@@ -397,6 +397,7 @@ const fragmentShader = `
   uniform float useMask;
   uniform float maskUsesUv;
   uniform float useLiveEraserMask;
+  uniform float liveMaskUsesProjection;
   uniform float useDepthCheck;
   uniform float useNormalCheck;
   uniform float ignoreSourceAlpha;
@@ -597,12 +598,17 @@ const fragmentShader = `
     float maskAlpha = mix(1.0, maskValue, useMask);
     vec4 liveEraserMaskTexel = texture2D(
       liveEraserMaskMap,
-      vec2(vUv.x, 1.0 - vUv.y)
+      mix(vec2(vUv.x, 1.0 - vUv.y), uv, liveMaskUsesProjection)
     );
     float liveEraserMaskAlpha =
       dot(liveEraserMaskTexel.rgb, vec3(0.299, 0.587, 0.114)) *
       liveEraserMaskTexel.a;
-    maskAlpha *= mix(1.0, liveEraserMaskAlpha, useLiveEraserMask);
+    float liveMaskAlpha = mix(
+      maskAlpha * liveEraserMaskAlpha,
+      liveEraserMaskAlpha,
+      liveMaskUsesProjection
+    );
+    maskAlpha = mix(maskAlpha, liveMaskAlpha, useLiveEraserMask);
 
     float projectedDepth = ndc.z * 0.5 + 0.5;
     float projectedViewDepth = -(projectorViewMatrix * captureWorldPosition).z;
@@ -1054,13 +1060,21 @@ function buildStackFragmentShader(
     layerUsesNormalArray(index)
       ? `texture(normalMaps, vec3((${uv}) * normalMapUvScale${index}, ${normalArraySlice(index).toFixed(1)}))`
       : `texture2D(normalMap${index}, ${uv})`;
-  const liveEraserMaskFactor = (index: number) =>
-    `mix(
-        1.0,
-        liveEraserMaskAlpha,
-        useLiveEraserMask *
-          (1.0 - step(0.5, abs(liveEraserLayerIndex - ${index.toFixed(1)})))
-      )`;
+  const liveMaskApplication = (index: number, projectedUv: string) => `
+      float liveMaskActive${index} = useLiveEraserMask *
+        (1.0 - step(0.5, abs(liveEraserLayerIndex - ${index.toFixed(1)})));
+      float liveMaskAlpha${index} = maskAlpha * liveEraserMaskAlpha;
+      if (liveMaskActive${index} > 0.5 && liveMaskUsesProjection > 0.5) {
+        vec4 liveProjectedMaskTexel${index} = texture2D(
+          liveEraserMaskMap,
+          ${projectedUv}
+        );
+        liveMaskAlpha${index} = dot(
+          liveProjectedMaskTexel${index}.rgb,
+          vec3(0.299, 0.587, 0.114)
+        ) * liveProjectedMaskTexel${index}.a;
+      }
+      maskAlpha = mix(maskAlpha, liveMaskAlpha${index}, liveMaskActive${index});`;
   // The 3x3 visibility neighborhood used to inline the complete depth/normal
   // decode expression nine times per layer. At 14 layers ANGLE had to compile
   // hundreds of repeated sampler/branch expressions, producing a 300ms main-
@@ -1340,12 +1354,16 @@ function buildStackFragmentShader(
             dot(maskTexel.rgb, vec3(0.299, 0.587, 0.114)) * maskTexel.a,
             compactUseMasks[layerIndex]
           );
-          maskAlpha *= mix(
-            1.0,
-            liveEraserMaskAlpha,
-            useLiveEraserMask *
-              (1.0 - step(0.5, abs(liveEraserLayerIndex - float(layerIndex))))
-          );
+          float liveMaskActive = useLiveEraserMask *
+            (1.0 - step(0.5, abs(liveEraserLayerIndex - float(layerIndex))));
+          float liveMaskAlpha = maskAlpha * liveEraserMaskAlpha;
+          if (liveMaskActive > 0.5 && liveMaskUsesProjection > 0.5) {
+            vec4 liveProjectedMaskTexel = texture2D(liveEraserMaskMap, uv);
+            liveMaskAlpha =
+              dot(liveProjectedMaskTexel.rgb, vec3(0.299, 0.587, 0.114)) *
+              liveProjectedMaskTexel.a;
+          }
+          maskAlpha = mix(maskAlpha, liveMaskAlpha, liveMaskActive);
           float projectedDepth = ndc.z * 0.5 + 0.5;
           float projectedViewDepth = -(
             compactProjectorViewMatrices[layerIndex] * captureWorldPosition
@@ -1642,7 +1660,7 @@ function buildStackFragmentShader(
 
       vec4 maskTexel = ${layerUsesMask(index) ? maskSample(index, layers[index].maskSpace === 'uv' ? 'vec2(vUv.x, 1.0 - vUv.y)' : 'uv') : 'vec4(1.0)'};
       float maskAlpha = dot(maskTexel.rgb, vec3(0.299, 0.587, 0.114)) * maskTexel.a;
-      maskAlpha *= ${liveEraserMaskFactor(index)};
+      ${liveMaskApplication(index, 'uv')}
 
       float projectedDepth = ndc.z * 0.5 + 0.5;
       float projectedViewDepth = -(projectorViewMatrix${index} * captureWorldPosition).z;
@@ -1743,7 +1761,7 @@ function buildStackFragmentShader(
 
       vec4 maskTexel = ${layerUsesMask(index) ? maskSample(index, layers[index].maskSpace === 'uv' ? 'vec2(vUv.x, 1.0 - vUv.y)' : 'uv') : 'vec4(1.0)'};
       float maskAlpha = dot(maskTexel.rgb, vec3(0.299, 0.587, 0.114)) * maskTexel.a;
-      maskAlpha *= ${liveEraserMaskFactor(index)};
+      ${liveMaskApplication(index, 'uv')}
 
       float projectedDepth = ndc.z * 0.5 + 0.5;
       float projectedViewDepth = -(projectorViewMatrix${index} * captureWorldPosition).z;
@@ -1879,6 +1897,7 @@ function buildStackFragmentShader(
   uniform sampler2D liveEraserMaskMap;
   uniform float useLiveEraserMask;
   uniform float liveEraserLayerIndex;
+  uniform float liveMaskUsesProjection;
   ${features.useBaseMap ? 'uniform sampler2D baseMap;' : ''}
   ${features.useBaseMap ? 'uniform float baseTextureOpacity;' : ''}
   ${features.useBaseRenderedColorMaskMap ? 'uniform sampler2D baseRenderedColorMaskMap;' : ''}
@@ -2725,11 +2744,75 @@ export function syncProjectedLayerLiveEraserPreviewInObject(
       if (material.uniforms.liveEraserLayerIndex) {
         material.uniforms.liveEraserLayerIndex.value = layerIndex;
       }
+      if (material.uniforms.liveMaskUsesProjection) {
+        material.uniforms.liveMaskUsesProjection.value = 0;
+      }
       material.uniforms.useLiveEraserMask.value = enabled ? 1 : 0;
       updated = true;
     }
   });
   return updated;
+}
+
+/**
+ * Replaces one resident projected layer's packed mask with a mutable
+ * projection-space canvas. The layer keeps its original colour, depth,
+ * surface-lock, ordering and material pass; only coverage changes while the
+ * local-repaint brush is active.
+ */
+export function syncProjectedLayerLiveMaskOverrideInObject(
+  root: THREE.Object3D,
+  layerId?: string,
+  texture?: THREE.Texture,
+) {
+  if (texture) prepareLiveEraserMaskTexture(texture);
+  const visited = new Set<THREE.Material>();
+  let updated = false;
+  let bound = false;
+  root.traverse((child) => {
+    if (!(child instanceof THREE.Mesh)) return;
+    const materials = Array.isArray(child.material) ? child.material : [child.material];
+    for (const material of materials) {
+      if (visited.has(material)) continue;
+      visited.add(material);
+      if (!(material instanceof THREE.ShaderMaterial)) continue;
+      if (material.userData[LIVE_LOCAL_REPAINT_OVERLAY_MATERIAL_FLAG]) continue;
+      const state = material.userData[PROJECTED_LAYER_STACK_STATE_KEY] as
+        | ProjectedLayerMaterialState
+        | undefined;
+      if (!state || !material.uniforms.useLiveEraserMask) continue;
+      const layerIndex = layerId
+        ? state.bindings.findIndex((binding) => binding.layerId === layerId)
+        : -1;
+      const enabled = Boolean(texture && layerIndex >= 0);
+      if (enabled && material.uniforms.liveEraserMaskMap) {
+        if (material.uniforms.liveEraserMaskMap.value !== texture) {
+          material.uniforms.liveEraserMaskMap.value = texture;
+          updated = true;
+        }
+      }
+      if (material.uniforms.liveEraserLayerIndex) {
+        if (material.uniforms.liveEraserLayerIndex.value !== layerIndex) {
+          material.uniforms.liveEraserLayerIndex.value = layerIndex;
+          updated = true;
+        }
+      }
+      if (material.uniforms.liveMaskUsesProjection) {
+        const nextMode = enabled ? 1 : 0;
+        if (material.uniforms.liveMaskUsesProjection.value !== nextMode) {
+          material.uniforms.liveMaskUsesProjection.value = nextMode;
+          updated = true;
+        }
+      }
+      const nextEnabled = enabled ? 1 : 0;
+      if (material.uniforms.useLiveEraserMask.value !== nextEnabled) {
+        material.uniforms.useLiveEraserMask.value = nextEnabled;
+        updated = true;
+      }
+      bound = bound || enabled;
+    }
+  });
+  return { updated, bound };
 }
 
 export function syncProjectedLayerResidentTextureVisibilityInObject(
@@ -2838,6 +2921,8 @@ function updateSharedPreviewUniforms(
       input.liveEraserMaskTexture && liveEraserLayerIndex >= 0 ? 1 : 0;
   if (material.uniforms.liveEraserLayerIndex)
     material.uniforms.liveEraserLayerIndex.value = liveEraserLayerIndex;
+  if (material.uniforms.liveMaskUsesProjection)
+    material.uniforms.liveMaskUsesProjection.value = 0;
   if (material.uniforms.useBaseMap) material.uniforms.useBaseMap.value = input.baseTexture ? 1 : 0;
   if (material.uniforms.baseTextureOpacity)
     material.uniforms.baseTextureOpacity.value = THREE.MathUtils.clamp(
@@ -3874,6 +3959,7 @@ export async function createProjectedLayerMaterial(input: ProjectionLayerInput) 
       useLiveEraserMask: {
         value: input.liveEraserMaskTexture && input.liveEraserLayerId === input.layerId ? 1 : 0,
       },
+      liveMaskUsesProjection: { value: 0 },
       useDepthCheck: {
         value: input.useDepthCheck && input.depthUrl && depthTexture !== neutralTexture ? 1 : 0,
       },
@@ -4084,6 +4170,7 @@ export async function createProjectedLayerStackMaterial(
           ? 1
           : 0,
     },
+    liveMaskUsesProjection: { value: 0 },
     liveEraserLayerIndex: {
       value: input.liveEraserLayerId
         ? input.layers.findIndex((layer) => layer.layerId === input.liveEraserLayerId)
@@ -4345,6 +4432,7 @@ export async function createProjectedLayerStackMaterial(
   uniforms.liveEraserLayerIndex.value = loadedLiveEraserLayerIndex;
   uniforms.useLiveEraserMask.value =
     input.liveEraserMaskTexture && loadedLiveEraserLayerIndex >= 0 ? 1 : 0;
+  uniforms.liveMaskUsesProjection.value = 0;
 
   if (useTextureArrays) {
     const renderer = options.renderer;

@@ -1,10 +1,10 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
-> 文档版本：`2.13.6`
+> 文档版本：`2.13.7`
 >
 > 生效日期：`2026-09-01`
 >
-> 代码盘点基线：`b1b80d8 + 本次局部重绘双阶段预览与当前层交接修复`
+> 代码盘点基线：`a022960 + 本次局部重绘正式材质实时蒙版修复`
 >
 > 基线仓库：`E:\Liclick 3D Texture Modernization`
 >
@@ -306,7 +306,7 @@ UI-09 剪刀
 | `ALG-LR-004` 历史增强边界谐调 | `14.0.0-compatible` | 仅读取/重建旧 v6-v14 Generation 和图层；新 `direct-v1` 任务不调用 |
 | `ALG-LR-005` 历史兼容边界谐调 | `5.0.0-compatible` | 仅保留旧 v3-v5 全幅合成与 legacy 切换的读取兼容；新 `direct-v1` 任务不调用 |
 | `ALG-LR-006` 表面画笔重投影 | `2.0.0` | raycast 命中表面，投射到 frozen source UV；最小绝对 face-on 0.08；世界半径 0.004-0.12 包围盒比例；texture radius 1-72 |
-| `ALG-LR-007` 低延迟实时覆盖 | `2.1.0` | live mask/source 最大 1024；应用画笔期间先由仅消费 source、live inward-crossfade mask 与 capture projector matrix 的简化 GPU mesh preview 提供即时反馈，深度感知 ordered projected stack 在后台按 `contentRevision` 自动重打包，离开画笔并确认同 layerId 已驻留后再移交显示权。简化 preview 没有 depth/normal/surface-lock 采样，只是 renderer-only 临时表示，不进入 Layer/Project/export；最终持久结果仍使用 `surface-locked-v1`、capture depth、原 coverage 与颜色公式。只有快速 preview 实际可见或 ordered stack 明确持有显示权时，才静音当前同 ID persisted twin；未就绪、eye-off、失败或超时必须保留当前正式层，其他局部重绘层永不受该 layerId 的交接影响。新一代 Generation 一次性接管、按钮首次点击排队进度、最大 1024 live mask、选择/旋转时仅隐藏作者蒙版展示等既有规则保持不变 |
+| `ALG-LR-007` 低延迟实时覆盖 | `2.1.1` | 已发布局部重绘行进入应用画笔时继续由原 ordered projected stack 正式材质显示，不再创建或静音后改由第二套无深度 mesh 表示。正式材质把预留 live-mask sampler 从 UV keep-mask 乘法切换为当前 layerId 的 projection-space authored coverage 替换；每次笔画只上传最大 1024 的 mutable mask texture，source、capture projector、depth/normal/surface-lock、图层顺序、颜色和 blend 仍由同一个驻留 pass 处理。退出画笔且确认正式层驻留后解除 override。尚无持久行的新结果继续使用原 depth-aware exact overlay，发布后再交给正式栈。新一代 Generation 一次性接管、按钮首次点击排队进度、选择/旋转时仅隐藏作者蒙版展示等既有规则保持不变 |
 | `ALG-LR-008` 延迟投影持久化 | `2.2.3` | interactive UV bake 固定关闭；生图前 Project Command snapshot 后台执行；Generation、对象、目标层与 GPU-ready 标记共同识别驻留 source；成功生图以 success revision 触发新 source 后台解码、目标层绑定与 GPU 预热，使应用画笔首次点击直接进入驻留快路径；若首次点击早于任务锁或 Generation store 发布完成，内存请求跨越该过渡窗口并在 ready 后自动执行，按钮以旋转图标和流动进度条反馈等待；pointer-up 两帧内发布权威图层行，发布后按真实 LayerStore 行判断驻留，不依赖旧 preview revision；后台构建只等待真实指针交互，不等待蒙版工具退出；idle 3000ms 仍仅合并持久化，needsRebake=true |
 | `ALG-LR-009` Inward Crossfade 栈合成 | `1.0.0` | 连续重绘层向内部交叉淡化，避免普通 alpha stacking 在边缘重复显露接缝 |
 | `ALG-LR-010` Provider 兼容编辑 | `1.0.0-compat` | `LocalRepaintDialog` 的 image/edit/protect/hole masks 独立路径，不得与四输入主路径混改 |
@@ -336,6 +336,8 @@ UI-09 剪刀
 `ALG-LR-007` v2.0.9 修正 UI-06 → M08 的实时 mask 所有权：ordered projected stack 使用打包快照，无法在每个指针采样后读取正在变化的 live canvas；因此应用画笔激活期间，无论活动重绘上方是否存在 `single-view-priority-v1`，均由专用 GPU overlay 临时接管反馈，并在同一状态提交中静音同 ID resident binding。离开应用画笔或刷新恢复后仍由 ordered stack 按原图层顺序显示持久结果。此变更不改 source/mask 内容、投影矩阵、coverage、深度编码、颜色公式、1024 上限、CPU/Worker/shader、UV/export、Project/Layer/Generation/Capture Schema、Revision、ownership 或资产，无数据迁移。回退时移除 live feedback 对专用 overlay 的强制接管即可；已有图层、蒙版和生成资产无需删除。
 
 `ALG-LR-007` v2.1.0 修正 UI-06 → M08 的当前层二次编辑和异步质量交接：复杂 depth-aware GPU overlay 在部分真实工程中可完成绑定但被 capture visibility 全部裁为透明；旧流程仍立即静音同 ID persisted twin，因而当前层旧笔画与新笔画同时消失，只有等待 ordered stack 重打包后手动开关预览才恢复。新流程在预热阶段创建 renderer-only 简化 mesh preview，每个有效采样只上传最大 1024 的 inward-crossfade live mask，并以同一 capture projector matrix 采样生成 source；它不读取 depth/normal，不参与持久 Layer、缩略图、UV 或 export，只保证编辑时的即时近似反馈。SceneRoot 将可见 projected 层的 `contentRevision` 纳入展示失效签名，pointer-up 发布后自动触发正式材质重建；离开应用画笔时逐帧确认当前 layerId 已进入真实背景材质，再关闭简化 preview 并解除同 ID resident 静音。静音门禁限定为“快速 preview 实际可见或 ordered stack 明确接管”，未就绪、eye-off、取消或 10 秒超时继续显示当前正式层；其他局部重绘 layerId 不变。最终 source、作者 mask、capture depth、`surface-locked-v1`、coverage/颜色公式、1024 live 上限、最终分辨率、CPU/Worker/UV/export、Project/Layer/Generation/Capture Schema、Revision、ownership 和资产均不改变，无数据迁移。回退时移除 `liveLocalRepaintFastPreview`、恢复 v2.0.9 的专用 overlay 所有权，并移除 projected contentRevision 展示失效通知；不得删除已有图层、蒙版、Generation 或资产。回归覆盖当前层二次进入、未就绪不静音、只静音同 ID twin、快速/复杂 twin 不并绘、正式层驻留后自动交接和 contentRevision 重建；真实浏览器已验证再次进入时快速 preview ready/visible 且复杂 overlay hidden。
+
+`ALG-LR-007` v2.1.1 修正 UI-06 → M08/M06 的实时 coverage 所有权。v2.1.0 的无深度快速 mesh 与正式 surface-locked 图层同时存在，重进画笔时会先静音正式行；快速 mesh 又缺少 capture depth/normal 门控，因此可能出现当前层旧笔画消失、live 笔画无反馈或深红色投影块。新流程删除该 duplicate mesh：已有正式行保持可见，并在其共享 projected shader 内将预留 live sampler 精确绑定到当前 layerId，使用 capture/projector UV 直接替换该行打包 mask；其他图层、resident source、depth/normal/surface-lock、inward crossfade、图层顺序和颜色运算均不变。mask texture 与 layer binding 未变化时不重复 invalidate；离开工具只在正式行仍驻留后清除 override。首次尚无持久行时保留原 depth-aware exact overlay，发布后按 layerId 交接。SceneRoot 只有在当前工具真实拥有预览显示权时才允许静音 resident row，晚到 marker 不能隐藏正式层。本次只改变 GPU shader uniform 绑定与视口生命周期；CPU/Worker/UV/export、1024 live 上限、最终分辨率、Project/Layer/Generation/Capture Schema、Project Command/Revision、ownership 和资产均不改变，无数据迁移。回退可关闭 projection-space override 并恢复 v2.0.9 的 exact overlay 接管，不应恢复 v2.1.0 的无深度快速 mesh；已有图层、蒙版、Generation 和资产无需删除或改写。回归覆盖正式行绑定、仅当前 layerId mask 替换、新行 exact overlay、退出交接、无 duplicate mesh 与晚到静音门禁；真实浏览器验证进入局部重绘和切换画笔时当前层持续可见、override 已绑定、无深红块。
 
 UI-05/UI-13 的贴图驻留边界要求所有挂到页面根节点的生成面板 Portal 同样受 `EditorPage.isActive` 门禁。进入 UV 时贴图编辑器可继续保留引擎与面板状态，但“局部生图”固定按钮、生成取消确认和结果大图预览均不得越过隐藏工作区显示；回到贴图页后按原状态恢复。此修复仅改变 React 展示生命周期，不改变局部生成算法版本、任务状态、GPU/CPU/Worker/shader、输入蒙版、Project/Layer/Generation/Capture Schema、对象资产或 Revision，无数据迁移；回退只移除 Portal 活跃态门禁。
 
@@ -597,3 +599,4 @@ M15 体积修复：锁定 `terser@5.51.2` 两轮安全压缩，保留日志和�
 | `2.13.4` | 2026-09-01 | `本次局部重绘画笔视口反馈修复` | UI-06、M08、`ALG-LR-007` v2.0.8：修复有序投影栈接管活动局部重绘时，专用 overlay 与同 ID resident binding 被同时静音，造成画笔已更新右侧图层但视口无反馈的问题；显示权改为互斥兜底，ordered stack 接管时保留 resident binding，可见 overlay 接管时才静音 persisted twin。投影/coverage/颜色与分辨率、CPU/Worker/shader/UV/export、Schema、Revision、ownership 和资产不变，无迁移。 |
 | `2.13.5` | 2026-09-01 | `本次局部重绘实时画笔反馈修复` | UI-06、M08、`ALG-LR-007` v2.0.9：修复持久层虽然可见，但 ordered projected stack 仍只读取上一次打包 mask，导致画笔实时 canvas 更新必须刷新后才显示的问题；应用画笔激活期间由专用 GPU overlay 临时接管，并同步静音 resident twin，离开工具或恢复后仍按原图层顺序显示。投影/coverage/颜色与分辨率、CPU/Worker/shader/UV/export、Schema、Revision、ownership 和资产不变，无迁移。 |
 | `2.13.6` | 2026-09-01 | `本次局部重绘双阶段预览与当前层交接修复` | UI-06、M08、`ALG-LR-007` v2.1.0：修复当前局部重绘层二次进入画笔时先被静音、复杂实时 overlay 无输出导致旧笔画和新笔画同时消失，以及等待后仍需手动开关预览的问题。新增 renderer-only 简化 source+live-mask mesh preview 立即反馈；只有其实际可见时才静音当前同 ID persisted twin，其他重绘层不受影响；projected `contentRevision` 自动触发正式材质重建，离开画笔且确认正式层驻留后自动交接。最终 depth/surface-lock、coverage、颜色、1024 live 上限、UV/export、Schema、Revision、ownership 和资产不变，无迁移。 |
+| `2.13.7` | 2026-09-01 | `本次局部重绘正式材质实时蒙版修复` | UI-06、M08/M06、`ALG-LR-007` v2.1.1：删除会与正式图层争夺显示权且缺少 depth/normal 的快速 duplicate mesh；已有局部重绘层始终保留在原 ordered projected material，以 projection-space live sampler 只替换当前 layerId 的 authored mask，使旧笔画与新笔画立即同屏反馈，同时继续使用正式 source、capture depth、surface-lock、图层顺序与颜色。无持久行的新结果仍用 depth-aware exact overlay，发布后自动交接；SceneRoot 晚到 marker 不再误静音正式层。CPU/Worker/UV/export、1024 live 上限、最终分辨率、Schema、Revision、ownership 与资产不变，无迁移。 |

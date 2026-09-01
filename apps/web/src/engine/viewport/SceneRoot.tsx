@@ -3042,7 +3042,18 @@ function ImportedModel({
     // visibility from that snapshot: a late effect would reopen a layer that
     // the user has already hidden.
     const authoritativeProjectionLayers = useLayerStore.getState().layers;
-    const authoritativePreviewLayerId = useSceneStore.getState().localRepaintPreviewLayer?.id;
+    const authoritativeSceneState = useSceneStore.getState();
+    const authoritativePreviewLayer = authoritativeSceneState.localRepaintPreviewLayer;
+    const authoritativeMutedPreviewLayerId =
+      authoritativePreviewLayer &&
+      shouldMuteLocalRepaintResidentLayer(
+        authoritativeProjectionLayers,
+        authoritativePreviewLayer,
+        authoritativePreviewLayer.id,
+        authoritativeSceneState.paintTool === 'inpaint-apply',
+      )
+        ? authoritativePreviewLayer.id
+        : undefined;
     const authoritativeMergedUvBoundaryOrder = getVisibleMergedUvBoundaryOrder(
       authoritativeProjectionLayers,
       importedModel.objectId,
@@ -3057,7 +3068,7 @@ function ImportedModel({
         ...toProjectionLayerDisplayInput(layer),
         visible:
           layer.visible &&
-          layer.id !== authoritativePreviewLayerId &&
+          layer.id !== authoritativeMutedPreviewLayerId &&
           isProjectedLayerAboveMergedUv(layer, authoritativeMergedUvBoundaryOrder),
       }));
     syncProjectedLayerResidentTextureVisibilityInObject(importedModel.group, {
@@ -4690,6 +4701,17 @@ function ImportedModel({
       const authoritativeSceneState = useSceneStore.getState();
       const authoritativeSettings = useSettingsStore.getState();
       const authoritativeLayers = useLayerStore.getState().layers;
+      const authoritativePreviewLayer = authoritativeSceneState.localRepaintPreviewLayer;
+      const authoritativeMutedPreviewLayerId =
+        authoritativePreviewLayer &&
+        shouldMuteLocalRepaintResidentLayer(
+          authoritativeLayers,
+          authoritativePreviewLayer,
+          authoritativePreviewLayer.id,
+          authoritativeSceneState.paintTool === 'inpaint-apply',
+        )
+          ? authoritativePreviewLayer.id
+          : undefined;
       const authoritativeMergedUvBoundaryOrder = getVisibleMergedUvBoundaryOrder(
         authoritativeLayers,
         importedModel.objectId,
@@ -4704,7 +4726,7 @@ function ImportedModel({
           ...toProjectionLayerDisplayInput(layer),
           visible:
             layer.visible &&
-            layer.id !== authoritativeSceneState.localRepaintPreviewLayer?.id &&
+            layer.id !== authoritativeMutedPreviewLayerId &&
             isProjectedLayerAboveMergedUv(layer, authoritativeMergedUvBoundaryOrder),
         }));
       const authoritativeLighting = getPreviewLighting({

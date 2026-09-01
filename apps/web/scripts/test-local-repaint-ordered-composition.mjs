@@ -187,11 +187,8 @@ try {
     new URL('../src/engine/viewport/ViewportCanvas.tsx', import.meta.url),
     'utf8',
   );
-  const fastPreview = readFileSync(
-    new URL(
-      '../src/engine/localRepaint/liveLocalRepaintFastPreview.ts',
-      import.meta.url,
-    ),
+  const projectedMaterial = readFileSync(
+    new URL('../src/engine/projection/ProjectedLayerMaterial.ts', import.meta.url),
     'utf8',
   );
   assert.match(sceneRoot, /mergeOrderedLocalRepaintPreview/);
@@ -234,25 +231,39 @@ try {
   );
   assert.match(
     viewport,
-    /const rendererPreviewOwnsPresentation = fastPreviewVisible \|\| orderedStackOwnsPreview;[\s\S]*?!rendererPreviewOwnsPresentation[\s\S]*?setLocalRepaintPreviewLayer\(undefined\)/,
-    'the current persisted twin must stay visible until its fast preview is actually submitted',
+    /residentOverrideBound = Boolean\([\s\S]*?bindLocalRepaintResidentMaskOverride/,
+    'an existing repaint must bind its mutable mask into the resident material',
   );
   assert.match(
     viewport,
-    /setLocalRepaintGpuOverlayVisibility\(\s*overlay,\s*shouldRender && !fastPreviewCanRender/,
-    'the exact and fast renderer twins must never be submitted together',
+    /const exactOverlayVisible = shouldRender && !hasPersistedLayer/,
+    'a second geometry overlay must be reserved for brand-new repaint rows only',
   );
   assert.match(
     viewport,
-    /isLocalRepaintLayerResident\(fastPreview\.root\.parent, fastPreview\.layerId\)[\s\S]*?setLocalRepaintPreviewLayer\(undefined\)/,
-    'leaving apply mode must release only the current preview after its formal layer is resident',
+    /isLocalRepaintLayerResident\(override\.root, override\.layerId\)[\s\S]*?clearLocalRepaintResidentMaskOverride\(\)/,
+    'leaving apply mode must release the live mask only after the formal layer is resident',
   );
-  assert.match(fastPreview, /uniform sampler2D projectedMap/);
-  assert.match(fastPreview, /uniform sampler2D maskMap/);
   assert.doesNotMatch(
-    fastPreview,
-    /depthMap|normalMap|surfaceLockedVisibility/,
-    'the immediate fallback must stay independent from asynchronous quality visibility assets',
+    viewport,
+    /liveLocalRepaintFastPreview|fastPreviewVisible|fastPreviewCanRender/,
+    'the depthless duplicate-mesh preview must stay out of the renderer path',
+  );
+  assert.match(projectedMaterial, /uniform float liveMaskUsesProjection/);
+  assert.match(
+    projectedMaterial,
+    /syncProjectedLayerLiveMaskOverrideInObject[\s\S]*?const nextMode = enabled \? 1 : 0[\s\S]*?liveMaskUsesProjection\.value = nextMode/,
+    'resident materials must switch the reserved live mask to projection-space replacement mode',
+  );
+  assert.match(
+    projectedMaterial,
+    /maskAlpha = mix\(maskAlpha, liveMaskAlpha, liveMaskActive\)/,
+    'the shared stack shader must replace only the selected layer mask',
+  );
+  assert.match(
+    sceneRoot,
+    /authoritativeMutedPreviewLayerId[\s\S]*?shouldMuteLocalRepaintResidentLayer/,
+    'late display synchronization must not mute a row merely because a preview id exists',
   );
   assert.match(
     sceneRoot,

@@ -47,6 +47,7 @@ import {
   disposeGeneratedMaterialTree,
   PROJECTED_LAYER_MATERIAL_USER_DATA_KEY,
   syncProjectedLayerLiveEraserPreviewInObject,
+  syncProjectedLayerLiveMaskOverrideInObject,
   syncProjectedLayerMaterialProjection,
 } from '@/engine/projection/ProjectedLayerMaterial';
 import {
@@ -118,12 +119,6 @@ import { registerPreviewTextureRenderer } from './previewTextureCache';
 import { createLocalRepaintFalloffInWorker } from '@/engine/localRepaint/falloffWorker';
 import { updateLocalRepaintInwardCrossfadeCanvas } from '@/engine/localRepaint/inwardCrossfadeMask';
 import { getLocalRepaintSeamMode } from '@/engine/localRepaint/seamHarmonizationMode';
-import {
-  createLiveLocalRepaintFastPreview,
-  disposeLiveLocalRepaintFastPreview,
-  syncLiveLocalRepaintFastPreview,
-  type LiveLocalRepaintFastPreview,
-} from '@/engine/localRepaint/liveLocalRepaintFastPreview';
 import { isViewportInteractionBusy, markViewportInteractionEnd } from './viewportInteractionState';
 import {
   markEraserPerformanceEvent,
@@ -6591,7 +6586,12 @@ function SurfacePaintOverlay() {
   const [localRepaintAssetsRevision, setLocalRepaintAssetsRevision] = useState(0);
   const localRepaintCompositeRef = useRef<LocalRepaintCompositeState>();
   const localRepaintGpuOverlayRef = useRef<LocalRepaintGpuOverlayState>();
-  const localRepaintFastPreviewRef = useRef<LiveLocalRepaintFastPreview>();
+  const localRepaintResidentMaskOverrideRef = useRef<{
+    root: THREE.Object3D;
+    layerId: string;
+    sourceKey: string;
+    texture: THREE.Texture;
+  }>();
   const localRepaintRuntimeDepthRef = useRef<{
     sourceKey: string;
     depthUrl: string;
@@ -6617,12 +6617,14 @@ function SurfacePaintOverlay() {
       liveInpaintScreenPreview.material.dispose();
     };
   }, [liveInpaintScreenPreview, scene]);
-  const clearLocalRepaintFastPreview = useCallback(() => {
-    disposeLiveLocalRepaintFastPreview(localRepaintFastPreviewRef.current);
-    localRepaintFastPreviewRef.current = undefined;
-    delete document.body.dataset.localRepaintFastPreviewReady;
-    delete document.body.dataset.localRepaintFastPreviewVisible;
-    invalidate();
+  const clearLocalRepaintResidentMaskOverride = useCallback(() => {
+    const current = localRepaintResidentMaskOverrideRef.current;
+    if (!current) return false;
+    const result = syncProjectedLayerLiveMaskOverrideInObject(current.root);
+    localRepaintResidentMaskOverrideRef.current = undefined;
+    document.body.dataset.localRepaintResidentMaskOverride = 'inactive';
+    if (result.updated) invalidate();
+    return result.updated;
   }, [invalidate]);
   const clearLocalRepaintGpuOverlay = useCallback(() => {
     disposeLocalRepaintGpuOverlay(localRepaintGpuOverlayRef.current);
@@ -6635,45 +6637,35 @@ function SurfacePaintOverlay() {
     // the next camera move or eye toggle.
     invalidate();
   }, [invalidate]);
-  const ensureLocalRepaintFastPreview = useCallback(
-    (
-      model: SurfacePaintTarget,
-      sourceKey: string,
-      composite: LocalRepaintCompositeState,
-      sourceTexture: THREE.Texture,
-    ) => {
-      const current = localRepaintFastPreviewRef.current;
+  const bindLocalRepaintResidentMaskOverride = useCallback(
+    (model: SurfacePaintTarget, sourceKey: string, composite: LocalRepaintCompositeState) => {
+      const current = localRepaintResidentMaskOverrideRef.current;
       if (
         current &&
-        current.sourceKey === sourceKey &&
-        current.layerId === composite.layerId &&
-        current.root.parent === model.group
+        (current.root !== model.group ||
+          current.layerId !== composite.layerId ||
+          current.sourceKey !== sourceKey)
       ) {
-        syncLiveLocalRepaintFastPreview(current, {
-          sourceTexture,
-          maskTexture: composite.blendMaskTexture,
-          worldToSourceClip: composite.worldToSourceClip,
-          opacity: 1,
-          visible: current.root.visible,
-        });
-        return current;
+        clearLocalRepaintResidentMaskOverride();
       }
-      clearLocalRepaintFastPreview();
-      const preview = createLiveLocalRepaintFastPreview({
-        modelGroup: model.group,
-        meshes: getPaintableSurfaceCache(model.group).positionedMeshes,
-        sourceKey,
-        layerId: composite.layerId,
-        sourceTexture,
-        maskTexture: composite.blendMaskTexture,
-        worldToSourceClip: composite.worldToSourceClip,
-        renderOrder: LOCAL_REPAINT_OVERLAY_RENDER_ORDER + 1,
-      });
-      localRepaintFastPreviewRef.current = preview;
-      document.body.dataset.localRepaintFastPreviewReady = '1';
-      return preview;
+      const result = syncProjectedLayerLiveMaskOverrideInObject(
+        model.group,
+        composite.layerId,
+        composite.blendMaskTexture,
+      );
+      if (result.bound) {
+        localRepaintResidentMaskOverrideRef.current = {
+          root: model.group,
+          layerId: composite.layerId,
+          sourceKey,
+          texture: composite.blendMaskTexture,
+        };
+        document.body.dataset.localRepaintResidentMaskOverride = `bound:${composite.layerId}`;
+      }
+      if (result.updated) invalidate();
+      return result.bound;
     },
-    [clearLocalRepaintFastPreview],
+    [clearLocalRepaintResidentMaskOverride, invalidate],
   );
   const paintTool = useSceneStore((state) => state.paintTool);
   const displayMode = useSceneStore((state) => state.displayMode);
@@ -7990,14 +7982,12 @@ function SurfacePaintOverlay() {
 
   const syncLocalRepaintGpuOverlayActivity = useCallback(() => {
     const overlay = localRepaintGpuOverlayRef.current;
-    const fastPreview = localRepaintFastPreviewRef.current;
-    if (!overlay && !fastPreview) return;
     const sceneState = useSceneStore.getState();
     const layerState = useLayerStore.getState();
     const layers = layerState.layers;
     const composite = localRepaintCompositeRef.current;
-    const liveLayerId = fastPreview?.layerId ?? overlay?.layerId;
-    const liveSourceKey = fastPreview?.sourceKey ?? overlay?.sourceKey;
+    const liveLayerId = composite?.layerId ?? overlay?.layerId;
+    const liveSourceKey = composite?.sourceKey ?? overlay?.sourceKey;
     if (!liveLayerId || !liveSourceKey) return;
     const persistedLayer = layers.find((layer) => layer.id === liveLayerId);
     const hasPersistedLayer = Boolean(persistedLayer);
@@ -8042,47 +8032,37 @@ function SurfacePaintOverlay() {
           (overlay ? readLocalRepaintGpuOverlayLayerVisibility(overlay, layers) : true),
       ),
     );
-    const fastPreviewCanRender = Boolean(
-      fastPreview &&
+    const targetModel = getTargetModel();
+    const residentOverrideBound = Boolean(
+      persistedLayer?.visible &&
         composite &&
-        fastPreview.sourceKey === composite.sourceKey &&
-        fastPreview.layerId === composite.layerId,
+        targetModel &&
+        composite.sourceKey === liveSourceKey &&
+        composite.restoredMaskReady &&
+        hasLiveContent &&
+        isLocalRepaintOverlayVisible(sceneState.displayMode, true) &&
+        bindLocalRepaintResidentMaskOverride(targetModel, liveSourceKey, composite),
     );
-    const fastPreviewVisible = shouldRender && fastPreviewCanRender;
     let changed = false;
-    if (fastPreview && composite && fastPreviewCanRender) {
-      changed =
-        syncLiveLocalRepaintFastPreview(fastPreview, {
-          sourceTexture: fastPreview.material.uniforms.projectedMap.value as THREE.Texture,
-          maskTexture: composite.blendMaskTexture,
-          worldToSourceClip: composite.worldToSourceClip,
-          opacity: persistedLayer?.opacity ?? 1,
-          visible: fastPreviewVisible,
-        }) || changed;
-    }
-    document.body.dataset.localRepaintFastPreviewVisible = fastPreviewVisible ? '1' : '0';
-    // The exact depth-aware overlay remains a fallback for older/prewarm states.
-    // Never submit both copies together; two transparent twins darken the color.
+    document.body.dataset.localRepaintResidentMaskOverride = residentOverrideBound
+      ? `bound:${liveLayerId}`
+      : 'inactive';
+    // A new repaint has no resident binding yet and still needs the exact
+    // depth-aware overlay. Existing rows stay in the shared material pass; if
+    // binding is briefly unavailable, keep their last complete pixels instead
+    // of substituting a second mesh or muting them.
+    const exactOverlayVisible = shouldRender && !hasPersistedLayer;
     if (overlay) {
       changed =
-        setLocalRepaintGpuOverlayVisibility(
-          overlay,
-          shouldRender && !fastPreviewCanRender,
-          layers,
-        ) || changed;
+        setLocalRepaintGpuOverlayVisibility(overlay, exactOverlayVisible, layers) || changed;
     }
     if (changed) invalidate();
-    const rendererPreviewOwnsPresentation = fastPreviewVisible || orderedStackOwnsPreview;
-    if (
-      !rendererPreviewOwnsPresentation &&
-      hasPersistedLayer &&
-      previewOwnsOverlay &&
-      !orderedStackOwnsPreview
-    ) {
-      // Preview ownership must describe what is actually submitted to WebGL,
-      // not merely which edit session is selected. In particular an eye-off
-      // transition hides the renderer-only twin, so keeping this marker would
-      // also mute the persisted row and leave both representations invisible.
+    const rendererPreviewOwnsPresentation =
+      !hasPersistedLayer && (exactOverlayVisible || orderedStackOwnsPreview);
+    if (hasPersistedLayer && previewOwnsOverlay) {
+      // A resident row now owns both historical and live coverage in the same
+      // shader. Never leave the legacy preview marker behind: SceneRoot treats
+      // that marker as permission to mute the resident binding.
       sceneState.setLocalRepaintPreviewLayer(undefined);
     } else if (
       rendererPreviewOwnsPresentation &&
@@ -8097,7 +8077,7 @@ function SurfacePaintOverlay() {
         maskUrl: composite?.maskUrl ?? persistedLayer.maskUrl,
       });
     }
-  }, [invalidate]);
+  }, [bindLocalRepaintResidentMaskOverride, getTargetModel, invalidate]);
 
   useEffect(() => {
     syncLocalRepaintGpuOverlayActivity();
@@ -8111,12 +8091,17 @@ function SurfacePaintOverlay() {
   ]);
 
   useEffect(() => {
-    if (paintTool === 'inpaint-apply') return undefined;
-    const fastPreview = localRepaintFastPreviewRef.current;
-    if (!fastPreview?.root.visible || !fastPreview.root.parent) return undefined;
+    if (
+      paintTool === 'inpaint-apply' ||
+      paintTool === 'inpaint-add' ||
+      paintTool === 'inpaint-subtract'
+    )
+      return undefined;
+    const override = localRepaintResidentMaskOverrideRef.current;
+    if (!override) return undefined;
     const persistedLayer = useLayerStore
       .getState()
-      .layers.find((layer) => layer.id === fastPreview.layerId && layer.visible);
+      .layers.find((layer) => layer.id === override.layerId && layer.visible);
     if (!persistedLayer) return undefined;
     let cancelled = false;
     void waitForLocalRepaintResidentHandoff({
@@ -8124,20 +8109,21 @@ function SurfacePaintOverlay() {
       now: () => performance.now(),
       nextFrame: () => new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve())),
       ready: () =>
-        Boolean(
-          fastPreview.root.parent &&
-            isLocalRepaintLayerResident(fastPreview.root.parent, fastPreview.layerId),
-        ),
+        isLocalRepaintLayerResident(override.root, override.layerId),
     }).then((ready) => {
-      if (!ready || cancelled || localRepaintFastPreviewRef.current !== fastPreview) return;
-      fastPreview.root.visible = false;
-      document.body.dataset.localRepaintFastPreviewVisible = '0';
+      if (
+        !ready ||
+        cancelled ||
+        localRepaintResidentMaskOverrideRef.current !== override
+      )
+        return;
+      clearLocalRepaintResidentMaskOverride();
       const overlay = localRepaintGpuOverlayRef.current;
-      if (overlay?.layerId === fastPreview.layerId) {
+      if (overlay?.layerId === override.layerId) {
         setLocalRepaintGpuOverlayVisibility(overlay, false, useLayerStore.getState().layers);
       }
       const sceneState = useSceneStore.getState();
-      if (sceneState.localRepaintPreviewLayer?.id === fastPreview.layerId) {
+      if (sceneState.localRepaintPreviewLayer?.id === override.layerId) {
         sceneState.setLocalRepaintPreviewLayer(undefined);
       }
       document.body.dataset.localRepaintResidentHandoff = 'ready';
@@ -8146,7 +8132,7 @@ function SurfacePaintOverlay() {
     return () => {
       cancelled = true;
     };
-  }, [invalidate, paintTool]);
+  }, [clearLocalRepaintResidentMaskOverride, invalidate, paintTool]);
 
   const ensurePaintPreviewOverlayForMesh = useCallback((layer: UvPaintLayer, mesh: THREE.Mesh) => {
     if (layer.paintOverlayTargets.has(mesh)) return;
@@ -8936,10 +8922,10 @@ function SurfacePaintOverlay() {
       localRepaintProjectedPublishRequestsRef.current.clear();
       localRepaintProjectedPublishRevisionsRef.current.clear();
       clearLocalRepaintGpuOverlay();
-      clearLocalRepaintFastPreview();
+      clearLocalRepaintResidentMaskOverride();
       useSceneStore.getState().setLocalRepaintPreviewLayer(undefined);
     };
-  }, [clearLocalRepaintFastPreview, clearLocalRepaintGpuOverlay]);
+  }, [clearLocalRepaintGpuOverlay, clearLocalRepaintResidentMaskOverride]);
 
   useEffect(() => {
     localRepaintUvCommitRevisionRef.current += 1;
@@ -8978,8 +8964,12 @@ function SurfacePaintOverlay() {
     delete document.body.dataset.localRepaintGpuErrorTarget;
     let cancelled = false;
     const previousOverlay = localRepaintGpuOverlayRef.current;
+    const previousOverride = localRepaintResidentMaskOverrideRef.current;
     const releasePreviousPreview = async () => {
-      if (!previousOverlay) return true;
+      if (!previousOverlay && !previousOverride) return true;
+      const previousLayerId = previousOverride?.layerId ?? previousOverlay?.layerId;
+      const previousRoot = previousOverride?.root ?? previousOverlay?.root.parent;
+      if (!previousLayerId) return true;
       const ready = await waitForLocalRepaintResidentHandoff({
         cancelled: () => cancelled,
         now: () => performance.now(),
@@ -8988,12 +8978,12 @@ function SurfacePaintOverlay() {
         ready: () => {
           const layer = useLayerStore
             .getState()
-            .layers.find((item) => item.id === previousOverlay.layerId);
+            .layers.find((item) => item.id === previousLayerId);
           return (
             !layer ||
             !layer.visible ||
-            !previousOverlay.root.parent ||
-            isLocalRepaintLayerResident(previousOverlay.root.parent, previousOverlay.layerId)
+            !previousRoot ||
+            isLocalRepaintLayerResident(previousRoot, previousLayerId)
           );
         },
       });
@@ -9007,15 +8997,22 @@ function SurfacePaintOverlay() {
         }
         return false;
       }
-      if (cancelled || localRepaintGpuOverlayRef.current !== previousOverlay) return false;
-      setLocalRepaintGpuOverlayVisibility(previousOverlay, false, useLayerStore.getState().layers);
-      const fastPreview = localRepaintFastPreviewRef.current;
-      if (fastPreview?.layerId === previousOverlay.layerId) {
-        fastPreview.root.visible = false;
-        document.body.dataset.localRepaintFastPreviewVisible = '0';
+      if (cancelled) return false;
+      if (previousOverlay && localRepaintGpuOverlayRef.current === previousOverlay) {
+        setLocalRepaintGpuOverlayVisibility(
+          previousOverlay,
+          false,
+          useLayerStore.getState().layers,
+        );
+      }
+      if (
+        previousOverride &&
+        localRepaintResidentMaskOverrideRef.current === previousOverride
+      ) {
+        clearLocalRepaintResidentMaskOverride();
       }
       const state = useSceneStore.getState();
-      if (state.localRepaintPreviewLayer?.id === previousOverlay.layerId)
+      if (state.localRepaintPreviewLayer?.id === previousLayerId)
         state.setLocalRepaintPreviewLayer(undefined);
       document.body.dataset.localRepaintResidentHandoff = 'ready';
       invalidate();
@@ -9025,7 +9022,7 @@ function SurfacePaintOverlay() {
       void releasePreviousPreview().then((ready) => {
         if (!ready || cancelled) return;
         clearLocalRepaintGpuOverlay();
-        clearLocalRepaintFastPreview();
+        clearLocalRepaintResidentMaskOverride();
         localRepaintSourceImageRef.current = undefined;
         localRepaintCompositeRef.current = undefined;
         localRepaintRuntimeDepthRef.current = undefined;
@@ -9194,8 +9191,8 @@ function SurfacePaintOverlay() {
       traceSourceEffect('cleanup');
     };
   }, [
-    clearLocalRepaintFastPreview,
     clearLocalRepaintGpuOverlay,
+    clearLocalRepaintResidentMaskOverride,
     invalidate,
     localRepaintProjectionSource,
     selectedObjectId,
@@ -9909,15 +9906,10 @@ function SurfacePaintOverlay() {
       // forces the UV layer compositor to rebuild.
       const sceneState = useSceneStore.getState();
       const currentPreviewLayer = sceneState.localRepaintPreviewLayer;
-      const currentOverlay = localRepaintGpuOverlayRef.current;
-      const persistedOverlayCanOwnPresentation = Boolean(
-        !existingLayer ||
-        (composite.hasContent &&
-          composite.gpuOverlayReady &&
-          currentOverlay?.sourceKey === sourceKey &&
-          currentOverlay.layerId === projectedLayer.id &&
-          currentOverlay.root.visible),
-      );
+      // Existing repaint rows never transfer ownership to a second mesh. Their
+      // resident projected material samples the mutable mask directly. Only a
+      // brand-new repaint without a row may publish a renderer-owned preview.
+      const persistedOverlayCanOwnPresentation = !existingLayer;
       const previewAlreadyPublished =
         currentPreviewLayer?.id === projectedLayer.id &&
         currentPreviewLayer.imageUrl === projectedLayer.imageUrl &&
@@ -10370,9 +10362,15 @@ function SurfacePaintOverlay() {
         reportLocalRepaintPrewarmProgress(0.76, '上传透明 Alpha 蒙版');
         gl.initTexture(composite.maskTexture);
         gl.initTexture(composite.blendMaskTexture);
-        if (sourceTexture) {
-          ensureLocalRepaintFastPreview(model, sourceKey, composite, sourceTexture);
-        }
+        const preparedComposite = composite;
+        const hasResidentLayer = useLayerStore
+          .getState()
+          .layers.some((layer) => layer.id === preparedComposite.layerId && layer.visible);
+        let residentOverrideBound = Boolean(
+          hasResidentLayer &&
+            preparedComposite.hasContent &&
+            bindLocalRepaintResidentMaskOverride(model, sourceKey, preparedComposite),
+        );
         await waitForFrame();
         reportLocalRepaintPrewarmProgress(0.84, '校准前后表面遮挡');
         model.group.updateMatrixWorld(true);
@@ -10421,7 +10419,10 @@ function SurfacePaintOverlay() {
         }
         await waitForViewportIdle();
         if (cancelled) return;
-        reportLocalRepaintPrewarmProgress(0.88, '编译独立局部重绘覆盖层');
+        reportLocalRepaintPrewarmProgress(
+          0.88,
+          residentOverrideBound ? '绑定正式材质实时蒙版' : '编译深度感知局部重绘覆盖层',
+        );
         // Cold restore may still be compiling the shared projected background
         // program. Starting a second compileAsync poll on the same renderer at
         // that moment produced 400-500ms main-thread stalls on ANGLE/NVIDIA.
@@ -10437,8 +10438,17 @@ function SurfacePaintOverlay() {
           await waitForFrame();
         }
         if (cancelled) return;
-        const overlay = await ensureLocalRepaintGpuOverlay(model, source, composite);
-        if (!overlay) {
+        if (hasResidentLayer && !residentOverrideBound) {
+          residentOverrideBound = bindLocalRepaintResidentMaskOverride(
+            model,
+            sourceKey,
+            composite,
+          );
+        }
+        const overlay = residentOverrideBound
+          ? undefined
+          : await ensureLocalRepaintGpuOverlay(model, source, composite);
+        if (!residentOverrideBound && !overlay) {
           const latestSource = resolveLocalRepaintStrokeSource();
           const superseded =
             cancelled ||
@@ -10454,7 +10464,9 @@ function SurfacePaintOverlay() {
           throw new Error('局部重绘透明覆盖层未能完成。');
         }
         await waitForFrame();
-        let readyOverlay = await ensureLocalRepaintGpuOverlay(model, source, composite);
+        let readyOverlay = residentOverrideBound
+          ? undefined
+          : await ensureLocalRepaintGpuOverlay(model, source, composite);
         // Re-run the lightweight publication step only after the persisted mask
         // and overlay are both ready. The live overlay is already visible, so
         // SceneRoot can now mute the stored row without a blank handoff frame.
@@ -10472,25 +10484,36 @@ function SurfacePaintOverlay() {
             throw new Error('局部重绘历史蒙版恢复失败。');
           }
           gl.initTexture(composite.maskTexture);
+          gl.initTexture(composite.blendMaskTexture);
           await waitForFrame();
-          readyOverlay = await ensureLocalRepaintGpuOverlay(model, source, composite);
+          const reboundComposite = composite;
+          const reboundResidentLayer = useLayerStore
+            .getState()
+            .layers.some((layer) => layer.id === reboundComposite.layerId && layer.visible);
+          residentOverrideBound = Boolean(
+            reboundResidentLayer &&
+              bindLocalRepaintResidentMaskOverride(model, sourceKey, reboundComposite),
+          );
+          readyOverlay = residentOverrideBound
+            ? undefined
+            : await ensureLocalRepaintGpuOverlay(model, source, composite);
         }
         if (
-          !readyOverlay ||
-          readyOverlay.material.userData.liclickDisposedMaterial === true ||
-          readyOverlay.root.parent !== model.group ||
-          localRepaintGpuOverlayRef.current !== readyOverlay
+          !residentOverrideBound &&
+          (!readyOverlay ||
+            readyOverlay.material.userData.liclickDisposedMaterial === true ||
+            readyOverlay.root.parent !== model.group ||
+            localRepaintGpuOverlayRef.current !== readyOverlay)
         ) {
           throw new Error('局部重绘透明覆盖层在就绪发布前失去绑定。');
         }
         if (ensureLiveLocalRepaintComposite(model, source) !== composite) {
           throw new Error('局部重绘图层在就绪发布前失去绑定。');
         }
-        // The independent overlay is authoritative during painting. SceneRoot's
-        // publication barrier already prevents a newly built background program
-        // from committing while any paint tool is active. Requiring the newest
-        // 15-layer build here duplicated that barrier and could hold button 3 for
-        // 10-15 seconds even though a correct resident background was visible.
+        // Existing rows now update their mask inside the resident projection
+        // program. New rows keep the exact depth-aware overlay until their first
+        // resident binding exists. In both cases the publication barrier avoids
+        // replacing a complete background while a paint gesture is active.
         // Require one valid resident background, then let the queued quality
         // upgrade publish after painting becomes idle.
         reportLocalRepaintPrewarmProgress(0.94, '稳定背景贴图材质');
@@ -10552,8 +10575,8 @@ function SurfacePaintOverlay() {
       if (timeoutId !== undefined) window.clearTimeout(timeoutId);
     };
   }, [
+    bindLocalRepaintResidentMaskOverride,
     ensureLiveLocalRepaintComposite,
-    ensureLocalRepaintFastPreview,
     ensureLocalRepaintGpuOverlay,
     getTargetModel,
     gl,
