@@ -758,6 +758,7 @@ export async function handleLiclickRoute(
       );
       const timeout = /timeout|timed out|超时/i.test(message);
       const invalidVisualInput = /PROMPT_POLISH_INVALID_VISUAL_INPUT/.test(message);
+      const incompleteResult = /PROMPT_POLISH_QWEN_INCOMPLETE/.test(message);
       const invalidResult = /PROMPT_POLISH_(?:EMPTY|INVALID|RESULT_TOO_LONG)/.test(message);
       const qwenNotConfigured = /PROMPT_POLISH_QWEN_NOT_CONFIGURED/.test(message);
       const qwenAuthFailure = /PROMPT_POLISH_QWEN_HTTP_(?:401|403)/.test(message);
@@ -771,12 +772,14 @@ export async function handleLiclickRoute(
             : qwenInvalidRequest
               ? 400
               : timeout
-              ? 504
-              : invalidVisualInput
-                ? 400
-                : invalidResult
-                  ? 502
-                  : 503,
+                ? 504
+                : invalidVisualInput
+                  ? 400
+                  : incompleteResult
+                    ? 502
+                    : invalidResult
+                      ? 502
+                      : 503,
         {
           code: qwenNotConfigured
             ? 'PROMPT_POLISH_QWEN_NOT_CONFIGURED'
@@ -790,9 +793,11 @@ export async function handleLiclickRoute(
                     ? 'PROMPT_POLISH_TIMEOUT'
                     : invalidVisualInput
                       ? 'PROMPT_POLISH_INVALID_VISUAL_INPUT'
-                      : invalidResult
-                        ? 'PROMPT_POLISH_INVALID_RESULT'
-                        : 'PROMPT_POLISH_UNAVAILABLE',
+                      : incompleteResult
+                        ? 'PROMPT_POLISH_INCOMPLETE_RESULT'
+                        : invalidResult
+                          ? 'PROMPT_POLISH_INVALID_RESULT'
+                          : 'PROMPT_POLISH_UNAVAILABLE',
           error: qwenNotConfigured
             ? '局部重绘智能润色服务尚未配置，请联系管理员。'
             : qwenAuthFailure
@@ -805,9 +810,11 @@ export async function handleLiclickRoute(
                     ? '智能润色响应超时，请稍后重试。'
                     : invalidVisualInput
                       ? '智能润色图片格式或大小不符合要求，请重试。'
-                      : invalidResult
-                        ? '智能润色返回的格式不符合要求，请重试。'
-                        : '智能润色暂时不可用，请稍后重试。',
+                      : incompleteResult
+                        ? '智能润色返回内容不完整，请重试。'
+                        : invalidResult
+                          ? '智能润色未返回有效内容，请重试。'
+                          : '智能润色暂时不可用，请稍后重试。',
         },
       );
     } finally {

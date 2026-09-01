@@ -9,6 +9,7 @@ import {
   buildQwenLocalRepaintSelectionContext,
   buildPromptPolishAtlasArgs,
   buildPromptPolishMessage,
+  ensureLocalRepaintMaskScope,
   getLocalRepaintPromptFormatIssues,
   normalizeLocalRepaintPrompt,
   normalizeQwen3VlPlusImage,
@@ -176,6 +177,10 @@ function withEnglishWordCount(prompt, target) {
 }
 const slightlyOverTargetLocalPrompt = withEnglishWordCount(validLocalPrompt, 183);
 const overlongLocalPrompt = withEnglishWordCount(validLocalPrompt, 201);
+const validLocalPromptWithoutScope = validLocalPrompt.replace(
+  'modifying only the region defined by the independent mask',
+  'while preserving its current placement',
+);
 assert.equal(validateLocalRepaintPrompt(validLocalPrompt, true), true);
 assert.equal(
   validateLocalRepaintPrompt(slightlyOverTargetLocalPrompt, true),
@@ -192,6 +197,18 @@ assert.equal(
   ),
   true,
   'Common explicit mask-scope language must be accepted',
+);
+assert.ok(getLocalRepaintPromptFormatIssues(validLocalPromptWithoutScope).includes('masked_scope'));
+const enforcedScopePrompt = ensureLocalRepaintMaskScope(validLocalPromptWithoutScope, true);
+assert.match(
+  enforcedScopePrompt.split(/\n\s*\n/)[0],
+  /Confine all edits to the independent mask region/,
+);
+assert.equal(validateLocalRepaintPrompt(enforcedScopePrompt, true), true);
+assert.equal(
+  ensureLocalRepaintMaskScope(validLocalPrompt, true),
+  validLocalPrompt,
+  'Do not duplicate an existing explicit scope requirement',
 );
 assert.equal(validateLocalRepaintPrompt(validLocalPrompt.replace(/\n\n/g, '\n'), true), false);
 assert.equal(validateLocalRepaintPrompt(`中文 ${validLocalPrompt}`, true), false);
@@ -291,41 +308,38 @@ try {
     );
     assert.match(calls[0].body.messages[0].content, /选区包围盒为 x=6\.\.9、y=5\.\.7/);
   }
-  for (const invalid of [
+  for (const noncanonical of [
     overlongLocalPrompt,
     mixedLanguagePrompt,
     validLocalPrompt.replace('Rebuild', '**Rebuild**'),
-    '',
     'Please repair the seam.',
     validLocalPrompt.replace(/\n\n/g, ' '),
-    { content: validLocalPrompt, finish_reason: 'length' },
   ]) {
-    const { result, calls } = await invokeWithReplies([invalid, validLocalPrompt]);
-    assert.equal(await result, validLocalPrompt);
-    assert.equal(calls.length, 2);
-    assert.equal(calls[0].signal, calls[1].signal, 'Both attempts share the original deadline');
-    assert.deepEqual(
-      calls[1].body.messages.slice(0, 2),
-      calls[0].body.messages,
-      'Repair retains original intent, template and all four images',
+    const { result, calls } = await invokeWithReplies([noncanonical]);
+    const source = typeof noncanonical === 'string' ? noncanonical : noncanonical.content;
+    assert.equal(
+      await result,
+      ensureLocalRepaintMaskScope(normalizeLocalRepaintPrompt(parsePolishedPrompt(source)), true),
     );
-    assert.equal(calls[1].body.messages[2].role, 'assistant');
-    assert.match(
-      calls[1].body.messages[3].content,
-      /condense wording instead of dropping requirements/,
+    assert.equal(
+      calls.length,
+      1,
+      'Presentation-style deviations are advisory and must not trigger format repair',
     );
-    assert.equal(calls[1].body.temperature, 0.2);
-    assert.match(calls[1].body.messages[3].content, /Translate any Chinese descriptive words/);
   }
-  const observedLiveRepair = await invokeWithReplies([
-    'Repair the selected surface while preserving the object and surrounding details.',
-    slightlyOverTargetLocalPrompt,
-  ]);
-  assert.equal(await observedLiveRepair.result, slightlyOverTargetLocalPrompt);
+  const liveRepairWithoutScope = slightlyOverTargetLocalPrompt.replace(
+    'modifying only the region defined by the independent mask',
+    'while preserving its current placement',
+  );
+  const observedLiveRepair = await invokeWithReplies([liveRepairWithoutScope]);
+  assert.equal(
+    await observedLiveRepair.result,
+    ensureLocalRepaintMaskScope(liveRepairWithoutScope, true),
+  );
   assert.equal(
     observedLiveRepair.calls.length,
-    2,
-    'The observed 183-word repaired response must pass without a third request or user-facing failure',
+    1,
+    'The observed 183-word response must pass without format repair or user-facing failure',
   );
   for (const prompt of ['', '  \n\t']) {
     const diagnosis = '修复控制面板下方的接缝和色差，以及标牌文字的重影。';
@@ -357,14 +371,16 @@ try {
   assert.match(noDefect.calls[1].body.messages[0].content, /未发现明确异常，保留现有外观。/);
   assert.match(noDefect.calls[1].body.messages[0].content, /without inventing any repairs/);
   const diagnosis = '修复控制面板下方的接缝和色差。';
-  const repaired = await invokeWithReplies([diagnosis, 'Too short.', validLocalPrompt], {
+  const repaired = await invokeWithReplies([diagnosis, 'Too short.'], {
     ...localInput,
     prompt: '',
   });
-  assert.equal(await repaired.result, validLocalPrompt);
-  assert.equal(repaired.calls.length, 3, 'Only the conversion format is retried, not diagnosis');
+  assert.equal(
+    await repaired.result,
+    'Too short. Confine all edits to the independent mask region and keep every area outside it unchanged.',
+  );
+  assert.equal(repaired.calls.length, 2, 'Noncanonical conversion output is accepted once');
   assert.ok(repaired.calls.every((call) => call.signal === repaired.calls[0].signal));
-  assert.deepEqual(repaired.calls[2].body.messages.slice(0, 2), repaired.calls[1].body.messages);
   for (const invalid of [
     '',
     validLocalPrompt,
@@ -379,13 +395,16 @@ try {
   const failedConversion = await invokeWithReplies([diagnosis, 500], { ...localInput, prompt: '' });
   await assert.rejects(failedConversion.result, /PROMPT_POLISH_QWEN_HTTP_500/);
   assert.equal(failedConversion.calls.length, 2);
-  const exhausted = await invokeWithReplies(['Too short.', 'Still too short.']);
-  await assert.rejects(exhausted.result, /PROMPT_POLISH_INVALID_LOCAL_REPAINT_FORMAT/);
-  assert.equal(
-    exhausted.calls.length,
-    2,
-    'Invalid repaired text must fail closed without endless retries',
-  );
+  const emptyConversion = await invokeWithReplies(['']);
+  await assert.rejects(emptyConversion.result, /PROMPT_POLISH_EMPTY_RESULT/);
+  assert.equal(emptyConversion.calls.length, 1);
+  for (const finishReason of ['length', 'content_filter']) {
+    const incomplete = await invokeWithReplies([
+      { content: validLocalPrompt, finish_reason: finishReason },
+    ]);
+    await assert.rejects(incomplete.result, /PROMPT_POLISH_QWEN_INCOMPLETE/);
+    assert.equal(incomplete.calls.length, 1);
+  }
   for (const status of [401, 429, 500]) {
     const failed = await invokeWithReplies([status]);
     await assert.rejects(failed.result, new RegExp(`PROMPT_POLISH_QWEN_HTTP_${status}`));
@@ -491,6 +510,8 @@ assert.match(panelSource, /currentEffectImage: visualInputs\?\.currentEffectImag
 assert.match(routeSource, /segments\[2\] === 'prompt-polish'/);
 assert.match(routeSource, /promptPolishUsers\.has\(user\.id\)/);
 assert.match(routeSource, /PROMPT_POLISH_VISUAL_INPUT_REQUIRED/);
+assert.match(routeSource, /PROMPT_POLISH_INCOMPLETE_RESULT/);
+assert.doesNotMatch(routeSource, /智能润色返回的格式不符合要求/);
 assert.match(promptPolishServiceSource, /qwen3VlPlusApiKey/);
 assert.match(promptPolishServiceSource, /buildQwen3VlPlusRequest/);
 assert.match(

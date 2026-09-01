@@ -1,5 +1,15 @@
 # Changelog
 
+### 2026-09-01 局部重绘提示词软校验
+
+- `ALG-GEN-005` v1.8.0：Qwen → Klein 的 100–180 词、2–3 段、纯英文和无 Markdown 约束改为生成目标及服务端观测指标，不再因段数、词数、语言片段、Markdown 或具体范围措辞拒绝可用正文，也不再为格式发起第二次 Qwen 调用。
+- 服务端继续确定性补充独立 mask 范围保护；只对空结果、超过 12000 字符、上游明确 `length/content_filter` 未完整结束、图片、网络、超时和鉴权错误 fail-closed。显式输入固定一次 Qwen 调用，空输入固定为诊断加转换两次；作者/远端 mask、四图、缓存、ModelView、Schema、Revision 和资产均不变，无迁移。
+
+### 2026-09-01 局部重绘蒙版范围确定性补全
+
+- `ALG-GEN-005` v1.7.2：修复 Qwen 格式修正结果的段落、词数和内容均合格，但未复述校验器认可的 `masked_scope` 句式而连续失败的问题。服务端在最终校验前检查首段；缺少明确范围时确定性追加“Confine all edits to the independent mask region and keep every area outside it unchanged.”，已有等价范围时不重复。
+- 自动补全只约束文字提示词，不改变独立作者 mask、ModelView 外扩/羽化 mask、四图输入、诊断、缓存、Schema、Revision 或资产；补全后仍执行 100–200 词、2–3 段、完整英文和 Markdown 等全部 fail-closed 校验。无迁移；回退移除补全函数即可。
+
 ### 2026-09-01 局部重绘提示词格式容错修复
 
 - `ALG-GEN-005` v1.7.1：修复 Qwen 第一次输出单段/缺少明确选区范围、第二次格式修正已合格但因 183 词略超 180 硬上限而仍向用户报错的问题。模板继续要求 100–180 词，服务端最终验收上限增加到 200 词；201 词及以上仍 fail-closed，不截句、不静默删除编辑要求。

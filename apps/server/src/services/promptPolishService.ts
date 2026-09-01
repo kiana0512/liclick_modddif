@@ -132,7 +132,10 @@ export async function buildQwenLocalRepaintSelectionContext(
 ) {
   const currentDataUrl = decodePromptPolishImage(currentEffectImage);
   const maskDataUrl = decodePromptPolishImage(maskImage);
-  const currentBuffer = Buffer.from(currentDataUrl.slice(currentDataUrl.indexOf(',') + 1), 'base64');
+  const currentBuffer = Buffer.from(
+    currentDataUrl.slice(currentDataUrl.indexOf(',') + 1),
+    'base64',
+  );
   const maskBuffer = Buffer.from(maskDataUrl.slice(maskDataUrl.indexOf(',') + 1), 'base64');
   try {
     const [currentMetadata, maskRaw] = await Promise.all([
@@ -144,12 +147,7 @@ export async function buildQwenLocalRepaintSelectionContext(
     ]);
     const width = currentMetadata.width ?? 0;
     const height = currentMetadata.height ?? 0;
-    if (
-      width <= 0 ||
-      height <= 0 ||
-      maskRaw.info.width !== width ||
-      maskRaw.info.height !== height
-    )
+    if (width <= 0 || height <= 0 || maskRaw.info.width !== width || maskRaw.info.height !== height)
       throw new Error('PROMPT_POLISH_INVALID_VISUAL_INPUT');
 
     let minX = width;
@@ -355,8 +353,9 @@ async function invokeQwenChat(
 
 async function invokeQwen3VlPlus(input: PromptPolishInput) {
   if (!serverConfig.qwen3VlPlusApiKey) throw new Error('PROMPT_POLISH_QWEN_NOT_CONFIGURED');
-  // Diagnosis, conversion and one optional format repair share one deadline
-  // and the same normalized images. Manual requests skip diagnosis entirely.
+  // Diagnosis and conversion share one deadline and the same normalized images.
+  // Manual requests skip diagnosis entirely. Klein accepts free-form instructions,
+  // so presentation-style deviations never trigger a second Qwen request.
   const signal = AbortSignal.timeout(serverConfig.qwen3VlPlusTimeoutMs);
   const normalizedInput = await normalizeQwen3VlPlusVisualInputs(input);
   const needsDiagnosis = !input.prompt.trim();
@@ -382,31 +381,26 @@ async function invokeQwen3VlPlus(input: PromptPolishInput) {
     request.messages[0].content +=
       '\nThe editing request above is a one-sentence visual diagnosis. Convert only its stated repairs into the final prompt; do not diagnose additional problems or add new editing goals. Use the images to describe the required local materials, perspective and continuity, while preserving valid content and real component boundaries. Repair existing text only if the diagnosis explicitly requests it and the correct characters are supported by readable evidence; never invent words or brands. If the diagnosis reports no clear defect, describe preserving the existing appearance without inventing any repairs.';
   }
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    const payload = await invokeQwenChat(request, signal);
-    const prompt = normalizeLocalRepaintPrompt(
-      parsePolishedPrompt(readQwenMessageContent(payload)),
-    );
-    if (prompt.length > 12_000) throw new Error('PROMPT_POLISH_RESULT_TOO_LONG');
-    const issues = getLocalRepaintPromptFormatIssues(prompt, input.hasMask !== false);
-    const finishReason = (payload as { choices?: Array<{ finish_reason?: string }> } | null)
-      ?.choices?.[0]?.finish_reason;
-    if (finishReason === 'length' || finishReason === 'content_filter')
-      issues.push('incomplete_response');
-    if (issues.length === 0) return prompt;
-    // Log diagnostics only: no prompt text, image data or credentials.
-    console.warn('[prompt-polish] invalid local repaint format', { attempt: attempt + 1, issues });
-    if (attempt === 1) throw new Error('PROMPT_POLISH_INVALID_LOCAL_REPAINT_FORMAT');
-    request.messages.push(
-      { role: 'assistant', content: prompt },
-      {
-        role: 'user',
-        content: `Correct only the output format of your previous answer using the original user request and the same four images above. Validation issues: ${issues.join(', ')}. Return only 2 or 3 English paragraphs separated by one blank line and 100 to ${localRepaintPromptTargetWordMaximum} English words total. The first sentence must identify the actual selected component and its target action or material, then limit editing to the independent mask region. Preserve all requested changes, exact requested text, useful Image 2 evidence, real component boundaries, and unmasked protection; use the fourth image only to keep the selected component correctly localized, and condense wording instead of dropping requirements. Translate any Chinese descriptive words into English, including fragments embedded inside English sentences; do not merely delete them. Remove Markdown formatting such as double asterisks and code fences. Return only the finished prompt, without headings, numbering, Markdown, analysis, or commentary.`,
-      },
-    );
-    request.temperature = 0.2;
+  const payload = await invokeQwenChat(request, signal);
+  const prompt = ensureLocalRepaintMaskScope(
+    normalizeLocalRepaintPrompt(parsePolishedPrompt(readQwenMessageContent(payload))),
+    input.hasMask !== false,
+  );
+  if (!prompt) throw new Error('PROMPT_POLISH_EMPTY_RESULT');
+  if (prompt.length > 12_000) throw new Error('PROMPT_POLISH_RESULT_TOO_LONG');
+  const finishReason = (payload as { choices?: Array<{ finish_reason?: string }> } | null)
+    ?.choices?.[0]?.finish_reason;
+  if (finishReason === 'length' || finishReason === 'content_filter')
+    throw new Error('PROMPT_POLISH_QWEN_INCOMPLETE');
+  const advisoryIssues = getLocalRepaintPromptFormatIssues(prompt, input.hasMask !== false);
+  if (advisoryIssues.length > 0) {
+    // Advisory only: Klein accepts free-form instructions. Never log prompt text,
+    // image data or credentials, and never block generation for presentation style.
+    console.warn('[prompt-polish] accepted noncanonical local repaint prompt', {
+      issues: advisoryIssues,
+    });
   }
-  throw new Error('PROMPT_POLISH_INVALID_LOCAL_REPAINT_FORMAT');
+  return prompt;
 }
 
 export function parsePolishedPrompt(stdout: string) {
@@ -430,10 +424,8 @@ function countEnglishWords(value: string) {
   return value.match(/[A-Za-z0-9]+(?:['-][A-Za-z0-9]+)*/g)?.length ?? 0;
 }
 
-const localRepaintPromptTargetWordMaximum = 180;
-// Qwen occasionally lands only a few words above the requested target after a
-// successful format repair. Klein does not require an exact word count, so a
-// small fail-closed tolerance avoids rejecting otherwise complete prompts.
+// The conversion template targets 100-180 words. This wider boundary is used
+// only by advisory telemetry and never blocks a Klein generation.
 const localRepaintPromptAcceptedWordMaximum = 200;
 
 export function normalizeLocalRepaintPrompt(prompt: string) {
@@ -463,6 +455,23 @@ export function normalizeLocalRepaintPrompt(prompt: string) {
     .join('\n\n');
 }
 
+function getLocalRepaintScopePattern(hasMask: boolean) {
+  return hasMask
+    ? /(?:\bonly\b[^.!?]{0,160}\bmask(?:ed)?\b|\bmask(?:ed)?\b[^.!?]{0,160}\bonly\b|\b(?:confin(?:e|ed|ing)|restrict(?:ed|ing)?|limit(?:ed|ing)?)\b[^.!?]{0,120}\b(?:to|within|inside)\b[^.!?]{0,80}\bmask(?:ed)?\b|\b(?:outside|beyond)\b[^.!?]{0,80}\bmask(?:ed)?\b[^.!?]{0,120}\b(?:unchanged|protected|preserved)\b)/i
+    : /(?:\bonly\b[^.!?]*\b(?:selected|specified) region\b|\b(?:selected|specified) region\b[^.!?]*\bonly\b)/i;
+}
+
+export function ensureLocalRepaintMaskScope(prompt: string, hasMask = true) {
+  if (!hasMask || getLocalRepaintScopePattern(true).test(prompt.split(/\n\s*\n/)[0] ?? ''))
+    return prompt;
+  const paragraphs = prompt.trim().split(/\n\s*\n/);
+  const firstParagraph = paragraphs[0]?.trim();
+  if (!firstParagraph) return prompt;
+  const separator = /[.!?]["'”’)]?$/.test(firstParagraph) ? ' ' : '. ';
+  paragraphs[0] = `${firstParagraph}${separator}Confine all edits to the independent mask region and keep every area outside it unchanged.`;
+  return paragraphs.join('\n\n');
+}
+
 export function getLocalRepaintPromptFormatIssues(prompt: string, hasMask = true) {
   const paragraphs = prompt.trim().split(/\n\s*\n/);
   const wordCount = countEnglishWords(prompt);
@@ -472,10 +481,7 @@ export function getLocalRepaintPromptFormatIssues(prompt: string, hasMask = true
   if (wordCount < 100 || wordCount > localRepaintPromptAcceptedWordMaximum)
     issues.push(`word_count=${wordCount}`);
   const firstParagraph = paragraphs[0] ?? '';
-  const scopePattern = hasMask
-    ? /(?:\bonly\b[^.!?]{0,160}\bmask(?:ed)?\b|\bmask(?:ed)?\b[^.!?]{0,160}\bonly\b|\b(?:confin(?:e|ed|ing)|restrict(?:ed|ing)?|limit(?:ed|ing)?)\b[^.!?]{0,120}\b(?:to|within|inside)\b[^.!?]{0,80}\bmask(?:ed)?\b|\b(?:outside|beyond)\b[^.!?]{0,80}\bmask(?:ed)?\b[^.!?]{0,120}\b(?:unchanged|protected|preserved)\b)/i
-    : /(?:\bonly\b[^.!?]*\b(?:selected|specified) region\b|\b(?:selected|specified) region\b[^.!?]*\bonly\b)/i;
-  if (!scopePattern.test(firstParagraph)) issues.push('masked_scope');
+  if (!getLocalRepaintScopePattern(hasMask).test(firstParagraph)) issues.push('masked_scope');
   if (
     paragraphs.some((paragraph) => {
       const count = paragraph.match(/[.!?]["'”’)]?(?=\s|$)/g)?.length ?? 0;
@@ -488,6 +494,8 @@ export function getLocalRepaintPromptFormatIssues(prompt: string, hasMask = true
   return issues;
 }
 
+// Diagnostic helper for tests and telemetry only. The production Klein path
+// deliberately does not reject a prompt because this helper returns false.
 export function validateLocalRepaintPrompt(prompt: string, hasMask = true) {
   return getLocalRepaintPromptFormatIssues(prompt, hasMask).length === 0;
 }
@@ -500,10 +508,10 @@ export async function polishPrompt(input: PromptPolishInput, atlasHomeDir?: stri
   let polishedPrompt = parsePolishedPrompt(stdout);
   if (!polishedPrompt) throw new Error('PROMPT_POLISH_EMPTY_RESULT');
   if (input.context === 'local-repaint') {
-    polishedPrompt = normalizeLocalRepaintPrompt(polishedPrompt);
-    if (!validateLocalRepaintPrompt(polishedPrompt, input.hasMask !== false)) {
-      throw new Error('PROMPT_POLISH_INVALID_LOCAL_REPAINT_FORMAT');
-    }
+    polishedPrompt = ensureLocalRepaintMaskScope(
+      normalizeLocalRepaintPrompt(polishedPrompt),
+      input.hasMask !== false,
+    );
   }
   if (polishedPrompt.length > 12_000) throw new Error('PROMPT_POLISH_RESULT_TOO_LONG');
   return polishedPrompt;
