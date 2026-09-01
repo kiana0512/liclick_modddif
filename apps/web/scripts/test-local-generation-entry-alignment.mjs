@@ -2,10 +2,12 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 
 const sourceRoot = new URL('../src/', import.meta.url);
-const [editorPage, generatePanel, bottomToolDock] = await Promise.all([
+const [editorPage, generatePanel, bottomToolDock, sceneStore, viewportCanvas] = await Promise.all([
   readFile(new URL('routes/EditorPage.tsx', sourceRoot), 'utf8'),
   readFile(new URL('components/panels/GeneratePanel.tsx', sourceRoot), 'utf8'),
   readFile(new URL('components/editor/BottomToolDock.tsx', sourceRoot), 'utf8'),
+  readFile(new URL('stores/sceneStore.ts', sourceRoot), 'utf8'),
+  readFile(new URL('engine/viewport/ViewportCanvas.tsx', sourceRoot), 'utf8'),
 ]);
 
 assert.match(
@@ -61,6 +63,21 @@ assert.match(
   bottomToolDock,
   /description="请先绘制蒙版；每次提交都会锁定当前蒙版，运行期间不可重复提交。"/,
   'the workflow tooltip must communicate that local generation requires a mask',
+);
+assert.match(
+  bottomToolDock,
+  /onPaintToolChange\('none'\);[\s\S]*onTransformModeChange\('select'\);[\s\S]*setPaintMaskPresentationVisible\(false\)/,
+  'the orbit selector must leave paint mode and hide only the mask presentation',
+);
+assert.match(
+  sceneStore,
+  /paintTool === 'inpaint-add' \|\| paintTool === 'inpaint-subtract'[\s\S]*\? true[\s\S]*state\.paintMaskPresentationVisible/,
+  'returning to either mask brush must restore mask presentation',
+);
+assert.match(
+  viewportCanvas,
+  /shouldShowColorPaintOverlays &&\s*paintMaskPresentationVisible &&/,
+  'the viewport mask must honor its independent presentation flag',
 );
 
 console.log('Local generation entry alignment regression checks passed.');

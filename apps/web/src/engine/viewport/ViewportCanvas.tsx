@@ -6623,6 +6623,9 @@ function SurfacePaintOverlay() {
   const paintMaskResetRevision = useSceneStore((state) => state.paintMaskResetRevision);
   const paintMaskInvertRevision = useSceneStore((state) => state.paintMaskInvertRevision);
   const paintMaskHasContent = useSceneStore((state) => state.paintMaskHasContent);
+  const paintMaskPresentationVisible = useSceneStore(
+    (state) => state.paintMaskPresentationVisible,
+  );
   const paintMaskSettings = useSceneStore((state) => state.paintMaskSettings);
   const localRepaintBrushSettings = useSceneStore((state) => state.localRepaintBrushSettings);
   const paintToolSettings = useSceneStore((state) => state.paintToolSettings);
@@ -6741,12 +6744,14 @@ function SurfacePaintOverlay() {
   const shouldShowColorPaintOverlays = isLocalRepaintOverlayVisible(displayMode, true);
   const shouldShowInpaintMask =
     shouldShowColorPaintOverlays &&
+    paintMaskPresentationVisible &&
     (isInpaintMode || (paintTool === 'none' && paintMaskHasContent));
   const readShouldShowInpaintMask = useCallback(() => {
     const state = useSceneStore.getState();
     const inpaintMode = state.paintTool === 'inpaint-add' || state.paintTool === 'inpaint-subtract';
     return (
       isLocalRepaintOverlayVisible(state.displayMode, true) &&
+      state.paintMaskPresentationVisible &&
       (inpaintMode || (state.paintTool === 'none' && state.paintMaskHasContent))
     );
   }, []);

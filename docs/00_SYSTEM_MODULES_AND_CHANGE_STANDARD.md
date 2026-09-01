@@ -1,6 +1,6 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
-> 文档版本：`2.10.0`
+> 文档版本：`2.10.1`
 >
 > 生效日期：`2026-08-31`
 >
@@ -301,7 +301,7 @@ UI-09 剪刀
 | `ALG-LR-004` 历史增强边界谐调 | `14.0.0-compatible` | 仅读取/重建旧 v6-v14 Generation 和图层；新 `direct-v1` 任务不调用 |
 | `ALG-LR-005` 历史兼容边界谐调 | `5.0.0-compatible` | 仅保留旧 v3-v5 全幅合成与 legacy 切换的读取兼容；新 `direct-v1` 任务不调用 |
 | `ALG-LR-006` 表面画笔重投影 | `2.0.0` | raycast 命中表面，投射到 frozen source UV；最小绝对 face-on 0.08；世界半径 0.004-0.12 包围盒比例；texture radius 1-72 |
-| `ALG-LR-007` 低延迟实时覆盖 | `2.0.4` | live mask/source 最大 1024；`surface-locked-v1`；ignore source alpha，coverage 由用户 mask 和几何决定；同一 source revision 复用驻留 GPU overlay、linear-view depth 与已链接 shader program。renderer preview 持有图层时保持 overlay 可见并静音同一 persisted twin；切换或清空 source 前等待旧层在实际背景材质驻留，再移交显示权；ordered projected stack 已拥有显示权时 overlay 保持隐藏 |
+| `ALG-LR-007` 低延迟实时覆盖 | `2.0.5` | live mask/source 最大 1024；`surface-locked-v1`；ignore source alpha，coverage 由用户 mask 和几何决定；同一 source revision 复用驻留 GPU overlay、linear-view depth 与已链接 shader program。renderer preview 持有图层时保持 overlay 可见并静音同一 persisted twin；切换或清空 source 前等待旧层在实际背景材质驻留，再移交显示权；ordered projected stack 已拥有显示权时 overlay 保持隐藏。UI-10 选择/旋转视角工具将作者蒙版的视口展示设为隐藏，重新进入加/减蒙版画笔时恢复；仅切换内存 presentation flag，不清除作者蒙版 |
 | `ALG-LR-008` 延迟投影持久化 | `2.2.1` | interactive UV bake 固定关闭；生图前 Project Command snapshot 后台执行；Generation、对象、目标层与 GPU-ready 标记共同识别驻留 source；pointer-up 两帧内发布权威图层行，发布后按真实 LayerStore 行判断驻留，不依赖旧 preview revision；后台构建只等待真实指针交互，不等待蒙版工具退出；idle 3000ms 仍仅合并持久化，needsRebake=true |
 | `ALG-LR-009` Inward Crossfade 栈合成 | `1.0.0` | 连续重绘层向内部交叉淡化，避免普通 alpha stacking 在边缘重复显露接缝 |
 | `ALG-LR-010` Provider 兼容编辑 | `1.0.0-compat` | `LocalRepaintDialog` 的 image/edit/protect/hole masks 独立路径，不得与四输入主路径混改 |
@@ -317,6 +317,8 @@ UI-09 剪刀
 `ALG-LR-007/008` v2.0.2/v2.2.0 与 `ALG-PROJ-007` v2.0.1 不改变投影矩阵、深度编码、face-on 阈值、1024 实时上限、最终 UV 分辨率或颜色合成公式。GPU 继续消费同一 source/mask/depth；CPU、Worker、UV raster、shader 门限与 export compositor 没有算法分叉。生图前 snapshot 与 Generation 最终写回仍进入同一 critical save queue，沿用 Project Command v1、Revision CAS、ownership 与 verified object asset；只把提交前的网络等待移出用户可见关键路径，失败由即时保存恢复。多层恢复的 Worker bitmap 在整组 striped upload 期间固定，缓存上限从 18 调整到 24，并只为当前选中对象预热隐藏 UV 行；其他模型的可见 exact/proxy 仍驻留，不降低图片尺寸或跳过 QA。旧工程无需批量迁移，重开时按现有 Layer/Generation/Capture 字段重建资源。回退可恢复提交前 save barrier、mask URL 严格相等判断、旧 overlay 可见分支和 18 项缓存；已有 projected layer、mask、capture、Generation、对象资产与 Revision 无需删除或改写。
 
 本次连续重绘修复属于 UI-06/UI-10 → M08 显示生命周期：旧 preview 无 revision 不能继续排除已发布行；已发布行在 pointer idle 期间预热，真实拖动、落笔和压力测试仍暂停重任务。source 切换/清空逐帧等待实际模型全部非 overlay 网格的材质绑定包含旧 layerId；最长等待 10 秒，取消或超时保留旧显示，不阻塞主线程、不清空旧图层。异步材质发布读取最新显示所有者，避免晚到任务重新静音旧层。GPU 仅调整驻留和交接顺序，CPU/Worker/shader/UV/export 的像素、蒙版与颜色公式、分辨率均不变；Project Command/Revision、资产和 ownership 无变化，无迁移。回退仅恢复 M08 驻留判定与 source 交接流程，不删除工程或资产。回归覆盖首次发布、跨源切换、部分网格就绪、已释放材质、取消及超时；真实用户工程连续笔画帧率仍需登录现场验证。
+
+`ALG-LR-007` v2.0.5 的视角选择属于 UI-06/UI-10 → M08 的纯展示状态：点击底部选择工具退出绘制并恢复 OrbitControls 输入，同时隐藏红色选择蒙版；`paintMaskDataUrl`、`paintMaskHasContent`、revision、capture 和历史均保持不变。再次进入加/减蒙版画笔会恢复蒙版展示。该 flag 不进入 Zustand preferences、Project、Layer、Generation、Capture、对象存储或 Revision；GPU 只切换已有 mask overlay 的可见性，CPU/Worker/shader/UV/export、投影矩阵、颜色和分辨率没有分叉。旧工程无需迁移；回退只移除按钮与 presentation flag，不删除蒙版或资产。
 
 `ALG-LR-011` 只生成最大 1024 的内存 UI 显示副本，不回写 `Layer.imageUrl`、Generation、对象存储或 Project Revision。GPU/CPU/Worker/shader、投影矩阵、UV raster、持久化与 export compositor 均继续消费原始 source/mask/depth，因此无需数据迁移。回滚只需移除 UI-05/UI-10 显示副本调用；已有图层与资产不变。测试必须证明透明显示不替换投影源、黑色材质与几何边缘不被扣除、普通投射层不再出现黑底、局部重绘层仍仅显示用户涂绘区域。
 
@@ -531,3 +533,4 @@ M15 体积修复：锁定 `terser@5.51.2` 两轮安全压缩，保留日志和�
 | `2.9.1` | 2026-08-31 | `13d4321 + 本次 lint 修复` | M15 发布修复：显式补齐 `@eslint/js` 依赖；M04 提示词 ANSI 清理改用 Node 内置实现并补充回归，修复 CI 正则规则错误。全部质量门禁保留，`ALG-GEN-005` v1.5.0 与业务/Schema/资产契约不变，无迁移。 |
 | `2.9.2` | 2026-08-31 | `707f009a + 本次构建体积修复` | M15：锁定 Terser 生产安全压缩，保留诊断和属性名，新增真实构建等价性回归。编辑器与 JS 总量回到原有体积上限内；不提高门禁，不删除功能，不改变业务算法、Schema 或资产，无迁移。 |
 | `2.10.0` | 2026-08-31 | `add3b82 + 本次橡皮历史事务修复` | UI-06/UI-10、M12、`ALG-ERASE-001` v1.3.0：抬笔预登记历史，撤回等待手势与提交；即时同步持久瓦片和 GPU live mask；细化逐笔重放并原子发布，redo 检查点不串笔。增加真实回调/数值时序回归。原输出分辨率、覆盖公式和资产/Project Schema 不变，无迁移。 |
+| `2.10.1` | 2026-09-01 | `本次视角选择工具提交` | UI-06/UI-10、M08、`ALG-LR-007` v2.0.5：贴图底部工具条新增选择/旋转视角按钮；点击退出画笔并隐藏蒙版展示，拖拽恢复 OrbitControls；返回蒙版画笔自动恢复展示。作者蒙版、历史、生成输入、GPU/CPU/Worker/shader/UV/export、Project/Layer/Generation/Capture Schema、Revision 与资产不变，无迁移。 |

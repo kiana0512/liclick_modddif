@@ -7882,6 +7882,8 @@ export function EditorPage({
                 localRepaintHelp: t('localRepaintToolHelp'),
                 inpaintSelectHelp: t('inpaintSelectToolHelp'),
                 inpaintUnselectHelp: t('inpaintUnselectToolHelp'),
+                viewportOrbit: t('viewportOrbit'),
+                viewportOrbitHelp: t('viewportOrbitHelp'),
               }}
             />
           }

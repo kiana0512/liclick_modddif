@@ -71,6 +71,8 @@ type BottomToolDockProps = {
     localRepaintHelp: string;
     inpaintSelectHelp: string;
     inpaintUnselectHelp: string;
+    viewportOrbit: string;
+    viewportOrbitHelp: string;
   };
 };
 
@@ -117,6 +119,12 @@ export function BottomToolDock({
     paintTool === 'inpaint-add' || paintTool === 'inpaint-subtract',
   );
   const paintMaskSettings = useSceneStore((state) => state.paintMaskSettings);
+  const paintMaskPresentationVisible = useSceneStore(
+    (state) => state.paintMaskPresentationVisible,
+  );
+  const setPaintMaskPresentationVisible = useSceneStore(
+    (state) => state.setPaintMaskPresentationVisible,
+  );
   const setPaintMaskSettings = useSceneStore((state) => state.setPaintMaskSettings);
   const localRepaintBrushSettings = useSceneStore((state) => state.localRepaintBrushSettings);
   const setLocalRepaintBrushSettings = useSceneStore((state) => state.setLocalRepaintBrushSettings);
@@ -359,6 +367,29 @@ export function BottomToolDock({
 
       {isTextureMode && (
         <>
+          <IconTooltip label={labels.viewportOrbit} description={labels.viewportOrbitHelp}>
+            <button
+              type="button"
+              className={cn(
+                baseButton,
+                paintTool === 'none' &&
+                  'border-[#6f93ff] bg-[#4568db]/18 text-white shadow-[0_0_0_1px_rgba(111,147,255,0.55),0_0_16px_rgba(69,104,219,0.24)]',
+              )}
+              onClick={() => {
+                onPaintToolChange('none');
+                onTransformModeChange('select');
+                setPaintMaskPresentationVisible(false);
+                setActiveMenu(undefined);
+              }}
+              aria-pressed={paintTool === 'none' && !paintMaskPresentationVisible}
+              aria-label={labels.viewportOrbit}
+            >
+              <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" aria-hidden="true">
+                <path d="m12 3 2.4 2.4L12 7.8 9.6 5.4 12 3Zm0 13.2 2.4 2.4L12 21l-2.4-2.4 2.4-2.4ZM3 12l2.4-2.4L7.8 12l-2.4 2.4L3 12Zm13.2 0 2.4-2.4L21 12l-2.4 2.4-2.4-2.4Z" fill="currentColor" />
+                <rect x="9" y="9" width="6" height="6" rx="1.2" stroke="currentColor" strokeWidth="1.8" />
+              </svg>
+            </button>
+          </IconTooltip>
           <span className="relative inline-flex">
             {activeMenu === 'eraser' && paintTool === 'eraser' && (
               <div className="absolute bottom-full left-0 z-50 mb-2 w-[248px] rounded-lg border border-white/16 bg-[#050509] p-2.5 text-white shadow-[0_18px_42px_rgba(0,0,0,0.54)]">
