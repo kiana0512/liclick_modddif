@@ -48,48 +48,26 @@ function buildGeneralMessage(input: PromptPolishInput) {
 
 function buildLocalRepaintMessage(input: PromptPolishInput) {
   const objectName = clipped(input.objectName, 160, 'the selected 3D object');
-  const references = (input.referenceNames ?? [])
-    .map((name) => name.trim().slice(0, 120))
-    .filter(Boolean)
-    .slice(0, 4);
   const hasMask = input.hasMask !== false;
-  const maskDescription = hasMask
-    ? 'A separate black-and-white mask is attached after Image 2. Its white pixels define the complete editable area aligned pixel-for-pixel with Image 1; black pixels are protected.'
-    : 'No white mask is available; edit only the region explicitly specified by the user.';
-  const image1Description = `Image 1 is the clean current rendered effect view of ${objectName} with no mask-preview overlay. It is authoritative for object identity, geometry, framing, perspective, placement, lighting, and the original appearance around the independently masked region.`;
-  const image2Description = references.length
-    ? `Image 2 is the complete selected reference asset (${references.join(', ')}) and supplies only relevant structure, text, material, color, and surface detail.`
-    : 'Image 2 is the complete selected reference image and supplies only relevant structure, text, material, color, and surface detail.';
+  const maskLocation = hasMask
+    ? `第三张独立蒙版的白色区域与 Image 1 像素对齐，定位在 ${objectName} 上；黑色区域受保护。`
+    : `没有独立蒙版；仅处理用户在 ${objectName} 上明确指定的区域。`;
 
-  return `You write precise, executable English image-editing prompts for FLUX.2 Klein using the user request, Image 1, an independent mask, and Image 2.
+  return `你是 FLUX.2 Klein 局部图像编辑提示词转换器。你的任务是把用户意图和选区视觉证据转成具体、简洁的英文编辑指令。
 
-Input rules:
-- Image 1 is the clean current effect with no mask-preview overlay. It controls object identity, composition, geometry, camera view, perspective, placement, lighting, and occlusion.
-- The independent mask defines the complete editable region. Fill the entire region with finished, realistic target content without white or gray mask blocks, transparent residue, blank areas, flat overlays, or mask outlines.
-- Image 2 supplies only relevant structure, text, materials, colors, and details. Never copy its composition, background, viewpoint, multi-view layout, or unrelated content.
-- For alternate views of the same object, identify the corresponding part and transform it into Image 1's perspective, curvature, orientation, and occlusion.
-- The user request takes precedence over references. Do not delete an object simply because it is masked. For text edits, specify exact spelling, lettering style, layout, and aging when supported by the request or readable references.
+输入：Image 1 为待编辑全图；Image 2 为完整参考图（可能为多视图）；第三张为与 Image 1 像素对齐的独立蒙版，白色编辑、黑色保护。若还附有选区局部放大图，它仅帮助看清 Image 1，不是新的参考视角，不能改变最终构图。
+用户要求：${input.prompt}
+选区定位信息：${maskLocation}
 
-Output contract: return only the final English prompt in exactly four paragraphs separated by one blank line. Each paragraph must have 1 to 3 complete sentences. The total must be 130 to 220 English words; aim for 170 to 195. No headings, numbering, explanations, Chinese descriptive text, Markdown, parameters, or workflow advice. Translate descriptive content from the user request into English; never leave Chinese fragments embedded in English sentences.
+在内部完成定位和判断，不输出分析：将蒙版的实际形状按像素坐标对应到图一，结合局部放大图辨认每个被选中的表面。先确认选区真正覆盖的部件，不以旁边显眼的机身、文字或其他物体替代。然后在图二寻找同一部件，用有用的参考视角交叉核对其材质和功能结构。参考未展示或不清楚的细节，不得猜测。
 
-Paragraph 1: start exactly with "Edit only the white masked region." Explain that the independent mask is only a temporary editing boundary, and the entire area must contain finished content with no visible mask traces.
-Paragraph 2: describe the concrete target structure, object, text, or surface and require complete filling. For removal, reconstruct the underlying surface. For additions or replacements, specify shape, size, placement, orientation, and occlusion. Include exact text details for text-editing tasks.
-Paragraph 3: require Image 1's geometry, curvature, perspective, surface direction, and structural boundaries. Match neighboring material, color, lighting, shadows, reflections, texture scale, wear, rust, scratches, dirt, and sharpness without seams, halos, hard transitions, blur, color breaks, repeated textures, or perspective errors.
-Paragraph 4: first describe the finished integrated region positively, then forbid mask blocks, flat overlays, translucent residue, mask edges, blank areas, and unfinished content. End by protecting Image 1's original geometry, silhouette, identity, camera, perspective, composition, background, and everything outside the mask.
+优先级：用户意图；图一的相机、构图、轮廓、部件位置和遮挡；图二对应部件的真实结构、配色、材质；图一选区周围的光照、色调和磨损。图一选区内异常外观不能作为目标。局部几何预览只辅助理解朝向与形状，其浅色底色、亮度分布、斑块轮廓和投影裂线不得成为成品材质的依据；真正的浅色材料及金属高光不因颜色而被删除。
 
-User editing request:
-${input.prompt}
+明确区分同一表面上的非物理纹理边缝与真实装配边界。修缝时恢复表面连续性，同时保留开口、槽道、零件分隔、必要的装配间隙、焊缝、清晰硬边和接触阴影，不将独立零件熔成一体。材质恢复必须覆盖选区内全部受影响的表面：按各自材质写明合适的底色和中间调、粗糙度、随朝向变化的高光、纹理方向与尺度、凹处阴影及合理磨损。不是简单给旧斑块染色，不沿蒙版轮廓产生新结构。
 
-Mask description:
-${maskDescription}
-
-Image 1 description:
-${image1Description}
-
-Image 2 description:
-${image2Description}
-
-Preserve Image 1's original geometry, silhouette, object identity, camera, perspective, composition, background, and all unmasked content. Do not introduce unrequested structural changes, text, or brands. Check the four-paragraph and word-count requirements before returning only the finished English prompt.`;
+输出最终英文提示词，100至180词，2至3段。只输出提示词，不输出标题、分析、Markdown、列表、坐标、图像编号以外的工作流术语或参数。
+第一句明确实际部件与目标动作/材质，随后限定只修改独立蒙版选区。主体用肯定句描述完成后的具体表面和部件关系，说明从 Image 2 的对应部件借鉴什么、如何保持 Image 1 的视角。不要堆砌“白模、白色块、灰色块、占位”等否定词；用明确目标外观替代。不要一律给物体变成金属，不更改未要求变化的配色；不要凭空指定文字、品牌、光源方向或零件。结尾保护 Image 1 的物体身份、相机、构图、背景和蒙版外内容。无需机械凑成四段，不要求“全部像素重采样”。
+删除、添加、替换或文字任务按照用户明确意图处理；被遮罩不等于需要删除。用户未填写时仅修复有证据的问题，无明确问题则保持外观。`;
 }
 
 export function buildPromptPolishMessage(input: PromptPolishInput) {
@@ -331,15 +309,11 @@ async function invokeQwen3VlPlus(input: PromptPolishInput) {
     // Log diagnostics only: no prompt text, image data or credentials.
     console.warn('[prompt-polish] invalid local repaint format', { attempt: attempt + 1, issues });
     if (attempt === 1) throw new Error('PROMPT_POLISH_INVALID_LOCAL_REPAINT_FORMAT');
-    const expectedStart =
-      input.hasMask !== false
-        ? 'Edit only the white masked region.'
-        : 'Edit only the specified region.';
     request.messages.push(
       { role: 'assistant', content: prompt },
       {
         role: 'user',
-        content: `Correct only the output format of your previous answer using the original user request and the same three images above. Validation issues: ${issues.join(', ')}. Return exactly four English paragraphs separated by one blank line, with 1 to 3 complete sentences per paragraph and 130 to 220 words total; aim for 170 to 195 words. Start exactly with "${expectedStart}". Keep the four roles in order: edit scope, concrete reconstruction, continuity, final state and protection. Preserve all requested changes, exact requested text, reference-based details, and unmasked protection; condense wording instead of dropping requirements. Translate any Chinese descriptive words into English, including fragments embedded inside English sentences; do not merely delete them. Remove Markdown formatting such as double asterisks and code fences. Return only the finished prompt, without headings, numbering, Markdown, analysis, or commentary.`,
+        content: `Correct only the output format of your previous answer using the original user request and the same three images above. Validation issues: ${issues.join(', ')}. Return only 2 or 3 English paragraphs separated by one blank line and 100 to 180 English words total. The first sentence must identify the actual selected component and its target action or material, then limit editing to the independent mask region. Preserve all requested changes, exact requested text, useful Image 2 evidence, real component boundaries, and unmasked protection; condense wording instead of dropping requirements. Translate any Chinese descriptive words into English, including fragments embedded inside English sentences; do not merely delete them. Remove Markdown formatting such as double asterisks and code fences. Return only the finished prompt, without headings, numbering, Markdown, analysis, or commentary.`,
       },
     );
     request.temperature = 0.2;
@@ -371,17 +345,20 @@ function countEnglishWords(value: string) {
 export function normalizeLocalRepaintPrompt(prompt: string) {
   const normalized = prompt.replace(/\r\n?/g, '\n').trim();
   let paragraphs = normalized.split(/\n\s*\n/);
-  // Four complete single-line paragraphs are an unambiguous formatting variant.
+  // Two or three complete single-line paragraphs are an unambiguous formatting variant.
   // Do not guess paragraph boundaries in prose or delete sentences to hit a budget.
   if (paragraphs.length === 1) {
     const lines = normalized
       .split('\n')
       .map((line) => line.trim())
       .filter(Boolean);
-    if (lines.length === 4 && lines.every((line) => /[.!?]["'”’)]?$/.test(line)))
+    if (
+      (lines.length === 2 || lines.length === 3) &&
+      lines.every((line) => /[.!?]["'”’)]?$/.test(line))
+    )
       paragraphs = lines;
   }
-  if (paragraphs.length !== 4) return normalized;
+  if (paragraphs.length !== 2 && paragraphs.length !== 3) return normalized;
   const numbered = paragraphs.every((paragraph, index) =>
     new RegExp(`^\\s*${index + 1}[.)]\\s+`).test(paragraph),
   );
@@ -395,20 +372,22 @@ export function normalizeLocalRepaintPrompt(prompt: string) {
 export function getLocalRepaintPromptFormatIssues(prompt: string, hasMask = true) {
   const paragraphs = prompt.trim().split(/\n\s*\n/);
   const wordCount = countEnglishWords(prompt);
-  const expectedStart = hasMask
-    ? 'Edit only the white masked region.'
-    : 'Edit only the specified region.';
   const issues: string[] = [];
-  if (paragraphs.length !== 4) issues.push(`paragraph_count=${paragraphs.length}`);
-  if (!prompt.startsWith(expectedStart)) issues.push('opening_sentence');
-  if (wordCount < 130 || wordCount > 220) issues.push(`word_count=${wordCount}`);
+  if (paragraphs.length !== 2 && paragraphs.length !== 3)
+    issues.push(`paragraph_count=${paragraphs.length}`);
+  if (wordCount < 100 || wordCount > 180) issues.push(`word_count=${wordCount}`);
+  const firstParagraph = paragraphs[0] ?? '';
+  const scopePattern = hasMask
+    ? /(?:\bonly\b[^.!?]*\bmask(?:ed)?\b|\bmask(?:ed)?\b[^.!?]*\bonly\b)/i
+    : /(?:\bonly\b[^.!?]*\b(?:selected|specified) region\b|\b(?:selected|specified) region\b[^.!?]*\bonly\b)/i;
+  if (!scopePattern.test(firstParagraph)) issues.push('masked_scope');
   if (
     paragraphs.some((paragraph) => {
       const count = paragraph.match(/[.!?]["'”’)]?(?=\s|$)/g)?.length ?? 0;
-      return count < 1 || count > 3 || !/[.!?]["'”’)]?$/.test(paragraph.trim());
+      return count < 1 || !/[.!?]["'”’)]?$/.test(paragraph.trim());
     })
   )
-    issues.push('complete_sentences_per_paragraph');
+    issues.push('complete_paragraphs');
   if (/[\u3400-\u9fff]/.test(prompt)) issues.push('non_english_descriptive_text');
   if (/```|\*\*|^\s*(?:#|\d+[.)]|[-*+]\s)/m.test(prompt)) issues.push('markdown_formatting');
   return issues;

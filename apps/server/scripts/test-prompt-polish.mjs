@@ -27,13 +27,12 @@ const localMessage = buildPromptPolishMessage({
 assert.match(localMessage, /FLUX\.2 Klein/);
 assert.match(localMessage, /remove the old label/);
 assert.match(localMessage, /industrial cutter/);
-assert.match(localMessage, /exactly four paragraphs/);
-assert.match(localMessage, /independent mask defines the complete editable region/);
-assert.match(localMessage, /Image 1 is the clean current effect with no mask-preview overlay/);
-assert.match(localMessage, /Image 2 supplies only relevant structure/);
-assert.match(localMessage, /For text edits, specify exact spelling/);
+assert.match(localMessage, /100至180词，2至3段/);
+assert.match(localMessage, /第三张为与 Image 1 像素对齐的独立蒙版/);
+assert.match(localMessage, /先确认选区真正覆盖的部件/);
+assert.match(localMessage, /在图二寻找同一部件/);
+assert.match(localMessage, /真正的浅色材料及金属高光不因颜色而被删除/);
 assert.doesNotMatch(localMessage, /limit automatic diagnosis/);
-assert.doesNotMatch(localMessage, /[\u3400-\u9fff]/);
 
 for (const prompt of ['', '   \n\t']) {
   const emptyMessage = buildPromptPolishMessage({
@@ -43,8 +42,8 @@ for (const prompt of ['', '   \n\t']) {
   });
   assert.doesNotMatch(emptyMessage, /limit automatic diagnosis/);
   assert.doesNotMatch(emptyMessage, /then restore the corresponding content from Image 2/);
-  assert.match(emptyMessage, /exactly four paragraphs/);
-  assert.match(emptyMessage, /130 to 220 English words/);
+  assert.match(emptyMessage, /100至180词，2至3段/);
+  assert.match(emptyMessage, /用户未填写时仅修复有证据的问题/);
 }
 
 const currentEffectDataUrl = 'data:image/png;base64,AQ==';
@@ -76,7 +75,7 @@ const diagnosisRequest = buildQwenLocalRepaintDiagnosisRequest({
   referenceImage: { name: 'reference.webp', dataUrl: referenceDataUrl },
   maskImage: { name: 'mask.png', dataUrl: maskDataUrl },
 });
-assert.doesNotMatch(diagnosisRequest.messages[0].content, /FLUX\.2 Klein|exactly four paragraphs/);
+assert.doesNotMatch(diagnosisRequest.messages[0].content, /FLUX\.2 Klein|100至180词/);
 assert.match(diagnosisRequest.messages[0].content, /只输出一句简短中文修复要求/);
 assert.match(diagnosisRequest.messages[0].content, /文字的重复、扭曲、缺笔或错位/);
 assert.match(diagnosisRequest.messages[0].content, /保留真实焊缝/);
@@ -127,13 +126,11 @@ assert.doesNotMatch(
   /--file/,
 );
 
-const validLocalPrompt = `Edit only the white masked region. Treat the mask strictly as an editable boundary rather than visible white content, and keep every unmasked pixel protected.
+const validLocalPrompt = `Repair the exposed conveyor chute and inner feed opening by removing the false seam and restoring their weathered steel finish, modifying only the region defined by the independent mask. Use Image 2 to recover the corresponding chute walls, recessed channel, and attachment junctions while transforming them into Image 1's exact low-angle perspective, scale, orientation, and occlusion.
 
-Completely remove the old printed label, its ink, edge discoloration, contact shadows, and all remaining fragments from the masked panel. Reconstruct the exposed base as continuous aged yellow painted metal with the same shallow surface relief, fine scratches, dust, and worn finish visible around the mask.
+Rebuild each selected surface with continuous dark aged steel, consistent edge thickness, recessed shadows, brushed wear, rust speckling, grime, and directional highlights that follow its surface normal. Preserve genuine rail separations, the feed opening, contact gaps, hard structural edges, and the nearby yellow painted housing; remove only nonphysical projection seams, pale residue, texture breaks, and misaligned patches without fusing distinct components.
 
-Fit the reconstruction to Image 1's panel geometry, curvature, perspective, surface direction, and structural borders. Match the surrounding yellow tone, rough metallic response, directional lighting, soft shadows, reflections, texture scale, rust specks, abrasion, dirt, and sharpness without seams, halos, hard edges, blur, color steps, repeated texture, or perspective errors.
-
-The completed region should read as an authentic uninterrupted section of the original weathered panel with no evidence that a label was ever present. Do not introduce new text, logos, shapes, holes, raised parts, or unrelated damage, and preserve Image 1's original geometry, silhouette, object identity, camera angle, perspective, composition, background, and all content outside the mask unchanged.`;
+The repaired chute should look mechanically coherent and naturally integrated, with matching sharpness, roughness, reflections, and wear scale. Preserve Image 1's object identity, geometry, silhouette, camera, composition, background, lighting, and every detail outside the independent mask unchanged.`;
 assert.equal(validateLocalRepaintPrompt(validLocalPrompt, true), true);
 assert.equal(validateLocalRepaintPrompt(validLocalPrompt.replace(/\n\n/g, '\n'), true), false);
 assert.equal(validateLocalRepaintPrompt(`中文 ${validLocalPrompt}`, true), false);
@@ -144,7 +141,7 @@ const overlongLocalPrompt = validLocalPrompt
   .split(/\n\n/)
   .map((paragraph) => `${paragraph} ${longSentence}`)
   .join('\n\n');
-assert.ok((overlongLocalPrompt.match(/[A-Za-z0-9]+(?:['-][A-Za-z0-9]+)*/g) ?? []).length > 220);
+assert.ok((overlongLocalPrompt.match(/[A-Za-z0-9]+(?:['-][A-Za-z0-9]+)*/g) ?? []).length > 180);
 const normalizedLocalPrompt = normalizeLocalRepaintPrompt(overlongLocalPrompt);
 assert.equal(
   normalizedLocalPrompt,
@@ -175,18 +172,15 @@ assert.equal(
   validLocalPrompt,
 );
 assert.equal(validateLocalRepaintPrompt(`${validLocalPrompt} Unfinished instruction`), false);
-assert.equal(
-  validateLocalRepaintPrompt(validLocalPrompt.replace('Reconstruct', '**Reconstruct**')),
-  false,
-);
+assert.equal(validateLocalRepaintPrompt(validLocalPrompt.replace('Rebuild', '**Rebuild**')), false);
 // Live Qwen reproduced a short Chinese fragment inside otherwise English prose.
-const mixedLanguagePrompt = validLocalPrompt.replace('yellow tone', 'yellow过渡 tone');
+const mixedLanguagePrompt = validLocalPrompt.replace('yellow painted', 'yellow过渡 painted');
 assert.deepEqual(getLocalRepaintPromptFormatIssues(mixedLanguagePrompt), [
   'non_english_descriptive_text',
 ]);
 assert.equal(normalizeLocalRepaintPrompt(mixedLanguagePrompt), mixedLanguagePrompt);
 assert.deepEqual(
-  getLocalRepaintPromptFormatIssues(validLocalPrompt.replace('Reconstruct', '**Reconstruct**')),
+  getLocalRepaintPromptFormatIssues(validLocalPrompt.replace('Rebuild', '**Rebuild**')),
   ['markdown_formatting'],
 );
 
@@ -239,7 +233,7 @@ try {
   for (const invalid of [
     overlongLocalPrompt,
     mixedLanguagePrompt,
-    validLocalPrompt.replace('Reconstruct', '**Reconstruct**'),
+    validLocalPrompt.replace('Rebuild', '**Rebuild**'),
     '',
     'Please repair the seam.',
     validLocalPrompt.replace(/\n\n/g, ' '),
@@ -269,15 +263,15 @@ try {
     assert.equal(await result, validLocalPrompt);
     assert.equal(input.prompt, prompt, 'Do not replace the user-owned blank input');
     assert.equal(calls.length, 2, 'Empty input must diagnose first, then convert');
-    assert.doesNotMatch(calls[0].body.messages[0].content, /exactly four paragraphs/);
+    assert.doesNotMatch(calls[0].body.messages[0].content, /100至180词/);
     assert.match(calls[0].body.messages[1].content[0].text, /一句中文修复要求/);
-    assert.ok(calls[1].body.messages[0].content.includes(`User editing request:\n${diagnosis}`));
+    assert.ok(calls[1].body.messages[0].content.includes(`用户要求：${diagnosis}`));
     assert.match(calls[1].body.messages[0].content, /do not diagnose additional problems/);
     assert.match(
       calls[1].body.messages[0].content,
       /Repair existing text only if the diagnosis explicitly requests it/,
     );
-    assert.match(calls[1].body.messages[0].content, /exactly four paragraphs/);
+    assert.match(calls[1].body.messages[0].content, /100至180词，2至3段/);
     assert.deepEqual(
       calls[1].body.messages[1].content.slice(1),
       calls[0].body.messages[1].content.slice(1),
@@ -371,7 +365,8 @@ for (const decorated of [
 ]) {
   assert.equal(parsePolishedPrompt(decorated), validLocalPrompt);
 }
-const plainPrompt = '修复接缝和色差，保留 CUT-BOT。\n\nKeep [labels], a/b and https://example.invalid/a/b unchanged.';
+const plainPrompt =
+  '修复接缝和色差，保留 CUT-BOT。\n\nKeep [labels], a/b and https://example.invalid/a/b unchanged.';
 assert.equal(parsePolishedPrompt(plainPrompt), plainPrompt);
 assert.equal(parsePolishedPrompt(''), '');
 assert.equal(
@@ -409,12 +404,16 @@ assert.match(panelSource, /context: isLocalRepaintTab \? 'local-repaint' : 'gene
 assert.match(panelSource, /prepareLocalRepaintPromptPolishInputs/);
 assert.match(
   panelSource,
-  /const promptFingerprint = JSON\.stringify\(\{[\s\S]*?\.\.\.\(rawUserPrompt \? \{\} : \{ autoDiagnosisPolicy: LOCAL_REPAINT_AUTO_DIAGNOSIS_POLICY \}\)/,
-  'Only empty-input prompt fingerprints must invalidate the old diagnosis cache',
+  /const promptFingerprint = JSON\.stringify\(\{[\s\S]*?promptTemplatePolicy: LOCAL_REPAINT_PROMPT_TEMPLATE_POLICY,[\s\S]*?\.\.\.\(rawUserPrompt \? \{\} : \{ autoDiagnosisPolicy: LOCAL_REPAINT_AUTO_DIAGNOSIS_POLICY \}\)/,
+  'Every local repaint prompt fingerprint must include the conversion template policy',
 );
 assert.match(
   visualInputSource,
   /LOCAL_REPAINT_AUTO_DIAGNOSIS_POLICY = 'one-sentence-diagnosis-to-klein-v2'/,
+);
+assert.match(
+  visualInputSource,
+  /LOCAL_REPAINT_PROMPT_TEMPLATE_POLICY = 'qwen-to-klein-grounded-2to3-v3'/,
 );
 assert.match(panelSource, /activeReferences\.find\(\(reference\) =>/);
 assert.match(panelSource, /currentEffectImage: visualInputs\?\.currentEffectImage/);

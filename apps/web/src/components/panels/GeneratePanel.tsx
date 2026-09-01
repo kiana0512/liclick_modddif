@@ -50,6 +50,7 @@ import { getUserFacingGenerationError } from '@/services/generationErrorMessage'
 import { resolveLocalRepaintMaterialReference } from '@/services/localRepaintMaterialReference';
 import {
   LOCAL_REPAINT_AUTO_DIAGNOSIS_POLICY,
+  LOCAL_REPAINT_PROMPT_TEMPLATE_POLICY,
   prepareLocalRepaintPromptPolishInputs,
 } from '@/services/localRepaintPromptPolishInputs';
 import {
@@ -3006,6 +3007,7 @@ export function GeneratePanel({
         ]);
       const promptFingerprint = JSON.stringify({
         prompt: rawUserPrompt,
+        promptTemplatePolicy: LOCAL_REPAINT_PROMPT_TEMPLATE_POLICY,
         ...(rawUserPrompt ? {} : { autoDiagnosisPolicy: LOCAL_REPAINT_AUTO_DIAGNOSIS_POLICY }),
         projectId: currentProject.id,
         objectId,
