@@ -1,19 +1,31 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
+import ts from 'typescript';
 
 const read = (path) => readFile(new URL(path, import.meta.url), 'utf8');
-const [panel, dock, editor, viewport, workflow, home, asset, app, serverInpaint] =
-  await Promise.all([
-    read('../src/components/panels/GeneratePanel.tsx'),
-    read('../src/components/editor/BottomToolDock.tsx'),
-    read('../src/routes/EditorPage.tsx'),
-    read('../src/engine/viewport/ViewportCanvas.tsx'),
-    read('../src/features/workflow/WorkflowModuleSwitcher.tsx'),
-    read('../src/routes/HomePage.tsx'),
-    read('../src/routes/AssetProcessingPage.tsx'),
-    read('../src/App.tsx'),
-    read('../../server/src/services/modelviewInpaintService.ts'),
-  ]);
+const [
+  panel,
+  dock,
+  editor,
+  viewport,
+  workflow,
+  home,
+  asset,
+  app,
+  serverInpaint,
+  backgroundPrewarmPolicy,
+] = await Promise.all([
+  read('../src/components/panels/GeneratePanel.tsx'),
+  read('../src/components/editor/BottomToolDock.tsx'),
+  read('../src/routes/EditorPage.tsx'),
+  read('../src/engine/viewport/ViewportCanvas.tsx'),
+  read('../src/features/workflow/WorkflowModuleSwitcher.tsx'),
+  read('../src/routes/HomePage.tsx'),
+  read('../src/routes/AssetProcessingPage.tsx'),
+  read('../src/App.tsx'),
+  read('../../server/src/services/modelviewInpaintService.ts'),
+  read('../src/engine/localRepaint/backgroundPrewarmPolicy.ts'),
+]);
 
 assert.doesNotMatch(panel, /createFullFrameMaskDataUrl/);
 assert.doesNotMatch(panel, /full-frame-default/);
@@ -56,6 +68,66 @@ assert.match(panel, /generationBelongsToObject/);
 assert.match(dock, /localImageGenerationSuccessKey/);
 assert.match(dock, /guideWorkflowButton/);
 assert.match(editor, /localImageGenerationRequested \|\| localImageGenerationStoreRunning/);
+assert.match(
+  editor,
+  /pendingLocalRepaintBackgroundGenerationIdRef\.current = result\.generationId/,
+);
+assert.match(editor, /resolveLocalRepaintBackgroundPrewarmDisposition\(\{/);
+assert.match(backgroundPrewarmPolicy, /pendingGenerationId === nextSource\.generationId/);
+assert.match(backgroundPrewarmPolicy, /'preserve-current-source'/);
+
+const compiledBackgroundPrewarmPolicy = ts.transpileModule(backgroundPrewarmPolicy, {
+  compilerOptions: {
+    module: ts.ModuleKind.ES2022,
+    target: ts.ScriptTarget.ES2022,
+  },
+}).outputText;
+const backgroundPrewarmPolicyModule = await import(
+  `data:text/javascript;base64,${Buffer.from(compiledBackgroundPrewarmPolicy).toString('base64')}`
+);
+const resolveBackgroundPrewarm =
+  backgroundPrewarmPolicyModule.resolveLocalRepaintBackgroundPrewarmDisposition;
+const nextSource = {
+  generationId: 'generation-2',
+  objectId: 'object-1',
+  targetLayerId: 'target-2',
+};
+
+assert.equal(
+  resolveBackgroundPrewarm({ nextSource }),
+  'stage-latest-generation',
+  'the first generation should prewarm without a visible source',
+);
+assert.equal(
+  resolveBackgroundPrewarm({ currentSource: nextSource, nextSource }),
+  'already-staged',
+  'an exact resident source should not be decoded again',
+);
+assert.equal(
+  resolveBackgroundPrewarm({
+    currentSource: {
+      generationId: 'generation-1',
+      objectId: 'object-1',
+      targetLayerId: 'target-1',
+    },
+    nextSource,
+    pendingGenerationId: 'generation-2',
+  }),
+  'stage-latest-generation',
+  'a newly completed second generation should replace the previous visible source once',
+);
+assert.equal(
+  resolveBackgroundPrewarm({
+    currentSource: {
+      generationId: 'generation-1',
+      objectId: 'object-1',
+      targetLayerId: 'target-1',
+    },
+    nextSource,
+  }),
+  'preserve-current-source',
+  'ordinary background scans should preserve a historical source being edited',
+);
 
 assert.doesNotMatch(viewport, /hasCanvasAlpha\(/);
 assert.match(viewport, /maskInverted/);

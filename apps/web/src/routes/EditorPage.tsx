@@ -160,6 +160,7 @@ import {
 } from '@/engine/localRepaint/seamHarmonizationMode';
 import { harmonizeLocalRepaintInWorker } from '@/engine/localRepaint/seamHarmonizationWorker';
 import { ensureLocalRepaintSessionLayer } from '@/engine/localRepaint/sessionLayer';
+import { resolveLocalRepaintBackgroundPrewarmDisposition } from '@/engine/localRepaint/backgroundPrewarmPolicy';
 import {
   generationBelongsToObject,
   normalizeLocalRepaintObjectBindings,
@@ -1112,6 +1113,7 @@ export function EditorPage({
   const localRepaintToolRequestRevisionRef = useRef(0);
   const localRepaintObjectScopeRef = useRef<string>();
   const preferredLocalRepaintGenerationIdRef = useRef<string>();
+  const pendingLocalRepaintBackgroundGenerationIdRef = useRef<string>();
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'failed' | 'offline'>(
     'idle',
   );
@@ -1318,6 +1320,7 @@ export function EditorPage({
     // They cannot follow a project/model switch even when a legacy layer lacks
     // objectId, otherwise that old image is painted onto every later model.
     localRepaintToolRequestRevisionRef.current += 1;
+    pendingLocalRepaintBackgroundGenerationIdRef.current = undefined;
     sceneState.setLocalRepaintProjectionSource(undefined);
     sceneState.setLocalRepaintPreviewLayer(undefined);
     sceneState.setLocalRepaintGenerationPresentationActive(false);
@@ -6072,13 +6075,26 @@ export function EditorPage({
     );
     if (!generationMaskUrl) return undefined;
     const preparedSource = useSceneStore.getState().localRepaintProjectionSource;
-    if (
-      preparedSource?.generationId === latestLocalRepaintGeneration.id &&
-      preparedSource.objectId === objectId &&
-      targetLayer &&
-      preparedSource.targetLayerId === targetLayer.id
-    )
-      return undefined;
+    if (targetLayer) {
+      const disposition = resolveLocalRepaintBackgroundPrewarmDisposition({
+        currentSource: preparedSource,
+        nextSource: {
+          generationId: latestLocalRepaintGeneration.id,
+          objectId,
+          targetLayerId: targetLayer.id,
+        },
+        pendingGenerationId: pendingLocalRepaintBackgroundGenerationIdRef.current,
+      });
+      if (disposition === 'already-staged') {
+        if (
+          pendingLocalRepaintBackgroundGenerationIdRef.current === latestLocalRepaintGeneration.id
+        ) {
+          pendingLocalRepaintBackgroundGenerationIdRef.current = undefined;
+        }
+        return undefined;
+      }
+      if (disposition === 'preserve-current-source') return undefined;
+    }
 
     let cancelled = false;
     const stage = async () => {
@@ -6130,11 +6146,23 @@ export function EditorPage({
           // Button 3 may have published this exact source while the idle task
           // was decoding it. Never overwrite its auto-activation request with
           // the background-only source below.
+          if (
+            pendingLocalRepaintBackgroundGenerationIdRef.current === latestLocalRepaintGeneration.id
+          ) {
+            pendingLocalRepaintBackgroundGenerationIdRef.current = undefined;
+          }
           return;
         }
-        if (visibleProjectionSource && visibleProjectionSource.targetLayerId !== currentTarget.id) {
-          return;
-        }
+        const disposition = resolveLocalRepaintBackgroundPrewarmDisposition({
+          currentSource: visibleProjectionSource,
+          nextSource: {
+            generationId: latestLocalRepaintGeneration.id,
+            objectId,
+            targetLayerId: currentTarget.id,
+          },
+          pendingGenerationId: pendingLocalRepaintBackgroundGenerationIdRef.current,
+        });
+        if (disposition === 'preserve-current-source') return;
         if (!visibleProjectionSource && visiblePreviewLayer) {
           // A preview without a source has no renderer owner and cannot be
           // interactive. Project restore can leave this marker behind after a
@@ -6169,6 +6197,11 @@ export function EditorPage({
           targetLayerType: currentTarget.type,
           targetLayerName: currentTarget.name,
         });
+        if (
+          pendingLocalRepaintBackgroundGenerationIdRef.current === latestLocalRepaintGeneration.id
+        ) {
+          pendingLocalRepaintBackgroundGenerationIdRef.current = undefined;
+        }
         markPerformanceEvent('local-repaint', 'background-source-stage', {
           durationMs: performance.now() - startedAt,
         });
@@ -6196,6 +6229,7 @@ export function EditorPage({
     getCurrentCameraSnapshot,
     getLocalRepaintProjectionImage,
     importedModel,
+    localImageGenerationSuccessKey,
     paintMaskDataUrl,
     paintTool,
     project,
@@ -6264,6 +6298,7 @@ export function EditorPage({
       setLocalImageGenerationRequested(false);
       if (!result.succeeded) return;
       preferredLocalRepaintGenerationIdRef.current = result.generationId;
+      pendingLocalRepaintBackgroundGenerationIdRef.current = result.generationId;
       setLocalImageGenerationSuccessKey((current) => current + 1);
     },
     [],

@@ -5,15 +5,21 @@ import { createServer } from 'vite';
 import * as THREE from 'three';
 
 const sourceRoot = new URL('../src/', import.meta.url);
-const [sessionLayer, generatePanel, editorPage, viewportCanvas, bottomToolDock] = await Promise.all(
-  [
-    readFile(new URL('engine/localRepaint/sessionLayer.ts', sourceRoot), 'utf8'),
-    readFile(new URL('components/panels/GeneratePanel.tsx', sourceRoot), 'utf8'),
-    readFile(new URL('routes/EditorPage.tsx', sourceRoot), 'utf8'),
-    readFile(new URL('engine/viewport/ViewportCanvas.tsx', sourceRoot), 'utf8'),
-    readFile(new URL('components/editor/BottomToolDock.tsx', sourceRoot), 'utf8'),
-  ],
-);
+const [
+  sessionLayer,
+  generatePanel,
+  editorPage,
+  viewportCanvas,
+  bottomToolDock,
+  backgroundPrewarmPolicy,
+] = await Promise.all([
+  readFile(new URL('engine/localRepaint/sessionLayer.ts', sourceRoot), 'utf8'),
+  readFile(new URL('components/panels/GeneratePanel.tsx', sourceRoot), 'utf8'),
+  readFile(new URL('routes/EditorPage.tsx', sourceRoot), 'utf8'),
+  readFile(new URL('engine/viewport/ViewportCanvas.tsx', sourceRoot), 'utf8'),
+  readFile(new URL('components/editor/BottomToolDock.tsx', sourceRoot), 'utf8'),
+  readFile(new URL('engine/localRepaint/backgroundPrewarmPolicy.ts', sourceRoot), 'utf8'),
+]);
 
 assert.match(sessionLayer, /preserveActiveProjection\?: boolean/);
 assert.match(
@@ -37,7 +43,12 @@ assert.match(
   /generationId: latestLocalRepaintGeneration\.id,\s*preserveActiveProjection: true,\s*preserveActiveLayer: true/,
   'idle preparation must not steal renderer ownership',
 );
-assert.match(editorPage, /visibleProjectionSource\.targetLayerId !== currentTarget\.id/);
+assert.match(editorPage, /resolveLocalRepaintBackgroundPrewarmDisposition\(\{/);
+assert.match(
+  backgroundPrewarmPolicy,
+  /pendingGenerationId === nextSource\.generationId[\s\S]*?'stage-latest-generation'[\s\S]*?'preserve-current-source'/,
+  'only a newly completed result may take renderer ownership from the visible repaint source',
+);
 assert.match(
   sessionLayer,
   /!item\.generationId && !item\.imageUrl && !claimedTargetIds\.has\(item\.id\)/,

@@ -1,10 +1,10 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
-> 文档版本：`2.13.1`
+> 文档版本：`2.13.2`
 >
 > 生效日期：`2026-09-01`
 >
-> 代码盘点基线：`1063a6c + 312e236 个人莉刻账号隔离集成`
+> 代码盘点基线：`1063a6c + 312e236 + 本次连续重绘单击接管修复`
 >
 > 基线仓库：`E:\Liclick 3D Texture Modernization`
 >
@@ -306,8 +306,8 @@ UI-09 剪刀
 | `ALG-LR-004` 历史增强边界谐调 | `14.0.0-compatible` | 仅读取/重建旧 v6-v14 Generation 和图层；新 `direct-v1` 任务不调用 |
 | `ALG-LR-005` 历史兼容边界谐调 | `5.0.0-compatible` | 仅保留旧 v3-v5 全幅合成与 legacy 切换的读取兼容；新 `direct-v1` 任务不调用 |
 | `ALG-LR-006` 表面画笔重投影 | `2.0.0` | raycast 命中表面，投射到 frozen source UV；最小绝对 face-on 0.08；世界半径 0.004-0.12 包围盒比例；texture radius 1-72 |
-| `ALG-LR-007` 低延迟实时覆盖 | `2.0.5` | live mask/source 最大 1024；`surface-locked-v1`；ignore source alpha，coverage 由用户 mask 和几何决定；同一 source revision 复用驻留 GPU overlay、linear-view depth 与已链接 shader program。renderer preview 持有图层时保持 overlay 可见并静音同一 persisted twin；切换或清空 source 前等待旧层在实际背景材质驻留，再移交显示权；ordered projected stack 已拥有显示权时 overlay 保持隐藏。UI-10 选择/旋转视角工具将作者蒙版的视口展示设为隐藏，重新进入加/减蒙版画笔时恢复；仅切换内存 presentation flag，不清除作者蒙版 |
-| `ALG-LR-008` 延迟投影持久化 | `2.2.1` | interactive UV bake 固定关闭；生图前 Project Command snapshot 后台执行；Generation、对象、目标层与 GPU-ready 标记共同识别驻留 source；pointer-up 两帧内发布权威图层行，发布后按真实 LayerStore 行判断驻留，不依赖旧 preview revision；后台构建只等待真实指针交互，不等待蒙版工具退出；idle 3000ms 仍仅合并持久化，needsRebake=true |
+| `ALG-LR-007` 低延迟实时覆盖 | `2.0.6` | live mask/source 最大 1024；`surface-locked-v1`；ignore source alpha，coverage 由用户 mask 和几何决定；同一 source revision 复用驻留 GPU overlay、linear-view depth 与已链接 shader program。renderer preview 持有图层时保持 overlay 可见并静音同一 persisted twin；新一代生图完成后以一次性 pending Generation 身份允许后台 source 接管旧 source，接管完即消耗；普通历史结果仍不被后台抢占。切换或清空 source 前等待旧层在实际背景材质驻留，再移交显示权；ordered projected stack 已拥有显示权时 overlay 保持隐藏。UI-10 选择/旋转视角工具将作者蒙版的视口展示设为隐藏，重新进入加/减蒙版画笔时恢复；仅切换内存 presentation flag，不清除作者蒙版 |
+| `ALG-LR-008` 延迟投影持久化 | `2.2.2` | interactive UV bake 固定关闭；生图前 Project Command snapshot 后台执行；Generation、对象、目标层与 GPU-ready 标记共同识别驻留 source；成功生图以 success revision 触发新 source 后台解码、目标层绑定与 GPU 预热，使应用画笔首次点击直接进入驻留快路径；pointer-up 两帧内发布权威图层行，发布后按真实 LayerStore 行判断驻留，不依赖旧 preview revision；后台构建只等待真实指针交互，不等待蒙版工具退出；idle 3000ms 仍仅合并持久化，needsRebake=true |
 | `ALG-LR-009` Inward Crossfade 栈合成 | `1.0.0` | 连续重绘层向内部交叉淡化，避免普通 alpha stacking 在边缘重复显露接缝 |
 | `ALG-LR-010` Provider 兼容编辑 | `1.0.0-compat` | `LocalRepaintDialog` 的 image/edit/protect/hole masks 独立路径，不得与四输入主路径混改 |
 | `ALG-LR-011` 生图透明显示副本 | `1.0.0` | UI-05 重绘效果图和 UI-10 普通投射图层缩略图优先使用 capture linear-view depth 清除明确无几何覆盖的背景，按精确 alpha bounds 仅裁切一次并保留 6% 留白；几何覆盖区的 RGB/alpha 原样保留。深度不可用时只清除与画布边缘连通的近黑外背景，不做第二次 matte、侵蚀或分位裁边。局部重绘图层不走整图副本，继续使用用户涂绘 mask，只显示笔刷授权区域 |
@@ -326,6 +326,8 @@ UI-09 剪刀
 本次连续重绘修复属于 UI-06/UI-10 → M08 显示生命周期：旧 preview 无 revision 不能继续排除已发布行；已发布行在 pointer idle 期间预热，真实拖动、落笔和压力测试仍暂停重任务。source 切换/清空逐帧等待实际模型全部非 overlay 网格的材质绑定包含旧 layerId；最长等待 10 秒，取消或超时保留旧显示，不阻塞主线程、不清空旧图层。异步材质发布读取最新显示所有者，避免晚到任务重新静音旧层。GPU 仅调整驻留和交接顺序，CPU/Worker/shader/UV/export 的像素、蒙版与颜色公式、分辨率均不变；Project Command/Revision、资产和 ownership 无变化，无迁移。回退仅恢复 M08 驻留判定与 source 交接流程，不删除工程或资产。回归覆盖首次发布、跨源切换、部分网格就绪、已释放材质、取消及超时；真实用户工程连续笔画帧率仍需登录现场验证。
 
 `ALG-LR-007` v2.0.5 的视角选择属于 UI-06/UI-10 → M08 的纯展示状态：点击底部选择工具退出绘制并恢复 OrbitControls 输入，同时隐藏红色选择蒙版；`paintMaskDataUrl`、`paintMaskHasContent`、revision、capture 和历史均保持不变。再次进入加/减蒙版画笔会恢复蒙版展示。该 flag 不进入 Zustand preferences、Project、Layer、Generation、Capture、对象存储或 Revision；GPU 只切换已有 mask overlay 的可见性，CPU/Worker/shader/UV/export、投影矩阵、颜色和分辨率没有分叉。旧工程无需迁移；回退只移除按钮与 presentation flag，不删除蒙版或资产。
+
+`ALG-LR-007` v2.0.6 / `ALG-LR-008` v2.2.2 仅修正 UI-05/UI-10 → M08 的连续生图 source 生命周期：生图成功时记录一次性 pending Generation，并用成功 revision 显式触发后台预热。当旧 source 仍占有 renderer 时，只允许与 pending Generation 完全相同的新结果执行一次交接；source 发布或已经驻留后立即消耗 pending 身份，之后的后台扫描继续保护用户主动选中的历史结果。本次不改动 GPU/CPU/Worker/shader、投影矩阵、深度编码、颜色合成、1024 实时上限、最终 UV/export 或 Project/Layer/Generation/Capture Schema，不新增持久字段。旧工程无需迁移或缓存失效；回退时移除 pending Generation 标记和背景 source 决策函数，即恢复旧的不同目标层一律保护分支，无需删除已有图层、蒙版或生成资产。
 
 UI-05/UI-13 的贴图驻留边界要求所有挂到页面根节点的生成面板 Portal 同样受 `EditorPage.isActive` 门禁。进入 UV 时贴图编辑器可继续保留引擎与面板状态，但“局部生图”固定按钮、生成取消确认和结果大图预览均不得越过隐藏工作区显示；回到贴图页后按原状态恢复。此修复仅改变 React 展示生命周期，不改变局部生成算法版本、任务状态、GPU/CPU/Worker/shader、输入蒙版、Project/Layer/Generation/Capture Schema、对象资产或 Revision，无数据迁移；回退只移除 Portal 活跃态门禁。
 
@@ -582,3 +584,4 @@ M15 体积修复：锁定 `terser@5.51.2` 两轮安全压缩，保留日志和�
 | `2.12.0` | 2026-09-01 | `4cbce31 + 本次局部重绘核心蒙版清理` | M08/UI-05、`ALG-LR-012` v1.1.0：ModelView 白灰几何融合不再直接混合细碎的原始抗锯齿 mask；Worker 新增 24/96 双阈值连通、2–6px@2K 闭运算、微小孤岛过滤、小孔填充及窄边羽化，并从清理后核生成既有 24–64px/4–10px 外扩羽化远端 mask。原始作者 mask 仍独立用于 Qwen、Capture、Generation、画笔、历史和回贴；GPU/shader/UV/export、Schema、Revision 与资产不变，无迁移。 |
 | `2.13.0` | 2026-09-01 | `本次 Qwen → Klein 材质证据锚定提交` | M04/UI-05、`ALG-GEN-005` v1.9.0：通用模板改为先以 Image 2 对应部件、第四张干净选区裁切和 mask 外邻域共同确定真实结构与材质；仅在视觉证据证明白灰均匀表面为未完成占位时，要求 Klein 用明确目标材质完整替换 clay/primer/flat placeholder/untextured surface，同时保护真实浅色材质。禁止仅凭“修缝”发明拉丝钢、干净焊缝、倒角或无缝铸造，并禁止输出像素坐标；缓存策略升级为 v5。四图、诊断、ModelView 输入、mask、GPU/CPU/Worker/shader/UV/export、Schema、Revision 和资产不变，无迁移。 |
 | `2.13.1` | 2026-09-01 | `1063a6c + 312e236 集成提交` | M13/M04、`LICLICK-ACCOUNT-BINDING` v1.0.0、`ALG-GEN-005` v1.9.1：合入当前飞书用户独立莉刻账号绑定，生图、编辑、轮询与通用润色使用用户独占 Atlas home 并 fail-closed；未知远端任务禁止探测。同时将“没有文字/不要文字”等确定识别为蒙版内无文字约束，清除 Qwen 的保留文字冲突句，禁止从材质参考复制文字、数字、Logo、标签及伪文字，缓存策略升级为 v6。Project/Layer/Capture/Generation Schema、Revision、ownership 与资产不迁移。 |
+| `2.13.2` | 2026-09-01 | `本次连续重绘单击接管修复` | UI-05/UI-10、M08、`ALG-LR-007` v2.0.6 / `ALG-LR-008` v2.2.2：生图成功记录一次性 pending Generation 并以 success revision 触发后台解码、目标层绑定和 GPU 预热；只有该新结果可以从上一代驻留 source 一次性接管，使第二次及后续生图的应用画笔首次点击即可直接绘制，同时保留历史结果编辑保护。GPU/CPU/Worker/shader、投影/UV/颜色公式、分辨率、Schema、Revision 与资产不变，无迁移。 |
