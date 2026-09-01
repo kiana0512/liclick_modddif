@@ -166,16 +166,36 @@ const validLocalPrompt = `Repair the exposed conveyor chute and inner feed openi
 Rebuild each selected surface with continuous dark aged steel, consistent edge thickness, recessed shadows, brushed wear, rust speckling, grime, and directional highlights that follow its surface normal. Preserve genuine rail separations, the feed opening, contact gaps, hard structural edges, and the nearby yellow painted housing; remove only nonphysical projection seams, pale residue, texture breaks, and misaligned patches without fusing distinct components.
 
 The repaired chute should look mechanically coherent and naturally integrated, with matching sharpness, roughness, reflections, and wear scale. Preserve Image 1's object identity, geometry, silhouette, camera, composition, background, lighting, and every detail outside the independent mask unchanged.`;
+function withEnglishWordCount(prompt, target) {
+  const count = (prompt.match(/[A-Za-z0-9]+(?:['-][A-Za-z0-9]+)*/g) ?? []).length;
+  assert.ok(count <= target, `Fixture already exceeds requested word count ${target}`);
+  const filler = Array.from({ length: target - count }, (_, index) => `detail${index + 1}`).join(
+    ' ',
+  );
+  return `${prompt.replace(/[.!?]\s*$/, '')} ${filler}.`;
+}
+const slightlyOverTargetLocalPrompt = withEnglishWordCount(validLocalPrompt, 183);
+const overlongLocalPrompt = withEnglishWordCount(validLocalPrompt, 201);
 assert.equal(validateLocalRepaintPrompt(validLocalPrompt, true), true);
+assert.equal(
+  validateLocalRepaintPrompt(slightlyOverTargetLocalPrompt, true),
+  true,
+  'A small overshoot above the 180-word target must not reject an otherwise valid repair',
+);
+assert.equal(
+  validateLocalRepaintPrompt(
+    validLocalPrompt.replace(
+      'modifying only the region defined by the independent mask',
+      'restricting edits to within the independent mask',
+    ),
+    true,
+  ),
+  true,
+  'Common explicit mask-scope language must be accepted',
+);
 assert.equal(validateLocalRepaintPrompt(validLocalPrompt.replace(/\n\n/g, '\n'), true), false);
 assert.equal(validateLocalRepaintPrompt(`中文 ${validLocalPrompt}`, true), false);
 
-const longSentence =
-  'Preserve carefully observed directional abrasion, subtle oxidation, accumulated dust, uneven paint fading, tiny impact marks, and realistic industrial surface variation throughout this reconstruction.';
-const overlongLocalPrompt = validLocalPrompt
-  .split(/\n\n/)
-  .map((paragraph) => `${paragraph} ${longSentence}`)
-  .join('\n\n');
 assert.ok((overlongLocalPrompt.match(/[A-Za-z0-9]+(?:['-][A-Za-z0-9]+)*/g) ?? []).length > 180);
 const normalizedLocalPrompt = normalizeLocalRepaintPrompt(overlongLocalPrompt);
 assert.equal(
@@ -287,7 +307,7 @@ try {
     assert.deepEqual(
       calls[1].body.messages.slice(0, 2),
       calls[0].body.messages,
-      'Repair retains original intent, template and all three images',
+      'Repair retains original intent, template and all four images',
     );
     assert.equal(calls[1].body.messages[2].role, 'assistant');
     assert.match(
@@ -297,6 +317,16 @@ try {
     assert.equal(calls[1].body.temperature, 0.2);
     assert.match(calls[1].body.messages[3].content, /Translate any Chinese descriptive words/);
   }
+  const observedLiveRepair = await invokeWithReplies([
+    'Repair the selected surface while preserving the object and surrounding details.',
+    slightlyOverTargetLocalPrompt,
+  ]);
+  assert.equal(await observedLiveRepair.result, slightlyOverTargetLocalPrompt);
+  assert.equal(
+    observedLiveRepair.calls.length,
+    2,
+    'The observed 183-word repaired response must pass without a third request or user-facing failure',
+  );
   for (const prompt of ['', '  \n\t']) {
     const diagnosis = '修复控制面板下方的接缝和色差，以及标牌文字的重影。';
     const input = { ...localInput, prompt };

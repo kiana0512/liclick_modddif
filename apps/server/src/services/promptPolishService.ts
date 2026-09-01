@@ -401,7 +401,7 @@ async function invokeQwen3VlPlus(input: PromptPolishInput) {
       { role: 'assistant', content: prompt },
       {
         role: 'user',
-        content: `Correct only the output format of your previous answer using the original user request and the same four images above. Validation issues: ${issues.join(', ')}. Return only 2 or 3 English paragraphs separated by one blank line and 100 to 180 English words total. The first sentence must identify the actual selected component and its target action or material, then limit editing to the independent mask region. Preserve all requested changes, exact requested text, useful Image 2 evidence, real component boundaries, and unmasked protection; use the fourth image only to keep the selected component correctly localized, and condense wording instead of dropping requirements. Translate any Chinese descriptive words into English, including fragments embedded inside English sentences; do not merely delete them. Remove Markdown formatting such as double asterisks and code fences. Return only the finished prompt, without headings, numbering, Markdown, analysis, or commentary.`,
+        content: `Correct only the output format of your previous answer using the original user request and the same four images above. Validation issues: ${issues.join(', ')}. Return only 2 or 3 English paragraphs separated by one blank line and 100 to ${localRepaintPromptTargetWordMaximum} English words total. The first sentence must identify the actual selected component and its target action or material, then limit editing to the independent mask region. Preserve all requested changes, exact requested text, useful Image 2 evidence, real component boundaries, and unmasked protection; use the fourth image only to keep the selected component correctly localized, and condense wording instead of dropping requirements. Translate any Chinese descriptive words into English, including fragments embedded inside English sentences; do not merely delete them. Remove Markdown formatting such as double asterisks and code fences. Return only the finished prompt, without headings, numbering, Markdown, analysis, or commentary.`,
       },
     );
     request.temperature = 0.2;
@@ -429,6 +429,12 @@ export function parsePolishedPrompt(stdout: string) {
 function countEnglishWords(value: string) {
   return value.match(/[A-Za-z0-9]+(?:['-][A-Za-z0-9]+)*/g)?.length ?? 0;
 }
+
+const localRepaintPromptTargetWordMaximum = 180;
+// Qwen occasionally lands only a few words above the requested target after a
+// successful format repair. Klein does not require an exact word count, so a
+// small fail-closed tolerance avoids rejecting otherwise complete prompts.
+const localRepaintPromptAcceptedWordMaximum = 200;
 
 export function normalizeLocalRepaintPrompt(prompt: string) {
   const normalized = prompt.replace(/\r\n?/g, '\n').trim();
@@ -463,10 +469,11 @@ export function getLocalRepaintPromptFormatIssues(prompt: string, hasMask = true
   const issues: string[] = [];
   if (paragraphs.length !== 2 && paragraphs.length !== 3)
     issues.push(`paragraph_count=${paragraphs.length}`);
-  if (wordCount < 100 || wordCount > 180) issues.push(`word_count=${wordCount}`);
+  if (wordCount < 100 || wordCount > localRepaintPromptAcceptedWordMaximum)
+    issues.push(`word_count=${wordCount}`);
   const firstParagraph = paragraphs[0] ?? '';
   const scopePattern = hasMask
-    ? /(?:\bonly\b[^.!?]*\bmask(?:ed)?\b|\bmask(?:ed)?\b[^.!?]*\bonly\b)/i
+    ? /(?:\bonly\b[^.!?]{0,160}\bmask(?:ed)?\b|\bmask(?:ed)?\b[^.!?]{0,160}\bonly\b|\b(?:confin(?:e|ed|ing)|restrict(?:ed|ing)?|limit(?:ed|ing)?)\b[^.!?]{0,120}\b(?:to|within|inside)\b[^.!?]{0,80}\bmask(?:ed)?\b|\b(?:outside|beyond)\b[^.!?]{0,80}\bmask(?:ed)?\b[^.!?]{0,120}\b(?:unchanged|protected|preserved)\b)/i
     : /(?:\bonly\b[^.!?]*\b(?:selected|specified) region\b|\b(?:selected|specified) region\b[^.!?]*\bonly\b)/i;
   if (!scopePattern.test(firstParagraph)) issues.push('masked_scope');
   if (
