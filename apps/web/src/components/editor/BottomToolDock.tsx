@@ -28,6 +28,7 @@ import { useLayerStore } from '@/stores/layerStore';
 import type { WorkspaceMode } from '@/components/workspace/workspacePanelTypes';
 import { runPaintMaskHistoryAction } from '@/engine/paint/paintMaskHistoryActions';
 import { getEraserTargetPolicy } from '@/engine/paint/eraserTargetPolicy';
+import { resolveLocalRepaintActivationDisposition } from '@/engine/localRepaint/activationRequestPolicy';
 
 type BottomToolDockProps = {
   mode: WorkspaceMode;
@@ -40,6 +41,8 @@ type BottomToolDockProps = {
   localImageGenerationRunning: boolean;
   localImageGenerationSuccessKey: number;
   canLocalRepaint: boolean;
+  canQueueLocalRepaintActivation?: boolean;
+  localRepaintActivationQueued?: boolean;
   canUndo: boolean;
   canRedo: boolean;
   onUndo: () => void;
@@ -99,6 +102,8 @@ export function BottomToolDock({
   localImageGenerationRunning,
   localImageGenerationSuccessKey,
   canLocalRepaint,
+  canQueueLocalRepaintActivation = false,
+  localRepaintActivationQueued = false,
   canUndo,
   canRedo,
   onUndo,
@@ -153,6 +158,15 @@ export function BottomToolDock({
   const isTextureMode = mode === 'texture';
   const isMaskPaintTool = paintTool === 'inpaint-add' || paintTool === 'inpaint-subtract';
   const localRepaintReady = canLocalRepaint;
+  const localRepaintActivationDisposition = resolveLocalRepaintActivationDisposition({
+    localRepaintReady,
+    operationLocked: interactionLocked || localImageGenerationRunning,
+    localGenerationRunning: localImageGenerationRunning,
+    canQueueDuringTransition: canQueueLocalRepaintActivation,
+  });
+  const localRepaintActivationAvailable =
+    localRepaintActivationDisposition === 'activate-now' ||
+    localRepaintActivationDisposition === 'queue-until-unlocked';
   const canEraseSelectedLayer = Boolean(activeLayer?.visible && eraserPolicy.canActivate);
   const inpaintMenuVisible =
     activeMenu === 'inpaint-add' ||
@@ -334,6 +348,12 @@ export function BottomToolDock({
         if (!interactionLocked) return;
         const target = event.target as HTMLElement;
         if (!target.closest('button, input, select, textarea')) return;
+        if (
+          localRepaintActivationDisposition === 'queue-until-unlocked' &&
+          target.closest('[data-local-repaint-apply="true"]')
+        ) {
+          return;
+        }
         event.preventDefault();
         event.stopPropagation();
         onInteractionLocked?.();
@@ -342,6 +362,12 @@ export function BottomToolDock({
         if (!interactionLocked) return;
         const target = event.target as HTMLElement;
         if (!target.closest('button, input, select, textarea')) return;
+        if (
+          localRepaintActivationDisposition === 'queue-until-unlocked' &&
+          target.closest('[data-local-repaint-apply="true"]')
+        ) {
+          return;
+        }
         event.preventDefault();
         event.stopPropagation();
         onInteractionLocked?.();
@@ -697,46 +723,75 @@ export function BottomToolDock({
                     type="button"
                     className={cn(
                       workflowButton,
+                      'relative overflow-hidden',
                       paintTool === 'inpaint-apply' && activeWorkflowButton,
                       repaintGuideActive &&
                         localRepaintReady &&
                         !localImageGenerationRunning &&
                         paintTool !== 'inpaint-apply' &&
                         guideWorkflowButton,
-                      (!localRepaintReady || localImageGenerationRunning) && lockedWorkflowButton,
+                      localRepaintActivationQueued && runningWorkflowButton,
+                      !localRepaintActivationAvailable && lockedWorkflowButton,
                     )}
+                    data-local-repaint-apply="true"
+                    aria-busy={localRepaintActivationQueued}
                     onClick={() => {
-                      if (localImageGenerationRunning) {
+                      if (localRepaintActivationDisposition === 'blocked-generation-running') {
                         notifyGenerationInProgress();
                         return;
                       }
-                      if (!localRepaintReady) {
+                      if (localRepaintActivationDisposition === 'blocked-no-result') {
                         notifyGenerationRequired();
                         return;
                       }
+                      if (localRepaintActivationDisposition === 'blocked-operation') {
+                        onInteractionLocked?.();
+                        return;
+                      }
                       setRepaintGuideActive(false);
+                      if (localRepaintActivationDisposition === 'queue-until-unlocked') {
+                        onLocalRepaint();
+                        setActiveMenu('inpaint-apply');
+                        return;
+                      }
                       if (paintTool === 'inpaint-apply') {
                         toggleMenu('inpaint-apply');
                         return;
                       } else {
                         onLocalRepaint();
                       }
-                      toggleMenu('inpaint-apply');
+                      setActiveMenu('inpaint-apply');
                     }}
                     aria-label={
-                      localImageGenerationRunning
-                        ? '应用局部重绘（等待局部生图完成）'
-                        : localRepaintReady
-                          ? '应用局部重绘'
-                          : '应用局部重绘（需先完成局部生图）'
+                      localRepaintActivationDisposition === 'queue-until-unlocked'
+                        ? '应用局部重绘（准备完成后自动启用）'
+                        : localImageGenerationRunning
+                          ? '应用局部重绘（等待局部生图完成）'
+                          : localRepaintReady
+                            ? '应用局部重绘'
+                            : '应用局部重绘（需先完成局部生图）'
                     }
                   >
                     <span className="relative grid place-items-center">
-                      <WandSparkles className="h-4.5 w-4.5" />
+                      {localRepaintActivationQueued ? (
+                        <LoaderCircle className="h-4.5 w-4.5 animate-spin" />
+                      ) : (
+                        <WandSparkles className="h-4.5 w-4.5" />
+                      )}
                       {paintTool === 'inpaint-apply' && (
                         <ChevronUp className="absolute -right-3 -top-3 h-3.5 w-3.5" />
                       )}
                     </span>
+                    {localRepaintActivationQueued && (
+                      <span
+                        className="absolute inset-x-1 bottom-0.5 h-1 overflow-hidden rounded-full bg-white/14"
+                        role="progressbar"
+                        aria-label="正在等待局部重绘画笔就绪"
+                        aria-valuetext="生成结果准备完成后将自动启用"
+                      >
+                        <span className="local-repaint-activation-progress block h-full w-1/2 rounded-full bg-gradient-to-r from-[#ff5ccf] to-[#8f5cff]" />
+                      </span>
+                    )}
                   </button>
                 </IconTooltip>
               </span>

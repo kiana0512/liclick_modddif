@@ -14,6 +14,8 @@ const [
   app,
   serverInpaint,
   backgroundPrewarmPolicy,
+  activationRequestPolicy,
+  globals,
 ] = await Promise.all([
   read('../src/components/panels/GeneratePanel.tsx'),
   read('../src/components/editor/BottomToolDock.tsx'),
@@ -25,6 +27,8 @@ const [
   read('../src/App.tsx'),
   read('../../server/src/services/modelviewInpaintService.ts'),
   read('../src/engine/localRepaint/backgroundPrewarmPolicy.ts'),
+  read('../src/engine/localRepaint/activationRequestPolicy.ts'),
+  read('../src/styles/globals.css'),
 ]);
 
 assert.doesNotMatch(panel, /createFullFrameMaskDataUrl/);
@@ -75,6 +79,13 @@ assert.match(
 assert.match(editor, /resolveLocalRepaintBackgroundPrewarmDisposition\(\{/);
 assert.match(backgroundPrewarmPolicy, /pendingGenerationId === nextSource\.generationId/);
 assert.match(backgroundPrewarmPolicy, /'preserve-current-source'/);
+assert.match(editor, /pendingLocalRepaintActivationRequestRef\.current = true/);
+assert.match(editor, /'replayed-after-generation-unlock'/);
+assert.match(dock, /data-local-repaint-apply="true"/);
+assert.match(dock, /localRepaintActivationDisposition === 'queue-until-unlocked'/);
+assert.match(dock, /localRepaintActivationQueued && \(/);
+assert.match(dock, /role="progressbar"/);
+assert.match(globals, /@keyframes local-repaint-activation-progress/);
 
 const compiledBackgroundPrewarmPolicy = ts.transpileModule(backgroundPrewarmPolicy, {
   compilerOptions: {
@@ -127,6 +138,68 @@ assert.equal(
   }),
   'preserve-current-source',
   'ordinary background scans should preserve a historical source being edited',
+);
+
+const compiledActivationRequestPolicy = ts.transpileModule(activationRequestPolicy, {
+  compilerOptions: {
+    module: ts.ModuleKind.ES2022,
+    target: ts.ScriptTarget.ES2022,
+  },
+}).outputText;
+const activationRequestPolicyModule = await import(
+  `data:text/javascript;base64,${Buffer.from(compiledActivationRequestPolicy).toString('base64')}`
+);
+const resolveActivation = activationRequestPolicyModule.resolveLocalRepaintActivationDisposition;
+
+assert.equal(
+  resolveActivation({
+    localRepaintReady: true,
+    operationLocked: true,
+    localGenerationRunning: true,
+    canQueueDuringTransition: true,
+  }),
+  'queue-until-unlocked',
+  'the first click after result publication must survive the short generation-unlock window',
+);
+assert.equal(
+  resolveActivation({
+    localRepaintReady: false,
+    operationLocked: false,
+    localGenerationRunning: false,
+    canQueueDuringTransition: true,
+  }),
+  'queue-until-unlocked',
+  'a successful result callback must preserve the click until the generation store publishes readiness',
+);
+assert.equal(
+  resolveActivation({
+    localRepaintReady: true,
+    operationLocked: false,
+    localGenerationRunning: false,
+    canQueueDuringTransition: false,
+  }),
+  'activate-now',
+  'a resident result must still activate immediately',
+);
+assert.equal(
+  resolveActivation({
+    localRepaintReady: false,
+    operationLocked: true,
+    localGenerationRunning: true,
+    canQueueDuringTransition: false,
+  }),
+  'blocked-generation-running',
+  'a generation with no usable result must remain locked',
+);
+assert.equal(
+  resolveActivation({
+    localRepaintReady: true,
+    operationLocked: true,
+    localGenerationRunning: false,
+    canQueueDuringTransition: false,
+  }),
+  'blocked-operation',
+  'unrelated editor operations must not be bypassed by the repaint queue',
 );
 
 assert.doesNotMatch(viewport, /hasCanvasAlpha\(/);

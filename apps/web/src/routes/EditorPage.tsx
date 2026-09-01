@@ -1114,6 +1114,7 @@ export function EditorPage({
   const localRepaintObjectScopeRef = useRef<string>();
   const preferredLocalRepaintGenerationIdRef = useRef<string>();
   const pendingLocalRepaintBackgroundGenerationIdRef = useRef<string>();
+  const pendingLocalRepaintActivationRequestRef = useRef(false);
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'failed' | 'offline'>(
     'idle',
   );
@@ -1145,6 +1146,11 @@ export function EditorPage({
   const [layerAdjustmentsOpen, setLayerAdjustmentsOpen] = useState(false);
   const [localImageGenerationRequestKey, setLocalImageGenerationRequestKey] = useState(0);
   const [localImageGenerationRequested, setLocalImageGenerationRequested] = useState(false);
+  const [
+    localRepaintGenerationSettledAwaitingUnlock,
+    setLocalRepaintGenerationSettledAwaitingUnlock,
+  ] = useState(false);
+  const [localRepaintActivationQueued, setLocalRepaintActivationQueued] = useState(false);
   const [localImageGenerationSuccessKey, setLocalImageGenerationSuccessKey] = useState(0);
   const [cancelActiveGenerationRequestKey, setCancelActiveGenerationRequestKey] = useState(0);
   const [generationConflictDialog, setGenerationConflictDialog] =
@@ -1321,6 +1327,9 @@ export function EditorPage({
     // objectId, otherwise that old image is painted onto every later model.
     localRepaintToolRequestRevisionRef.current += 1;
     pendingLocalRepaintBackgroundGenerationIdRef.current = undefined;
+    pendingLocalRepaintActivationRequestRef.current = false;
+    setLocalRepaintActivationQueued(false);
+    setLocalRepaintGenerationSettledAwaitingUnlock(false);
     sceneState.setLocalRepaintProjectionSource(undefined);
     sceneState.setLocalRepaintPreviewLayer(undefined);
     sceneState.setLocalRepaintGenerationPresentationActive(false);
@@ -1534,6 +1543,12 @@ export function EditorPage({
   const modelMutationLocked = editorTaskRunning || generationConflictLocked;
   const generationOperationLocked = modelMutationLocked;
   const editorToolsLocked = editorTaskRunning || snapshotPreparationLocked;
+  const canQueueLocalRepaintActivation =
+    (localRepaintGenerationReady || localRepaintGenerationSettledAwaitingUnlock) &&
+    (localImageGenerationRunning || localRepaintGenerationSettledAwaitingUnlock) &&
+    !contentAwareRepairRunning &&
+    !projectGenerationRunning &&
+    !snapshotPreparationLocked;
   const showGenerationConflict = useCallback((action = '当前操作') => {
     setGenerationConflictDialog({ action });
   }, []);
@@ -6275,6 +6290,9 @@ export function EditorPage({
     // Waiting for GeneratePanel to mount would leave one frame where `none`
     // hides the live repaint before the persisted row has taken ownership.
     useSceneStore.getState().setLocalRepaintGenerationPresentationActive(true);
+    pendingLocalRepaintActivationRequestRef.current = false;
+    setLocalRepaintActivationQueued(false);
+    setLocalRepaintGenerationSettledAwaitingUnlock(false);
     setPaintTool('none');
     setLocalImageGenerationRequested(true);
     showPanel('generate');
@@ -6296,7 +6314,13 @@ export function EditorPage({
     (result: LocalImageGenerationSettledResult) => {
       useSceneStore.getState().setLocalRepaintGenerationPresentationActive(false);
       setLocalImageGenerationRequested(false);
-      if (!result.succeeded) return;
+      if (!result.succeeded) {
+        pendingLocalRepaintActivationRequestRef.current = false;
+        setLocalRepaintActivationQueued(false);
+        setLocalRepaintGenerationSettledAwaitingUnlock(false);
+        return;
+      }
+      setLocalRepaintGenerationSettledAwaitingUnlock(true);
       preferredLocalRepaintGenerationIdRef.current = result.generationId;
       pendingLocalRepaintBackgroundGenerationIdRef.current = result.generationId;
       setLocalImageGenerationSuccessKey((current) => current + 1);
@@ -6310,10 +6334,21 @@ export function EditorPage({
     window.requestAnimationFrame((frameAt) => {
       document.body.dataset.localRepaintButton3ResponseMs = (frameAt - clickedAt).toFixed(1);
     });
+    if (
+      canQueueLocalRepaintActivation &&
+      (generationOperationLocked || !localRepaintGenerationReady)
+    ) {
+      pendingLocalRepaintActivationRequestRef.current = true;
+      setLocalRepaintActivationQueued(true);
+      document.body.dataset.localRepaintButton3ActivationPath = 'queued-generation-unlock';
+      return;
+    }
     if (generationOperationLocked) {
       notifyEditorTaskRunning();
       return;
     }
+    pendingLocalRepaintActivationRequestRef.current = false;
+    setLocalRepaintActivationQueued(false);
     const requestRevision = localRepaintToolRequestRevisionRef.current + 1;
     localRepaintToolRequestRevisionRef.current = requestRevision;
     const showPrewarmProgress = (detail: string, progress: number) => {
@@ -6573,11 +6608,13 @@ export function EditorPage({
       });
     })();
   }, [
+    canQueueLocalRepaintActivation,
     generationOperationLocked,
     generations,
     getCurrentCameraSnapshot,
     getLocalRepaintProjectionImage,
     importedModel,
+    localRepaintGenerationReady,
     notifyEditorTaskRunning,
     paintMaskDataUrl,
     project,
@@ -6590,6 +6627,25 @@ export function EditorPage({
     setProjectLayers,
     t,
   ]);
+
+  useEffect(() => {
+    if (
+      generationOperationLocked ||
+      !localRepaintGenerationReady ||
+      !pendingLocalRepaintActivationRequestRef.current
+    ) {
+      return;
+    }
+    pendingLocalRepaintActivationRequestRef.current = false;
+    setLocalRepaintActivationQueued(false);
+    document.body.dataset.localRepaintButton3ActivationPath = 'replayed-after-generation-unlock';
+    handleLocalRepaintFromToolbar();
+  }, [generationOperationLocked, handleLocalRepaintFromToolbar, localRepaintGenerationReady]);
+
+  useEffect(() => {
+    if (generationOperationLocked || !localRepaintGenerationReady) return;
+    setLocalRepaintGenerationSettledAwaitingUnlock(false);
+  }, [generationOperationLocked, localRepaintGenerationReady]);
 
   useEffect(() => {
     const target = window as typeof window & {
@@ -7887,6 +7943,8 @@ export function EditorPage({
               localImageGenerationRunning={localImageGenerationRunning}
               localImageGenerationSuccessKey={localImageGenerationSuccessKey}
               canLocalRepaint={localRepaintGenerationReady}
+              canQueueLocalRepaintActivation={canQueueLocalRepaintActivation}
+              localRepaintActivationQueued={localRepaintActivationQueued}
               canUndo={canUndo}
               canRedo={canRedo}
               onUndo={undo}
