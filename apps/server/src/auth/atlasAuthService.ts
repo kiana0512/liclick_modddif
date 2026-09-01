@@ -46,6 +46,14 @@ type AtlasTokenCacheModule = {
   readCache?: (tokenFile: string) => AtlasTokenCache | undefined;
 };
 
+export type AtlasRuntimeCompatibility = {
+  ok: boolean;
+  version?: string;
+  minimumVersion: string;
+  secureTokenCacheReader: boolean;
+  message?: string;
+};
+
 type AtlasClaims = {
   email?: string;
   name?: string;
@@ -59,16 +67,47 @@ type AtlasClaims = {
 
 const pendingAtlasLogins = new Map<string, PendingAtlasLogin>();
 const pendingLoginTtlMs = 10 * 60 * 1000;
+const minimumCompatibleAtlasSkillhubVersion = '2.9.1';
 
 function atlasScriptPath() {
   const appData = process.env.APPDATA;
   const explicitPath = process.env.ATLAS_SKILLHUB_PATH;
   const candidates = [
     explicitPath ?? '',
-    appData ? path.join(appData, 'npm', 'node_modules', '@lilith', 'atlas-skillhub', 'dist', 'index.js') : '',
-    path.join(os.homedir(), 'AppData', 'Roaming', 'npm', 'node_modules', '@lilith', 'atlas-skillhub', 'dist', 'index.js'),
-    path.join(os.homedir(), '.npm-global', 'lib', 'node_modules', '@lilith', 'atlas-skillhub', 'dist', 'index.js'),
-    path.join(os.homedir(), '.local', 'lib', 'node_modules', '@lilith', 'atlas-skillhub', 'dist', 'index.js'),
+    appData
+      ? path.join(appData, 'npm', 'node_modules', '@lilith', 'atlas-skillhub', 'dist', 'index.js')
+      : '',
+    path.join(
+      os.homedir(),
+      'AppData',
+      'Roaming',
+      'npm',
+      'node_modules',
+      '@lilith',
+      'atlas-skillhub',
+      'dist',
+      'index.js',
+    ),
+    path.join(
+      os.homedir(),
+      '.npm-global',
+      'lib',
+      'node_modules',
+      '@lilith',
+      'atlas-skillhub',
+      'dist',
+      'index.js',
+    ),
+    path.join(
+      os.homedir(),
+      '.local',
+      'lib',
+      'node_modules',
+      '@lilith',
+      'atlas-skillhub',
+      'dist',
+      'index.js',
+    ),
     '/usr/local/lib/node_modules/@lilith/atlas-skillhub/dist/index.js',
     '/usr/lib/node_modules/@lilith/atlas-skillhub/dist/index.js',
   ].filter(Boolean);
@@ -116,7 +155,8 @@ export function parseJsonFromOutput(text: string) {
   } catch {
     const first = raw.indexOf('{');
     const last = raw.lastIndexOf('}');
-    if (first >= 0 && last > first) return JSON.parse(raw.slice(first, last + 1)) as Record<string, unknown>;
+    if (first >= 0 && last > first)
+      return JSON.parse(raw.slice(first, last + 1)) as Record<string, unknown>;
     return {};
   }
 }
@@ -148,20 +188,24 @@ function terminateAtlasProcessTree(child: ChildProcessWithoutNullStreams) {
     return;
   }
 
-  const killer = spawn(
-    'taskkill.exe',
-    ['/pid', String(child.pid), '/t', '/f'],
-    { shell: false, windowsHide: true, stdio: 'ignore' },
-  );
+  const killer = spawn('taskkill.exe', ['/pid', String(child.pid), '/t', '/f'], {
+    shell: false,
+    windowsHide: true,
+    stdio: 'ignore',
+  });
   killer.once('error', () => child.kill('SIGKILL'));
 }
 
-export function runAtlas(args: string[], timeoutMs: number, allowNonZero = false, homeDir?: string, extraEnv: NodeJS.ProcessEnv = {}) {
+export function runAtlas(
+  args: string[],
+  timeoutMs: number,
+  allowNonZero = false,
+  homeDir?: string,
+  extraEnv: NodeJS.ProcessEnv = {},
+) {
   const script = atlasScriptPath();
   if (!script) {
-    return Promise.reject(
-      new Error('未找到 @lilith/atlas-skillhub，请先安装莉刻 Atlas 运行时。'),
-    );
+    return Promise.reject(new Error('未找到 @lilith/atlas-skillhub，请先安装莉刻 Atlas 运行时。'));
   }
   return new Promise<AtlasCommandResult>((resolve, reject) => {
     const commandArgs = [...args];
@@ -311,25 +355,85 @@ let encryptedTokenCacheReaderPromise:
   | Promise<(tokenFile: string) => AtlasTokenCache | undefined>
   | undefined;
 
-function getEncryptedTokenCacheReader() {
-  encryptedTokenCacheReaderPromise ??= (async () => {
-    const script = atlasScriptPath();
-    if (!script) throw new Error('Atlas runtime is unavailable.');
-    const runtimeDir = path.dirname(script);
-    const candidates = fs
-      .readdirSync(runtimeDir)
-      .filter((name) => name.endsWith('.js') && name !== path.basename(script));
-
-    for (const name of candidates) {
-      const candidate = path.join(runtimeDir, name);
-      const source = fs.readFileSync(candidate, 'utf8');
-      if (!source.includes('function readCache(') || !source.includes('readCache,')) continue;
-      const module = (await import(pathToFileURL(candidate).href)) as AtlasTokenCacheModule;
-      if (typeof module.readCache === 'function') return module.readCache;
+function atlasRuntimeVersion(script: string) {
+  let directory = path.dirname(script);
+  for (let depth = 0; depth < 4; depth += 1) {
+    const packageFile = path.join(directory, 'package.json');
+    if (fs.existsSync(packageFile)) {
+      try {
+        const packageJson = JSON.parse(fs.readFileSync(packageFile, 'utf8')) as {
+          name?: string;
+          version?: string;
+        };
+        if (packageJson.name === '@lilith/atlas-skillhub') return packageJson.version;
+      } catch {
+        return undefined;
+      }
     }
-    throw new Error('Installed Atlas runtime does not expose its secure token cache reader.');
-  })();
+    const parent = path.dirname(directory);
+    if (parent === directory) break;
+    directory = parent;
+  }
+  return undefined;
+}
+
+async function loadEncryptedTokenCacheReader() {
+  const script = atlasScriptPath();
+  if (!script) throw new Error('ATLAS_RUNTIME_UNAVAILABLE: Atlas runtime is unavailable.');
+  const runtimeDir = path.dirname(script);
+  const candidates = fs
+    .readdirSync(runtimeDir)
+    .filter((name) => name.endsWith('.js') && name !== path.basename(script));
+
+  for (const name of candidates) {
+    const candidate = path.join(runtimeDir, name);
+    const source = fs.readFileSync(candidate, 'utf8');
+    if (!source.includes('function readCache(') || !source.includes('readCache,')) continue;
+    const moduleUrl = pathToFileURL(candidate);
+    moduleUrl.searchParams.set('mtime', String(fs.statSync(candidate).mtimeMs));
+    const module = (await import(moduleUrl.href)) as AtlasTokenCacheModule;
+    if (typeof module.readCache === 'function') return module.readCache;
+  }
+  const version = atlasRuntimeVersion(script) ?? 'unknown';
+  throw new Error(
+    `ATLAS_RUNTIME_INCOMPATIBLE: @lilith/atlas-skillhub ${version} does not expose its secure token cache reader; minimum supported version is ${minimumCompatibleAtlasSkillhubVersion}.`,
+  );
+}
+
+function getEncryptedTokenCacheReader() {
+  if (!encryptedTokenCacheReaderPromise) {
+    const attempt = loadEncryptedTokenCacheReader();
+    const guarded = attempt.catch((error) => {
+      if (encryptedTokenCacheReaderPromise === guarded) {
+        encryptedTokenCacheReaderPromise = undefined;
+      }
+      throw error;
+    });
+    encryptedTokenCacheReaderPromise = guarded;
+  }
   return encryptedTokenCacheReaderPromise;
+}
+
+export async function getAtlasRuntimeCompatibility(): Promise<AtlasRuntimeCompatibility> {
+  const script = atlasScriptPath();
+  const version = script ? atlasRuntimeVersion(script) : undefined;
+  try {
+    await getEncryptedTokenCacheReader();
+    return {
+      ok: true,
+      version,
+      minimumVersion: minimumCompatibleAtlasSkillhubVersion,
+      secureTokenCacheReader: true,
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      version,
+      minimumVersion: minimumCompatibleAtlasSkillhubVersion,
+      secureTokenCacheReader: false,
+      message: error instanceof Error ? error.message : 'ATLAS_RUNTIME_INCOMPATIBLE',
+    };
+  }
 }
 
 async function readCompatibleAtlasTokenCache(homeDir?: string) {
@@ -341,7 +445,8 @@ async function readCompatibleAtlasTokenCache(homeDir?: string) {
 }
 
 function assertValidAtlasToken(cache: AtlasTokenCache, tokenFile: string) {
-  if (!cache.access_token) throw new Error(`Atlas token cache is missing access_token: ${tokenFile}`);
+  if (!cache.access_token)
+    throw new Error(`Atlas token cache is missing access_token: ${tokenFile}`);
   if (!cache.gateway_url) throw new Error(`Atlas token cache is missing gateway_url: ${tokenFile}`);
   if (!cache.expires_at) throw new Error(`Atlas token cache is missing expires_at: ${tokenFile}`);
   const expiresAt = new Date(cache.expires_at);
@@ -390,7 +495,9 @@ export async function callAtlasToolJson(
       signal: AbortSignal.timeout(timeoutMs),
     });
   } catch (error) {
-    throw new Error(`Atlas gateway network error: ${error instanceof Error ? error.message : String(error)}`);
+    throw new Error(
+      `Atlas gateway network error: ${error instanceof Error ? error.message : String(error)}`,
+    );
   }
   const text = await response.text();
   if (!response.ok) {
@@ -447,7 +554,12 @@ export async function getAtlasStatus(homeDir?: string) {
 function isManagedAtlasHomeDir(homeDir?: string) {
   if (!homeDir) return false;
   const relative = path.relative(userAtlasHomesRoot(), path.resolve(homeDir));
-  return Boolean(relative) && relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+  return (
+    Boolean(relative) &&
+    relative !== '..' &&
+    !relative.startsWith(`..${path.sep}`) &&
+    !path.isAbsolute(relative)
+  );
 }
 
 async function removeManagedAtlasHomeDir(homeDir?: string) {
@@ -475,7 +587,11 @@ export async function startPersonalLiclickAccountBinding(user: AuthUser) {
   }
   const login = await startAtlasLoginProcess(user.id);
   const deadline = Date.now() + 3_000;
-  while (!login.closed && !extractFirstUrl(`${login.stdout}\n${login.stderr}`) && Date.now() < deadline) {
+  while (
+    !login.closed &&
+    !extractFirstUrl(`${login.stdout}\n${login.stderr}`) &&
+    Date.now() < deadline
+  ) {
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
   return bindingResponse(login);
@@ -490,7 +606,11 @@ export async function pollPersonalLiclickAccountBinding(loginId: string, user: A
     const status = await getAtlasStatus(login.homeDir);
     if (status.valid) {
       const identity = await getAtlasIdentity(login.homeDir);
-      if (!user.email || !identity.email || user.email.toLowerCase() !== identity.email.toLowerCase()) {
+      if (
+        !user.email ||
+        !identity.email ||
+        user.email.toLowerCase() !== identity.email.toLowerCase()
+      ) {
         pendingAtlasLogins.delete(login.id);
         if (!login.closed) login.child?.kill('SIGTERM');
         await removeManagedAtlasHomeDir(login.homeDir);
@@ -525,7 +645,10 @@ export async function getPersonalLiclickAccount(user: AuthUser) {
       getAtlasIdentity(user.atlasHomeDir),
     ]);
     const matches = Boolean(
-      status.valid && user.email && identity.email && user.email.toLowerCase() === identity.email.toLowerCase(),
+      status.valid &&
+      user.email &&
+      identity.email &&
+      user.email.toLowerCase() === identity.email.toLowerCase(),
     );
     return {
       bound: matches,
@@ -561,12 +684,22 @@ export async function checkLiclickApiAccess(user?: AuthUser) {
       message: '莉刻/Atlas 未登录。',
     };
   }
-  const result = await runAtlas(['gateway', 'list-tools', '--service', 'liclick'], 60_000, false, user?.atlasHomeDir);
-  const toolNames = [...result.stdout.matchAll(/^\s{2}([a-zA-Z0-9_]+)\(/gm)].map((match) => match[1]);
+  const result = await runAtlas(
+    ['gateway', 'list-tools', '--service', 'liclick'],
+    60_000,
+    false,
+    user?.atlasHomeDir,
+  );
+  const toolNames = [...result.stdout.matchAll(/^\s{2}([a-zA-Z0-9_]+)\(/gm)].map(
+    (match) => match[1],
+  );
   return {
     ok: toolNames.length > 0,
     status,
     tools: toolNames,
-    message: toolNames.length > 0 ? `莉刻 API 可用，发现 ${toolNames.length} 个工具。` : '莉刻 API 已响应，但没有解析到工具。',
+    message:
+      toolNames.length > 0
+        ? `莉刻 API 可用，发现 ${toolNames.length} 个工具。`
+        : '莉刻 API 已响应，但没有解析到工具。',
   };
 }
