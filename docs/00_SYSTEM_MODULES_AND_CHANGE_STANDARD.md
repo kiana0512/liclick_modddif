@@ -1,10 +1,10 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
-> 文档版本：`2.10.0`
+> 文档版本：`2.11.0`
 >
-> 生效日期：`2026-08-31`
+> 生效日期：`2026-09-01`
 >
-> 代码盘点基线：`add3b82 + 本次橡皮历史事务修复`
+> 代码盘点基线：`139c77c + 本次个人莉刻账号隔离提交`
 >
 > 基线仓库：`E:\Liclick 3D Texture Modernization`
 >
@@ -429,6 +429,21 @@ A100 发布同时显式配置 `LICLICK_PERFORMANCE_LAB_ENABLED=true` 与构建�
 
 迁移只新增性能会话/分片表，不回填旧 `sessionStorage` 报告，不改变 Project Command、Revision CAS、对象 ownership 或任何图层资产。回滚可停止挂载 Cloud bridge、关闭性能 API 并保留新增表供审计；IndexedDB 未发送记录可由恢复后的同版本页面继续重试，禁止为回滚删除用户项目或恢复 Windows 本地采集组件。
 
+### 13.2 当前用户莉刻账号绑定 `LICLICK-ACCOUNT-BINDING` v1.0.0
+
+莉刻生图、编辑、轮询与通用提示词润色必须使用当前飞书 Session 用户独占的服务器端账号绑定。浏览器只通过同源、带 Cookie 的 Cloud API 发起绑定和查询状态；OAuth 临时状态、token 与 `atlas_home_dir` 只由 A100 控制面保管，禁止写入浏览器、Windows 本地组件或项目文档。
+
+| 契约 | 当前版本/规则 |
+| --- | --- |
+| 身份来源 | 当前飞书 Session 的 `user_id` 与 email；绑定成功时 Atlas email 必须与飞书 email 完全一致，否则拒绝并清理临时凭据 |
+| 凭据隔离 | 每个用户写入独立、服务器托管的 Atlas home，并只把该目录绑定到同一 `cloud_users.id`；不得使用共享 `ATLAS_TOKEN_FILE`、默认 home 或其他用户目录作为回退 |
+| 强制门禁 | 生图、编辑、任务轮询和通用润色在未绑定时统一失败为 `409 LICLICK_PERSONAL_ACCOUNT_REQUIRED`；底层 Atlas 调用同时 fail-closed，防止绕过路由后落入共享凭据 |
+| 任务所有权 | 只允许轮询当前 Session 用户已登记且携带同一用户个人 Atlas home 的任务；未知远端 task ID 固定返回 404，不得用当前或默认凭据探测 |
+| 解绑 | 只清除当前用户数据库绑定及其受管目录，不退出飞书、不删除其他用户凭据、不触碰 Project/Layer/Capture/Generation 数据 |
+| 浏览器拓扑 | 继续使用 browser zero-install + LI3D Cloud；禁止恢复 localhost/4618、安装器、端点切换或本地凭据托管 |
+
+迁移策略为：既有用户若没有独立 `atlas_home_dir`，一律视为未绑定并由本人重新完成莉刻授权；不自动认领 A100 共享凭据，也不迁移历史共享账号任务。该变更不修改 Project Command、Revision CAS、Project/Layer/Capture/Generation Schema、对象 ownership 或已验证资产。发布后应从 A100 运行配置移除共享 `ATLAS_TOKEN_FILE` 并撤销旧共享 token；回滚不得恢复共享回退，只能临时关闭莉刻入口并保留用户绑定数据，待兼容版本恢复。
+
 - 同源 Session Cookie；浏览器不保存长期对象存储密钥。
 - 所有项目、Job、Asset 查询同时带 user_id 和资源 ID。
 - OAuth state 使用数据库原子消费，拒绝重放。
@@ -531,3 +546,4 @@ M15 体积修复：锁定 `terser@5.51.2` 两轮安全压缩，保留日志和�
 | `2.9.1` | 2026-08-31 | `13d4321 + 本次 lint 修复` | M15 发布修复：显式补齐 `@eslint/js` 依赖；M04 提示词 ANSI 清理改用 Node 内置实现并补充回归，修复 CI 正则规则错误。全部质量门禁保留，`ALG-GEN-005` v1.5.0 与业务/Schema/资产契约不变，无迁移。 |
 | `2.9.2` | 2026-08-31 | `707f009a + 本次构建体积修复` | M15：锁定 Terser 生产安全压缩，保留诊断和属性名，新增真实构建等价性回归。编辑器与 JS 总量回到原有体积上限内；不提高门禁，不删除功能，不改变业务算法、Schema 或资产，无迁移。 |
 | `2.10.0` | 2026-08-31 | `add3b82 + 本次橡皮历史事务修复` | UI-06/UI-10、M12、`ALG-ERASE-001` v1.3.0：抬笔预登记历史，撤回等待手势与提交；即时同步持久瓦片和 GPU live mask；细化逐笔重放并原子发布，redo 检查点不串笔。增加真实回调/数值时序回归。原输出分辨率、覆盖公式和资产/Project Schema 不变，无迁移。 |
+| `2.11.0` | 2026-09-01 | `139c77c + 本次个人莉刻账号隔离提交` | M13/M04、`LICLICK-ACCOUNT-BINDING` v1.0.0：飞书用户通过 A100 Cloud 绑定 email 完全一致的个人莉刻账号；生图、编辑、轮询和通用润色必须携带该用户独立 Atlas home，路由与底层调用双重 fail-closed，未知远端任务禁止探测。浏览器只使用同源 Cookie，未恢复 Windows 本地组件。既有无独立绑定用户需重新授权；Project/Layer/Capture/Generation Schema、Revision、ownership 与资产不迁移；回滚不得恢复共享 token。 |

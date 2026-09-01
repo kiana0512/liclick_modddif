@@ -193,6 +193,15 @@ export function createPostgresControlRepository(database: ProjectSqlDatabase) {
       });
     },
 
+    async setUserAtlasHomeDir(userId: string, atlasHomeDir?: string) {
+      const result = await database.query<UserRow>(
+        `UPDATE cloud_users SET atlas_home_dir = $2, updated_at = NOW()
+          WHERE user_id = $1 RETURNING *`,
+        [userId, atlasHomeDir ?? null],
+      );
+      return result.rows[0] ? userFromRow(result.rows[0]) : undefined;
+    },
+
     async createSession(session: UserSession) {
       await database.query('DELETE FROM cloud_user_sessions WHERE expires_at <= NOW()');
       await database.query(
