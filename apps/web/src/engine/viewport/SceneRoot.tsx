@@ -4659,6 +4659,11 @@ function ImportedModel({
       }
       if (materialChanged) {
         markProjectedBackgroundMaterialCommit();
+        window.dispatchEvent(
+          new CustomEvent('liclick:projected-material-resident', {
+            detail: { objectId: importedModel.objectId },
+          }),
+        );
         if (sharedProjectedMaterial) {
           document.body.dataset.projectedFinalMaterialReadyUnixMs = String(Date.now());
           document.body.dataset.textureRestoreProjectedReady = '1';

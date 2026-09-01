@@ -6554,6 +6554,9 @@ function SurfacePaintOverlay() {
   const localRepaintLastCommitReportRef = useRef<LocalRepaintUvCommitReport>();
   const localRepaintUvScheduleFrameRef = useRef<number>();
   const localRepaintHandoffFrameRef = useRef<number>();
+  const localRepaintResidentPresentationFrameRef = useRef<number>();
+  const localRepaintResidentPresentationLayerRef = useRef<string>();
+  const syncLocalRepaintGpuOverlayActivityRef = useRef<() => void>(() => undefined);
   const inpaintMaskPrewarmResourceKeyRef = useRef<string>();
   const inpaintDepthCaptureTimerRef = useRef<number>();
   const inpaintDepthCaptureFrameRef = useRef<number>();
@@ -6666,6 +6669,30 @@ function SurfacePaintOverlay() {
       return result.bound;
     },
     [clearLocalRepaintResidentMaskOverride, invalidate],
+  );
+  const scheduleLocalRepaintResidentPresentation = useCallback(
+    (layerId: string) => {
+      if (localRepaintResidentPresentationLayerRef.current === layerId) return;
+      if (localRepaintResidentPresentationFrameRef.current !== undefined) {
+        window.cancelAnimationFrame(localRepaintResidentPresentationFrameRef.current);
+      }
+      localRepaintResidentPresentationLayerRef.current = layerId;
+      document.body.dataset.localRepaintResidentHandoff = `presenting:${layerId}`;
+      // Clearing the preview marker unmutes the resident row. Keep the exact
+      // overlay for one complete browser paint, then withdraw it on the next
+      // frame so no frame can observe both presentation owners as transparent.
+      localRepaintResidentPresentationFrameRef.current = window.requestAnimationFrame(() => {
+        localRepaintResidentPresentationFrameRef.current = window.requestAnimationFrame(() => {
+          localRepaintResidentPresentationFrameRef.current = undefined;
+          if (localRepaintResidentPresentationLayerRef.current !== layerId) return;
+          localRepaintResidentPresentationLayerRef.current = undefined;
+          document.body.dataset.localRepaintResidentHandoff = `ready:${layerId}`;
+          syncLocalRepaintGpuOverlayActivityRef.current();
+          invalidate();
+        });
+      });
+    },
+    [invalidate],
   );
   const paintTool = useSceneStore((state) => state.paintTool);
   const displayMode = useSceneStore((state) => state.displayMode);
@@ -8051,19 +8078,23 @@ function SurfacePaintOverlay() {
     // depth-aware overlay. Existing rows stay in the shared material pass; if
     // binding is briefly unavailable, keep their last complete pixels instead
     // of substituting a second mesh or muting them.
-    const exactOverlayVisible = shouldRender && !hasPersistedLayer;
+    const residentHandoffPending =
+      localRepaintResidentPresentationLayerRef.current === liveLayerId;
+    const exactOverlayVisible =
+      shouldRender && (!residentOverrideBound || previewOwnsOverlay || residentHandoffPending);
     if (overlay) {
       changed =
         setLocalRepaintGpuOverlayVisibility(overlay, exactOverlayVisible, layers) || changed;
     }
     if (changed) invalidate();
     const rendererPreviewOwnsPresentation =
-      !hasPersistedLayer && (exactOverlayVisible || orderedStackOwnsPreview);
-    if (hasPersistedLayer && previewOwnsOverlay) {
+      exactOverlayVisible || (!hasPersistedLayer && orderedStackOwnsPreview);
+    if (hasPersistedLayer && residentOverrideBound && previewOwnsOverlay) {
       // A resident row now owns both historical and live coverage in the same
-      // shader. Never leave the legacy preview marker behind: SceneRoot treats
-      // that marker as permission to mute the resident binding.
+      // shader. Unmute it first, keep the exact overlay through one presented
+      // frame, and only then complete the handoff.
       sceneState.setLocalRepaintPreviewLayer(undefined);
+      scheduleLocalRepaintResidentPresentation(liveLayerId);
     } else if (
       rendererPreviewOwnsPresentation &&
       persistedLayer &&
@@ -8077,7 +8108,13 @@ function SurfacePaintOverlay() {
         maskUrl: composite?.maskUrl ?? persistedLayer.maskUrl,
       });
     }
-  }, [bindLocalRepaintResidentMaskOverride, getTargetModel, invalidate]);
+  }, [
+    bindLocalRepaintResidentMaskOverride,
+    getTargetModel,
+    invalidate,
+    scheduleLocalRepaintResidentPresentation,
+  ]);
+  syncLocalRepaintGpuOverlayActivityRef.current = syncLocalRepaintGpuOverlayActivity;
 
   useEffect(() => {
     syncLocalRepaintGpuOverlayActivity();
@@ -8089,6 +8126,16 @@ function SurfacePaintOverlay() {
     paintTool,
     syncLocalRepaintGpuOverlayActivity,
   ]);
+
+  useEffect(() => {
+    const handleProjectedMaterialResident = () => syncLocalRepaintGpuOverlayActivity();
+    window.addEventListener('liclick:projected-material-resident', handleProjectedMaterialResident);
+    return () =>
+      window.removeEventListener(
+        'liclick:projected-material-resident',
+        handleProjectedMaterialResident,
+      );
+  }, [syncLocalRepaintGpuOverlayActivity]);
 
   useEffect(() => {
     if (
@@ -8915,6 +8962,10 @@ function SurfacePaintOverlay() {
       if (localRepaintHandoffFrameRef.current !== undefined)
         window.cancelAnimationFrame(localRepaintHandoffFrameRef.current);
       localRepaintHandoffFrameRef.current = undefined;
+      if (localRepaintResidentPresentationFrameRef.current !== undefined)
+        window.cancelAnimationFrame(localRepaintResidentPresentationFrameRef.current);
+      localRepaintResidentPresentationFrameRef.current = undefined;
+      localRepaintResidentPresentationLayerRef.current = undefined;
       if (localRepaintUvScheduleFrameRef.current !== undefined)
         window.cancelAnimationFrame(localRepaintUvScheduleFrameRef.current);
       localRepaintUvScheduleFrameRef.current = undefined;
@@ -10353,6 +10404,44 @@ function SurfacePaintOverlay() {
           { flipY: false },
         );
         const sourceKey = createLocalRepaintSourceKey(source, model.objectId);
+        const liveMaskComposite = composite;
+        const residentLayerState = useLayerStore.getState();
+        const residentLayer = residentLayerState.layers.find(
+          (layer) => layer.id === liveMaskComposite.layerId && layer.visible,
+        );
+        if (
+          residentLayer &&
+          (residentLayer.maskUrl !== liveMaskComposite.blendMaskUrl ||
+            residentLayer.localRepaintMaskUrl !== liveMaskComposite.maskUrl)
+        ) {
+          // A restored row normally points at durable server assets. Promote it
+          // to the stable live-canvas URLs during the explicit GPU prewarm,
+          // before input is accepted. Doing the same URL/sampler transition on
+          // the first pointer-up invalidates the projected stack and produces
+          // the visible first-stroke hitch.
+          reportLocalRepaintPrewarmProgress(0.7, '切换实时蒙版通道');
+          const activeLayerId = residentLayerState.activeProjectedLayerId;
+          residentLayerState.setLayers(
+            residentLayerState.layers.map((layer) =>
+              layer.id === residentLayer.id
+                ? {
+                    ...layer,
+                    maskUrl: liveMaskComposite.blendMaskUrl,
+                    localRepaintMaskUrl: liveMaskComposite.maskUrl,
+                  }
+                : layer,
+            ),
+          );
+          if (
+            activeLayerId &&
+            useLayerStore.getState().layers.some((layer) => layer.id === activeLayerId)
+          ) {
+            useLayerStore.getState().setActiveLayer(activeLayerId);
+          }
+          document.body.dataset.localRepaintLiveMaskPromotion = `ready:${residentLayer.id}`;
+          await waitForFrame();
+          if (cancelled) return;
+        }
         // Upload immutable color and empty coverage before accepting input. The
         // first painted frame must contain only a tiny mask update, never image
         // decode, texture allocation or shader compilation.
@@ -11440,7 +11529,12 @@ function SurfacePaintOverlay() {
             lightness: 0,
           },
           order: existingProjectionLayer?.order ?? 0,
-          contentRevision: (existingProjectionLayer?.contentRevision ?? 0) + 1,
+          // The live CanvasTexture already contains the cumulative stroke.
+          // Advancing this structural revision on every pointer-up rebuilds the
+          // complete projected stack and is especially visible on the first
+          // stroke. Preserve it here; durable source replacements still advance
+          // their revision through the ordinary layer update path.
+          contentRevision: existingProjectionLayer?.contentRevision ?? 0,
           eraserAlgorithmVersion: ERASER_ALGORITHM_VERSION,
           createdAt: existingProjectionLayer?.createdAt ?? new Date().toISOString(),
         };
@@ -11450,6 +11544,34 @@ function SurfacePaintOverlay() {
             !isMatchingLocalRepaintProjectionLayer(item, source, model.objectId),
         );
         const nextLayers = [persistedLayer, ...retainedLayers];
+        document.body.dataset.localRepaintLayerRowStructureDelta = JSON.stringify(
+          Object.entries({
+            created: !existingProjectionLayer,
+            imageUrl: existingProjectionLayer?.imageUrl !== persistedLayer.imageUrl,
+            maskUrl: existingProjectionLayer?.maskUrl !== persistedLayer.maskUrl,
+            maskSpace: existingProjectionLayer?.maskSpace !== persistedLayer.maskSpace,
+            depthUrl: existingProjectionLayer?.depthUrl !== persistedLayer.depthUrl,
+            depthEncoding:
+              existingProjectionLayer?.depthEncoding !== persistedLayer.depthEncoding,
+            objectId: existingProjectionLayer?.objectId !== persistedLayer.objectId,
+            generationId: existingProjectionLayer?.generationId !== persistedLayer.generationId,
+            captureId: existingProjectionLayer?.captureId !== persistedLayer.captureId,
+            replacementTargetLayerId:
+              existingProjectionLayer?.replacementTargetLayerId !==
+              persistedLayer.replacementTargetLayerId,
+            minimumProjectionFacing:
+              existingProjectionLayer?.minimumProjectionFacing !==
+              persistedLayer.minimumProjectionFacing,
+            projectionVisibilityPolicy:
+              existingProjectionLayer?.projectionVisibilityPolicy !==
+              persistedLayer.projectionVisibilityPolicy,
+            order: existingProjectionLayer?.order !== persistedLayer.order,
+            contentRevision:
+              existingProjectionLayer?.contentRevision !== persistedLayer.contentRevision,
+          })
+            .filter(([, changed]) => changed)
+            .map(([field]) => field),
+        );
         const activeLayerIdBeforePublish = layerState.activeProjectedLayerId;
         layerState.setLayers(nextLayers);
         if (

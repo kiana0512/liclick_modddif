@@ -236,8 +236,23 @@ try {
   );
   assert.match(
     viewport,
-    /const exactOverlayVisible = shouldRender && !hasPersistedLayer/,
-    'a second geometry overlay must be reserved for brand-new repaint rows only',
+    /const exactOverlayVisible =\s*shouldRender && \(!residentOverrideBound \|\| previewOwnsOverlay \|\| residentHandoffPending\)/,
+    'the exact overlay must remain visible until the resident material has presented a frame',
+  );
+  assert.match(
+    viewport,
+    /liclick:projected-material-resident[\s\S]*?syncLocalRepaintGpuOverlayActivity/,
+    'the first-row handoff must retry its live-mask binding after the final material commits',
+  );
+  assert.match(
+    viewport,
+    /scheduleLocalRepaintResidentPresentation[\s\S]*?requestAnimationFrame\(\(\) => \{[\s\S]*?requestAnimationFrame\(\(\) => \{/,
+    'the resident row must receive a presented frame before the exact overlay is withdrawn',
+  );
+  assert.match(
+    sceneRoot,
+    /window\.dispatchEvent\([\s\S]*?liclick:projected-material-resident/,
+    'SceneRoot must announce the exact point at which a rebuilt projected material is resident',
   );
   assert.match(
     viewport,
@@ -268,7 +283,22 @@ try {
   assert.match(
     sceneRoot,
     /visibleProjectedContentChanged[\s\S]*?previousLayer\.contentRevision !== layer\.contentRevision[\s\S]*?requiresMaterialReconciliation = true/,
-    'a published repaint revision must automatically rebuild the formal projected presentation',
+    'durable projected content revisions must still rebuild the formal presentation',
+  );
+  assert.match(
+    viewport,
+    /contentRevision:\s*existingProjectionLayer\?\.contentRevision \?\? 0/,
+    'interactive repaint commits must retain their structural revision and avoid a full stack rebuild',
+  );
+  assert.match(
+    viewport,
+    /residentLayer\.maskUrl !== liveMaskComposite\.blendMaskUrl[\s\S]*?切换实时蒙版通道[\s\S]*?maskUrl: liveMaskComposite\.blendMaskUrl[\s\S]*?localRepaintMaskUrl: liveMaskComposite\.maskUrl/,
+    'durable masks must move to their stable live URLs during prewarm instead of on first pointer-up',
+  );
+  assert.doesNotMatch(
+    viewport,
+    /contentRevision:\s*\(existingProjectionLayer\?\.contentRevision \?\? 0\) \+ 1/,
+    'pointer-up must not invalidate the projected material structure',
   );
 
   console.log('Local repaint ordered composition invariants passed.');
