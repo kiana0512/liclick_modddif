@@ -33,12 +33,27 @@ const localRepaintNoTextChinesePattern =
   /(?:没有|不要|不含|无|禁止|避免|不让[^，。；]*出现|去掉|去除|删除|擦除|移除)(?:任何|所有|新的|新生成的|生成的)?(?:文字|文本|字母|数字|字符|标签|标识|标志|水印|乱码|伪文字|logo)/i;
 const localRepaintNoTextEnglishPattern =
   /\b(?:no|without|remove|delete|erase|exclude|avoid|forbid|do not (?:add|generate|include|show|create|copy))\b[^.!?\n]{0,80}\b(?:text|lettering|letters?|numbers?|characters?|labels?|logos?|watermarks?|pseudo-text|typography)\b/i;
+const localRepaintImplicitRemoveSelectionChinesePattern =
+  /^(?:请(?:帮我)?|把)?(?:去掉|去除|删除|擦除|移除|清除)(?:掉)?(?=\s|[，,。；;]|$)/i;
+const localRepaintImplicitRemoveSelectionEnglishPattern =
+  /^(?:please\s+)?(?:remove|delete|erase|clear)(?:\s+(?:it|this|that|the selection|the selected content))?(?=\s*[,.;]|$)/i;
+
+export function detectLocalRepaintImplicitRemoveSelectionIntent(prompt: string) {
+  const value = prompt.trim();
+  return (
+    value.length > 0 &&
+    (localRepaintImplicitRemoveSelectionChinesePattern.test(value) ||
+      localRepaintImplicitRemoveSelectionEnglishPattern.test(value))
+  );
+}
 
 export function detectLocalRepaintNoTextIntent(prompt: string) {
   const value = prompt.trim();
   return (
     value.length > 0 &&
-    (localRepaintNoTextChinesePattern.test(value) || localRepaintNoTextEnglishPattern.test(value))
+    (localRepaintNoTextChinesePattern.test(value) ||
+      localRepaintNoTextEnglishPattern.test(value) ||
+      detectLocalRepaintImplicitRemoveSelectionIntent(value))
   );
 }
 
@@ -68,8 +83,11 @@ function buildLocalRepaintMessage(input: PromptPolishInput) {
       `第三张独立蒙版的白色区域与 Image 1 像素对齐，定位在 ${objectName} 上；黑色区域受保护。`
     : `没有独立蒙版；仅处理用户在 ${objectName} 上明确指定的区域。`;
 
+  const implicitRemoveSelection = detectLocalRepaintImplicitRemoveSelectionIntent(input.prompt);
   const noTextInstruction = detectLocalRepaintNoTextIntent(input.prompt)
-    ? `\n这是明确的“蒙版内不生成文字”任务。最终蒙版区域只能包含目标表面材质，不得添加、复制、重建、保留或臆造任何文字、字母、数字、品牌、标签、标志、水印、乱码、伪文字或类似排版的笔画。图一蒙版外和图二中的文字仅是上下文，不得迁移进蒙版；蒙版外已有内容保持不变。此约束优先于视觉参考中出现的文字。`
+    ? implicitRemoveSelection
+      ? `\n用户用“去除/删除”等词省略了具体对象时，第三张蒙版内当前可见的标记、图案、文字或其他突兀内容就是删除目标；不得把它误认成需要恢复的控制面板、标签或零件。最终蒙版区域只恢复用户指定或邻域支持的连续底层材质，不得从图一、局部裁切或图二复制、重建、保留任何被选中的内容，也不得生成文字、字母、数字、品牌、标签、标志、水印、乱码、伪文字或类似排版的笔画。蒙版外已有内容保持不变。`
+      : `\n这是明确的“蒙版内不生成文字”任务。最终蒙版区域只能包含目标表面材质，不得添加、复制、重建、保留或臆造任何文字、字母、数字、品牌、标签、标志、水印、乱码、伪文字或类似排版的笔画。图一蒙版外和图二中的文字仅是上下文，不得迁移进蒙版；蒙版外已有内容保持不变。此约束优先于视觉参考中出现的文字。`
     : '';
 
   return `你是 FLUX.2 Klein 局部图像编辑提示词转换器。你的任务是把用户意图和选区视觉证据转成具体、简洁的英文编辑指令。

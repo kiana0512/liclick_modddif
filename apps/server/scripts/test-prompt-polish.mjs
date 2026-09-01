@@ -9,6 +9,7 @@ import {
   buildQwenLocalRepaintSelectionContext,
   buildPromptPolishAtlasArgs,
   buildPromptPolishMessage,
+  detectLocalRepaintImplicitRemoveSelectionIntent,
   detectLocalRepaintNoTextIntent,
   ensureLocalRepaintNoTextConstraint,
   ensureLocalRepaintMaskScope,
@@ -51,9 +52,19 @@ const noTextMessage = buildPromptPolishMessage({
 });
 assert.equal(detectLocalRepaintNoTextIntent('没有文字'), true);
 assert.equal(detectLocalRepaintNoTextIntent('不让它出现文字'), true);
+assert.equal(detectLocalRepaintImplicitRemoveSelectionIntent('去除，保留黄色旧材质'), true);
+assert.equal(detectLocalRepaintNoTextIntent('去除，保留黄色旧材质'), true);
 assert.equal(detectLocalRepaintNoTextIntent('修复文字错位'), false);
 assert.match(noTextMessage, /明确的“蒙版内不生成文字”任务/);
 assert.match(noTextMessage, /不得迁移进蒙版/);
+const implicitRemovalMessage = buildPromptPolishMessage({
+  prompt: '去除，保留黄色旧材质',
+  context: 'local-repaint',
+  objectName: 'industrial cutter',
+  hasMask: true,
+});
+assert.match(implicitRemovalMessage, /蒙版内当前可见的标记、图案、文字或其他突兀内容就是删除目标/);
+assert.match(implicitRemovalMessage, /不得把它误认成需要恢复的控制面板、标签或零件/);
 
 const contradictoryNoTextPrompt =
   'Restore the yellow painted panel. Preserve the original CUT-BOT stencil lettering exactly and keep the label readable. Keep the camera and every area outside the mask unchanged.';
@@ -384,6 +395,14 @@ try {
     1,
     'The observed 183-word response must pass without format repair or user-facing failure',
   );
+  const implicitRemoval = await invokeWithReplies([contradictoryNoTextPrompt], {
+    ...localInput,
+    prompt: '去除，保留黄色旧材质',
+  });
+  const implicitRemovalResult = await implicitRemoval.result;
+  assert.doesNotMatch(implicitRemovalResult, /Preserve the original CUT-BOT/);
+  assert.match(implicitRemovalResult, /continuous text-free continuation/);
+  assert.equal(implicitRemoval.calls[0].body.temperature, 0.2);
   for (const prompt of ['', '  \n\t']) {
     const diagnosis = '修复控制面板下方的接缝和色差，以及标牌文字的重影。';
     const input = { ...localInput, prompt };
@@ -546,7 +565,7 @@ assert.match(
 );
 assert.match(
   visualInputSource,
-  /LOCAL_REPAINT_PROMPT_TEMPLATE_POLICY = 'qwen-to-klein-material-grounding-v6'/,
+  /LOCAL_REPAINT_PROMPT_TEMPLATE_POLICY = 'qwen-to-klein-material-grounding-v7'/,
 );
 assert.match(panelSource, /activeReferences\.find\(\(reference\) =>/);
 assert.match(panelSource, /currentEffectImage: visualInputs\?\.currentEffectImage/);
