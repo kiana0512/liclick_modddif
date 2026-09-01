@@ -84,7 +84,7 @@ function buildLocalRepaintMessage(input: PromptPolishInput) {
 
   const implicitRemoveSelection = detectLocalRepaintImplicitRemoveSelectionIntent(input.prompt);
   const implicitRemovalInstruction = implicitRemoveSelection
-    ? `\n这是“清除蒙版内错误内容并补回底层材质”的任务，不是专门去文字。用户省略具体删除对象时，第三张蒙版白区内当前可见的全部异常内容就是删除目标，包括错误材质图案、贴花、色块、污斑、投影残影、文字，以及看似面板、旋钮、按钮、铭牌或零件的幻觉。不得识别、保留、改造或重建这些选中内容，也不得从图二复制任何部件或图案到蒙版。目标外观只能根据用户指定材质和蒙版边缘最近的同一连续表面确定：延续其底色、粗糙度、纹理尺度、旧化、划痕与光照，形成没有新增结构的自然材质补片。蒙版外已有内容保持不变。`
+    ? `\n这是“清除蒙版内错误内容并补回底层材质”的任务，不是专门去文字。用户省略具体删除对象时，第三张蒙版白区内当前可见的全部异常内容就是删除目标，包括错误材质图案、贴花、色块、污斑、投影残影、文字，以及看似面板、旋钮、按钮、铭牌或零件的幻觉。此时选区属于蒙版边缘外最近的同一连续主体表面，不是独立物件；不得识别、保留、改造或重建选中内容，也不得从图二复制任何部件或图案到蒙版。最终英文要明确删除选区内所有封闭轮廓、边框、圆角矩形、凸缘、倒角、接缝、圆形痕迹、按钮和面板剪影，并将其视觉上压平为没有物件边界的连续主体表面。目标外观只能根据用户指定材质和蒙版边缘最近的未修改表面确定：延续其底色、粗糙度、纹理尺度、旧化、划痕、曲率明暗与透视，不生成新结构。蒙版外已有内容保持不变。`
     : '';
   const noTextInstruction = detectLocalRepaintNoTextIntent(input.prompt)
     ? `\n这是明确的“蒙版内不生成文字”任务。最终蒙版区域只能包含目标表面材质，不得添加、复制、重建、保留或臆造任何文字、字母、数字、品牌、标签、标志、水印、乱码、伪文字或类似排版的笔画。图一蒙版外和图二中的文字仅是上下文，不得迁移进蒙版；蒙版外已有内容保持不变。此约束优先于视觉参考中出现的文字。`
@@ -561,7 +561,7 @@ export function ensureLocalRepaintImplicitRemovalConstraint(
     .join('\n\n')
     .trim();
   const separator = cleaned && !/[.!?]["'”’)]?$/.test(cleaned) ? '. ' : cleaned ? ' ' : '';
-  return `${cleaned}${separator}Treat all visual content currently inside the original authored mask as the unwanted removal target, not as reference structure. Erase every selected material pattern, decal, color block, stain, projection ghost, marking, text-like trace, panel, plate, knob, button, switch, relief, or apparent component completely. Fill the entire mask only by continuing the nearest unmasked ring of the same underlying surface, matching its base color, roughness, texture scale, weathering, scratches, shading, and perspective. Do not copy or reinterpret any object, component, graphic, or feature from the material reference inside the mask, and do not create new geometry, seams, borders, panels, controls, labels, or decorative patches. Preserve the silhouette and every pixel outside the mask unchanged.`;
+  return `${cleaned}${separator}Treat all visual content currently inside the original authored mask as the unwanted removal target, not as reference structure. The masked region belongs to the same continuous parent surface as the nearest unmasked ring; it is not a separate object, cover, hatch, access door, control box, panel, plate, inset, insert, label, decal, or component. Erase every selected material pattern, color block, stain, projection ghost, marking, text-like trace, relief, or apparent component completely. Remove all enclosed contours, rounded-rectangle outlines, rims, borders, bevels, seams, frames, circular marks, knobs, buttons, fasteners, and panel silhouettes within the mask. Visually flatten the selected placeholder into the uninterrupted parent surface and fill the whole mask only by continuing the nearest unmasked ring, matching its base color, roughness, texture scale, weathering, scratches, curvature shading, and perspective. Use the material reference only as secondary surface-character evidence; do not copy or reinterpret any object, component, graphic, control, plate, text, logo, decal, border, seam, relief, or decorative feature from it into the mask. The entire mask must read as one continuous surface with no object-like boundary, gray or white clay, flat placeholder, hard patch edge, halo, repeated texture, or abrupt color change. Preserve the silhouette and every pixel outside the mask unchanged.`;
 }
 
 /**

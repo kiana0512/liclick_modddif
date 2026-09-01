@@ -75,7 +75,9 @@ const guardedImplicitRemovalPrompt = ensureLocalRepaintImplicitRemovalConstraint
 assert.doesNotMatch(guardedImplicitRemovalPrompt, /Restore the selected control panel/);
 assert.match(guardedImplicitRemovalPrompt, /every selected material pattern/);
 assert.match(guardedImplicitRemovalPrompt, /nearest unmasked ring/);
-assert.match(guardedImplicitRemovalPrompt, /do not create new geometry/);
+assert.match(guardedImplicitRemovalPrompt, /same continuous parent surface/);
+assert.match(guardedImplicitRemovalPrompt, /Remove all enclosed contours/);
+assert.match(guardedImplicitRemovalPrompt, /no object-like boundary/);
 assert.equal(
   ensureLocalRepaintImplicitRemovalConstraint('Repair the seam.', '修复接缝'),
   'Repair the seam.',
