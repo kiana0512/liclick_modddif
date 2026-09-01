@@ -1,10 +1,10 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
-> 文档版本：`2.10.6`
+> 文档版本：`2.10.7`
 >
 > 生效日期：`2026-08-31`
 >
-> 代码盘点基线：`32702a4 + 本次远端蒙版融合范围调整`
+> 代码盘点基线：`6382583 + 本次 Qwen 选区原图上下文裁切`
 >
 > 基线仓库：`E:\Liclick 3D Texture Modernization`
 >
@@ -367,7 +367,7 @@ Bake 设置包含 resolution、frontal/rear distance、distance/cage、cage infl
 | `ALG-GEN-002` 多视图批次 | N 个捕获共享 batch；完成层串行 commit，整批结束一次发布新投影栈 |
 | `ALG-GEN-003` 任务身份归一 | clientGenerationId/serverJobId/taskId 合并，避免恢复时重复 running 行 |
 | `ALG-GEN-004` ModelView 远端单视图 | `1.0.0`；当前视角白模 + 多视图材质参考 + 可选提示词 → `modelview-single-view` → Generation；结果继续使用 `ALG-PROJ-005` 单视图优先投影 |
-| `ALG-GEN-005` 提示词智能润色 | `1.6.0`；UI-05 经同源 `/api/liclick/prompt-polish` 分流。普通单/多视图保持莉刻 `data-analysis` A2A；局部重绘空输入仍先由 `qwen3-vl-plus` 输出一句中文修复要求，显式输入跳过诊断，两者再进入统一 Qwen → Klein 转换模板。新模板先按原始 mask 定位真实部件，再从完整参考图交叉核对同部件结构/材质并变换到 Image 1 视角；最终只输出 100–180 词、2–3 段英文，不再强制固定开头或四段结构。仅最终英文写入 Generation，诊断不持久化、不回填文本框；三图编码、65 秒 deadline 和一次格式修正保持不变。模板策略进入所有局部重绘指纹，升级后首次重新解析、后续继续复用 |
+| `ALG-GEN-005` 提示词智能润色 | `1.7.0`；UI-05 经同源 `/api/liclick/prompt-polish` 分流。普通单/多视图保持莉刻 `data-analysis` A2A；局部重绘空输入仍先由 `qwen3-vl-plus` 输出一句中文修复要求，显式输入跳过诊断，两者再进入统一 Qwen → Klein 转换模板。服务端用未外扩原始 mask 定位，并从干净 Image 1 自动裁出带上下文的第四图供 Qwen 看清选中部件；完整参考图仍只提供有证据的结构/材质，第四图不改变编辑范围或 ModelView 输入。最终只输出 100–180 词、2–3 段英文。仅最终英文写入 Generation，诊断不持久化、不回填文本框；四图编码、65 秒 deadline 和一次格式修正保持不变。模板策略进入所有局部重绘指纹，升级后首次重新解析、后续继续复用 |
 | `ALG-OUT-001` 纹理/模型导出 | BaseColor 与 GLB/GLTF/FBX/OBJ/STL/ZIP；验证 UV 方向和颜色空间 |
 | `ALG-OUT-002` 快照/转台 | 当前视口设置生成静态图或视频，不改变 Layer 作者数据 |
 
@@ -396,22 +396,24 @@ Bake 设置包含 resolution、frontal/rear distance、distance/cage、cage infl
 - 迁移：Project Command、Revision、ownership、Capture/Layer 字段和资产类别均不升级；旧项目直接兼容。要让已有单视图获得新轮廓过渡，需要重新生成或重新创建投影层。
 - 回退：停止生成 `distance-field-v1` Alpha并恢复 `ignoreSourceAlpha=true` 即可；已保存 PNG、mask、depth 均仍为合法资产。不得删除用户历史图层或重写 Revision。
 
-### 11.3 提示词智能润色 `ALG-GEN-005` v1.6.0
+### 11.3 提示词智能润色 `ALG-GEN-005` v1.7.0
 
 - UI 与触发：普通生成仍保留手动智能润色图标。局部生成有用户输入时直接进入 Klein 模板转换；留空（包括纯空白）先执行独立诊断，再转换。诊断限定蒙版内人工接缝、突兀色差、纹理断裂、重影、投影重复/拉伸/错位及已有文字的重复、扭曲、缺笔或错位。真实面板接缝、焊缝、开口、零件边界与正常明暗必须保留，不新增部件、改整体配色或重设几何；文字拼写只采用原图/对应参考中清楚可辨的证据，不猜测品牌。最终英文结果才写入 Generation.prompt 和既有 metadata，诊断句只作服务端中间值，用户文本框保持原文。
-- 一句话诊断：第一阶段不发送 Klein 转换模板，只输出 4–120 字符、以“修复”开头的一句中文要求，例如“修复控制面板下方的接缝和色差”。允许逗号合并确定问题；禁止分析过程、标题、列表和 JSON。无明确缺陷时固定返回“未发现明确异常，保留现有外观。”。诊断使用 max_tokens=512、temperature=0.2；空值、多句、换行、超长、截断或 content_filter 回复直接阻断，不裁剪后继续。第二阶段将该句作为用户要求，沿用三图和 v1.6.0 转换模板，只扩写句中目标，不重新寻找问题；无缺陷句仅转换为保留原貌的要求。
-- Qwen 视觉契约：两阶段均使用 Image 1 干净当前效果图、Image 2 完整选中多视图、第三张未外扩原始作者 mask；只编码一次并复用。Qwen 不接收 clay 白灰几何融合图，也不接收远端专用外扩/羽化 mask；原始 mask 与 Image 1 像素对齐，参考图不要求像素对齐。mask 白色只表达原始编辑区域。
-- 编码与安全：Image 1 以 512px tile 组成真实 2K，保留材质、灯光、背景和网格，仅隐藏作者叠加层；Image 1 进入 Qwen 前为 JPEG quality 95 / 4:4:4，原始 mask 为 quality 100 / 4:4:4，参考图为 quality 85 / 4:2:0，最长边均不超过 2048。浏览器只调用同源 Cookie API，服务端必须收到 `currentEffectImage/maskImage/referenceImage`，不得在缺图时降级为文件名推断；API Key 只在 Node 控制面。
+- 一句话诊断：第一阶段不发送 Klein 转换模板，只输出 4–120 字符、以“修复”开头的一句中文要求，例如“修复控制面板下方的接缝和色差”。允许逗号合并确定问题；禁止分析过程、标题、列表和 JSON。无明确缺陷时固定返回“未发现明确异常，保留现有外观。”。诊断使用 max_tokens=512、temperature=0.2；空值、多句、换行、超长、截断或 content_filter 回复直接阻断，不裁剪后继续。第二阶段将该句作为用户要求，沿用四图和 v1.7.0 转换模板，只扩写句中目标，不重新寻找问题；无缺陷句仅转换为保留原貌的要求。
+- Qwen 视觉契约：两阶段均使用 Image 1 干净当前效果图、Image 2 完整选中多视图、第三张未外扩原始作者 mask，以及服务端从干净 Image 1 自动生成的第四张选区上下文裁切；只编码一次并复用。第四图按第三图包围盒定位，四周上下文为 `max(16, round(max(width,height)/32))px`，在 2048 输入上约 64px；它只放大 Image 1 的未修改真实画面，不是新参考视角，不能扩大编辑范围。Qwen 不接收 clay 白灰几何融合图，也不接收远端专用外扩/羽化 mask；原始 mask 与 Image 1 像素对齐，参考图不要求像素对齐。mask 白色只表达原始编辑区域。
+- 编码与安全：Image 1 以 512px tile 组成真实 2K，保留材质、灯光、背景和网格，仅隐藏作者叠加层；Image 1 与第四张裁切进入 Qwen 前为 JPEG quality 95 / 4:4:4，原始 mask 为 quality 100 / 4:4:4，参考图为 quality 85 / 4:2:0，最长边均不超过 2048。浏览器只调用同源 Cookie API，仍只提交 `currentEffectImage/maskImage/referenceImage`；服务端不得在缺图时降级为文件名推断，并负责从已规范化的 Image 1 和 mask 派生第四图。API Key 只在 Node 控制面。
 - 模板与输出：system content 使用经 A/B 测试选定的通用 Qwen → Klein 模板。Qwen 必须先把原始 mask 的像素位置对应到 Image 1，确认真实被选部件，再从 Image 2 的完整/多视图中只取同一部件有证据的结构、配色、材质和功能边界，并转换到 Image 1 的相机、透视、轮廓、遮挡、光照与磨损。局部几何预览的浅色底色、亮度斑块和投影裂线不得成为成品材质依据，但真实浅色材质和金属高光不得因颜色被误删；修缝必须区分非物理纹理边缝与真实装配间隙、焊缝、开口、硬边和接触阴影。
-- 输出与格式修复：最终只允许 100–180 个英文单词、2–3 段完整英文正文；首句先明确实际部件及目标动作/材质，随后限定只修改独立 mask 选区。禁止标题、编号、Markdown、分析、坐标、无关参数和中文描述，不再强制 `Edit only the white masked region.` 固定开头，也不再机械凑四段或堆叠白/灰占位否定词。服务端强校验段数、词数、英文、Markdown、完整段落及首段 mask 范围；只无损归一 2/3 个单行段落、CRLF 和连续编号，不删句。最终回复异常时保留转换要求、system 和三图，携带具体原因修正一次，不重新诊断。空输入正常两次调用、含格式修正最多三次；显式输入正常一次、最多两次。所有调用共用默认 65 秒 deadline；HTTP、认证或网络错误不按格式问题重试，第一阶段格式异常也不重试。日志只记录尝试次数和原因代码，不记录诊断、提示词正文、图片或凭据。
+- 输出与格式修复：最终只允许 100–180 个英文单词、2–3 段完整英文正文；首句先明确实际部件及目标动作/材质，随后限定只修改独立 mask 选区。禁止标题、编号、Markdown、分析、坐标、无关参数和中文描述，不再强制 `Edit only the white masked region.` 固定开头，也不再机械凑四段或堆叠白/灰占位否定词。服务端强校验段数、词数、英文、Markdown、完整段落及首段 mask 范围；只无损归一 2/3 个单行段落、CRLF 和连续编号，不删句。最终回复异常时保留转换要求、system 和四图，携带具体原因修正一次，不重新诊断。空输入正常两次调用、含格式修正最多三次；显式输入正常一次、最多两次。所有调用共用默认 65 秒 deadline；HTTP、认证或网络错误不按格式问题重试，第一阶段格式异常也不重试。日志只记录尝试次数和原因代码，不记录诊断、提示词正文、图片或凭据。
 - 复用、并发与回退：前端用项目/对象/参考 ID、原始提示词、mask revision、冻结相机/对象矩阵和图层 content revision 构造指纹；先查内存六项 LRU，再查已持久化 Generation，命中时不再调用 Qwen。等待 Qwen 期间 mask revision 变化则阻断提交。回退可关闭生成时自动解析并恢复手动入口；既有 Project/Layer/Capture 与历史结果无需迁移或删除。
-- 测试：`test:prompt-polish` 以模拟上游响应覆盖独立诊断模板、一句话验证、空串/纯空白两阶段、无缺陷保留、三图/超时复用、诊断异常阻断、显式输入跳过诊断、最终格式一次修正及日志脱敏；不代替真实模型效果验收。`test:local-repaint-generation-input`、`test:local-repaint-performance-merge`、`test:local-repaint-result-composite` 锁定 Qwen/ModelView 角色分离、Worker 外扩羽化和内部 prompt 复用。
+- 测试：`test:prompt-polish` 以模拟上游响应覆盖独立诊断模板、一句话验证、空串/纯空白两阶段、无缺陷保留、四图顺序、选区包围盒/裁切、超时复用、诊断异常阻断、显式输入跳过诊断、最终格式一次修正及日志脱敏；不代替真实模型效果验收。`test:local-repaint-generation-input`、`test:local-repaint-performance-merge`、`test:local-repaint-result-composite` 锁定 Qwen/ModelView 角色分离、Worker 外扩羽化和内部 prompt 复用。
 - v1.4.1 影响与回退：仅调整 M04 控制面润色适配器和测试；GPU/CPU/Worker/shader、投影、导出、分辨率、作者/远端 mask、Project/Layer/Generation/Capture Schema 和 Revision 不变，无数据迁移。回退只恢复润色适配器，不删除历史提示词、图层或资产。
 - v1.4.2 影响、复用与回退：UI-05 → M04 / `ALG-GEN-005` 仅在空输入时注入受限诊断规则；用户显式编辑和普通润色保持不变。空输入指纹增加 `autoDiagnosisPolicy=seam-local-artifacts-v1`，使旧内存/历史诊断提示词不再命中；显式输入指纹不变，不删除历史记录。三图、四段/130–220词校验、模型参数、GPU/CPU/Worker/shader、UV、导出、分辨率与原始/远端蒙版规则均不变。无 Schema、资产或 Project Revision 迁移；回退恢复旧空输入规则并移除指纹中的策略版本即可。回归覆盖空串/纯空白、真实接缝保护、保守保留、手动要求及缓存隔离。
 
 - v1.5.0 影响、迁移与回退：仅 M04 / UI-05 控制面新增一句话诊断阶段，转换模型/参数/四段规则及普通润色不变。空输入指纹更新为 `autoDiagnosisPolicy=one-sentence-diagnosis-to-klein-v2`，旧缓存不命中但历史记录保留；显式输入指纹不变。诊断不新增 API 返回字段或持久化字段。GPU/CPU/Worker/shader、投影/UV/export、分辨率、作者/远端 mask、Schema、Project Command/Revision/ownership 和历史资产均不变，无数据迁移。回退恢复单次空输入模板和上一策略版本即可，不删除任何工程数据。
 
 - v1.6.0 影响、迁移与回退：仅 M04 / UI-05 的 Qwen → Klein system content、最终格式校验/修正提示及局部提示词缓存指纹变化；普通单/多视图润色、空输入诊断规则、三图顺序与编码、ModelView 输入、作者/远端 mask、GPU/CPU/Worker/shader、投影/UV/export、分辨率、Schema、Project Command/Revision/ownership 和历史资产均不变。所有局部重绘指纹新增 `promptTemplatePolicy=qwen-to-klein-grounded-2to3-v3`，因此旧模板缓存仅在升级后首次失效，生成的新结果仍按相同指纹复用；无批量数据迁移或历史删除。回退时恢复 v1.5.0 模板、四段校验/修正提示并移除该策略字段即可，已有 Generation 和图层继续可读。
+
+- v1.7.0 影响、迁移与回退：仅 M04 服务端新增由原始 mask 推导第四张干净选区裁切，UI-05 将所有局部指纹策略升级为 `qwen-to-klein-selection-crop-v4`。浏览器 API 请求结构、用户输入逻辑、ModelView 的“效果图与白灰几何预览融合图 + 外扩/羽化 mask”、作者 mask、GPU/CPU/Worker/shader、投影/UV/export、分辨率、Schema、Project Command/Revision/ownership 和历史资产均不变。旧模板缓存仅在升级后首次失效，无批量迁移或历史删除。回退时停止生成/发送第四图并恢复 v3 指纹即可，已有 Generation 和图层继续可读。
 
 ## 12. 状态、Revision 与并发
 
@@ -547,3 +549,4 @@ M15 体积修复：锁定 `terser@5.51.2` 两轮安全压缩，保留日志和�
 | `2.10.4` | 2026-09-01 | `本次 UV 到烘焙资产角色修复` | UI-13/UI-14、M10：UV 发布与历史交接只自动填充低模，烘焙页不再把 UV 输入或 Pipeline 来源高模自动导入；高模保持空白并由用户选择，选择后复用低模 Bake Set ID 自动配对。旧 Pipeline 自动高模快照只在读取时忽略，不删除资产；显式 Bake 高模继续恢复。Pipeline/Bake Workspace Schema、Revision 与烘焙算法不变，无批量迁移。 |
 | `2.10.5` | 2026-09-01 | `本次 Qwen → Klein 模板替换` | M04/UI-05、`ALG-GEN-005` v1.6.0：局部重绘转换模板改为先按 mask 定位真实部件、再用 Image 2 对应视角交叉核对并适配 Image 1；输出改为 100–180 词、2–3 段英文，取消固定开头和四段堆叠。同步更新 fail-closed 校验、一次格式修正及所有局部缓存指纹。空输入诊断、三图输入、ModelView、蒙版、投影/UV、Schema、Revision 和资产不变，无迁移。 |
 | `2.10.6` | 2026-09-01 | `本次远端蒙版融合范围调整` | M08/UI-05、`ALG-LR-012` v1.0.3：仅将 ModelView 专用远端 mask 自适应外扩从 16–48px/短边20%提高为 24–64px/短边25%@2K，羽化仍为4–10px且原始核心保持255；Qwen、Capture、Generation、局部重绘画笔及历史恢复继续绑定未外扩作者 mask。返图直出、投影/UV、Schema、Revision和已有资产不变，无迁移；回退仅恢复 Worker 参数。 |
+| `2.10.7` | 2026-09-01 | `6382583 + 本次 Qwen 选区原图上下文裁切` | M04/UI-05、`ALG-GEN-005` v1.7.0：服务端按未外扩原始 mask 包围盒从干净 Image 1 派生第四张上下文裁切，2K 默认约保留 64px，用于诊断、转换和一次格式修正时辨认真实选中部件。浏览器仍提交原三图，第四图不改变编辑范围、ModelView 输入或远端 mask；缓存策略升级为 `qwen-to-klein-selection-crop-v4`。Schema、Revision、资产及历史工程不变，无迁移；回退移除第四图并恢复 v3 指纹即可。 |

@@ -14,7 +14,7 @@ const promptPolishCaptureResolution = 2048;
 // Changing empty-request diagnosis must not reuse prompts from the old policy.
 export const LOCAL_REPAINT_AUTO_DIAGNOSIS_POLICY = 'one-sentence-diagnosis-to-klein-v2';
 // Any local repaint result from an older conversion contract must miss the prompt cache once.
-export const LOCAL_REPAINT_PROMPT_TEMPLATE_POLICY = 'qwen-to-klein-grounded-2to3-v3';
+export const LOCAL_REPAINT_PROMPT_TEMPLATE_POLICY = 'qwen-to-klein-selection-crop-v4';
 
 export type LocalRepaintPromptPolishInputs = {
   currentEffectImage: PromptPolishImageInput;
@@ -27,6 +27,8 @@ export type LocalRepaintPromptPolishInputs = {
  * Freezes the same authored BaseColor view and RGB selection mask used by the
  * local-repaint workflow, without archiving a Capture or mutating the project.
  * Image 2 is the complete reference image currently selected by the user.
+ * The server derives a Qwen-only clean selection crop from Image 1 and this
+ * original mask; the browser and ModelView request contracts stay unchanged.
  */
 export async function prepareLocalRepaintPromptPolishInputs(input: {
   objectId: string;

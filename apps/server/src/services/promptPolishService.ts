@@ -15,6 +15,8 @@ export type PromptPolishInput = {
   currentEffectImage?: PromptPolishImageInput;
   maskImage?: PromptPolishImageInput;
   referenceImage?: PromptPolishImageInput;
+  selectionCropImage?: PromptPolishImageInput;
+  maskLocationDescription?: string;
 };
 
 export type PromptPolishImageInput = {
@@ -50,12 +52,13 @@ function buildLocalRepaintMessage(input: PromptPolishInput) {
   const objectName = clipped(input.objectName, 160, 'the selected 3D object');
   const hasMask = input.hasMask !== false;
   const maskLocation = hasMask
-    ? `第三张独立蒙版的白色区域与 Image 1 像素对齐，定位在 ${objectName} 上；黑色区域受保护。`
+    ? input.maskLocationDescription?.trim() ||
+      `第三张独立蒙版的白色区域与 Image 1 像素对齐，定位在 ${objectName} 上；黑色区域受保护。`
     : `没有独立蒙版；仅处理用户在 ${objectName} 上明确指定的区域。`;
 
   return `你是 FLUX.2 Klein 局部图像编辑提示词转换器。你的任务是把用户意图和选区视觉证据转成具体、简洁的英文编辑指令。
 
-输入：Image 1 为待编辑全图；Image 2 为完整参考图（可能为多视图）；第三张为与 Image 1 像素对齐的独立蒙版，白色编辑、黑色保护。若还附有选区局部放大图，它仅帮助看清 Image 1，不是新的参考视角，不能改变最终构图。
+输入：Image 1 为待编辑全图；Image 2 为完整参考图（可能为多视图）；第三张为与 Image 1 像素对齐的独立蒙版，白色编辑、黑色保护；第四张为自动从 Image 1 裁出的干净选区上下文放大图。第四张仅帮助看清 Image 1，不是新的参考视角，不能改变最终构图或编辑范围。
 用户要求：${input.prompt}
 选区定位信息：${maskLocation}
 
@@ -123,6 +126,80 @@ export async function normalizeQwen3VlPlusImage(
   };
 }
 
+export async function buildQwenLocalRepaintSelectionContext(
+  currentEffectImage: PromptPolishImageInput,
+  maskImage: PromptPolishImageInput,
+) {
+  const currentDataUrl = decodePromptPolishImage(currentEffectImage);
+  const maskDataUrl = decodePromptPolishImage(maskImage);
+  const currentBuffer = Buffer.from(currentDataUrl.slice(currentDataUrl.indexOf(',') + 1), 'base64');
+  const maskBuffer = Buffer.from(maskDataUrl.slice(maskDataUrl.indexOf(',') + 1), 'base64');
+  try {
+    const [currentMetadata, maskRaw] = await Promise.all([
+      sharp(currentBuffer, { limitInputPixels: 64 * 1024 * 1024 }).metadata(),
+      sharp(maskBuffer, { limitInputPixels: 64 * 1024 * 1024 })
+        .removeAlpha()
+        .raw()
+        .toBuffer({ resolveWithObject: true }),
+    ]);
+    const width = currentMetadata.width ?? 0;
+    const height = currentMetadata.height ?? 0;
+    if (
+      width <= 0 ||
+      height <= 0 ||
+      maskRaw.info.width !== width ||
+      maskRaw.info.height !== height
+    )
+      throw new Error('PROMPT_POLISH_INVALID_VISUAL_INPUT');
+
+    let minX = width;
+    let minY = height;
+    let maxX = -1;
+    let maxY = -1;
+    const channels = maskRaw.info.channels;
+    for (let index = 0; index < width * height; index += 1) {
+      const offset = index * channels;
+      let strength = 0;
+      for (let channel = 0; channel < Math.min(3, channels); channel += 1)
+        strength = Math.max(strength, maskRaw.data[offset + channel] ?? 0);
+      if (strength <= 8) continue;
+      const x = index % width;
+      const y = Math.floor(index / width);
+      minX = Math.min(minX, x);
+      minY = Math.min(minY, y);
+      maxX = Math.max(maxX, x);
+      maxY = Math.max(maxY, y);
+    }
+    if (maxX < minX || maxY < minY) throw new Error('PROMPT_POLISH_INVALID_VISUAL_INPUT');
+
+    const contextPixels = Math.max(16, Math.round(Math.max(width, height) / 32));
+    const left = Math.max(0, minX - contextPixels);
+    const top = Math.max(0, minY - contextPixels);
+    const right = Math.min(width - 1, maxX + contextPixels);
+    const bottom = Math.min(height - 1, maxY + contextPixels);
+    const cropWidth = right - left + 1;
+    const cropHeight = bottom - top + 1;
+    const crop = await sharp(currentBuffer, { limitInputPixels: 64 * 1024 * 1024 })
+      .extract({ left, top, width: cropWidth, height: cropHeight })
+      .jpeg({ quality: 95, chromaSubsampling: '4:4:4' })
+      .toBuffer();
+    const normalized = [minX / width, minY / height, (maxX + 1) / width, (maxY + 1) / height]
+      .map((value) => value.toFixed(3))
+      .join(', ');
+    return {
+      selectionCropImage: {
+        name: 'selected-region-context.jpg',
+        dataUrl: `data:image/jpeg;base64,${crop.toString('base64')}`,
+      },
+      maskLocationDescription: `第三张独立蒙版与 Image 1 像素对齐；选区包围盒为 x=${minX}..${maxX}、y=${minY}..${maxY}，归一化范围为 [${normalized}]。第四张是该包围盒四周保留约 ${contextPixels}px 的未修改 Image 1 裁切，仅用于辨认选中部件；真正编辑范围仍以第三张蒙版为准。`,
+    };
+  } catch (error) {
+    if (error instanceof Error && error.message === 'PROMPT_POLISH_INVALID_VISUAL_INPUT')
+      throw error;
+    throw new Error('PROMPT_POLISH_INVALID_VISUAL_INPUT');
+  }
+}
+
 async function normalizeQwen3VlPlusVisualInputs(
   input: PromptPolishInput,
 ): Promise<PromptPolishInput> {
@@ -137,7 +214,17 @@ async function normalizeQwen3VlPlusVisualInputs(
       chromaSubsampling: '4:4:4',
     }),
   ]);
-  return { ...input, currentEffectImage, referenceImage, maskImage };
+  const selectionContext = await buildQwenLocalRepaintSelectionContext(
+    currentEffectImage,
+    maskImage,
+  );
+  return {
+    ...input,
+    currentEffectImage,
+    referenceImage,
+    maskImage,
+    ...selectionContext,
+  };
 }
 
 export function buildPromptPolishAtlasArgs(input: PromptPolishInput) {
@@ -167,11 +254,12 @@ export function buildQwen3VlPlusRequest(
   const content: QwenContentPart[] = [
     {
       type: 'text',
-      text: 'The three visual inputs are ordered as Image 1 (the clean current effect with no mask-preview overlay), Image 2 (the complete selected reference), and the original independent edit mask without dilation. Align the independent mask pixel-for-pixel with Image 1, follow the supplied editing request, and return only the final English prompt.',
+      text: 'The four visual inputs are ordered as Image 1 (the clean current effect with no mask-preview overlay), Image 2 (the complete selected reference), the original independent edit mask without dilation, and a clean unchanged crop from Image 1 around the selected region. Use the crop only to identify the selected component; align the independent mask pixel-for-pixel with Image 1, follow the supplied editing request, and return only the final English prompt.',
     },
     { type: 'image_url', image_url: { url: decodePromptPolishImage(input.currentEffectImage) } },
     { type: 'image_url', image_url: { url: decodePromptPolishImage(input.referenceImage) } },
     { type: 'image_url', image_url: { url: decodePromptPolishImage(input.maskImage) } },
+    { type: 'image_url', image_url: { url: decodePromptPolishImage(input.selectionCropImage) } },
   ];
   return {
     model,
@@ -187,7 +275,7 @@ export function buildQwen3VlPlusRequest(
 export function buildQwenLocalRepaintDiagnosisRequest(input: PromptPolishInput) {
   const request = buildQwen3VlPlusRequest(input);
   request.messages[0].content = `你是3D贴图局部修复问题诊断助手，只识别具体问题，不编写生图提示词。
-图像顺序：Image 1 是干净当前效果图；Image 2 是完整参考图；第三张是与 Image 1 像素对齐的原始独立蒙版，白色可编辑，黑色保护。
+图像顺序：Image 1 是干净当前效果图；Image 2 是完整参考图；第三张是与 Image 1 像素对齐的原始独立蒙版，白色可编辑，黑色保护；第四张是未修改的 Image 1 选区上下文裁切，只用于辨认被选中的真实部件。
 仅判断蒙版白色区域内有视觉证据的问题：人工纹理接缝、突兀色差、纹理断裂、重影、投影引起的重复/拉伸/错位/不合理局部细节，以及已有文字的重复、扭曲、缺笔或错位。保留真实焊缝、面板接缝、开口和零件边界，不能把正常明暗、反射或自然磨损当成缺陷。
 参考图只辅助定位和确认异常，不要求恢复全部参考特征，不改变整体配色、不新增零件或重新设计几何。文字异常只修复已有文字；仅在对应参考或原图清楚可辨时指定正确拼写，无法辨认时不得猜测或创造文字、品牌。
 只输出一句简短中文修复要求，4至120个字符，以“修复”开头，可用逗号合并多个确定问题，尽可能说明部位，例如“修复控制面板下方的接缝和色差”。示例只说明格式，不代表这些问题一定存在。不要解释、分析过程、标题、列表、JSON、Markdown、英文生图提示词或四段模板。
@@ -313,7 +401,7 @@ async function invokeQwen3VlPlus(input: PromptPolishInput) {
       { role: 'assistant', content: prompt },
       {
         role: 'user',
-        content: `Correct only the output format of your previous answer using the original user request and the same three images above. Validation issues: ${issues.join(', ')}. Return only 2 or 3 English paragraphs separated by one blank line and 100 to 180 English words total. The first sentence must identify the actual selected component and its target action or material, then limit editing to the independent mask region. Preserve all requested changes, exact requested text, useful Image 2 evidence, real component boundaries, and unmasked protection; condense wording instead of dropping requirements. Translate any Chinese descriptive words into English, including fragments embedded inside English sentences; do not merely delete them. Remove Markdown formatting such as double asterisks and code fences. Return only the finished prompt, without headings, numbering, Markdown, analysis, or commentary.`,
+        content: `Correct only the output format of your previous answer using the original user request and the same four images above. Validation issues: ${issues.join(', ')}. Return only 2 or 3 English paragraphs separated by one blank line and 100 to 180 English words total. The first sentence must identify the actual selected component and its target action or material, then limit editing to the independent mask region. Preserve all requested changes, exact requested text, useful Image 2 evidence, real component boundaries, and unmasked protection; use the fourth image only to keep the selected component correctly localized, and condense wording instead of dropping requirements. Translate any Chinese descriptive words into English, including fragments embedded inside English sentences; do not merely delete them. Remove Markdown formatting such as double asterisks and code fences. Return only the finished prompt, without headings, numbering, Markdown, analysis, or commentary.`,
       },
     );
     request.temperature = 0.2;

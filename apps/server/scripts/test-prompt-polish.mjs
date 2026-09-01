@@ -2,9 +2,11 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import sharp from 'sharp';
 import {
   buildQwen3VlPlusRequest,
   buildQwenLocalRepaintDiagnosisRequest,
+  buildQwenLocalRepaintSelectionContext,
   buildPromptPolishAtlasArgs,
   buildPromptPolishMessage,
   getLocalRepaintPromptFormatIssues,
@@ -49,6 +51,7 @@ for (const prompt of ['', '   \n\t']) {
 const currentEffectDataUrl = 'data:image/png;base64,AQ==';
 const referenceDataUrl = 'data:image/webp;base64,Ag==';
 const maskDataUrl = 'data:image/png;base64,Aw==';
+const selectionCropDataUrl = 'data:image/jpeg;base64,BA==';
 const multimodalRequest = buildQwen3VlPlusRequest({
   prompt: 'restore the masked label',
   context: 'local-repaint',
@@ -56,6 +59,7 @@ const multimodalRequest = buildQwen3VlPlusRequest({
   currentEffectImage: { name: 'current.png', dataUrl: currentEffectDataUrl },
   referenceImage: { name: 'reference.webp', dataUrl: referenceDataUrl },
   maskImage: { name: 'mask.png', dataUrl: maskDataUrl },
+  selectionCropImage: { name: 'selected-region-context.jpg', dataUrl: selectionCropDataUrl },
 });
 assert.equal(multimodalRequest.model, 'qwen3-vl-plus');
 assert.equal(multimodalRequest.messages[0].role, 'system');
@@ -63,10 +67,11 @@ assert.match(multimodalRequest.messages[0].content, /FLUX\.2 Klein/);
 const multimodalContent = multimodalRequest.messages[1].content;
 assert.deepEqual(
   multimodalContent.filter((part) => part.type === 'image_url').map((part) => part.image_url.url),
-  [currentEffectDataUrl, referenceDataUrl, maskDataUrl],
+  [currentEffectDataUrl, referenceDataUrl, maskDataUrl, selectionCropDataUrl],
 );
 assert.match(multimodalContent[0].text, /clean current effect with no mask-preview overlay/);
 assert.match(multimodalContent[0].text, /original independent edit mask without dilation/);
+assert.match(multimodalContent[0].text, /clean unchanged crop from Image 1/);
 const diagnosisRequest = buildQwenLocalRepaintDiagnosisRequest({
   prompt: '',
   context: 'local-repaint',
@@ -74,6 +79,7 @@ const diagnosisRequest = buildQwenLocalRepaintDiagnosisRequest({
   currentEffectImage: { name: 'current.png', dataUrl: currentEffectDataUrl },
   referenceImage: { name: 'reference.webp', dataUrl: referenceDataUrl },
   maskImage: { name: 'mask.png', dataUrl: maskDataUrl },
+  selectionCropImage: { name: 'selected-region-context.jpg', dataUrl: selectionCropDataUrl },
 });
 assert.doesNotMatch(diagnosisRequest.messages[0].content, /FLUX\.2 Klein|100至180词/);
 assert.match(diagnosisRequest.messages[0].content, /只输出一句简短中文修复要求/);
@@ -108,6 +114,35 @@ const normalizedVisual = await normalizeQwen3VlPlusImage({
 });
 assert.equal(normalizedVisual.name, 'mask.jpg');
 assert.match(normalizedVisual.dataUrl, /^data:image\/jpeg;base64,/);
+
+const selectionCurrentBuffer = await sharp({
+  create: { width: 16, height: 12, channels: 3, background: { r: 72, g: 88, b: 104 } },
+})
+  .png()
+  .toBuffer();
+const selectionMaskBuffer = await sharp({
+  create: { width: 16, height: 12, channels: 3, background: { r: 0, g: 0, b: 0 } },
+})
+  .composite([
+    {
+      input: {
+        create: { width: 4, height: 3, channels: 3, background: { r: 255, g: 255, b: 255 } },
+      },
+      left: 6,
+      top: 5,
+    },
+  ])
+  .png()
+  .toBuffer();
+const selectionCurrentDataUrl = `data:image/png;base64,${selectionCurrentBuffer.toString('base64')}`;
+const selectionMaskDataUrl = `data:image/png;base64,${selectionMaskBuffer.toString('base64')}`;
+const selectionContext = await buildQwenLocalRepaintSelectionContext(
+  { name: 'selection-current.png', dataUrl: selectionCurrentDataUrl },
+  { name: 'selection-mask.png', dataUrl: selectionMaskDataUrl },
+);
+assert.match(selectionContext.selectionCropImage.dataUrl, /^data:image\/jpeg;base64,/);
+assert.match(selectionContext.maskLocationDescription, /x=6\.\.9、y=5\.\.7/);
+assert.match(selectionContext.maskLocationDescription, /真正编辑范围仍以第三张蒙版为准/);
 
 const generalMessage = buildPromptPolishMessage({
   prompt: 'rusted blue steel',
@@ -195,9 +230,9 @@ const localInput = {
   prompt: 'remove the old label and restore the yellow painted metal',
   context: 'local-repaint',
   hasMask: true,
-  currentEffectImage: { name: 'current.png', dataUrl: onePixelPng },
+  currentEffectImage: { name: 'current.png', dataUrl: selectionCurrentDataUrl },
   referenceImage: { name: 'reference.png', dataUrl: onePixelPng },
-  maskImage: { name: 'mask.png', dataUrl: onePixelPng },
+  maskImage: { name: 'mask.png', dataUrl: selectionMaskDataUrl },
 };
 async function invokeWithReplies(replies, input = localInput) {
   const calls = [];
@@ -229,6 +264,12 @@ try {
       1,
       'Valid or losslessly normalized output must not trigger another Qwen call',
     );
+    assert.equal(
+      calls[0].body.messages[1].content.filter((part) => part.type === 'image_url').length,
+      4,
+      'Production prompt conversion must include the clean selected-region context crop',
+    );
+    assert.match(calls[0].body.messages[0].content, /选区包围盒为 x=6\.\.9、y=5\.\.7/);
   }
   for (const invalid of [
     overlongLocalPrompt,
@@ -413,7 +454,7 @@ assert.match(
 );
 assert.match(
   visualInputSource,
-  /LOCAL_REPAINT_PROMPT_TEMPLATE_POLICY = 'qwen-to-klein-grounded-2to3-v3'/,
+  /LOCAL_REPAINT_PROMPT_TEMPLATE_POLICY = 'qwen-to-klein-selection-crop-v4'/,
 );
 assert.match(panelSource, /activeReferences\.find\(\(reference\) =>/);
 assert.match(panelSource, /currentEffectImage: visualInputs\?\.currentEffectImage/);
@@ -426,6 +467,8 @@ assert.match(
   promptPolishServiceSource,
   /Image 1 \(the clean current effect with no mask-preview overlay\)/,
 );
+assert.match(promptPolishServiceSource, /buildQwenLocalRepaintSelectionContext/);
+assert.match(promptPolishServiceSource, /clean unchanged crop from Image 1/);
 assert.match(
   promptPolishServiceSource,
   /input\.context === 'local-repaint'[\s\S]*?invokeQwen3VlPlus/,
