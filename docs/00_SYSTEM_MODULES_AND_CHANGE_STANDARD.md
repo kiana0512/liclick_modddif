@@ -1,10 +1,10 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
-> 文档版本：`2.13.4`
+> 文档版本：`2.13.5`
 >
 > 生效日期：`2026-09-01`
 >
-> 代码盘点基线：`acac25d + 本次局部重绘画笔视口反馈修复`
+> 代码盘点基线：`31970c1 + 本次局部重绘实时画笔反馈修复`
 >
 > 基线仓库：`E:\Liclick 3D Texture Modernization`
 >
@@ -306,7 +306,7 @@ UI-09 剪刀
 | `ALG-LR-004` 历史增强边界谐调 | `14.0.0-compatible` | 仅读取/重建旧 v6-v14 Generation 和图层；新 `direct-v1` 任务不调用 |
 | `ALG-LR-005` 历史兼容边界谐调 | `5.0.0-compatible` | 仅保留旧 v3-v5 全幅合成与 legacy 切换的读取兼容；新 `direct-v1` 任务不调用 |
 | `ALG-LR-006` 表面画笔重投影 | `2.0.0` | raycast 命中表面，投射到 frozen source UV；最小绝对 face-on 0.08；世界半径 0.004-0.12 包围盒比例；texture radius 1-72 |
-| `ALG-LR-007` 低延迟实时覆盖 | `2.0.8` | live mask/source 最大 1024；`surface-locked-v1`；ignore source alpha，coverage 由用户 mask 和几何决定；同一 source revision 复用驻留 GPU overlay、linear-view depth 与已链接 shader program。renderer preview 持有图层时保持 overlay 可见并静音同一 persisted twin；新一代生图完成后以一次性 pending Generation 身份允许后台 source 接管旧 source，接管完即消耗；普通历史结果仍不被后台抢占。切换或清空 source 前等待旧层在实际背景材质驻留，再移交显示权；ordered projected stack 已拥有显示权时 overlay 保持隐藏，但同 ID 的 resident binding 必须保持可见，禁止两条显示路径同时静音。成功回调、任务解锁与 Generation store 就绪之间的短暂窗口内，UI-10 首次点击登记一次性画笔启用请求并显示不确定进度条，状态就绪后自动重放，不要求第二次点击。UI-10 选择/旋转视角工具将作者蒙版的视口展示设为隐藏，重新进入加/减蒙版画笔时恢复；仅切换内存 presentation flag，不清除作者蒙版 |
+| `ALG-LR-007` 低延迟实时覆盖 | `2.0.9` | live mask/source 最大 1024；`surface-locked-v1`；ignore source alpha，coverage 由用户 mask 和几何决定；同一 source revision 复用驻留 GPU overlay、linear-view depth 与已链接 shader program。renderer preview 持有图层时保持 overlay 可见并静音同一 persisted twin；新一代生图完成后以一次性 pending Generation 身份允许后台 source 接管旧 source，接管完即消耗；普通历史结果仍不被后台抢占。切换或清空 source 前等待旧层在实际背景材质驻留，再移交显示权；空闲/恢复时 ordered projected stack 可按图层顺序持有显示权，但应用画笔激活期间必须由可变 GPU overlay 接管并静音同 ID resident binding，禁止用未重打包的静态 mask 延迟实时反馈。成功回调、任务解锁与 Generation store 就绪之间的短暂窗口内，UI-10 首次点击登记一次性画笔启用请求并显示不确定进度条，状态就绪后自动重放，不要求第二次点击。UI-10 选择/旋转视角工具将作者蒙版的视口展示设为隐藏，重新进入加/减蒙版画笔时恢复；仅切换内存 presentation flag，不清除作者蒙版 |
 | `ALG-LR-008` 延迟投影持久化 | `2.2.3` | interactive UV bake 固定关闭；生图前 Project Command snapshot 后台执行；Generation、对象、目标层与 GPU-ready 标记共同识别驻留 source；成功生图以 success revision 触发新 source 后台解码、目标层绑定与 GPU 预热，使应用画笔首次点击直接进入驻留快路径；若首次点击早于任务锁或 Generation store 发布完成，内存请求跨越该过渡窗口并在 ready 后自动执行，按钮以旋转图标和流动进度条反馈等待；pointer-up 两帧内发布权威图层行，发布后按真实 LayerStore 行判断驻留，不依赖旧 preview revision；后台构建只等待真实指针交互，不等待蒙版工具退出；idle 3000ms 仍仅合并持久化，needsRebake=true |
 | `ALG-LR-009` Inward Crossfade 栈合成 | `1.0.0` | 连续重绘层向内部交叉淡化，避免普通 alpha stacking 在边缘重复显露接缝 |
 | `ALG-LR-010` Provider 兼容编辑 | `1.0.0-compat` | `LocalRepaintDialog` 的 image/edit/protect/hole masks 独立路径，不得与四输入主路径混改 |
@@ -332,6 +332,8 @@ UI-09 剪刀
 `ALG-LR-007` v2.0.7 / `ALG-LR-008` v2.2.3 修正 UI-10 → M08 的画笔启用请求生命周期：局部生图成功后，远端完成回调、编辑器任务锁释放和 Generation store 发布结果可能发生在相邻的不同 React 提交中。应用画笔的首次点击若落在这个窗口，不再被底部工具条捕获阶段丢弃，而是登记一个仅驻留内存的一次性请求；按钮立即显示旋转图标和不确定进度条，待任务解锁且结果 ready 后自动重放并进入 `inpaint-apply`。只有局部生成成功过渡可排队，内容识别修补、项目生成和快照准备等其他互斥操作仍 fail-closed；生成失败、切换工程/模型或开始下一次生成会清除请求。本次不改变 GPU/CPU/Worker/shader、投影矩阵、深度编码、颜色合成、1024 实时上限、最终 UV/export、Project/Layer/Generation/Capture Schema、Revision、ownership 或资产，无数据迁移。回退时移除 activation request policy、EditorPage 一次性请求状态、BottomToolDock 排队放行与进度条，即恢复统一交互锁；已有图层、蒙版和 Generation 无需删除或改写。
 
 `ALG-LR-007` v2.0.8 修正 UI-06 → M08 的双表示显示权：当活动局部重绘上方存在可见的 `single-view-priority-v1` 图层时，专用 GPU overlay 按顺序规则保持隐藏，实时 source/mask 由 ordered projected stack 合成；此时同 ID 的 resident binding 不得再因 renderer preview marker 被静音。只有专用 overlay 实际负责显示时才静音 persisted twin，从而避免笔画已经写入 LayerStore、右侧缩略图已更新，但 overlay 与 resident row 同时透明导致视口无反馈。GPU/CPU/Worker/shader、投影矩阵、coverage、深度编码、颜色合成、1024 实时上限、最终 UV/export、Project/Layer/Generation/Capture Schema、Revision、ownership 与资产均不改变，旧工程无需迁移。回退时仅恢复 resident binding 对 preview ID 的无条件静音；不得删除已有图层、蒙版或生成资产。
+
+`ALG-LR-007` v2.0.9 修正 UI-06 → M08 的实时 mask 所有权：ordered projected stack 使用打包快照，无法在每个指针采样后读取正在变化的 live canvas；因此应用画笔激活期间，无论活动重绘上方是否存在 `single-view-priority-v1`，均由专用 GPU overlay 临时接管反馈，并在同一状态提交中静音同 ID resident binding。离开应用画笔或刷新恢复后仍由 ordered stack 按原图层顺序显示持久结果。此变更不改 source/mask 内容、投影矩阵、coverage、深度编码、颜色公式、1024 上限、CPU/Worker/shader、UV/export、Project/Layer/Generation/Capture Schema、Revision、ownership 或资产，无数据迁移。回退时移除 live feedback 对专用 overlay 的强制接管即可；已有图层、蒙版和生成资产无需删除。
 
 UI-05/UI-13 的贴图驻留边界要求所有挂到页面根节点的生成面板 Portal 同样受 `EditorPage.isActive` 门禁。进入 UV 时贴图编辑器可继续保留引擎与面板状态，但“局部生图”固定按钮、生成取消确认和结果大图预览均不得越过隐藏工作区显示；回到贴图页后按原状态恢复。此修复仅改变 React 展示生命周期，不改变局部生成算法版本、任务状态、GPU/CPU/Worker/shader、输入蒙版、Project/Layer/Generation/Capture Schema、对象资产或 Revision，无数据迁移；回退只移除 Portal 活跃态门禁。
 
@@ -591,3 +593,4 @@ M15 体积修复：锁定 `terser@5.51.2` 两轮安全压缩，保留日志和�
 | `2.13.2` | 2026-09-01 | `本次连续重绘单击接管修复` | UI-05/UI-10、M08、`ALG-LR-007` v2.0.6 / `ALG-LR-008` v2.2.2：生图成功记录一次性 pending Generation 并以 success revision 触发后台解码、目标层绑定和 GPU 预热；只有该新结果可以从上一代驻留 source 一次性接管，使第二次及后续生图的应用画笔首次点击即可直接绘制，同时保留历史结果编辑保护。GPU/CPU/Worker/shader、投影/UV/颜色公式、分辨率、Schema、Revision 与资产不变，无迁移。 |
 | `2.13.3` | 2026-09-01 | `本次局部重绘即时点击排队与进度反馈修复` | UI-10、M08、`ALG-LR-007` v2.0.7 / `ALG-LR-008` v2.2.3：修复生图完成瞬间首次点击被工具条残余任务锁吞掉的问题；首次点击在成功回调、任务解锁与 Generation store ready 的短窗口内登记一次性内存请求，按钮立即显示旋转图标和流动进度条，结果就绪后自动进入画笔，无需第二次点击。其他互斥操作仍 fail-closed；失败、切工程/模型或新生成会清除请求。GPU/CPU/Worker/shader、投影/UV/颜色公式、分辨率、Schema、Revision、ownership 与资产不变，无迁移。 |
 | `2.13.4` | 2026-09-01 | `本次局部重绘画笔视口反馈修复` | UI-06、M08、`ALG-LR-007` v2.0.8：修复有序投影栈接管活动局部重绘时，专用 overlay 与同 ID resident binding 被同时静音，造成画笔已更新右侧图层但视口无反馈的问题；显示权改为互斥兜底，ordered stack 接管时保留 resident binding，可见 overlay 接管时才静音 persisted twin。投影/coverage/颜色与分辨率、CPU/Worker/shader/UV/export、Schema、Revision、ownership 和资产不变，无迁移。 |
+| `2.13.5` | 2026-09-01 | `本次局部重绘实时画笔反馈修复` | UI-06、M08、`ALG-LR-007` v2.0.9：修复持久层虽然可见，但 ordered projected stack 仍只读取上一次打包 mask，导致画笔实时 canvas 更新必须刷新后才显示的问题；应用画笔激活期间由专用 GPU overlay 临时接管，并同步静音 resident twin，离开工具或恢复后仍按原图层顺序显示。投影/coverage/颜色与分辨率、CPU/Worker/shader/UV/export、Schema、Revision、ownership 和资产不变，无迁移。 |

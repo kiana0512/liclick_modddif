@@ -72,7 +72,10 @@ import type { Layer } from '@/types/layer';
 import type { SerializedCamera } from '@/types/capture';
 import { createId } from '@/utils/id';
 import { waitForBrowserPaint } from '@/utils/browserScheduling';
-import { shouldPresentLocalRepaintInOrderedStack } from '@/engine/localRepaint/orderedPreviewComposition';
+import {
+  shouldPresentLocalRepaintInOrderedStack,
+  shouldUseDedicatedLocalRepaintOverlay,
+} from '@/engine/localRepaint/orderedPreviewComposition';
 import { registerPaintMaskHistoryActionHandler } from '@/engine/paint/paintMaskHistoryActions';
 import {
   ERASER_ALGORITHM_VERSION,
@@ -7944,10 +7947,13 @@ function SurfacePaintOverlay() {
       composite?.sourceKey === overlay.sourceKey && composite.hasContent,
     );
     const previewOwnsOverlay = sceneState.localRepaintPreviewLayer?.id === overlay.layerId;
-    const orderedStackOwnsPreview = shouldPresentLocalRepaintInOrderedStack(
-      layers,
-      sceneState.localRepaintPreviewLayer ?? persistedLayer,
-    );
+    const liveFeedbackRequested = sceneState.paintTool === 'inpaint-apply';
+    const orderedStackOwnsPreview =
+      !shouldUseDedicatedLocalRepaintOverlay(
+        layers,
+        sceneState.localRepaintPreviewLayer ?? persistedLayer,
+        liveFeedbackRequested,
+      );
     const erasesPersistedLocalRepaint = isLocalRepaintLayerEraserActive(
       sceneState.paintTool,
       layerState.activeProjectedLayerId,
@@ -9836,10 +9842,11 @@ function SurfacePaintOverlay() {
         const previewOwnsOverlay = sceneState.localRepaintPreviewLayer?.id === composite.layerId;
         const visible = Boolean(
           composite.hasContent &&
-          !shouldPresentLocalRepaintInOrderedStack(
+          shouldUseDedicatedLocalRepaintOverlay(
             layerState.layers,
             sceneState.localRepaintPreviewLayer ??
               layerState.layers.find((layer) => layer.id === composite.layerId),
+            sceneState.paintTool === 'inpaint-apply',
           ) &&
           (sceneState.paintTool === 'inpaint-apply' ||
             erasesPersistedLocalRepaint ||
@@ -9997,10 +10004,11 @@ function SurfacePaintOverlay() {
           maskTexture: composite.blendMaskTexture,
           visible:
             composite.hasContent &&
-            !shouldPresentLocalRepaintInOrderedStack(
+            shouldUseDedicatedLocalRepaintOverlay(
               layerState.layers,
               sceneState.localRepaintPreviewLayer ??
                 layerState.layers.find((layer) => layer.id === composite.layerId),
+              sceneState.paintTool === 'inpaint-apply',
             ) &&
             (sceneState.paintTool === 'inpaint-apply' ||
               erasesPersistedLocalRepaint ||
@@ -10070,10 +10078,11 @@ function SurfacePaintOverlay() {
         const previewOwnsOverlay = sceneState.localRepaintPreviewLayer?.id === composite.layerId;
         const visible = Boolean(
           composite.hasContent &&
-          !shouldPresentLocalRepaintInOrderedStack(
+          shouldUseDedicatedLocalRepaintOverlay(
             layerState.layers,
             sceneState.localRepaintPreviewLayer ??
               layerState.layers.find((layer) => layer.id === composite.layerId),
+            sceneState.paintTool === 'inpaint-apply',
           ) &&
           (sceneState.paintTool === 'inpaint-apply' ||
             erasesPersistedLocalRepaint ||
@@ -13564,10 +13573,11 @@ function SurfacePaintOverlay() {
           const layerState = useLayerStore.getState();
           const visible =
             isLocalRepaintOverlayVisible(sceneState.displayMode, layerVisible) &&
-            !shouldPresentLocalRepaintInOrderedStack(
+            shouldUseDedicatedLocalRepaintOverlay(
               layerState.layers,
               sceneState.localRepaintPreviewLayer ??
                 layerState.layers.find((layer) => layer.id === composite.layerId),
+              sceneState.paintTool === 'inpaint-apply',
             );
           const presentation = readLocalRepaintGpuOverlayPresentation(overlay);
           if (

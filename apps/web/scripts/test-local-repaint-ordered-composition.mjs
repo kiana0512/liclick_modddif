@@ -89,6 +89,25 @@ try {
     false,
     'ordered-stack ownership must keep the resident repaint binding visible',
   );
+  assert.equal(
+    ordered.shouldUseDedicatedLocalRepaintOverlay(
+      [single, persistedRepaint],
+      liveRepaint,
+      true,
+    ),
+    true,
+    'the mutable live overlay must own feedback while the apply brush is active',
+  );
+  assert.equal(
+    ordered.shouldMuteLocalRepaintResidentLayer(
+      [single, persistedRepaint],
+      liveRepaint,
+      persistedRepaint.id,
+      true,
+    ),
+    true,
+    'live overlay feedback must mute the stale packed resident twin',
+  );
 
   const bottomUp = ordered.mergeOrderedLocalRepaintPreview(
     [single, persistedRepaint],
@@ -181,30 +200,30 @@ try {
   );
   assert.match(
     viewport,
-    /!orderedStackOwnsPreview[\s\S]*?setLocalRepaintGpuOverlayVisibility/,
-    'the renderer-only GPU mesh must be hidden while the ordered stack owns presentation',
+    /liveFeedbackRequested = sceneState\.paintTool === 'inpaint-apply'[\s\S]*?!shouldUseDedicatedLocalRepaintOverlay/,
+    'idle ordering must yield to the mutable overlay only while live feedback is requested',
   );
-  const orderedOwnershipGuards = viewport.match(
-    /!shouldPresentLocalRepaintInOrderedStack\(/g,
+  const liveOverlayOwnershipGuards = viewport.match(
+    /shouldUseDedicatedLocalRepaintOverlay\(/g,
   );
   assert(
-    (orderedOwnershipGuards?.length ?? 0) >= 4,
-    'every overlay activation path, including reuse and pointer-down, must respect ordered-stack ownership',
+    (liveOverlayOwnershipGuards?.length ?? 0) >= 5,
+    'every overlay activation path, including reuse and pointer-down, must share live ownership policy',
   );
   assert.match(
     viewport,
-    /const erasesPersistedLocalRepaint = isLocalRepaintLayerEraserActive\([\s\S]*?const visible = Boolean\(\s*composite\.hasContent &&\s*!shouldPresentLocalRepaintInOrderedStack\(/,
-    'reusing an existing local-repaint overlay must not enable it over the ordered stack',
+    /const erasesPersistedLocalRepaint = isLocalRepaintLayerEraserActive\([\s\S]*?const visible = Boolean\(\s*composite\.hasContent &&\s*shouldUseDedicatedLocalRepaintOverlay\(/,
+    'reusing an existing local-repaint overlay must enable its mutable canvas during apply',
   );
   assert.match(
     viewport,
-    /currentOverlay\.visibilityLayerSeen = false;[\s\S]*?const previewOwnsOverlay =[\s\S]*?visible:\s*composite\.hasContent &&\s*!shouldPresentLocalRepaintInOrderedStack\([\s\S]*?previewOwnsOverlay/,
-    'rebinding the resident overlay program must preserve both ordered-stack and live-preview ownership',
+    /currentOverlay\.visibilityLayerSeen = false;[\s\S]*?const previewOwnsOverlay =[\s\S]*?visible:\s*composite\.hasContent &&\s*shouldUseDedicatedLocalRepaintOverlay\([\s\S]*?previewOwnsOverlay/,
+    'rebinding the resident overlay program must preserve live-preview ownership',
   );
   assert.match(
     viewport,
-    /const layerVisible = readLocalRepaintGpuOverlayLayerVisibility\(overlay\);[\s\S]*?const visible =\s*isLocalRepaintOverlayVisible\([\s\S]*?&&\s*!shouldPresentLocalRepaintInOrderedStack\([\s\S]*?syncLocalRepaintGpuOverlayBinding\(overlay,\s*\{[\s\S]*?visible,/,
-    'pointer-down must not force the renderer overlay on while the ordered stack is authoritative',
+    /const layerVisible = readLocalRepaintGpuOverlayLayerVisibility\(overlay\);[\s\S]*?const visible =\s*isLocalRepaintOverlayVisible\([\s\S]*?&&\s*shouldUseDedicatedLocalRepaintOverlay\([\s\S]*?syncLocalRepaintGpuOverlayBinding\(overlay,\s*\{[\s\S]*?visible,/,
+    'pointer-down must force the mutable renderer overlay on for immediate feedback',
   );
 
   console.log('Local repaint ordered composition invariants passed.');

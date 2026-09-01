@@ -53,6 +53,21 @@ export function shouldPresentLocalRepaintInOrderedStack(
 }
 
 /**
+ * The ordered stack contains a packed snapshot of projected masks. While the
+ * apply brush is live it cannot reflect mutations to the renderer-owned canvas
+ * until the stack is rebuilt, so the dedicated overlay must temporarily own
+ * presentation even when normal idle ordering would place a priority layer
+ * above the repaint.
+ */
+export function shouldUseDedicatedLocalRepaintOverlay(
+  layers: readonly Layer[],
+  preview: Layer | undefined,
+  liveFeedbackRequested: boolean,
+) {
+  return liveFeedbackRequested || !shouldPresentLocalRepaintInOrderedStack(layers, preview);
+}
+
+/**
  * A renderer-owned preview only mutes its persisted twin while the dedicated
  * GPU overlay is the presentation path. When layer order requires the preview
  * to participate in the shared projected stack, muting the same id there makes
@@ -63,9 +78,11 @@ export function shouldMuteLocalRepaintResidentLayer(
   layers: readonly Layer[],
   preview: Layer | undefined,
   layerId: string,
+  liveFeedbackRequested = false,
 ) {
   return (
-    preview?.id === layerId && !shouldPresentLocalRepaintInOrderedStack(layers, preview)
+    preview?.id === layerId &&
+    shouldUseDedicatedLocalRepaintOverlay(layers, preview, liveFeedbackRequested)
   );
 }
 

@@ -1220,6 +1220,9 @@ function ImportedModel({
   const pbrLightAzimuth = useSettingsStore((state) => state.pbrLightAzimuth);
   const resolution = useSettingsStore((state) => state.resolution);
   const localRepaintPreviewLayer = useSceneStore((state) => state.localRepaintPreviewLayer);
+  const localRepaintLiveFeedbackRequested = useSceneStore(
+    (state) => state.paintTool === 'inpaint-apply',
+  );
   const transientWhitePresentationObjectId = useSceneStore(
     (state) => state.transientWhitePresentationObjectId,
   );
@@ -1320,10 +1323,11 @@ function ImportedModel({
         layers,
         localRepaintPreviewLayer,
         localRepaintPreviewLayer.id,
+        localRepaintLiveFeedbackRequested,
       )
         ? localRepaintPreviewLayer.id
         : undefined,
-    [layers, localRepaintPreviewLayer],
+    [layers, localRepaintLiveFeedbackRequested, localRepaintPreviewLayer],
   );
   const activeLayerId = useLayerStore((state) => state.activeProjectedLayerId);
   const project = useProjectStore((state) =>
@@ -1895,6 +1899,7 @@ function ImportedModel({
             state.layers,
             currentPreviewLayer,
             currentPreviewLayer.id,
+            useSceneStore.getState().paintTool === 'inpaint-apply',
           )
           ? currentPreviewLayer.id
           : undefined
@@ -2116,6 +2121,7 @@ function ImportedModel({
               currentLayers,
               useSceneStore.getState().localRepaintPreviewLayer,
               layer.id,
+              useSceneStore.getState().paintTool === 'inpaint-apply',
             ) &&
             isProjectedLayerAboveMergedUv(layer, currentMergedUvBoundaryOrder),
         }));
