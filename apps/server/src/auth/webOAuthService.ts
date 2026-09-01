@@ -9,6 +9,11 @@ import {
 } from '../services/identityTelemetryService.js';
 import { enrichFeishuUserByOpenId } from '../services/feishuPlatformService.js';
 import { postgresControlRepository } from '../repositories/postgresControlRepository.js';
+import {
+  completePersonalLiclickAccountBinding,
+  getPersonalLiclickAccount,
+  startPersonalLiclickAccountBinding,
+} from './atlasAuthService.js';
 
 type PendingWebOAuthLogin = {
   id: string;
@@ -18,6 +23,8 @@ type PendingWebOAuthLogin = {
   startedAt: number;
   completedAt?: number;
   user?: AuthUser;
+  provisionalUser?: AuthUser;
+  liclickBindingId?: string;
   error?: string;
   bindingDevice?: DeviceIdentityInput;
   browserNonceHash: string;
@@ -443,11 +450,34 @@ export async function handleWebOAuthCallback(
       });
     }
     await createSession(user.id, 'feishu-oauth', request, response);
-    login.user = user;
-    login.completedAt = Date.now();
+    const existingLiclickAccount = await getPersonalLiclickAccount(user);
+    if (existingLiclickAccount.bound) {
+      login.user = user;
+      login.completedAt = Date.now();
+      await persistWebOAuthLogin(login);
+      response.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+      response.end(callbackHtml(true, '登录成功，当前用户的莉刻账号已自动关联。'));
+      return true;
+    }
+    const binding = await startPersonalLiclickAccountBinding(user, {
+      linkedOAuthLoginId: login.id,
+    });
+    login.provisionalUser = user;
+    login.liclickBindingId = binding.loginId;
     await persistWebOAuthLogin(login);
-    response.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
-    response.end(callbackHtml(true, '授权已完成，可以回到 Liclick 页面继续使用。'));
+    if (login.provider === 'idaas-sp') {
+      await completePersonalLiclickAccountBinding(binding.loginId, user, { idToken });
+      login.user = user;
+      login.completedAt = Date.now();
+      await persistWebOAuthLogin(login);
+      response.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+      response.end(callbackHtml(true, '登录成功，当前用户的莉刻账号已自动关联。'));
+      return true;
+    }
+    if (!binding.redirectUrl) throw new Error('IDaaS 没有返回莉刻账号关联地址。');
+    response.writeHead(302, { location: binding.redirectUrl, 'cache-control': 'no-store' });
+    response.end();
+    return true;
   } catch (callbackError) {
     login.error = callbackError instanceof Error ? callbackError.message : 'Web OAuth 登录失败。';
     await persistWebOAuthLogin(login);
@@ -455,6 +485,26 @@ export async function handleWebOAuthCallback(
     response.end(callbackHtml(false, login.error));
   }
   return true;
+}
+
+export async function completeWebOAuthLiclickBinding(
+  loginId: string,
+  bindingId: string,
+  user: AuthUser,
+) {
+  const login = postgresControlRepository
+    ? await postgresControlRepository.getOAuthLogin<PendingWebOAuthLogin>(loginId)
+    : pendingWebOAuthLogins.get(loginId);
+  if (
+    !login ||
+    login.liclickBindingId !== bindingId ||
+    login.provisionalUser?.id !== user.id
+  ) {
+    throw new Error('登录与莉刻账号关联任务不匹配，请重新登录。');
+  }
+  login.user = login.provisionalUser;
+  login.completedAt = Date.now();
+  await persistWebOAuthLogin(login);
 }
 
 export async function pollWebOAuthLogin(loginId: string) {

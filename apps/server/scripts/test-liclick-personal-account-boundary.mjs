@@ -38,9 +38,10 @@ assert.equal(
   '服务器莉刻运行时版本不兼容，请联系管理员升级服务。',
 );
 
-const [routeSource, atlasSource, serverSource, setupSource] = await Promise.all([
+const [routeSource, atlasSource, webOAuthSource, serverSource, setupSource] = await Promise.all([
   readFile(path.join(packageRoot, 'src/routes/liclick.ts'), 'utf8'),
   readFile(path.join(packageRoot, 'src/auth/atlasAuthService.ts'), 'utf8'),
+  readFile(path.join(packageRoot, 'src/auth/webOAuthService.ts'), 'utf8'),
   readFile(path.join(packageRoot, 'src/index.ts'), 'utf8'),
   readFile(path.resolve(packageRoot, '../../scripts/setup-linux-a100.sh'), 'utf8'),
 ]);
@@ -48,16 +49,24 @@ const [routeSource, atlasSource, serverSource, setupSource] = await Promise.all(
 assert.match(routeSource, /code:\s*'LICLICK_PERSONAL_ACCOUNT_REQUIRED'/);
 assert.match(routeSource, /startPersonalLiclickAccountBinding\(user\)/);
 assert.match(routeSource, /pollPersonalLiclickAccountBinding\(segments\[3\], user\)/);
+assert.match(routeSource, /getPersonalLiclickAccountCallbackHtml\(loginId, user\)/);
+assert.match(routeSource, /completePersonalLiclickAccountBinding\(loginId, user, body\)/);
 assert.doesNotMatch(
   routeSource,
   /pollLiclickImageTask\(segments\[3\]/,
   'Unknown remote task ids must never be polled with the current or shared credential.',
 );
 assert.match(atlasSource, /禁止使用服务器共享 Atlas 凭据调用莉刻/);
-assert.match(atlasSource, /莉刻账号与当前飞书登录账号不一致，已拒绝绑定/);
+assert.match(atlasSource, /莉刻账号与当前飞书登录账号不一致，已拒绝关联/);
 assert.match(atlasSource, /ATLAS_RUNTIME_INCOMPATIBLE/);
 assert.match(atlasSource, /minimumCompatibleAtlasSkillhubVersion = '2\.9\.1'/);
 assert.match(atlasSource, /encryptedTokenCacheReaderPromise = undefined/);
+assert.match(atlasSource, /runtime\.authenticate/);
+assert.match(atlasSource, /gateway', 'list-tools', '--service', 'liclick'/);
+assert.doesNotMatch(atlasSource, /writeFile\(tokenFile/);
+assert.match(webOAuthSource, /getPersonalLiclickAccount\(user\)/);
+assert.match(webOAuthSource, /startPersonalLiclickAccountBinding\(user/);
+assert.match(webOAuthSource, /completeWebOAuthLiclickBinding/);
 assert.match(serverSource, /getAtlasRuntimeCompatibility\(\)/);
 assert.match(serverSource, /secureTokenCacheReader: atlasRuntime\.secureTokenCacheReader/);
 assert.match(setupSource, /ATLAS_SKILLHUB_VERSION="\$\{ATLAS_SKILLHUB_VERSION:-2\.9\.1\}"/);

@@ -1,10 +1,10 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
-> 文档版本：`2.13.8`
+> 文档版本：`2.13.9`
 >
 > 生效日期：`2026-09-01`
 >
-> 代码盘点基线：`0d03980 + 本次局部重绘首笔原子交接修复`
+> 代码盘点基线：`a3ce6ae + 本次飞书登录安全关联莉刻账号修复`
 >
 > 基线仓库：`E:\Liclick 3D Texture Modernization`
 >
@@ -466,7 +466,7 @@ A100 发布同时显式配置 `LICLICK_PERFORMANCE_LAB_ENABLED=true` 与构建�
 
 迁移只新增性能会话/分片表，不回填旧 `sessionStorage` 报告，不改变 Project Command、Revision CAS、对象 ownership 或任何图层资产。回滚可停止挂载 Cloud bridge、关闭性能 API 并保留新增表供审计；IndexedDB 未发送记录可由恢复后的同版本页面继续重试，禁止为回滚删除用户项目或恢复 Windows 本地采集组件。
 
-### 13.2 当前用户莉刻账号绑定 `LICLICK-ACCOUNT-BINDING` v1.0.0
+### 13.2 当前用户莉刻账号绑定 `LICLICK-ACCOUNT-BINDING` v1.1.0
 
 莉刻生图、编辑、轮询与通用提示词润色必须使用当前飞书 Session 用户独占的服务器端账号绑定。浏览器只通过同源、带 Cookie 的 Cloud API 发起绑定和查询状态；OAuth 临时状态、token 与 `atlas_home_dir` 只由 A100 控制面保管，禁止写入浏览器、Windows 本地组件或项目文档。
 
@@ -478,6 +478,8 @@ A100 发布同时显式配置 `LICLICK_PERFORMANCE_LAB_ENABLED=true` 与构建�
 | 任务所有权 | 只允许轮询当前 Session 用户已登记且携带同一用户个人 Atlas home 的任务；未知远端 task ID 固定返回 404，不得用当前或默认凭据探测 |
 | 解绑 | 只清除当前用户数据库绑定及其受管目录，不退出飞书、不删除其他用户凭据、不触碰 Project/Layer/Capture/Generation 数据 |
 | 浏览器拓扑 | 继续使用 browser zero-install + LI3D Cloud；禁止恢复 localhost/4618、安装器、端点切换或本地凭据托管 |
+
+v1.1.0 将“登录 LI3D”与“关联当前用户莉刻账号”串为同一安全流程。飞书/IDaaS 完成身份校验后，服务端为当前用户启动 Atlas SkillHub 2.9.1 的 loopback-only `authenticate` bridge；浏览器只接收同源关联回调页面，回调中的身份令牌立即转交本机回环监听器，页面随后清除 URL fragment。Atlas 运行时负责加密 token cache 写入，LI3D 禁止自行落明文 token；写入完成后还必须通过 secure cache 读取、有效期检查、`gateway list-tools --service liclick` 可用性检查以及 Atlas email 与飞书 Session email 一致性检查，全部通过才绑定独立 `atlas_home_dir`。运行时缺少 `readCache` 或 `authenticate` 时固定返回 `ATLAS_RUNTIME_INCOMPATIBLE`，不得回退共享账号、默认 home 或手写明文缓存。失败、超时、身份不一致或回调任务不匹配时终止子进程并删除未绑定临时目录；既有合法个人绑定继续复用。该升级不改变 Project/Layer/Capture/Generation Schema、Revision、ownership、图层资产或莉刻任务格式，无数据迁移；回退只能关闭自动关联入口并要求用户重新授权，不得恢复共享凭据。
 
 迁移策略为：既有用户若没有独立 `atlas_home_dir`，一律视为未绑定并由本人重新完成莉刻授权；不自动认领 A100 共享凭据，也不迁移历史共享账号任务。该变更不修改 Project Command、Revision CAS、Project/Layer/Capture/Generation Schema、对象 ownership 或已验证资产。发布后应从 A100 运行配置移除共享 `ATLAS_TOKEN_FILE` 并撤销旧共享 token；回滚不得恢复共享回退，只能临时关闭莉刻入口并保留用户绑定数据，待兼容版本恢复。
 
@@ -603,3 +605,4 @@ M15 体积修复：锁定 `terser@5.51.2` 两轮安全压缩，保留日志和�
 | `2.13.6` | 2026-09-01 | `本次局部重绘双阶段预览与当前层交接修复` | UI-06、M08、`ALG-LR-007` v2.1.0：修复当前局部重绘层二次进入画笔时先被静音、复杂实时 overlay 无输出导致旧笔画和新笔画同时消失，以及等待后仍需手动开关预览的问题。新增 renderer-only 简化 source+live-mask mesh preview 立即反馈；只有其实际可见时才静音当前同 ID persisted twin，其他重绘层不受影响；projected `contentRevision` 自动触发正式材质重建，离开画笔且确认正式层驻留后自动交接。最终 depth/surface-lock、coverage、颜色、1024 live 上限、UV/export、Schema、Revision、ownership 和资产不变，无迁移。 |
 | `2.13.7` | 2026-09-01 | `本次局部重绘正式材质实时蒙版修复` | UI-06、M08/M06、`ALG-LR-007` v2.1.1：删除会与正式图层争夺显示权且缺少 depth/normal 的快速 duplicate mesh；已有局部重绘层始终保留在原 ordered projected material，以 projection-space live sampler 只替换当前 layerId 的 authored mask，使旧笔画与新笔画立即同屏反馈，同时继续使用正式 source、capture depth、surface-lock、图层顺序与颜色。无持久行的新结果仍用 depth-aware exact overlay，发布后自动交接；SceneRoot 晚到 marker 不再误静音正式层。CPU/Worker/UV/export、1024 live 上限、最终分辨率、Schema、Revision、ownership 与资产不变，无迁移。 |
 | `2.13.8` | 2026-09-01 | `本次局部重绘首笔原子交接修复` | UI-06、M08/M06、`ALG-LR-007` v2.1.2：持久蒙版 URL/sampler 切换提前到画笔预热进度阶段，pointer-up 不再递增 projected 结构 `contentRevision`；新行 exact overlay 保留到 SceneRoot 最终材质驻留、live override 绑定并完整呈现一帧后，再通过两帧屏障原子撤下。修复首笔结束后短暂消失并伴随整栈重建卡顿的问题。项目保存继续把 live raw/blend mask 按 revision 持久化；CPU/Worker/shader coverage、depth/surface-lock、UV/export、最终分辨率、Schema、Project Revision、ownership 与资产类别不变，旧工程惰性提升，无批量迁移。 |
+| `2.13.9` | 2026-09-01 | `本次飞书登录安全关联莉刻账号修复` | M13、`LICLICK-ACCOUNT-BINDING` v1.1.0：飞书/IDaaS 登录成功后自动进入同源莉刻账号关联，服务端通过 Atlas SkillHub 2.9.1 loopback-only `authenticate` bridge 转交回调令牌并由运行时写入加密缓存；绑定前强制校验 secure cache、有效期、莉刻网关工具、Atlas/飞书 email 一致性与 OAuth 任务归属。禁止 LI3D 写明文 token，运行时不兼容、失败或超时时 fail-closed 并清理临时目录，不回退共享账号。Project/Layer/Capture/Generation Schema、Revision、ownership 与资产不变，无迁移。 |

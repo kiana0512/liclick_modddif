@@ -1,5 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import fs from 'node:fs';
+import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -28,12 +29,17 @@ type PendingAtlasLogin = {
   id: string;
   userId: string;
   homeDir: string;
-  child?: ChildProcessWithoutNullStreams;
   startedAt: number;
+  child: ChildProcessWithoutNullStreams;
+  callbackPort: number;
   stdout: string;
   stderr: string;
   closed: boolean;
   closeCode?: number | null;
+  linkedOAuthLoginId?: string;
+  email?: string;
+  expiresAt?: string;
+  error?: string;
 };
 
 type AtlasTokenCache = {
@@ -68,6 +74,7 @@ type AtlasClaims = {
 const pendingAtlasLogins = new Map<string, PendingAtlasLogin>();
 const pendingLoginTtlMs = 10 * 60 * 1000;
 const minimumCompatibleAtlasSkillhubVersion = '2.9.1';
+const atlasGatewayUrl = 'https://atlas-ai-gateway.lilithgames.com';
 
 function atlasScriptPath() {
   const appData = process.env.APPDATA;
@@ -264,14 +271,11 @@ function prunePendingAtlasLogins() {
   const now = Date.now();
   for (const [id, login] of pendingAtlasLogins) {
     if (now - login.startedAt > pendingLoginTtlMs) {
-      if (!login.closed) login.child?.kill('SIGTERM');
+      if (!login.closed) terminateAtlasProcessTree(login.child);
       pendingAtlasLogins.delete(id);
+      void removeManagedAtlasHomeDir(login.homeDir);
     }
   }
-}
-
-function extractFirstUrl(text: string) {
-  return text.match(/https?:\/\/[^\s"'<>]+/)?.[0];
 }
 
 function sanitizeAtlasLoginMessage(text: string) {
@@ -289,55 +293,42 @@ function loginMessage(login: PendingAtlasLogin, fallback: string) {
   return sanitizeAtlasLoginMessage(`${login.stderr}\n${login.stdout}`) || fallback;
 }
 
-function startAtlasLoginProcess(userId: string) {
-  const script = atlasScriptPath();
-  if (!script) throw new Error('未找到 @lilith/atlas-skillhub，请先安装莉刻 Atlas 运行时。');
+function reserveLoopbackPort() {
+  return new Promise<number>((resolve, reject) => {
+    const server = net.createServer();
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address();
+      if (!address || typeof address === 'string') {
+        server.close();
+        reject(new Error('无法分配 Atlas 授权回调端口。'));
+        return;
+      }
+      server.close((error) => (error ? reject(error) : resolve(address.port)));
+    });
+  });
+}
 
-  const id = randomUUID();
-  return createAtlasHomeDir().then((homeDir) => {
-    const login: PendingAtlasLogin = {
-      id,
-      userId,
-      homeDir,
-      startedAt: Date.now(),
-      stdout: '',
-      stderr: '',
-      closed: false,
+function waitForLoopbackListener(login: PendingAtlasLogin, timeoutMs = 5_000) {
+  const deadline = Date.now() + timeoutMs;
+  return new Promise<void>((resolve, reject) => {
+    const attempt = () => {
+      if (login.closed) {
+        reject(new Error(loginMessage(login, 'Atlas 安全授权进程启动失败。')));
+        return;
+      }
+      const socket = net.createConnection({ host: '127.0.0.1', port: login.callbackPort });
+      socket.once('connect', () => {
+        socket.destroy();
+        resolve();
+      });
+      socket.once('error', () => {
+        socket.destroy();
+        if (Date.now() >= deadline) reject(new Error('Atlas 安全授权回调启动超时。'));
+        else setTimeout(attempt, 50);
+      });
     };
-    pendingAtlasLogins.set(id, login);
-
-    const child = spawn(
-      atlasNodePath(),
-      [script, 'gateway', 'login', '--token-file', atlasTokenFile(homeDir)],
-      {
-        cwd: process.cwd(),
-        env: atlasEnv(homeDir, {
-          // Many CLI browser openers print the URL when BROWSER is echo.
-          // If atlas-skillhub opens a browser directly, polling still catches the token file once it is written.
-          BROWSER: process.env.ATLAS_BROWSER ?? 'echo',
-        }),
-        shell: false,
-        windowsHide: true,
-      },
-    );
-    login.child = child;
-
-    child.stdout.on('data', (chunk) => {
-      login.stdout += chunk.toString();
-    });
-    child.stderr.on('data', (chunk) => {
-      login.stderr += chunk.toString();
-    });
-    child.on('error', (error) => {
-      login.stderr += `\n${error.message}`;
-      login.closed = true;
-    });
-    child.on('close', (code) => {
-      login.closeCode = code;
-      login.closed = true;
-    });
-
-    return login;
+    attempt();
   });
 }
 
@@ -377,7 +368,7 @@ function atlasRuntimeVersion(script: string) {
   return undefined;
 }
 
-async function loadEncryptedTokenCacheReader() {
+function atlasSecureTokenModulePath() {
   const script = atlasScriptPath();
   if (!script) throw new Error('ATLAS_RUNTIME_UNAVAILABLE: Atlas runtime is unavailable.');
   const runtimeDir = path.dirname(script);
@@ -388,16 +379,92 @@ async function loadEncryptedTokenCacheReader() {
   for (const name of candidates) {
     const candidate = path.join(runtimeDir, name);
     const source = fs.readFileSync(candidate, 'utf8');
-    if (!source.includes('function readCache(') || !source.includes('readCache,')) continue;
-    const moduleUrl = pathToFileURL(candidate);
-    moduleUrl.searchParams.set('mtime', String(fs.statSync(candidate).mtimeMs));
-    const module = (await import(moduleUrl.href)) as AtlasTokenCacheModule;
-    if (typeof module.readCache === 'function') return module.readCache;
+    if (
+      source.includes('function readCache(') &&
+      source.includes('readCache,') &&
+      source.includes('function authenticate(') &&
+      source.includes('authenticate,')
+    ) {
+      return candidate;
+    }
   }
   const version = atlasRuntimeVersion(script) ?? 'unknown';
   throw new Error(
-    `ATLAS_RUNTIME_INCOMPATIBLE: @lilith/atlas-skillhub ${version} does not expose its secure token cache reader; minimum supported version is ${minimumCompatibleAtlasSkillhubVersion}.`,
+    `ATLAS_RUNTIME_INCOMPATIBLE: @lilith/atlas-skillhub ${version} does not expose its secure token cache reader and login bridge; minimum supported version is ${minimumCompatibleAtlasSkillhubVersion}.`,
   );
+}
+
+async function loadEncryptedTokenCacheReader() {
+  const candidate = atlasSecureTokenModulePath();
+  const moduleUrl = pathToFileURL(candidate);
+  moduleUrl.searchParams.set('mtime', String(fs.statSync(candidate).mtimeMs));
+  const module = (await import(moduleUrl.href)) as AtlasTokenCacheModule;
+  if (typeof module.readCache === 'function') return module.readCache;
+  throw new Error('ATLAS_RUNTIME_INCOMPATIBLE: Atlas secure token cache reader is unavailable.');
+}
+
+async function startSecureAtlasLoginProcess(
+  userId: string,
+  options: { linkedOAuthLoginId?: string } = {},
+) {
+  await getEncryptedTokenCacheReader();
+  const homeDir = await createAtlasHomeDir();
+  const callbackPort = await reserveLoopbackPort();
+  const helperOptions = {
+    moduleUrl: pathToFileURL(atlasSecureTokenModulePath()).href,
+    gatewayBaseUrl: atlasGatewayUrl,
+    callbackPort,
+    tokenFile: atlasTokenFile(homeDir),
+  };
+  const helperSource = `const options=JSON.parse(Buffer.from(process.env.LI3D_ATLAS_BINDING_OPTIONS,'base64url').toString('utf8'));const runtime=await import(options.moduleUrl);await runtime.authenticate({gatewayBaseUrl:options.gatewayBaseUrl,gatewayEnv:'prod',callbackPort:options.callbackPort,timeoutSeconds:600,tokenFile:options.tokenFile,localOnly:true});`;
+  const child = spawn(atlasNodePath(), ['--input-type=module', '--eval', helperSource], {
+    cwd: process.cwd(),
+    env: atlasEnv(homeDir, {
+      LI3D_ATLAS_BINDING_OPTIONS: Buffer.from(JSON.stringify(helperOptions)).toString('base64url'),
+      // Prevent the helper from opening a browser on the server. LI3D owns the
+      // public callback and forwards the token to this loopback-only listener.
+      PATH: '',
+      Path: '',
+    }),
+    shell: false,
+    windowsHide: true,
+  });
+  const login: PendingAtlasLogin = {
+    id: randomUUID(),
+    userId,
+    homeDir,
+    child,
+    callbackPort,
+    startedAt: Date.now(),
+    stdout: '',
+    stderr: '',
+    closed: false,
+    linkedOAuthLoginId: options.linkedOAuthLoginId,
+  };
+  pendingAtlasLogins.set(login.id, login);
+  child.stdout.on('data', (chunk) => {
+    login.stdout += chunk.toString();
+  });
+  child.stderr.on('data', (chunk) => {
+    login.stderr += chunk.toString();
+  });
+  child.on('error', (error) => {
+    login.stderr += `\n${error.message}`;
+    login.closed = true;
+  });
+  child.on('close', (code) => {
+    login.closeCode = code;
+    login.closed = true;
+  });
+  try {
+    await waitForLoopbackListener(login);
+    return login;
+  } catch (error) {
+    pendingAtlasLogins.delete(login.id);
+    if (!login.closed) terminateAtlasProcessTree(login.child);
+    await removeManagedAtlasHomeDir(homeDir);
+    throw error;
+  }
 }
 
 function getEncryptedTokenCacheReader() {
@@ -568,32 +635,41 @@ async function removeManagedAtlasHomeDir(homeDir?: string) {
 }
 
 function bindingResponse(login: PendingAtlasLogin) {
+  const callbackUrl = new URL(
+    `${serverConfig.publicWorkspaceUrl.replace(/\/$/, '')}/api/liclick/account-binding/callback`,
+  );
+  callbackUrl.searchParams.set('loginId', login.id);
+  const redirectUrl = new URL(serverConfig.idaasJwtSso.url);
+  redirectUrl.searchParams.set('redirect_uri', callbackUrl.toString());
+  redirectUrl.searchParams.set('state', login.id);
+  if (serverConfig.idaasJwtSso.enterpriseId) {
+    redirectUrl.searchParams.set('enterpriseId', serverConfig.idaasJwtSso.enterpriseId);
+  }
   return {
     loginId: login.id,
-    status: 'pending' as const,
-    redirectUrl: extractFirstUrl(`${login.stdout}\n${login.stderr}`),
-    message: loginMessage(login, '请在莉刻授权页面完成当前账号授权。'),
+    status: login.email ? ('bound' as const) : ('pending' as const),
+    redirectUrl: login.email ? undefined : redirectUrl.toString(),
+    email: login.email,
+    expiresAt: login.expiresAt,
+    message: login.email
+      ? '当前飞书用户的莉刻账号已自动关联。'
+      : login.error ?? '正在使用当前企业身份安全关联莉刻账号。',
   };
 }
 
-export async function startPersonalLiclickAccountBinding(user: AuthUser) {
+export async function startPersonalLiclickAccountBinding(
+  user: AuthUser,
+  options: { linkedOAuthLoginId?: string } = {},
+) {
   if (!user.email) throw new Error('当前飞书账号没有邮箱，无法校验莉刻账号归属。');
   prunePendingAtlasLogins();
   for (const login of pendingAtlasLogins.values()) {
     if (login.userId !== user.id) continue;
-    if (!login.closed) login.child?.kill('SIGTERM');
+    if (!login.closed) terminateAtlasProcessTree(login.child);
     pendingAtlasLogins.delete(login.id);
-    await removeManagedAtlasHomeDir(login.homeDir);
+    if (!login.email) await removeManagedAtlasHomeDir(login.homeDir);
   }
-  const login = await startAtlasLoginProcess(user.id);
-  const deadline = Date.now() + 3_000;
-  while (
-    !login.closed &&
-    !extractFirstUrl(`${login.stdout}\n${login.stderr}`) &&
-    Date.now() < deadline
-  ) {
-    await new Promise((resolve) => setTimeout(resolve, 100));
-  }
+  const login = await startSecureAtlasLoginProcess(user.id, options);
   return bindingResponse(login);
 }
 
@@ -601,51 +677,85 @@ export async function pollPersonalLiclickAccountBinding(loginId: string, user: A
   prunePendingAtlasLogins();
   const login = pendingAtlasLogins.get(loginId);
   if (!login || login.userId !== user.id) throw new Error('莉刻账号授权请求不存在或已过期。');
-  const tokenFile = atlasTokenFile(login.homeDir);
-  if (fs.existsSync(tokenFile)) {
-    const status = await getAtlasStatus(login.homeDir);
-    if (status.valid) {
-      const identity = await getAtlasIdentity(login.homeDir);
-      if (
-        !user.email ||
-        !identity.email ||
-        user.email.toLowerCase() !== identity.email.toLowerCase()
-      ) {
-        pendingAtlasLogins.delete(login.id);
-        if (!login.closed) login.child?.kill('SIGTERM');
-        await removeManagedAtlasHomeDir(login.homeDir);
-        throw new Error('莉刻账号与当前飞书登录账号不一致，已拒绝绑定。');
-      }
-      const savedUser = await setUserAtlasHomeDir(user.id, login.homeDir);
-      if (!savedUser) throw new Error('当前用户不存在，无法保存莉刻账号绑定。');
-      pendingAtlasLogins.delete(login.id);
-      if (!login.closed) login.child?.kill('SIGTERM');
-      return {
-        loginId: login.id,
-        status: 'bound' as const,
-        email: identity.email,
-        expiresAt: status.expiresAt,
-        message: '莉刻账号已绑定到当前飞书用户。',
-      };
-    }
-  }
-  if (login.closed && login.closeCode !== 0) {
-    pendingAtlasLogins.delete(login.id);
-    await removeManagedAtlasHomeDir(login.homeDir);
-    throw new Error(loginMessage(login, '莉刻账号授权失败，请重试。'));
-  }
+  if (login.error) throw new Error(login.error);
   return bindingResponse(login);
+}
+
+export function getPersonalLiclickAccountCallbackHtml(loginId: string, user: AuthUser) {
+  const login = pendingAtlasLogins.get(loginId);
+  if (!login || login.userId !== user.id) throw new Error('莉刻账号授权请求不存在或不属于当前用户。');
+  return `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>LI3D 账号关联</title><body style="font-family:Arial,'Microsoft YaHei',sans-serif;background:#090a18;color:#fff;padding:40px"><h2>正在关联莉刻账号</h2><p id="status">正在安全校验当前企业身份，请稍候…</p><script>(async()=>{const status=document.getElementById('status');try{const fragment=new URLSearchParams(location.hash.replace(/^#/,''));const query=new URLSearchParams(location.search);const idToken=fragment.get('id_token')||query.get('id_token');const accessToken=fragment.get('access_token')||query.get('access_token');history.replaceState(null,'',location.pathname+location.search);if(!idToken&&!accessToken)throw new Error('IDaaS 回调缺少身份令牌');const response=await fetch(location.pathname+location.search,{method:'POST',credentials:'include',headers:{'content-type':'application/json'},body:JSON.stringify({idToken,accessToken})});const payload=await response.json().catch(()=>({}));if(!response.ok)throw new Error(payload.error||'账号关联失败');status.textContent='账号关联成功，可以返回 LI3D。';try{window.opener&&window.opener.postMessage({type:'liclick-auth-callback',success:true},'*')}catch{}setTimeout(()=>window.close(),500)}catch(error){status.textContent=error instanceof Error?error.message:'账号关联失败';try{window.opener&&window.opener.postMessage({type:'liclick-auth-callback',success:false},'*')}catch{}}})();</script></body></html>`;
+}
+
+function waitForAtlasLoginExit(login: PendingAtlasLogin, timeoutMs = 20_000) {
+  const deadline = Date.now() + timeoutMs;
+  return new Promise<void>((resolve, reject) => {
+    const check = () => {
+      if (login.closed) {
+        if (login.closeCode === 0) resolve();
+        else reject(new Error(loginMessage(login, 'Atlas 安全凭据写入失败。')));
+        return;
+      }
+      if (Date.now() >= deadline) {
+        terminateAtlasProcessTree(login.child);
+        reject(new Error('Atlas 安全凭据写入超时。'));
+        return;
+      }
+      setTimeout(check, 50);
+    };
+    check();
+  });
+}
+
+export async function completePersonalLiclickAccountBinding(
+  loginId: string,
+  user: AuthUser,
+  tokens: { idToken?: string; accessToken?: string },
+) {
+  prunePendingAtlasLogins();
+  const login = pendingAtlasLogins.get(loginId);
+  if (!login || login.userId !== user.id) throw new Error('莉刻账号授权请求不存在或不属于当前用户。');
+  if (!user.email) throw new Error('当前飞书账号没有邮箱，无法校验莉刻账号归属。');
+  if (login.email) return { ...bindingResponse(login), linkedOAuthLoginId: login.linkedOAuthLoginId };
+  const idToken = tokens.idToken?.trim();
+  const accessToken = tokens.accessToken?.trim();
+  if (!idToken && !accessToken) throw new Error('IDaaS 回调缺少有效身份令牌。');
+  try {
+    const response = await fetch(`http://127.0.0.1:${login.callbackPort}/callback/token`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ id_token: idToken, access_token: accessToken }),
+      signal: AbortSignal.timeout(5_000),
+    });
+    if (!response.ok) throw new Error(`Atlas 安全回调返回 HTTP ${response.status}。`);
+    await waitForAtlasLoginExit(login);
+    const tokenCache = await readCompatibleAtlasTokenCache(login.homeDir);
+    assertValidAtlasToken(tokenCache, atlasTokenFile(login.homeDir));
+    await runAtlas(['gateway', 'list-tools', '--service', 'liclick'], 60_000, false, login.homeDir);
+    const identity = await getAtlasIdentity(login.homeDir);
+    if (!identity.email || identity.email.trim().toLowerCase() !== user.email.trim().toLowerCase()) {
+      throw new Error('莉刻账号与当前飞书登录账号不一致，已拒绝关联。');
+    }
+    const savedUser = await setUserAtlasHomeDir(user.id, login.homeDir);
+    if (!savedUser) throw new Error('当前用户不存在，无法保存莉刻账号关联。');
+    login.email = identity.email;
+    login.expiresAt = tokenCache.expires_at;
+    return { ...bindingResponse(login), linkedOAuthLoginId: login.linkedOAuthLoginId };
+  } catch (error) {
+    login.error = error instanceof Error ? error.message : '莉刻账号关联失败。';
+    if (!login.closed) terminateAtlasProcessTree(login.child);
+    await removeManagedAtlasHomeDir(login.homeDir);
+    throw error;
+  }
 }
 
 export async function getPersonalLiclickAccount(user: AuthUser) {
   if (!user.atlasHomeDir) return { bound: false as const };
   try {
-    const [status, identity] = await Promise.all([
-      getAtlasStatus(user.atlasHomeDir),
-      getAtlasIdentity(user.atlasHomeDir),
-    ]);
+    const tokenCache = await readCompatibleAtlasTokenCache(user.atlasHomeDir);
+    assertValidAtlasToken(tokenCache, atlasTokenFile(user.atlasHomeDir));
+    const identity = await getAtlasIdentity(user.atlasHomeDir);
     const matches = Boolean(
-      status.valid &&
       user.email &&
       identity.email &&
       user.email.toLowerCase() === identity.email.toLowerCase(),
@@ -653,7 +763,7 @@ export async function getPersonalLiclickAccount(user: AuthUser) {
     return {
       bound: matches,
       email: matches ? identity.email : undefined,
-      expiresAt: matches ? status.expiresAt : undefined,
+      expiresAt: matches ? tokenCache.expires_at : undefined,
       reason: matches ? undefined : '个人莉刻账号未登录、已过期或与飞书账号不一致。',
     };
   } catch {

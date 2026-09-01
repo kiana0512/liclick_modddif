@@ -3,12 +3,15 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {
   checkLiclickApiAccess,
+  completePersonalLiclickAccountBinding,
   getAtlasIdentity,
   getPersonalLiclickAccount,
+  getPersonalLiclickAccountCallbackHtml,
   pollPersonalLiclickAccountBinding,
   startPersonalLiclickAccountBinding,
   unlinkPersonalLiclickAccount,
 } from '../auth/atlasAuthService.js';
+import { completeWebOAuthLiclickBinding } from '../auth/webOAuthService.js';
 import type { AuthUser } from '../auth/authTypes.js';
 import { requireAuth } from '../auth/authMiddleware.js';
 import {
@@ -720,6 +723,65 @@ export async function handleLiclickRoute(
 
   if (isLiclickRoute && request.method === 'GET' && segments[2] === 'account' && !segments[3]) {
     sendJson(response, 200, await getPersonalLiclickAccount(user));
+    return true;
+  }
+
+  if (
+    isLiclickRoute &&
+    request.method === 'GET' &&
+    segments[2] === 'account-binding' &&
+    segments[3] === 'callback'
+  ) {
+    try {
+      const loginId = url.searchParams.get('loginId') ?? '';
+      const html = getPersonalLiclickAccountCallbackHtml(loginId, user);
+      response.writeHead(200, {
+        'content-type': 'text/html; charset=utf-8',
+        'cache-control': 'no-store',
+        'referrer-policy': 'no-referrer',
+        'content-security-policy': "default-src 'none'; script-src 'unsafe-inline'; connect-src 'self'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'",
+        'permissions-policy': 'camera=(), microphone=(), geolocation=()',
+      });
+      response.end(html);
+    } catch (error) {
+      response.writeHead(410, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' });
+      response.end(error instanceof Error ? error.message : '莉刻账号授权请求已失效。');
+    }
+    return true;
+  }
+
+  if (
+    isLiclickRoute &&
+    request.method === 'POST' &&
+    segments[2] === 'account-binding' &&
+    segments[3] === 'callback'
+  ) {
+    try {
+      const loginId = url.searchParams.get('loginId') ?? '';
+      const body = await readJsonBody<{ idToken?: string; accessToken?: string }>(request, 128 * 1024);
+      if (
+        (!body.idToken && !body.accessToken) ||
+        (body.idToken?.length ?? 0) > 48 * 1024 ||
+        (body.accessToken?.length ?? 0) > 48 * 1024
+      ) {
+        throw new Error('IDaaS 回调缺少有效身份令牌。');
+      }
+      const result = await completePersonalLiclickAccountBinding(loginId, user, body);
+      if (result.linkedOAuthLoginId) {
+        await completeWebOAuthLiclickBinding(result.linkedOAuthLoginId, loginId, user);
+      }
+      sendJson(response, 200, {
+        status: result.status,
+        email: result.email,
+        expiresAt: result.expiresAt,
+        message: result.message,
+      });
+    } catch (error) {
+      sendJson(response, 409, {
+        code: 'LICLICK_ACCOUNT_BINDING_CALLBACK_FAILED',
+        error: error instanceof Error ? error.message : '莉刻账号关联失败。',
+      });
+    }
     return true;
   }
 
