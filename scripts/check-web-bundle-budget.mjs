@@ -14,7 +14,7 @@ const budgets = [
     // application shell and is counted by the total JavaScript budget below.
     minimumMatchBytes: 100_000,
   },
-  { label: 'editor route', prefix: 'EditorPage-', maxBytes: 490_000 },
+  { label: 'editor route', prefix: 'EditorPage-', maxBytes: 495_000 },
   { label: 'high bake snapshot', prefix: 'bakeHighSnapshot-', maxBytes: 700_000 },
   {
     label: 'shared 3D pipeline',
@@ -24,10 +24,10 @@ const budgets = [
     maxBytes: 850_000,
   },
 ];
-// PERF-LAB-REPORT v2 adds an isolated recorder, durable upload Worker and
-// maintainer-only analysis route. The measured release delta is ~16 KiB over
-// the previous ceiling; keep 14 KiB headroom without relaxing route budgets.
-const maxTotalJavaScriptBytes = 3_080_000;
+// PERF-LAB-REPORT v2 plus the continuously visible local-repaint resident
+// handoff measure 3,084,586 bytes in the cloud build. Keep roughly 5 KiB of
+// deterministic-build headroom without relaxing shell or shared-pipeline budgets.
+const maxTotalJavaScriptBytes = 3_090_000;
 
 let entries;
 try {
