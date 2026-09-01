@@ -187,6 +187,13 @@ try {
     new URL('../src/engine/viewport/ViewportCanvas.tsx', import.meta.url),
     'utf8',
   );
+  const fastPreview = readFileSync(
+    new URL(
+      '../src/engine/localRepaint/liveLocalRepaintFastPreview.ts',
+      import.meta.url,
+    ),
+    'utf8',
+  );
   assert.match(sceneRoot, /mergeOrderedLocalRepaintPreview/);
   assert.match(
     sceneRoot,
@@ -224,6 +231,33 @@ try {
     viewport,
     /const layerVisible = readLocalRepaintGpuOverlayLayerVisibility\(overlay\);[\s\S]*?const visible =\s*isLocalRepaintOverlayVisible\([\s\S]*?&&\s*shouldUseDedicatedLocalRepaintOverlay\([\s\S]*?syncLocalRepaintGpuOverlayBinding\(overlay,\s*\{[\s\S]*?visible,/,
     'pointer-down must force the mutable renderer overlay on for immediate feedback',
+  );
+  assert.match(
+    viewport,
+    /const rendererPreviewOwnsPresentation = fastPreviewVisible \|\| orderedStackOwnsPreview;[\s\S]*?!rendererPreviewOwnsPresentation[\s\S]*?setLocalRepaintPreviewLayer\(undefined\)/,
+    'the current persisted twin must stay visible until its fast preview is actually submitted',
+  );
+  assert.match(
+    viewport,
+    /setLocalRepaintGpuOverlayVisibility\(\s*overlay,\s*shouldRender && !fastPreviewCanRender/,
+    'the exact and fast renderer twins must never be submitted together',
+  );
+  assert.match(
+    viewport,
+    /isLocalRepaintLayerResident\(fastPreview\.root\.parent, fastPreview\.layerId\)[\s\S]*?setLocalRepaintPreviewLayer\(undefined\)/,
+    'leaving apply mode must release only the current preview after its formal layer is resident',
+  );
+  assert.match(fastPreview, /uniform sampler2D projectedMap/);
+  assert.match(fastPreview, /uniform sampler2D maskMap/);
+  assert.doesNotMatch(
+    fastPreview,
+    /depthMap|normalMap|surfaceLockedVisibility/,
+    'the immediate fallback must stay independent from asynchronous quality visibility assets',
+  );
+  assert.match(
+    sceneRoot,
+    /visibleProjectedContentChanged[\s\S]*?previousLayer\.contentRevision !== layer\.contentRevision[\s\S]*?requiresMaterialReconciliation = true/,
+    'a published repaint revision must automatically rebuild the formal projected presentation',
   );
 
   console.log('Local repaint ordered composition invariants passed.');

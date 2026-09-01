@@ -424,7 +424,7 @@ function importedModelLayerDisplaySignature(layers: Layer[], objectId: string) {
     .filter((layer) => !layer.objectId || layer.objectId === objectId)
     .map(
       (layer) =>
-        `${layer.id}:${layer.type}:${layer.role ?? ''}:${layer.order}:${Number(layer.visible)}:${layer.opacity}:${layer.strength ?? 1}:${layer.blendMode}:${layer.adjustments?.hue ?? 0}:${layer.adjustments?.saturation ?? 0}:${layer.adjustments?.lightness ?? 0}`,
+        `${layer.id}:${layer.type}:${layer.role ?? ''}:${layer.order}:${Number(layer.visible)}:${layer.opacity}:${layer.strength ?? 1}:${layer.blendMode}:${layer.adjustments?.hue ?? 0}:${layer.adjustments?.saturation ?? 0}:${layer.adjustments?.lightness ?? 0}:${layer.generationId ?? ''}:${layer.captureId ?? ''}:${layer.contentRevision ?? 0}`,
     )
     .join('|');
 }
@@ -1964,6 +1964,23 @@ function ImportedModel({
           previousLayer.role !== layer.role
         );
       });
+      const visibleProjectedContentChanged = state.layers.some((layer) => {
+        if (
+          layer.type !== 'projected' ||
+          !layer.visible ||
+          (layer.objectId && layer.objectId !== importedModel.objectId)
+        )
+          return false;
+        const previousLayer = previousLayerById.get(layer.id);
+        return (
+          !previousLayer ||
+          previousLayer.imageUrl !== layer.imageUrl ||
+          previousLayer.maskUrl !== layer.maskUrl ||
+          previousLayer.depthUrl !== layer.depthUrl ||
+          previousLayer.contentRevision !== layer.contentRevision ||
+          previousLayer.role !== layer.role
+        );
+      });
       const visibleOrdinaryUvLayers = objectUvLayers.filter(
         (layer) =>
           layer.visible &&
@@ -2064,7 +2081,12 @@ function ImportedModel({
         visibleLocalRepaintUvLayers.length > 0 ||
         visibleContentAwareUvLayers.length > 0;
       const hasVisibleProjectedContribution = displayLayers.some((layer) => layer.visible);
-      if (reopenedUvLayer || reopenedProjectedLayer || visibleUvContentChanged) {
+      if (
+        reopenedUvLayer ||
+        reopenedProjectedLayer ||
+        visibleUvContentChanged ||
+        visibleProjectedContentChanged
+      ) {
         requiresMaterialReconciliation = true;
       }
       // Visibility normally stays on the zero-allocation uniform path. A cold
