@@ -286,3 +286,23 @@ export async function upsertUser(input: {
   await ensureUserWorkspace(savedUser!.id);
   return savedUser!;
 }
+
+export async function setUserAtlasHomeDir(userId: string, atlasHomeDir?: string) {
+  if (postgresControlRepository) {
+    return postgresControlRepository.setUserAtlasHomeDir(userId, atlasHomeDir);
+  }
+  let savedUser: AuthUser | undefined;
+  await updateAuthDatabase((database) => ({
+    ...database,
+    users: database.users.map((user) => {
+      if (user.id !== userId) return user;
+      savedUser = {
+        ...user,
+        atlasHomeDir,
+        updatedAt: new Date().toISOString(),
+      };
+      return savedUser;
+    }),
+  }));
+  return savedUser;
+}

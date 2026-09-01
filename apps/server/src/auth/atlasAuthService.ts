@@ -4,10 +4,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { randomUUID } from 'node:crypto';
-import type { IncomingMessage, ServerResponse } from 'node:http';
-import { createSession, upsertUser } from './sessionService.js';
+import { setUserAtlasHomeDir } from './sessionService.js';
 import { serverConfig } from '../config.js';
-import { enrichFeishuUserByEmail } from '../services/feishuPlatformService.js';
 import type { AuthUser } from './authTypes.js';
 
 type AtlasCommandResult = {
@@ -26,14 +24,9 @@ type AtlasStatus = {
   expires_at?: string;
 };
 
-type PublicAtlasStatus = {
-  valid: boolean;
-  expiresAt?: string;
-  message?: string;
-};
-
 type PendingAtlasLogin = {
   id: string;
+  userId: string;
   homeDir: string;
   child?: ChildProcessWithoutNullStreams;
   startedAt: number;
@@ -252,14 +245,7 @@ function loginMessage(login: PendingAtlasLogin, fallback: string) {
   return sanitizeAtlasLoginMessage(`${login.stderr}\n${login.stdout}`) || fallback;
 }
 
-function cancelPendingAtlasLogins() {
-  for (const login of pendingAtlasLogins.values()) {
-    if (!login.closed) login.child?.kill('SIGTERM');
-  }
-  pendingAtlasLogins.clear();
-}
-
-function startAtlasLoginProcess() {
+function startAtlasLoginProcess(userId: string) {
   const script = atlasScriptPath();
   if (!script) throw new Error('未找到 @lilith/atlas-skillhub，请先安装莉刻 Atlas 运行时。');
 
@@ -267,6 +253,7 @@ function startAtlasLoginProcess() {
   return createAtlasHomeDir().then((homeDir) => {
     const login: PendingAtlasLogin = {
       id,
+      userId,
       homeDir,
       startedAt: Date.now(),
       stdout: '',
@@ -370,6 +357,9 @@ export async function callAtlasToolJson(
   timeoutMs: number,
   homeDir?: string,
 ): Promise<AtlasToolCallResult> {
+  if (!homeDir?.trim()) {
+    throw new Error('LICLICK_PERSONAL_ACCOUNT_REQUIRED: 禁止使用服务器共享 Atlas 凭据调用莉刻。');
+  }
   const tokenFile = atlasTokenFile(homeDir);
   const cache = await readCompatibleAtlasTokenCache(homeDir);
   assertValidAtlasToken(cache, tokenFile);
@@ -442,13 +432,6 @@ export async function getAtlasIdentity(homeDir?: string) {
   };
 }
 
-function avatarDataUrl(displayName: string, email?: string) {
-  const hue = Math.abs([...`${displayName}${email ?? ''}`].reduce((sum, char) => sum + char.charCodeAt(0), 0)) % 360;
-  const initial = (displayName.trim() || email?.trim() || 'L').slice(0, 1).toUpperCase();
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="96" height="96" viewBox="0 0 96 96"><defs><linearGradient id="g" x1="0" x2="1" y1="0" y2="1"><stop stop-color="hsl(${hue} 88% 62%)"/><stop offset="1" stop-color="hsl(${(hue + 54) % 360} 78% 56%)"/></linearGradient></defs><rect width="96" height="96" rx="48" fill="url(#g)"/><text x="50%" y="54%" text-anchor="middle" dominant-baseline="middle" font-family="Arial, sans-serif" font-size="42" font-weight="700" fill="white">${initial}</text></svg>`;
-  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
-}
-
 export async function getAtlasStatus(homeDir?: string) {
   const result = await runAtlas(['gateway', 'status'], 30_000, true, homeDir);
   const parsed = parseJsonFromOutput(result.stdout) as AtlasStatus;
@@ -461,32 +444,114 @@ export async function getAtlasStatus(homeDir?: string) {
   };
 }
 
-async function createLoggedInSession(homeDir: string, request: IncomingMessage, response: ServerResponse) {
-  const atlasIdentity = await getAtlasIdentity(homeDir);
-  const directoryProfile = atlasIdentity.email
-    ? await enrichFeishuUserByEmail(atlasIdentity.email).catch((error) => {
-        console.warn(
-          '[LI3D Atlas profile] Optional Feishu avatar enrichment failed:',
-          error instanceof Error ? error.message : 'unknown error',
-        );
-        return undefined;
-      })
-    : undefined;
-  const email = directoryProfile?.email ?? atlasIdentity.email;
-  const displayName = directoryProfile?.name || atlasIdentity.displayName;
-  const user = await upsertUser({
-    id: email ? `atlas-${email.toLowerCase()}` : undefined,
-    displayName,
-    email,
-    avatarUrl: directoryProfile?.avatarUrl ?? avatarDataUrl(displayName, email),
-    authSource: 'feishu-oauth',
-    atlasHomeDir: homeDir,
-  });
-  await createSession(user.id, 'feishu-oauth', request, response);
-  return user;
+function isManagedAtlasHomeDir(homeDir?: string) {
+  if (!homeDir) return false;
+  const relative = path.relative(userAtlasHomesRoot(), path.resolve(homeDir));
+  return Boolean(relative) && relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+}
+
+async function removeManagedAtlasHomeDir(homeDir?: string) {
+  if (!isManagedAtlasHomeDir(homeDir)) return;
+  await fs.promises.rm(path.resolve(homeDir!), { recursive: true, force: true });
+}
+
+function bindingResponse(login: PendingAtlasLogin) {
+  return {
+    loginId: login.id,
+    status: 'pending' as const,
+    redirectUrl: extractFirstUrl(`${login.stdout}\n${login.stderr}`),
+    message: loginMessage(login, '请在莉刻授权页面完成当前账号授权。'),
+  };
+}
+
+export async function startPersonalLiclickAccountBinding(user: AuthUser) {
+  if (!user.email) throw new Error('当前飞书账号没有邮箱，无法校验莉刻账号归属。');
+  prunePendingAtlasLogins();
+  for (const login of pendingAtlasLogins.values()) {
+    if (login.userId !== user.id) continue;
+    if (!login.closed) login.child?.kill('SIGTERM');
+    pendingAtlasLogins.delete(login.id);
+    await removeManagedAtlasHomeDir(login.homeDir);
+  }
+  const login = await startAtlasLoginProcess(user.id);
+  const deadline = Date.now() + 3_000;
+  while (!login.closed && !extractFirstUrl(`${login.stdout}\n${login.stderr}`) && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  return bindingResponse(login);
+}
+
+export async function pollPersonalLiclickAccountBinding(loginId: string, user: AuthUser) {
+  prunePendingAtlasLogins();
+  const login = pendingAtlasLogins.get(loginId);
+  if (!login || login.userId !== user.id) throw new Error('莉刻账号授权请求不存在或已过期。');
+  const tokenFile = atlasTokenFile(login.homeDir);
+  if (fs.existsSync(tokenFile)) {
+    const status = await getAtlasStatus(login.homeDir);
+    if (status.valid) {
+      const identity = await getAtlasIdentity(login.homeDir);
+      if (!user.email || !identity.email || user.email.toLowerCase() !== identity.email.toLowerCase()) {
+        pendingAtlasLogins.delete(login.id);
+        if (!login.closed) login.child?.kill('SIGTERM');
+        await removeManagedAtlasHomeDir(login.homeDir);
+        throw new Error('莉刻账号与当前飞书登录账号不一致，已拒绝绑定。');
+      }
+      const savedUser = await setUserAtlasHomeDir(user.id, login.homeDir);
+      if (!savedUser) throw new Error('当前用户不存在，无法保存莉刻账号绑定。');
+      pendingAtlasLogins.delete(login.id);
+      if (!login.closed) login.child?.kill('SIGTERM');
+      return {
+        loginId: login.id,
+        status: 'bound' as const,
+        email: identity.email,
+        expiresAt: status.expiresAt,
+        message: '莉刻账号已绑定到当前飞书用户。',
+      };
+    }
+  }
+  if (login.closed && login.closeCode !== 0) {
+    pendingAtlasLogins.delete(login.id);
+    await removeManagedAtlasHomeDir(login.homeDir);
+    throw new Error(loginMessage(login, '莉刻账号授权失败，请重试。'));
+  }
+  return bindingResponse(login);
+}
+
+export async function getPersonalLiclickAccount(user: AuthUser) {
+  if (!user.atlasHomeDir) return { bound: false as const };
+  try {
+    const [status, identity] = await Promise.all([
+      getAtlasStatus(user.atlasHomeDir),
+      getAtlasIdentity(user.atlasHomeDir),
+    ]);
+    const matches = Boolean(
+      status.valid && user.email && identity.email && user.email.toLowerCase() === identity.email.toLowerCase(),
+    );
+    return {
+      bound: matches,
+      email: matches ? identity.email : undefined,
+      expiresAt: matches ? status.expiresAt : undefined,
+      reason: matches ? undefined : '个人莉刻账号未登录、已过期或与飞书账号不一致。',
+    };
+  } catch {
+    return { bound: false as const, reason: '个人莉刻账号不可用，请重新绑定。' };
+  }
+}
+
+export async function unlinkPersonalLiclickAccount(user: AuthUser) {
+  await setUserAtlasHomeDir(user.id, undefined);
+  await removeManagedAtlasHomeDir(user.atlasHomeDir);
 }
 
 export async function checkLiclickApiAccess(user?: AuthUser) {
+  if (!user?.atlasHomeDir) {
+    return {
+      ok: false,
+      status: { valid: false, message: '当前飞书用户尚未绑定个人莉刻账号。' },
+      tools: [] as string[],
+      message: '当前飞书用户尚未绑定个人莉刻账号。',
+    };
+  }
   const status = await getAtlasStatus(user?.atlasHomeDir);
   if (!status.valid) {
     return {

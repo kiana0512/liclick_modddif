@@ -651,15 +651,19 @@ async function uploadReference(
   _tempDir: string,
   atlasContext: LiclickAtlasContext = {},
 ): Promise<UploadedReference> {
+  const personalAtlasHomeDir = atlasContext.atlasHomeDir?.trim();
+  if (!personalAtlasHomeDir) {
+    throw new Error('LICLICK_PERSONAL_ACCOUNT_REQUIRED: 当前用户尚未绑定个人莉刻账号。');
+  }
   const toolArguments: Record<string, unknown> = { asset_type: 'image' };
   let cacheKey: string;
   if (reference.url.startsWith('data:')) {
     const { buffer } = dataUrlToBuffer(reference.url);
     const digest = createHash('sha256').update(buffer).digest('hex');
-    cacheKey = `${atlasContext.atlasHomeDir ?? 'default'}:image:${digest}`;
+    cacheKey = `${personalAtlasHomeDir}:image:${digest}`;
     toolArguments.file_path = reference.url;
   } else {
-    cacheKey = `${atlasContext.atlasHomeDir ?? 'default'}:image-url:${reference.url}`;
+    cacheKey = `${personalAtlasHomeDir}:image-url:${reference.url}`;
     toolArguments.url = reference.url;
   }
 
@@ -671,7 +675,7 @@ async function uploadReference(
         'upload_asset',
         toolArguments,
         10 * 60 * 1000,
-        atlasContext.atlasHomeDir,
+        personalAtlasHomeDir,
       );
       const parsed = parseJsonFromOutput(upload.stdout);
       const assetId =
@@ -705,6 +709,9 @@ export async function pollLiclickImageTask(
   taskId: string,
   atlasContext: LiclickAtlasContext = {},
 ): Promise<LiclickImageTaskResult> {
+  if (!atlasContext.atlasHomeDir?.trim()) {
+    throw new Error('LICLICK_PERSONAL_ACCOUNT_REQUIRED: 当前用户尚未绑定个人莉刻账号。');
+  }
   const poll = await callAtlasToolJson(
     'liclick',
     'get_task_status',
@@ -719,6 +726,9 @@ export async function submitLiclickImageJob(
   input: GenerateImageInput,
   atlasContext: LiclickAtlasContext = {},
 ): Promise<LiclickImageSubmission> {
+  if (!atlasContext.atlasHomeDir?.trim()) {
+    throw new Error('LICLICK_PERSONAL_ACCOUNT_REQUIRED: 当前用户尚未绑定个人莉刻账号。');
+  }
   return withTempDir(async (tempDir) => {
     const references = (input.references ?? []).slice(0, 10);
     const uploadedReferences = await Promise.all(
@@ -762,6 +772,9 @@ export async function submitLiclickImageEdit(
   input: EditImageInput,
   atlasContext: LiclickAtlasContext = {},
 ): Promise<LiclickImageSubmission> {
+  if (!atlasContext.atlasHomeDir?.trim()) {
+    throw new Error('LICLICK_PERSONAL_ACCOUNT_REQUIRED: 当前用户尚未绑定个人莉刻账号。');
+  }
   return withTempDir(async (tempDir) => {
     const { task: extraParams, workspaceId } = buildLocalRepaintTask(input);
     let submit;

@@ -1,7 +1,14 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
-import { checkLiclickApiAccess, getAtlasIdentity } from '../auth/atlasAuthService.js';
+import {
+  checkLiclickApiAccess,
+  getAtlasIdentity,
+  getPersonalLiclickAccount,
+  pollPersonalLiclickAccountBinding,
+  startPersonalLiclickAccountBinding,
+  unlinkPersonalLiclickAccount,
+} from '../auth/atlasAuthService.js';
 import type { AuthUser } from '../auth/authTypes.js';
 import { requireAuth } from '../auth/authMiddleware.js';
 import {
@@ -679,13 +686,21 @@ function getJobListResponse(job: GenerationJob) {
 }
 
 function assertJobUsesPersonalLiclickAccount(
-  _job: Pick<GenerationJob | EditImageJob, 'atlasHomeDir'>,
+  job: Pick<GenerationJob | EditImageJob, 'atlasHomeDir'>,
 ) {
-  // Browser users submit through the authenticated cloud control plane. The
-  // production service owns upstream credentials; no device account is needed.
+  if (!job.atlasHomeDir) {
+    throw new Error('LICLICK_PERSONAL_ACCOUNT_REQUIRED: 当前任务没有绑定个人莉刻账号。');
+  }
 }
 
-function requirePersonalLiclickAccount(_response: ServerResponse, _user: AuthUser) {
+function requirePersonalLiclickAccount(response: ServerResponse, user: AuthUser) {
+  if (!user.atlasHomeDir) {
+    sendJson(response, 409, {
+      code: 'LICLICK_PERSONAL_ACCOUNT_REQUIRED',
+      error: '当前飞书用户尚未绑定个人莉刻账号，请在右上角账号菜单完成绑定后重试。',
+    });
+    return false;
+  }
   return true;
 }
 
@@ -703,6 +718,51 @@ export async function handleLiclickRoute(
   const user = authenticatedUser ?? (await requireAuth(request, response));
   if (!user) return true;
 
+  if (isLiclickRoute && request.method === 'GET' && segments[2] === 'account' && !segments[3]) {
+    sendJson(response, 200, await getPersonalLiclickAccount(user));
+    return true;
+  }
+
+  if (
+    isLiclickRoute &&
+    request.method === 'POST' &&
+    segments[2] === 'account-binding' &&
+    segments[3] === 'start'
+  ) {
+    try {
+      sendJson(response, 200, await startPersonalLiclickAccountBinding(user));
+    } catch (error) {
+      sendJson(response, 409, {
+        code: 'LICLICK_ACCOUNT_BINDING_START_FAILED',
+        error: error instanceof Error ? error.message : '莉刻账号授权启动失败。',
+      });
+    }
+    return true;
+  }
+
+  if (
+    isLiclickRoute &&
+    request.method === 'GET' &&
+    segments[2] === 'account-binding' &&
+    segments[3]
+  ) {
+    try {
+      sendJson(response, 200, await pollPersonalLiclickAccountBinding(segments[3], user));
+    } catch (error) {
+      sendJson(response, 409, {
+        code: 'LICLICK_ACCOUNT_BINDING_FAILED',
+        error: error instanceof Error ? error.message : '莉刻账号授权失败。',
+      });
+    }
+    return true;
+  }
+
+  if (isLiclickRoute && request.method === 'DELETE' && segments[2] === 'account' && !segments[3]) {
+    await unlinkPersonalLiclickAccount(user);
+    sendJson(response, 200, { bound: false });
+    return true;
+  }
+
   if (isLiclickRoute && request.method === 'POST' && segments[2] === 'prompt-polish') {
     if (promptPolishUsers.has(user.id)) {
       sendJson(response, 409, { code: 'PROMPT_POLISH_BUSY', error: '智能润色正在处理中。' });
@@ -710,6 +770,7 @@ export async function handleLiclickRoute(
     }
     const input = await readJsonBody<PromptPolishInput>(request, 48 * 1024 * 1024);
     const context = input.context === 'local-repaint' ? input.context : 'general';
+    if (context === 'general' && !requirePersonalLiclickAccount(response, user)) return true;
     const prompt = typeof input.prompt === 'string' ? input.prompt.trim() : '';
     const maxLength = context === 'local-repaint' ? 4096 : 12_000;
     if ((context === 'general' && !prompt) || Array.from(prompt).length > maxLength) {
@@ -902,22 +963,6 @@ export async function handleLiclickRoute(
     if (!requirePersonalLiclickAccount(response, user)) return true;
     const job = findEditImageJob(segments[3]);
     if (!job || job.userId !== user.id) {
-      try {
-        const result = await pollLiclickImageTask(segments[3], { atlasHomeDir: user.atlasHomeDir });
-        sendJson(response, 200, {
-          id: segments[3],
-          status: result.resultUrl ? 'succeeded' : 'running',
-          outputImage: result.resultUrl ? await remoteImageToDataUrl(result.resultUrl) : undefined,
-          resultUrl: result.resultUrl,
-          resultUrls: result.resultUrls,
-          taskId: segments[3],
-          updatedAt: new Date().toISOString(),
-          raw: result.raw,
-        });
-        return true;
-      } catch {
-        // Fall through to the normal not-found response when the id is not a remote Liclick task id.
-      }
       sendJson(response, 404, { error: 'Edit image job not found.' });
       return true;
     }
