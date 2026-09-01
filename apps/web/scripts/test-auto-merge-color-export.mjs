@@ -25,5 +25,15 @@ assert.doesNotMatch(
   /\{ id: 'texture-normal'/,
   'the normal texture export row must stay hidden',
 );
+assert.doesNotMatch(
+  exportMenu,
+  /\bCheck\b|\bX\b/,
+  'export capability rows must not render supported or unsupported status icons',
+);
+assert.match(
+  exportMenu,
+  /disabled:text-white\/30/,
+  'unsupported export capabilities must remain visible with muted text',
+);
 
 console.log('Automatic UV merge color export regression checks passed.');

@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Camera, Check, Download, Film, Package, Triangle, X } from 'lucide-react';
+import { Camera, Download, Film, Package, Triangle } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
 import { cn } from '@/components/common/cn';
 import { IconTooltip } from '@/components/common/IconTooltip';
@@ -41,7 +41,6 @@ type ExportMenuProps = {
 type ExportMenuRow = {
   id?: ExportActionId;
   label: string;
-  status?: string;
   disabled?: boolean;
   disabledReason?: string;
 };
@@ -130,14 +129,11 @@ export function ExportMenu({
                     setOpen(false);
                   }}
                   className={cn(
-                    'flex w-full items-center justify-between rounded-md px-2 py-1.5 text-left text-sm text-white/74 transition hover:bg-white/8 hover:text-white disabled:cursor-not-allowed disabled:text-white/30',
+                    'flex w-full items-center rounded-md px-2 py-1.5 text-left text-sm text-white/74 transition hover:bg-white/8 hover:text-white disabled:cursor-not-allowed disabled:text-white/30',
                   )}
-                  title={row.disabled ? row.disabledReason ?? row.status : undefined}
+                  title={row.disabled ? row.disabledReason : undefined}
                 >
                   <span>{row.label}</span>
-                  <span className="ml-3 inline-flex items-center gap-1 text-[10px] uppercase text-white/34">
-                    {row.status ?? (row.disabled ? <X className="h-3 w-3" /> : <Check className="h-3 w-3 text-liclick-pink" />)}
-                  </span>
                 </button>
               ))}
             </div>
