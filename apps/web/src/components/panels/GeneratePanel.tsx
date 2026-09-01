@@ -463,6 +463,26 @@ function generationMatchesTab(generation: Generation, tab: GenerateTab) {
   return isLocalRepaintGeneration(generation);
 }
 
+function generationRecencyTimestamp(generation: Generation) {
+  const completedAt = generation.metadata.completedAt;
+  const completedTimestamp = typeof completedAt === 'string' ? Date.parse(completedAt) : Number.NaN;
+  const startedTimestamp = getGenerationStartedAt(generation);
+  return Number.isFinite(completedTimestamp)
+    ? completedTimestamp
+    : Number.isFinite(startedTimestamp)
+      ? startedTimestamp
+      : Number.NEGATIVE_INFINITY;
+}
+
+function selectMostRecentGeneration(generations: Generation[]) {
+  return generations.reduce<Generation | undefined>((latest, generation) => {
+    if (!latest) return generation;
+    return generationRecencyTimestamp(generation) > generationRecencyTimestamp(latest)
+      ? generation
+      : latest;
+  }, undefined);
+}
+
 function isRunningGeneration(generation?: Generation) {
   return Boolean(
     generation &&
@@ -966,7 +986,11 @@ export function GeneratePanel({
     },
     [onTaskRunningChange],
   );
-  const previewGeneration = activeProjectGeneration ?? tabGenerations[0];
+  const latestTabGeneration = selectMostRecentGeneration(tabGenerations);
+  const latestSingleViewTextureGeneration = selectMostRecentGeneration(
+    tabGenerations.filter((generation) => generation.mode === 'single'),
+  );
+  const previewGeneration = activeProjectGeneration ?? latestTabGeneration ?? tabGenerations[0];
   const previewIsGenerating = isRunningGeneration(previewGeneration);
   // A toolbar repaint request owns the synchronous submit lock before its
   // Generation row exists. Reflect that preparation window in the panel CTA
@@ -975,7 +999,9 @@ export function GeneratePanel({
   const displayedPreviewGeneration =
     isTextureMapTab && texturePreviewMode === 'repaint'
       ? latestLocalRepaintGeneration
-      : previewGeneration;
+      : isTextureMapTab && texturePreviewMode === 'single' && !activeProjectGeneration
+        ? latestSingleViewTextureGeneration
+        : previewGeneration;
   const displayedPreviewIsGenerating = isRunningGeneration(displayedPreviewGeneration);
   const displayedPreviewFailed = displayedPreviewGeneration?.status === 'failed';
   const displayedPreviewCancelled = displayedPreviewGeneration?.metadata.cancelled === true;
@@ -2467,6 +2493,7 @@ export function GeneratePanel({
     if (!textureBatchWasCancelled()) updateTexturePipelineProgress(46, '生成纹理贴图');
 
     const completedGenerations: Generation[] = [];
+    const failureMessages: string[] = [];
     let projectedGenerationCount = 0;
     const submittedGenerations: Generation[] = [];
     results.forEach((result, index) => {
@@ -2532,12 +2559,15 @@ export function GeneratePanel({
         return false;
       }
       if (textureBatchWasCancelled() || isCancelledGeneration(pending.pendingGeneration)) return;
+      const failureMessage =
+        result.reason instanceof Error
+          ? result.reason.message
+          : `${pending.label} 视角提交失败。`;
+      failureMessages.push(getUserFacingGenerationError(failureMessage));
       syncGeneration(
         createFailedGeneration(
           pending.pendingGeneration,
-          result.reason instanceof Error
-            ? result.reason.message
-            : `${pending.label} 视角提交失败。`,
+          failureMessage,
           {
             cameraView: pending.cameraView,
             cameraViewId: pending.viewId,
@@ -2631,14 +2661,17 @@ export function GeneratePanel({
           if (result.value.projected) projectedGenerationCount += 1;
         } else {
           if (textureBatchWasCancelled() || isCancelledGeneration(submitted)) return;
+          const failureMessage =
+            result.reason instanceof Error
+              ? result.reason.message
+              : isMultiviewRequest
+                ? '多视角纹理贴图任务失败。'
+                : '当前单视图纹理贴图任务失败。';
+          failureMessages.push(getUserFacingGenerationError(failureMessage));
           syncGeneration(
             createFailedGeneration(
               submitted,
-              result.reason instanceof Error
-                ? result.reason.message
-                : isMultiviewRequest
-                  ? '多视角纹理贴图任务失败。'
-                  : '当前单视图纹理贴图任务失败。',
+              failureMessage,
             ),
           );
         }
@@ -2734,9 +2767,11 @@ export function GeneratePanel({
     } else {
       setGenerateNotice({
         tone: 'error',
-        message: isMultiviewRequest
-          ? '多视图纹理贴图任务提交失败。'
-          : '单视图纹理贴图任务提交失败。',
+        message:
+          failureMessages[0] ??
+          (isMultiviewRequest
+            ? '多视图纹理贴图任务提交失败。'
+            : '单视图纹理贴图任务提交失败。'),
       });
     }
   }
@@ -4477,12 +4512,17 @@ export function GeneratePanel({
                 <div className="absolute inset-0 grid place-items-center bg-rose-950/28 px-4 text-center text-white">
                   <div className="grid gap-1">
                     <div className="text-sm font-semibold">
-                      {displayedPreviewCancelled ? '已终止' : '生成失败'}
+                      {displayedPreviewCancelled ? '已终止' : '最近一次生成失败'}
                     </div>
                     <div className="text-xs text-white/66">
                       {displayedPreviewCancelled
                         ? '当前生成任务已停止等待，本次结果已丢弃。'
-                        : '请检查提示词、参考图或模型要求后重试。'}
+                        : typeof displayedPreviewGeneration?.metadata.error === 'string'
+                          ? getUserFacingGenerationError(
+                              displayedPreviewGeneration.metadata.error,
+                              '请检查提示词、参考图或模型要求后重试。',
+                            )
+                          : '请检查提示词、参考图或模型要求后重试。'}
                     </div>
                   </div>
                 </div>
