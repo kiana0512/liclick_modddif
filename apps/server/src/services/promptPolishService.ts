@@ -52,8 +52,7 @@ export function detectLocalRepaintNoTextIntent(prompt: string) {
   return (
     value.length > 0 &&
     (localRepaintNoTextChinesePattern.test(value) ||
-      localRepaintNoTextEnglishPattern.test(value) ||
-      detectLocalRepaintImplicitRemoveSelectionIntent(value))
+      localRepaintNoTextEnglishPattern.test(value))
   );
 }
 
@@ -84,17 +83,18 @@ function buildLocalRepaintMessage(input: PromptPolishInput) {
     : `没有独立蒙版；仅处理用户在 ${objectName} 上明确指定的区域。`;
 
   const implicitRemoveSelection = detectLocalRepaintImplicitRemoveSelectionIntent(input.prompt);
+  const implicitRemovalInstruction = implicitRemoveSelection
+    ? `\n这是“清除蒙版内错误内容并补回底层材质”的任务，不是专门去文字。用户省略具体删除对象时，第三张蒙版白区内当前可见的全部异常内容就是删除目标，包括错误材质图案、贴花、色块、污斑、投影残影、文字，以及看似面板、旋钮、按钮、铭牌或零件的幻觉。不得识别、保留、改造或重建这些选中内容，也不得从图二复制任何部件或图案到蒙版。目标外观只能根据用户指定材质和蒙版边缘最近的同一连续表面确定：延续其底色、粗糙度、纹理尺度、旧化、划痕与光照，形成没有新增结构的自然材质补片。蒙版外已有内容保持不变。`
+    : '';
   const noTextInstruction = detectLocalRepaintNoTextIntent(input.prompt)
-    ? implicitRemoveSelection
-      ? `\n用户用“去除/删除”等词省略了具体对象时，第三张蒙版内当前可见的标记、图案、文字或其他突兀内容就是删除目标；不得把它误认成需要恢复的控制面板、标签或零件。最终蒙版区域只恢复用户指定或邻域支持的连续底层材质，不得从图一、局部裁切或图二复制、重建、保留任何被选中的内容，也不得生成文字、字母、数字、品牌、标签、标志、水印、乱码、伪文字或类似排版的笔画。蒙版外已有内容保持不变。`
-      : `\n这是明确的“蒙版内不生成文字”任务。最终蒙版区域只能包含目标表面材质，不得添加、复制、重建、保留或臆造任何文字、字母、数字、品牌、标签、标志、水印、乱码、伪文字或类似排版的笔画。图一蒙版外和图二中的文字仅是上下文，不得迁移进蒙版；蒙版外已有内容保持不变。此约束优先于视觉参考中出现的文字。`
+    ? `\n这是明确的“蒙版内不生成文字”任务。最终蒙版区域只能包含目标表面材质，不得添加、复制、重建、保留或臆造任何文字、字母、数字、品牌、标签、标志、水印、乱码、伪文字或类似排版的笔画。图一蒙版外和图二中的文字仅是上下文，不得迁移进蒙版；蒙版外已有内容保持不变。此约束优先于视觉参考中出现的文字。`
     : '';
 
   return `你是 FLUX.2 Klein 局部图像编辑提示词转换器。你的任务是把用户意图和选区视觉证据转成具体、简洁的英文编辑指令。
 
 输入：Image 1 为待编辑全图；Image 2 为完整参考图（可能为多视图）；第三张为与 Image 1 像素对齐的独立蒙版，白色编辑、黑色保护；第四张为自动从 Image 1 裁出的干净选区上下文放大图。第四张仅帮助看清 Image 1，不是新的参考视角，不能改变最终构图或编辑范围。
 用户要求：${input.prompt}
-选区定位信息：${maskLocation}${noTextInstruction}
+选区定位信息：${maskLocation}${implicitRemovalInstruction}${noTextInstruction}
 
 在内部完成定位和判断，不输出分析：将蒙版的实际形状按像素坐标对应到图一，结合局部放大图辨认每个被选中的表面。先确认选区真正覆盖的部件，不以旁边显眼的机身、文字或其他物体替代。然后在图二寻找同一部件，用有用的参考视角交叉核对其材质和功能结构。参考未展示或不清楚的细节，不得猜测。
 
@@ -302,7 +302,11 @@ export function buildQwen3VlPlusRequest(
       { role: 'user', content },
     ],
     max_tokens: 4096,
-    temperature: detectLocalRepaintNoTextIntent(input.prompt) ? 0.2 : 0.6,
+    temperature:
+      detectLocalRepaintNoTextIntent(input.prompt) ||
+      detectLocalRepaintImplicitRemoveSelectionIntent(input.prompt)
+        ? 0.2
+        : 0.6,
   };
 }
 
@@ -419,9 +423,12 @@ async function invokeQwen3VlPlus(input: PromptPolishInput) {
   }
   const payload = await invokeQwenChat(request, signal);
   const prompt = ensureLocalRepaintNoTextConstraint(
-    ensureLocalRepaintMaskScope(
-      normalizeLocalRepaintPrompt(parsePolishedPrompt(readQwenMessageContent(payload))),
-      input.hasMask !== false,
+    ensureLocalRepaintImplicitRemovalConstraint(
+      ensureLocalRepaintMaskScope(
+        normalizeLocalRepaintPrompt(parsePolishedPrompt(readQwenMessageContent(payload))),
+        input.hasMask !== false,
+      ),
+      conversionInput.prompt,
     ),
     conversionInput.prompt,
   );
@@ -515,6 +522,47 @@ const localRepaintTextTermPattern =
   /\b(?:text|lettering|letters?|numbers?|characters?|stencil|labels?|logos?|wording|typography|glyphs?|signage|decals?|watermarks?|pseudo-text)\b/i;
 const localRepaintTextPreservationPattern =
   /\b(?:preserve|retain|keep|restore|reconstruct|replicate|maintain|copy)\b/i;
+const localRepaintSelectedArtifactPattern =
+  /\b(?:control\s*panel|panel|console|knobs?|buttons?|switches?|plates?|plaques?|labels?|decals?|graphics?|patterns?|markings?|symbols?|logos?|lettering|text|stains?|patches?|seams?|components?|parts?)\b/i;
+const localRepaintSelectedArtifactCreationPattern =
+  /\b(?:add|create|introduce|preserve|retain|keep|restore|reconstruct|replicate|maintain|copy|rebuild)\b/i;
+const localRepaintNegativeInstructionPattern =
+  /\b(?:do\s+not|don't|never|without|avoid|exclude|remove|erase|delete|no\s+(?:new|additional))\b/i;
+
+/**
+ * A shorthand request such as "去除，保留周围黄色材质" means that every
+ * visible feature inside the authored mask is disposable evidence, regardless
+ * of whether it resembles text, a decal, a stain or a physical control panel.
+ * Strip Qwen sentences that would recreate such evidence, then add a stable
+ * Klein instruction grounded only in the nearest unmasked surface ring.
+ */
+export function ensureLocalRepaintImplicitRemovalConstraint(
+  prompt: string,
+  userPrompt: string,
+) {
+  if (!detectLocalRepaintImplicitRemoveSelectionIntent(userPrompt)) return prompt;
+  const cleaned = prompt
+    .split(/\n\s*\n/)
+    .map((paragraph) =>
+      paragraph
+        .split(/(?<=[.!?])\s+/)
+        .filter((sentence) => {
+          if (localRepaintNegativeInstructionPattern.test(sentence)) return true;
+          return !(
+            localRepaintSelectedArtifactPattern.test(sentence) &&
+            localRepaintSelectedArtifactCreationPattern.test(sentence)
+          );
+        })
+        .join(' ')
+        .replace(/\s+/g, ' ')
+        .trim(),
+    )
+    .filter(Boolean)
+    .join('\n\n')
+    .trim();
+  const separator = cleaned && !/[.!?]["'”’)]?$/.test(cleaned) ? '. ' : cleaned ? ' ' : '';
+  return `${cleaned}${separator}Treat all visual content currently inside the original authored mask as the unwanted removal target, not as reference structure. Erase every selected material pattern, decal, color block, stain, projection ghost, marking, text-like trace, panel, plate, knob, button, switch, relief, or apparent component completely. Fill the entire mask only by continuing the nearest unmasked ring of the same underlying surface, matching its base color, roughness, texture scale, weathering, scratches, shading, and perspective. Do not copy or reinterpret any object, component, graphic, or feature from the material reference inside the mask, and do not create new geometry, seams, borders, panels, controls, labels, or decorative patches. Preserve the silhouette and every pixel outside the mask unchanged.`;
+}
 
 /**
  * A manual no-text request is an output invariant, not a suggestion for Qwen.

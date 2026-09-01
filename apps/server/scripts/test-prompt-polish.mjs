@@ -11,6 +11,7 @@ import {
   buildPromptPolishMessage,
   detectLocalRepaintImplicitRemoveSelectionIntent,
   detectLocalRepaintNoTextIntent,
+  ensureLocalRepaintImplicitRemovalConstraint,
   ensureLocalRepaintNoTextConstraint,
   ensureLocalRepaintMaskScope,
   getLocalRepaintPromptFormatIssues,
@@ -53,7 +54,7 @@ const noTextMessage = buildPromptPolishMessage({
 assert.equal(detectLocalRepaintNoTextIntent('没有文字'), true);
 assert.equal(detectLocalRepaintNoTextIntent('不让它出现文字'), true);
 assert.equal(detectLocalRepaintImplicitRemoveSelectionIntent('去除，保留黄色旧材质'), true);
-assert.equal(detectLocalRepaintNoTextIntent('去除，保留黄色旧材质'), true);
+assert.equal(detectLocalRepaintNoTextIntent('去除，保留黄色旧材质'), false);
 assert.equal(detectLocalRepaintNoTextIntent('修复文字错位'), false);
 assert.match(noTextMessage, /明确的“蒙版内不生成文字”任务/);
 assert.match(noTextMessage, /不得迁移进蒙版/);
@@ -63,8 +64,22 @@ const implicitRemovalMessage = buildPromptPolishMessage({
   objectName: 'industrial cutter',
   hasMask: true,
 });
-assert.match(implicitRemovalMessage, /蒙版内当前可见的标记、图案、文字或其他突兀内容就是删除目标/);
-assert.match(implicitRemovalMessage, /不得把它误认成需要恢复的控制面板、标签或零件/);
+assert.match(implicitRemovalMessage, /不是专门去文字/);
+assert.match(implicitRemovalMessage, /错误材质图案、贴花、色块、污斑/);
+assert.match(implicitRemovalMessage, /不得从图二复制任何部件或图案到蒙版/);
+
+const guardedImplicitRemovalPrompt = ensureLocalRepaintImplicitRemovalConstraint(
+  'Restore the selected control panel with its knobs and buttons. Preserve the yellow paint outside the mask unchanged.',
+  '去除，保留原始周边黄色材质',
+);
+assert.doesNotMatch(guardedImplicitRemovalPrompt, /Restore the selected control panel/);
+assert.match(guardedImplicitRemovalPrompt, /every selected material pattern/);
+assert.match(guardedImplicitRemovalPrompt, /nearest unmasked ring/);
+assert.match(guardedImplicitRemovalPrompt, /do not create new geometry/);
+assert.equal(
+  ensureLocalRepaintImplicitRemovalConstraint('Repair the seam.', '修复接缝'),
+  'Repair the seam.',
+);
 
 const contradictoryNoTextPrompt =
   'Restore the yellow painted panel. Preserve the original CUT-BOT stencil lettering exactly and keep the label readable. Keep the camera and every area outside the mask unchanged.';
@@ -401,7 +416,9 @@ try {
   });
   const implicitRemovalResult = await implicitRemoval.result;
   assert.doesNotMatch(implicitRemovalResult, /Preserve the original CUT-BOT/);
-  assert.match(implicitRemovalResult, /continuous text-free continuation/);
+  assert.match(implicitRemovalResult, /every selected material pattern/);
+  assert.match(implicitRemovalResult, /nearest unmasked ring/);
+  assert.doesNotMatch(implicitRemovalResult, /continuous text-free continuation/);
   assert.equal(implicitRemoval.calls[0].body.temperature, 0.2);
   for (const prompt of ['', '  \n\t']) {
     const diagnosis = '修复控制面板下方的接缝和色差，以及标牌文字的重影。';
@@ -565,7 +582,7 @@ assert.match(
 );
 assert.match(
   visualInputSource,
-  /LOCAL_REPAINT_PROMPT_TEMPLATE_POLICY = 'qwen-to-klein-material-grounding-v7'/,
+  /LOCAL_REPAINT_PROMPT_TEMPLATE_POLICY = 'qwen-to-klein-material-grounding-v8'/,
 );
 assert.match(panelSource, /activeReferences\.find\(\(reference\) =>/);
 assert.match(panelSource, /currentEffectImage: visualInputs\?\.currentEffectImage/);

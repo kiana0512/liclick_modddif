@@ -14,7 +14,7 @@ const promptPolishCaptureResolution = 2048;
 // Changing empty-request diagnosis must not reuse prompts from the old policy.
 export const LOCAL_REPAINT_AUTO_DIAGNOSIS_POLICY = 'one-sentence-diagnosis-to-klein-v2';
 // Any local repaint result from an older conversion contract must miss the prompt cache once.
-export const LOCAL_REPAINT_PROMPT_TEMPLATE_POLICY = 'qwen-to-klein-material-grounding-v7';
+export const LOCAL_REPAINT_PROMPT_TEMPLATE_POLICY = 'qwen-to-klein-material-grounding-v8';
 
 export type LocalRepaintPromptPolishInputs = {
   currentEffectImage: PromptPolishImageInput;
