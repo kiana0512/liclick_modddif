@@ -1,10 +1,10 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
-> 文档版本：`2.10.5`
+> 文档版本：`2.10.6`
 >
 > 生效日期：`2026-08-31`
 >
-> 代码盘点基线：`bb5bd66 + 本次 Qwen → Klein 模板替换`
+> 代码盘点基线：`32702a4 + 本次远端蒙版融合范围调整`
 >
 > 基线仓库：`E:\Liclick 3D Texture Modernization`
 >
@@ -283,9 +283,9 @@ UI-09 剪刀
 局部选择（多相机表面笔画）
  → 点击局部生图时冻结 square camera + object matrix
  → 同相机捕获 2K flat BaseColor 干净效果图、2K clay-target 白灰几何图和原始 RGB selection mask
- → Worker 仅在原始 mask 内以连续强度将 clay 融入效果图；原始 mask 自适应外扩 16–48px@2K 并羽化 4–10px
+ → Worker 仅在原始 mask 内以连续强度将 clay 融入效果图；原始 mask 自适应外扩 24–64px@2K 并羽化 4–10px
  → 若材质参考是单图，先生成 durable 多视图配对
- → Qwen 只看干净效果图 / 完整多视图 / 未外扩原始 mask；留空先输出一句中文修复要求，再用 Klein 四段模板转换；有用户文字直接转换
+ → Qwen 只看干净效果图 / 完整多视图 / 未外扩原始 mask；留空先输出一句中文修复要求，再用 Klein 2–3 段模板转换；有用户文字直接转换
  → ModelView 四输入（效果+蒙版内白灰几何融合图 / 材质参考 / 外扩羽化 RGB mask / Qwen 最终 prompt）与 1K linear-view depth guard 并行
  → 远端单张 PNG 直接作为新结果，不再执行浏览器校色或接缝融合
  → 保存 direct result、mask、capture 与工作流版本元数据
@@ -310,7 +310,7 @@ UI-09 剪刀
 | `ALG-LR-009` Inward Crossfade 栈合成 | `1.0.0` | 连续重绘层向内部交叉淡化，避免普通 alpha stacking 在边缘重复显露接缝 |
 | `ALG-LR-010` Provider 兼容编辑 | `1.0.0-compat` | `LocalRepaintDialog` 的 image/edit/protect/hole masks 独立路径，不得与四输入主路径混改 |
 | `ALG-LR-011` 生图透明显示副本 | `1.0.0` | UI-05 重绘效果图和 UI-10 普通投射图层缩略图优先使用 capture linear-view depth 清除明确无几何覆盖的背景，按精确 alpha bounds 仅裁切一次并保留 6% 留白；几何覆盖区的 RGB/alpha 原样保留。深度不可用时只清除与画布边缘连通的近黑外背景，不做第二次 matte、侵蚀或分位裁边。局部重绘图层不走整图副本，继续使用用户涂绘 mask，只显示笔刷授权区域 |
-| `ALG-LR-012` 远端重绘输入融合 | `1.0.2` | 专用 Worker 在原始连续 mask 内执行 `composite=current×(1-a)+clay×a`；外扩半径为 `clamp(0.2×mask短边, 16, 48)px@2K`，羽化维持 `clamp(0.2×外扩, 4, 10)px@2K`。融合图和外扩 mask 只给 ModelView；Qwen、Capture、Generation 画笔授权与历史恢复统一使用未外扩作者 mask，双蒙版历史任务优先读取 `authoredMaskUrl` |
+| `ALG-LR-012` 远端重绘输入融合 | `1.0.3` | 专用 Worker 在原始连续 mask 内执行 `composite=current×(1-a)+clay×a`；外扩半径为 `clamp(0.25×mask短边, 24, 64)px@2K`，羽化维持 `clamp(0.2×外扩, 4, 10)px@2K`。融合图和外扩 mask 只给 ModelView；Qwen、Capture、Generation 画笔授权与历史恢复统一使用未外扩作者 mask，双蒙版历史任务优先读取 `authoredMaskUrl` |
 
 局部生图远端接收生成阶段的 RGB selection mask，但仍不接收 UV 图集、表面深度或用户最终回贴 coverage。远端 latent mask 不承诺蒙版外像素逐点不变；浏览器继续用同一 `allowedMaskUrl`、capture camera 和 depth guard 限制 3D 写回，用户通过表面画笔决定最终图层 coverage。这些几何授权契约与旧版保持一致。
 
@@ -546,3 +546,4 @@ M15 体积修复：锁定 `terser@5.51.2` 两轮安全压缩，保留日志和�
 | `2.10.3` | 2026-09-01 | `本次导出能力状态样式提交` | UI-03、M11：导出菜单移除支持项勾选和不支持项叉号；不可用格式继续保留并以灰色禁用文字及原因提示表达，支持格式维持普通可点击文字。`ALG-OUT-001`、导出格式、UV 合并、文件内容、Schema、资产与 Revision 不变，无迁移。 |
 | `2.10.4` | 2026-09-01 | `本次 UV 到烘焙资产角色修复` | UI-13/UI-14、M10：UV 发布与历史交接只自动填充低模，烘焙页不再把 UV 输入或 Pipeline 来源高模自动导入；高模保持空白并由用户选择，选择后复用低模 Bake Set ID 自动配对。旧 Pipeline 自动高模快照只在读取时忽略，不删除资产；显式 Bake 高模继续恢复。Pipeline/Bake Workspace Schema、Revision 与烘焙算法不变，无批量迁移。 |
 | `2.10.5` | 2026-09-01 | `本次 Qwen → Klein 模板替换` | M04/UI-05、`ALG-GEN-005` v1.6.0：局部重绘转换模板改为先按 mask 定位真实部件、再用 Image 2 对应视角交叉核对并适配 Image 1；输出改为 100–180 词、2–3 段英文，取消固定开头和四段堆叠。同步更新 fail-closed 校验、一次格式修正及所有局部缓存指纹。空输入诊断、三图输入、ModelView、蒙版、投影/UV、Schema、Revision 和资产不变，无迁移。 |
+| `2.10.6` | 2026-09-01 | `本次远端蒙版融合范围调整` | M08/UI-05、`ALG-LR-012` v1.0.3：仅将 ModelView 专用远端 mask 自适应外扩从 16–48px/短边20%提高为 24–64px/短边25%@2K，羽化仍为4–10px且原始核心保持255；Qwen、Capture、Generation、局部重绘画笔及历史恢复继续绑定未外扩作者 mask。返图直出、投影/UV、Schema、Revision和已有资产不变，无迁移；回退仅恢复 Worker 参数。 |

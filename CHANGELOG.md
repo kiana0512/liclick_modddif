@@ -1,5 +1,10 @@
 # Changelog
 
+### 2026-09-01 局部重绘远端蒙版融合范围
+
+- `ALG-LR-012` v1.0.3：ModelView 专用远端 mask 自适应外扩由 `clamp(0.2×mask短边, 16, 48)px@2K` 调整为 `clamp(0.25×mask短边, 24, 64)px@2K`，继续保留 4–10px 羽化和原始核心全不透明，扩大接缝两侧可重采样上下文。
+- Qwen、Capture、Generation、局部重绘画笔和历史恢复仍使用未外扩作者 mask；本次不改变最终画笔授权、返图直出、投影/UV、Schema、Revision 或已有资产，无迁移。回退只需恢复 Worker 的 16–48px/20% 参数。
+
 本文件记录维护者和用户可感知的仓库变化。详细问题证据、范围、测试和回退见 `docs/changes/`。
 
 ## Unreleased

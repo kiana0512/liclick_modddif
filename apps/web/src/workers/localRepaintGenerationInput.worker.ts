@@ -177,8 +177,8 @@ self.onmessage = async (event: MessageEvent<GenerationInputWorkerRequest>) => {
     const scale = Math.max(width, height) / 2048;
     const minimumDimension = Math.min(maxX - minX + 1, maxY - minY + 1);
     const dilationRadius = Math.max(
-      Math.round(16 * scale),
-      Math.min(Math.round(48 * scale), Math.round(minimumDimension * 0.2)),
+      Math.round(24 * scale),
+      Math.min(Math.round(64 * scale), Math.round(minimumDimension * 0.25)),
     );
     const featherRadius = Math.max(
       Math.round(4 * scale),

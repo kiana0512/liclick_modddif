@@ -65,9 +65,9 @@ assert.match(
   /function getLocalRepaintAuthoringMaskUrl\([\s\S]*?metadata\.authoredMaskUrl[\s\S]*?metadata\.maskUrl/,
   'Brush restore must prefer the authored mask and retain legacy mask fallback.',
 );
-assert.match(workerSource, /Math\.round\(minimumDimension \* 0\.2\)/);
-assert.match(workerSource, /Math\.round\(16 \* scale\)/);
-assert.match(workerSource, /Math\.round\(48 \* scale\)/);
+assert.match(workerSource, /Math\.round\(24 \* scale\)/);
+assert.match(workerSource, /Math\.round\(64 \* scale\)/);
+assert.match(workerSource, /Math\.round\(minimumDimension \* 0\.25\)/);
 assert.match(workerSource, /Math\.round\(dilationRadius \* 0\.2\)/);
 assert.match(workerSource, /if \(authoredBinary\[index\] > 0\) submittedMask\[index\] = 255/);
 
