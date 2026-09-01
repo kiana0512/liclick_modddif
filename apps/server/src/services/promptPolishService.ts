@@ -29,6 +29,18 @@ const allowedPromptPolishImageTypes = new Set(['image/png', 'image/jpeg', 'image
 
 const statusLinePattern = /^(?:Skill版本|请求ID|会话ID|正在分析|处理中|已完成|完成)\s*[:：.….]*/i;
 const atlasMetadataLinePattern = /^_?Skill版本\s*[:：].*(?:请求ID|会话ID)/i;
+const localRepaintNoTextChinesePattern =
+  /(?:没有|不要|不含|无|禁止|避免|不让[^，。；]*出现|去掉|去除|删除|擦除|移除)(?:任何|所有|新的|新生成的|生成的)?(?:文字|文本|字母|数字|字符|标签|标识|标志|水印|乱码|伪文字|logo)/i;
+const localRepaintNoTextEnglishPattern =
+  /\b(?:no|without|remove|delete|erase|exclude|avoid|forbid|do not (?:add|generate|include|show|create|copy))\b[^.!?\n]{0,80}\b(?:text|lettering|letters?|numbers?|characters?|labels?|logos?|watermarks?|pseudo-text|typography)\b/i;
+
+export function detectLocalRepaintNoTextIntent(prompt: string) {
+  const value = prompt.trim();
+  return (
+    value.length > 0 &&
+    (localRepaintNoTextChinesePattern.test(value) || localRepaintNoTextEnglishPattern.test(value))
+  );
+}
 
 function clipped(value: string | undefined, maxLength: number, fallback: string) {
   return (value?.trim() || fallback).slice(0, maxLength);
@@ -56,11 +68,15 @@ function buildLocalRepaintMessage(input: PromptPolishInput) {
       `第三张独立蒙版的白色区域与 Image 1 像素对齐，定位在 ${objectName} 上；黑色区域受保护。`
     : `没有独立蒙版；仅处理用户在 ${objectName} 上明确指定的区域。`;
 
+  const noTextInstruction = detectLocalRepaintNoTextIntent(input.prompt)
+    ? `\n这是明确的“蒙版内不生成文字”任务。最终蒙版区域只能包含目标表面材质，不得添加、复制、重建、保留或臆造任何文字、字母、数字、品牌、标签、标志、水印、乱码、伪文字或类似排版的笔画。图一蒙版外和图二中的文字仅是上下文，不得迁移进蒙版；蒙版外已有内容保持不变。此约束优先于视觉参考中出现的文字。`
+    : '';
+
   return `你是 FLUX.2 Klein 局部图像编辑提示词转换器。你的任务是把用户意图和选区视觉证据转成具体、简洁的英文编辑指令。
 
 输入：Image 1 为待编辑全图；Image 2 为完整参考图（可能为多视图）；第三张为与 Image 1 像素对齐的独立蒙版，白色编辑、黑色保护；第四张为自动从 Image 1 裁出的干净选区上下文放大图。第四张仅帮助看清 Image 1，不是新的参考视角，不能改变最终构图或编辑范围。
 用户要求：${input.prompt}
-选区定位信息：${maskLocation}
+选区定位信息：${maskLocation}${noTextInstruction}
 
 在内部完成定位和判断，不输出分析：将蒙版的实际形状按像素坐标对应到图一，结合局部放大图辨认每个被选中的表面。先确认选区真正覆盖的部件，不以旁边显眼的机身、文字或其他物体替代。然后在图二寻找同一部件，用有用的参考视角交叉核对其材质和功能结构。参考未展示或不清楚的细节，不得猜测。
 
@@ -268,7 +284,7 @@ export function buildQwen3VlPlusRequest(
       { role: 'user', content },
     ],
     max_tokens: 4096,
-    temperature: 0.6,
+    temperature: detectLocalRepaintNoTextIntent(input.prompt) ? 0.2 : 0.6,
   };
 }
 
@@ -384,9 +400,12 @@ async function invokeQwen3VlPlus(input: PromptPolishInput) {
       '\nThe editing request above is a one-sentence visual diagnosis. Convert only its stated repairs into the final prompt; do not diagnose additional problems or add new editing goals. Use the images to describe the required local materials, perspective and continuity, while preserving valid content and real component boundaries. Repair existing text only if the diagnosis explicitly requests it and the correct characters are supported by readable evidence; never invent words or brands. If the diagnosis reports no clear defect, describe preserving the existing appearance without inventing any repairs.';
   }
   const payload = await invokeQwenChat(request, signal);
-  const prompt = ensureLocalRepaintMaskScope(
-    normalizeLocalRepaintPrompt(parsePolishedPrompt(readQwenMessageContent(payload))),
-    input.hasMask !== false,
+  const prompt = ensureLocalRepaintNoTextConstraint(
+    ensureLocalRepaintMaskScope(
+      normalizeLocalRepaintPrompt(parsePolishedPrompt(readQwenMessageContent(payload))),
+      input.hasMask !== false,
+    ),
+    conversionInput.prompt,
   );
   if (!prompt) throw new Error('PROMPT_POLISH_EMPTY_RESULT');
   if (prompt.length > 12_000) throw new Error('PROMPT_POLISH_RESULT_TOO_LONG');
@@ -472,6 +491,41 @@ export function ensureLocalRepaintMaskScope(prompt: string, hasMask = true) {
   const separator = /[.!?]["'”’)]?$/.test(firstParagraph) ? ' ' : '. ';
   paragraphs[0] = `${firstParagraph}${separator}Confine all edits to the independent mask region and keep every area outside it unchanged.`;
   return paragraphs.join('\n\n');
+}
+
+const localRepaintTextTermPattern =
+  /\b(?:text|lettering|letters?|numbers?|characters?|stencil|labels?|logos?|wording|typography|glyphs?|signage|decals?|watermarks?|pseudo-text)\b/i;
+const localRepaintTextPreservationPattern =
+  /\b(?:preserve|retain|keep|restore|reconstruct|replicate|maintain|copy)\b/i;
+
+/**
+ * A manual no-text request is an output invariant, not a suggestion for Qwen.
+ * Remove direct contradictions and append a deterministic Klein constraint so
+ * lettering visible in a material reference cannot be copied into the clay mask.
+ */
+export function ensureLocalRepaintNoTextConstraint(prompt: string, userPrompt: string) {
+  if (!detectLocalRepaintNoTextIntent(userPrompt)) return prompt;
+  const cleaned = prompt
+    .split(/\n\s*\n/)
+    .map((paragraph) =>
+      paragraph
+        .split(/(?<=[.!?])\s+/)
+        .filter((sentence) => {
+          if (/\b(?:outside|beyond)\b[^.!?]{0,80}\bmask(?:ed)?\b/i.test(sentence)) return true;
+          return !(
+            localRepaintTextTermPattern.test(sentence) &&
+            localRepaintTextPreservationPattern.test(sentence)
+          );
+        })
+        .join(' ')
+        .replace(/\s+/g, ' ')
+        .trim(),
+    )
+    .filter(Boolean)
+    .join('\n\n')
+    .trim();
+  const separator = cleaned && !/[.!?]["'”’)]?$/.test(cleaned) ? '. ' : cleaned ? ' ' : '';
+  return `${cleaned}${separator}Render the entire masked region only as a continuous text-free continuation of the target surface material. Do not add, copy, reconstruct, preserve, or hallucinate any text, lettering, letters, numbers, logos, labels, decals, symbols, glyphs, watermarks, pseudo-text, or typographic strokes inside the mask; ignore all such content in the material reference. Preserve every existing detail outside the mask unchanged.`;
 }
 
 export function getLocalRepaintPromptFormatIssues(prompt: string, hasMask = true) {

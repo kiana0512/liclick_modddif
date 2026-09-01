@@ -9,6 +9,8 @@ import {
   buildQwenLocalRepaintSelectionContext,
   buildPromptPolishAtlasArgs,
   buildPromptPolishMessage,
+  detectLocalRepaintNoTextIntent,
+  ensureLocalRepaintNoTextConstraint,
   ensureLocalRepaintMaskScope,
   getLocalRepaintPromptFormatIssues,
   normalizeLocalRepaintPrompt,
@@ -40,6 +42,32 @@ assert.match(localMessage, /完整替换选区内的白灰 clay\/primer\/flat pl
 assert.match(localMessage, /不得仅凭用户说“修缝”就发明 brushed steel、clean metal、new weld bead、chamfer/);
 assert.match(localMessage, /不要在最终提示词输出像素坐标或包围盒/);
 assert.doesNotMatch(localMessage, /limit automatic diagnosis/);
+
+const noTextMessage = buildPromptPolishMessage({
+  prompt: '没有文字',
+  context: 'local-repaint',
+  objectName: 'industrial cutter',
+  hasMask: true,
+});
+assert.equal(detectLocalRepaintNoTextIntent('没有文字'), true);
+assert.equal(detectLocalRepaintNoTextIntent('不让它出现文字'), true);
+assert.equal(detectLocalRepaintNoTextIntent('修复文字错位'), false);
+assert.match(noTextMessage, /明确的“蒙版内不生成文字”任务/);
+assert.match(noTextMessage, /不得迁移进蒙版/);
+
+const contradictoryNoTextPrompt =
+  'Restore the yellow painted panel. Preserve the original CUT-BOT stencil lettering exactly and keep the label readable. Keep the camera and every area outside the mask unchanged.';
+const guardedNoTextPrompt = ensureLocalRepaintNoTextConstraint(
+  contradictoryNoTextPrompt,
+  '没有文字',
+);
+assert.doesNotMatch(guardedNoTextPrompt, /Preserve the original CUT-BOT/);
+assert.match(guardedNoTextPrompt, /continuous text-free continuation/);
+assert.match(guardedNoTextPrompt, /ignore all such content in the material reference/);
+assert.equal(
+  ensureLocalRepaintNoTextConstraint('Repair the seam.', '修复接缝'),
+  'Repair the seam.',
+);
 
 for (const prompt of ['', '   \n\t']) {
   const emptyMessage = buildPromptPolishMessage({
@@ -77,6 +105,17 @@ assert.deepEqual(
 assert.match(multimodalContent[0].text, /clean current effect with no mask-preview overlay/);
 assert.match(multimodalContent[0].text, /original independent edit mask without dilation/);
 assert.match(multimodalContent[0].text, /clean unchanged crop from Image 1/);
+const noTextMultimodalRequest = buildQwen3VlPlusRequest({
+  prompt: '没有文字',
+  context: 'local-repaint',
+  hasMask: true,
+  currentEffectImage: { name: 'current.png', dataUrl: currentEffectDataUrl },
+  referenceImage: { name: 'reference.webp', dataUrl: referenceDataUrl },
+  maskImage: { name: 'mask.png', dataUrl: maskDataUrl },
+  selectionCropImage: { name: 'selected-region-context.jpg', dataUrl: selectionCropDataUrl },
+});
+assert.equal(noTextMultimodalRequest.temperature, 0.2);
+assert.match(noTextMultimodalRequest.messages[0].content, /不得迁移进蒙版/);
 const diagnosisRequest = buildQwenLocalRepaintDiagnosisRequest({
   prompt: '',
   context: 'local-repaint',
@@ -268,7 +307,7 @@ const originalTimeoutFactory = AbortSignal.timeout;
 const originalWarn = console.warn;
 const warnings = [];
 const localInput = {
-  prompt: 'remove the old label and restore the yellow painted metal',
+  prompt: 'repair the selected panel and restore the yellow painted metal',
   context: 'local-repaint',
   hasMask: true,
   currentEffectImage: { name: 'current.png', dataUrl: selectionCurrentDataUrl },
@@ -507,7 +546,7 @@ assert.match(
 );
 assert.match(
   visualInputSource,
-  /LOCAL_REPAINT_PROMPT_TEMPLATE_POLICY = 'qwen-to-klein-material-grounding-v5'/,
+  /LOCAL_REPAINT_PROMPT_TEMPLATE_POLICY = 'qwen-to-klein-material-grounding-v6'/,
 );
 assert.match(panelSource, /activeReferences\.find\(\(reference\) =>/);
 assert.match(panelSource, /currentEffectImage: visualInputs\?\.currentEffectImage/);
