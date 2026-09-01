@@ -20,7 +20,7 @@ const projectedWorkerSource = readFileSync(
 );
 
 const projectedMaterialBusyGuard = sceneRootSource.match(
-  /const isViewportInteractionBusy = \(\) => \{([\s\S]*?)\n    \};/,
+  /const isViewportInteractionBusy = \(\) => \{([\s\S]*?)\n {4}\};/,
 );
 assert.ok(projectedMaterialBusyGuard, 'The projected material busy guard must remain explicit.');
 assert.doesNotMatch(
