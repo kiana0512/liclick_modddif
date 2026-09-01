@@ -15,7 +15,7 @@ const layersPanelSource = readFileSync(
 
 assert.match(
   sceneRootSource,
-  /const visibleUvContentChanged = objectUvLayers\.some[\s\S]*?previousLayer\.imageUrl !== layer\.imageUrl[\s\S]*?reopenedUvLayer \|\| reopenedProjectedLayer \|\| visibleUvContentChanged[\s\S]*?setUvVisibilityRenderRevision/,
+  /const visibleUvContentChanged = objectUvLayers\.some[\s\S]*?previousLayer\.imageUrl !== layer\.imageUrl[\s\S]*?if \(\s*reopenedUvLayer \|\|\s*reopenedProjectedLayer \|\|\s*visibleUvContentChanged \|\|\s*visibleProjectedContentChanged\s*\)[\s\S]*?setUvVisibilityRenderRevision/,
   'Publishing a merged UV must force one material reconciliation without a page refresh.',
 );
 

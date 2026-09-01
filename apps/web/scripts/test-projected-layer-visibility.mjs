@@ -673,13 +673,13 @@ assert.doesNotMatch(
 );
 assert.match(
   editorPageSource,
-  /const visibleProjectionSource = latestSceneState\.localRepaintProjectionSource;[\s\S]*?visibleProjectionSource && visibleProjectionSource\.targetLayerId !== currentTarget\.id[\s\S]*?return;/,
+  /const visibleProjectionSource = latestSceneState\.localRepaintProjectionSource;[\s\S]*?resolveLocalRepaintBackgroundPrewarmDisposition\(\{[\s\S]*?currentSource: visibleProjectionSource,[\s\S]*?targetLayerId: currentTarget\.id,[\s\S]*?\}\);[\s\S]*?if \(disposition === 'preserve-current-source'\) return;/,
   'A live historical repaint source must remain the real ownership guard for background prewarm.',
 );
 assert.match(
   viewportCanvasSource,
-  /const persistedOverlayCanOwnPresentation = Boolean\([\s\S]*?!existingLayer \|\|[\s\S]*?composite\.hasContent &&[\s\S]*?composite\.gpuOverlayReady &&[\s\S]*?currentOverlay\?\.sourceKey === sourceKey &&[\s\S]*?currentOverlay\.root\.visible/,
-  'A persisted repaint row must stay visible until its saved mask and GPU overlay are both ready and visible.',
+  /const persistedOverlayCanOwnPresentation = !existingLayer;/,
+  'A persisted repaint row must keep resident presentation ownership; only a brand-new row may publish the renderer overlay.',
 );
 assert.match(
   viewportCanvasSource,
@@ -693,8 +693,8 @@ assert.match(
 );
 assert.match(
   viewportCanvasSource,
-  /if \(!shouldRender && hasPersistedLayer && previewOwnsOverlay && !orderedStackOwnsPreview\)[\s\S]*?setLocalRepaintPreviewLayer\(undefined\)[\s\S]*?else if \(\(shouldRender \|\| orderedStackOwnsPreview\) && persistedLayer && !previewOwnsOverlay\)/,
-  'Eye toggles and ordered-stack presentation must transfer repaint ownership according to the actual GPU submission path.',
+  /const exactOverlayVisible =\s*shouldRender && \(!residentOverrideBound \|\| previewOwnsOverlay \|\| residentHandoffPending\);[\s\S]*?const rendererPreviewOwnsPresentation =\s*exactOverlayVisible \|\| \(!hasPersistedLayer && orderedStackOwnsPreview\);[\s\S]*?if \(hasPersistedLayer && residentOverrideBound && previewOwnsOverlay\)[\s\S]*?setLocalRepaintPreviewLayer\(undefined\);[\s\S]*?scheduleLocalRepaintResidentPresentation\(liveLayerId\);[\s\S]*?rendererPreviewOwnsPresentation &&[\s\S]*?persistedLayer &&[\s\S]*?!previewOwnsOverlay/,
+  'Eye toggles and ordered-stack presentation must retain the exact overlay through resident-mask handoff before transferring ownership.',
 );
 assert.match(
   viewportCanvasSource,
