@@ -1,5 +1,11 @@
 # Changelog
 
+### 2026-09-01 Qwen → Klein 材质证据锚定
+
+- `ALG-GEN-005` v1.9.0：局部重绘通用模板先综合 Image 2 对应部件、第四张干净选区裁切和 Image 1 的 mask 外邻域，再确定实际结构、底色、材质、粗糙度与旧化；只有视觉证据证明选区是未完成白灰占位时，最终英文才明确要求完整替换 clay/primer/flat placeholder/untextured surface，避免误伤真实白色或浅灰材质。
+- 禁止 Qwen 仅凭“修缝”发明 brushed steel、clean metal、new weld bead、chamfer 或无缝铸造结构，也不再向 Klein 输出像素坐标/包围盒。缓存策略升级为 `qwen-to-klein-material-grounding-v5`，旧提示词升级后首次重新解析；四图、诊断次数、ModelView、作者/远端 mask、Schema、Revision 和资产不变，无迁移。
+- 使用固定种子与指定 Klein TrueV3 双图局部重绘工作流实测：原本光滑白灰的进料槽占位区域被完整恢复为与参考图及邻域一致的深色旧钢结构，未残留白膜；该材质描述只来自本测试视觉证据，不写死进通用模板。
+
 ### 2026-09-01 局部重绘核心蒙版清理
 
 - `ALG-LR-012` v1.1.0：ModelView 使用的白灰几何融合图不再直接依赖原始抗锯齿 mask 的每个弱像素；Worker 新增 24/96 双阈值连通、自适应 2–6px@2K 闭运算、微小孤岛过滤和小孔填充，再以全不透明核及窄边羽化融入 clay 预览，减少白灰碎片和底图细断线被远端复现。

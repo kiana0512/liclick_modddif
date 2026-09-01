@@ -35,6 +35,10 @@ assert.match(localMessage, /第三张为与 Image 1 像素对齐的独立蒙版/
 assert.match(localMessage, /先确认选区真正覆盖的部件/);
 assert.match(localMessage, /在图二寻找同一部件/);
 assert.match(localMessage, /真正的浅色材料及金属高光不因颜色而被删除/);
+assert.match(localMessage, /图二对应部件、第四张干净局部和图一选区边界外的真实表面共同确定目标外观/);
+assert.match(localMessage, /完整替换选区内的白灰 clay\/primer\/flat placeholder\/untextured surface/);
+assert.match(localMessage, /不得仅凭用户说“修缝”就发明 brushed steel、clean metal、new weld bead、chamfer/);
+assert.match(localMessage, /不要在最终提示词输出像素坐标或包围盒/);
 assert.doesNotMatch(localMessage, /limit automatic diagnosis/);
 
 for (const prompt of ['', '   \n\t']) {
@@ -503,7 +507,7 @@ assert.match(
 );
 assert.match(
   visualInputSource,
-  /LOCAL_REPAINT_PROMPT_TEMPLATE_POLICY = 'qwen-to-klein-selection-crop-v4'/,
+  /LOCAL_REPAINT_PROMPT_TEMPLATE_POLICY = 'qwen-to-klein-material-grounding-v5'/,
 );
 assert.match(panelSource, /activeReferences\.find\(\(reference\) =>/);
 assert.match(panelSource, /currentEffectImage: visualInputs\?\.currentEffectImage/);

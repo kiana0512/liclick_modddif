@@ -1,10 +1,10 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
-> 文档版本：`2.12.0`
+> 文档版本：`2.13.0`
 >
 > 生效日期：`2026-08-31`
 >
-> 代码盘点基线：`4cbce31 + 本次局部重绘核心蒙版清理`
+> 代码盘点基线：`38df8ca + 本次 Qwen → Klein 材质证据锚定`
 >
 > 基线仓库：`E:\Liclick 3D Texture Modernization`
 >
@@ -370,7 +370,7 @@ Bake 设置包含 resolution、frontal/rear distance、distance/cage、cage infl
 | `ALG-GEN-002` 多视图批次 | N 个捕获共享 batch；完成层串行 commit，整批结束一次发布新投影栈 |
 | `ALG-GEN-003` 任务身份归一 | clientGenerationId/serverJobId/taskId 合并，避免恢复时重复 running 行 |
 | `ALG-GEN-004` ModelView 远端单视图 | `1.0.0`；当前视角白模 + 多视图材质参考 + 可选提示词 → `modelview-single-view` → Generation；结果继续使用 `ALG-PROJ-005` 单视图优先投影 |
-| `ALG-GEN-005` 提示词智能润色 | `1.8.0`；UI-05 经同源 `/api/liclick/prompt-polish` 分流。普通单/多视图保持莉刻 `data-analysis` A2A；局部重绘空输入仍先由 `qwen3-vl-plus` 输出一句中文修复要求，显式输入跳过诊断，两者再进入统一 Qwen → Klein 转换模板。服务端用未外扩原始 mask 定位，并从干净 Image 1 自动裁出带上下文的第四图供 Qwen 看清选中部件；完整参考图仍只提供有证据的结构/材质，第四图不改变编辑范围或 ModelView 输入。模板以 100–180 词、2–3 段英文为生成目标；段数、词数、语言和 Markdown 偏差只记脱敏告警，不阻断也不触发格式修正。若首段缺少明确 mask 范围，服务端确定性追加固定保护句。仅最终正文写入 Generation，诊断不持久化、不回填文本框；显式输入一次 Qwen，空输入诊断加转换两次，共用 65 秒 deadline。模板策略进入所有局部重绘指纹，升级后首次重新解析、后续继续复用 |
+| `ALG-GEN-005` 提示词智能润色 | `1.9.0`；UI-05 经同源 `/api/liclick/prompt-polish` 分流。普通单/多视图保持莉刻 `data-analysis` A2A；局部重绘空输入仍先由 `qwen3-vl-plus` 输出一句中文修复要求，显式输入跳过诊断，两者再进入统一 Qwen → Klein 转换模板。服务端用未外扩原始 mask 定位，并从干净 Image 1 自动裁出带上下文的第四图供 Qwen 看清选中部件；完整参考图仍只提供有证据的结构/材质，第四图不改变编辑范围或 ModelView 输入。模板先用 Image 2、第四图和 mask 外邻域共同确定真实结构与材质；仅当三者证明选区为未完成的白灰占位时，要求 Klein 用明确目标材质完整替换 clay/primer/flat placeholder/untextured surface，真实浅色材质不受此规则影响。模板以 100–180 词、2–3 段英文为生成目标；段数、词数、语言和 Markdown 偏差只记脱敏告警，不阻断也不触发格式修正。若首段缺少明确 mask 范围，服务端确定性追加固定保护句。仅最终正文写入 Generation，诊断不持久化、不回填文本框；显式输入一次 Qwen，空输入诊断加转换两次，共用 65 秒 deadline。模板策略进入所有局部重绘指纹，升级后首次重新解析、后续继续复用 |
 | `ALG-OUT-001` 纹理/模型导出 | BaseColor 与 GLB/GLTF/FBX/OBJ/STL/ZIP；验证 UV 方向和颜色空间 |
 | `ALG-OUT-002` 快照/转台 | 当前视口设置生成静态图或视频，不改变 Layer 作者数据 |
 
@@ -399,13 +399,13 @@ Bake 设置包含 resolution、frontal/rear distance、distance/cage、cage infl
 - 迁移：Project Command、Revision、ownership、Capture/Layer 字段和资产类别均不升级；旧项目直接兼容。要让已有单视图获得新轮廓过渡，需要重新生成或重新创建投影层。
 - 回退：停止生成 `distance-field-v1` Alpha并恢复 `ignoreSourceAlpha=true` 即可；已保存 PNG、mask、depth 均仍为合法资产。不得删除用户历史图层或重写 Revision。
 
-### 11.3 提示词智能润色 `ALG-GEN-005` v1.8.0
+### 11.3 提示词智能润色 `ALG-GEN-005` v1.9.0
 
 - UI 与触发：普通生成仍保留手动智能润色图标。局部生成有用户输入时直接进入 Klein 模板转换；留空（包括纯空白）先执行独立诊断，再转换。诊断限定蒙版内人工接缝、突兀色差、纹理断裂、重影、投影重复/拉伸/错位及已有文字的重复、扭曲、缺笔或错位。真实面板接缝、焊缝、开口、零件边界与正常明暗必须保留，不新增部件、改整体配色或重设几何；文字拼写只采用原图/对应参考中清楚可辨的证据，不猜测品牌。最终英文结果才写入 Generation.prompt 和既有 metadata，诊断句只作服务端中间值，用户文本框保持原文。
 - 一句话诊断：第一阶段不发送 Klein 转换模板，只输出 4–120 字符、以“修复”开头的一句中文要求，例如“修复控制面板下方的接缝和色差”。允许逗号合并确定问题；禁止分析过程、标题、列表和 JSON。无明确缺陷时固定返回“未发现明确异常，保留现有外观。”。诊断使用 max_tokens=512、temperature=0.2；空值、多句、换行、超长、截断或 content_filter 回复直接阻断，不裁剪后继续。第二阶段将该句作为用户要求，沿用四图和 v1.7.0 转换模板，只扩写句中目标，不重新寻找问题；无缺陷句仅转换为保留原貌的要求。
 - Qwen 视觉契约：两阶段均使用 Image 1 干净当前效果图、Image 2 完整选中多视图、第三张未外扩原始作者 mask，以及服务端从干净 Image 1 自动生成的第四张选区上下文裁切；只编码一次并复用。第四图按第三图包围盒定位，四周上下文为 `max(16, round(max(width,height)/32))px`，在 2048 输入上约 64px；它只放大 Image 1 的未修改真实画面，不是新参考视角，不能扩大编辑范围。Qwen 不接收 clay 白灰几何融合图，也不接收远端专用外扩/羽化 mask；原始 mask 与 Image 1 像素对齐，参考图不要求像素对齐。mask 白色只表达原始编辑区域。
 - 编码与安全：Image 1 以 512px tile 组成真实 2K，保留材质、灯光、背景和网格，仅隐藏作者叠加层；Image 1 与第四张裁切进入 Qwen 前为 JPEG quality 95 / 4:4:4，原始 mask 为 quality 100 / 4:4:4，参考图为 quality 85 / 4:2:0，最长边均不超过 2048。浏览器只调用同源 Cookie API，仍只提交 `currentEffectImage/maskImage/referenceImage`；服务端不得在缺图时降级为文件名推断，并负责从已规范化的 Image 1 和 mask 派生第四图。API Key 只在 Node 控制面。
-- 模板与输出：system content 使用经 A/B 测试选定的通用 Qwen → Klein 模板。Qwen 必须先把原始 mask 的像素位置对应到 Image 1，确认真实被选部件，再从 Image 2 的完整/多视图中只取同一部件有证据的结构、配色、材质和功能边界，并转换到 Image 1 的相机、透视、轮廓、遮挡、光照与磨损。局部几何预览的浅色底色、亮度斑块和投影裂线不得成为成品材质依据，但真实浅色材质和金属高光不得因颜色被误删；修缝必须区分非物理纹理边缝与真实装配间隙、焊缝、开口、硬边和接触阴影。
+- 模板与输出：system content 使用经真实 Klein 工作流验证的通用 Qwen → Klein 模板。Qwen 必须先把原始 mask 的像素位置对应到 Image 1，确认真实被选部件，再从 Image 2 的完整/多视图中只取同一部件有证据的结构、配色、材质和功能边界，并转换到 Image 1 的相机、透视、轮廓、遮挡、光照与磨损。目标外观必须由 Image 2 对应部件、第四张干净局部和 Image 1 的 mask 外邻域共同锚定；若这些证据表明选区内纯白、浅灰或均匀光滑区域是未完成材质/几何占位，最终英文需先正面描述真实结构、底色、材质、粗糙度与旧化，再用一句明确约束完整替换 clay/primer/flat placeholder/untextured surface。真实浅色材质和金属高光不得因颜色被误删。修缝必须区分非物理纹理边缝与真实装配间隙、焊缝、开口、硬边和接触阴影；除非用户要求或图像证据明确支持，不得发明 brushed steel、clean metal、new weld bead、chamfer 或无缝铸造结构，也不得向最终 Klein 提示词输出像素坐标或包围盒。
 - 输出与软校验：模板仍要求 100–180 个英文单词、2–3 段完整英文正文；首句先明确实际部件及目标动作/材质，随后限定只修改独立 mask 选区。段数、100–200 词观测范围、英文、Markdown、完整段落及首段 mask 表达只用于脱敏质量告警，不再拒绝非空正文，也不为表现格式发起第二次 Qwen 调用。服务端仍识别 `only ... mask`、`confine/restrict/limit ... within/to the mask` 或 mask 外保持 unchanged/protected/preserved 等等价表达；缺少明确范围时只在首段末尾确定性追加 `Confine all edits to the independent mask region and keep every area outside it unchanged.`，已有等价要求时不重复。只无损归一 2/3 个单行段落、CRLF 和连续编号，不截句、不删除意图。显式输入固定一次 Qwen 调用；空输入固定为一次诊断加一次转换。两阶段共用默认 65 秒 deadline。只有空正文、超过 12000 字符、上游 `finish_reason=length/content_filter`、图片格式、HTTP、认证、网络或超时错误阻断；日志只记录问题代码，不记录诊断、提示词正文、图片或凭据。
 - 复用、并发与回退：前端用项目/对象/参考 ID、原始提示词、mask revision、冻结相机/对象矩阵和图层 content revision 构造指纹；先查内存六项 LRU，再查已持久化 Generation，命中时不再调用 Qwen。等待 Qwen 期间 mask revision 变化则阻断提交。回退可关闭生成时自动解析并恢复手动入口；既有 Project/Layer/Capture 与历史结果无需迁移或删除。
 - 测试：`test:prompt-polish` 以模拟上游响应覆盖独立诊断模板、一句话验证、空串/纯空白两阶段、无缺陷保留、四图顺序、选区包围盒/裁切、超时复用、诊断异常阻断、显式输入跳过诊断、183/201 词、单段、混合语言和 Markdown 的单次软放行、mask 范围确定性补全/去重、空结果/截断/content_filter/超长硬阻断及日志脱敏；不代替真实模型效果验收。`test:local-repaint-generation-input`、`test:local-repaint-performance-merge`、`test:local-repaint-result-composite` 锁定 Qwen/ModelView 角色分离、Worker 外扩羽化和内部 prompt 复用。
@@ -423,6 +423,8 @@ Bake 设置包含 resolution、frontal/rear distance、distance/cage、cage infl
 - v1.7.2 影响、迁移与回退：仅 M04 在 Qwen 输出归一化后、格式校验前增加 mask 范围固定句补全；不改变 system 目标、诊断、四图、调用次数、缓存指纹、ModelView、作者/远端 mask、GPU/CPU/Worker/shader、投影/UV/export、分辨率、Schema、Project Command/Revision/ownership 或历史资产，无缓存失效和数据迁移。回退时移除 `ensureLocalRepaintMaskScope` 调用即可。
 
 - v1.8.0 影响、迁移与回退：仅 M04 将最终提示词格式判断从阻断校验改为脱敏观测，并移除格式修正 Qwen 调用；独立 mask 范围确定性补全、system 生成目标、诊断、四图、缓存指纹、ModelView、作者/远端 mask、GPU/CPU/Worker/shader、投影/UV/export、分辨率、Schema、Project Command/Revision/ownership 和历史资产均不变，无缓存失效或数据迁移。回退时恢复格式失败分支和第二次 Qwen 请求即可。
+
+- v1.9.0 影响、迁移与回退：仅 M04 的 Qwen → Klein system content 与 UI-05 的局部提示词缓存策略变化。策略指纹升级为 `qwen-to-klein-material-grounding-v5`，旧模板结果只在升级后首次失效，新的 Generation 仍按既有上下文指纹复用。诊断次数、四图、ModelView 效果/白灰几何融合图、作者/远端 mask、GPU/CPU/Worker/shader、投影/UV/export、分辨率、Schema、Project Command/Revision/ownership 和历史资产不变，无批量迁移。回退时恢复 v1.8.0 system content 和 v4 指纹即可，不删除任何提示词、Generation、图层或资产。
 
 ## 12. 状态、Revision 与并发
 
@@ -563,3 +565,4 @@ M15 体积修复：锁定 `terser@5.51.2` 两轮安全压缩，保留日志和�
 | `2.10.9` | 2026-09-01 | `bb9e50a + 本次局部重绘蒙版范围确定性补全` | M04、`ALG-GEN-005` v1.7.2：Qwen 输出归一化后若首段缺少明确 mask 范围，服务端确定性追加固定保护句再执行完整格式校验，修复第二轮只剩 `masked_scope` 时的误失败；已有等价范围不重复。诊断、四图、缓存、ModelView、作者/远端 mask、Schema、Revision 和资产不变，无迁移；回退移除补全函数即可。 |
 | `2.11.0` | 2026-09-01 | `bb9e50a + 本次局部重绘提示词软校验` | M04、`ALG-GEN-005` v1.8.0：模板格式约束改为脱敏质量告警，不再因段数、词数、语言、Markdown 或范围措辞拒绝非空正文，也不再二次调用 Qwen 修格式；mask 范围固定句仍确定性补齐。仅空结果、12000 字符上限、上游截断/content_filter、视觉输入和传输类错误阻断。四图、诊断、缓存、ModelView、mask、Schema、Revision 和资产不变，无迁移。 |
 | `2.12.0` | 2026-09-01 | `4cbce31 + 本次局部重绘核心蒙版清理` | M08/UI-05、`ALG-LR-012` v1.1.0：ModelView 白灰几何融合不再直接混合细碎的原始抗锯齿 mask；Worker 新增 24/96 双阈值连通、2–6px@2K 闭运算、微小孤岛过滤、小孔填充及窄边羽化，并从清理后核生成既有 24–64px/4–10px 外扩羽化远端 mask。原始作者 mask 仍独立用于 Qwen、Capture、Generation、画笔、历史和回贴；GPU/shader/UV/export、Schema、Revision 与资产不变，无迁移。 |
+| `2.13.0` | 2026-09-01 | `本次 Qwen → Klein 材质证据锚定提交` | M04/UI-05、`ALG-GEN-005` v1.9.0：通用模板改为先以 Image 2 对应部件、第四张干净选区裁切和 mask 外邻域共同确定真实结构与材质；仅在视觉证据证明白灰均匀表面为未完成占位时，要求 Klein 用明确目标材质完整替换 clay/primer/flat placeholder/untextured surface，同时保护真实浅色材质。禁止仅凭“修缝”发明拉丝钢、干净焊缝、倒角或无缝铸造，并禁止输出像素坐标；缓存策略升级为 v5。四图、诊断、ModelView 输入、mask、GPU/CPU/Worker/shader/UV/export、Schema、Revision 和资产不变，无迁移。 |
