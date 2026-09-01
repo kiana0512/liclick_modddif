@@ -92,10 +92,7 @@ import {
 } from '@/services/workspaceApiClient';
 import { bakeSourceUnitScaleFactor } from '@/features/bake/bakeModelAlignment';
 import { useProjectStore } from '@/stores/projectStore';
-import {
-  getModelFormatFromFileName,
-  loadModelFromFile,
-} from '@/engine/loaders/loadModelFromFile';
+import { loadModelFromFile } from '@/engine/loaders/loadModelFromFile';
 import {
   assertModelTriangleLimit,
   AUTO_UV_MODEL_TRIANGLE_LIMIT,
@@ -2734,8 +2731,9 @@ export function AssetProcessingPage({
       };
       modelAssetPaths.push(savedSource.asset.relativePath ?? savedSource.asset.url);
 
-      // A standalone retopology or UV session still establishes a durable high-model
-      // root, so Bake can hydrate the original source and pair it with the generated low model.
+      // A standalone retopology or UV session still establishes a durable source
+      // root for pipeline lineage. Bake must not treat this provenance asset as an
+      // implicit high-poly selection; only the UV output is handed off as low-poly.
       if (mode === 'retopology' || mode === 'uv') {
         const timestamp = new Date().toISOString();
         const textureRoot = {
@@ -2833,69 +2831,22 @@ export function AssetProcessingPage({
     if (mode === 'uv' && objectId) {
       const previousWorkspace = nextProject.bakeWorkspace;
       const previousSet = previousWorkspace?.bakeSets[objectId];
-      const highAsset = inputAssets.find(
-        (asset) => asset.kind === 'high-model' || asset.kind === 'model',
-      );
-      const format = highAsset ? getModelFormatFromFileName(highAsset.name) : undefined;
-      const fallbackHighObject: SceneObject | undefined =
-        highAsset && format
-          ? input.highObject
-            ? {
-                ...input.highObject,
-                id: objectId,
-                name: highAsset.name,
-                sourcePath: highAsset.url,
-                format,
-                materialSlots: input.highObject.materialSlots.map((slot) => ({ ...slot })),
-                uvSets: [...input.highObject.uvSets],
-                transform: { ...input.highObject.transform },
-                visible: true,
-                selected: true,
-              }
-            : {
-              id: objectId,
-              name: highAsset.name,
-              type: 'group',
-              sourcePath: highAsset.url,
-              format,
-              materialSlots: [],
-              uvSets: [],
-              transform: {
-                position: [0, 0, 0],
-                rotation: [0, 0, 0],
-                scale: [1, 1, 1],
-              },
-              visible: true,
-              selected: true,
-            }
-          : undefined;
-      const highObject =
-        previousSet?.highObject ??
-        nextProject.objects.find((object) => object.id === objectId) ??
-        fallbackHighObject;
       nextProject = {
         ...nextProject,
         bakeWorkspace: {
           version: 1,
           ...previousWorkspace,
-          activeStage: 'alignment',
+          activeStage: 'assets',
           selectedObjectId: objectId,
           bakeSets: {
             ...(previousWorkspace?.bakeSets ?? {}),
             [objectId]: {
               objectId,
               ...previousSet,
-              ...(highAsset
-                ? {
-                    high: {
-                      name: highAsset.name,
-                      url: highAsset.url,
-                      relativePath: highAsset.relativePath,
-                      mimeType: highAsset.mimeType,
-                    },
-                  }
-                : {}),
-              ...(highObject ? { highObject } : {}),
+              // UV contributes only the low-poly input. Explicitly clear the
+              // legacy auto-filled high snapshot so Bake opens with High empty.
+              high: undefined,
+              highObject: undefined,
               low: {
                 name: outputAsset.name,
                 url: outputAsset.url,
@@ -2956,7 +2907,7 @@ export function AssetProcessingPage({
               bakeWorkspace: {
                 version: 1 as const,
                 ...latestWorkspace,
-                activeStage: 'alignment' as const,
+                activeStage: 'assets' as const,
                 selectedObjectId: objectId,
                 bakeSets: {
                   ...(latestWorkspace?.bakeSets ?? {}),
@@ -3045,11 +2996,9 @@ export function AssetProcessingPage({
     }
     const outputBlob = await fetchTaskHistoryOutputBlob(output);
     // Automatic UV preserves the submitted geometry and adds/updates UV data.
-    // Older account-history records did not retain a second source download,
-    // so the verified UV result is also the durable high snapshot for Bake.
-    // This keeps historical handoff self-contained without inventing a local
-    // workspace dependency; retopology must not use this fallback because it
-    // intentionally changes geometry.
+    // Older account-history records did not retain a separate source download,
+    // so this verified result also anchors pipeline lineage. Bake still receives
+    // it only as low-poly and requires an explicit high-poly import.
     const historicalUvSource =
       mode === 'uv'
         ? new File([outputBlob], record.sourceName || output.filename, {

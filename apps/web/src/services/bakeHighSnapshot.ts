@@ -98,7 +98,7 @@ export function replaceBakeHighSnapshot(
     assetManifest,
     bakeWorkspace: {
       version: 1,
-      activeStage: 'assets',
+      activeStage: previousSet.low ? 'alignment' : 'assets',
       selectedObjectId: input.objectId,
       bakeSets,
     },
@@ -110,6 +110,22 @@ export function replaceBakeHighSnapshot(
 export function getBakeHighObjects(project?: Project): SceneObject[] {
   if (!project?.bakeWorkspace) return [];
   return Object.entries(project.bakeWorkspace.bakeSets).flatMap(([objectId, bakeSet]) => {
+    const highSource = bakeSet.high?.relativePath ?? bakeSet.high?.url ?? bakeSet.highObject?.sourcePath;
+    const pipelineOwnsHighSource = Boolean(
+      highSource &&
+        project.pipeline?.revisions.some((revision) =>
+          revision.outputAssets.some(
+            (asset) =>
+              (asset.kind === 'high-model' || asset.kind === 'model') &&
+              (asset.relativePath === highSource || asset.url === highSource),
+          ),
+        ),
+    );
+    // UV input models are pipeline provenance, not an implicit Bake high-poly
+    // selection. Historical projects may still contain that old snapshot, so
+    // suppress it at read time without deleting the stored pipeline asset.
+    if (pipelineOwnsHighSource) return [];
+
     if (bakeSet.highObject) {
       const asset = bakeSet.high ?? {
         name: bakeSet.highObject.name,
@@ -119,8 +135,7 @@ export function getBakeHighObjects(project?: Project): SceneObject[] {
     }
 
     const legacyObject = project.objects.find((object) => object.id === objectId);
-    if (!legacyObject) return [];
-    if (!bakeSet.high) return [legacyObject];
+    if (!legacyObject || !bakeSet.high) return [];
     return [cloneBakeHighObject(legacyObject, objectId, bakeSet.high)];
   });
 }

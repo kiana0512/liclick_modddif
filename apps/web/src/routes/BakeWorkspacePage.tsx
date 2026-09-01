@@ -314,9 +314,7 @@ export function BakeWorkspacePage({
   const restoredJobRef = useRef('');
   const saveQueueRef = useRef<Promise<void>>(Promise.resolve());
   const autoLowPairRef = useRef(new Set<string>());
-  const pipelineAssetHydrationRef = useRef('');
   const pipelineLowRecoveryRef = useRef('');
-  const pendingPipelineLowRef = useRef<File>();
   const { project, isLoading, error } = useWorkflowProject(projectId);
   const replaceCurrentProject = useProjectStore((state) => state.replaceCurrentProject);
   const [highObjectOverrides, setHighObjectOverrides] = useState<Record<string, SceneObject>>({});
@@ -355,12 +353,8 @@ export function BakeWorkspacePage({
     [highObjects, project],
   );
   const [selectedObjectId, setSelectedObjectId] = useState(handoff?.objectId ?? '');
-  const [activeStage, setActiveStage] = useState<BakeStage>(
-    handoff?.lowModel?.file ? 'alignment' : 'assets',
-  );
-  const [viewportMode, setViewportMode] = useState<BakeViewportMode>(
-    handoff?.lowModel?.file ? 'overlay' : 'high',
-  );
+  const [activeStage, setActiveStage] = useState<BakeStage>('assets');
+  const [viewportMode, setViewportMode] = useState<BakeViewportMode>('high');
   const [viewportResetKey, setViewportResetKey] = useState(0);
   const [lowFiles, setLowFiles] = useState<Record<string, File>>(() =>
     handoff?.lowModel?.file ? { [handoff.objectId]: handoff.lowModel.file } : {},
@@ -730,12 +724,13 @@ export function BakeWorkspacePage({
     [handoff, project],
   );
 
-  const selectedLow = selectedHigh ? lowFiles[selectedHigh.id] : undefined;
-  const selectedCage = selectedHigh ? cageFiles[selectedHigh.id] : undefined;
-  const selectedColor = selectedHigh ? colorFiles[selectedHigh.id] : undefined;
-  const selectedRoughness = selectedHigh ? roughnessFiles[selectedHigh.id] : undefined;
-  const selectedMetallic = selectedHigh ? metallicFiles[selectedHigh.id] : undefined;
-  const selectedNormal = selectedHigh ? normalFiles[selectedHigh.id] : undefined;
+  const selectedBakeObjectId = selectedHigh?.id || selectedObjectId || handoff?.objectId;
+  const selectedLow = selectedBakeObjectId ? lowFiles[selectedBakeObjectId] : undefined;
+  const selectedCage = selectedBakeObjectId ? cageFiles[selectedBakeObjectId] : undefined;
+  const selectedColor = selectedBakeObjectId ? colorFiles[selectedBakeObjectId] : undefined;
+  const selectedRoughness = selectedBakeObjectId ? roughnessFiles[selectedBakeObjectId] : undefined;
+  const selectedMetallic = selectedBakeObjectId ? metallicFiles[selectedBakeObjectId] : undefined;
+  const selectedNormal = selectedBakeObjectId ? normalFiles[selectedBakeObjectId] : undefined;
   const selectedProjectColor = selectedHigh ? projectColorForObject(selectedHigh.id) : undefined;
   const selectedColorName = selectedColor?.name ?? selectedProjectColor?.name;
   const autoRoughnessEnabled = roughnessSource === 'comfy';
@@ -1240,7 +1235,7 @@ export function BakeWorkspacePage({
       | 'normal',
     objectId?: string,
   ) {
-    fileTargetIdRef.current = objectId ?? selectedHigh?.id;
+    fileTargetIdRef.current = objectId ?? selectedHigh?.id ?? selectedObjectId ?? handoff?.objectId;
     const input = {
       high: highInputRef.current,
       low: lowInputRef.current,
@@ -1369,7 +1364,12 @@ export function BakeWorkspacePage({
         { normalize: false, ground: false, targetMaxDimension: 3 },
         resourceFiles,
       );
-      objectId = selectedHigh?.id ?? loaded.object.id;
+      objectId =
+        fileTargetIdRef.current ??
+        selectedHigh?.id ??
+        selectedObjectId ??
+        handoff?.objectId ??
+        loaded.object.id;
       previousOverride = highObjectOverrides[objectId];
 
       loaded.root.name = modelFile.name;
@@ -1419,6 +1419,10 @@ export function BakeWorkspacePage({
           highObject: importedObject,
         }),
       );
+      if (lowFiles[objectId]) {
+        setActiveStage('alignment');
+        setViewportMode('overlay');
+      }
       if (temporaryObjectUrl) {
         URL.revokeObjectURL(temporaryObjectUrl);
         temporaryObjectUrl = undefined;
@@ -1444,7 +1448,7 @@ export function BakeWorkspacePage({
   }
 
   useEffect(() => {
-    if (!project || highObjects.length === 0) return;
+    if (!project) return;
     const uvRevision = getLatestUsablePipelineStageRevision(project.pipeline, 'uv');
     const lowAsset = uvRevision?.outputAssets.find(
       (asset) => asset.kind === 'uv-model' || asset.kind === 'low-model',
@@ -1452,11 +1456,14 @@ export function BakeWorkspacePage({
     if (!lowAsset) return;
 
     const selectedWorkspaceObjectId = project.bakeWorkspace?.selectedObjectId;
-    const targetObjectId = resolvePipelineBakeTargetObjectId(
-      highObjects.map((object) => object.id),
-      lowAsset.objectId,
-      selectedWorkspaceObjectId,
-    );
+    const targetObjectId =
+      resolvePipelineBakeTargetObjectId(
+        highObjects.map((object) => object.id),
+        lowAsset.objectId,
+        selectedWorkspaceObjectId,
+      ) ??
+      lowAsset.objectId ??
+      selectedWorkspaceObjectId;
     if (!targetObjectId) return;
     if (lowFiles[targetObjectId] || project.bakeWorkspace?.bakeSets[targetObjectId]?.low) return;
 
@@ -1476,8 +1483,13 @@ export function BakeWorkspacePage({
         const assigned = { [targetObjectId]: lowFile };
         setSelectedObjectId(targetObjectId);
         setLowFiles((current) => ({ ...current, ...assigned }));
-        setActiveStage('alignment');
-        setViewportMode('overlay');
+        if (highObjects.some((object) => object.id === targetObjectId)) {
+          setActiveStage('alignment');
+          setViewportMode('overlay');
+        } else {
+          setActiveStage('assets');
+          setViewportMode('high');
+        }
         void persistImportedFiles('low', assigned);
       })
       .catch((reason: unknown) => {
@@ -1497,65 +1509,6 @@ export function BakeWorkspacePage({
       }
     };
   }, [highObjects, lowFiles, persistImportedFiles, project]);
-
-  useEffect(() => {
-    if (!project || highObjects.length > 0) return;
-    const textureRevision = getLatestUsablePipelineStageRevision(project.pipeline, 'texture');
-    const uvRevision = getLatestUsablePipelineStageRevision(project.pipeline, 'uv');
-    const highAsset = textureRevision?.outputAssets.find(
-      (asset) => asset.kind === 'high-model' || asset.kind === 'model',
-    );
-    const lowAsset = uvRevision?.outputAssets.find(
-      (asset) => asset.kind === 'uv-model' || asset.kind === 'low-model',
-    );
-    if (!highAsset) return;
-    const hydrationKey = `${project.id}:${highAsset.id}:${lowAsset?.id ?? 'no-low'}`;
-    if (pipelineAssetHydrationRef.current === hydrationKey) return;
-    pipelineAssetHydrationRef.current = hydrationKey;
-    let cancelled = false;
-
-    const readAssetFile = async (asset: NonNullable<typeof highAsset>) => {
-      const blob = await readWorkspaceAssetBlob(asset.url);
-      return new File([blob], asset.name, {
-        type: asset.mimeType || blob.type || 'application/octet-stream',
-      });
-    };
-
-    void Promise.all([readAssetFile(highAsset), lowAsset ? readAssetFile(lowAsset) : undefined])
-      .then(([highFile, lowFile]) => {
-        if (cancelled) return;
-        if (lowFile) pendingPipelineLowRef.current = lowFile;
-        void handleHighImport([highFile]);
-      })
-      .catch((reason: unknown) => {
-        if (cancelled) return;
-        pipelineAssetHydrationRef.current = '';
-        setBakeError(
-          reason instanceof Error
-            ? `流程资产自动接入失败：${reason.message}`
-            : '流程资产自动接入失败',
-        );
-      });
-    return () => {
-      cancelled = true;
-    };
-    // The hydration key makes this effect idempotent while the import callback
-    // intentionally uses the latest component state.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [highObjects.length, project]);
-
-  useEffect(() => {
-    const lowFile = pendingPipelineLowRef.current;
-    const high = highObjects[0];
-    if (!lowFile || !high) return;
-    pendingPipelineLowRef.current = undefined;
-    const assigned = { [high.id]: lowFile };
-    setSelectedObjectId(high.id);
-    setLowFiles((current) => ({ ...current, ...assigned }));
-    setActiveStage('alignment');
-    setViewportMode('overlay');
-    void persistImportedFiles('low', assigned);
-  }, [highObjects, persistImportedFiles]);
 
   function openStage(stage: BakeStage) {
     setActiveStage(stage);
