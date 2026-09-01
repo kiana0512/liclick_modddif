@@ -68,6 +68,7 @@ import { mergeAuthoritativeLocalRepaintLayers } from './projectedPreviewLayerAut
 import {
   getOrderedLocalRepaintPreviewLayer,
   mergeOrderedLocalRepaintPreview,
+  shouldMuteLocalRepaintResidentLayer,
 } from '@/engine/localRepaint/orderedPreviewComposition';
 import { ObjectTransformControls } from './ObjectTransformControls';
 import { isViewportInteractionBusy as isSharedViewportInteractionBusy } from './viewportInteractionState';
@@ -1312,6 +1313,18 @@ function ImportedModel({
     () => getOrderedLocalRepaintPreviewLayer(layers, localRepaintPreviewLayer),
     [layers, localRepaintPreviewLayer],
   );
+  const rendererOwnedLocalRepaintPreviewLayerId = useMemo(
+    () =>
+      localRepaintPreviewLayer &&
+      shouldMuteLocalRepaintResidentLayer(
+        layers,
+        localRepaintPreviewLayer,
+        localRepaintPreviewLayer.id,
+      )
+        ? localRepaintPreviewLayer.id
+        : undefined,
+    [layers, localRepaintPreviewLayer],
+  );
   const activeLayerId = useLayerStore((state) => state.activeProjectedLayerId);
   const project = useProjectStore((state) =>
     state.currentProjectId
@@ -1767,7 +1780,7 @@ function ImportedModel({
           priorityOverlay: layer.projectionCompositeMode === 'single-view-priority-v1',
           visible:
             layer.visible &&
-            layer.id !== localRepaintPreviewLayerId &&
+            layer.id !== rendererOwnedLocalRepaintPreviewLayerId &&
             isProjectedLayerAboveMergedUv(layer, visibleMergedUvBoundaryOrder),
           hue: (layer.adjustments?.hue ?? 0) / 100,
           saturation: (layer.adjustments?.saturation ?? 0) / 100,
@@ -1790,7 +1803,7 @@ function ImportedModel({
       }),
     [
       captureById,
-      localRepaintPreviewLayerId,
+      rendererOwnedLocalRepaintPreviewLayerId,
       projectedProgramWarmupLayers,
       runtimeVisibilityByLayerId,
       visibleMergedUvBoundaryOrder,
@@ -1839,7 +1852,7 @@ function ImportedModel({
           // is preparing. The stored depth (when present) remains a valid fallback.
           visible:
             layer.visible &&
-            layer.id !== localRepaintPreviewLayerId &&
+            layer.id !== rendererOwnedLocalRepaintPreviewLayerId &&
             isProjectedLayerAboveMergedUv(layer, visibleMergedUvBoundaryOrder),
           hue: (layer.adjustments?.hue ?? 0) / 100,
           saturation: (layer.adjustments?.saturation ?? 0) / 100,
@@ -1862,7 +1875,7 @@ function ImportedModel({
       }),
     [
       captureById,
-      localRepaintPreviewLayerId,
+      rendererOwnedLocalRepaintPreviewLayerId,
       runtimeVisibilityByLayerId,
       stablePreviewProjectedLayers,
       visibleMergedUvBoundaryOrder,
@@ -1876,7 +1889,16 @@ function ImportedModel({
       )
         return;
       const startedAt = performance.now();
-      const currentPreviewLayerId = useSceneStore.getState().localRepaintPreviewLayer?.id;
+      const currentPreviewLayer = useSceneStore.getState().localRepaintPreviewLayer;
+      const mutedPreviewLayerId = currentPreviewLayer
+        ? shouldMuteLocalRepaintResidentLayer(
+            state.layers,
+            currentPreviewLayer,
+            currentPreviewLayer.id,
+          )
+          ? currentPreviewLayer.id
+          : undefined
+        : undefined;
       const currentMergedUvBoundaryOrder = getVisibleMergedUvBoundaryOrder(
         state.layers,
         importedModel.objectId,
@@ -1894,7 +1916,7 @@ function ImportedModel({
           // the resident stack and must recover their stored visibility/opacity.
           visible:
             layer.visible &&
-            layer.id !== currentPreviewLayerId &&
+            layer.id !== mutedPreviewLayerId &&
             isProjectedLayerAboveMergedUv(layer, currentMergedUvBoundaryOrder),
         }));
       if (
@@ -2090,7 +2112,11 @@ function ImportedModel({
           ...toProjectionLayerDisplayInput(layer),
           visible:
             layer.visible &&
-            layer.id !== useSceneStore.getState().localRepaintPreviewLayer?.id &&
+            !shouldMuteLocalRepaintResidentLayer(
+              currentLayers,
+              useSceneStore.getState().localRepaintPreviewLayer,
+              layer.id,
+            ) &&
             isProjectedLayerAboveMergedUv(layer, currentMergedUvBoundaryOrder),
         }));
       if (
@@ -2139,7 +2165,7 @@ function ImportedModel({
         ...toProjectionLayerDisplayInput(layer),
         visible:
           layer.visible &&
-          layer.id !== localRepaintPreviewLayerId &&
+          layer.id !== rendererOwnedLocalRepaintPreviewLayerId &&
           isProjectedLayerAboveMergedUv(layer, currentMergedUvBoundaryOrder),
       }));
     syncProjectedLayerMaterialDisplayStateInObject(
@@ -2157,7 +2183,7 @@ function ImportedModel({
       }),
     );
     invalidate();
-  }, [importedModel, invalidate, localRepaintPreviewLayerId]);
+  }, [importedModel, invalidate, rendererOwnedLocalRepaintPreviewLayerId]);
   const contentAwareUvUnderlayLayers = useMemo(() => {
     // The signature is an intentional recompute token for relevant LayerStore
     // fields while the source rows are read atomically from getState().

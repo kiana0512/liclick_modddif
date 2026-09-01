@@ -52,6 +52,23 @@ export function shouldPresentLocalRepaintInOrderedStack(
   );
 }
 
+/**
+ * A renderer-owned preview only mutes its persisted twin while the dedicated
+ * GPU overlay is the presentation path. When layer order requires the preview
+ * to participate in the shared projected stack, muting the same id there makes
+ * both owners transparent: the dedicated overlay is hidden by the order guard
+ * and the resident binding is disabled by the preview marker.
+ */
+export function shouldMuteLocalRepaintResidentLayer(
+  layers: readonly Layer[],
+  preview: Layer | undefined,
+  layerId: string,
+) {
+  return (
+    preview?.id === layerId && !shouldPresentLocalRepaintInOrderedStack(layers, preview)
+  );
+}
+
 export function getOrderedLocalRepaintPreviewLayer(
   layers: readonly Layer[],
   preview: Layer | undefined,
@@ -70,4 +87,3 @@ export function mergeOrderedLocalRepaintPreview(
     (left, right) => right.order - left.order,
   );
 }
-

@@ -80,6 +80,15 @@ try {
     true,
     'a visible priority single-view above repaint must disable the always-on-top fast path',
   );
+  assert.equal(
+    ordered.shouldMuteLocalRepaintResidentLayer(
+      [single, persistedRepaint],
+      liveRepaint,
+      persistedRepaint.id,
+    ),
+    false,
+    'ordered-stack ownership must keep the resident repaint binding visible',
+  );
 
   const bottomUp = ordered.mergeOrderedLocalRepaintPreview(
     [single, persistedRepaint],
@@ -100,6 +109,24 @@ try {
     }),
     false,
     'moving repaint above the single-view must restore the clear low-latency foreground path',
+  );
+  assert.equal(
+    ordered.shouldMuteLocalRepaintResidentLayer(
+      [repaintOnTop, singleBelow],
+      { ...liveRepaint, order: 0 },
+      repaintOnTop.id,
+    ),
+    true,
+    'dedicated-overlay ownership must continue muting the persisted twin',
+  );
+  assert.equal(
+    ordered.shouldMuteLocalRepaintResidentLayer(
+      [single, persistedRepaint],
+      liveRepaint,
+      'another-layer',
+    ),
+    false,
+    'preview ownership must never mute an unrelated resident layer',
   );
   assert.equal(
     ordered.shouldPresentLocalRepaintInOrderedStack(
@@ -142,6 +169,11 @@ try {
     'utf8',
   );
   assert.match(sceneRoot, /mergeOrderedLocalRepaintPreview/);
+  assert.match(
+    sceneRoot,
+    /shouldMuteLocalRepaintResidentLayer/,
+    'resident display uniforms must distinguish ordered-stack ownership from the dedicated overlay',
+  );
   assert.match(
     sceneRoot,
     /previewProjectionInputs\.slice\(liveRepaintIndex\)/,
