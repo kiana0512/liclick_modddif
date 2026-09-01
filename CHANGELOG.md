@@ -1,5 +1,10 @@
 # Changelog
 
+### 2026-09-01 局部重绘核心蒙版清理
+
+- `ALG-LR-012` v1.1.0：ModelView 使用的白灰几何融合图不再直接依赖原始抗锯齿 mask 的每个弱像素；Worker 新增 24/96 双阈值连通、自适应 2–6px@2K 闭运算、微小孤岛过滤和小孔填充，再以全不透明核及窄边羽化融入 clay 预览，减少白灰碎片和底图细断线被远端复现。
+- ModelView 专用的 24–64px 外扩、4–10px 羽化 mask 改由清理后核生成；未外扩原始作者 mask 仍完整保留给 Qwen、Capture、Generation、表面画笔、历史恢复和最终回贴 coverage。不改变 GPU/shader/UV/export、输出分辨率、Schema、Revision、ownership 或已有资产，无迁移；回退只需恢复 Worker 的原始蒙版融合路径。
+
 ### 2026-09-01 局部重绘提示词软校验
 
 - `ALG-GEN-005` v1.8.0：Qwen → Klein 的 100–180 词、2–3 段、纯英文和无 Markdown 约束改为生成目标及服务端观测指标，不再因段数、词数、语言片段、Markdown 或具体范围措辞拒绝可用正文，也不再为格式发起第二次 Qwen 调用。

@@ -15,14 +15,14 @@ const workerSource = fs.readFileSync(workerPath, 'utf8');
 const panelSource = fs.readFileSync(panelPath, 'utf8');
 const editorPageSource = fs.readFileSync(editorPagePath, 'utf8');
 const privateCoreSource = `${workerSource.slice(0, workerSource.indexOf('self.onmessage'))}
-export { dilateMask, boxBlur };`;
+export { dilateMask, boxBlur, buildCompositeCoreMask };`;
 const compiled = ts.transpileModule(privateCoreSource, {
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
   fileName: workerPath,
 }).outputText;
 const module = { exports: {} };
 new Function('exports', 'module', compiled)(module.exports, module);
-const { dilateMask, boxBlur } = module.exports;
+const { dilateMask, boxBlur, buildCompositeCoreMask } = module.exports;
 
 const width = 11;
 const height = 11;
@@ -34,6 +34,22 @@ assert.equal(dilated[3 * width + 3], 255);
 assert.equal(dilated[2 * width + 2], 0);
 const feathered = boxBlur(dilated, width, height, 1);
 assert.ok(feathered[2 * width + 3] > 0 && feathered[2 * width + 3] < 255);
+
+const fragmentedWidth = 31;
+const fragmentedHeight = 21;
+const fragmented = new Uint8Array(fragmentedWidth * fragmentedHeight);
+for (let y = 7; y <= 13; y += 1) {
+  for (let x = 8; x <= 20; x += 1) fragmented[y * fragmentedWidth + x] = 255;
+}
+fragmented[10 * fragmentedWidth + 14] = 0;
+fragmented[10 * fragmentedWidth + 21] = 40;
+fragmented[2 * fragmentedWidth + 2] = 40;
+fragmented[18 * fragmentedWidth + 28] = 255;
+const compositeCore = buildCompositeCoreMask(fragmented, fragmentedWidth, fragmentedHeight, 1);
+assert.equal(compositeCore[10 * fragmentedWidth + 14], 255, 'A small internal hole should be filled.');
+assert.equal(compositeCore[10 * fragmentedWidth + 21], 255, 'A weak pixel connected to the core should remain.');
+assert.equal(compositeCore[2 * fragmentedWidth + 2], 0, 'Weak isolated antialias noise should be removed.');
+assert.equal(compositeCore[18 * fragmentedWidth + 28], 0, 'A microscopic detached island should be removed.');
 
 assert.match(
   panelSource,
@@ -69,6 +85,10 @@ assert.match(workerSource, /Math\.round\(24 \* scale\)/);
 assert.match(workerSource, /Math\.round\(64 \* scale\)/);
 assert.match(workerSource, /Math\.round\(minimumDimension \* 0\.25\)/);
 assert.match(workerSource, /Math\.round\(dilationRadius \* 0\.2\)/);
-assert.match(workerSource, /if \(authoredBinary\[index\] > 0\) submittedMask\[index\] = 255/);
+assert.match(workerSource, /if \(authoredStrength\[index\] >= 24\) candidate\[index\] = 255/);
+assert.match(workerSource, /if \(authoredStrength\[index\] >= 96\) strong\[index\] = 255/);
+assert.match(workerSource, /const compositeCore = buildCompositeCoreMask/);
+assert.match(workerSource, /const dilated = dilateMask\(compositeCore/);
+assert.match(workerSource, /if \(compositeCore\[index\] > 0\) submittedMask\[index\] = 255/);
 
 console.log('Local repaint generation input tests passed.');

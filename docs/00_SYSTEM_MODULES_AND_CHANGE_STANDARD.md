@@ -1,10 +1,10 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
-> 文档版本：`2.11.0`
+> 文档版本：`2.12.0`
 >
 > 生效日期：`2026-08-31`
 >
-> 代码盘点基线：`bb9e50a + 本次局部重绘提示词软校验`
+> 代码盘点基线：`4cbce31 + 本次局部重绘核心蒙版清理`
 >
 > 基线仓库：`E:\Liclick 3D Texture Modernization`
 >
@@ -283,7 +283,8 @@ UI-09 剪刀
 局部选择（多相机表面笔画）
  → 点击局部生图时冻结 square camera + object matrix
  → 同相机捕获 2K flat BaseColor 干净效果图、2K clay-target 白灰几何图和原始 RGB selection mask
- → Worker 仅在原始 mask 内以连续强度将 clay 融入效果图；原始 mask 自适应外扩 24–64px@2K 并羽化 4–10px
+ → Worker 从原始 mask 派生双阈值连通、闭运算补断、微小孤岛过滤与小孔填充的合成核，用全不透明核+窄边羽化将 clay 融入效果图
+ → ModelView 专用 mask 再从合成核自适应外扩 24–64px@2K 并羽化 4–10px；未修改原始作者 mask
  → 若材质参考是单图，先生成 durable 多视图配对
  → Qwen 只看干净效果图 / 完整多视图 / 未外扩原始 mask；留空先输出一句中文修复要求，再用 Klein 2–3 段模板转换；有用户文字直接转换
  → ModelView 四输入（效果+蒙版内白灰几何融合图 / 材质参考 / 外扩羽化 RGB mask / Qwen 最终 prompt）与 1K linear-view depth guard 并行
@@ -310,13 +311,15 @@ UI-09 剪刀
 | `ALG-LR-009` Inward Crossfade 栈合成 | `1.0.0` | 连续重绘层向内部交叉淡化，避免普通 alpha stacking 在边缘重复显露接缝 |
 | `ALG-LR-010` Provider 兼容编辑 | `1.0.0-compat` | `LocalRepaintDialog` 的 image/edit/protect/hole masks 独立路径，不得与四输入主路径混改 |
 | `ALG-LR-011` 生图透明显示副本 | `1.0.0` | UI-05 重绘效果图和 UI-10 普通投射图层缩略图优先使用 capture linear-view depth 清除明确无几何覆盖的背景，按精确 alpha bounds 仅裁切一次并保留 6% 留白；几何覆盖区的 RGB/alpha 原样保留。深度不可用时只清除与画布边缘连通的近黑外背景，不做第二次 matte、侵蚀或分位裁边。局部重绘图层不走整图副本，继续使用用户涂绘 mask，只显示笔刷授权区域 |
-| `ALG-LR-012` 远端重绘输入融合 | `1.0.3` | 专用 Worker 在原始连续 mask 内执行 `composite=current×(1-a)+clay×a`；外扩半径为 `clamp(0.25×mask短边, 24, 64)px@2K`，羽化维持 `clamp(0.2×外扩, 4, 10)px@2K`。融合图和外扩 mask 只给 ModelView；Qwen、Capture、Generation 画笔授权与历史恢复统一使用未外扩作者 mask，双蒙版历史任务优先读取 `authoredMaskUrl` |
+| `ALG-LR-012` 远端重绘输入融合 | `1.1.0` | 专用 Worker 从原始连续 mask 派生 ModelView 合成核：候选/强核阈值为 24/96，8 邻域保留含强核的连通域，应用 `clamp(0.012×mask短边, 2, 6)px@2K` 闭运算、小于 `max(24px², bbox×0.02%)@2K` 的孤岛过滤和小于 `max(64px², bbox×0.05%)@2K` 的封闭孔填充；`composite=current×(1-a)+clay×a` 使用全不透明核和约 1.5px@2K 窄边羽化。远端 mask 从清理后核再按 `clamp(0.25×核短边, 24, 64)px@2K` 外扩、`clamp(0.2×外扩, 4, 10)px@2K` 羽化。Qwen、Capture、Generation 画笔授权与历史恢复仍使用未外扩、未清理的原始作者 mask |
 
 局部生图远端接收生成阶段的 RGB selection mask，但仍不接收 UV 图集、表面深度或用户最终回贴 coverage。远端 latent mask 不承诺蒙版外像素逐点不变；浏览器继续用同一 `allowedMaskUrl`、capture camera 和 depth guard 限制 3D 写回，用户通过表面画笔决定最终图层 coverage。这些几何授权契约与旧版保持一致。
 
 `ALG-LR-002` v3.1 在 Node 控制面转发前用 Sharp 校验 `image/mask` 尺寸一致且 mask 红通道非空；缺少蒙版、alpha-only/全黑蒙版或尺寸不同均以 422 fail-closed，不进入 GPU 队列。原始作者 mask 与远端外扩 mask 分别持久到 Generation metadata：前者写入 `maskUrl/authoredMaskUrl` 并与 Capture、Qwen、交互画笔及历史恢复绑定，后者只写入 `submittedMaskUrl` 并作为 ModelView 真实提交蒙版。读取双蒙版历史任务时优先使用 `authoredMaskUrl`，没有该字段的旧工程才回退 `maskUrl`。新任务的幂等后缀仍为 `inpaint:4input-rseed-r1`；同一 client generation ID 的网络重放复用键，修改任一输入必须创建新 ID。远端单视图类型已与局部重绘拆分，仍只提交白模与材质参考两张图，不接收 mask。
 
 迁移：Project Command、Revision、Capture/Generation/Layer Schema、对象存储类别与 ownership 均不升级；旧 v5-v14 结果继续使用已持久化 harmonized/raw 元数据，不批量重算。新任务以 `resultComposition=direct-v1`、`rawResultUrl=resultUrl` 识别并直接投影。回退可恢复旧三输入 workflow 与浏览器 harmonization；已保存的 direct PNG 仍是合法 Generation 资产，禁止删除历史图层或改写 Revision。
+
+`ALG-LR-012` v1.1.0 只改变 ModelView 生成输入的派生蒙版：原始作者 mask 仍是编辑意图、Qwen 定位、Capture、Generation 画笔授权、历史和回贴 coverage 的唯一权威来源，不被清理或覆写。清理后核只用于白灰几何融合图与 `submittedMaskUrl`，不使用凸包或包围盒填充，不跨越大于闭运算直径的结构空隙。GPU、shader、UV raster、投影、返图直出、输出分辨率和 export compositor 无变化；Project/Layer/Generation/Capture Schema、Revision、ownership 与已有资产无迁移。回退时只恢复 Worker 使用原始连续蒙版融合并从原始二值核外扩，不删除任何工程数据。
 
 `ALG-LR-007/008` v2.0.2/v2.2.0 与 `ALG-PROJ-007` v2.0.1 不改变投影矩阵、深度编码、face-on 阈值、1024 实时上限、最终 UV 分辨率或颜色合成公式。GPU 继续消费同一 source/mask/depth；CPU、Worker、UV raster、shader 门限与 export compositor 没有算法分叉。生图前 snapshot 与 Generation 最终写回仍进入同一 critical save queue，沿用 Project Command v1、Revision CAS、ownership 与 verified object asset；只把提交前的网络等待移出用户可见关键路径，失败由即时保存恢复。多层恢复的 Worker bitmap 在整组 striped upload 期间固定，缓存上限从 18 调整到 24，并只为当前选中对象预热隐藏 UV 行；其他模型的可见 exact/proxy 仍驻留，不降低图片尺寸或跳过 QA。旧工程无需批量迁移，重开时按现有 Layer/Generation/Capture 字段重建资源。回退可恢复提交前 save barrier、mask URL 严格相等判断、旧 overlay 可见分支和 18 项缓存；已有 projected layer、mask、capture、Generation、对象资产与 Revision 无需删除或改写。
 
@@ -559,3 +562,4 @@ M15 体积修复：锁定 `terser@5.51.2` 两轮安全压缩，保留日志和�
 | `2.10.8` | 2026-09-01 | `6dd8667 + 本次局部重绘提示词格式容错修复` | M04、`ALG-GEN-005` v1.7.1：模板仍要求 100–180 词，服务端最终验收上限调整为 200 词，修复格式修正结果为 183 词时的误拒绝；新增 confine/restrict/limit 及 mask 外保持不变等明确范围表达识别，201 词及以上继续 fail-closed。诊断、四图、缓存、ModelView、mask、Schema、Revision 和资产不变，无迁移；回退恢复旧上限与正则即可。 |
 | `2.10.9` | 2026-09-01 | `bb9e50a + 本次局部重绘蒙版范围确定性补全` | M04、`ALG-GEN-005` v1.7.2：Qwen 输出归一化后若首段缺少明确 mask 范围，服务端确定性追加固定保护句再执行完整格式校验，修复第二轮只剩 `masked_scope` 时的误失败；已有等价范围不重复。诊断、四图、缓存、ModelView、作者/远端 mask、Schema、Revision 和资产不变，无迁移；回退移除补全函数即可。 |
 | `2.11.0` | 2026-09-01 | `bb9e50a + 本次局部重绘提示词软校验` | M04、`ALG-GEN-005` v1.8.0：模板格式约束改为脱敏质量告警，不再因段数、词数、语言、Markdown 或范围措辞拒绝非空正文，也不再二次调用 Qwen 修格式；mask 范围固定句仍确定性补齐。仅空结果、12000 字符上限、上游截断/content_filter、视觉输入和传输类错误阻断。四图、诊断、缓存、ModelView、mask、Schema、Revision 和资产不变，无迁移。 |
+| `2.12.0` | 2026-09-01 | `4cbce31 + 本次局部重绘核心蒙版清理` | M08/UI-05、`ALG-LR-012` v1.1.0：ModelView 白灰几何融合不再直接混合细碎的原始抗锯齿 mask；Worker 新增 24/96 双阈值连通、2–6px@2K 闭运算、微小孤岛过滤、小孔填充及窄边羽化，并从清理后核生成既有 24–64px/4–10px 外扩羽化远端 mask。原始作者 mask 仍独立用于 Qwen、Capture、Generation、画笔、历史和回贴；GPU/shader/UV/export、Schema、Revision 与资产不变，无迁移。 |

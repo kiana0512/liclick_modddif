@@ -79,6 +79,179 @@ function dilateMask(source: Uint8Array, width: number, height: number, radius: n
   return maxFilterVertical(maxFilterHorizontal(source, width, height, radius), width, height, radius);
 }
 
+function erodeMask(source: Uint8Array, width: number, height: number, radius: number) {
+  if (radius <= 0) return new Uint8Array(source);
+  const inverted = new Uint8Array(source.length);
+  for (let index = 0; index < source.length; index += 1) inverted[index] = 255 - source[index];
+  const expandedBackground = dilateMask(inverted, width, height, radius);
+  for (let index = 0; index < source.length; index += 1) inverted[index] = 255 - expandedBackground[index];
+  return inverted;
+}
+
+function getMaskBounds(mask: Uint8Array, width: number, height: number) {
+  let minX = width;
+  let minY = height;
+  let maxX = -1;
+  let maxY = -1;
+  for (let index = 0; index < mask.length; index += 1) {
+    if (mask[index] === 0) continue;
+    const x = index % width;
+    const y = Math.floor(index / width);
+    minX = Math.min(minX, x);
+    minY = Math.min(minY, y);
+    maxX = Math.max(maxX, x);
+    maxY = Math.max(maxY, y);
+  }
+  return { minX, minY, maxX, maxY };
+}
+
+function fillSmallMaskHoles(
+  source: Uint8Array,
+  width: number,
+  height: number,
+  maximumHoleArea: number,
+) {
+  const output = new Uint8Array(source);
+  const bounds = getMaskBounds(source, width, height);
+  if (bounds.maxX < bounds.minX || bounds.maxY < bounds.minY) return output;
+  const visited = new Uint8Array(source.length);
+  const queue = new Int32Array(source.length);
+  const neighborOffsets = [-1, 1, -width, width];
+  for (let y = bounds.minY; y <= bounds.maxY; y += 1) {
+    for (let x = bounds.minX; x <= bounds.maxX; x += 1) {
+      const origin = y * width + x;
+      if (source[origin] !== 0 || visited[origin] !== 0) continue;
+      let head = 0;
+      let tail = 0;
+      let touchesBoundary = false;
+      queue[tail++] = origin;
+      visited[origin] = 1;
+      while (head < tail) {
+        const index = queue[head++];
+        const currentX = index % width;
+        const currentY = Math.floor(index / width);
+        if (
+          currentX === bounds.minX ||
+          currentX === bounds.maxX ||
+          currentY === bounds.minY ||
+          currentY === bounds.maxY
+        ) {
+          touchesBoundary = true;
+        }
+        for (const neighborOffset of neighborOffsets) {
+          const neighbor = index + neighborOffset;
+          const neighborX = neighbor % width;
+          const neighborY = Math.floor(neighbor / width);
+          if (
+            neighbor < 0 ||
+            neighbor >= source.length ||
+            neighborX < bounds.minX ||
+            neighborX > bounds.maxX ||
+            neighborY < bounds.minY ||
+            neighborY > bounds.maxY ||
+            Math.abs(neighborX - currentX) + Math.abs(neighborY - currentY) !== 1 ||
+            source[neighbor] !== 0 ||
+            visited[neighbor] !== 0
+          ) {
+            continue;
+          }
+          visited[neighbor] = 1;
+          queue[tail++] = neighbor;
+        }
+      }
+      if (!touchesBoundary && tail <= maximumHoleArea) {
+        for (let queueIndex = 0; queueIndex < tail; queueIndex += 1) output[queue[queueIndex]] = 255;
+      }
+    }
+  }
+  return output;
+}
+
+function buildCompositeCoreMask(
+  authoredStrength: Uint8Array,
+  width: number,
+  height: number,
+  scale: number,
+) {
+  const candidate = new Uint8Array(authoredStrength.length);
+  const strong = new Uint8Array(authoredStrength.length);
+  for (let index = 0; index < authoredStrength.length; index += 1) {
+    if (authoredStrength[index] >= 24) candidate[index] = 255;
+    if (authoredStrength[index] >= 96) strong[index] = 255;
+  }
+  const candidateBounds = getMaskBounds(candidate, width, height);
+  if (candidateBounds.maxX < candidateBounds.minX || candidateBounds.maxY < candidateBounds.minY) {
+    throw new Error('The authored local repaint mask is empty.');
+  }
+  const candidateWidth = candidateBounds.maxX - candidateBounds.minX + 1;
+  const candidateHeight = candidateBounds.maxY - candidateBounds.minY + 1;
+  const minimumDimension = Math.min(candidateWidth, candidateHeight);
+  const minimumCloseRadius = Math.max(1, Math.round(2 * scale));
+  const maximumCloseRadius = Math.max(minimumCloseRadius, Math.round(6 * scale));
+  const closeRadius = Math.max(
+    minimumCloseRadius,
+    Math.min(maximumCloseRadius, Math.round(minimumDimension * 0.012)),
+  );
+  const closedCandidate = erodeMask(
+    dilateMask(candidate, width, height, closeRadius),
+    width,
+    height,
+    closeRadius,
+  );
+  for (let index = 0; index < candidate.length; index += 1) {
+    if (candidate[index] > 0) closedCandidate[index] = 255;
+  }
+
+  const bboxArea = candidateWidth * candidateHeight;
+  const minimumIslandArea = Math.max(
+    4,
+    Math.round(24 * scale * scale),
+    Math.round(bboxArea * 0.0002),
+  );
+  const core = new Uint8Array(authoredStrength.length);
+  const visited = new Uint8Array(authoredStrength.length);
+  const queue = new Int32Array(authoredStrength.length);
+  let keptPixelCount = 0;
+  for (let origin = 0; origin < closedCandidate.length; origin += 1) {
+    if (closedCandidate[origin] === 0 || visited[origin] !== 0) continue;
+    let head = 0;
+    let tail = 0;
+    let strongPixelCount = 0;
+    queue[tail++] = origin;
+    visited[origin] = 1;
+    while (head < tail) {
+      const index = queue[head++];
+      if (strong[index] > 0) strongPixelCount += 1;
+      const currentX = index % width;
+      const currentY = Math.floor(index / width);
+      for (let offsetY = -1; offsetY <= 1; offsetY += 1) {
+        for (let offsetX = -1; offsetX <= 1; offsetX += 1) {
+          if (offsetX === 0 && offsetY === 0) continue;
+          const neighborX = currentX + offsetX;
+          const neighborY = currentY + offsetY;
+          if (neighborX < 0 || neighborX >= width || neighborY < 0 || neighborY >= height) continue;
+          const neighbor = neighborY * width + neighborX;
+          if (closedCandidate[neighbor] === 0 || visited[neighbor] !== 0) continue;
+          visited[neighbor] = 1;
+          queue[tail++] = neighbor;
+        }
+      }
+    }
+    if (strongPixelCount === 0 || (tail < minimumIslandArea && bboxArea >= minimumIslandArea)) continue;
+    for (let queueIndex = 0; queueIndex < tail; queueIndex += 1) core[queue[queueIndex]] = 255;
+    keptPixelCount += tail;
+  }
+  if (keptPixelCount === 0) {
+    for (let index = 0; index < strong.length; index += 1) core[index] = strong[index];
+  }
+  const maximumHoleArea = Math.max(
+    16,
+    Math.round(64 * scale * scale),
+    Math.round(bboxArea * 0.0005),
+  );
+  return fillSmallMaskHoles(core, width, height, maximumHoleArea);
+}
+
 function boxBlur(source: Uint8Array, width: number, height: number, radius: number) {
   if (radius <= 0) return new Uint8Array(source);
   const horizontal = new Float32Array(source.length);
@@ -150,11 +323,6 @@ self.onmessage = async (event: MessageEvent<GenerationInputWorkerRequest>) => {
     const clayPixels = readPixels(clayPreview, width, height);
     const maskPixels = readPixels(authoredMask, width, height);
     const authoredStrength = new Uint8Array(width * height);
-    const authoredBinary = new Uint8Array(width * height);
-    let minX = width;
-    let minY = height;
-    let maxX = -1;
-    let maxY = -1;
     for (let index = 0; index < authoredStrength.length; index += 1) {
       const offset = index * 4;
       const value = Math.round(
@@ -163,18 +331,23 @@ self.onmessage = async (event: MessageEvent<GenerationInputWorkerRequest>) => {
           255,
       );
       authoredStrength[index] = value;
-      if (value <= 8) continue;
-      authoredBinary[index] = 255;
-      const x = index % width;
-      const y = Math.floor(index / width);
-      minX = Math.min(minX, x);
-      minY = Math.min(minY, y);
-      maxX = Math.max(maxX, x);
-      maxY = Math.max(maxY, y);
     }
-    if (maxX < minX || maxY < minY) throw new Error('The authored local repaint mask is empty.');
 
     const scale = Math.max(width, height) / 2048;
+    const compositeCore = buildCompositeCoreMask(authoredStrength, width, height, scale);
+    const coreBounds = getMaskBounds(compositeCore, width, height);
+    if (coreBounds.maxX < coreBounds.minX || coreBounds.maxY < coreBounds.minY) {
+      throw new Error('The authored local repaint mask is empty.');
+    }
+    const compositeEdgeRadius = Math.max(1, Math.round(1.5 * scale));
+    const compositeAlpha = boxBlur(compositeCore, width, height, compositeEdgeRadius);
+    for (let index = 0; index < compositeCore.length; index += 1) {
+      if (compositeCore[index] > 0) compositeAlpha[index] = 255;
+    }
+    const minX = coreBounds.minX;
+    const minY = coreBounds.minY;
+    const maxX = coreBounds.maxX;
+    const maxY = coreBounds.maxY;
     const minimumDimension = Math.min(maxX - minX + 1, maxY - minY + 1);
     const dilationRadius = Math.max(
       Math.round(24 * scale),
@@ -186,8 +359,8 @@ self.onmessage = async (event: MessageEvent<GenerationInputWorkerRequest>) => {
     );
 
     const compositePixels = new Uint8ClampedArray(currentPixels.data);
-    for (let index = 0; index < authoredStrength.length; index += 1) {
-      const alpha = authoredStrength[index] / 255;
+    for (let index = 0; index < compositeAlpha.length; index += 1) {
+      const alpha = compositeAlpha[index] / 255;
       if (alpha <= 0) continue;
       const offset = index * 4;
       for (let channel = 0; channel < 4; channel += 1) {
@@ -198,10 +371,10 @@ self.onmessage = async (event: MessageEvent<GenerationInputWorkerRequest>) => {
       }
     }
 
-    const dilated = dilateMask(authoredBinary, width, height, dilationRadius);
+    const dilated = dilateMask(compositeCore, width, height, dilationRadius);
     const submittedMask = boxBlur(dilated, width, height, featherRadius);
-    for (let index = 0; index < authoredBinary.length; index += 1) {
-      if (authoredBinary[index] > 0) submittedMask[index] = 255;
+    for (let index = 0; index < compositeCore.length; index += 1) {
+      if (compositeCore[index] > 0) submittedMask[index] = 255;
     }
 
     const compositeCanvas = new OffscreenCanvas(width, height);
