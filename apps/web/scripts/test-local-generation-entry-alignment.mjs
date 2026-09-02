@@ -57,8 +57,8 @@ assert.match(
 );
 assert.match(
   editorPage,
-  /generation\.id === preferredGenerationId &&\s*matchesUsableLocalRepaintGeneration\(generation\)/,
-  'brush activation must prefer the settled generation before falling back to history ordering',
+  /selectPreferredLocalRepaintGeneration\(\s*generations,\s*matchesUsableLocalRepaintGeneration,\s*preferredGenerationId,\s*\)/,
+  'brush activation must pass the settled generation to the shared deterministic selector',
 );
 const applyToolLifecycle = bottomToolDock.slice(
   bottomToolDock.indexOf("const applyToolSelected = paintTool === 'inpaint-apply'"),

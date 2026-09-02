@@ -10741,7 +10741,7 @@ function SurfacePaintOverlay() {
         return;
       }
       const startedAt = performance.now();
-      let composite = ensureLiveLocalRepaintComposite(model, source);
+      const composite = ensureLiveLocalRepaintComposite(model, source);
       if (!composite) {
         publishLocalRepaintInteractiveState({
           sessionId: repaintSession.sessionId,
