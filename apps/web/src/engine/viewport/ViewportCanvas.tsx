@@ -8084,8 +8084,16 @@ function SurfacePaintOverlay() {
     // of substituting a second mesh or muting them.
     const residentHandoffPending =
       localRepaintResidentPresentationLayerRef.current === liveLayerId;
+    // While the apply brush is active, the mutable exact overlay is the only
+    // presentation path that can reflect every canvas stamp immediately. A
+    // resident live-mask override may already be bound for the eventual
+    // handoff, but it must not suppress this interactive owner.
     const exactOverlayVisible =
-      shouldRender && (!residentOverrideBound || previewOwnsOverlay || residentHandoffPending);
+      shouldRender &&
+      (liveFeedbackRequested ||
+        !residentOverrideBound ||
+        previewOwnsOverlay ||
+        residentHandoffPending);
     if (overlay) {
       changed =
         setLocalRepaintGpuOverlayVisibility(overlay, exactOverlayVisible, layers) || changed;
@@ -8093,7 +8101,12 @@ function SurfacePaintOverlay() {
     if (changed) invalidate();
     const rendererPreviewOwnsPresentation =
       exactOverlayVisible || (!hasPersistedLayer && orderedStackOwnsPreview);
-    if (hasPersistedLayer && residentOverrideBound && previewOwnsOverlay) {
+    if (
+      hasPersistedLayer &&
+      residentOverrideBound &&
+      previewOwnsOverlay &&
+      !liveFeedbackRequested
+    ) {
       // A resident row now owns both historical and live coverage in the same
       // shader. Unmute it first, keep the exact overlay through one presented
       // frame, and only then complete the handoff.
@@ -9976,10 +9989,12 @@ function SurfacePaintOverlay() {
       // forces the UV layer compositor to rebuild.
       const sceneState = useSceneStore.getState();
       const currentPreviewLayer = sceneState.localRepaintPreviewLayer;
-      // Existing repaint rows never transfer ownership to a second mesh. Their
-      // resident projected material samples the mutable mask directly. Only a
-      // brand-new repaint without a row may publish a renderer-owned preview.
-      const persistedOverlayCanOwnPresentation = !existingLayer;
+      // Existing repaint rows stay structurally resident, but the mutable exact
+      // overlay temporarily owns presentation while the apply brush is active.
+      // SceneRoot uses this marker to mute only the matching resident twin;
+      // every historical repaint row remains visible.
+      const overlayCanOwnPresentation =
+        !existingLayer || sceneState.paintTool === 'inpaint-apply';
       const previewAlreadyPublished =
         currentPreviewLayer?.id === projectedLayer.id &&
         currentPreviewLayer.imageUrl === projectedLayer.imageUrl &&
@@ -10013,10 +10028,10 @@ function SurfacePaintOverlay() {
       if (
         existingLayer &&
         currentPreviewLayer?.id === projectedLayer.id &&
-        !persistedOverlayCanOwnPresentation
+        !overlayCanOwnPresentation
       ) {
         sceneState.setLocalRepaintPreviewLayer(undefined);
-      } else if (persistedOverlayCanOwnPresentation && !previewAlreadyPublished) {
+      } else if (overlayCanOwnPresentation && !previewAlreadyPublished) {
         sceneState.setLocalRepaintPreviewLayer(projectedLayer);
       }
       return composite;

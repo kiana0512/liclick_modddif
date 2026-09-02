@@ -236,8 +236,18 @@ try {
   );
   assert.match(
     viewport,
-    /const exactOverlayVisible =\s*shouldRender && \(!residentOverrideBound \|\| previewOwnsOverlay \|\| residentHandoffPending\)/,
-    'the exact overlay must remain visible until the resident material has presented a frame',
+    /const exactOverlayVisible =\s*shouldRender &&\s*\(liveFeedbackRequested \|\|[\s\S]*?!residentOverrideBound \|\|[\s\S]*?previewOwnsOverlay \|\|[\s\S]*?residentHandoffPending\)/,
+    'the exact overlay must own every live apply frame and remain visible through resident handoff',
+  );
+  assert.match(
+    viewport,
+    /hasPersistedLayer &&[\s\S]*?residentOverrideBound &&[\s\S]*?previewOwnsOverlay &&[\s\S]*?!liveFeedbackRequested[\s\S]*?scheduleLocalRepaintResidentPresentation/,
+    'a bound resident row must not reclaim presentation while the apply brush is still live',
+  );
+  assert.match(
+    viewport,
+    /const overlayCanOwnPresentation =\s*!existingLayer \|\| sceneState\.paintTool === 'inpaint-apply'/,
+    'a persisted repaint must publish the renderer owner marker during live apply',
   );
   assert.match(
     viewport,

@@ -678,8 +678,8 @@ assert.match(
 );
 assert.match(
   viewportCanvasSource,
-  /const persistedOverlayCanOwnPresentation = !existingLayer;/,
-  'A persisted repaint row must keep resident presentation ownership; only a brand-new row may publish the renderer overlay.',
+  /const overlayCanOwnPresentation =\s*!existingLayer \|\| sceneState\.paintTool === 'inpaint-apply';/,
+  'The live overlay must temporarily own presentation for an existing repaint row while the apply brush is active.',
 );
 assert.match(
   viewportCanvasSource,
@@ -693,8 +693,8 @@ assert.match(
 );
 assert.match(
   viewportCanvasSource,
-  /const exactOverlayVisible =\s*shouldRender && \(!residentOverrideBound \|\| previewOwnsOverlay \|\| residentHandoffPending\);[\s\S]*?const rendererPreviewOwnsPresentation =\s*exactOverlayVisible \|\| \(!hasPersistedLayer && orderedStackOwnsPreview\);[\s\S]*?if \(hasPersistedLayer && residentOverrideBound && previewOwnsOverlay\)[\s\S]*?setLocalRepaintPreviewLayer\(undefined\);[\s\S]*?scheduleLocalRepaintResidentPresentation\(liveLayerId\);[\s\S]*?rendererPreviewOwnsPresentation &&[\s\S]*?persistedLayer &&[\s\S]*?!previewOwnsOverlay/,
-  'Eye toggles and ordered-stack presentation must retain the exact overlay through resident-mask handoff before transferring ownership.',
+  /const exactOverlayVisible =\s*shouldRender &&\s*\(liveFeedbackRequested \|\|[\s\S]*?residentHandoffPending\);[\s\S]*?const rendererPreviewOwnsPresentation =\s*exactOverlayVisible \|\| \(!hasPersistedLayer && orderedStackOwnsPreview\);[\s\S]*?hasPersistedLayer &&[\s\S]*?residentOverrideBound &&[\s\S]*?previewOwnsOverlay &&[\s\S]*?!liveFeedbackRequested[\s\S]*?setLocalRepaintPreviewLayer\(undefined\);[\s\S]*?scheduleLocalRepaintResidentPresentation\(liveLayerId\);/,
+  'Apply mode must retain the exact overlay, then transfer ownership only after the resident-mask handoff is allowed.',
 );
 assert.match(
   viewportCanvasSource,
@@ -703,8 +703,8 @@ assert.match(
 );
 assert.match(
   viewportCanvasSource,
-  /currentPreviewLayer\?\.id === projectedLayer\.id &&[\s\S]*?!persistedOverlayCanOwnPresentation[\s\S]*?setLocalRepaintPreviewLayer\(undefined\)/,
-  'Refresh must clear a stale live-owner marker instead of hiding both the saved repaint and its overlay.',
+  /currentPreviewLayer\?\.id === projectedLayer\.id &&[\s\S]*?!overlayCanOwnPresentation[\s\S]*?setLocalRepaintPreviewLayer\(undefined\)/,
+  'Refresh must clear a stale live-owner marker outside apply mode instead of hiding both the saved repaint and its overlay.',
 );
 assert.match(
   viewportCanvasSource,
