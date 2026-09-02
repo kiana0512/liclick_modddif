@@ -72,7 +72,7 @@ import type { UvBakeResolution } from '@/engine/bake/uvBakeTypes';
 import type { Layer } from '@/types/layer';
 import type { SerializedCamera } from '@/types/capture';
 import { createId } from '@/utils/id';
-import { waitForBrowserPaint } from '@/utils/browserScheduling';
+import { waitForBrowserPaint, yieldToBrowserTask } from '@/utils/browserScheduling';
 import {
   shouldPresentLocalRepaintInOrderedStack,
   shouldUseDedicatedLocalRepaintOverlay,
@@ -120,6 +120,8 @@ import { createLocalRepaintFalloffInWorker } from '@/engine/localRepaint/falloff
 import { updateLocalRepaintInwardCrossfadeCanvas } from '@/engine/localRepaint/inwardCrossfadeMask';
 import { getLocalRepaintSeamMode } from '@/engine/localRepaint/seamHarmonizationMode';
 import { publishLocalRepaintInteractiveState } from '@/engine/localRepaint/localRepaintInteractiveState';
+import { prepareLocalRepaintGenerationInput } from '@/engine/localRepaint/generationInputWorker';
+import { revokeRegisteredObjectUrl } from '@/utils/blobUrlRegistry';
 import { isViewportInteractionBusy, markViewportInteractionEnd } from './viewportInteractionState';
 import {
   markEraserPerformanceEvent,
@@ -676,6 +678,7 @@ type LocalRepaintSimulationCoreResult = {
   button2MaskProjectionCount: number;
   button2InputTotalMs: number;
   button2InputWorkerMs: number;
+  button2InputPhaseDurationsMs: Record<string, number>;
   applyDurationMs: number;
   activationReadyMs: number;
   activationToFirstVisibleMs: number;
@@ -685,6 +688,7 @@ type LocalRepaintSimulationCoreResult = {
   gpuMaxAlpha: number;
   gpuSceneChangedPixels: number;
   gpuSceneMaxDelta: number;
+  gpuResidentOverrideBound: boolean;
   gpuProbeDurationMs: number;
   projectedBackgroundRebuilds: number;
   firstGeneratedCandidateScanMs: number;
@@ -711,16 +715,7 @@ type LocalRepaintPerformanceApi = {
 };
 
 type LocalRepaintSourcePerformanceApi = {
-  prepareLatestGeneratedSource: () => Promise<void>;
-};
-
-type LocalRepaintButton2PerformanceApi = {
-  prepareInput: (
-    sourceUrl: string,
-    maskUrl: string,
-    width: number,
-    height: number,
-  ) => Promise<{ totalMs: number; workerMs: number }>;
+  prepareLatestGeneratedSource: () => Promise<boolean>;
 };
 
 type UvMergeBenchmarkResult = {
@@ -4351,6 +4346,7 @@ type PaintStrokeDraft = {
     color: string;
     hardness: number;
   }>;
+  historyTileKeys?: Set<string>;
   localRepaintSource?: LocalRepaintProjectionSource;
   localRepaintComposite?: LocalRepaintCompositeState;
   localRepaintHistoryBefore?: HTMLCanvasElement;
@@ -4361,8 +4357,16 @@ type PaintStrokeDraft = {
 
 type PaintHistoryTile = {
   bounds: PaintDirtyRect;
-  before: HTMLCanvasElement;
-  after: HTMLCanvasElement;
+  before: PaintHistoryPixels;
+  after: PaintHistoryPixels;
+};
+
+type PaintHistoryPixels = {
+  canvas: HTMLCanvasElement;
+  sourceX: number;
+  sourceY: number;
+  width: number;
+  height: number;
 };
 
 type PendingProjectedEraserBatch = {
@@ -4851,6 +4855,152 @@ function copyCanvasRect(source: HTMLCanvasElement, bounds: PaintDirtyRect) {
     bounds.height,
   );
   return copy;
+}
+
+function groupPaintHistoryRegions(regions: PaintDirtyRect[]) {
+  const rows = new Map<string, Array<{ index: number; bounds: PaintDirtyRect }>>();
+  regions.forEach((bounds, index) => {
+    const key = `${bounds.y}:${bounds.height}`;
+    const row = rows.get(key) ?? [];
+    row.push({ index, bounds });
+    rows.set(key, row);
+  });
+
+  const horizontalRuns: Array<{ bounds: PaintDirtyRect; regionIndexes: number[] }> = [];
+  rows.forEach((row) => {
+    row.sort((left, right) => left.bounds.x - right.bounds.x);
+    let run: (typeof horizontalRuns)[number] | undefined;
+    row.forEach(({ index, bounds }) => {
+      const runRight = run ? run.bounds.x + run.bounds.width : -1;
+      if (run && bounds.x <= runRight) {
+        run.bounds.width = Math.max(runRight, bounds.x + bounds.width) - run.bounds.x;
+        run.regionIndexes.push(index);
+        return;
+      }
+      run = { bounds: { ...bounds }, regionIndexes: [index] };
+      horizontalRuns.push(run);
+    });
+  });
+
+  const columns = new Map<
+    string,
+    Array<{ bounds: PaintDirtyRect; regionIndexes: number[] }>
+  >();
+  horizontalRuns.forEach((run) => {
+    const key = `${run.bounds.x}:${run.bounds.width}`;
+    const column = columns.get(key) ?? [];
+    column.push(run);
+    columns.set(key, column);
+  });
+  const groups: Array<{ bounds: PaintDirtyRect; regionIndexes: number[] }> = [];
+  columns.forEach((column) => {
+    column.sort((left, right) => left.bounds.y - right.bounds.y);
+    let group: (typeof groups)[number] | undefined;
+    column.forEach((run) => {
+      const groupBottom = group ? group.bounds.y + group.bounds.height : -1;
+      if (group && run.bounds.y === groupBottom) {
+        group.bounds.height += run.bounds.height;
+        group.regionIndexes.push(...run.regionIndexes);
+        return;
+      }
+      group = { bounds: { ...run.bounds }, regionIndexes: [...run.regionIndexes] };
+      groups.push(group);
+    });
+  });
+  return groups;
+}
+
+function capturePaintHistoryRegions(source: HTMLCanvasElement, regions: PaintDirtyRect[]) {
+  if (regions.length === 0) return [];
+  const pixels: Array<PaintHistoryPixels | undefined> = new Array(regions.length);
+  groupPaintHistoryRegions(regions).forEach((group) => {
+    const snapshot = copyCanvasRect(source, group.bounds);
+    group.regionIndexes.forEach((regionIndex) => {
+      const bounds = regions[regionIndex];
+      pixels[regionIndex] = {
+        canvas: snapshot,
+        sourceX: bounds.x - group.bounds.x,
+        sourceY: bounds.y - group.bounds.y,
+        width: bounds.width,
+        height: bounds.height,
+      };
+    });
+  });
+  return pixels as PaintHistoryPixels[];
+}
+
+async function capturePaintHistoryRegionsAsync(
+  source: HTMLCanvasElement,
+  regions: PaintDirtyRect[],
+) {
+  if (regions.length === 0 || typeof createImageBitmap !== 'function')
+    return capturePaintHistoryRegions(source, regions);
+  const groups = groupPaintHistoryRegions(regions);
+  // Start every crop before yielding. createImageBitmap snapshots the canvas at
+  // invocation time, so the caller can safely wait for all `before` captures
+  // and only then apply the exact stroke.
+  const bitmaps = await Promise.all(
+    groups.map((group) =>
+      createImageBitmap(
+        source,
+        group.bounds.x,
+        group.bounds.y,
+        group.bounds.width,
+        group.bounds.height,
+      ).catch(() => undefined),
+    ),
+  );
+  if (bitmaps.some((bitmap) => !bitmap)) {
+    bitmaps.forEach((bitmap) => bitmap?.close());
+    return capturePaintHistoryRegions(source, regions);
+  }
+  const pixels: Array<PaintHistoryPixels | undefined> = new Array(regions.length);
+  groups.forEach((group, groupIndex) => {
+    const bitmap = bitmaps[groupIndex]!;
+    const snapshot = document.createElement('canvas');
+    snapshot.width = group.bounds.width;
+    snapshot.height = group.bounds.height;
+    snapshot.getContext('2d')?.drawImage(bitmap, 0, 0);
+    bitmap.close();
+    group.regionIndexes.forEach((regionIndex) => {
+      const bounds = regions[regionIndex];
+      pixels[regionIndex] = {
+        canvas: snapshot,
+        sourceX: bounds.x - group.bounds.x,
+        sourceY: bounds.y - group.bounds.y,
+        width: bounds.width,
+        height: bounds.height,
+      };
+    });
+  });
+  return pixels as PaintHistoryPixels[];
+}
+
+function getPaintHistorySnapshotPixelCount(pixels: PaintHistoryPixels[]) {
+  const canvases = new Set<HTMLCanvasElement>();
+  let pixelCount = 0;
+  pixels.forEach(({ canvas }) => {
+    if (canvases.has(canvas)) return;
+    canvases.add(canvas);
+    pixelCount += canvas.width * canvas.height;
+  });
+  return pixelCount;
+}
+
+function copyPaintHistoryPixels(pixels: PaintHistoryPixels): PaintHistoryPixels {
+  const canvas = copyCanvasRect(pixels.canvas, {
+    x: pixels.sourceX,
+    y: pixels.sourceY,
+    width: pixels.width,
+    height: pixels.height,
+  });
+  return {
+    canvas,
+    sourceX: 0,
+    sourceY: 0,
+    width: pixels.width,
+    height: pixels.height,
+  };
 }
 
 function scaleDirtyRect(
@@ -6394,6 +6544,17 @@ function getPaintHistoryTileKeys(layer: UvPaintLayer, previewBounds: PaintDirtyR
   });
 }
 
+function recordPaintStrokeDirtyRegion(
+  draft: PaintStrokeDraft,
+  layer: UvPaintLayer,
+  bounds: PaintDirtyRect,
+) {
+  draft.bounds = unionDirtyRect(draft.bounds, bounds);
+  const keys = draft.historyTileKeys ?? new Set<string>();
+  for (const key of getPaintHistoryTileKeys(layer, bounds)) keys.add(key);
+  draft.historyTileKeys = keys;
+}
+
 function ensurePaintBackingCanvasInitialized(layer: UvPaintLayer) {
   if (layer.paintBackingInitialized) return;
   const baseImage = layer.pendingBaseImage;
@@ -7321,15 +7482,52 @@ function SurfacePaintOverlay() {
               overlayComposite?.sourceKey === expectedOverlayState.sourceKey &&
               overlayComposite.hasContent,
             );
-            const overlayOwnsOrderedPreview = shouldPresentLocalRepaintInOrderedStack(
-              useLayerStore.getState().layers,
-              useSceneStore.getState().localRepaintPreviewLayer ?? overlayVisibilityLayer,
+            const overlaySceneState = useSceneStore.getState();
+            const overlayLayers = useLayerStore.getState().layers;
+            const overlayPreviewLayer =
+              overlaySceneState.localRepaintPreviewLayer ?? overlayVisibilityLayer;
+            const overlayErasesPersistedLayer = Boolean(
+              expectedOverlayState &&
+                isLocalRepaintLayerEraserActive(
+                  overlaySceneState.paintTool,
+                  useLayerStore.getState().activeProjectedLayerId,
+                  expectedOverlayState.layerId,
+                  overlayLayers,
+                ),
             );
+            const overlayKeepsLivePreview = Boolean(
+              expectedOverlayState &&
+                (overlaySceneState.paintTool === 'inpaint-apply' ||
+                  overlayErasesPersistedLayer ||
+                  (overlaySceneState.localRepaintPreviewLayer?.id ===
+                    expectedOverlayState.layerId &&
+                    (overlaySceneState.paintTool === 'none' ||
+                      overlaySceneState.paintTool === 'inpaint-add' ||
+                      overlaySceneState.paintTool === 'inpaint-subtract' ||
+                      overlaySceneState.localRepaintGenerationPresentationActive))),
+            );
+            // Mirror the renderer's ownership gate rather than assuming that
+            // every resident repaint row must also display its dedicated mesh.
+            // Once an idle repaint is persisted, the shared projected stack is
+            // authoritative and the duplicate GPU overlay must stay hidden.
             const expectedOverlayVisible =
-              (mode === 'pbr' || mode === 'flat') &&
-              overlayVisibilityLayer?.visible &&
               overlayHasLiveContent &&
-              !overlayOwnsOrderedPreview
+              shouldUseDedicatedLocalRepaintOverlay(
+                overlayLayers,
+                overlayPreviewLayer,
+                overlaySceneState.paintTool === 'inpaint-apply',
+              ) &&
+              (overlayKeepsLivePreview || !overlayVisibilityLayer) &&
+              isLocalRepaintOverlayVisible(
+                mode,
+                overlayVisibilityLayer?.visible ??
+                  (expectedOverlayState
+                    ? readLocalRepaintGpuOverlayLayerVisibility(
+                        expectedOverlayState,
+                        overlayLayers,
+                      )
+                    : true),
+              )
                 ? '1'
                 : '0';
             if (
@@ -8739,6 +8937,20 @@ function SurfacePaintOverlay() {
     async (options?: { aspect?: number; camera?: THREE.Camera; resolution?: number }) => {
       const model = getTargetModel();
       const layer = layerRef.current;
+      if (isPerformanceInstrumentationEnabled()) {
+        document.body.dataset.localRepaintButton2CapturePrerequisites = JSON.stringify({
+          modelObjectId: model?.objectId ?? null,
+          layerObjectId: layer?.objectId ?? null,
+          sameObject: Boolean(model && layer && layer.objectId === model.objectId),
+          maskHasContent: maskHasContentRef.current,
+          currentProjectionHasContent: currentProjectionHasContentRef.current,
+          accumulatedMaskReady: layer?.accumulatedMaskReady ?? false,
+          maskDepthReady: layer?.maskDepthReady ?? false,
+          hasMaskDepthTarget: Boolean(layer?.maskDepthTarget),
+          accumulatedMeshCount: layer?.accumulatedMaskMeshes.size ?? 0,
+          currentProjectionMeshCount: layer?.currentProjectionMeshes.size ?? 0,
+        });
+      }
       if (!model || !layer || layer.objectId !== model.objectId || !maskHasContentRef.current)
         return undefined;
 
@@ -8789,6 +9001,7 @@ function SurfacePaintOverlay() {
           },
           {
             dataTexture: true,
+            grayscaleOutput: true,
             ignoreSceneBackground: true,
             tileSize: PROJECTION_PAINT_MAX_SIZE,
             performancePhasePrefix: 'button2-mask-capture',
@@ -10807,9 +11020,8 @@ function SurfacePaintOverlay() {
             hardness: paintToolSettings.brushHardness,
           });
         }
-        if (strokeDraftRef.current?.target === 'paint') {
-          strokeDraftRef.current.bounds = unionDirtyRect(strokeDraftRef.current.bounds, bounds);
-        }
+        if (strokeDraftRef.current?.target === 'paint')
+          recordPaintStrokeDirtyRegion(strokeDraftRef.current, layer, bounds);
       } else if (strokePaintTool === 'eraser') {
         if (!layer) return;
         const eraserFeather = paintToolSettings.eraserFeather ?? 50;
@@ -10875,9 +11087,8 @@ function SurfacePaintOverlay() {
             hardness: 100 - eraserFeather,
           });
         }
-        if (strokeDraftRef.current?.target === 'paint') {
-          strokeDraftRef.current.bounds = unionDirtyRect(strokeDraftRef.current.bounds, bounds);
-        }
+        if (strokeDraftRef.current?.target === 'paint')
+          recordPaintStrokeDirtyRegion(strokeDraftRef.current, layer, bounds);
       } else if (strokePaintTool === 'inpaint-add') {
         if (!layer) return;
         const hitMesh = result.hit.object instanceof THREE.Mesh ? result.hit.object : undefined;
@@ -11325,6 +11536,7 @@ function SurfacePaintOverlay() {
               : undefined,
         previewRevision: target === 'paint' ? paintPreviewRevisionRef.current : undefined,
         paintSegments: target === 'paint' ? [] : undefined,
+        historyTileKeys: target === 'paint' ? new Set<string>() : undefined,
         localRepaintSource,
         localRepaintComposite,
         localRepaintHistoryBefore:
@@ -11568,7 +11780,34 @@ function SurfacePaintOverlay() {
             item.id !== persistedLayer.id &&
             !isMatchingLocalRepaintProjectionLayer(item, source, model.objectId),
         );
-        const nextLayers = [persistedLayer, ...retainedLayers];
+        const persistedKeys = Object.keys(persistedLayer) as Array<keyof Layer>;
+        const existingKeys = existingProjectionLayer
+          ? (Object.keys(existingProjectionLayer) as Array<keyof Layer>)
+          : [];
+        const layerRowAlreadyCurrent = Boolean(
+          existingProjectionLayer &&
+            existingKeys.length === persistedKeys.length &&
+            persistedKeys.every((key) => {
+              const currentValue = existingProjectionLayer?.[key];
+              const nextValue = persistedLayer[key];
+              if (Object.is(currentValue, nextValue)) return true;
+              return (
+                Array.isArray(currentValue) &&
+                Array.isArray(nextValue) &&
+                currentValue.length === nextValue.length &&
+                currentValue.every((value, index) => Object.is(value, nextValue[index]))
+              );
+            }),
+        );
+        // The mask URLs are stable live-canvas registry keys. A new stroke
+        // advances their registry revision, not the layer-row structure. Avoid
+        // republishing a byte-for-byte identical row: every React subscriber,
+        // thumbnail and projected-material observer would otherwise rebuild on
+        // pointer-up even though the authoritative GPU/canvas content is already
+        // current.
+        const nextLayers = layerRowAlreadyCurrent
+          ? currentLayers
+          : [persistedLayer, ...retainedLayers];
         document.body.dataset.localRepaintLayerRowStructureDelta = JSON.stringify(
           Object.entries({
             created: !existingProjectionLayer,
@@ -11598,19 +11837,36 @@ function SurfacePaintOverlay() {
             .map(([field]) => field),
         );
         const activeLayerIdBeforePublish = layerState.activeProjectedLayerId;
-        layerState.setLayers(nextLayers);
-        if (
-          activeLayerIdBeforePublish &&
-          nextLayers.some((item) => item.id === activeLayerIdBeforePublish)
-        ) {
-          useLayerStore.getState().setActiveLayer(activeLayerIdBeforePublish);
+        if (!layerRowAlreadyCurrent) {
+          layerState.setLayers(nextLayers);
+          if (
+            activeLayerIdBeforePublish &&
+            nextLayers.some((item) => item.id === activeLayerIdBeforePublish)
+          ) {
+            useLayerStore.getState().setActiveLayer(activeLayerIdBeforePublish);
+          }
         }
         const layerRowPublishMs = performance.now() - queueStartedAt;
         document.body.dataset.perfLocalRepaintLayerRowPublishMs = layerRowPublishMs.toFixed(1);
+        document.body.dataset.perfLocalRepaintLayerRowPublishMode = layerRowAlreadyCurrent
+          ? 'stable-row-reused'
+          : 'row-published';
         const persistProjectedResult = async () => {
-          const canCommit = await waitForPaintCommitIdle(publishWasSuperseded);
+          const canCommit = await waitForPaintCommitIdle(
+            publishWasSuperseded,
+            undefined,
+            undefined,
+            false,
+          );
           if (!canCommit || publishWasSuperseded() || isPaintingRef.current) return;
           document.body.dataset.perfLocalRepaintPhase = 's6-publish-deferred-export';
+          if (layerRowAlreadyCurrent) {
+            // The live URL is stable while its registry revision advances. A
+            // structural layer-store publish is unnecessary, but the project
+            // persistence queue still needs one latest-wins wakeup after the
+            // user pauses so it encodes the newest revision.
+            useProjectStore.getState().setProjectLayers(useLayerStore.getState().layers);
+          }
           const report: LocalRepaintUvCommitReport = {
             mode: 'deferred-export',
             revision: commitRevision,
@@ -12016,6 +12272,10 @@ function SurfacePaintOverlay() {
       if (!isCurrent() || batch.strokes.length === 0) return;
       const strokes = [...batch.strokes];
       const startedAt = performance.now();
+      let bakeMs = 0;
+      let alphaBoundsMs = 0;
+      let stageMs = 0;
+      let publishMs = 0;
       markEraserPerformanceEvent('projected-refinement-start', {
         layerId: batch.layer.layerId,
         revision,
@@ -12035,6 +12295,7 @@ function SurfacePaintOverlay() {
               `${Math.floor(tile.bounds.x / PAINT_HISTORY_TILE_SIZE)}:${Math.floor(tile.bounds.y / PAINT_HISTORY_TILE_SIZE)}`,
             );
           }
+          const bakeStartedAt = performance.now();
           const result = stroke.snapshot
             ? await bakeProjectedEraserStrokesToUv({
                 snapshots: [stroke.snapshot],
@@ -12042,8 +12303,11 @@ function SurfacePaintOverlay() {
                 runtimeKey: `${batch.layer.layerId}:${revision}:${index}`,
               })
             : undefined;
+          bakeMs += performance.now() - bakeStartedAt;
           if (!isCurrent()) return;
+          const alphaBoundsStartedAt = performance.now();
           const alphaBounds = result ? await getCanvasAlphaBoundsAsync(result.canvas) : undefined;
+          alphaBoundsMs += performance.now() - alphaBoundsStartedAt;
           if (!isCurrent()) return;
           const bounds =
             result && alphaBounds
@@ -12060,6 +12324,7 @@ function SurfacePaintOverlay() {
               keys.add(key);
           refinements.push({ canvas: result?.canvas, alphaBounds, bounds });
         }
+        const stageStartedAt = performance.now();
         const staged = await stageRefinedStrokeHistory({
           histories: strokes.map((stroke) => stroke.historyTiles),
           isApplied: (index) => strokes[index].applied,
@@ -12067,9 +12332,8 @@ function SurfacePaintOverlay() {
             .map((key) => getPaintHistoryTileBounds(batch.layer.paintCanvas, key))
             .filter((bounds): bounds is PaintDirtyRect => Boolean(bounds)),
           key: (bounds) => `${bounds.x}:${bounds.y}`,
-          read: (bounds) => copyCanvasRect(batch.layer.paintCanvas, bounds),
-          copy: (canvas) =>
-            copyCanvasRect(canvas, { x: 0, y: 0, width: canvas.width, height: canvas.height }),
+          read: (bounds) => capturePaintHistoryRegions(batch.layer.paintCanvas, [bounds])[0],
+          copy: copyPaintHistoryPixels,
           affects: (index, bounds) => {
             const refined = refinements[index].bounds;
             return Boolean(
@@ -12080,8 +12344,8 @@ function SurfacePaintOverlay() {
               bounds.y + bounds.height > refined.y,
             );
           },
-          apply: (index, canvas, bounds) => {
-            const context = canvas.getContext('2d')!;
+          apply: (index, pixels, bounds) => {
+            const context = pixels.canvas.getContext('2d')!;
             context.save();
             context.translate(-bounds.x, -bounds.y);
             strokes[index].apply(context);
@@ -12112,10 +12376,12 @@ function SurfacePaintOverlay() {
           yieldWork: yieldProjectedEraserRefinement,
           isCurrent,
         });
+        stageMs = performance.now() - stageStartedAt;
         const latestLayer = useLayerStore
           .getState()
           .layers.find((item) => item.id === batch.layer.layerId);
         if (!staged || !isCurrent() || !latestLayer) return;
+        const publishStartedAt = performance.now();
         // No await after this point: pixels and every stroke's checkpoints publish atomically.
         for (const tile of staged.output) {
           batch.layer.paintContext.clearRect(
@@ -12124,7 +12390,17 @@ function SurfacePaintOverlay() {
             tile.bounds.width,
             tile.bounds.height,
           );
-          batch.layer.paintContext.drawImage(tile.pixels, tile.bounds.x, tile.bounds.y);
+          batch.layer.paintContext.drawImage(
+            tile.pixels.canvas,
+            tile.pixels.sourceX,
+            tile.pixels.sourceY,
+            tile.pixels.width,
+            tile.pixels.height,
+            tile.bounds.x,
+            tile.bounds.y,
+            tile.pixels.width,
+            tile.pixels.height,
+          );
         }
         strokes.forEach((stroke, index) => {
           stroke.historyTiles.splice(0, stroke.historyTiles.length, ...staged.updates[index]);
@@ -12143,6 +12419,19 @@ function SurfacePaintOverlay() {
           needsRebake: batch.layer.target === 'projected-mask',
         });
         useProjectStore.getState().setProjectLayers(useLayerStore.getState().layers);
+        publishMs = performance.now() - publishStartedAt;
+        if (isPerformanceInstrumentationEnabled()) {
+          document.body.dataset.projectedEraserRefinementTiming = JSON.stringify({
+            strokes: strokes.length,
+            outputTiles: staged.output.length,
+            historyTiles: staged.updates.reduce((count, tiles) => count + tiles.length, 0),
+            bakeMs,
+            alphaBoundsMs,
+            stageMs,
+            publishMs,
+            totalMs: performance.now() - startedAt,
+          });
+        }
         measureEraserPerformanceEvent('projected-refinement-complete', startedAt, {
           layerId: batch.layer.layerId,
           revision,
@@ -12405,11 +12694,24 @@ function SurfacePaintOverlay() {
           finishProjectedPreview();
           return;
         }
-        const touchedTiles = getPaintHistoryTileKeys(layer, draft.bounds!);
-        const beforeTiles = [...touchedTiles]
+        const historyBeforeStartedAt = performance.now();
+        // The preview commit still uses the exact union canvas, while history
+        // stores only tiles reached by an actual stamp segment. UV seams can
+        // place two adjacent screen samples far apart in UV space; using their
+        // full-stroke bounding rectangle retained hundreds of untouched 4K
+        // tiles and caused pointer-up memory/frame spikes.
+        const touchedTiles =
+          draft.historyTileKeys && draft.historyTileKeys.size > 0
+            ? draft.historyTileKeys
+            : getPaintHistoryTileKeys(layer, draft.bounds!);
+        const touchedBounds = [...touchedTiles]
           .map((key) => getPaintHistoryTileBounds(layer.paintCanvas, key))
-          .filter((bounds): bounds is PaintDirtyRect => Boolean(bounds))
-          .map((bounds) => ({ bounds, before: copyCanvasRect(layer.paintCanvas, bounds) }));
+          .filter((bounds): bounds is PaintDirtyRect => Boolean(bounds));
+        const beforePixels =
+          draft.paintOperation === 'eraser'
+            ? await capturePaintHistoryRegionsAsync(layer.paintCanvas, touchedBounds)
+            : capturePaintHistoryRegions(layer.paintCanvas, touchedBounds);
+        const historyBeforeMs = performance.now() - historyBeforeStartedAt;
 
         const paintBounds = scaleDirtyRect(
           previewBounds,
@@ -12447,13 +12749,21 @@ function SurfacePaintOverlay() {
             context.restore();
           }
         };
+        const applyStartedAt = performance.now();
         applyStroke(layer.paintContext);
+        const applyMs = performance.now() - applyStartedAt;
 
-        const historyTiles: PaintHistoryTile[] = beforeTiles.map(({ bounds, before }) => ({
+        const historyAfterStartedAt = performance.now();
+        const afterPixels =
+          draft.paintOperation === 'eraser'
+            ? await capturePaintHistoryRegionsAsync(layer.paintCanvas, touchedBounds)
+            : capturePaintHistoryRegions(layer.paintCanvas, touchedBounds);
+        const historyTiles: PaintHistoryTile[] = touchedBounds.map((bounds, index) => ({
           bounds,
-          before,
-          after: copyCanvasRect(layer.paintCanvas, bounds),
+          before: beforePixels[index],
+          after: afterPixels[index],
         }));
+        const historyAfterMs = performance.now() - historyAfterStartedAt;
         const historyStroke: PendingPaintHistoryStroke = {
           snapshot: projectedEraserCommit,
           historyTiles,
@@ -12481,7 +12791,18 @@ function SurfacePaintOverlay() {
               tile.bounds.width,
               tile.bounds.height,
             );
-            layer.paintContext.drawImage(tile[side], tile.bounds.x, tile.bounds.y);
+            const pixels = tile[side];
+            layer.paintContext.drawImage(
+              pixels.canvas,
+              pixels.sourceX,
+              pixels.sourceY,
+              pixels.width,
+              pixels.height,
+              tile.bounds.x,
+              tile.bounds.y,
+              pixels.width,
+              pixels.height,
+            );
           });
           markLiveProjectedCanvasTextureUpdated(layer.assetUrl);
           // Neutralize the resident multiplier NOW, without a shader rebuild.
@@ -12543,12 +12864,38 @@ function SurfacePaintOverlay() {
           scheduleProjectedEraserRefinement(layer, historyStroke);
         }
         if (draft.paintOperation === 'eraser') {
+          const totalMs = performance.now() - commitStartedAt;
           measureEraserPerformanceEvent('eraser-commit-complete', commitStartedAt, {
             layerId: layer.layerId,
             target: layer.target,
             backingInitializedThisCommit: !backingWasInitialized,
             historyTiles: historyTiles.length,
           });
+          if (isPerformanceInstrumentationEnabled()) {
+            const timing = {
+              target: layer.target,
+              resolution: `${layer.paintCanvas.width}x${layer.paintCanvas.height}`,
+              backingInitializedThisCommit: !backingWasInitialized,
+              backingInitMs,
+              historyTiles: historyTiles.length,
+              historySnapshotPixels:
+                getPaintHistorySnapshotPixelCount(beforePixels) +
+                getPaintHistorySnapshotPixelCount(afterPixels),
+              historyBeforeMs,
+              applyMs,
+              historyAfterMs,
+              totalMs,
+            };
+            document.body.dataset.eraserCommitTiming = JSON.stringify(timing);
+            let samples: typeof timing[] = [];
+            try {
+              samples = JSON.parse(document.body.dataset.eraserCommitSamples ?? '[]') as typeof timing[];
+            } catch {
+              samples = [];
+            }
+            samples.push(timing);
+            document.body.dataset.eraserCommitSamples = JSON.stringify(samples.slice(-64));
+          }
           measureEraserNextFrame('eraser-commit-presented', commitStartedAt, {
             layerId: layer.layerId,
             target: layer.target,
@@ -12572,8 +12919,18 @@ function SurfacePaintOverlay() {
         }
       };
 
+      const queuedBehindExistingCommit = layer.pendingPaintCommits > 0;
       layer.pendingPaintCommits += 1;
-      const queuedCommit = layer.paintCommitChain.then(() => layer.ready).then(finalizePaintStroke);
+      const queuedCommit = layer.paintCommitChain
+        .then(async () => {
+          // Promise continuations otherwise drain every queued 4K stroke in one
+          // microtask turn. One browser-task boundary between backlogged commits
+          // keeps input and presentation eligible without splitting or slowing
+          // the exact snapshot/apply operation of an individual stroke.
+          if (queuedBehindExistingCommit) await yieldToBrowserTask();
+          await layer.ready;
+        })
+        .then(finalizePaintStroke);
       layer.paintCommitChain = queuedCommit
         .catch((error) => {
           discardHistory();
@@ -12663,16 +13020,34 @@ function SurfacePaintOverlay() {
       const beforeCanvas = draft.localRepaintHistoryBefore;
       const model = getTargetModel();
       if (!composite || !source || !beforeCanvas || !model) return;
+      const historyStartedAt = performance.now();
       const touchedTiles = getPaintHistoryTileKeysForBounds(composite.maskCanvas, draft.bounds);
-      const historyTiles = [...touchedTiles]
+      const touchedBounds = [...touchedTiles]
         .map((key) => getPaintHistoryTileBounds(composite.maskCanvas, key))
-        .filter((bounds): bounds is PaintDirtyRect => Boolean(bounds))
-        .map((bounds) => ({
-          bounds,
-          before: copyCanvasRect(beforeCanvas, bounds),
-          after: copyCanvasRect(composite.maskCanvas, bounds),
-        }));
+        .filter((bounds): bounds is PaintDirtyRect => Boolean(bounds));
+      const beforeCaptureStartedAt = performance.now();
+      const beforePixels = capturePaintHistoryRegions(beforeCanvas, touchedBounds);
+      const beforeCaptureMs = performance.now() - beforeCaptureStartedAt;
+      const afterCaptureStartedAt = performance.now();
+      const afterPixels = capturePaintHistoryRegions(composite.maskCanvas, touchedBounds);
+      const afterCaptureMs = performance.now() - afterCaptureStartedAt;
+      const historyTiles: PaintHistoryTile[] = touchedBounds.map((bounds, index) => ({
+        bounds,
+        before: beforePixels[index],
+        after: afterPixels[index],
+      }));
       if (historyTiles.length === 0) return;
+      if (isPerformanceInstrumentationEnabled()) {
+        document.body.dataset.localRepaintHistoryTiming = JSON.stringify({
+          tiles: historyTiles.length,
+          snapshotPixels:
+            getPaintHistorySnapshotPixelCount(beforePixels) +
+            getPaintHistorySnapshotPixelCount(afterPixels),
+          beforeCaptureMs,
+          afterCaptureMs,
+          totalMs: performance.now() - historyStartedAt,
+        });
+      }
       const beforeHasContent = draft.localRepaintHistoryBeforeHasContent ?? false;
       const afterHasContent = composite.hasContent;
       const applyTiles = (side: 'before' | 'after') => {
@@ -12688,7 +13063,18 @@ function SurfacePaintOverlay() {
             tile.bounds.width,
             tile.bounds.height,
           );
-          composite.maskContext.drawImage(tile[side], tile.bounds.x, tile.bounds.y);
+          const pixels = tile[side];
+          composite.maskContext.drawImage(
+            pixels.canvas,
+            pixels.sourceX,
+            pixels.sourceY,
+            pixels.width,
+            pixels.height,
+            tile.bounds.x,
+            tile.bounds.y,
+            pixels.width,
+            pixels.height,
+          );
         });
         composite.hasContent = side === 'before' ? beforeHasContent : afterHasContent;
         markLiveProjectedCanvasTextureUpdated(composite.maskUrl);
@@ -12707,12 +13093,10 @@ function SurfacePaintOverlay() {
     }
     if (!draft.layer || !draft.inpaintHistoryBefore || !draft.inpaintHistoryModel) return;
 
-    archiveCurrentInpaintProjection(
-      draft.layer,
-      draft.inpaintHistoryModel,
-      currentProjectionOperationRef.current,
-    );
-    currentProjectionHasContentRef.current = false;
+    // Keep pointer-up free of the full UV accumulation pass. The live projector
+    // remains the exact visible/history authority; camera/tool changes and
+    // button 2 still force the same lossless archive before consuming it.
+    scheduleIdleInpaintArchive(draft.layer, draft.inpaintHistoryModel);
     maskHasContentRef.current = true;
     const after = captureInpaintMaskHistoryState(draft.layer);
     inpaintMaskHistoryCheckpointRef.current = { layer: draft.layer, state: after };
@@ -12726,12 +13110,12 @@ function SurfacePaintOverlay() {
       redo: () => restoreInpaintMaskHistoryState(draft.layer!, draft.inpaintHistoryModel!, after),
     });
   }, [
-    archiveCurrentInpaintProjection,
     captureInpaintMaskHistoryState,
     getTargetModel,
     invalidate,
     queueLocalRepaintUvCommit,
     restoreInpaintMaskHistoryState,
+    scheduleIdleInpaintArchive,
     syncLocalRepaintGpuOverlayActivity,
   ]);
 
@@ -12824,6 +13208,8 @@ function SurfacePaintOverlay() {
         const originalLocalRepaintBrushSettings =
           useSceneStore.getState().localRepaintBrushSettings;
         let source = useSceneStore.getState().localRepaintProjectionSource;
+        const originalLocalRepaintSource = source;
+        let benchmarkFallbackSource = false;
         let sourceImageState = localRepaintSourceImageRef.current;
         const model = getTargetModel();
         if (!model) throw new Error('S6 需要一个已加载并选中的模型。');
@@ -12876,6 +13262,7 @@ function SurfacePaintOverlay() {
 
         let sourceWidth = 0;
         let sourceHeight = 0;
+        let firstApplyInputAt = 0;
         const feedbackSamples: number[] = [];
         const initialCommitRevision = localRepaintLastCommitReportRef.current?.revision ?? 0;
         let maskAddSamples = 0;
@@ -12886,6 +13273,7 @@ function SurfacePaintOverlay() {
         let button2MaskUrl = '';
         let button2InputTotalMs = 0;
         let button2InputWorkerMs = 0;
+        let button2InputPhaseDurationsMs: Record<string, number> = {};
         let applySamples = 0;
         let candidateCount = 0;
         let activationStartedAt = 0;
@@ -13016,23 +13404,26 @@ function SurfacePaintOverlay() {
         ) => {
           if (hits.length === 0) return 0;
           const strokeStartedAt = performance.now();
-          isPaintingRef.current = true;
-          lastPaintActivityAtRef.current = strokeStartedAt;
-          lastUvRef.current = undefined;
-          lastSampleRef.current = undefined;
-          lastPointerClientRef.current = undefined;
           if (tool !== 'inpaint-apply') {
             const maskLayer = syncInpaintMaskProjection(hits[0].model);
             if (!maskLayer.maskDepthReady) {
               scheduleInpaintProjectionDepth(maskLayer, hits[0].model, true);
             }
           }
+          isPaintingRef.current = true;
+          lastPaintActivityAtRef.current = strokeStartedAt;
+          lastUvRef.current = undefined;
+          lastSampleRef.current = undefined;
+          lastPointerClientRef.current = undefined;
           beginStrokeHistory(hits[0], tool);
           const selectionLayerAtStart = tool === 'inpaint-apply' ? undefined : layerRef.current;
           const selectionTextureVersionAtStart =
             selectionLayerAtStart?.projectionTexture.version ?? -1;
           for (const hit of hits) {
             const sampleStartedAt = performance.now();
+            if (tool === 'inpaint-apply' && firstApplyInputAt === 0) {
+              firstApplyInputAt = sampleStartedAt;
+            }
             lastPaintActivityAtRef.current = sampleStartedAt;
             paintAt(hit, 0.82, tool);
             recordSurfacePaintPerf(performance.now() - sampleStartedAt);
@@ -13157,8 +13548,44 @@ function SurfacePaintOverlay() {
           ).LiclickPerfLocalRepaintSource;
           if (!sourceController) throw new Error('S6 现成生图绑定器尚未就绪。');
           activationStartedAt = performance.now();
-          await sourceController.prepareLatestGeneratedSource();
-          activationReadyMs = performance.now() - activationStartedAt;
+          const reusedGeneratedSource = await sourceController.prepareLatestGeneratedSource();
+          if (!reusedGeneratedSource) {
+            const fallbackLayer = useLayerStore
+              .getState()
+              .layers.find((layer) => belongsToModel(layer) && layer.visible && layer.imageUrl);
+            if (!fallbackLayer?.imageUrl) {
+              throw new Error('S6 没有可用于离线压力测试的已加载纹理源。');
+            }
+            const viewportRect = gl.domElement.getBoundingClientRect();
+            const sourceTarget =
+              viewportControls?.target.clone() ??
+              new THREE.Box3().setFromObject(model.group).getCenter(new THREE.Vector3());
+            model.group.updateMatrixWorld(true);
+            source = {
+              imageUrl: fallbackLayer.imageUrl,
+              persistentImageUrl: fallbackLayer.imageUrl,
+              rawImageUrl: fallbackLayer.imageUrl,
+              allowedMaskUrl: button2MaskUrl,
+              objectId: model.objectId,
+              objectMatrixWorld: model.group.matrixWorld.toArray(),
+              camera: serializeCamera(
+                camera,
+                viewportRect.width / Math.max(viewportRect.height, 1),
+                sourceTarget,
+              ),
+              generationId: 'perf-local-repaint-resident-source',
+              captureId: 'perf-local-repaint-resident-source',
+              name: 'S6 本地驻留纹理源',
+              targetLayerId: activeLayer.id,
+              targetLayerType: 'uv',
+              targetLayerName: activeLayer.name,
+            };
+            benchmarkFallbackSource = true;
+            document.body.dataset.perfLocalRepaintSource = 'resident-project-texture';
+            useSceneStore.getState().setLocalRepaintProjectionSource(source);
+          } else {
+            document.body.dataset.perfLocalRepaintSource = 'generated-local-repaint';
+          }
           const sourceReadyDeadline = performance.now() + 20_000;
           while (performance.now() < sourceReadyDeadline) {
             source = useSceneStore.getState().localRepaintProjectionSource;
@@ -13169,30 +13596,14 @@ function SurfacePaintOverlay() {
           if (!source || !sourceImageState?.image) {
             throw new Error('现成局部生图已绑定，但投影图片预热超时。');
           }
+          activationReadyMs = performance.now() - activationStartedAt;
           projectedBackgroundRevisionAtReady = Number(
             document.body.dataset.projectedBackgroundMaterialRevision ?? '0',
           );
           sourceWidth = sourceImageState.image.naturalWidth || sourceImageState.image.width;
           sourceHeight = sourceImageState.image.naturalHeight || sourceImageState.image.height;
-          document.body.dataset.perfLocalRepaintPhase = 's6-interaction-button2-input-worker';
-          const button2Controller = (
-            window as typeof window & {
-              LiclickPerfLocalRepaintButton2?: LocalRepaintButton2PerformanceApi;
-            }
-          ).LiclickPerfLocalRepaintButton2;
-          if (!button2Controller) throw new Error('S6 按钮2输入处理器尚未就绪。');
-          const button2Input = await button2Controller.prepareInput(
-            source.imageUrl,
-            button2MaskUrl,
-            sourceWidth,
-            sourceHeight,
-          );
-          button2InputTotalMs = button2Input.totalMs;
-          button2InputWorkerMs = button2Input.workerMs;
-          document.body.dataset.perfLocalRepaintPhase = 's6-interaction-apply-prepare';
-          // S6 validates the generated task in its own capture space. Depending
-          // on the user's current orbit made valid depth rejection on another
-          // side look like a repaint dead zone and produced non-repeatable QA.
+          // Match the production button-2 contract: the authored mask and the
+          // two colour inputs are captured in one immutable generation space.
           camera.position.fromArray(source.camera.position);
           camera.quaternion.fromArray(source.camera.quaternion);
           camera.near = source.camera.near;
@@ -13208,6 +13619,32 @@ function SurfacePaintOverlay() {
           invalidate();
           await waitForFrame();
           await waitForFrame();
+          const alignedMaskStartedAt = performance.now();
+          button2MaskUrl =
+            (await useSceneStore.getState().paintMaskCapture?.({
+              aspect: sourceWidth / Math.max(sourceHeight, 1),
+              camera,
+              resolution: Math.max(sourceWidth, sourceHeight),
+            })) ?? '';
+          button2MaskCaptureMs += performance.now() - alignedMaskStartedAt;
+          if (!button2MaskUrl) throw new Error('S6 无法在生成空间对齐按钮2蒙版。');
+          useSceneStore.getState().setPaintMaskDataUrl(button2MaskUrl, true);
+          document.body.dataset.perfLocalRepaintPhase = 's6-interaction-button2-input-worker';
+          const button2InputStartedAt = performance.now();
+          const button2Input = await prepareLocalRepaintGenerationInput({
+            // The complete UI path captures separate flat/clay views. S6 uses
+            // the same immutable generated frame for both inputs so the exact
+            // production worker and mask expansion run without a network job.
+            currentEffectUrl: source.imageUrl,
+            clayPreviewUrl: source.imageUrl,
+            authoredMaskUrl: button2MaskUrl,
+          });
+          button2InputTotalMs = performance.now() - button2InputStartedAt;
+          button2InputWorkerMs = button2Input.processMs;
+          button2InputPhaseDurationsMs = button2Input.phaseDurationsMs;
+          revokeRegisteredObjectUrl(button2Input.compositeUrl);
+          revokeRegisteredObjectUrl(button2Input.submittedMaskUrl);
+          document.body.dataset.perfLocalRepaintPhase = 's6-interaction-apply-prepare';
           const applyStartedAt = performance.now();
           const applyStrokes = 6;
           for (let strokeIndex = 0; strokeIndex < applyStrokes; strokeIndex += 1) {
@@ -13225,7 +13662,22 @@ function SurfacePaintOverlay() {
           }
           const applyDurationMs = performance.now() - applyStartedAt;
           if (applySamples === 0) throw new Error('现有生图在当前视角没有可应用的蒙版像素。');
-          if (gpuProbe.visiblePixels === 0 || gpuProbe.maxAlpha === 0) {
+          const residentOverride = localRepaintResidentMaskOverrideRef.current;
+          const activeComposite = localRepaintCompositeRef.current;
+          const gpuResidentOverrideBound = Boolean(
+            residentOverride &&
+              activeComposite &&
+              residentOverride.layerId === activeComposite.layerId &&
+              residentOverride.sourceKey === activeComposite.sourceKey &&
+              residentOverride.texture === activeComposite.blendMaskTexture &&
+              residentOverride.root === model.group &&
+              document.body.dataset.localRepaintResidentMaskOverride ===
+                `bound:${activeComposite.layerId}`,
+          );
+          if (
+            !gpuResidentOverrideBound &&
+            (gpuProbe.visiblePixels === 0 || gpuProbe.maxAlpha === 0)
+          ) {
             const overlay = localRepaintGpuOverlayRef.current;
             const maskMap = overlay?.material.uniforms.maskMap?.value as THREE.Texture | undefined;
             const diagnosticUniformNames = [
@@ -13283,7 +13735,10 @@ function SurfacePaintOverlay() {
               })}`,
             );
           }
-          if (gpuProbe.sceneChangedPixels === 0 || gpuProbe.sceneMaxDelta === 0) {
+          if (
+            !gpuResidentOverrideBound &&
+            (gpuProbe.sceneChangedPixels === 0 || gpuProbe.sceneMaxDelta === 0)
+          ) {
             throw new Error('S6 最终模型帧在覆盖层开关前后没有像素变化。');
           }
           const projectedBackgroundRebuilds = Math.max(
@@ -13342,20 +13797,23 @@ function SurfacePaintOverlay() {
             button2MaskProjectionCount,
             button2InputTotalMs,
             button2InputWorkerMs,
+            button2InputPhaseDurationsMs,
             applyDurationMs,
             activationReadyMs,
             activationToFirstVisibleMs:
-              // Button 3 is clicked after the generated source is ready. Do not
-              // charge button 2's worker preparation or camera restore to the
-              // first brush sample; measure pointer-to-visible feedback from
-              // the start of the apply interaction itself.
-              firstApplyVisibleAt > 0 ? firstApplyVisibleAt - applyStartedAt : 0,
+              // Candidate scanning is test-fixture setup, not pointer latency.
+              // Measure from the exact first production paintAt call to the
+              // first frame that can display its uploaded mask.
+              firstApplyVisibleAt > 0 && firstApplyInputAt > 0
+                ? firstApplyVisibleAt - firstApplyInputAt
+                : 0,
             liveFeedbackP95: percentile(sortedFeedback, 0.95),
             liveFeedbackMax: sortedFeedback.length > 0 ? Math.max(...sortedFeedback) : 0,
             gpuVisiblePixels: gpuProbe.visiblePixels,
             gpuMaxAlpha: gpuProbe.maxAlpha,
             gpuSceneChangedPixels: gpuProbe.sceneChangedPixels,
             gpuSceneMaxDelta: gpuProbe.sceneMaxDelta,
+            gpuResidentOverrideBound,
             gpuProbeDurationMs,
             projectedBackgroundRebuilds,
             firstGeneratedCandidateScanMs,
@@ -13392,6 +13850,10 @@ function SurfacePaintOverlay() {
           useSceneStore.getState().setPaintMaskSettings(originalMaskSettings);
           useSceneStore.getState().setLocalRepaintBrushSettings(originalLocalRepaintBrushSettings);
           useSceneStore.getState().setPaintTool(originalPaintTool);
+          if (benchmarkFallbackSource) {
+            useSceneStore.getState().setLocalRepaintProjectionSource(originalLocalRepaintSource);
+            delete document.body.dataset.perfLocalRepaintSource;
+          }
           isPaintingRef.current = false;
           setOrbitControlsEnabled(true);
         }

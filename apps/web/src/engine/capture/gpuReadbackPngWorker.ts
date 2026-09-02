@@ -38,6 +38,7 @@ export function encodeFlippedGpuReadbackPngInWorker(
   width: number,
   height: number,
   outputSize?: { width: number; height: number },
+  pixelFormat: 'rgba' | 'grayscale' = 'rgba',
 ) {
   const id = nextRequestId++;
   const buffer =
@@ -56,6 +57,7 @@ export function encodeFlippedGpuReadbackPngInWorker(
         height,
         outputWidth: outputSize?.width,
         outputHeight: outputSize?.height,
+        pixelFormat,
       },
       [buffer],
     );

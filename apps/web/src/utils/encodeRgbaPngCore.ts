@@ -71,6 +71,45 @@ export function encodeRgbaPngBytes(
   return png;
 }
 
+/** Encodes an opaque grayscale PNG. Browsers decode colour type 0 back to
+ * R=G=B=value and A=255, so mask pixels remain byte-identical while the
+ * interactive worker compresses one channel instead of four. */
+export function encodeGrayscalePngBytes(width: number, height: number, grayscale: Uint8Array) {
+  if (grayscale.byteLength !== width * height) {
+    throw new Error('Grayscale data size does not match PNG dimensions.');
+  }
+  const rowStride = width;
+  const raw = new Uint8Array((rowStride + 1) * height);
+  for (let y = 0; y < height; y += 1) {
+    const rawOffset = y * (rowStride + 1);
+    const sourceOffset = y * rowStride;
+    raw[rawOffset] = 0;
+    raw.set(grayscale.subarray(sourceOffset, sourceOffset + rowStride), rawOffset + 1);
+  }
+
+  const ihdr = new Uint8Array(13);
+  const ihdrView = new DataView(ihdr.buffer);
+  ihdrView.setUint32(0, width);
+  ihdrView.setUint32(4, height);
+  ihdr.set([8, 0, 0, 0, 0], 8); // 8-bit grayscale, opaque, no interlace.
+  const chunks = [
+    pngChunk('IHDR', ihdr),
+    pngChunk('IDAT', zlibSync(raw, { level: INTERACTIVE_PNG_COMPRESSION_LEVEL })),
+    pngChunk('IEND', new Uint8Array()),
+  ];
+  const byteLength =
+    pngSignature.byteLength + chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0);
+  const png = new Uint8Array(byteLength);
+  let offset = 0;
+  png.set(pngSignature, offset);
+  offset += pngSignature.byteLength;
+  for (const chunk of chunks) {
+    png.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return png;
+}
+
 /** Same lossless RGBA PNG format as encodeRgbaPngBytes, but feeds zlib in
  * bounded row groups. Worker callers can yield between groups so 4K encoding
  * does not monopolize the browser process or create a 60MB temporary raw scan

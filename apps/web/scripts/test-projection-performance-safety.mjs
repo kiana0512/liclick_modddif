@@ -98,8 +98,8 @@ assert.match(
 );
 assert.match(
   viewportSource,
-  /overlayHasLiveContent[\s\S]*?!overlayOwnsOrderedPreview/,
-  'S7 overlay expectations must follow live-content and ordered-preview ownership',
+  /overlayHasLiveContent[\s\S]*?shouldUseDedicatedLocalRepaintOverlay[\s\S]*?overlayKeepsLivePreview/,
+  'S7 overlay expectations must follow the same live/persisted ownership gate as the renderer',
 );
 assert.match(
   viewportSource,

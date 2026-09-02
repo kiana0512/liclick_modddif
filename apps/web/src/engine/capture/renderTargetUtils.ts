@@ -20,6 +20,9 @@ type RenderSceneToPngOptions = {
    * contract or doing image resampling on the main thread. */
   encodedWidth?: number;
   encodedHeight?: number;
+  /** Encode an opaque scalar mask as PNG colour type 0. Decoded browser pixels
+   * remain R=G=B and A=255 while transport work is reduced fourfold. */
+  grayscaleOutput?: boolean;
   /**
    * Applies capture-only scene state immediately before each submitted draw
    * and restores it synchronously afterwards. Tiled captures must use this
@@ -260,6 +263,7 @@ export async function renderSceneToPngUrl(
   }
 
   markCapturePerformancePhase(options.performancePhasePrefix, 'encode-worker');
+  const encodeStartedAt = performance.now();
   const png = await encodeFlippedGpuReadbackPngInWorker(
     pixels,
     request.width,
@@ -267,7 +271,20 @@ export async function renderSceneToPngUrl(
     options.encodedWidth && options.encodedHeight
       ? { width: options.encodedWidth, height: options.encodedHeight }
       : undefined,
+    options.grayscaleOutput ? 'grayscale' : 'rgba',
   );
+  if (
+    options.performancePhasePrefix === 'button2-mask-capture' &&
+    typeof document !== 'undefined'
+  ) {
+    document.body.dataset.localRepaintMaskCaptureEncodeMs = (
+      performance.now() - encodeStartedAt
+    ).toFixed(1);
+    document.body.dataset.localRepaintMaskCapturePngBytes = String(png.byteLength);
+    document.body.dataset.localRepaintMaskCapturePngFormat = options.grayscaleOutput
+      ? 'grayscale'
+      : 'rgba';
+  }
   markCapturePerformancePhase(options.performancePhasePrefix, 'publish');
   return createRegisteredObjectUrl(new Blob([png], { type: 'image/png' }));
 }

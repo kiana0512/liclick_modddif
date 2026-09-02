@@ -178,19 +178,106 @@ try {
     true,
     ts.ScriptKind.TSX,
   );
-  let commitNode, restoreNode;
+  let commitNode, historyCommitNode, restoreNode, groupRegionsNode;
   const find = (node) => {
     if (ts.isVariableDeclaration(node) && node.name.getText(file) === 'commitPaintStroke')
       commitNode = node;
+    if (ts.isVariableDeclaration(node) && node.name.getText(file) === 'commitStrokeHistory')
+      historyCommitNode = node;
+    if (ts.isFunctionDeclaration(node) && node.name?.getText(file) === 'groupPaintHistoryRegions')
+      groupRegionsNode = node;
     ts.forEachChild(node, find);
   };
   find(file);
+  assert.ok(groupRegionsNode, 'Paint history snapshot grouping helper must exist');
+  const groupingExports = {};
+  const groupingJs = ts.transpileModule(
+    `${groupRegionsNode.getText(file)}\nexports.groupPaintHistoryRegions = groupPaintHistoryRegions;`,
+    {
+      compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+    },
+  ).outputText;
+  new Function('exports', groupingJs)(groupingExports);
+  const { groupPaintHistoryRegions } = groupingExports;
+  const historyTileSize = 256;
+  const diagonalTiles = Array.from({ length: 16 }, (_, index) => ({
+    x: index * historyTileSize,
+    y: index * historyTileSize,
+    width: historyTileSize,
+    height: historyTileSize,
+  }));
+  const diagonalGroups = groupPaintHistoryRegions(diagonalTiles);
+  assert.equal(diagonalGroups.length, 16, 'Sparse diagonal tiles must not allocate one 4K union');
+  assert.equal(
+    diagonalGroups.reduce((sum, group) => sum + group.bounds.width * group.bounds.height, 0),
+    diagonalTiles.length * historyTileSize * historyTileSize,
+    'Sparse history storage must contain only touched tile pixels',
+  );
+  const denseTiles = Array.from({ length: 12 }, (_, index) => ({
+    x: (index % 4) * historyTileSize,
+    y: Math.floor(index / 4) * historyTileSize,
+    width: historyTileSize,
+    height: historyTileSize,
+  }));
+  const denseGroups = groupPaintHistoryRegions(denseTiles);
+  assert.deepEqual(
+    denseGroups.map((group) => group.bounds),
+    [{ x: 0, y: 0, width: historyTileSize * 4, height: historyTileSize * 3 }],
+    'Dense tiles should retain the single fast shared-snapshot path',
+  );
+  assert.deepEqual(
+    [...denseGroups[0].regionIndexes].sort((left, right) => left - right),
+    denseTiles.map((_, index) => index),
+    'Grouped snapshots must preserve every original tile mapping',
+  );
   const findRestore = (node) => {
     if (ts.isVariableDeclaration(node) && node.name.getText(file) === 'applyTiles')
       restoreNode = node.initializer;
     ts.forEachChild(node, findRestore);
   };
   findRestore(commitNode);
+  const commitSource = historyCommitNode.initializer.getText(file);
+  assert.match(
+    commitSource,
+    /scheduleIdleInpaintArchive\(draft\.layer, draft\.inpaintHistoryModel\)/,
+    'Mask history keeps the live projector authoritative and archives after pointer-up',
+  );
+  assert.doesNotMatch(
+    commitSource,
+    /currentProjectionHasContentRef\.current\s*=\s*false/,
+    'A deferred or failed archive must not discard the live mask authority',
+  );
+  assert.match(
+    commitSource,
+    /capturePaintHistoryRegions\(beforeCanvas, touchedBounds\)/,
+    'Local repaint history captures grouped before snapshots for touched tiles',
+  );
+  assert.match(
+    commitSource,
+    /capturePaintHistoryRegions\(composite\.maskCanvas, touchedBounds\)/,
+    'Local repaint history captures grouped after snapshots for touched tiles',
+  );
+  assert.doesNotMatch(
+    commitSource,
+    /copyCanvasRect\(beforeCanvas, bounds\)/,
+    'Local repaint history must not allocate a canvas per touched tile',
+  );
+  const paintCommitSource = commitNode.initializer.getText(file);
+  assert.match(
+    viewport,
+    /recordPaintStrokeDirtyRegion\(strokeDraftRef\.current, layer, bounds\)/,
+    'Every brush/eraser segment must record its own touched history tiles',
+  );
+  assert.match(
+    paintCommitSource,
+    /draft\.historyTileKeys && draft\.historyTileKeys\.size > 0[\s\S]*?draft\.historyTileKeys[\s\S]*?: getPaintHistoryTileKeys/,
+    'Paint history must prefer the exact segment tile set over the full-stroke UV union',
+  );
+  assert.match(
+    paintCommitSource,
+    /draft\.paintOperation === 'eraser'[\s\S]*?await capturePaintHistoryRegionsAsync\(layer\.paintCanvas, touchedBounds\)/,
+    'Eraser history must move cold canvas readback off the main thread',
+  );
   const canvas = (value) => {
     const result = { value, width: 1, height: 1 };
     result.context = {
@@ -227,7 +314,11 @@ try {
     liveResultTexture: {},
   };
   const historyTiles = [
-    { bounds: { x: 0, y: 0, width: 1, height: 1 }, before: canvas(1), after: canvas(0) },
+    {
+      bounds: { x: 0, y: 0, width: 1, height: 1 },
+      before: { canvas: canvas(1), sourceX: 0, sourceY: 0, width: 1, height: 1 },
+      after: { canvas: canvas(0), sourceX: 0, sourceY: 0, width: 1, height: 1 },
+    },
   ];
   const uploaded = [],
     marked = [];

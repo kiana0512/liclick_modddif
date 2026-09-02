@@ -6708,7 +6708,7 @@ export function EditorPage({
   useEffect(() => {
     const target = window as typeof window & {
       LiclickPerfLocalRepaintSource?: {
-        prepareLatestGeneratedSource: () => Promise<void>;
+        prepareLatestGeneratedSource: () => Promise<boolean>;
       };
     };
     target.LiclickPerfLocalRepaintSource = {
@@ -6725,6 +6725,23 @@ export function EditorPage({
         if (!maskState.paintMaskHasContent) {
           throw new Error('S6 蒙版编码超时，未进入现成生图绑定阶段。');
         }
+        const preferredObjectId = selectedObjectId ?? importedModel?.objectId;
+        const hasReusableGeneration = Boolean(
+          project &&
+            preferredObjectId &&
+            generations.some(
+              (generation) =>
+                Boolean(generation.resultUrl) &&
+                generation.status === 'succeeded' &&
+                isLocalRepaintGeneration(generation) &&
+                (!generation.metadata.projectId || generation.metadata.projectId === projectId) &&
+                generationBelongsToObject(generation, preferredObjectId, project.captures),
+            ),
+        );
+        // A performance run must not wait 25 seconds for a generation record
+        // that does not exist. The viewport benchmark can bind an already
+        // resident project texture as a deterministic, network-free source.
+        if (!hasReusableGeneration) return false;
         document.body.dataset.perfUseCurrentLocalRepaintMask = '1';
         try {
           handleLocalRepaintFromToolbar();
@@ -6735,7 +6752,7 @@ export function EditorPage({
               sceneState.localRepaintProjectionSource &&
               sceneState.paintTool === 'inpaint-apply'
             ) {
-              return;
+              return true;
             }
             await wait(50);
           }
@@ -6748,7 +6765,14 @@ export function EditorPage({
     return () => {
       delete target.LiclickPerfLocalRepaintSource;
     };
-  }, [handleLocalRepaintFromToolbar]);
+  }, [
+    generations,
+    handleLocalRepaintFromToolbar,
+    importedModel,
+    project,
+    projectId,
+    selectedObjectId,
+  ]);
 
   const executeContentAwareRepair = useCallback(
     async (
