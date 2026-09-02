@@ -135,8 +135,8 @@ try {
       { ...liveRepaint, order: 0 },
       repaintOnTop.id,
     ),
-    true,
-    'the fast exact overlay must mute its resident twin outside ordered-stack presentation',
+    false,
+    'a persisted repaint outside apply mode must remain resident for erasing and eye toggles',
   );
   assert.equal(
     ordered.shouldMuteLocalRepaintResidentLayer(

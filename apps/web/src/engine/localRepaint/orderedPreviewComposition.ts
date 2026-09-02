@@ -60,8 +60,8 @@ export function shouldPresentLocalRepaintInOrderedStack(
  * above the repaint.
  */
 export function shouldUseDedicatedLocalRepaintOverlay(
-  layers: readonly Layer[],
-  preview: Layer | undefined,
+  _layers: readonly Layer[],
+  _preview: Layer | undefined,
   liveFeedbackRequested: boolean,
 ) {
   // The apply brush mutates a CanvasTexture every frame. Keep that hot path on
@@ -69,7 +69,11 @@ export function shouldUseDedicatedLocalRepaintOverlay(
   // as soon as the gesture/session hands off. This avoids making the first
   // stroke wait for a resident material publication while preserving ordered
   // composition outside the interactive phase.
-  return liveFeedbackRequested || !shouldPresentLocalRepaintInOrderedStack(layers, preview);
+  // The dedicated mesh has exactly one job: frame-by-frame feedback while the
+  // new-result apply brush is active. Persisted repaint rows (including their
+  // eraser) must stay in the resident stack so mask edits, eye toggles and
+  // ordering all observe the same material instance.
+  return liveFeedbackRequested;
 }
 
 /**
