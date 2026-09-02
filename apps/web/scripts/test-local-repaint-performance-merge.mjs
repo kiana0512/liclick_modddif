@@ -104,6 +104,11 @@ assert.doesNotMatch(
 );
 assert.match(viewport, /publishLocalRepaintInteractiveState\(\{/);
 assert.match(interactiveState, /'liclick:local-repaint-interactive-state'/);
+assert.match(
+  viewport,
+  /projectedBackgroundMaterialRevision[\s\S]{0,500}backgroundDisplayMode === 'flat'[\s\S]{0,120}backgroundDisplayMode === 'pbr'/,
+  'ordinary flat/PBR materials must satisfy the repaint background readiness barrier',
+);
 assert.match(dock, /data-local-repaint-apply="true"/);
 assert.match(dock, /localRepaintActivationDisposition === 'queue-until-unlocked'/);
 assert.match(dock, /localRepaintActivationQueued && \(/);

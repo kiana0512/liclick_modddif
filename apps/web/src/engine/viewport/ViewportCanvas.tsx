@@ -10625,8 +10625,11 @@ function SurfacePaintOverlay() {
           // or the ordinary display-mode material used by the clay/flat view.
           // The latter intentionally has no projectedFinalMaterialReadyUnixMs,
           // so requiring that marker rejects an otherwise ready white model.
+          const backgroundDisplayMode = useSceneStore.getState().displayMode;
           backgroundReady =
-            Number(document.body.dataset.projectedBackgroundMaterialRevision ?? '0') > 0;
+            Number(document.body.dataset.projectedBackgroundMaterialRevision ?? '0') > 0 ||
+            (model.group.visible &&
+              (backgroundDisplayMode === 'flat' || backgroundDisplayMode === 'pbr'));
           if (backgroundReady) break;
           await waitForFrame();
         }
