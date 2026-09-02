@@ -57,19 +57,33 @@ export function registerLiveProjectedCanvasTexture(
 ) {
   const url = createLiveProjectedCanvasUrl(id);
   const existing = liveCanvasTextures.get(url);
-  if (existing?.canvas === canvas) return url;
-  existing?.texture.dispose();
+  if (existing) {
+    // A live URL is a stable material binding, not just a cache key. Reopening
+    // a local-repaint row creates a new backing canvas with the same layer id.
+    // Replacing the CanvasTexture object here leaves every resident projected
+    // material holding the disposed previous texture until a structural rebuild
+    // (selecting the row happens to trigger one). Keep the texture identity and
+    // swap only its source so eye/preview toggles immediately sample the same
+    // erased mask as the interactive overlay.
+    if (existing.canvas !== canvas) {
+      existing.canvas = canvas;
+      existing.texture.image = canvas;
+      existing.revision += 1;
+      existing.encodedPng = undefined;
+    }
+    existing.flipY = options.flipY ?? existing.flipY;
+    configureTexture(existing.texture, colorSpace, existing.flipY);
+    return url;
+  }
   liveImageTextures.get(url)?.texture.dispose();
   liveImageTextures.delete(url);
   const texture = new THREE.CanvasTexture(canvas);
   const flipY = options.flipY ?? false;
   configureTexture(texture, colorSpace, flipY);
-  // Preserve a monotonic revision when a stable runtime URL swaps canvases.
-  // Consumers can then detect the replacement without forcing a new layer URL.
   liveCanvasTextures.set(url, {
     canvas,
     texture,
-    revision: (existing?.revision ?? -1) + 1,
+    revision: 0,
     flipY,
   });
   return url;
