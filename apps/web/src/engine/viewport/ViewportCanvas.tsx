@@ -6708,6 +6708,9 @@ function SurfacePaintOverlay() {
   const paintToolSettings = useSceneStore((state) => state.paintToolSettings);
   const textureResolutionSetting = useSettingsStore((state) => state.resolution);
   const localRepaintProjectionSource = useSceneStore((state) => state.localRepaintProjectionSource);
+  const localRepaintGpuPrepareRevision = useSceneStore(
+    (state) => state.localRepaintGpuPrepareRevision,
+  );
   const localRepaintGenerationPresentationActive = useSceneStore(
     (state) => state.localRepaintGenerationPresentationActive,
   );
@@ -8988,6 +8991,9 @@ function SurfacePaintOverlay() {
       window.cancelAnimationFrame(localRepaintUvScheduleFrameRef.current);
     localRepaintUvScheduleFrameRef.current = undefined;
     const source = localRepaintProjectionSource;
+    document.body.dataset.localRepaintGpuPrepareRevision = String(
+      localRepaintGpuPrepareRevision,
+    );
     const traceSourceEffect = (event: string) => {
       if (document.body.dataset.perfLocalRepaintMeasuring !== '1') return;
       let history: Array<Record<string, unknown>> = [];
@@ -9257,6 +9263,7 @@ function SurfacePaintOverlay() {
     clearLocalRepaintGpuOverlay,
     clearLocalRepaintResidentMaskOverride,
     invalidate,
+    localRepaintGpuPrepareRevision,
     localRepaintProjectionSource,
     selectedObjectId,
   ]);

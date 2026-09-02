@@ -17,6 +17,7 @@ const [
   activationRequestPolicy,
   globals,
   interactiveState,
+  sceneStore,
 ] = await Promise.all([
   read('../src/components/panels/GeneratePanel.tsx'),
   read('../src/components/editor/BottomToolDock.tsx'),
@@ -31,6 +32,7 @@ const [
   read('../src/engine/localRepaint/activationRequestPolicy.ts'),
   read('../src/styles/globals.css'),
   read('../src/engine/localRepaint/localRepaintInteractiveState.ts'),
+  read('../src/stores/sceneStore.ts'),
 ]);
 
 assert.doesNotMatch(panel, /createFullFrameMaskDataUrl/);
@@ -84,9 +86,13 @@ assert.match(backgroundPrewarmPolicy, /pendingGenerationId === nextSource\.gener
 assert.match(backgroundPrewarmPolicy, /'preserve-current-source'/);
 assert.match(editor, /createLocalRepaintActivationRequest\(\{/);
 assert.match(editor, /'replayed-after-gpu-ready'/);
-assert.match(editor, /'watchdog-resident-gpu'/);
-assert.match(editor, /'watchdog-released'/);
-assert.match(editor, /LOCAL_REPAINT_ACTIVATION_WATCHDOG_MS/);
+assert.match(editor, /requestLocalRepaintGpuPrepare\(\)/);
+assert.match(editor, /'renderer-retry'/);
+assert.doesNotMatch(editor, /LOCAL_REPAINT_ACTIVATION_WATCHDOG_MS/);
+assert.doesNotMatch(editor, /watchdog-released/);
+assert.match(sceneStore, /localRepaintGpuPrepareRevision/);
+assert.match(sceneStore, /requestLocalRepaintGpuPrepare/);
+assert.match(viewport, /localRepaintGpuPrepareRevision/);
 assert.match(editor, /localRepaintGenerationReady && localRepaintInteractiveReady/);
 assert.doesNotMatch(editor, /localRepaintInteractiveWaitersRef/);
 assert.doesNotMatch(editor, /local-repaint-interactive-ready-timeout/);
@@ -148,6 +154,19 @@ assert.equal(
   }),
   'stage-latest-generation',
   'a newly completed second generation should replace the previous visible source once',
+);
+assert.equal(
+  resolveBackgroundPrewarm({
+    currentSource: {
+      generationId: 'generation-1',
+      objectId: 'object-1',
+      targetLayerId: 'target-1',
+      autoActivate: false,
+    },
+    nextSource,
+  }),
+  'stage-latest-generation',
+  'a passive renderer-restored source must not block the newest generation after reload',
 );
 assert.equal(
   resolveBackgroundPrewarm({

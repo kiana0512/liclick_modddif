@@ -21,8 +21,6 @@ export function resolveLocalRepaintActivationDisposition(input: {
   return input.canQueueDuringTransition ? 'queue-until-unlocked' : 'blocked-operation';
 }
 
-export const LOCAL_REPAINT_ACTIVATION_WATCHDOG_MS = 8_000;
-
 export type LocalRepaintActivationRequest = {
   generationId?: string;
   targetLayerId?: string;

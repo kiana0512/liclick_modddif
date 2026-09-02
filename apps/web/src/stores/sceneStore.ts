@@ -115,6 +115,8 @@ type SceneStore = {
   paintMaskPresentationVisible: boolean;
   paintMaskCapture?: PaintMaskCapture;
   localRepaintProjectionSource?: LocalRepaintProjectionSource;
+  /** Explicit renderer retry token; incrementing restarts source decode/GPU binding. */
+  localRepaintGpuPrepareRevision: number;
   localRepaintPreviewLayer?: Layer;
   /**
    * Renderer-only handoff guard used while a local image generation is in
@@ -158,6 +160,7 @@ type SceneStore = {
   setPaintMaskPresentationVisible: (visible: boolean) => void;
   setPaintMaskCapture: (capture?: PaintMaskCapture) => void;
   setLocalRepaintProjectionSource: (source?: LocalRepaintProjectionSource) => void;
+  requestLocalRepaintGpuPrepare: () => void;
   setLocalRepaintPreviewLayer: (layer?: Layer) => void;
   setLocalRepaintGenerationPresentationActive: (active: boolean) => void;
   setTransientWhitePresentationObject: (objectId?: string) => void;
@@ -272,6 +275,7 @@ export const useSceneStore = create<SceneStore>()(
       paintMaskPresentationVisible: true,
       paintMaskCapture: undefined,
       localRepaintProjectionSource: undefined,
+      localRepaintGpuPrepareRevision: 0,
       localRepaintPreviewLayer: undefined,
       localRepaintGenerationPresentationActive: false,
       transientWhitePresentationObjectId: undefined,
@@ -534,6 +538,10 @@ export const useSceneStore = create<SceneStore>()(
       setPaintMaskCapture: (paintMaskCapture) => set({ paintMaskCapture }),
       setLocalRepaintProjectionSource: (localRepaintProjectionSource) =>
         set({ localRepaintProjectionSource }),
+      requestLocalRepaintGpuPrepare: () =>
+        set((state) => ({
+          localRepaintGpuPrepareRevision: state.localRepaintGpuPrepareRevision + 1,
+        })),
       setLocalRepaintPreviewLayer: (localRepaintPreviewLayer) => set({ localRepaintPreviewLayer }),
       setLocalRepaintGenerationPresentationActive: (localRepaintGenerationPresentationActive) =>
         set({ localRepaintGenerationPresentationActive }),

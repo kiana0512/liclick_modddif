@@ -2,6 +2,8 @@ export type LocalRepaintBackgroundSourceIdentity = {
   generationId?: string;
   objectId?: string;
   targetLayerId?: string;
+  /** False identifies a renderer-restored/passively staged source, not a user-owned edit. */
+  autoActivate?: boolean;
 };
 
 export type LocalRepaintBackgroundPrewarmDisposition =
@@ -11,7 +13,9 @@ export type LocalRepaintBackgroundPrewarmDisposition =
 
 export function resolveLocalRepaintBackgroundPrewarmDisposition(input: {
   currentSource?: LocalRepaintBackgroundSourceIdentity;
-  nextSource: Required<LocalRepaintBackgroundSourceIdentity>;
+  nextSource: Required<
+    Pick<LocalRepaintBackgroundSourceIdentity, 'generationId' | 'objectId' | 'targetLayerId'>
+  >;
   pendingGenerationId?: string;
 }): LocalRepaintBackgroundPrewarmDisposition {
   const { currentSource, nextSource, pendingGenerationId } = input;
@@ -27,7 +31,7 @@ export function resolveLocalRepaintBackgroundPrewarmDisposition(input: {
   // A newly completed generation is the only passive flow allowed to replace
   // another live source. Once consumed, selecting a historical repaint keeps
   // ownership until the user explicitly chooses a different result.
-  return pendingGenerationId === nextSource.generationId
+  return pendingGenerationId === nextSource.generationId || currentSource.autoActivate === false
     ? 'stage-latest-generation'
     : 'preserve-current-source';
 }

@@ -163,7 +163,6 @@ import { ensureLocalRepaintSessionLayer } from '@/engine/localRepaint/sessionLay
 import { resolveLocalRepaintBackgroundPrewarmDisposition } from '@/engine/localRepaint/backgroundPrewarmPolicy';
 import {
   createLocalRepaintActivationRequest,
-  LOCAL_REPAINT_ACTIVATION_WATCHDOG_MS,
   localRepaintActivationRequestMatches,
   selectPreferredLocalRepaintGeneration,
   type LocalRepaintActivationRequest,
@@ -1125,6 +1124,7 @@ export function EditorPage({
   const localRepaintObjectScopeRef = useRef<string>();
   const preferredLocalRepaintGenerationIdRef = useRef<string>();
   const pendingLocalRepaintBackgroundGenerationIdRef = useRef<string>();
+  const localRepaintGpuPrepareRequestedKeyRef = useRef<string>();
   const pendingLocalRepaintActivationRequestRef = useRef<LocalRepaintActivationRequest>();
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'failed' | 'offline'>(
     'idle',
@@ -1340,6 +1340,7 @@ export function EditorPage({
     // objectId, otherwise that old image is painted onto every later model.
     localRepaintToolRequestRevisionRef.current += 1;
     pendingLocalRepaintBackgroundGenerationIdRef.current = undefined;
+    localRepaintGpuPrepareRequestedKeyRef.current = undefined;
     pendingLocalRepaintActivationRequestRef.current = undefined;
     setLocalRepaintActivationQueued(false);
     setLocalRepaintGenerationSettledAwaitingUnlock(false);
@@ -6030,6 +6031,12 @@ export function EditorPage({
         return;
       }
       setLocalRepaintInteractiveState(detail);
+      if (detail.status === 'ready' || detail.status === 'failed') {
+        localRepaintGpuPrepareRequestedKeyRef.current = undefined;
+        if (pendingLocalRepaintBackgroundGenerationIdRef.current === detail.generationId) {
+          pendingLocalRepaintBackgroundGenerationIdRef.current = undefined;
+        }
+      }
       if (detail.status !== 'failed') return;
       pendingLocalRepaintActivationRequestRef.current = undefined;
       setLocalRepaintActivationQueued(false);
@@ -6154,6 +6161,21 @@ export function EditorPage({
     );
     if (!generationMaskUrl) return undefined;
     const preparedSource = useSceneStore.getState().localRepaintProjectionSource;
+    const requestRendererPrepare = (targetLayerId: string) => {
+      const generationId = latestLocalRepaintGeneration.id;
+      const ready =
+        document.body.dataset.localRepaintGpuReadyGeneration === generationId &&
+        document.body.dataset.localRepaintGpuReadyTarget === targetLayerId;
+      if (ready) return false;
+      const requestKey = `${generationId}:${targetLayerId}`;
+      if (localRepaintGpuPrepareRequestedKeyRef.current !== requestKey) {
+        localRepaintGpuPrepareRequestedKeyRef.current = requestKey;
+        document.body.dataset.localRepaintBackgroundGeneration = generationId;
+        document.body.dataset.localRepaintBackgroundStage = 'renderer-retry';
+        useSceneStore.getState().requestLocalRepaintGpuPrepare();
+      }
+      return true;
+    };
     if (targetLayer) {
       const disposition = resolveLocalRepaintBackgroundPrewarmDisposition({
         currentSource: preparedSource,
@@ -6165,6 +6187,7 @@ export function EditorPage({
         pendingGenerationId: pendingLocalRepaintBackgroundGenerationIdRef.current,
       });
       if (disposition === 'already-staged') {
+        if (requestRendererPrepare(targetLayer.id)) return undefined;
         if (
           pendingLocalRepaintBackgroundGenerationIdRef.current === latestLocalRepaintGeneration.id
         ) {
@@ -6223,11 +6246,15 @@ export function EditorPage({
           visibleProjectionSource?.generationId === latestLocalRepaintGeneration.id &&
           visibleProjectionSource.targetLayerId === currentTarget.id
         ) {
-          // Button 3 may have published this exact source while the idle task
-          // was decoding it. Never overwrite its auto-activation request with
-          // the background-only source below.
+          // Source identity alone is not readiness. A cancelled renderer effect
+          // can leave the newest source in Zustand while the GPU markers still
+          // belong to the previous generation. Explicitly restart the renderer
+          // preparation once and wait for its ready/failed event.
+          const preparing = requestRendererPrepare(currentTarget.id);
           if (
-            pendingLocalRepaintBackgroundGenerationIdRef.current === latestLocalRepaintGeneration.id
+            !preparing &&
+            pendingLocalRepaintBackgroundGenerationIdRef.current ===
+              latestLocalRepaintGeneration.id
           ) {
             pendingLocalRepaintBackgroundGenerationIdRef.current = undefined;
           }
@@ -6560,11 +6587,17 @@ export function EditorPage({
         document.body.dataset.localRepaintButton3ActivationPath = 'background-prewarm-queued';
         setPaintTool('none');
         clearPrewarmProgress();
+        const gpuPrepareKey = `${latestLocalRepaintGeneration.id}:${preparedTargetId}`;
+        localRepaintGpuPrepareRequestedKeyRef.current = gpuPrepareKey;
         pendingLocalRepaintActivationRequestRef.current = createLocalRepaintActivationRequest({
           generationId: latestLocalRepaintGeneration.id,
           targetLayerId: preparedTargetId,
         });
         setLocalRepaintActivationQueued(true);
+        // The source can already be selected while its prior renderer effect was
+        // cancelled before publishing GPU readiness. Restart that exact source
+        // immediately; the ready/failed event, not a timer, resolves the button.
+        useSceneStore.getState().requestLocalRepaintGpuPrepare();
         return;
       }
 
@@ -7265,61 +7298,6 @@ export function EditorPage({
       t,
     ],
   );
-
-  useEffect(() => {
-    if (
-      !localRepaintActivationQueued ||
-      localImageGenerationRunning ||
-      generationOperationLocked
-    ) {
-      return undefined;
-    }
-    const timeoutId = window.setTimeout(() => {
-      const request = pendingLocalRepaintActivationRequestRef.current;
-      if (!request) {
-        setLocalRepaintActivationQueued(false);
-        return;
-      }
-      const source = useSceneStore.getState().localRepaintProjectionSource;
-      const readyMarker = {
-        generationId: document.body.dataset.localRepaintGpuReadyGeneration,
-        targetLayerId: document.body.dataset.localRepaintGpuReadyTarget,
-      };
-      const effectiveRequest = request.generationId
-        ? request
-        : createLocalRepaintActivationRequest({
-            generationId:
-              preferredLocalRepaintGenerationIdRef.current ?? source?.generationId,
-            targetLayerId: source?.targetLayerId,
-            now: request.requestedAt,
-          });
-      if (localRepaintActivationRequestMatches(effectiveRequest, readyMarker)) {
-        pendingLocalRepaintActivationRequestRef.current = effectiveRequest;
-        setLocalRepaintInteractiveState({
-          generationId: readyMarker.generationId!,
-          targetLayerId: readyMarker.targetLayerId,
-          status: 'ready',
-        });
-        document.body.dataset.localRepaintButton3ActivationPath = 'watchdog-resident-gpu';
-        return;
-      }
-      pendingLocalRepaintActivationRequestRef.current = undefined;
-      setLocalRepaintActivationQueued(false);
-      document.body.dataset.localRepaintButton3ActivationPath = 'watchdog-released';
-      pushToast({
-        tone: 'warning',
-        title: '画笔准备超时',
-        description: '已自动解除等待，请再点击一次局部重绘。',
-        dedupeKey: 'local-repaint-activation-watchdog-released',
-      });
-    }, LOCAL_REPAINT_ACTIVATION_WATCHDOG_MS);
-    return () => window.clearTimeout(timeoutId);
-  }, [
-    generationOperationLocked,
-    localImageGenerationRunning,
-    localRepaintActivationQueued,
-    pushToast,
-  ]);
 
   const runContentAwareRepair = useCallback(
     (

@@ -1,10 +1,10 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
-> 文档版本：`2.13.10`
+> 文档版本：`2.13.11`
 >
 > 生效日期：`2026-09-02`
 >
-> 代码盘点基线：`52c4e71 + 本次局部重绘画笔激活转圈自愈修复`
+> 代码盘点基线：`a35b6c1 + 本次局部重绘 GPU 加载链路修复`
 >
 > 基线仓库：`E:\Liclick 3D Texture Modernization`
 >
@@ -307,7 +307,7 @@ UI-09 剪刀
 | `ALG-LR-005` 历史兼容边界谐调 | `5.0.0-compatible` | 仅保留旧 v3-v5 全幅合成与 legacy 切换的读取兼容；新 `direct-v1` 任务不调用 |
 | `ALG-LR-006` 表面画笔重投影 | `2.0.0` | raycast 命中表面，投射到 frozen source UV；最小绝对 face-on 0.08；世界半径 0.004-0.12 包围盒比例；texture radius 1-72 |
 | `ALG-LR-007` 低延迟实时覆盖 | `2.1.2` | 已发布局部重绘行继续使用 ordered projected stack 正式材质与 projection-space live mask override。进入画笔的显式预热阶段先把持久 mask URL 提升为稳定 live canvas URL 并完成必要的 sampler/材质切换；pointer-up 保留已有 `contentRevision`，只更新累计 CanvasTexture 与图层保存快照，不再使正式投影栈结构失效。尚无持久行的新结果在 depth-aware exact overlay 中显示，正式行创建后仍保持 overlay，直到 SceneRoot 宣告新材质驻留、live mask 成功绑定且 resident row 完整呈现一帧，再以两帧屏障撤下 overlay。source、capture projector、depth/normal/surface-lock、图层顺序、颜色、blend、1024 live 上限与排队进度规则不变 |
-| `ALG-LR-008` 延迟投影持久化 | `2.2.4` | interactive UV bake 固定关闭；生图前 Project Command snapshot 后台执行；Generation、对象、目标层与 GPU-ready 标记共同识别驻留 source；成功生图以 success revision 触发新 source 后台解码、目标层绑定与 GPU 预热，使应用画笔首次点击直接进入驻留快路径；若首次点击早于任务锁或 Generation store 发布完成，内存请求跨越该过渡窗口并在 ready 后自动执行，按钮以旋转图标和流动进度条反馈等待；排队请求绑定确切 Generation/目标层，旧 GPU 事件不得解锁新请求，生图任务结束后最长等待 8 秒并根据驻留标记自愈或释放转圈；pointer-up 两帧内发布权威图层行，发布后按真实 LayerStore 行判断驻留，不依赖旧 preview revision；后台构建只等待真实指针交互，不等待蒙版工具退出；idle 3000ms 仍仅合并持久化，needsRebake=true |
+| `ALG-LR-008` 延迟投影持久化 | `2.2.5` | interactive UV bake 固定关闭；生图前 Project Command snapshot 后台执行；Generation、对象、目标层与 GPU-ready 标记共同识别驻留 source；成功生图以 success revision 触发新 source 后台解码、目标层绑定与 GPU 预热，使应用画笔首次点击直接进入驻留快路径；若首次点击早于任务锁或 Generation store 发布完成，内存请求跨越该过渡窗口并在 ready 后自动执行，按钮以旋转图标和流动进度条反馈等待；排队请求绑定确切 Generation/目标层，旧 GPU 事件不得解锁新请求；刷新或 renderer effect 取消后，被动恢复的旧 source 不得阻止最新 Generation 接管，source 已选中但 GPU-ready 缺失时通过显式 prepare revision 重新执行解码、纹理上传与目标层绑定，并仅由 ready/failed 事件结束等待，不使用超时冒充完成；pointer-up 两帧内发布权威图层行，发布后按真实 LayerStore 行判断驻留，不依赖旧 preview revision；后台构建只等待真实指针交互，不等待蒙版工具退出；idle 3000ms 仍仅合并持久化，needsRebake=true |
 | `ALG-LR-009` Inward Crossfade 栈合成 | `1.0.0` | 连续重绘层向内部交叉淡化，避免普通 alpha stacking 在边缘重复显露接缝 |
 | `ALG-LR-010` Provider 兼容编辑 | `1.0.0-compat` | `LocalRepaintDialog` 的 image/edit/protect/hole masks 独立路径，不得与四输入主路径混改 |
 | `ALG-LR-011` 生图透明显示副本 | `1.0.0` | UI-05 重绘效果图和 UI-10 普通投射图层缩略图优先使用 capture linear-view depth 清除明确无几何覆盖的背景，按精确 alpha bounds 仅裁切一次并保留 6% 留白；几何覆盖区的 RGB/alpha 原样保留。深度不可用时只清除与画布边缘连通的近黑外背景，不做第二次 matte、侵蚀或分位裁边。局部重绘图层不走整图副本，继续使用用户涂绘 mask，只显示笔刷授权区域 |
@@ -332,6 +332,8 @@ UI-09 剪刀
 `ALG-LR-007` v2.0.7 / `ALG-LR-008` v2.2.3 修正 UI-10 → M08 的画笔启用请求生命周期：局部生图成功后，远端完成回调、编辑器任务锁释放和 Generation store 发布结果可能发生在相邻的不同 React 提交中。应用画笔的首次点击若落在这个窗口，不再被底部工具条捕获阶段丢弃，而是登记一个仅驻留内存的一次性请求；按钮立即显示旋转图标和不确定进度条，待任务解锁且结果 ready 后自动重放并进入 `inpaint-apply`。只有局部生成成功过渡可排队，内容识别修补、项目生成和快照准备等其他互斥操作仍 fail-closed；生成失败、切换工程/模型或开始下一次生成会清除请求。本次不改变 GPU/CPU/Worker/shader、投影矩阵、深度编码、颜色合成、1024 实时上限、最终 UV/export、Project/Layer/Generation/Capture Schema、Revision、ownership 或资产，无数据迁移。回退时移除 activation request policy、EditorPage 一次性请求状态、BottomToolDock 排队放行与进度条，即恢复统一交互锁；已有图层、蒙版和 Generation 无需删除或改写。
 
 `ALG-LR-008` v2.2.4 修正 UI-10 → M08 的排队转圈竞态。等待状态从无身份的 boolean 升级为内存中的 Generation/目标层请求；生成完成回调会把过渡期请求升级为确切 Generation，互动 ready/failed 事件仅能更新同一请求，防止上一轮 GPU 晚到事件错误解锁。预载、后台 source 发布和点击激活共用显式 preferred Generation；无 preferred 时按 `completedAt/startedAt` 确定选最新结果，不再依赖数组顺序。后台预热取消、跳过和失败均结束诊断 stage；生图任务已结束且解锁后，8 秒 watchdog 若发现对应 GPU-ready 驻留标记则自愈并自动重放，否则释放转圈并提示重试，不会无限占用画笔按钮。本次不修改图层数组、已有局部重绘显示权、蒙版、GPU shader、CPU/Worker、投影/UV/export、分辨率或 Project/Layer/Generation/Capture Schema、Revision、ownership 与资产，无数据迁移。回退时恢复 boolean 请求、移除 Generation 选择函数与 watchdog 即可；已有图层、蒙版和 Generation 无需删除或改写。
+
+`ALG-LR-008` v2.2.5 取代 v2.2.4 的超时补救，修复 UI-10 → M08 的真实加载链路。浏览器诊断确认：刷新或连续生成后，最新 Generation 已成为候选，但 renderer 仍可能保留上一 Generation 的 GPU-ready 标记；被动恢复 source 因缺少一次性 pending 标记而错误保护旧结果，或最新 source 已写入 Zustand 但其 renderer effect 在发布 ready 前被取消，导致按钮永久等待。新逻辑允许 `autoActivate=false` 的被动恢复 source 被最新 Generation 接管，并增加仅驻留内存的 GPU prepare revision；后台发现“source 身份正确但 GPU-ready 不匹配”或用户点击该 source 时，会立即重启同一 source 的图片解码、蒙版准备、纹理上传和目标层绑定，由精确 Generation/目标层的 ready/failed 事件完成或失败，不再使用计时器释放或伪造成功。实测刷新后后台 Generation 与 GPU-ready 一致，驻留点击路径响应约 7.1ms。已有局部重绘图层、历史蒙版和显示权在 renderer handoff 期间持续保留；不修改 shader、CPU/Worker 算法、投影/UV/export、分辨率、Project/Layer/Generation/Capture Schema、Revision、ownership 或资产，无数据迁移。回退时移除 `localRepaintGpuPrepareRevision`、被动 source 接管分支和显式 prepare 请求，并恢复 v2.2.4 watchdog；已有工程数据无需改写。
 
 `ALG-LR-007` v2.0.8 修正 UI-06 → M08 的双表示显示权：当活动局部重绘上方存在可见的 `single-view-priority-v1` 图层时，专用 GPU overlay 按顺序规则保持隐藏，实时 source/mask 由 ordered projected stack 合成；此时同 ID 的 resident binding 不得再因 renderer preview marker 被静音。只有专用 overlay 实际负责显示时才静音 persisted twin，从而避免笔画已经写入 LayerStore、右侧缩略图已更新，但 overlay 与 resident row 同时透明导致视口无反馈。GPU/CPU/Worker/shader、投影矩阵、coverage、深度编码、颜色合成、1024 实时上限、最终 UV/export、Project/Layer/Generation/Capture Schema、Revision、ownership 与资产均不改变，旧工程无需迁移。回退时仅恢复 resident binding 对 preview ID 的无条件静音；不得删除已有图层、蒙版或生成资产。
 
@@ -609,3 +611,4 @@ M15 体积修复：锁定 `terser@5.51.2` 两轮安全压缩，保留日志和�
 | `2.13.8` | 2026-09-01 | `本次局部重绘首笔原子交接修复` | UI-06、M08/M06、`ALG-LR-007` v2.1.2：持久蒙版 URL/sampler 切换提前到画笔预热进度阶段，pointer-up 不再递增 projected 结构 `contentRevision`；新行 exact overlay 保留到 SceneRoot 最终材质驻留、live override 绑定并完整呈现一帧后，再通过两帧屏障原子撤下。修复首笔结束后短暂消失并伴随整栈重建卡顿的问题。项目保存继续把 live raw/blend mask 按 revision 持久化；CPU/Worker/shader coverage、depth/surface-lock、UV/export、最终分辨率、Schema、Project Revision、ownership 与资产类别不变，旧工程惰性提升，无批量迁移。 |
 | `2.13.9` | 2026-09-01 | `本次飞书登录安全关联莉刻账号修复` | M13、`LICLICK-ACCOUNT-BINDING` v1.1.0：飞书/IDaaS 登录成功后自动进入同源莉刻账号关联，服务端通过 Atlas SkillHub 2.9.1 loopback-only `authenticate` bridge 转交回调令牌并由运行时写入加密缓存；绑定前强制校验 secure cache、有效期、莉刻网关工具、Atlas/飞书 email 一致性与 OAuth 任务归属。禁止 LI3D 写明文 token，运行时不兼容、失败或超时时 fail-closed 并清理临时目录，不回退共享账号。Project/Layer/Capture/Generation Schema、Revision、ownership 与资产不变，无迁移。 |
 | `2.13.10` | 2026-09-02 | `本次局部重绘画笔激活转圈自愈修复` | UI-10、M08、`ALG-LR-008` v2.2.4：将画笔排队从 boolean 改为 Generation/目标层级内存请求，过渡期在生成回调时绑定确切结果，旧 GPU 事件不再误解锁；预载、后台预热和点击共用 preferred/时间排序的确定性 Generation 选择。预热取消/跳过会结束 stage；生图结束解锁后 8 秒 watchdog 会按 GPU-ready 标记自愈重放，否则释放转圈并提示重试。已有局部重绘图层和显示权持续保留；GPU/CPU/Worker/shader、投影/UV/export、分辨率、Schema、Revision、ownership 与资产不变，无迁移。 |
+| `2.13.11` | 2026-09-02 | `本次局部重绘 GPU 加载链路修复` | UI-10、M08、`ALG-LR-008` v2.2.5：移除 8 秒 watchdog，修复刷新/连续生成后最新 source 与旧 GPU-ready 分离的根因。被动恢复的 `autoActivate=false` source 允许最新 Generation 接管；source 已匹配但 renderer 未 ready 时，通过内存 prepare revision 显式重跑解码、蒙版、GPU 纹理和目标层绑定，并由精确 ready/failed 事件结束等待。真实工程刷新后最新 Generation 与 GPU-ready 一致，驻留点击约 7.1ms；历史局部重绘图层和显示权持续保留。shader、CPU/Worker 算法、投影/UV/export、分辨率、Schema、Revision、ownership 与资产不变，无迁移。 |
