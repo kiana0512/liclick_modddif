@@ -159,6 +159,11 @@ assert.match(
 );
 assert.match(
   viewportCanvas,
+  /previousOverride\?\.sourceKey \?\? previousOverlay\?\.sourceKey[\s\S]*?await releasePreviousPreview\(\)/,
+  'switching repaint sources must hand off a resident override even when no fallback overlay exists',
+);
+assert.match(
+  viewportCanvas,
   /releasePreviousPreview\(\)\.then/,
   'clearing a source must also wait for resident handoff',
 );
@@ -174,6 +179,9 @@ try {
     isLocalRepaintLayerResident,
     waitForLocalRepaintResidentHandoff,
   } = await server.ssrLoadModule('/src/engine/viewport/localRepaintResidentHandoff.ts');
+  const { syncProjectedLayerResidentMaskTextureInObject } = await server.ssrLoadModule(
+    '/src/engine/projection/ProjectedLayerMaterial.ts',
+  );
   assert.equal(getTransientLocalRepaintLayerId('A', []), 'A');
   assert.equal(
     getTransientLocalRepaintLayerId('A', [{ id: 'A', contentRevision: 1 }]),
@@ -210,6 +218,45 @@ try {
   material.userData.liclickDisposedMaterial = true;
   assert.equal(isLocalRepaintLayerResident(group, 'A'), false);
   assert.equal(isLocalRepaintLayerResident(new THREE.Group(), 'A'), false);
+
+  const residentGroup = new THREE.Group();
+  const residentMaterial = new THREE.ShaderMaterial({
+    uniforms: { maskMap0: { value: new THREE.Texture() } },
+  });
+  residentMaterial.userData.liclickProjectedLayerStackState = {
+    bindings: [
+      {
+        layerId: 'older-repaint',
+        maskUrl: 'liclick-live-projected-canvas:older-repaint:inward-crossfade',
+        maskMapUniform: 'maskMap0',
+      },
+    ],
+  };
+  residentGroup.add(new THREE.Mesh(new THREE.BoxGeometry(), residentMaterial));
+  const latestMaskTexture = new THREE.Texture();
+  const residentPromotion = syncProjectedLayerResidentMaskTextureInObject(
+    residentGroup,
+    'older-repaint',
+    'liclick-live-projected-canvas:older-repaint:inward-crossfade',
+    latestMaskTexture,
+  );
+  assert.equal(residentPromotion.bound, true);
+  assert.equal(
+    residentMaterial.uniforms.maskMap0.value,
+    latestMaskTexture,
+    'an older repaint must retain its own latest erased mask after the shared preview moves on',
+  );
+  residentMaterial.userData.liclickProjectedLayerStackState.bindings[0].maskMapUniform = undefined;
+  assert.equal(
+    syncProjectedLayerResidentMaskTextureInObject(
+      residentGroup,
+      'older-repaint',
+      'liclick-live-projected-canvas:older-repaint:inward-crossfade',
+      latestMaskTexture,
+    ).bound,
+    false,
+    'an array-backed stale mask must not be mistaken for a completed resident handoff',
+  );
 
   let frames = 0;
   let now = 0;

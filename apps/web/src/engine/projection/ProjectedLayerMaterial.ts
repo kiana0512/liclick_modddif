@@ -227,6 +227,8 @@ const SAFE_NORMALIZE_GLSL = `
 type ProjectedLayerUniformBinding = {
   layerId: string;
   imageUrl: string;
+  maskUrl?: string;
+  maskMapUniform?: string;
   projectedMapUniform: string;
   opacityUniform: string;
   strengthUniform: string;
@@ -2844,6 +2846,60 @@ export function syncProjectedLayerLiveMaskOverrideInObject(
   return { updated, bound };
 }
 
+/**
+ * Promotes one local-repaint layer from the shared transition sampler to its
+ * own resident direct mask sampler. A material that still packs this mask in
+ * the texture array deliberately reports not-ready; its structural rebuild
+ * must finish before the single transition sampler can safely move to another
+ * repaint layer.
+ */
+export function syncProjectedLayerResidentMaskTextureInObject(
+  root: THREE.Object3D,
+  layerId: string,
+  maskUrl: string,
+  texture: THREE.Texture,
+) {
+  prepareLiveEraserMaskTexture(texture);
+  const visited = new Set<THREE.Material>();
+  let materialCount = 0;
+  let boundMaterialCount = 0;
+  let updated = false;
+  root.traverse((child) => {
+    if (!(child instanceof THREE.Mesh) || child.userData.liclickPaintOverlay) return;
+    const materials = Array.isArray(child.material) ? child.material : [child.material];
+    for (const material of materials) {
+      if (visited.has(material)) continue;
+      visited.add(material);
+      if (!(material instanceof THREE.ShaderMaterial)) continue;
+      if (material.userData[LIVE_LOCAL_REPAINT_OVERLAY_MATERIAL_FLAG]) continue;
+      const state = material.userData[PROJECTED_LAYER_STACK_STATE_KEY] as
+        | ProjectedLayerMaterialState
+        | undefined;
+      if (!state) continue;
+      materialCount += 1;
+      const binding = state.bindings.find((item) => item.layerId === layerId);
+      if (
+        !binding ||
+        binding.maskUrl !== maskUrl ||
+        !binding.maskMapUniform ||
+        !material.uniforms[binding.maskMapUniform]
+      )
+        continue;
+      const uniform = material.uniforms[binding.maskMapUniform];
+      if (uniform.value !== texture) {
+        uniform.value = texture;
+        updated = true;
+      }
+      boundMaterialCount += 1;
+    }
+  });
+  if (updated) texture.needsUpdate = true;
+  return {
+    updated,
+    bound: materialCount > 0 && boundMaterialCount === materialCount,
+  };
+}
+
 export function syncProjectedLayerResidentTextureVisibilityInObject(
   root: THREE.Object3D,
   input: {
@@ -4828,6 +4884,10 @@ export async function createProjectedLayerStackMaterial(
     bindings: loadedLayers.map((layer, index) => ({
       layerId: layer.layerId,
       imageUrl: layer.imageUrl,
+      maskUrl: layer.maskUrl,
+      ...(layer.useMask && layer.maskUrl && (layer.maskArraySlice ?? -1) < 0
+        ? { maskMapUniform: `maskMap${index}` }
+        : {}),
       projectedMapUniform:
         useTextureArrays && !isLiveProjectedCanvasUrl(layer.imageUrl)
           ? 'projectedMaps'

@@ -47,6 +47,7 @@ import {
   syncProjectedLayerLiveEraserPreviewInObject,
   syncProjectedLayerLiveMaskOverrideInObject,
   syncProjectedLayerMaterialProjection,
+  syncProjectedLayerResidentMaskTextureInObject,
 } from '@/engine/projection/ProjectedLayerMaterial';
 import {
   clearLiveSurfacePaintPreview,
@@ -6762,6 +6763,7 @@ function SurfacePaintOverlay() {
     root: THREE.Object3D;
     layerId: string;
     sourceKey: string;
+    maskUrl: string;
     texture: THREE.Texture;
   }>();
   const localRepaintRuntimeDepthRef = useRef<{
@@ -6809,6 +6811,27 @@ function SurfacePaintOverlay() {
     // the next camera move or eye toggle.
     invalidate();
   }, [invalidate]);
+  const promoteLocalRepaintResidentMaskTexture = useCallback(
+    (override: {
+      root: THREE.Object3D;
+      layerId: string;
+      texture: THREE.Texture;
+      maskUrl: string;
+    }) => {
+      const result = syncProjectedLayerResidentMaskTextureInObject(
+        override.root,
+        override.layerId,
+        override.maskUrl,
+        override.texture,
+      );
+      if (result.bound) {
+        document.body.dataset.localRepaintResidentMaskTexture = `bound:${override.layerId}`;
+      }
+      if (result.updated) invalidate();
+      return result.bound;
+    },
+    [invalidate],
+  );
   const bindLocalRepaintResidentMaskOverride = useCallback(
     (model: SurfacePaintTarget, sourceKey: string, composite: LocalRepaintCompositeState) => {
       const current = localRepaintResidentMaskOverrideRef.current;
@@ -6825,11 +6848,18 @@ function SurfacePaintOverlay() {
         composite.layerId,
         composite.blendMaskTexture,
       );
+      promoteLocalRepaintResidentMaskTexture({
+        root: model.group,
+        layerId: composite.layerId,
+        maskUrl: composite.blendMaskUrl,
+        texture: composite.blendMaskTexture,
+      });
       if (result.bound) {
         localRepaintResidentMaskOverrideRef.current = {
           root: model.group,
           layerId: composite.layerId,
           sourceKey,
+          maskUrl: composite.blendMaskUrl,
           texture: composite.blendMaskTexture,
         };
         document.body.dataset.localRepaintResidentMaskOverride = `bound:${composite.layerId}`;
@@ -6837,7 +6867,7 @@ function SurfacePaintOverlay() {
       if (result.updated) invalidate();
       return result.bound;
     },
-    [clearLocalRepaintResidentMaskOverride, invalidate],
+    [clearLocalRepaintResidentMaskOverride, invalidate, promoteLocalRepaintResidentMaskTexture],
   );
   const scheduleLocalRepaintResidentPresentation = useCallback(
     (layerId: string) => {
@@ -8384,7 +8414,13 @@ function SurfacePaintOverlay() {
       now: () => performance.now(),
       nextFrame: () => new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve())),
       ready: () =>
-        isLocalRepaintLayerResident(override.root, override.layerId),
+        isLocalRepaintLayerResident(override.root, override.layerId) &&
+        promoteLocalRepaintResidentMaskTexture({
+          root: override.root,
+          layerId: override.layerId,
+          maskUrl: override.maskUrl,
+          texture: override.texture,
+        }),
     }).then((ready) => {
       if (
         !ready ||
@@ -8412,6 +8448,7 @@ function SurfacePaintOverlay() {
     invalidate,
     isEditingPersistedLocalRepaint,
     paintTool,
+    promoteLocalRepaintResidentMaskTexture,
   ]);
 
   const ensurePaintPreviewOverlayForMesh = useCallback((layer: UvPaintLayer, mesh: THREE.Mesh) => {
@@ -9285,7 +9322,14 @@ function SurfacePaintOverlay() {
             !layer ||
             !layer.visible ||
             !previousRoot ||
-            isLocalRepaintLayerResident(previousRoot, previousLayerId)
+            (isLocalRepaintLayerResident(previousRoot, previousLayerId) &&
+              (!previousOverride ||
+                promoteLocalRepaintResidentMaskTexture({
+                  root: previousOverride.root,
+                  layerId: previousOverride.layerId,
+                  maskUrl: previousOverride.maskUrl,
+                  texture: previousOverride.texture,
+                })))
           );
         },
       });
@@ -9414,9 +9458,11 @@ function SurfacePaintOverlay() {
         }
         // Do not overwrite A's cumulative mask or rebind its single GPU overlay
         // to B until the assigned background material can actually display A.
+        const previousPresentationSourceKey =
+          previousOverride?.sourceKey ?? previousOverlay?.sourceKey;
         if (
-          previousOverlay &&
-          previousOverlay.sourceKey !==
+          previousPresentationSourceKey &&
+          previousPresentationSourceKey !==
             createLocalRepaintSourceKey(
               source,
               source.objectId ?? selectedObjectId ?? 'unknown-object',
@@ -10972,6 +11018,7 @@ function SurfacePaintOverlay() {
     gl,
     localRepaintAssetsRevision,
     localRepaintProjectionSource,
+    promoteLocalRepaintResidentMaskTexture,
     resolveLocalRepaintStrokeSource,
   ]);
 
