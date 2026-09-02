@@ -162,6 +162,10 @@ import { harmonizeLocalRepaintInWorker } from '@/engine/localRepaint/seamHarmoni
 import { ensureLocalRepaintSessionLayer } from '@/engine/localRepaint/sessionLayer';
 import { resolveLocalRepaintBackgroundPrewarmDisposition } from '@/engine/localRepaint/backgroundPrewarmPolicy';
 import {
+  LOCAL_REPAINT_INTERACTIVE_STATE_EVENT,
+  type LocalRepaintInteractiveStateDetail,
+} from '@/engine/localRepaint/localRepaintInteractiveState';
+import {
   generationBelongsToObject,
   normalizeLocalRepaintObjectBindings,
 } from '@/engine/localRepaint/objectBinding';
@@ -1151,6 +1155,8 @@ export function EditorPage({
     setLocalRepaintGenerationSettledAwaitingUnlock,
   ] = useState(false);
   const [localRepaintActivationQueued, setLocalRepaintActivationQueued] = useState(false);
+  const [localRepaintInteractiveState, setLocalRepaintInteractiveState] =
+    useState<LocalRepaintInteractiveStateDetail>();
   const [localImageGenerationSuccessKey, setLocalImageGenerationSuccessKey] = useState(0);
   const [cancelActiveGenerationRequestKey, setCancelActiveGenerationRequestKey] = useState(0);
   const [generationConflictDialog, setGenerationConflictDialog] =
@@ -1467,6 +1473,17 @@ export function EditorPage({
         generationBelongsToObject(generation, preferredObjectId, project?.captures ?? []),
     );
   }, [generations, importedModel?.objectId, project?.captures, projectId, selectedObjectId]);
+  const localRepaintInteractiveReady = useMemo(
+    () =>
+      localRepaintInteractiveState?.status === 'ready' &&
+      generations.some(
+        (generation) =>
+          generation.id === localRepaintInteractiveState.generationId &&
+          generation.status === 'succeeded' &&
+          Boolean(generation.resultUrl),
+      ),
+    [generations, localRepaintInteractiveState],
+  );
   const localImageGenerationStoreRunning = useMemo(() => {
     const preferredObjectId = selectedObjectId ?? importedModel?.objectId;
     return generations.some(
@@ -1545,7 +1562,9 @@ export function EditorPage({
   const editorToolsLocked = editorTaskRunning || snapshotPreparationLocked;
   const canQueueLocalRepaintActivation =
     (localRepaintGenerationReady || localRepaintGenerationSettledAwaitingUnlock) &&
-    (localImageGenerationRunning || localRepaintGenerationSettledAwaitingUnlock) &&
+    (localImageGenerationRunning ||
+      localRepaintGenerationSettledAwaitingUnlock ||
+      (localRepaintGenerationReady && !localRepaintInteractiveReady)) &&
     !contentAwareRepairRunning &&
     !projectGenerationRunning &&
     !snapshotPreparationLocked;
@@ -5983,6 +6002,43 @@ export function EditorPage({
   }, []);
 
   useEffect(() => {
+    const handleLocalRepaintInteractiveState = (event: Event) => {
+      const detail = (event as CustomEvent<LocalRepaintInteractiveStateDetail>).detail;
+      if (!detail?.generationId) return;
+      const preferredGenerationId = preferredLocalRepaintGenerationIdRef.current;
+      if (preferredGenerationId && detail.generationId !== preferredGenerationId) return;
+      const source = useSceneStore.getState().localRepaintProjectionSource;
+      if (
+        detail.status !== 'preparing' &&
+        (source?.generationId !== detail.generationId ||
+          source.targetLayerId !== detail.targetLayerId)
+      ) {
+        return;
+      }
+      setLocalRepaintInteractiveState(detail);
+      if (detail.status !== 'failed') return;
+      pendingLocalRepaintActivationRequestRef.current = false;
+      setLocalRepaintActivationQueued(false);
+      pushToast({
+        tone: 'error',
+        title: '局部重绘 GPU 准备失败',
+        description: '高清结果或蒙版无法上传，请重新生成局部重绘结果。',
+        dedupeKey: 'local-repaint-gpu-prewarm-failed',
+      });
+    };
+    window.addEventListener(
+      LOCAL_REPAINT_INTERACTIVE_STATE_EVENT,
+      handleLocalRepaintInteractiveState,
+    );
+    return () => {
+      window.removeEventListener(
+        LOCAL_REPAINT_INTERACTIVE_STATE_EVENT,
+        handleLocalRepaintInteractiveState,
+      );
+    };
+  }, [pushToast]);
+
+  useEffect(() => {
     const preferredObjectId = selectedObjectId ?? importedModel?.objectId;
     const matchesUsableLocalRepaintGeneration = (generation: Generation) =>
       Boolean(generation.resultUrl) &&
@@ -6231,13 +6287,14 @@ export function EditorPage({
         }
       }
     };
-    // Image decode, target binding and GPU prewarm are prerequisites for the
-    // next button-3 click. Busy WebGL scenes can starve requestIdleCallback for
-    // its full timeout, so start the asynchronous pipeline on the next task.
-    const timeoutId = window.setTimeout(() => void stage(), 0);
+    // Start the exact generation-scoped prewarm in the current effect turn.
+    // A queued microtask avoids the extra timer task while still allowing all
+    // sibling effects from the result publication to finish first.
+    queueMicrotask(() => {
+      if (!cancelled) void stage();
+    });
     return () => {
       cancelled = true;
-      window.clearTimeout(timeoutId);
     };
   }, [
     generations,
@@ -6323,6 +6380,10 @@ export function EditorPage({
       setLocalRepaintGenerationSettledAwaitingUnlock(true);
       preferredLocalRepaintGenerationIdRef.current = result.generationId;
       pendingLocalRepaintBackgroundGenerationIdRef.current = result.generationId;
+      setLocalRepaintInteractiveState({
+        generationId: result.generationId,
+        status: 'preparing',
+      });
       setLocalImageGenerationSuccessKey((current) => current + 1);
     },
     [],
@@ -6336,7 +6397,9 @@ export function EditorPage({
     });
     if (
       canQueueLocalRepaintActivation &&
-      (generationOperationLocked || !localRepaintGenerationReady)
+      (generationOperationLocked ||
+        !localRepaintGenerationReady ||
+        !localRepaintInteractiveReady)
     ) {
       pendingLocalRepaintActivationRequestRef.current = true;
       setLocalRepaintActivationQueued(true);
@@ -6461,38 +6524,17 @@ export function EditorPage({
           document.body.dataset.localRepaintGpuReadyGeneration ===
             latestLocalRepaintGeneration.id &&
           document.body.dataset.localRepaintGpuReadyTarget === preparedTargetId;
-        const hasGpuError = () =>
-          document.body.dataset.localRepaintGpuErrorGeneration ===
-            latestLocalRepaintGeneration.id &&
-          document.body.dataset.localRepaintGpuErrorTarget === preparedTargetId;
         if (isGpuReady()) {
           document.body.dataset.localRepaintButton3ActivationPath = 'resident-gpu';
           clearPrewarmProgress();
           setPaintTool('inpaint-apply');
           return;
         }
-        document.body.dataset.localRepaintButton3ActivationPath = 'background-prewarm';
+        document.body.dataset.localRepaintButton3ActivationPath = 'background-prewarm-queued';
         setPaintTool('none');
-        showPrewarmProgress('复用后台 GPU 预热任务', 0.2);
-        while (
-          localRepaintToolRequestRevisionRef.current === requestRevision &&
-          !isGpuReady() &&
-          !hasGpuError()
-        ) {
-          await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
-        }
-        if (localRepaintToolRequestRevisionRef.current !== requestRevision) return;
         clearPrewarmProgress();
-        if (isGpuReady()) {
-          setPaintTool('inpaint-apply');
-        } else {
-          pushToast({
-            tone: 'error',
-            title: '局部重绘 GPU 准备失败',
-            description: '高清结果或蒙版无法上传，请再次点击局部重绘重试。',
-            dedupeKey: 'local-repaint-gpu-prewarm-failed',
-          });
-        }
+        pendingLocalRepaintActivationRequestRef.current = true;
+        setLocalRepaintActivationQueued(true);
         return;
       }
 
@@ -6615,6 +6657,7 @@ export function EditorPage({
     getLocalRepaintProjectionImage,
     importedModel,
     localRepaintGenerationReady,
+    localRepaintInteractiveReady,
     notifyEditorTaskRunning,
     paintMaskDataUrl,
     project,
@@ -6632,20 +6675,35 @@ export function EditorPage({
     if (
       generationOperationLocked ||
       !localRepaintGenerationReady ||
+      !localRepaintInteractiveReady ||
       !pendingLocalRepaintActivationRequestRef.current
     ) {
       return;
     }
     pendingLocalRepaintActivationRequestRef.current = false;
     setLocalRepaintActivationQueued(false);
-    document.body.dataset.localRepaintButton3ActivationPath = 'replayed-after-generation-unlock';
+    document.body.dataset.localRepaintButton3ActivationPath = 'replayed-after-gpu-ready';
     handleLocalRepaintFromToolbar();
-  }, [generationOperationLocked, handleLocalRepaintFromToolbar, localRepaintGenerationReady]);
+  }, [
+    generationOperationLocked,
+    handleLocalRepaintFromToolbar,
+    localRepaintGenerationReady,
+    localRepaintInteractiveReady,
+  ]);
 
   useEffect(() => {
-    if (generationOperationLocked || !localRepaintGenerationReady) return;
+    if (
+      generationOperationLocked ||
+      !localRepaintGenerationReady ||
+      !localRepaintInteractiveReady
+    )
+      return;
     setLocalRepaintGenerationSettledAwaitingUnlock(false);
-  }, [generationOperationLocked, localRepaintGenerationReady]);
+  }, [
+    generationOperationLocked,
+    localRepaintGenerationReady,
+    localRepaintInteractiveReady,
+  ]);
 
   useEffect(() => {
     const target = window as typeof window & {
@@ -7942,7 +8000,7 @@ export function EditorPage({
               onLocalRepaint={handleLocalRepaintFromToolbar}
               localImageGenerationRunning={localImageGenerationRunning}
               localImageGenerationSuccessKey={localImageGenerationSuccessKey}
-              canLocalRepaint={localRepaintGenerationReady}
+              canLocalRepaint={localRepaintGenerationReady && localRepaintInteractiveReady}
               canQueueLocalRepaintActivation={canQueueLocalRepaintActivation}
               localRepaintActivationQueued={localRepaintActivationQueued}
               canUndo={canUndo}

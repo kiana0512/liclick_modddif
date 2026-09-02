@@ -119,6 +119,7 @@ import { registerPreviewTextureRenderer } from './previewTextureCache';
 import { createLocalRepaintFalloffInWorker } from '@/engine/localRepaint/falloffWorker';
 import { updateLocalRepaintInwardCrossfadeCanvas } from '@/engine/localRepaint/inwardCrossfadeMask';
 import { getLocalRepaintSeamMode } from '@/engine/localRepaint/seamHarmonizationMode';
+import { publishLocalRepaintInteractiveState } from '@/engine/localRepaint/localRepaintInteractiveState';
 import { isViewportInteractionBusy, markViewportInteractionEnd } from './viewportInteractionState';
 import {
   markEraserPerformanceEvent,
@@ -9085,6 +9086,12 @@ function SurfacePaintOverlay() {
       };
     }
 
+    publishLocalRepaintInteractiveState({
+      generationId: source.generationId ?? '',
+      targetLayerId: source.targetLayerId,
+      status: 'preparing',
+    });
+
     // The former delayed-UV-bake path created an empty merge layer before the
     // first valid stroke. Live projected masks are now authoritative, so remove
     // those obsolete placeholders and migrate their target once during setup.
@@ -9219,6 +9226,11 @@ function SurfacePaintOverlay() {
         localRepaintCompositeRef.current = undefined;
         document.body.dataset.localRepaintGpuErrorGeneration = source.generationId ?? '';
         document.body.dataset.localRepaintGpuErrorTarget = source.targetLayerId ?? '';
+        publishLocalRepaintInteractiveState({
+          generationId: source.generationId ?? '',
+          targetLayerId: source.targetLayerId,
+          status: 'failed',
+        });
         reportLocalRepaintPrewarmProgress(1, '无法读取高清结果或蒙版，请重试', {
           done: true,
           failed: true,
@@ -10625,6 +10637,11 @@ function SurfacePaintOverlay() {
         console.warn('[Liclick 3D Texture] Local repaint GPU prewarm failed:', error);
         document.body.dataset.localRepaintGpuErrorGeneration = source.generationId ?? '';
         document.body.dataset.localRepaintGpuErrorTarget = source.targetLayerId ?? '';
+        publishLocalRepaintInteractiveState({
+          generationId: source.generationId ?? '',
+          targetLayerId: source.targetLayerId,
+          status: 'failed',
+        });
         reportLocalRepaintPrewarmProgress(1, '局部重绘 GPU 覆盖层准备失败，请重试', {
           done: true,
           failed: true,
@@ -10636,6 +10653,11 @@ function SurfacePaintOverlay() {
       const currentSource = sceneState.localRepaintProjectionSource;
       document.body.dataset.localRepaintGpuReadyGeneration = source.generationId ?? '';
       document.body.dataset.localRepaintGpuReadyTarget = source.targetLayerId ?? '';
+      publishLocalRepaintInteractiveState({
+        generationId: source.generationId ?? '',
+        targetLayerId: source.targetLayerId,
+        status: 'ready',
+      });
       reportLocalRepaintPrewarmProgress(1, 'GPU 已就绪，可以立即涂抹', { done: true });
       if (
         source.autoActivate !== false &&

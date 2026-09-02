@@ -16,6 +16,7 @@ const [
   backgroundPrewarmPolicy,
   activationRequestPolicy,
   globals,
+  interactiveState,
 ] = await Promise.all([
   read('../src/components/panels/GeneratePanel.tsx'),
   read('../src/components/editor/BottomToolDock.tsx'),
@@ -29,6 +30,7 @@ const [
   read('../src/engine/localRepaint/backgroundPrewarmPolicy.ts'),
   read('../src/engine/localRepaint/activationRequestPolicy.ts'),
   read('../src/styles/globals.css'),
+  read('../src/engine/localRepaint/localRepaintInteractiveState.ts'),
 ]);
 
 assert.doesNotMatch(panel, /createFullFrameMaskDataUrl/);
@@ -80,7 +82,16 @@ assert.match(editor, /resolveLocalRepaintBackgroundPrewarmDisposition\(\{/);
 assert.match(backgroundPrewarmPolicy, /pendingGenerationId === nextSource\.generationId/);
 assert.match(backgroundPrewarmPolicy, /'preserve-current-source'/);
 assert.match(editor, /pendingLocalRepaintActivationRequestRef\.current = true/);
-assert.match(editor, /'replayed-after-generation-unlock'/);
+assert.match(editor, /'replayed-after-gpu-ready'/);
+assert.match(editor, /localRepaintGenerationReady && localRepaintInteractiveReady/);
+assert.match(editor, /queueMicrotask\(\(\) => \{/);
+assert.match(editor, /'background-prewarm-queued'/);
+assert.doesNotMatch(
+  editor,
+  /while \([\s\S]{0,240}!isGpuReady\(\)[\s\S]{0,240}requestAnimationFrame/,
+);
+assert.match(viewport, /publishLocalRepaintInteractiveState\(\{/);
+assert.match(interactiveState, /'liclick:local-repaint-interactive-state'/);
 assert.match(dock, /data-local-repaint-apply="true"/);
 assert.match(dock, /localRepaintActivationDisposition === 'queue-until-unlocked'/);
 assert.match(dock, /localRepaintActivationQueued && \(/);
