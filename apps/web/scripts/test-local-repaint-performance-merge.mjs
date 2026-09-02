@@ -82,8 +82,11 @@ assert.match(
 assert.match(editor, /resolveLocalRepaintBackgroundPrewarmDisposition\(\{/);
 assert.match(backgroundPrewarmPolicy, /pendingGenerationId === nextSource\.generationId/);
 assert.match(backgroundPrewarmPolicy, /'preserve-current-source'/);
-assert.match(editor, /pendingLocalRepaintActivationRequestRef\.current = true/);
+assert.match(editor, /createLocalRepaintActivationRequest\(\{/);
 assert.match(editor, /'replayed-after-gpu-ready'/);
+assert.match(editor, /'watchdog-resident-gpu'/);
+assert.match(editor, /'watchdog-released'/);
+assert.match(editor, /LOCAL_REPAINT_ACTIVATION_WATCHDOG_MS/);
 assert.match(editor, /localRepaintGenerationReady && localRepaintInteractiveReady/);
 assert.doesNotMatch(editor, /localRepaintInteractiveWaitersRef/);
 assert.doesNotMatch(editor, /local-repaint-interactive-ready-timeout/);
@@ -169,6 +172,12 @@ const activationRequestPolicyModule = await import(
   `data:text/javascript;base64,${Buffer.from(compiledActivationRequestPolicy).toString('base64')}`
 );
 const resolveActivation = activationRequestPolicyModule.resolveLocalRepaintActivationDisposition;
+const createActivationRequest =
+  activationRequestPolicyModule.createLocalRepaintActivationRequest;
+const activationRequestMatches =
+  activationRequestPolicyModule.localRepaintActivationRequestMatches;
+const selectPreferredGeneration =
+  activationRequestPolicyModule.selectPreferredLocalRepaintGeneration;
 
 assert.equal(
   resolveActivation({
@@ -219,6 +228,51 @@ assert.equal(
   }),
   'blocked-operation',
   'unrelated editor operations must not be bypassed by the repaint queue',
+);
+
+const exactActivationRequest = createActivationRequest({
+  generationId: 'generation-2',
+  targetLayerId: 'target-2',
+  now: 100,
+});
+assert.equal(exactActivationRequest.requestedAt, 100);
+assert.equal(
+  activationRequestMatches(exactActivationRequest, {
+    generationId: 'generation-2',
+    targetLayerId: 'target-2',
+  }),
+  true,
+  'the renderer event for the queued generation and destination must release the request',
+);
+assert.equal(
+  activationRequestMatches(exactActivationRequest, {
+    generationId: 'generation-1',
+    targetLayerId: 'target-1',
+  }),
+  false,
+  'a stale renderer event must not release the current activation request',
+);
+
+const generated = (id, completedAt) => ({
+  id,
+  mode: 'inpaint',
+  prompt: '',
+  referenceIds: [],
+  resultUrl: `/${id}.png`,
+  status: 'succeeded',
+  metadata: { workflow: 'local-repaint', completedAt },
+});
+const generation1 = generated('generation-1', '2026-09-02T01:00:00.000Z');
+const generation2 = generated('generation-2', '2026-09-02T02:00:00.000Z');
+assert.equal(
+  selectPreferredGeneration([generation1, generation2], () => true)?.id,
+  'generation-2',
+  'fallback selection must deterministically choose the newest completed repaint',
+);
+assert.equal(
+  selectPreferredGeneration([generation1, generation2], () => true, 'generation-1')?.id,
+  'generation-1',
+  'an explicit generation from the settle callback must remain authoritative',
 );
 
 assert.doesNotMatch(viewport, /hasCanvasAlpha\(/);

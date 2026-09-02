@@ -162,6 +162,13 @@ import { harmonizeLocalRepaintInWorker } from '@/engine/localRepaint/seamHarmoni
 import { ensureLocalRepaintSessionLayer } from '@/engine/localRepaint/sessionLayer';
 import { resolveLocalRepaintBackgroundPrewarmDisposition } from '@/engine/localRepaint/backgroundPrewarmPolicy';
 import {
+  createLocalRepaintActivationRequest,
+  LOCAL_REPAINT_ACTIVATION_WATCHDOG_MS,
+  localRepaintActivationRequestMatches,
+  selectPreferredLocalRepaintGeneration,
+  type LocalRepaintActivationRequest,
+} from '@/engine/localRepaint/activationRequestPolicy';
+import {
   LOCAL_REPAINT_INTERACTIVE_STATE_EVENT,
   type LocalRepaintInteractiveStateDetail,
 } from '@/engine/localRepaint/localRepaintInteractiveState';
@@ -1118,7 +1125,7 @@ export function EditorPage({
   const localRepaintObjectScopeRef = useRef<string>();
   const preferredLocalRepaintGenerationIdRef = useRef<string>();
   const pendingLocalRepaintBackgroundGenerationIdRef = useRef<string>();
-  const pendingLocalRepaintActivationRequestRef = useRef(false);
+  const pendingLocalRepaintActivationRequestRef = useRef<LocalRepaintActivationRequest>();
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'failed' | 'offline'>(
     'idle',
   );
@@ -1333,7 +1340,7 @@ export function EditorPage({
     // objectId, otherwise that old image is painted onto every later model.
     localRepaintToolRequestRevisionRef.current += 1;
     pendingLocalRepaintBackgroundGenerationIdRef.current = undefined;
-    pendingLocalRepaintActivationRequestRef.current = false;
+    pendingLocalRepaintActivationRequestRef.current = undefined;
     setLocalRepaintActivationQueued(false);
     setLocalRepaintGenerationSettledAwaitingUnlock(false);
     sceneState.setLocalRepaintProjectionSource(undefined);
@@ -6005,8 +6012,15 @@ export function EditorPage({
     const handleLocalRepaintInteractiveState = (event: Event) => {
       const detail = (event as CustomEvent<LocalRepaintInteractiveStateDetail>).detail;
       if (!detail?.generationId) return;
+      const pendingRequest = pendingLocalRepaintActivationRequestRef.current;
       const preferredGenerationId = preferredLocalRepaintGenerationIdRef.current;
-      if (preferredGenerationId && detail.generationId !== preferredGenerationId) return;
+      if (
+        pendingRequest
+          ? !localRepaintActivationRequestMatches(pendingRequest, detail)
+          : preferredGenerationId && detail.generationId !== preferredGenerationId
+      ) {
+        return;
+      }
       const source = useSceneStore.getState().localRepaintProjectionSource;
       if (
         detail.status !== 'preparing' &&
@@ -6017,7 +6031,7 @@ export function EditorPage({
       }
       setLocalRepaintInteractiveState(detail);
       if (detail.status !== 'failed') return;
-      pendingLocalRepaintActivationRequestRef.current = false;
+      pendingLocalRepaintActivationRequestRef.current = undefined;
       setLocalRepaintActivationQueued(false);
       pushToast({
         tone: 'error',
@@ -6047,14 +6061,11 @@ export function EditorPage({
       (!generation.metadata.projectId || generation.metadata.projectId === projectId) &&
       generationBelongsToObject(generation, preferredObjectId, project?.captures ?? []);
     const preferredGenerationId = preferredLocalRepaintGenerationIdRef.current;
-    const latestLocalRepaintGeneration =
-      (preferredGenerationId
-        ? generations.find(
-            (generation) =>
-              generation.id === preferredGenerationId &&
-              matchesUsableLocalRepaintGeneration(generation),
-          )
-        : undefined) ?? generations.find(matchesUsableLocalRepaintGeneration);
+    const latestLocalRepaintGeneration = selectPreferredLocalRepaintGeneration(
+      generations,
+      matchesUsableLocalRepaintGeneration,
+      preferredGenerationId,
+    );
     if (!latestLocalRepaintGeneration?.resultUrl) return;
     // Start fetching/converting the ComfyUI result as soon as it arrives. The
     // apply button should only bind an already warm source, regardless of which
@@ -6097,14 +6108,11 @@ export function EditorPage({
       (!generation.metadata.projectId || generation.metadata.projectId === projectId) &&
       generationBelongsToObject(generation, preferredObjectId, project.captures);
     const preferredGenerationId = preferredLocalRepaintGenerationIdRef.current;
-    const latestLocalRepaintGeneration =
-      (preferredGenerationId
-        ? generations.find(
-            (generation) =>
-              generation.id === preferredGenerationId &&
-              matchesUsableLocalRepaintGeneration(generation),
-          )
-        : undefined) ?? generations.find(matchesUsableLocalRepaintGeneration);
+    const latestLocalRepaintGeneration = selectPreferredLocalRepaintGeneration(
+      generations,
+      matchesUsableLocalRepaintGeneration,
+      preferredGenerationId,
+    );
     if (!latestLocalRepaintGeneration?.resultUrl) return undefined;
     const objectId = preferredObjectId;
     const currentLayers = useLayerStore.getState().layers;
@@ -6171,6 +6179,7 @@ export function EditorPage({
     const stage = async () => {
       const startedAt = performance.now();
       document.body.dataset.localRepaintBackgroundStage = 'running';
+      document.body.dataset.localRepaintBackgroundGeneration = latestLocalRepaintGeneration.id;
       try {
         if (!isLocalRepaintDestinationLayer(targetLayer, objectId)) {
           // Create/bind the destination while the browser is idle, not in the
@@ -6285,6 +6294,14 @@ export function EditorPage({
           document.body.dataset.localRepaintBackgroundStage = 'failed';
           console.warn('[Liclick 3D Texture] Could not stage local repaint source:', error);
         }
+      } finally {
+        if (
+          document.body.dataset.localRepaintBackgroundGeneration ===
+            latestLocalRepaintGeneration.id &&
+          document.body.dataset.localRepaintBackgroundStage === 'running'
+        ) {
+          document.body.dataset.localRepaintBackgroundStage = cancelled ? 'cancelled' : 'skipped';
+        }
       }
     };
     // Start the exact generation-scoped prewarm in the current effect turn.
@@ -6295,6 +6312,13 @@ export function EditorPage({
     });
     return () => {
       cancelled = true;
+      if (
+        document.body.dataset.localRepaintBackgroundGeneration ===
+          latestLocalRepaintGeneration.id &&
+        document.body.dataset.localRepaintBackgroundStage === 'running'
+      ) {
+        document.body.dataset.localRepaintBackgroundStage = 'cancelled';
+      }
     };
   }, [
     generations,
@@ -6347,7 +6371,7 @@ export function EditorPage({
     // Waiting for GeneratePanel to mount would leave one frame where `none`
     // hides the live repaint before the persisted row has taken ownership.
     useSceneStore.getState().setLocalRepaintGenerationPresentationActive(true);
-    pendingLocalRepaintActivationRequestRef.current = false;
+    pendingLocalRepaintActivationRequestRef.current = undefined;
     setLocalRepaintActivationQueued(false);
     setLocalRepaintGenerationSettledAwaitingUnlock(false);
     setPaintTool('none');
@@ -6372,7 +6396,7 @@ export function EditorPage({
       useSceneStore.getState().setLocalRepaintGenerationPresentationActive(false);
       setLocalImageGenerationRequested(false);
       if (!result.succeeded) {
-        pendingLocalRepaintActivationRequestRef.current = false;
+        pendingLocalRepaintActivationRequestRef.current = undefined;
         setLocalRepaintActivationQueued(false);
         setLocalRepaintGenerationSettledAwaitingUnlock(false);
         return;
@@ -6380,6 +6404,12 @@ export function EditorPage({
       setLocalRepaintGenerationSettledAwaitingUnlock(true);
       preferredLocalRepaintGenerationIdRef.current = result.generationId;
       pendingLocalRepaintBackgroundGenerationIdRef.current = result.generationId;
+      if (pendingLocalRepaintActivationRequestRef.current) {
+        pendingLocalRepaintActivationRequestRef.current = createLocalRepaintActivationRequest({
+          generationId: result.generationId,
+          now: pendingLocalRepaintActivationRequestRef.current.requestedAt,
+        });
+      }
       setLocalRepaintInteractiveState({
         generationId: result.generationId,
         status: 'preparing',
@@ -6401,7 +6431,7 @@ export function EditorPage({
         !localRepaintGenerationReady ||
         !localRepaintInteractiveReady)
     ) {
-      pendingLocalRepaintActivationRequestRef.current = true;
+      pendingLocalRepaintActivationRequestRef.current = createLocalRepaintActivationRequest({});
       setLocalRepaintActivationQueued(true);
       document.body.dataset.localRepaintButton3ActivationPath = 'queued-generation-unlock';
       return;
@@ -6410,7 +6440,7 @@ export function EditorPage({
       notifyEditorTaskRunning();
       return;
     }
-    pendingLocalRepaintActivationRequestRef.current = false;
+    pendingLocalRepaintActivationRequestRef.current = undefined;
     setLocalRepaintActivationQueued(false);
     const requestRevision = localRepaintToolRequestRevisionRef.current + 1;
     localRepaintToolRequestRevisionRef.current = requestRevision;
@@ -6446,14 +6476,11 @@ export function EditorPage({
         (!generation.metadata.projectId || generation.metadata.projectId === projectId) &&
         generationBelongsToObject(generation, preferredObjectId, project.captures);
       const preferredGenerationId = preferredLocalRepaintGenerationIdRef.current;
-      const latestLocalRepaintGeneration =
-        (preferredGenerationId
-          ? generations.find(
-              (generation) =>
-                generation.id === preferredGenerationId &&
-                matchesUsableLocalRepaintGeneration(generation),
-            )
-          : undefined) ?? generations.find(matchesUsableLocalRepaintGeneration);
+      const latestLocalRepaintGeneration = selectPreferredLocalRepaintGeneration(
+        generations,
+        matchesUsableLocalRepaintGeneration,
+        preferredGenerationId,
+      );
       const generationCapture = latestLocalRepaintGeneration
         ? (project.captures.find(
             (capture) => capture.id === latestLocalRepaintGeneration.captureId,
@@ -6533,7 +6560,10 @@ export function EditorPage({
         document.body.dataset.localRepaintButton3ActivationPath = 'background-prewarm-queued';
         setPaintTool('none');
         clearPrewarmProgress();
-        pendingLocalRepaintActivationRequestRef.current = true;
+        pendingLocalRepaintActivationRequestRef.current = createLocalRepaintActivationRequest({
+          generationId: latestLocalRepaintGeneration.id,
+          targetLayerId: preparedTargetId,
+        });
         setLocalRepaintActivationQueued(true);
         return;
       }
@@ -6680,7 +6710,7 @@ export function EditorPage({
     ) {
       return;
     }
-    pendingLocalRepaintActivationRequestRef.current = false;
+    pendingLocalRepaintActivationRequestRef.current = undefined;
     setLocalRepaintActivationQueued(false);
     document.body.dataset.localRepaintButton3ActivationPath = 'replayed-after-gpu-ready';
     handleLocalRepaintFromToolbar();
@@ -7235,6 +7265,61 @@ export function EditorPage({
       t,
     ],
   );
+
+  useEffect(() => {
+    if (
+      !localRepaintActivationQueued ||
+      localImageGenerationRunning ||
+      generationOperationLocked
+    ) {
+      return undefined;
+    }
+    const timeoutId = window.setTimeout(() => {
+      const request = pendingLocalRepaintActivationRequestRef.current;
+      if (!request) {
+        setLocalRepaintActivationQueued(false);
+        return;
+      }
+      const source = useSceneStore.getState().localRepaintProjectionSource;
+      const readyMarker = {
+        generationId: document.body.dataset.localRepaintGpuReadyGeneration,
+        targetLayerId: document.body.dataset.localRepaintGpuReadyTarget,
+      };
+      const effectiveRequest = request.generationId
+        ? request
+        : createLocalRepaintActivationRequest({
+            generationId:
+              preferredLocalRepaintGenerationIdRef.current ?? source?.generationId,
+            targetLayerId: source?.targetLayerId,
+            now: request.requestedAt,
+          });
+      if (localRepaintActivationRequestMatches(effectiveRequest, readyMarker)) {
+        pendingLocalRepaintActivationRequestRef.current = effectiveRequest;
+        setLocalRepaintInteractiveState({
+          generationId: readyMarker.generationId!,
+          targetLayerId: readyMarker.targetLayerId,
+          status: 'ready',
+        });
+        document.body.dataset.localRepaintButton3ActivationPath = 'watchdog-resident-gpu';
+        return;
+      }
+      pendingLocalRepaintActivationRequestRef.current = undefined;
+      setLocalRepaintActivationQueued(false);
+      document.body.dataset.localRepaintButton3ActivationPath = 'watchdog-released';
+      pushToast({
+        tone: 'warning',
+        title: '画笔准备超时',
+        description: '已自动解除等待，请再点击一次局部重绘。',
+        dedupeKey: 'local-repaint-activation-watchdog-released',
+      });
+    }, LOCAL_REPAINT_ACTIVATION_WATCHDOG_MS);
+    return () => window.clearTimeout(timeoutId);
+  }, [
+    generationOperationLocked,
+    localImageGenerationRunning,
+    localRepaintActivationQueued,
+    pushToast,
+  ]);
 
   const runContentAwareRepair = useCallback(
     (
