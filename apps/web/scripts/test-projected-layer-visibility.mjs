@@ -288,10 +288,19 @@ assert.match(
   /const eraserFeather = paintToolSettings\.eraserFeather \?\? 50;[\s\S]*?layer\.liveResultContext[\s\S]*?'destination-out',[\s\S]*?'uv',[\s\S]*?eraserFeather/,
   'The projected-layer eraser must apply its feather value to the live keep-mask.',
 );
+const endLiveEraserPreviewSource = viewportCanvasInteractionSource.match(
+  /function endLiveEraserPreview\(layer: UvPaintLayer\)[\s\S]*?\n}\n\nfunction getPaintHistoryTileBounds/,
+)?.[0];
+assert.ok(endLiveEraserPreviewSource, 'The projected-layer eraser preview teardown must exist.');
 assert.match(
-  viewportCanvasInteractionSource,
-  /function endLiveEraserPreview\(layer: UvPaintLayer\)[\s\S]*?clearLiveSurfacePaintPreview\(layer\.layerId, layer\.liveResultUrl\)[\s\S]*?syncProjectedLayerLiveEraserPreviewInObject\([\s\S]*?layer\.layerId,[\s\S]*?undefined/,
-  'Ending a normal projected-layer eraser preview must synchronously detach its resident keep-mask uniform.',
+  endLiveEraserPreviewSource,
+  /clearLiveSurfacePaintPreview\(layer\.layerId, layer\.liveResultUrl\)[\s\S]*?layer\.liveEraserPreviewRoot = undefined/,
+  'Ending a projected-layer eraser preview must release its input-side registry and root ownership.',
+);
+assert.doesNotMatch(
+  endLiveEraserPreviewSource,
+  /syncProjectedLayerLiveEraserPreviewInObject/,
+  'Input teardown must not clear the resident GPU keep-mask before SceneRoot completes the persistent material handoff.',
 );
 assert.match(
   viewportCanvasInteractionSource,
@@ -334,8 +343,8 @@ assert.match(
 );
 assert.match(
   sceneRootSource,
-  /if \(!liveProjectedEraserMaskTexture\) return;[\s\S]*?const projectedMaterialStructureKey[\s\S]*?committedProjectedMaterialStructureRef\.current !== projectedMaterialStructureKey[\s\S]*?applyMaterials clears it atomically/,
-  'Eye and tool toggles must retain the live eraser multiplier until the revised resident array is ready.',
+  /if \(!liveProjectedEraserMaskTexture\) return;[\s\S]*?const projectedMaterialStructureKey[\s\S]*?if \(committedProjectedMaterialStructureRef\.current !== projectedMaterialStructureKey\)[\s\S]*?replacement material only after the persistent mask is resident/,
+  'Eye and tool toggles must retain the live eraser multiplier until either direct or array resident material owns the persistent mask.',
 );
 assert.match(
   viewportCanvasInteractionSource,

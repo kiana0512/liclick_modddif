@@ -175,7 +175,7 @@ Layer 的 `type`、`role`、`blendMode`、`visibility policy` 是四个独立维
 
 删除最后一个活动对象图层后，store 自动创建空 UV 保底层。剪刀发布时会隐藏所有实际被消费的源层；若指定空 UV 目标则原位填充，否则在源层位置创建 merged-uv。
 
-### 5.1 当前图层橡皮 `ALG-ERASE-001` v1.3.2
+### 5.1 当前图层橡皮 `ALG-ERASE-001` v1.3.3
 
 橡皮采用 Modddif 式“编辑当前图层覆盖”语义，不对最终合成画面做破坏性擦除。快捷键为贴图工作区 `E`，目标由 `engine/paint/eraserTargetPolicy.ts` 唯一判定，React 和 Zustand 不得复制类型分支。
 
@@ -198,6 +198,8 @@ v1.3.0 历史事务修复（UI-06/UI-10 → M12 历史与画笔集成）：每�
 v1.3.1 首笔投影蒙版交接修复：普通 projected 橡皮激活时以 1×1 中性白值预热未来正式 keep-mask 的稳定 live URL，SceneRoot 在内存 live preview 中把该 URL 提前纳入投影结构，但不在用户落笔前修改 Layer/Project。首笔提交把同一 CanvasTexture 扩为项目分辨率并更新像素，LayerStore 发布相同 URL，因此不再触发“无 UV mask → 新 UV mask”的异步纹理数组重建；512 实时 multiplier 在整个交接窗口持续生效。既有外部蒙版在解码后按同一流程提升。覆盖公式、历史、3000ms 补缝、保存资产、GPU/CPU/Worker/UV/export 和 1K/2K/4K/8K 输出均不变。
 
 v1.3.2 投影蒙版显隐交接修复：多投影栈的 `DataArrayTexture` 是 live canvas 的像素快照，稳定 URL 不能单独表示内容变更。纹理数组结构键仅在 array 路径纳入 live keep-mask revision，每次持久提交会取消旧的全白/旧蒙版打包并重新上传当前像素。新数组尚未驻留时，旧材质继续保留累计 live multiplier；新材质原子发布后再清除，因此关闭/重开图层预览不再恢复擦除前的效果。direct sampler 路径仍原地更新 CanvasTexture，不增加重建。覆盖公式、历史、补缝、保存资产、GPU/CPU/Worker/UV/export、分辨率与 Schema 均不变，无迁移。
+
+v1.3.3 投影蒙版统一原子交接修复：A100 项目逐个显示投影行时常为 `useTextureArrays=false`，多行同时显示且采样器吃紧时也可能进入 array；两条路径首次擦除都可能需要异步建立持久 keep-mask。旧输入层 `endLiveEraserPreview()` 会在眼睛/工具切换时抢先清除 GPU live multiplier，绕过 SceneRoot 的驻留检查；本地构建快时该时间窗不明显，A100 恢复项目的解码/材质队列较慢时则会显示未擦除的旧材质。现由 SceneRoot 独占清理权：不区分 direct/array，只要已提交材质结构键尚未匹配当前持久蒙版，所有图层均保留累计实时蒙版；替换材质驻留后再原子清除。已有 direct CanvasTexture 驻留时仍原地更新，不增加重建。覆盖、历史、补缝、持久化、分辨率、Schema 与资产均不变，无迁移。
 
 撤回/重做在同一任务中恢复持久瓦片、将当前及同层重建实例的 live eraser multiplier 重置为白色中性值、上传纹理并 invalidate；保持驻留 shader 结构，重新绑定 image/mask URL 和 contentRevision，随后同步 Project layers。此处中性白值是内部 keep-mask，不是编辑结果中的白模。后台细化仍采用项目原始分辨率和 3000ms idle；`engine/paint/refineStrokeHistory.ts` 从最早瓦片检查点按笔画顺序重放，分别更新每笔的 before/after。已撤回笔画仅更新 redo 检查点，不重新显示；新分支清除不再属于历史的笔画。每四个瓦片让出执行权，完成后无 await 地原子发布全部像素与历史；切换、撤回或新笔画使旧任务失效时不发布半成品。
 
@@ -639,3 +641,4 @@ M15 体积修复：锁定 `terser@5.51.2` 两轮安全压缩，保留日志和�
 | `2.15.0` | 2026-09-02 | `本次局部重绘统一会话与单显示所有权修复` | UI-06/UI-10、M08、`ALG-LR-007` v2.2.0 / `ALG-LR-008` v2.3.0：以 generation/target/sessionId 的唯一内存 Session 串行推进资源、蒙版、正式材质和渲染帧准备，拒绝旧任务晚到事件；共享 projected material 成为唯一显示 owner，移除活动画笔对 dedicated overlay 与 resident twin 的切换；pointer-down 只消费 ready 资源。总准备 20 秒、正式绑定 10 秒后明确失败，不再无限转圈。Schema、Revision、ownership、投影/颜色/分辨率与已有资产不变，无迁移。 |
 | `2.15.1` | 2026-09-02 | `本次普通投影橡皮首笔原子交接修复` | UI-06/UI-10、M05/M06/M08、`ALG-ERASE-001` v1.3.1：橡皮激活时通过 renderer-only live preview 预热与首笔提交相同的稳定 UV keep-mask URL，首笔抬起只更新 CanvasTexture 与 Layer 内容，不再从无 mask 切换到新 mask 后重建整套投影纹理数组，消除擦除先显示、回弹、3000ms 补缝后再恢复的问题。不落笔不修改项目；覆盖、历史、补缝、持久化、分辨率、Schema、Revision、ownership 与资产类别不变，无迁移。 |
 | `2.15.2` | 2026-09-02 | `本次投影橡皮显隐持久修复` | UI-06/UI-10、M05/M06/M08、`ALG-ERASE-001` v1.3.2：纹理数组键纳入 live keep-mask revision，取消旧蒙版快照并重打包当前像素；新 array 驻留前保留累计 live multiplier，原子发布后再清除，修复擦除后关闭/重开图层预览恢复旧效果。direct 路径、覆盖、历史、补缝、持久化、分辨率、Schema、Revision、ownership 与资产类别不变，无迁移。 |
+| `2.15.3` | 2026-09-02 | `本次投影蒙版统一原子交接修复` | UI-06/UI-10、M05/M06/M08、`ALG-ERASE-001` v1.3.3：按本地真实源码链路消除输入层与材质层的双重清理权；`endLiveEraserPreview()` 只结束输入/注册表状态，SceneRoot 根据已提交结构键独占 GPU live multiplier 到持久 keep-mask 的原子交接。覆盖 A100 逐层显示常见的 direct 路径和多层 array 路径，修复本地快路径正常而 A100 慢恢复路径关开预览丢失擦除的差异。覆盖、历史、补缝、持久化、分辨率、Schema、Revision、ownership 与资产类别不变，无迁移。 |

@@ -1639,9 +1639,10 @@ function ImportedModel({
     });
   }, [importedObjectId, liveSurfacePaintPreview]);
   useLayoutEffect(() => {
-    // Clearing a transient multiplier is a separate atomic handoff below. If
-    // the persistent keep-mask is packed into a texture array, detaching here
-    // would expose the array's previous snapshot until its replacement lands.
+    // Clearing a transient multiplier is a separate atomic handoff below. The
+    // current resident material may still predate the first keep-mask sampler,
+    // or an array may still contain the previous mask snapshot. Detaching here
+    // would expose the unmasked/previous result until its replacement lands.
     if (!liveProjectedEraserMaskTexture) return;
     const layerId = liveSurfacePaintPreview?.layerId;
     if (
@@ -3197,14 +3198,11 @@ function ImportedModel({
   ].join('|');
   useLayoutEffect(() => {
     if (liveProjectedEraserMaskTexture) return;
-    if (
-      useProjectedTextureArrays &&
-      committedProjectedMaterialStructureRef.current !== projectedMaterialStructureKey
-    ) {
-      // The old array still contains the pre-commit mask pixels. Keep the
-      // cumulative live multiplier on that material through eye/tool toggles;
-      // applyMaterials clears it atomically on the replacement material after
-      // the new live-mask revision has been packed and presented.
+    if (committedProjectedMaterialStructureRef.current !== projectedMaterialStructureKey) {
+      // The old direct material may not own the first keep-mask sampler yet, or
+      // the old array may still contain pre-commit pixels. Keep the cumulative
+      // live multiplier through eye/tool toggles; applyMaterials clears it on
+      // the replacement material only after the persistent mask is resident.
       return;
     }
     if (
@@ -3217,7 +3215,6 @@ function ImportedModel({
     invalidate,
     liveProjectedEraserMaskTexture,
     projectedMaterialStructureKey,
-    useProjectedTextureArrays,
   ]);
   const showWhiteMembrane = Boolean(
     transientWhitePresentationObjectId === importedModel.objectId ||

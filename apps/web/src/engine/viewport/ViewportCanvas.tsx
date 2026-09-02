@@ -6658,16 +6658,12 @@ function endLiveEraserPreview(layer: UvPaintLayer) {
   layer.liveEraserPreviewActive = false;
   clearLiveSurfacePaintPreview(layer.layerId, layer.liveResultUrl);
   if (layer.liveEraserPreviewRoot) {
-    // Registry/React reconciliation is intentionally asynchronous. Clear the
-    // resident keep-mask uniform in the same turn as an eye or active-layer
-    // change; otherwise the previous layer can keep sampling its cumulative
-    // eraser mask after the UI says the preview has ended, and reopening the
-    // eye leaves the whole projection suppressed until another material pass.
-    syncProjectedLayerLiveEraserPreviewInObject(
-      layer.liveEraserPreviewRoot,
-      layer.layerId,
-      undefined,
-    );
+    // SceneRoot owns the atomic handoff from this cumulative live multiplier
+    // to the persistent keep-mask. Clearing the resident uniform here races the
+    // direct/array material build on restored cloud projects: an eye toggle can
+    // then expose the unmasked old material until the replacement reaches the
+    // GPU. Dropping the input-side root reference is safe; SceneRoot detaches
+    // the uniform once its committed structure key proves the mask is resident.
     layer.liveEraserPreviewRoot = undefined;
   }
 }
