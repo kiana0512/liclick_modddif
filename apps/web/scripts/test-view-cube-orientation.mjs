@@ -169,15 +169,29 @@ try {
     Math.log(distanceAfterFirstWheelFrame / distanceBeforeWheelFrame) /
     Math.log(expectedWheelTarget / distanceBeforeWheelFrame);
   assert.ok(
-    firstFrameProgress < 0.024,
-    `The first 60 Hz frame must consume under 2.4% of the logarithmic zoom target; received ${(firstFrameProgress * 100).toFixed(2)}%`,
+    firstFrameProgress < 0.013,
+    `The first 60 Hz frame must consume under 1.3% of the logarithmic zoom target; received ${(firstFrameProgress * 100).toFixed(2)}%`,
   );
   assert.ok(
     distanceAfterFirstWheelFrame > distanceBeforeWheelFrame &&
       distanceAfterFirstWheelFrame < expectedWheelTarget,
     'The first rendered frame must move toward the zoom target without jumping directly to it',
   );
-  for (let frame = 0; frame < 90; frame += 1) controls.updateWheelTransition(1 / 60);
+  let previousWheelDistance = distanceAfterFirstWheelFrame;
+  let maximumWheelFrameProgress = firstFrameProgress;
+  for (let frame = 0; frame < 90; frame += 1) {
+    controls.updateWheelTransition(1 / 60);
+    const nextWheelDistance = perspectiveCamera.position.distanceTo(controls.target);
+    const frameProgress =
+      Math.log(nextWheelDistance / previousWheelDistance) /
+      Math.log(expectedWheelTarget / distanceBeforeWheelFrame);
+    maximumWheelFrameProgress = Math.max(maximumWheelFrameProgress, frameProgress);
+    previousWheelDistance = nextWheelDistance;
+  }
+  assert.ok(
+    maximumWheelFrameProgress < 0.062,
+    `No 60 Hz frame may consume 6.2% of the logarithmic zoom target; received ${(maximumWheelFrameProgress * 100).toFixed(2)}%`,
+  );
   assert.ok(
     wheelActivitySignals > 5,
     'Viewport interaction priority must stay active until the smooth zoom settles',

@@ -102,6 +102,8 @@ import {
   type PerformanceTimelineEvent,
 } from '@/engine/performance/performanceTimeline';
 import {
+  estimateMissedFrameCount,
+  estimateMissedFramePercent,
   sumDurationSamples,
   summarizeDurationSamples,
   summarizeFramePacing,
@@ -1033,27 +1035,36 @@ function readStoredManualRepaintReport() {
 }
 
 function LightweightPerformanceHud() {
-  const [sample, setSample] = useState({ fps: 0, p95: 0, max: 0 });
+  const [sample, setSample] = useState({ fps: 0, p95: 0, max: 0, missedFrames: 0 });
   useEffect(() => {
     let frame = 0;
     let previous = performance.now();
     let published = previous;
-    const samples: number[] = [];
+    const samples: Array<{ at: number; durationMs: number }> = [];
     const tick = (now: number) => {
       const duration = now - previous;
       previous = now;
-      if (duration > 0 && duration < 1_000) {
-        samples.push(duration);
-        if (samples.length > 180) samples.shift();
+      if (duration > 0 && duration < 30_000) {
+        samples.push({ at: now, durationMs: duration });
+        while (samples.length > 0 && (samples[0]?.at ?? now) < now - 5_000) samples.shift();
       }
       if (now - published >= 500 && samples.length) {
         published = now;
-        const recent = samples.slice(-120);
+        const recent = samples.map((value) => value.durationMs);
         const total = recent.reduce((sum, value) => sum + value, 0);
+        const targetMs =
+          percentile(
+            recent.filter((value) => value < 40),
+            0.1,
+          ) || STRICT_60_HZ_FRAME_BUDGET_MS;
         setSample({
           fps: total > 0 ? (recent.length * 1_000) / total : 0,
           p95: percentile(recent, 0.95),
           max: Math.max(...recent),
+          missedFrames: estimateMissedFrameCount(
+            recent.map((durationMs) => ({ durationMs })),
+            targetMs,
+          ),
         });
       }
       frame = window.requestAnimationFrame(tick);
@@ -1061,11 +1072,12 @@ function LightweightPerformanceHud() {
     frame = window.requestAnimationFrame(tick);
     return () => window.cancelAnimationFrame(frame);
   }, []);
-  const severe = sample.p95 > 25 || sample.fps < 45;
-  const warning = sample.p95 > 18 || sample.fps < 57;
+  const severe = sample.max >= 50 || sample.missedFrames >= 2 || sample.p95 > 25 || sample.fps < 45;
+  const warning =
+    sample.max >= 22.5 || sample.missedFrames >= 1 || sample.p95 > 18 || sample.fps < 57;
   return (
     <div
-      className={`pointer-events-none absolute right-4 top-4 z-[28] grid grid-cols-[auto_auto_auto_auto] items-center gap-4 rounded-md border px-3 py-2 text-white shadow-xl backdrop-blur-md ${severe ? 'border-red-500/70 bg-red-950/78' : warning ? 'border-amber-400/60 bg-black/82' : 'border-emerald-400/45 bg-black/78'}`}
+      className={`pointer-events-none absolute right-4 top-4 z-[28] grid grid-cols-[auto_auto_auto_auto_auto] items-center gap-4 rounded-md border px-3 py-2 text-white shadow-xl backdrop-blur-md ${severe ? 'border-red-500/70 bg-red-950/78' : warning ? 'border-amber-400/60 bg-black/82' : 'border-emerald-400/45 bg-black/78'}`}
     >
       <span
         className={`text-xs font-semibold ${severe ? 'text-red-300' : warning ? 'text-amber-300' : 'text-emerald-300'}`}
@@ -1081,16 +1093,24 @@ function LightweightPerformanceHud() {
       <span className="text-[10px] text-white/50">
         最大帧 <b className="ml-1 font-mono text-xs text-white">{sample.max.toFixed(1)} ms</b>
       </span>
+      <span className="text-[10px] text-white/50">
+        近5秒丢帧 <b className="ml-1 font-mono text-xs text-white">{sample.missedFrames}</b>
+      </span>
     </div>
   );
 }
 
 function PerformanceTestHud() {
   const [collapsed, setCollapsed] = useState(true);
+  const collapsedMetricButtonRef = useRef<HTMLButtonElement>(null);
   const [manualRecording, setManualRecording] = useState(false);
   const [manualReport, setManualReport] = useState<ManualRepaintReport | undefined>(
     readStoredManualRepaintReport,
   );
+  // The compact badge is updated outside React so sampling never makes the HUD
+  // itself part of the measured workload. Keep the completed manual window in
+  // a ref so a later idle 5-second window cannot overwrite the real result.
+  const manualReportRef = useRef(manualReport);
   const manualStartedAtRef = useRef(0);
   const manualStartedUnixMsRef = useRef(0);
   const manualHeapStartMbRef = useRef<number>();
@@ -1311,6 +1331,7 @@ function PerformanceTestHud() {
       manualHeapStartMbRef.current = readUsedJsHeapMb();
       manualDiagnosticsStartRef.current = snapshotPerformanceDiagnostics();
       manualEventsRef.current = [];
+      manualReportRef.current = undefined;
       setManualReport(undefined);
       document.body.dataset.perfManualLocalRepaintRecording = '1';
       window.dispatchEvent(
@@ -1357,9 +1378,12 @@ function PerformanceTestHud() {
       averageFps: total > 0 ? (frameTimes.length * 1000) / total : 0,
       frameP95: percentile(frameTimes, 0.95),
       frameMax: max(frameTimes),
-      // Li3D's strict 60 Hz contract counts every frame above one refresh
-      // interval as dropped. Do not hide 16.67-25 ms misses behind a 1.5x grace.
-      droppedFrames: frameTimes.filter((value) => value > targetMs).length,
+      // Count refresh opportunities actually skipped. A normal 16.8 ms rAF
+      // sample is one presented frame, while 33.4 ms misses one refresh.
+      droppedFrames: estimateMissedFrameCount(
+        frameTimes.map((durationMs) => ({ durationMs })),
+        targetMs,
+      ),
       pointerDownP95: percentile(latency('pointerdown'), 0.95),
       pointerUpP95: percentile(latency('pointerup'), 0.95),
       wheelEvents: events
@@ -1387,6 +1411,7 @@ function PerformanceTestHud() {
       eventRetentionLimit: MAX_MANUAL_REPAINT_EVENTS,
       events,
     };
+    manualReportRef.current = report;
     setManualReport(report);
     try {
       window.sessionStorage.setItem(MANUAL_REPAINT_REPORT_STORAGE_KEY, JSON.stringify(report));
@@ -1547,6 +1572,23 @@ function PerformanceTestHud() {
     animationFrame = window.requestAnimationFrame(sampleFrame);
 
     const updateTimer = window.setInterval(() => {
+      const nowUnixMs = Date.now();
+      const recentFrameSamples = frameSamplesRef.current.filter(
+        (sample) => sample.unixMs >= nowUnixMs - 5_000,
+      );
+      const recentFrameSummary = summarizeFramePacing(
+        recentFrameSamples,
+        STRICT_60_HZ_FRAME_BUDGET_MS,
+      );
+      const recentFps = recentFrameSummary.average > 0 ? 1_000 / recentFrameSummary.average : 0;
+      if (collapsedMetricButtonRef.current) {
+        const recorded = manualReportRef.current;
+        collapsedMetricButtonRef.current.textContent = recorded
+          ? `人工 · ${recorded.averageFps.toFixed(1)} FPS · P95 ${recorded.frameP95.toFixed(1)}ms` +
+            ` · 峰值 ${recorded.frameMax.toFixed(0)}ms · 丢帧 ${recorded.droppedFrames}`
+          : `性能 · ${recentFps.toFixed(0)} FPS · P95 ${recentFrameSummary.p95.toFixed(1)}ms` +
+            ` · 峰值 ${recentFrameSummary.maximum.toFixed(0)}ms · 丢帧 ${recentFrameSummary.missedFrameCount}`;
+      }
       // Keep the rAF/native collectors running, but do not let the large HUD
       // React tree become the workload during a viewport stress window. The
       // final scenario result is published immediately after measurement.
@@ -1584,7 +1626,7 @@ function PerformanceTestHud() {
         frameP99: frameSummary.p99,
         frameJitterP95: frameSummary.jitterP95,
         frameMax: frameSummary.maximum,
-        droppedFrames: frameSummary.aboveThresholdPercent,
+        droppedFrames: frameSummary.missedFramePercent,
         paintP95: percentile(paintSamples, 0.95),
         paintMax: paintSamples.length > 0 ? Math.max(...paintSamples) : 0,
         paintSamples: paintSamples.length,
@@ -1678,6 +1720,8 @@ function PerformanceTestHud() {
     recordingStartedAtRef.current = Date.now();
     clearPerformanceTimelineEvents();
     if (collectorOnly) return;
+    manualReportRef.current = undefined;
+    setManualReport(undefined);
     setFrameHistory([]);
     setCpuHistory([]);
     setGpuHistory([]);
@@ -1771,17 +1815,12 @@ function PerformanceTestHud() {
         frameP99: pacing.p99,
         frameJitterP95: pacing.jitterP95,
         frameMax: durations.length > 0 ? Math.max(...durations) : 0,
-        droppedFrames:
-          durations.length > 0
-            ? (durations.filter((duration) => duration > STRICT_60_HZ_FRAME_BUDGET_MS).length /
-                durations.length) *
-              100
-            : 0,
+        droppedFrames: pacing.missedFramePercent,
         postModelFrameP95: postModelPacing.p95,
         postModelFrameP99: postModelPacing.p99,
         postModelFrameJitterP95: postModelPacing.jitterP95,
         postModelFrameMax: postModelPacing.maximum,
-        postModelDroppedFrames: postModelPacing.aboveThresholdPercent,
+        postModelDroppedFrames: postModelPacing.missedFramePercent,
         longTaskMax: longTasks.length > 0 ? Math.max(...longTasks) : 0,
       };
       document.body.dataset.perfRefreshRestoreResult = JSON.stringify(result);
@@ -1934,12 +1973,7 @@ function PerformanceTestHud() {
         return {
           p95: percentile(durations, 0.95),
           max: durations.length > 0 ? Math.max(...durations) : 0,
-          dropped:
-            durations.length > 0
-              ? (durations.filter((duration) => duration > STRICT_60_HZ_FRAME_BUDGET_MS).length /
-                  durations.length) *
-                100
-              : 0,
+          dropped: estimateMissedFramePercent(samples, STRICT_60_HZ_FRAME_BUDGET_MS),
         };
       };
 
@@ -2152,12 +2186,7 @@ function PerformanceTestHud() {
         return {
           p95: percentile(durations, 0.95),
           max: durations.length > 0 ? Math.max(...durations) : 0,
-          dropped:
-            durations.length > 0
-              ? (durations.filter((duration) => duration > STRICT_60_HZ_FRAME_BUDGET_MS).length /
-                  durations.length) *
-                100
-              : 0,
+          dropped: estimateMissedFramePercent(samples, STRICT_60_HZ_FRAME_BUDGET_MS),
         };
       };
       const ids = targets.map((layer) => layer.id);
@@ -2317,12 +2346,7 @@ function PerformanceTestHud() {
       return {
         p95: percentile(durations, 0.95),
         max: durations.length > 0 ? Math.max(...durations) : 0,
-        dropped:
-          durations.length > 0
-            ? (durations.filter((duration) => duration > STRICT_60_HZ_FRAME_BUDGET_MS).length /
-                durations.length) *
-              100
-            : 0,
+        dropped: estimateMissedFramePercent(samples, STRICT_60_HZ_FRAME_BUDGET_MS),
       };
     };
     setUvMergeBenchmarkRunning(true);
@@ -2437,12 +2461,7 @@ function PerformanceTestHud() {
       return {
         p95: percentile(durations, 0.95),
         max: durations.length > 0 ? Math.max(...durations) : 0,
-        dropped:
-          durations.length > 0
-            ? (durations.filter((duration) => duration > STRICT_60_HZ_FRAME_BUDGET_MS).length /
-                durations.length) *
-              100
-            : 0,
+        dropped: estimateMissedFramePercent(samples, STRICT_60_HZ_FRAME_BUDGET_MS),
       };
     };
     const memory = (performance as Performance & { memory?: { usedJSHeapSize: number } }).memory;
@@ -2561,12 +2580,7 @@ function PerformanceTestHud() {
         return {
           p95: percentile(durations, 0.95),
           max: durations.length > 0 ? Math.max(...durations) : 0,
-          dropped:
-            durations.length > 0
-              ? (durations.filter((duration) => duration > STRICT_60_HZ_FRAME_BUDGET_MS).length /
-                  durations.length) *
-                100
-              : 0,
+          dropped: estimateMissedFramePercent(samples, STRICT_60_HZ_FRAME_BUDGET_MS),
         };
       };
       let result: ContentAwareRepairBenchmarkResult | undefined;
@@ -2798,12 +2812,7 @@ function PerformanceTestHud() {
       return {
         p95: percentile(durations, 0.95),
         max: durations.length > 0 ? Math.max(...durations) : 0,
-        dropped:
-          durations.length > 0
-            ? (durations.filter((duration) => duration > STRICT_60_HZ_FRAME_BUDGET_MS).length /
-                durations.length) *
-              100
-            : 0,
+        dropped: estimateMissedFramePercent(samples, STRICT_60_HZ_FRAME_BUDGET_MS),
       };
     };
     setViewportLayerStressRunning(true);
@@ -2826,7 +2835,7 @@ function PerformanceTestHud() {
       const sampleScenarioFrame = (now: number) => {
         const durationMs = now - scenarioPreviousFrameAt;
         scenarioPreviousFrameAt = now;
-        if (durationMs > 0 && durationMs < 1_000) {
+        if (durationMs > 0 && durationMs < 30_000) {
           scenarioFrameSamples.push({
             unixMs: Date.now(),
             durationMs,
@@ -2932,11 +2941,14 @@ function PerformanceTestHud() {
     return (
       <div className="absolute right-4 top-16 z-[28] flex items-center gap-2 rounded-md border border-liclick-pink/55 bg-black/82 p-1.5 text-xs font-semibold text-white shadow-xl backdrop-blur-md 2xl:top-4">
         <button
+          ref={collapsedMetricButtonRef}
           type="button"
           onClick={() => setCollapsed(false)}
           className="rounded px-2 py-1 transition hover:bg-white/10"
         >
-          性能 · {metrics.fps.toFixed(0)} FPS · P95 {metrics.frameP95.toFixed(1)}ms
+          {manualReport
+            ? `人工 · ${manualReport.averageFps.toFixed(1)} FPS · P95 ${manualReport.frameP95.toFixed(1)}ms · 峰值 ${manualReport.frameMax.toFixed(0)}ms · 丢帧 ${manualReport.droppedFrames}`
+            : `性能 · ${metrics.fps.toFixed(0)} FPS · P95 ${metrics.frameP95.toFixed(1)}ms · 峰值 ${metrics.frameMax.toFixed(0)}ms · 丢帧 ${metrics.droppedFrames.toFixed(0)}%`}
         </button>
         <button
           type="button"
@@ -2945,11 +2957,6 @@ function PerformanceTestHud() {
         >
           {manualRecording ? '■ 结束并分析' : '● 开始人工录制'}
         </button>
-        {manualReport && (
-          <span className={manualReport.droppedFrames === 0 ? 'text-emerald-300' : 'text-rose-300'}>
-            {manualReport.averageFps.toFixed(1)} FPS / 掉帧 {manualReport.droppedFrames}
-          </span>
-        )}
       </div>
     );
   }
@@ -3153,7 +3160,7 @@ function PerformanceTestHud() {
           tone={metricTone(metrics.frameMax, 33, 80)}
         />
         <PerformanceMetric
-          label="掉帧率 (>16.67ms)"
+          label="实际错失刷新率"
           value={`${metrics.droppedFrames.toFixed(0)}%`}
           tone={metricTone(metrics.droppedFrames, 5, 20)}
         />
@@ -3163,7 +3170,7 @@ function PerformanceTestHud() {
             manualRecording
               ? '录制中（再次点击结束）'
               : manualReport
-                ? `${manualReport.strokes}笔 / ${manualReport.averageFps.toFixed(1)} / ${manualReport.droppedFrames}`
+                ? `${manualReport.strokes}次输入 / ${manualReport.averageFps.toFixed(1)} / ${manualReport.droppedFrames}`
                 : '等待开始'
           }
           tone={
@@ -4887,10 +4894,7 @@ function groupPaintHistoryRegions(regions: PaintDirtyRect[]) {
     });
   });
 
-  const columns = new Map<
-    string,
-    Array<{ bounds: PaintDirtyRect; regionIndexes: number[] }>
-  >();
+  const columns = new Map<string, Array<{ bounds: PaintDirtyRect; regionIndexes: number[] }>>();
   horizontalRuns.forEach((run) => {
     const key = `${run.bounds.x}:${run.bounds.width}`;
     const column = columns.get(key) ?? [];
@@ -6903,9 +6907,7 @@ function SurfacePaintOverlay() {
   const paintMaskResetRevision = useSceneStore((state) => state.paintMaskResetRevision);
   const paintMaskInvertRevision = useSceneStore((state) => state.paintMaskInvertRevision);
   const paintMaskHasContent = useSceneStore((state) => state.paintMaskHasContent);
-  const paintMaskPresentationVisible = useSceneStore(
-    (state) => state.paintMaskPresentationVisible,
-  );
+  const paintMaskPresentationVisible = useSceneStore((state) => state.paintMaskPresentationVisible);
   const paintMaskSettings = useSceneStore((state) => state.paintMaskSettings);
   const localRepaintBrushSettings = useSceneStore((state) => state.localRepaintBrushSettings);
   const paintToolSettings = useSceneStore((state) => state.paintToolSettings);
@@ -7549,8 +7551,7 @@ function SurfacePaintOverlay() {
               expectedOverlayState &&
               (overlaySceneState.paintTool === 'inpaint-apply' ||
                 overlayErasesPersistedLayer ||
-                  (overlaySceneState.localRepaintPreviewLayer?.id ===
-                    expectedOverlayState.layerId &&
+                (overlaySceneState.localRepaintPreviewLayer?.id === expectedOverlayState.layerId &&
                   (overlaySceneState.paintTool === 'none' ||
                     overlaySceneState.paintTool === 'inpaint-add' ||
                     overlaySceneState.paintTool === 'inpaint-subtract' ||
@@ -7572,10 +7573,7 @@ function SurfacePaintOverlay() {
                 mode,
                 overlayVisibilityLayer?.visible ??
                   (expectedOverlayState
-                    ? readLocalRepaintGpuOverlayLayerVisibility(
-                        expectedOverlayState,
-                        overlayLayers,
-                      )
+                    ? readLocalRepaintGpuOverlayLayerVisibility(expectedOverlayState, overlayLayers)
                     : true),
               )
                 ? '1'
@@ -8267,46 +8265,13 @@ function SurfacePaintOverlay() {
     if (!liveLayerId || !liveSourceKey) return;
     const persistedLayer = layers.find((layer) => layer.id === liveLayerId);
     const hasPersistedLayer = Boolean(persistedLayer);
-    const hasLiveContent = Boolean(
-      composite?.sourceKey === liveSourceKey && composite.hasContent,
-    );
+    const hasLiveContent = Boolean(composite?.sourceKey === liveSourceKey && composite.hasContent);
     const previewOwnsOverlay = sceneState.localRepaintPreviewLayer?.id === liveLayerId;
     const liveFeedbackRequested = sceneState.paintTool === 'inpaint-apply';
-    const orderedStackOwnsPreview =
-      !shouldUseDedicatedLocalRepaintOverlay(
-        layers,
+    const orderedStackOwnsPreview = !shouldUseDedicatedLocalRepaintOverlay(
+      layers,
       sceneState.localRepaintPreviewLayer ?? persistedLayer,
       liveFeedbackRequested,
-    );
-    const erasesPersistedLocalRepaint = isLocalRepaintLayerEraserActive(
-      sceneState.paintTool,
-      layerState.activeProjectedLayerId,
-      liveLayerId,
-      layers,
-    );
-    const keepsLiveLocalRepaintPreview =
-      sceneState.paintTool === 'inpaint-apply' ||
-      erasesPersistedLocalRepaint ||
-      (previewOwnsOverlay &&
-        (sceneState.paintTool === 'none' ||
-          sceneState.paintTool === 'inpaint-add' ||
-          sceneState.paintTool === 'inpaint-subtract' ||
-          sceneState.localRepaintGenerationPresentationActive));
-    // An empty prewarmed overlay used to rasterize the complete model even
-    // though every fragment resolved to zero alpha. Do not submit that draw at
-    // all. Mask editing is part of the same local-repaint session, so keep the
-    // live result visible while moving between the apply brush and mask brush.
-    // After leaving those tools, keep the overlay only for the very short atomic
-    // handoff window before the persisted row is resident.
-    const shouldRender = Boolean(
-      hasLiveContent &&
-      !orderedStackOwnsPreview &&
-      (keepsLiveLocalRepaintPreview || !hasPersistedLayer) &&
-      isLocalRepaintOverlayVisible(
-        sceneState.displayMode,
-        persistedLayer?.visible ??
-          (overlay ? readLocalRepaintGpuOverlayLayerVisibility(overlay, layers) : true),
-      ),
     );
     const targetModel = getTargetModel();
     const residentOverrideBound = Boolean(
@@ -8323,22 +8288,9 @@ function SurfacePaintOverlay() {
     document.body.dataset.localRepaintResidentMaskOverride = residentOverrideBound
       ? `bound:${liveLayerId}`
       : 'inactive';
-    // A new repaint has no resident binding yet and still needs the exact
-    // depth-aware overlay. Existing rows stay in the shared material pass; if
-    // binding is briefly unavailable, keep their last complete pixels instead
-    // of substituting a second mesh or muting them.
-    const residentHandoffPending =
-      localRepaintResidentPresentationLayerRef.current === liveLayerId;
-    // While the apply brush is active, the mutable exact overlay is the only
-    // presentation path that can reflect every canvas stamp immediately. A
-    // resident live-mask override may already be bound for the eventual
-    // handoff, but it must not suppress this interactive owner.
-    const exactOverlayVisible =
-      shouldRender &&
-      (liveFeedbackRequested ||
-        !residentOverrideBound ||
-        previewOwnsOverlay ||
-        residentHandoffPending);
+    // The shared projected material is the sole presentation owner. Keep the
+    // legacy overlay object inert while older lifecycle code is phased out.
+    const exactOverlayVisible = false;
     if (overlay) {
       changed =
         setLocalRepaintGpuOverlayVisibility(overlay, exactOverlayVisible, layers) || changed;
@@ -8357,11 +8309,7 @@ function SurfacePaintOverlay() {
       // frame, and only then complete the handoff.
       sceneState.setLocalRepaintPreviewLayer(undefined);
       scheduleLocalRepaintResidentPresentation(liveLayerId);
-    } else if (
-      rendererPreviewOwnsPresentation &&
-      persistedLayer &&
-      !previewOwnsOverlay
-    ) {
+    } else if (rendererPreviewOwnsPresentation && persistedLayer && !previewOwnsOverlay) {
       // Eye-on may happen while the eraser is still active. Reclaim ownership
       // in the same store turn in which the GPU twin becomes visible so the
       // persisted copy never renders coplanar with it.
@@ -8427,12 +8375,7 @@ function SurfacePaintOverlay() {
           texture: override.texture,
         }),
     }).then((ready) => {
-      if (
-        !ready ||
-        cancelled ||
-        localRepaintResidentMaskOverrideRef.current !== override
-      )
-        return;
+      if (!ready || cancelled || localRepaintResidentMaskOverrideRef.current !== override) return;
       clearLocalRepaintResidentMaskOverride();
       const overlay = localRepaintGpuOverlayRef.current;
       if (overlay?.layerId === override.layerId) {
@@ -9320,9 +9263,7 @@ function SurfacePaintOverlay() {
         nextFrame: () =>
           new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve())),
         ready: () => {
-          const layer = useLayerStore
-            .getState()
-            .layers.find((item) => item.id === previousLayerId);
+          const layer = useLayerStore.getState().layers.find((item) => item.id === previousLayerId);
           return (
             !layer ||
             !layer.visible ||
@@ -9356,10 +9297,7 @@ function SurfacePaintOverlay() {
           useLayerStore.getState().layers,
         );
       }
-      if (
-        previousOverride &&
-        localRepaintResidentMaskOverrideRef.current === previousOverride
-      ) {
+      if (previousOverride && localRepaintResidentMaskOverrideRef.current === previousOverride) {
         clearLocalRepaintResidentMaskOverride();
       }
       const state = useSceneStore.getState();
@@ -11957,8 +11895,7 @@ function SurfacePaintOverlay() {
             maskUrl: existingProjectionLayer?.maskUrl !== persistedLayer.maskUrl,
             maskSpace: existingProjectionLayer?.maskSpace !== persistedLayer.maskSpace,
             depthUrl: existingProjectionLayer?.depthUrl !== persistedLayer.depthUrl,
-            depthEncoding:
-              existingProjectionLayer?.depthEncoding !== persistedLayer.depthEncoding,
+            depthEncoding: existingProjectionLayer?.depthEncoding !== persistedLayer.depthEncoding,
             objectId: existingProjectionLayer?.objectId !== persistedLayer.objectId,
             generationId: existingProjectionLayer?.generationId !== persistedLayer.generationId,
             captureId: existingProjectionLayer?.captureId !== persistedLayer.captureId,
@@ -13029,9 +12966,11 @@ function SurfacePaintOverlay() {
               totalMs,
             };
             document.body.dataset.eraserCommitTiming = JSON.stringify(timing);
-            let samples: typeof timing[] = [];
+            let samples: (typeof timing)[] = [];
             try {
-              samples = JSON.parse(document.body.dataset.eraserCommitSamples ?? '[]') as typeof timing[];
+              samples = JSON.parse(
+                document.body.dataset.eraserCommitSamples ?? '[]',
+              ) as (typeof timing)[];
             } catch {
               samples = [];
             }

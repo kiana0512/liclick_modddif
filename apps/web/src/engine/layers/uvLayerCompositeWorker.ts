@@ -19,6 +19,7 @@ let nextRequestId = 1;
 let activeComposite: PendingComposite | undefined;
 const queuedComposites = new Map<string, PendingComposite>();
 let replacedCompositeCount = 0;
+let cancelledCompositeCount = 0;
 
 function abortError() {
   return new DOMException('Superseded by a newer UV composition.', 'AbortError');
@@ -35,6 +36,7 @@ function updateQueueProbe() {
     Number(Boolean(activeComposite)) + queuedComposites.size,
   );
   document.body.dataset.uvCompositeReplacedCount = String(replacedCompositeCount);
+  document.body.dataset.uvCompositeCancelledCount = String(cancelledCompositeCount);
 }
 
 function dispatchNextComposite() {
@@ -42,9 +44,7 @@ function dispatchNextComposite() {
     updateQueueProbe();
     return;
   }
-  const next = queuedComposites.entries().next().value as
-    | [string, PendingComposite]
-    | undefined;
+  const next = queuedComposites.entries().next().value as [string, PendingComposite] | undefined;
   if (!next) return;
   const [ownerKey, task] = next;
   queuedComposites.delete(ownerKey);
@@ -53,9 +53,7 @@ function dispatchNextComposite() {
   getWorker().postMessage(
     { id: task.id, layers: task.layers },
     {
-      transfer: task.layers.flatMap((layer) =>
-        'bitmap' in layer ? [layer.bitmap] : [],
-      ),
+      transfer: task.layers.flatMap((layer) => ('bitmap' in layer ? [layer.bitmap] : [])),
     },
   );
 }
@@ -98,10 +96,7 @@ export function canCompositeUvLayersInWorker() {
   );
 }
 
-export function compositeUvLayersInWorker(
-  layers: CompositeUvLayerInput[],
-  ownerKey = 'default',
-) {
+export function compositeUvLayersInWorker(layers: CompositeUvLayerInput[], ownerKey = 'default') {
   const id = nextRequestId++;
   return new Promise<ImageBitmap>((resolve, reject) => {
     const task = { id, ownerKey, layers, resolve, reject };
@@ -121,4 +116,20 @@ export function compositeUvLayerUrlsInWorker(
   ownerKey = 'default',
 ) {
   return compositeUvLayersInWorker(layers, ownerKey);
+}
+
+/**
+ * Removes queued obsolete work for one mounted compositor. An already active
+ * OffscreenCanvas job is allowed to finish so rapid owner changes cannot churn
+ * worker processes or transient ImageBitmap allocations.
+ */
+export function cancelUvLayerCompositions(ownerKey: string) {
+  const queued = queuedComposites.get(ownerKey);
+  if (queued) {
+    queuedComposites.delete(ownerKey);
+    releaseTaskBitmaps(queued);
+    queued.reject(abortError());
+    cancelledCompositeCount += 1;
+  }
+  updateQueueProbe();
 }

@@ -67,6 +67,7 @@ try {
     path.join(root, 'src/workers/previewImageBitmap.worker.ts'),
     'utf8',
   );
+  const projectStoreSource = await readFile(path.join(root, 'src/stores/projectStore.ts'), 'utf8');
   assert.doesNotMatch(
     editorSource,
     /models\.some\(\(model\) => model\.restoreStage && model\.restoreStage !== 'full'\)[\s\S]{0,120}return undefined/,
@@ -139,8 +140,13 @@ try {
   );
   assert.match(
     sceneRootSource,
-    /updateCurrentProject\(\{[\s\S]{0,120}activeObjectId: objectId/,
-    'viewport selection must persist through the same active-object contract as the object list',
+    /scheduleCurrentProjectActiveObjectPersistence\(objectId\)/,
+    'viewport selection must use the shared deferred active-object persistence contract',
+  );
+  assert.match(
+    projectStoreSource,
+    /setTimeout\([\s\S]{0,700}updateProjectById\(projectId, \{ activeObjectId \}\)/,
+    'rapid model selection must coalesce project persistence while preserving the final active object',
   );
 
   stdout.write('Multi-model restore policy regression test passed.\n');

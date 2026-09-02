@@ -25,7 +25,11 @@ import { useEditorHistoryStore } from '@/stores/editorHistoryStore';
 import { useGenerationStore } from '@/stores/generationStore';
 import { useT } from '@/stores/i18nStore';
 import { useLayerStore } from '@/stores/layerStore';
-import { IMMEDIATE_PROJECT_SAVE_EVENT, useProjectStore } from '@/stores/projectStore';
+import {
+  IMMEDIATE_PROJECT_SAVE_EVENT,
+  scheduleCurrentProjectActiveObjectPersistence,
+  useProjectStore,
+} from '@/stores/projectStore';
 import { useSceneStore } from '@/stores/sceneStore';
 import { useToastStore } from '@/stores/toastStore';
 import type { ModelLoadResult } from '@/engine/loaders/modelImportTypes';
@@ -186,7 +190,7 @@ export function ObjectsPanel({
       return;
     }
     selectObject(objectId);
-    updateCurrentProject({ objects: useSceneStore.getState().objects, activeObjectId: objectId });
+    scheduleCurrentProjectActiveObjectPersistence(objectId);
   }
 
   function handleToggleVisibility(objectId: string) {

@@ -36,7 +36,11 @@ export function WorkspaceDock({ side, panels, compactHidden, onRequestOpen }: Wo
     const frame = window.requestAnimationFrame(() => {
       const container = scrollContainerRef.current;
       if (!container) return;
-      container.scrollTo({ top: container.scrollHeight, behavior: 'smooth' });
+      // Activating the texture workspace used to start a long smooth scroll of
+      // the entire translucent dock. That animation competes with the viewport
+      // render and repeats on every scene -> texture switch. Preserve the same
+      // final panel position in one layout update.
+      container.scrollTop = container.scrollHeight;
     });
     return () => window.cancelAnimationFrame(frame);
   }, [generatePanelExpanded, side]);

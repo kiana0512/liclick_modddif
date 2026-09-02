@@ -42,6 +42,7 @@ import {
 } from '@/engine/layers/uvLayerComposition';
 import {
   canCompositeUvLayersInWorker,
+  cancelUvLayerCompositions,
   compositeUvLayerUrlsInWorker,
   compositeUvLayersInWorker,
 } from '@/engine/layers/uvLayerCompositeWorker';
@@ -58,7 +59,10 @@ import {
 import { useLayerStore } from '@/stores/layerStore';
 import { useWorkspaceLayoutStore } from '@/components/workspace/workspaceLayoutStore';
 import { translations, useI18nStore } from '@/stores/i18nStore';
-import { useProjectStore } from '@/stores/projectStore';
+import {
+  scheduleCurrentProjectActiveObjectPersistence,
+  useProjectStore,
+} from '@/stores/projectStore';
 import { useSceneStore } from '@/stores/sceneStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useToastStore } from '@/stores/toastStore';
@@ -667,6 +671,7 @@ function useCompositedUvTextureState(
   );
 
   useEffect(() => {
+    const workerOwnerKey = workerOwnerKeyRef.current;
     const uvLayers = stableLayers.filter((layer) => layer.visible && layer.imageUrl);
     if (uvLayers.length === 0) {
       // Keep finished composites resident. Visibility toggles are frequent and
@@ -822,7 +827,7 @@ function useCompositedUvTextureState(
                       imageUrl: layer.imageUrl!,
                       opacity: layer.opacity,
                     })),
-                    workerOwnerKeyRef.current,
+                    workerOwnerKey,
                   )
                 : await compositeUvLayersInWorker(
                     await Promise.all(
@@ -834,7 +839,7 @@ function useCompositedUvTextureState(
                         };
                       }),
                     ),
-                    workerOwnerKeyRef.current,
+                    workerOwnerKey,
                   );
               if (options?.maxSize && bitmap.width > options.maxSize) {
                 const resizedScale = options.maxSize / Math.max(bitmap.width, bitmap.height);
@@ -954,6 +959,7 @@ function useCompositedUvTextureState(
     return () => {
       cancelled = true;
       runtimeRef.current = undefined;
+      cancelUvLayerCompositions(workerOwnerKey);
     };
   }, [gl, layerKey, options?.maxSize, stableLayers]);
 
@@ -968,6 +974,11 @@ function useCompositedUvTextureState(
 function useCompositedUvTexture(layers: Layer[], options?: { maxSize?: number }) {
   return useCompositedUvTextureState(layers, options).texture;
 }
+
+const selectionBoundsCache = new WeakMap<
+  THREE.Object3D,
+  { matrixWorld: THREE.Matrix4; bounds: THREE.Box3 }
+>();
 
 function SelectionBoundsCorners({ object }: { object: THREE.Object3D }) {
   const lastMatrixWorldRef = useRef(
@@ -999,8 +1010,21 @@ function SelectionBoundsCorners({ object }: { object: THREE.Object3D }) {
     const paddedBounds = new THREE.Box3();
 
     const update = () => {
-      object.updateMatrixWorld(true);
-      bounds.setFromObject(object, true);
+      object.updateWorldMatrix(true, false);
+      // Selection chrome does not need the per-vertex `precise` path. That path
+      // scans every vertex whenever selection moves to another high-poly model
+      // and blocks presentation. Geometry bounds preserve the indicator's AABB
+      // semantics without touching texture or projection output.
+      const cachedBounds = selectionBoundsCache.get(object);
+      if (cachedBounds?.matrixWorld.equals(object.matrixWorld)) {
+        bounds.copy(cachedBounds.bounds);
+      } else {
+        bounds.setFromObject(object, false);
+        selectionBoundsCache.set(object, {
+          matrixWorld: object.matrixWorld.clone(),
+          bounds: bounds.clone(),
+        });
+      }
       if (bounds.isEmpty()) {
         lines.visible = false;
         return;
@@ -1051,7 +1075,9 @@ function SelectionBoundsCorners({ object }: { object: THREE.Object3D }) {
   }, [indicator]);
 
   useFrame(() => {
-    object.updateMatrixWorld(true);
+    // Camera motion cannot change the model root. Recurse through children only
+    // when a transform tool actually changed this root matrix.
+    object.updateWorldMatrix(true, false);
     if (!lastMatrixWorldRef.current.equals(object.matrixWorld)) indicator.update();
   });
 
@@ -1656,19 +1682,19 @@ function ImportedModel({
     const projectedCandidates = layers.filter(
       (layer) =>
         layer.type === 'projected' &&
+        layer.visible &&
         // Unpublished strokes stay renderer-only. Once published, warm their
         // muted resident row during pointer idle, before the next handoff.
         layer.id !== transientLocalRepaintPreviewLayerId &&
         layer.imageUrl &&
         layer.camera &&
-        (!layer.objectId || layer.objectId === importedObjectId),
+        (!layer.objectId || layer.objectId === importedObjectId) &&
+        isProjectedLayerAboveMergedUv(layer, visibleMergedUvBoundaryOrder),
     );
     const storedLayers = projectedCandidates
-      // Every persisted projection stays resident so an eye click remains a
-      // uniform-only operation. This is also the only stack eligible for initial
-      // publication: the old cold path first exposed a one-layer direct material
-      // and then replaced it with a differently sampled resident array, producing
-      // the visible correct-frame -> comb-frame transition.
+      // Hidden projections contribute zero pixels, so exclude their 4K samplers
+      // from the active shader. Eye-open rebuilds the same authoritative layer;
+      // visible colour and composition remain exact.
       // Layer order 0 is the top row in the panel. Feed the shader bottom-up so
       // later overlay evaluations preserve that visible stacking order.
       .sort((a, b) => b.order - a.order)
@@ -1698,6 +1724,7 @@ function ImportedModel({
     liveSurfacePaintPreview,
     transientLocalRepaintPreviewLayerId,
     texturedRestoreReady,
+    visibleMergedUvBoundaryOrder,
     visibleLocalRepaintPreviewLayer,
   ]);
   const previewProjectedLayerSignature = useMemo(
@@ -1709,16 +1736,19 @@ function ImportedModel({
     previewProjectedLayerSignature,
   );
   const projectedProgramWarmupLayers = useMemo(() => {
-    // Warm the exact resident structure used by the single authoritative
-    // material. Hidden rows remain zero-opacity uniforms until their eye opens.
+    // Warm only the exact visible structure. Compiling hidden 4K projection
+    // samplers on every workspace/model switch created driver long tasks while
+    // producing no pixels.
     const residentLayers = layers
       .filter(
         (layer) =>
           layer.type === 'projected' &&
+          layer.visible &&
           layer.id !== transientLocalRepaintPreviewLayerId &&
           layer.imageUrl &&
           layer.camera &&
-          (!layer.objectId || layer.objectId === importedObjectId),
+          (!layer.objectId || layer.objectId === importedObjectId) &&
+          isProjectedLayerAboveMergedUv(layer, visibleMergedUvBoundaryOrder),
       )
       .sort((left, right) => right.order - left.order)
       .map((layer) =>
@@ -1747,6 +1777,7 @@ function ImportedModel({
     layers,
     liveSurfacePaintPreview,
     transientLocalRepaintPreviewLayerId,
+    visibleMergedUvBoundaryOrder,
     visibleLocalRepaintPreviewLayer,
   ]);
   const projectedProgramWarmupInputs = useMemo<ProjectionLayerStackInput['layers']>(
@@ -2271,11 +2302,12 @@ function ImportedModel({
             layer.role !== 'local-repaint-draft' &&
             Boolean(layer.imageUrl) &&
             (!layer.objectId || layer.objectId === importedObjectId) &&
-            // Only the selected object's hidden rows can be toggled from the
-            // visible Layers panel. Warming hidden UV rows for every one of a
-            // nine-model project multiplied the cache working set and evicted
-            // in-flight worker bitmaps used by the current object's layers.
-            (layer.visible || selectedObjectId === importedObjectId),
+            // Hidden rows are speculative: warming them automatically can
+            // launch a full-resolution composition after the UI is already
+            // interactive and then stall a later zoom/workspace switch. The
+            // visible stack is the only texture required for the current
+            // frame; a hidden row is prepared on demand if the user enables it.
+            layer.visible,
         )
         .sort((left, right) => {
           const priority = (layer: Layer) =>
@@ -2283,7 +2315,7 @@ function ImportedModel({
           return priority(left) - priority(right) || left.order - right.order;
         })
         .slice(0, MAX_RESIDENT_UV_TOGGLE_TEXTURES),
-    [importedObjectId, layers, selectedObjectId],
+    [importedObjectId, layers],
   );
   const residentUvToggleSignature = useMemo(
     () => residentUvToggleLayers.map((layer) => `${layer.id}:${layer.imageUrl}`).join('|'),
@@ -2996,16 +3028,15 @@ function ImportedModel({
   // projected material while a live canvas is attached or the layer is dirty;
   // otherwise the layer row updates but the model keeps showing the stale bake.
   const hasResidentProjectedLayers = stablePreviewProjectedLayers.length > 0;
-  // Keep the projected shader and its texture arrays resident even when every
-  // projected layer is hidden. Visibility is already represented by each
-  // layer's opacity uniform, so replacing the shader with a white/baked material
-  // at zero visible layers only destroys GPU state and forces an asynchronous
-  // rebuild when an eye is enabled again. It also lets a stale/blank baked cache
-  // win that race and leave the object permanently white.
-  //
+  // Building hidden texture arrays speculatively creates large GPU queues that
+  // surface later as wheel/drag hitches even when an exact merged UV owns the
+  // visible colour. A real eye-open makes the row visible and immediately
+  // enters the authoritative projected path.
+  const needsInteractiveProjectedMaterial = stableVisibleProjectedLayers.length > 0;
   // Exact baked previews remain useful for legacy stacks that cannot be sampled
-  // as projected layers (for example, records without camera data). A resident
-  // projection stack must stay authoritative for interactive visibility changes.
+  // as projected layers (for example, records without camera data). Once any
+  // projected layer is visible, its stack is authoritative; when all are hidden,
+  // the exact merged UV can render without retaining a duplicate texture array.
   const visibleStackHasBakedPreview =
     Boolean(previewBakedTextureRecord) &&
     !visibleStackNeedsLivePreview &&
@@ -3013,7 +3044,8 @@ function ImportedModel({
   const canPreviewProjectedLayers =
     importedModel.restoreStage !== 'proxy' &&
     !visibleStackHasBakedPreview &&
-    hasResidentProjectedLayers;
+    hasResidentProjectedLayers &&
+    needsInteractiveProjectedMaterial;
   const previewLighting = useMemo(
     () =>
       getPreviewLighting({
@@ -5115,7 +5147,6 @@ export function SceneRoot() {
   const selectedObjectId = useSceneStore((state) => state.selectedObjectId);
   const workspaceMode = useWorkspaceLayoutStore((state) => state.mode);
   const selectObject = useSceneStore((state) => state.selectObject);
-  const updateCurrentProject = useProjectStore((state) => state.updateCurrentProject);
   const displayMode = useSceneStore((state) => state.displayMode);
   const environmentPreset = useSettingsStore((state) => state.environmentPreset);
   const exposure = useSettingsStore((state) => state.exposure);
@@ -5158,12 +5189,9 @@ export function SceneRoot() {
   const selectImportedObject = useCallback(
     (objectId: string) => {
       selectObject(objectId);
-      updateCurrentProject({
-        objects: useSceneStore.getState().objects,
-        activeObjectId: objectId,
-      });
+      scheduleCurrentProjectActiveObjectPersistence(objectId);
     },
-    [selectObject, updateCurrentProject],
+    [selectObject],
   );
   const clearViewportSelection = useCallback(() => {
     // Texture authoring always needs one active object. Clearing it on an empty

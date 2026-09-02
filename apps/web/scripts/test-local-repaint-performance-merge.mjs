@@ -81,6 +81,11 @@ assert.match(
   editor,
   /pendingLocalRepaintBackgroundGenerationIdRef\.current = result\.generationId/,
 );
+assert.match(
+  editor,
+  /pendingLocalRepaintBackgroundGenerationIdRef\.current !== latestLocalRepaintGeneration\.id[\s\S]*?return undefined;/,
+  'persisted local repaint generations must not restart speculative GPU preparation on every model or workspace switch',
+);
 assert.match(editor, /resolveLocalRepaintBackgroundPrewarmDisposition\(\{/);
 assert.match(backgroundPrewarmPolicy, /pendingGenerationId === nextSource\.generationId/);
 assert.match(backgroundPrewarmPolicy, /'preserve-current-source'/);

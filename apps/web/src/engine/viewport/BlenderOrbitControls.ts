@@ -6,11 +6,11 @@ type PointerAction = 'orbit' | 'pan' | 'dolly';
 const WORLD_UP = new THREE.Vector3(0, 1, 0);
 const MIN_ORTHOGRAPHIC_ZOOM = 0.01;
 const MAX_ORTHOGRAPHIC_ZOOM = 10_000;
-// A lower critically-damped frequency keeps the exact accumulated target but
-// reduces the visible first-frame acceleration of a wheel notch by 36.8%
-// (3.69% -> 2.33% target progress at 60 Hz). It also lowers the peak per-frame
-// target progress by 22.1% (10.99% -> 8.56%) without introducing overshoot.
-const WHEEL_ZOOM_SPRING = 14;
+// The critically-damped frequency keeps the exact accumulated target while
+// making high-frequency wheel input read as one continuous camera move. At
+// 60 Hz this consumes 1.24% of the target on the first frame and peaks at
+// 6.11% per frame (formerly 2.33% / 8.56%), without overshoot or a fixed FPS.
+const WHEEL_ZOOM_SPRING = 10;
 const WHEEL_DELTA_LINE = 1;
 const WHEEL_DELTA_PAGE = 2;
 
@@ -26,7 +26,9 @@ export class BlenderOrbitControls {
   minDistance = 0.3;
   maxDistance = 40;
   rotateSpeed = 0.005;
-  zoomSpeed = 0.0008;
+  // Preserve every physical wheel delta but reduce the logarithmic sensitivity
+  // by 25%; four 100px packets now target 27.1% instead of 37.7% distance.
+  zoomSpeed = 0.0006;
   panSpeed = 1;
 
   private activePointerId?: number;

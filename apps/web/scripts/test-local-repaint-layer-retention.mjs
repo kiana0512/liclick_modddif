@@ -104,8 +104,8 @@ assert.match(
 );
 assert.match(
   viewportCanvas,
-  /previewOwnsOverlay\s*&&\s*\(sceneState\.paintTool === 'none'[\s\S]*?sceneState\.paintTool === 'inpaint-add'[\s\S]*?sceneState\.paintTool === 'inpaint-subtract'/,
-  'closing the mask tool must keep the resident local repaint GPU preview visible',
+  /const exactOverlayVisible = false;[\s\S]*?setLocalRepaintGpuOverlayVisibility\(overlay, exactOverlayVisible, layers\)/,
+  'the shared resident material must remain the sole presentation owner while the legacy overlay stays inert',
 );
 assert.ok(
   (viewportCanvas.match(/const previewOwnsOverlay =/g) ?? []).length >= 4,

@@ -25,6 +25,30 @@ const editorSource = await readFile(
   new URL('../src/routes/EditorPage.tsx', import.meta.url),
   'utf8',
 );
+const objectsPanelSource = await readFile(
+  new URL('../src/components/panels/ObjectsPanel.tsx', import.meta.url),
+  'utf8',
+);
+const projectStoreSource = await readFile(
+  new URL('../src/stores/projectStore.ts', import.meta.url),
+  'utf8',
+);
+
+assert.match(
+  sceneRootSource,
+  /function SelectionBoundsCorners[\s\S]*?bounds\.setFromObject\(object, false\)/,
+  'scene selection chrome must use geometry bounds instead of scanning every high-poly vertex',
+);
+assert.match(
+  sceneRootSource,
+  /const selectionBoundsCache = new WeakMap[\s\S]*?cachedBounds\?\.matrixWorld\.equals\(object\.matrixWorld\)[\s\S]*?bounds\.copy\(cachedBounds\.bounds\)/,
+  'reselecting an unchanged model must reuse its world-space selection bounds',
+);
+assert.match(
+  sceneRootSource,
+  /useFrame\(\(\) => \{[\s\S]*?object\.updateWorldMatrix\(true, false\);[\s\S]*?indicator\.update\(\)/,
+  'unchanged selected models must not recursively update their complete object tree every frame',
+);
 
 assert.match(
   materialSource,
@@ -68,6 +92,11 @@ assert.match(
 );
 assert.match(
   materialSource,
+  /MAX_PROJECTED_SOURCE_TEXTURE_CACHE_ENTRIES = 48[\s\S]*?while \(projectedTextureCache\.size > MAX_PROJECTED_SOURCE_TEXTURE_CACHE_ENTRIES\)[\s\S]*?projectedTextureCache\.delete\(oldestKey\)/,
+  'decoded projected source textures must use a bounded LRU cache across multi-model projects',
+);
+assert.match(
+  materialSource,
   /PIXEL_UNPACK_BUFFER_BINDING[\s\S]*?bindBuffer\(input\.context\.PIXEL_UNPACK_BUFFER, null\)[\s\S]*?bindBuffer\(input\.context\.PIXEL_UNPACK_BUFFER, previousPixelUnpackBuffer\)/,
   'striped projected-array uploads must isolate and restore the pixel-unpack buffer binding',
 );
@@ -83,8 +112,8 @@ assert.match(
 );
 assert.match(
   viewportSource,
-  /droppedFrames: frameTimes\.filter\(\(value\) => value > targetMs\)\.length/,
-  'the performance lab must count every frame above the 60 Hz interval',
+  /droppedFrames: estimateMissedFrameCount\(/,
+  'the performance lab must count refresh opportunities actually missed',
 );
 assert.doesNotMatch(
   viewportSource,
@@ -173,13 +202,38 @@ assert.match(
 );
 assert.match(
   sceneRootSource,
-  /layer\.visible \|\| selectedObjectId === importedObjectId[\s\S]*?prewarmPreviewTextures\(imageUrls,[\s\S]*?maxSize: proxyTextureMaxSize/,
-  'multi-model restore must pin only the selected object\'s hidden UV toggle working set',
+  /Boolean\(layer\.imageUrl\)[\s\S]*?layer\.visible[\s\S]*?prewarmPreviewTextures\(imageUrls,[\s\S]*?maxSize: proxyTextureMaxSize/,
+  'multi-model restore must only prewarm the visible UV working set',
+);
+assert.match(
+  projectStoreSource,
+  /ACTIVE_OBJECT_PERSIST_DELAY_MS = 4_000[\s\S]*?scheduleCurrentProjectActiveObjectPersistence[\s\S]*?updateProjectById\(projectId, \{ activeObjectId \}\)/,
+  'rapid model navigation must persist only its final stable selection',
+);
+assert.match(
+  objectsPanelSource,
+  /function handleSelectObject\(objectId: string\)[\s\S]*?selectObject\(objectId\);\s*scheduleCurrentProjectActiveObjectPersistence\(objectId\);\s*\}/,
+  'the object list must defer persistence instead of cloning the complete project on every selection',
+);
+assert.match(
+  sceneRootSource,
+  /const selectImportedObject = useCallback\([\s\S]*?selectObject\(objectId\);\s*scheduleCurrentProjectActiveObjectPersistence\(objectId\);/,
+  'viewport selection must defer persistence instead of cloning the complete project on every click',
 );
 assert.match(
   sceneRootSource,
   /if \(!workspaceVisible\) \{[\s\S]*?hiddenBuild\.cancelled = true;[\s\S]*?projectedTextureArrayBuildRef\.current = undefined;[\s\S]*?return undefined;/,
   'hidden texture-workspace models must cancel and forget partial 4K projected-array builds',
+);
+assert.match(
+  sceneRootSource,
+  /const needsInteractiveProjectedMaterial = stableVisibleProjectedLayers\.length > 0/,
+  'hidden projected rows must not start speculative texture-array uploads while merged UV owns the visible result',
+);
+assert.doesNotMatch(
+  sceneRootSource,
+  /HIDDEN_PROJECTED_PREWARM_DELAY_MS|selectedForProjectedEditing/,
+  'selection idle must not schedule a delayed hidden-layer upload that can collide with wheel input',
 );
 assert.match(
   sceneRootSource,

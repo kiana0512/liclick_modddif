@@ -12,6 +12,11 @@ import {
 
 export const IMMEDIATE_PROJECT_SAVE_EVENT = 'liclick:immediate-project-save';
 const LOCAL_OBJECT_DELETION_KEY = 'liclick:pending-object-deletions:v1';
+const ACTIVE_OBJECT_PERSIST_DELAY_MS = 4_000;
+
+let pendingActiveObjectPersistence:
+  | { projectId: string; activeObjectId: string; timer: number }
+  | undefined;
 
 type ProjectStore = {
   projects: Project[];
@@ -357,3 +362,30 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
       };
     }),
 }));
+
+/**
+ * Model selection is navigation state. Updating the full Project store for
+ * every click re-renders the editor route and starts the max-wait autosave,
+ * which structured-clones the complete image-heavy project during a rapid
+ * sweep. Keep selection immediate in sceneStore, then persist only the last
+ * stable object. Explicit save/back snapshots already read sceneStore directly.
+ */
+export function scheduleCurrentProjectActiveObjectPersistence(activeObjectId: string) {
+  const projectId = useProjectStore.getState().currentProjectId;
+  if (!projectId || typeof window === 'undefined') return;
+  if (pendingActiveObjectPersistence) {
+    window.clearTimeout(pendingActiveObjectPersistence.timer);
+  }
+  const timer = window.setTimeout(() => {
+    const pending = pendingActiveObjectPersistence;
+    pendingActiveObjectPersistence = undefined;
+    if (!pending || pending.projectId !== projectId || pending.activeObjectId !== activeObjectId)
+      return;
+    const state = useProjectStore.getState();
+    if (state.currentProjectId !== projectId) return;
+    const project = state.projects.find((item) => item.id === projectId);
+    if (!project || project.activeObjectId === activeObjectId) return;
+    state.updateProjectById(projectId, { activeObjectId });
+  }, ACTIVE_OBJECT_PERSIST_DELAY_MS);
+  pendingActiveObjectPersistence = { projectId, activeObjectId, timer };
+}
