@@ -30,16 +30,21 @@ export function resolveLocalRepaintBackgroundPrewarmDisposition(input: {
     return 'already-staged';
   }
 
-  // A persisted repaint selected for editing is an explicit user-owned source.
-  // Background staging of the newest generation must never replace it, even
-  // when that source was restored with autoActivate=false or another result
-  // finishes while the user is working on the selected row.
+  // A newly completed generation owns one explicit staging handoff. This must
+  // win over an idle persisted-row source, otherwise button 3 waits forever
+  // for GPU readiness that can never be published for the new result. Active
+  // eraser gestures are excluded by EditorPage before this policy is reached.
+  if (pendingGenerationId === nextSource.generationId) return 'stage-latest-generation';
+
+  // Outside that one result handoff, a persisted repaint selected for editing
+  // is an explicit user-owned source and ordinary background scans cannot
+  // replace it.
   if (currentSource.projectionLayerId) return 'preserve-current-source';
 
   // A newly completed generation is the only passive flow allowed to replace
   // another live source. Once consumed, selecting a historical repaint keeps
   // ownership until the user explicitly chooses a different result.
-  return pendingGenerationId === nextSource.generationId || currentSource.autoActivate === false
+  return currentSource.autoActivate === false
     ? 'stage-latest-generation'
     : 'preserve-current-source';
 }

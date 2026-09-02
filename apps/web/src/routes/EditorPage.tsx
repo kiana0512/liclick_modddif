@@ -6455,9 +6455,7 @@ export function EditorPage({
     });
     if (
       canQueueLocalRepaintActivation &&
-      (generationOperationLocked ||
-        !localRepaintGenerationReady ||
-        !localRepaintInteractiveReady)
+      (generationOperationLocked || !localRepaintGenerationReady)
     ) {
       pendingLocalRepaintActivationRequestRef.current = createLocalRepaintActivationRequest({});
       setLocalRepaintActivationQueued(true);
@@ -6739,14 +6737,15 @@ export function EditorPage({
     if (
       generationOperationLocked ||
       !localRepaintGenerationReady ||
-      !localRepaintInteractiveReady ||
       !pendingLocalRepaintActivationRequestRef.current
     ) {
       return;
     }
     pendingLocalRepaintActivationRequestRef.current = undefined;
     setLocalRepaintActivationQueued(false);
-    document.body.dataset.localRepaintButton3ActivationPath = 'replayed-after-gpu-ready';
+    document.body.dataset.localRepaintButton3ActivationPath = localRepaintInteractiveReady
+      ? 'replayed-after-gpu-ready'
+      : 'replayed-to-start-gpu-prepare';
     handleLocalRepaintFromToolbar();
   }, [
     generationOperationLocked,

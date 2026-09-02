@@ -192,8 +192,32 @@ assert.equal(
     nextSource,
     pendingGenerationId: 'generation-2',
   }),
+  'stage-latest-generation',
+  'a newly completed generation must stage once instead of deadlocking behind the selected row',
+);
+assert.equal(
+  resolveBackgroundPrewarm({
+    currentSource: {
+      generationId: 'generation-1',
+      objectId: 'object-1',
+      targetLayerId: 'target-1',
+      projectionLayerId: 'local-repaint-projection-1',
+      autoActivate: false,
+    },
+    nextSource,
+  }),
   'preserve-current-source',
-  'an exact selected repaint row must retain renderer ownership across later generations',
+  'ordinary scans must preserve the exact selected repaint row',
+);
+assert.match(
+  editor,
+  /canQueueLocalRepaintActivation &&\s*\(generationOperationLocked \|\| !localRepaintGenerationReady\)/,
+  'a ready generation with a cold GPU source must start preparation on click instead of only spinning',
+);
+assert.match(
+  editor,
+  /!localRepaintGenerationReady \|\|\s*!pendingLocalRepaintActivationRequestRef\.current[\s\S]*?'replayed-to-start-gpu-prepare'/,
+  'an unlocked queued click must replay into GPU preparation without waiting for a circular ready event',
 );
 
 const compiledActivationRequestPolicy = ts.transpileModule(activationRequestPolicy, {
