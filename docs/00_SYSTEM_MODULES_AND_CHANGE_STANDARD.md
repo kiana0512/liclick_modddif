@@ -175,7 +175,7 @@ Layer 的 `type`、`role`、`blendMode`、`visibility policy` 是四个独立维
 
 删除最后一个活动对象图层后，store 自动创建空 UV 保底层。剪刀发布时会隐藏所有实际被消费的源层；若指定空 UV 目标则原位填充，否则在源层位置创建 merged-uv。
 
-### 5.1 当前图层橡皮 `ALG-ERASE-001` v1.3.1
+### 5.1 当前图层橡皮 `ALG-ERASE-001` v1.3.2
 
 橡皮采用 Modddif 式“编辑当前图层覆盖”语义，不对最终合成画面做破坏性擦除。快捷键为贴图工作区 `E`，目标由 `engine/paint/eraserTargetPolicy.ts` 唯一判定，React 和 Zustand 不得复制类型分支。
 
@@ -196,6 +196,8 @@ v1.2.0 的交互调度只优化普通 projected keep-mask：原始鼠标/压感�
 v1.3.0 历史事务修复（UI-06/UI-10 → M12 历史与画笔集成）：每次抬笔立即占据一个 runtime 历史位置，图像解码和 48ms idle 提交只填充该位置的前后瓦片，不再次入栈或清空 redo。`engine/paint/paintHistoryBoundary.ts` 统一工具栏与快捷键：等待当前手势和已登记的提交，再按请求顺序执行撤回/重做；等待期间仅拒绝新绘制手势，不阻塞浏览器线程。提交失败移除本笔占位；项目历史重置与清理蒙版通过版本检查淘汰晚到提交。
 
 v1.3.1 首笔投影蒙版交接修复：普通 projected 橡皮激活时以 1×1 中性白值预热未来正式 keep-mask 的稳定 live URL，SceneRoot 在内存 live preview 中把该 URL 提前纳入投影结构，但不在用户落笔前修改 Layer/Project。首笔提交把同一 CanvasTexture 扩为项目分辨率并更新像素，LayerStore 发布相同 URL，因此不再触发“无 UV mask → 新 UV mask”的异步纹理数组重建；512 实时 multiplier 在整个交接窗口持续生效。既有外部蒙版在解码后按同一流程提升。覆盖公式、历史、3000ms 补缝、保存资产、GPU/CPU/Worker/UV/export 和 1K/2K/4K/8K 输出均不变。
+
+v1.3.2 投影蒙版显隐交接修复：多投影栈的 `DataArrayTexture` 是 live canvas 的像素快照，稳定 URL 不能单独表示内容变更。纹理数组结构键仅在 array 路径纳入 live keep-mask revision，每次持久提交会取消旧的全白/旧蒙版打包并重新上传当前像素。新数组尚未驻留时，旧材质继续保留累计 live multiplier；新材质原子发布后再清除，因此关闭/重开图层预览不再恢复擦除前的效果。direct sampler 路径仍原地更新 CanvasTexture，不增加重建。覆盖公式、历史、补缝、保存资产、GPU/CPU/Worker/UV/export、分辨率与 Schema 均不变，无迁移。
 
 撤回/重做在同一任务中恢复持久瓦片、将当前及同层重建实例的 live eraser multiplier 重置为白色中性值、上传纹理并 invalidate；保持驻留 shader 结构，重新绑定 image/mask URL 和 contentRevision，随后同步 Project layers。此处中性白值是内部 keep-mask，不是编辑结果中的白模。后台细化仍采用项目原始分辨率和 3000ms idle；`engine/paint/refineStrokeHistory.ts` 从最早瓦片检查点按笔画顺序重放，分别更新每笔的 before/after。已撤回笔画仅更新 redo 检查点，不重新显示；新分支清除不再属于历史的笔画。每四个瓦片让出执行权，完成后无 await 地原子发布全部像素与历史；切换、撤回或新笔画使旧任务失效时不发布半成品。
 
@@ -636,3 +638,4 @@ M15 体积修复：锁定 `terser@5.51.2` 两轮安全压缩，保留日志和�
 | `2.14.1` | 2026-09-02 | `29e6750 + 58dd8b1 本地合并基线` | 合入远端运行时性能采集、投影降级、橡皮擦历史开销、局部重绘 worker/PNG 编码与云端包体门禁优化；同时保留 `ALG-LR-007` v2.1.4 的实时 overlay 显示权、历史图层持续显示和原子交接，以及 `ALG-LR-008` v2.2.6 的精确 GPU 准备自愈与事件握手。Project/Layer/Generation/Capture Schema、Revision、ownership 与资产不变，无迁移。 |
 | `2.15.0` | 2026-09-02 | `本次局部重绘统一会话与单显示所有权修复` | UI-06/UI-10、M08、`ALG-LR-007` v2.2.0 / `ALG-LR-008` v2.3.0：以 generation/target/sessionId 的唯一内存 Session 串行推进资源、蒙版、正式材质和渲染帧准备，拒绝旧任务晚到事件；共享 projected material 成为唯一显示 owner，移除活动画笔对 dedicated overlay 与 resident twin 的切换；pointer-down 只消费 ready 资源。总准备 20 秒、正式绑定 10 秒后明确失败，不再无限转圈。Schema、Revision、ownership、投影/颜色/分辨率与已有资产不变，无迁移。 |
 | `2.15.1` | 2026-09-02 | `本次普通投影橡皮首笔原子交接修复` | UI-06/UI-10、M05/M06/M08、`ALG-ERASE-001` v1.3.1：橡皮激活时通过 renderer-only live preview 预热与首笔提交相同的稳定 UV keep-mask URL，首笔抬起只更新 CanvasTexture 与 Layer 内容，不再从无 mask 切换到新 mask 后重建整套投影纹理数组，消除擦除先显示、回弹、3000ms 补缝后再恢复的问题。不落笔不修改项目；覆盖、历史、补缝、持久化、分辨率、Schema、Revision、ownership 与资产类别不变，无迁移。 |
+| `2.15.2` | 2026-09-02 | `本次投影橡皮显隐持久修复` | UI-06/UI-10、M05/M06/M08、`ALG-ERASE-001` v1.3.2：纹理数组键纳入 live keep-mask revision，取消旧蒙版快照并重打包当前像素；新 array 驻留前保留累计 live multiplier，原子发布后再清除，修复擦除后关闭/重开图层预览恢复旧效果。direct 路径、覆盖、历史、补缝、持久化、分辨率、Schema、Revision、ownership 与资产类别不变，无迁移。 |

@@ -328,6 +328,16 @@ assert.match(
   'The projected stack must use the prewarmed resident mask URL during the live eraser handoff.',
 );
 assert.match(
+  sceneRootSource,
+  /function liveProjectedMaskRevisionSignature[\s\S]*?getLiveProjectedCanvasState\(maskUrl\)\?\.revision[\s\S]*?const projectedTextureArrayStructureSignature[\s\S]*?useProjectedTextureArrays[\s\S]*?liveProjectedMaskRevisionSignature\(layer\.maskUrl\)/,
+  'A packed projected mask must invalidate the texture array when its stable live canvas pixels change.',
+);
+assert.match(
+  sceneRootSource,
+  /if \(!liveProjectedEraserMaskTexture\) return;[\s\S]*?const projectedMaterialStructureKey[\s\S]*?committedProjectedMaterialStructureRef\.current !== projectedMaterialStructureKey[\s\S]*?applyMaterials clears it atomically/,
+  'Eye and tool toggles must retain the live eraser multiplier until the revised resident array is ready.',
+);
+assert.match(
   viewportCanvasInteractionSource,
   /previewOwnsOverlay &&[\s\S]*?sceneState\.localRepaintGenerationPresentationActive[\s\S]*?localRepaintGenerationPresentationActive,[\s\S]*?paintTool/,
   'A running local generation must keep the previous renderer-owned repaint visible while editing is locked.',

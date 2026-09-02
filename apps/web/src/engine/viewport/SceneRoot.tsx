@@ -242,6 +242,12 @@ function applyLiveProjectedMaskBinding(
   return maskUrl ? { ...layer, maskUrl, maskSpace: 'uv' as const } : layer;
 }
 
+function liveProjectedMaskRevisionSignature(maskUrl: string | undefined) {
+  if (!maskUrl) return '';
+  const revision = getLiveProjectedCanvasState(maskUrl)?.revision;
+  return revision === undefined ? '' : `live-mask-r${revision}`;
+}
+
 function layerPreviewSignature(layer: Layer, relativeOrder = layer.order) {
   return [
     layer.id,
@@ -1633,7 +1639,11 @@ function ImportedModel({
     });
   }, [importedObjectId, liveSurfacePaintPreview]);
   useLayoutEffect(() => {
-    const layerId = liveProjectedEraserMaskTexture ? liveSurfacePaintPreview?.layerId : undefined;
+    // Clearing a transient multiplier is a separate atomic handoff below. If
+    // the persistent keep-mask is packed into a texture array, detaching here
+    // would expose the array's previous snapshot until its replacement lands.
+    if (!liveProjectedEraserMaskTexture) return;
+    const layerId = liveSurfacePaintPreview?.layerId;
     if (
       syncProjectedLayerLiveEraserPreviewInObject(
         importedModel.group,
@@ -2438,6 +2448,9 @@ function ImportedModel({
             layer.layerId,
             layer.imageUrl,
             layer.maskUrl ?? '',
+            useProjectedTextureArrays
+              ? liveProjectedMaskRevisionSignature(layer.maskUrl)
+              : '',
             layer.depthUrl ?? '',
             layer.normalUrl ?? '',
             layer.maskSpace ?? 'projection',
@@ -2451,7 +2464,7 @@ function ImportedModel({
           ].join('~'),
         )
         .join('|'),
-    [previewProjectionInputs],
+    [previewProjectionInputs, useProjectedTextureArrays],
   );
   const projectedSamplerBudget = useProjectedTextureArrays
     ? projectedTextureArraySamplerBudget
@@ -3182,6 +3195,30 @@ function ImportedModel({
     useProjectedTextureArrays ? 'array' : 'direct',
     textureArrayCompositionFallbackRequired ? 'fallback' : 'exact',
   ].join('|');
+  useLayoutEffect(() => {
+    if (liveProjectedEraserMaskTexture) return;
+    if (
+      useProjectedTextureArrays &&
+      committedProjectedMaterialStructureRef.current !== projectedMaterialStructureKey
+    ) {
+      // The old array still contains the pre-commit mask pixels. Keep the
+      // cumulative live multiplier on that material through eye/tool toggles;
+      // applyMaterials clears it atomically on the replacement material after
+      // the new live-mask revision has been packed and presented.
+      return;
+    }
+    if (
+      syncProjectedLayerLiveEraserPreviewInObject(importedModel.group, undefined, undefined)
+    ) {
+      invalidate();
+    }
+  }, [
+    importedModel,
+    invalidate,
+    liveProjectedEraserMaskTexture,
+    projectedMaterialStructureKey,
+    useProjectedTextureArrays,
+  ]);
   const showWhiteMembrane = Boolean(
     transientWhitePresentationObjectId === importedModel.objectId ||
     (!hasAuthoritativeVisibleTextureLayer && !liveTopUvTexture && !liveSurfacePaintPreview),
@@ -3195,6 +3232,9 @@ function ImportedModel({
             layer.layerId,
             layer.imageUrl,
             layer.maskUrl ?? '',
+            useProjectedProgramWarmupTextureArrays
+              ? liveProjectedMaskRevisionSignature(layer.maskUrl)
+              : '',
             layer.depthUrl ?? '',
             layer.normalUrl ?? '',
             layer.useMask ? 1 : 0,
@@ -3206,7 +3246,7 @@ function ImportedModel({
           ].join('~'),
         )
         .join('|'),
-    [projectedProgramWarmupInputs],
+    [projectedProgramWarmupInputs, useProjectedProgramWarmupTextureArrays],
   );
   const projectedProgramWarmupStructureSignature = useMemo(
     () =>
