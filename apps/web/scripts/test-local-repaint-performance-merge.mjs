@@ -104,6 +104,56 @@ assert.doesNotMatch(
 );
 assert.match(viewport, /publishLocalRepaintInteractiveState\(\{/);
 assert.match(interactiveState, /'liclick:local-repaint-interactive-state'/);
+assert.match(interactiveState, /LocalRepaintSessionPhase/);
+assert.match(interactiveState, /current\?\.sessionId !== update\.sessionId/);
+assert.doesNotMatch(
+  editor,
+  /localRepaintGpuReadyGeneration === generationId/,
+  'button readiness must come from the session owner, not DOM diagnostics',
+);
+
+const compiledInteractiveState = ts.transpileModule(interactiveState, {
+  compilerOptions: {
+    module: ts.ModuleKind.ES2022,
+    target: ts.ScriptTarget.ES2022,
+  },
+}).outputText;
+const interactiveStateModule = await import(
+  `data:text/javascript;base64,${Buffer.from(compiledInteractiveState).toString('base64')}`
+);
+const firstSession = interactiveStateModule.beginLocalRepaintSession({
+  generationId: 'generation-1',
+  targetLayerId: 'target-1',
+});
+const secondSession = interactiveStateModule.beginLocalRepaintSession({
+  generationId: 'generation-2',
+  targetLayerId: 'target-2',
+});
+assert.equal(
+  interactiveStateModule.publishLocalRepaintInteractiveState({
+    sessionId: firstSession.sessionId,
+    generationId: 'generation-1',
+    targetLayerId: 'target-1',
+    status: 'ready',
+  }),
+  false,
+  'a stale async task must not publish readiness into the current session',
+);
+assert.equal(
+  interactiveStateModule.getLocalRepaintSessionSnapshot().sessionId,
+  secondSession.sessionId,
+);
+assert.equal(
+  interactiveStateModule.publishLocalRepaintInteractiveState({
+    sessionId: secondSession.sessionId,
+    generationId: 'generation-2',
+    targetLayerId: 'target-2',
+    status: 'ready',
+    phase: 'ready',
+  }),
+  true,
+);
+assert.equal(interactiveStateModule.getLocalRepaintSessionSnapshot().status, 'ready');
 assert.match(
   viewport,
   /projectedBackgroundMaterialRevision[\s\S]{0,500}backgroundDisplayMode === 'flat'[\s\S]{0,120}backgroundDisplayMode === 'pbr'/,

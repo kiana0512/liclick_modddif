@@ -168,7 +168,9 @@ import {
   type LocalRepaintActivationRequest,
 } from '@/engine/localRepaint/activationRequestPolicy';
 import {
+  getLocalRepaintSessionSnapshot,
   LOCAL_REPAINT_INTERACTIVE_STATE_EVENT,
+  requestLocalRepaintSessionActivation,
   type LocalRepaintInteractiveStateDetail,
 } from '@/engine/localRepaint/localRepaintInteractiveState';
 import {
@@ -6164,9 +6166,11 @@ export function EditorPage({
     const preparedSource = useSceneStore.getState().localRepaintProjectionSource;
     const requestRendererPrepare = (targetLayerId: string) => {
       const generationId = latestLocalRepaintGeneration.id;
+      const session = getLocalRepaintSessionSnapshot();
       const ready =
-        document.body.dataset.localRepaintGpuReadyGeneration === generationId &&
-        document.body.dataset.localRepaintGpuReadyTarget === targetLayerId;
+        session?.status === 'ready' &&
+        session.generationId === generationId &&
+        session.targetLayerId === targetLayerId;
       if (ready) return false;
       const requestKey = `${generationId}:${targetLayerId}`;
       if (localRepaintGpuPrepareRequestedKeyRef.current !== requestKey) {
@@ -6558,9 +6562,11 @@ export function EditorPage({
         ? useLayerStore.getState().layers.find((layer) => layer.id === preparedSource.targetLayerId)
         : undefined;
       const preparedTargetId = preparedTargetLayer?.id;
+      const preparedSession = getLocalRepaintSessionSnapshot();
       const preparedSourceHasGpuError =
-        document.body.dataset.localRepaintGpuErrorGeneration === latestLocalRepaintGeneration.id &&
-        document.body.dataset.localRepaintGpuErrorTarget === preparedTargetId;
+        preparedSession?.status === 'failed' &&
+        preparedSession.generationId === latestLocalRepaintGeneration.id &&
+        preparedSession.targetLayerId === preparedTargetId;
       if (
         preparedSource?.generationId === latestLocalRepaintGeneration.id &&
         preparedSource.objectId === objectId &&
@@ -6573,10 +6579,14 @@ export function EditorPage({
         // about readiness and forced a fully resident source back through the
         // cold 6% decode path. Generation + object + destination own the source
         // revision; the GPU-ready markers below guard the exact resident bind.
-        const isGpuReady = () =>
-          document.body.dataset.localRepaintGpuReadyGeneration ===
-            latestLocalRepaintGeneration.id &&
-          document.body.dataset.localRepaintGpuReadyTarget === preparedTargetId;
+        const isGpuReady = () => {
+          const session = getLocalRepaintSessionSnapshot();
+          return (
+            session?.status === 'ready' &&
+            session.generationId === latestLocalRepaintGeneration.id &&
+            session.targetLayerId === preparedTargetId
+          );
+        };
         if (isGpuReady()) {
           document.body.dataset.localRepaintButton3ActivationPath = 'resident-gpu';
           clearPrewarmProgress();
@@ -6592,6 +6602,10 @@ export function EditorPage({
           generationId: latestLocalRepaintGeneration.id,
           targetLayerId: preparedTargetId,
         });
+        requestLocalRepaintSessionActivation(
+          latestLocalRepaintGeneration.id,
+          preparedTargetId,
+        );
         setLocalRepaintActivationQueued(true);
         // The source can already be selected while its prior renderer effect was
         // cancelled before publishing GPU readiness. Restart that exact source

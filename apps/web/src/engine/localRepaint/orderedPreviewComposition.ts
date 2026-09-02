@@ -60,11 +60,15 @@ export function shouldPresentLocalRepaintInOrderedStack(
  * above the repaint.
  */
 export function shouldUseDedicatedLocalRepaintOverlay(
-  layers: readonly Layer[],
-  preview: Layer | undefined,
-  liveFeedbackRequested: boolean,
+  _layers: readonly Layer[],
+  _preview: Layer | undefined,
+  _liveFeedbackRequested: boolean,
 ) {
-  return liveFeedbackRequested || !shouldPresentLocalRepaintInOrderedStack(layers, preview);
+  // Local repaint is always injected into the shared projected material stack.
+  // A second mesh used to race that resident stack for visibility and sampled
+  // stale masks after eye toggles. Keeping this helper as a compatibility seam
+  // makes old call sites harmless while presentation has one owner.
+  return false;
 }
 
 /**
@@ -75,22 +79,19 @@ export function shouldUseDedicatedLocalRepaintOverlay(
  * and the resident binding is disabled by the preview marker.
  */
 export function shouldMuteLocalRepaintResidentLayer(
-  layers: readonly Layer[],
-  preview: Layer | undefined,
-  layerId: string,
-  liveFeedbackRequested = false,
+  _layers: readonly Layer[],
+  _preview: Layer | undefined,
+  _layerId: string,
+  _liveFeedbackRequested = false,
 ) {
-  return (
-    preview?.id === layerId &&
-    shouldUseDedicatedLocalRepaintOverlay(layers, preview, liveFeedbackRequested)
-  );
+  return false;
 }
 
 export function getOrderedLocalRepaintPreviewLayer(
   layers: readonly Layer[],
   preview: Layer | undefined,
 ) {
-  if (!preview || !shouldPresentLocalRepaintInOrderedStack(layers, preview)) return undefined;
+  if (!preview?.imageUrl || !preview.camera || preview.type !== 'projected') return undefined;
   return resolveLocalRepaintPreviewPresentation(preview, layers);
 }
 

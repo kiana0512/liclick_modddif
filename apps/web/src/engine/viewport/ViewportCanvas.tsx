@@ -118,7 +118,12 @@ import { registerPreviewTextureRenderer } from './previewTextureCache';
 import { createLocalRepaintFalloffInWorker } from '@/engine/localRepaint/falloffWorker';
 import { updateLocalRepaintInwardCrossfadeCanvas } from '@/engine/localRepaint/inwardCrossfadeMask';
 import { getLocalRepaintSeamMode } from '@/engine/localRepaint/seamHarmonizationMode';
-import { publishLocalRepaintInteractiveState } from '@/engine/localRepaint/localRepaintInteractiveState';
+import {
+  beginLocalRepaintSession,
+  getLocalRepaintSessionSnapshot,
+  publishLocalRepaintInteractiveState,
+  withLocalRepaintSessionTimeout,
+} from '@/engine/localRepaint/localRepaintInteractiveState';
 import { prepareLocalRepaintGenerationInput } from '@/engine/localRepaint/generationInputWorker';
 import { revokeRegisteredObjectUrl } from '@/utils/blobUrlRegistry';
 import { isViewportInteractionBusy, markViewportInteractionEnd } from './viewportInteractionState';
@@ -9380,10 +9385,17 @@ function SurfacePaintOverlay() {
       };
     }
 
+    const repaintSession = beginLocalRepaintSession({
+      generationId: source.generationId ?? '',
+      targetLayerId: source.targetLayerId,
+      activationRequested: source.autoActivate !== false,
+    });
     publishLocalRepaintInteractiveState({
+      sessionId: repaintSession.sessionId,
       generationId: source.generationId ?? '',
       targetLayerId: source.targetLayerId,
       status: 'preparing',
+      phase: 'loading-assets',
     });
 
     // The former delayed-UV-bake path created an empty merge layer before the
@@ -9424,15 +9436,19 @@ function SurfacePaintOverlay() {
 
     const sourceDecodeStartedAt = performance.now();
     const previousAssets = localRepaintSourceImageRef.current;
-    void Promise.all([
-      previousAssets?.url === source.imageUrl
-        ? Promise.resolve(previousAssets.image)
-        : loadImageElement(source.imageUrl),
-      // The generated visibility mask is authoritative. Never turn a failed
-      // mask fetch into unrestricted projection opacity.
-      loadImageElement(source.allowedMaskUrl),
-      Promise.resolve(undefined),
-    ])
+    void withLocalRepaintSessionTimeout(
+      Promise.all([
+        previousAssets?.url === source.imageUrl
+          ? Promise.resolve(previousAssets.image)
+          : loadImageElement(source.imageUrl),
+        // The generated visibility mask is authoritative. Never turn a failed
+        // mask fetch into unrestricted projection opacity.
+        loadImageElement(source.allowedMaskUrl),
+        Promise.resolve(undefined),
+      ]),
+      20_000,
+      '读取局部重绘高清图或蒙版',
+    )
       .then(async ([sourceImage, allowedMaskImage, depthImage]) => {
         if (cancelled) return;
         if (document.body.dataset.perfLocalRepaintMeasuring === '1') {
@@ -9523,9 +9539,12 @@ function SurfacePaintOverlay() {
         document.body.dataset.localRepaintGpuErrorGeneration = source.generationId ?? '';
         document.body.dataset.localRepaintGpuErrorTarget = source.targetLayerId ?? '';
         publishLocalRepaintInteractiveState({
+          sessionId: repaintSession.sessionId,
           generationId: source.generationId ?? '',
           targetLayerId: source.targetLayerId,
           status: 'failed',
+          phase: 'failed',
+          error: error instanceof Error ? error.message : String(error),
         });
         reportLocalRepaintPrewarmProgress(1, '无法读取高清结果或蒙版，请重试', {
           done: true,
@@ -10697,6 +10716,11 @@ function SurfacePaintOverlay() {
       preparedAssets.allowedMaskUrl !== localRepaintProjectionSource.allowedMaskUrl
     )
       return undefined;
+    const repaintSession = beginLocalRepaintSession({
+      generationId: localRepaintProjectionSource.generationId ?? '',
+      targetLayerId: localRepaintProjectionSource.targetLayerId,
+      activationRequested: localRepaintProjectionSource.autoActivate !== false,
+    });
     let cancelled = false;
     reportLocalRepaintPrewarmProgress(0.08, '读取高清生成结果');
     let timeoutId: number | undefined;
@@ -10707,24 +10731,67 @@ function SurfacePaintOverlay() {
       });
     const prepare = async () => {
       if (cancelled) return;
-      if (isPaintingRef.current || isViewportInteractionBusy()) {
-        timeoutId = window.setTimeout(() => void prepare(), 80);
-        return;
-      }
+      const preparationDeadline = performance.now() + 20_000;
       const waitForViewportIdle = async () => {
         while (!cancelled && (isPaintingRef.current || isViewportInteractionBusy())) {
+          if (performance.now() >= preparationDeadline) {
+            throw new Error('等待视口空闲超时，请结束当前操作后重试。');
+          }
           await waitForFrame();
         }
       };
       const model = getTargetModel();
-      if (!model || !localRepaintSourceImageRef.current) return;
+      if (!model || !localRepaintSourceImageRef.current) {
+        publishLocalRepaintInteractiveState({
+          sessionId: repaintSession.sessionId,
+          generationId: localRepaintProjectionSource.generationId ?? '',
+          targetLayerId: localRepaintProjectionSource.targetLayerId,
+          status: 'failed',
+          phase: 'failed',
+          error: '局部重绘模型或高清资源已失效。',
+        });
+        return;
+      }
       const source = resolveLocalRepaintStrokeSource();
-      if (!source) return;
+      if (!source) {
+        publishLocalRepaintInteractiveState({
+          sessionId: repaintSession.sessionId,
+          generationId: localRepaintProjectionSource.generationId ?? '',
+          targetLayerId: localRepaintProjectionSource.targetLayerId,
+          status: 'failed',
+          phase: 'failed',
+          error: '局部重绘来源已被取消。',
+        });
+        return;
+      }
       const startedAt = performance.now();
       let composite = ensureLiveLocalRepaintComposite(model, source);
-      if (!composite) return;
+      if (!composite) {
+        publishLocalRepaintInteractiveState({
+          sessionId: repaintSession.sessionId,
+          generationId: source.generationId ?? '',
+          targetLayerId: source.targetLayerId,
+          status: 'failed',
+          phase: 'failed',
+          error: '局部重绘常驻图层创建失败。',
+        });
+        return;
+      }
       try {
-        if (composite.restoredMaskPromise) await composite.restoredMaskPromise;
+        publishLocalRepaintInteractiveState({
+          sessionId: repaintSession.sessionId,
+          generationId: source.generationId ?? '',
+          targetLayerId: source.targetLayerId,
+          status: 'preparing',
+          phase: 'restoring-mask',
+        });
+        if (composite.restoredMaskPromise) {
+          await withLocalRepaintSessionTimeout(
+            composite.restoredMaskPromise,
+            Math.max(1, preparationDeadline - performance.now()),
+            '恢复局部重绘历史蒙版',
+          );
+        }
         if (cancelled || localRepaintCompositeRef.current !== composite) return;
         if (composite.restoredMaskUrl && !composite.hasContent) {
           throw new Error('局部重绘历史蒙版恢复失败。');
@@ -10732,6 +10799,13 @@ function SurfacePaintOverlay() {
         await waitForViewportIdle();
         if (cancelled) return;
         reportLocalRepaintPrewarmProgress(0.64, '上传高清颜色纹理');
+        publishLocalRepaintInteractiveState({
+          sessionId: repaintSession.sessionId,
+          generationId: source.generationId ?? '',
+          targetLayerId: source.targetLayerId,
+          status: 'preparing',
+          phase: 'building-resident-material',
+        });
         const sourceTexture = getLiveProjectedTexture(
           localRepaintSourceImageRef.current.previewImageUrl,
           THREE.SRGBColorSpace,
@@ -10786,9 +10860,11 @@ function SurfacePaintOverlay() {
         gl.initTexture(composite.maskTexture);
         gl.initTexture(composite.blendMaskTexture);
         const preparedComposite = composite;
-        const hasResidentLayer = useLayerStore
-          .getState()
-          .layers.some((layer) => layer.id === preparedComposite.layerId && layer.visible);
+        const hasResidentLayer =
+          useLayerStore
+            .getState()
+            .layers.some((layer) => layer.id === preparedComposite.layerId && layer.visible) ||
+          useSceneStore.getState().localRepaintPreviewLayer?.id === preparedComposite.layerId;
         let residentOverrideBound = Boolean(
           hasResidentLayer &&
           preparedComposite.hasContent &&
@@ -10842,10 +10918,7 @@ function SurfacePaintOverlay() {
         }
         await waitForViewportIdle();
         if (cancelled) return;
-        reportLocalRepaintPrewarmProgress(
-          0.88,
-          residentOverrideBound ? '绑定正式材质实时蒙版' : '编译深度感知局部重绘覆盖层',
-        );
+        reportLocalRepaintPrewarmProgress(0.88, '绑定正式材质实时蒙版');
         // Cold restore may still be compiling the shared projected background
         // program. Starting a second compileAsync poll on the same renderer at
         // that moment produced 400-500ms main-thread stalls on ANGLE/NVIDIA.
@@ -10861,84 +10934,38 @@ function SurfacePaintOverlay() {
           await waitForFrame();
         }
         if (cancelled) return;
-        if (hasResidentLayer && !residentOverrideBound) {
+        // The shared projected material is the only presentation owner. Wait
+        // for SceneRoot to publish the preview into that stack, then bind the
+        // mutable mask there. A dedicated mesh is intentionally not accepted as
+        // readiness because it caused stale eye-toggle and selection results.
+        const residentDeadline = Math.min(preparationDeadline, performance.now() + 10_000);
+        while (!cancelled && !residentOverrideBound && performance.now() < residentDeadline) {
+          ensureLiveLocalRepaintComposite(model, source);
+          invalidate();
+          await waitForFrame();
           residentOverrideBound = bindLocalRepaintResidentMaskOverride(
             model,
             sourceKey,
             composite,
           );
         }
-        const overlay = residentOverrideBound
-          ? undefined
-          : await ensureLocalRepaintGpuOverlay(model, source, composite);
-        if (!residentOverrideBound && !overlay) {
-          const latestSource = resolveLocalRepaintStrokeSource();
-          const superseded =
-            cancelled ||
-            localRepaintCompositeRef.current !== composite ||
-            !latestSource ||
-            createLocalRepaintSourceKey(latestSource, model.objectId) !==
-              createLocalRepaintSourceKey(source, model.objectId);
-          // Source binding can legitimately advance while an older shader is
-          // compiling (for example when S6 reuses the newest generation). The
-          // newer effect owns readiness; do not surface this cancellation as a
-          // GPU failure or transiently replace its progress with an error.
-          if (superseded) return;
-          throw new Error('局部重绘透明覆盖层未能完成。');
+        if (!residentOverrideBound) {
+          throw new Error('局部重绘正式材质未能完成实时蒙版绑定。');
         }
-        await waitForFrame();
-        let readyOverlay = residentOverrideBound
-          ? undefined
-          : await ensureLocalRepaintGpuOverlay(model, source, composite);
-        // Re-run the lightweight publication step only after the persisted mask
-        // and overlay are both ready. The live overlay is already visible, so
-        // SceneRoot can now mute the stored row without a blank handoff frame.
-        for (let bindingAttempt = 0; bindingAttempt < 3; bindingAttempt += 1) {
-          const publishedComposite = ensureLiveLocalRepaintComposite(model, source);
-          if (!publishedComposite) break;
-          if (publishedComposite === composite) break;
-          // During later repaint cycles the temporary destination can advance
-          // through more than one canonical row while the shader compiles. Keep
-          // following that legitimate handoff in this click instead of asking
-          // the user to click button 3 again for each transition.
-          composite = publishedComposite;
-          if (composite.restoredMaskPromise) await composite.restoredMaskPromise;
-          if (composite.restoredMaskUrl && !composite.hasContent) {
-            throw new Error('局部重绘历史蒙版恢复失败。');
-          }
-          gl.initTexture(composite.maskTexture);
-          gl.initTexture(composite.blendMaskTexture);
-          await waitForFrame();
-          const reboundComposite = composite;
-          const reboundResidentLayer = useLayerStore
-            .getState()
-            .layers.some((layer) => layer.id === reboundComposite.layerId && layer.visible);
-          residentOverrideBound = Boolean(
-            reboundResidentLayer &&
-            bindLocalRepaintResidentMaskOverride(model, sourceKey, reboundComposite),
-          );
-          readyOverlay = residentOverrideBound
-            ? undefined
-            : await ensureLocalRepaintGpuOverlay(model, source, composite);
-        }
-        if (
-          !residentOverrideBound &&
-          (!readyOverlay ||
-            readyOverlay.material.userData.liclickDisposedMaterial === true ||
-            readyOverlay.root.parent !== model.group ||
-            localRepaintGpuOverlayRef.current !== readyOverlay)
-        ) {
-          throw new Error('局部重绘透明覆盖层在就绪发布前失去绑定。');
-        }
+        clearLocalRepaintGpuOverlay();
         if (ensureLiveLocalRepaintComposite(model, source) !== composite) {
           throw new Error('局部重绘图层在就绪发布前失去绑定。');
         }
-        // Existing rows now update their mask inside the resident projection
-        // program. New rows keep the exact depth-aware overlay until their first
-        // resident binding exists. In both cases the publication barrier avoids
-        // replacing a complete background while a paint gesture is active.
-        // Require one valid resident background, then let the queued quality
-        // upgrade publish after painting becomes idle.
+        publishLocalRepaintInteractiveState({
+          sessionId: repaintSession.sessionId,
+          generationId: source.generationId ?? '',
+          targetLayerId: source.targetLayerId,
+          status: 'preparing',
+          phase: 'verifying-render-frame',
+        });
+        // Both new and restored repaint rows now update their mask inside the
+        // resident projection program. The publication barrier avoids exposing
+        // input before that single owner and its background are renderable.
         reportLocalRepaintPrewarmProgress(0.94, '稳定背景贴图材质');
         const backgroundDeadline = performance.now() + 3_000;
         let backgroundReady = false;
@@ -10963,11 +10990,14 @@ function SurfacePaintOverlay() {
         document.body.dataset.localRepaintGpuErrorGeneration = source.generationId ?? '';
         document.body.dataset.localRepaintGpuErrorTarget = source.targetLayerId ?? '';
         publishLocalRepaintInteractiveState({
+          sessionId: repaintSession.sessionId,
           generationId: source.generationId ?? '',
           targetLayerId: source.targetLayerId,
           status: 'failed',
+          phase: 'failed',
+          error: error instanceof Error ? error.message : String(error),
         });
-        reportLocalRepaintPrewarmProgress(1, '局部重绘 GPU 覆盖层准备失败，请重试', {
+        reportLocalRepaintPrewarmProgress(1, '局部重绘正式材质准备失败，请重试', {
           done: true,
           failed: true,
         });
@@ -10979,9 +11009,11 @@ function SurfacePaintOverlay() {
       document.body.dataset.localRepaintGpuReadyGeneration = source.generationId ?? '';
       document.body.dataset.localRepaintGpuReadyTarget = source.targetLayerId ?? '';
       publishLocalRepaintInteractiveState({
+        sessionId: repaintSession.sessionId,
         generationId: source.generationId ?? '',
         targetLayerId: source.targetLayerId,
         status: 'ready',
+        phase: 'ready',
       });
       reportLocalRepaintPrewarmProgress(1, 'GPU 已就绪，可以立即涂抹', { done: true });
       if (
@@ -11012,8 +11044,8 @@ function SurfacePaintOverlay() {
     };
   }, [
     bindLocalRepaintResidentMaskOverride,
+    clearLocalRepaintGpuOverlay,
     ensureLiveLocalRepaintComposite,
-    ensureLocalRepaintGpuOverlay,
     getTargetModel,
     gl,
     localRepaintAssetsRevision,
@@ -14451,88 +14483,31 @@ function SurfacePaintOverlay() {
         const composite = source
           ? (preparedComposite ?? ensureLiveLocalRepaintComposite(result.model, source))
           : undefined;
-        const overlay = localRepaintGpuOverlayRef.current;
-        if (
-          source &&
-          composite &&
-          (!composite.restoredMaskUrl || composite.restoredMaskReady) &&
-          composite.gpuOverlayReady &&
-          overlay?.sourceKey === createLocalRepaintSourceKey(source, result.model.objectId) &&
-          overlay.layerId === composite.layerId
-        ) {
-          const previewImageUrl = localRepaintSourceImageRef.current?.previewImageUrl;
-          const sourceTexture = previewImageUrl
-            ? getLiveProjectedTexture(previewImageUrl, THREE.SRGBColorSpace, { flipY: false })
-            : undefined;
-          const layerVisible = readLocalRepaintGpuOverlayLayerVisibility(overlay);
-          const sceneState = useSceneStore.getState();
-          const layerState = useLayerStore.getState();
-          const visible =
-            isLocalRepaintOverlayVisible(sceneState.displayMode, layerVisible) &&
-            shouldUseDedicatedLocalRepaintOverlay(
-              layerState.layers,
-              sceneState.localRepaintPreviewLayer ??
-                layerState.layers.find((layer) => layer.id === composite.layerId),
-              sceneState.paintTool === 'inpaint-apply',
-            );
-          const presentation = readLocalRepaintGpuOverlayPresentation(overlay);
-          if (
-            syncLocalRepaintGpuOverlayBinding(overlay, {
-              modelGroup: result.model.group,
-              sourceTexture,
-              maskTexture: composite.blendMaskTexture,
-              visible,
-              ...presentation,
-            })
-          ) {
-            const repairRevision =
-              Number(document.body.dataset.localRepaintOverlayRepairRevision ?? '0') + 1;
-            document.body.dataset.localRepaintOverlayRepairRevision = String(repairRevision);
-            invalidate();
-          }
-          // Atomically transfer presentation ownership only after the live
-          // overlay has really become visible. Until this point SceneRoot must
-          // continue rendering the persisted row restored from the project.
-          if (visible) ensureLiveLocalRepaintComposite(result.model, source);
-        }
+        const sourceKey = createLocalRepaintSourceKey(source, result.model.objectId);
+        const residentOverride = localRepaintResidentMaskOverrideRef.current;
         const residentMaskBound = Boolean(
-          isEditingPersistedLocalRepaint &&
-          source &&
           composite &&
           composite.restoredMaskReady &&
-          bindLocalRepaintResidentMaskOverride(
-            result.model,
-            createLocalRepaintSourceKey(source, result.model.objectId),
-            composite,
-          ),
+          residentOverride?.root === result.model.group &&
+          residentOverride.layerId === composite.layerId &&
+          residentOverride.sourceKey === sourceKey &&
+          residentOverride.texture === composite.blendMaskTexture,
         );
-        const localRepaintPresentationReady = isEditingPersistedLocalRepaint
-          ? residentMaskBound
-          : Boolean(composite?.gpuOverlayReady);
+        const repaintSession = getLocalRepaintSessionSnapshot();
+        const localRepaintPresentationReady = Boolean(
+          residentMaskBound &&
+            repaintSession?.status === 'ready' &&
+            repaintSession.generationId === (source.generationId ?? '') &&
+            repaintSession.targetLayerId === source.targetLayerId,
+        );
         if (
           !composite ||
           (composite.restoredMaskUrl && !composite.restoredMaskReady) ||
           !localRepaintPresentationReady
         ) {
-          if (isEditingPersistedLocalRepaint) {
-            const shouldRetryGpuPreparation = Boolean(
-              composite?.restoredMaskError ||
-              (composite?.restoredMaskReady && composite.gpuOverlayReady && !residentMaskBound),
-            );
-            if (shouldRetryGpuPreparation) {
-              useSceneStore.getState().requestLocalRepaintGpuPrepare();
-            }
-            pushToast({
-              tone: composite?.restoredMaskError ? 'error' : 'info',
-              title: composite?.restoredMaskError
-                ? '局部重绘蒙版恢复失败'
-                : '正在准备局部重绘橡皮擦',
-              description: composite?.restoredMaskError
-                ? '未能读取这个图层的原始蒙版，正在重新加载。'
-                : '正在恢复累计蒙版并绑定实时材质，请稍后再试。',
-              dedupeKey: `local-repaint-eraser-prepare:${activePaintLayer?.id ?? 'unknown'}`,
-            });
-          }
+          // Pointer input never repairs resources. The explicit preparation
+          // session owns all decode/material work and enables the tool only
+          // after one verified resident render frame.
           return;
         }
         const surfaceFacesProjector =

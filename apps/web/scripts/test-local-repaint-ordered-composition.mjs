@@ -95,8 +95,8 @@ try {
       liveRepaint,
       true,
     ),
-    true,
-    'the mutable live overlay must own feedback while the apply brush is active',
+    false,
+    'the shared resident projected stack must own live feedback',
   );
   assert.equal(
     ordered.shouldMuteLocalRepaintResidentLayer(
@@ -105,8 +105,8 @@ try {
       persistedRepaint.id,
       true,
     ),
-    true,
-    'live overlay feedback must mute the stale packed resident twin',
+    false,
+    'live feedback must never hide the resident projected row',
   );
 
   const bottomUp = ordered.mergeOrderedLocalRepaintPreview(
@@ -135,8 +135,8 @@ try {
       { ...liveRepaint, order: 0 },
       repaintOnTop.id,
     ),
-    true,
-    'dedicated-overlay ownership must continue muting the persisted twin',
+    false,
+    'the resident row stays visible regardless of ordering',
   );
   assert.equal(
     ordered.shouldMuteLocalRepaintResidentLayer(
@@ -192,11 +192,7 @@ try {
     'utf8',
   );
   assert.match(sceneRoot, /mergeOrderedLocalRepaintPreview/);
-  assert.match(
-    sceneRoot,
-    /shouldMuteLocalRepaintResidentLayer/,
-    'resident display uniforms must distinguish ordered-stack ownership from the dedicated overlay',
-  );
+  assert.match(sceneRoot, /getOrderedLocalRepaintPreviewLayer/);
   assert.match(
     sceneRoot,
     /previewProjectionInputs\.slice\(liveRepaintIndex\)/,
@@ -204,61 +200,15 @@ try {
   );
   assert.match(
     viewport,
-    /liveFeedbackRequested = sceneState\.paintTool === 'inpaint-apply'[\s\S]*?!shouldUseDedicatedLocalRepaintOverlay/,
-    'idle ordering must yield to the mutable overlay only while live feedback is requested',
-  );
-  const liveOverlayOwnershipGuards = viewport.match(
-    /shouldUseDedicatedLocalRepaintOverlay\(/g,
-  );
-  assert(
-    (liveOverlayOwnershipGuards?.length ?? 0) >= 5,
-    'every overlay activation path, including reuse and pointer-down, must share live ownership policy',
-  );
-  assert.match(
-    viewport,
-    /const erasesPersistedLocalRepaint = isLocalRepaintLayerEraserActive\([\s\S]*?const visible = Boolean\(\s*composite\.hasContent &&\s*shouldUseDedicatedLocalRepaintOverlay\(/,
-    'reusing an existing local-repaint overlay must enable its mutable canvas during apply',
-  );
-  assert.match(
-    viewport,
-    /currentOverlay\.visibilityLayerSeen = false;[\s\S]*?const previewOwnsOverlay =[\s\S]*?visible:\s*composite\.hasContent &&\s*shouldUseDedicatedLocalRepaintOverlay\([\s\S]*?previewOwnsOverlay/,
-    'rebinding the resident overlay program must preserve live-preview ownership',
-  );
-  assert.match(
-    viewport,
-    /const layerVisible = readLocalRepaintGpuOverlayLayerVisibility\(overlay\);[\s\S]*?const visible =\s*isLocalRepaintOverlayVisible\([\s\S]*?&&\s*shouldUseDedicatedLocalRepaintOverlay\([\s\S]*?syncLocalRepaintGpuOverlayBinding\(overlay,\s*\{[\s\S]*?visible,/,
-    'pointer-down must force the mutable renderer overlay on for immediate feedback',
-  );
-  assert.match(
-    viewport,
-    /residentOverrideBound = Boolean\([\s\S]*?bindLocalRepaintResidentMaskOverride/,
-    'an existing repaint must bind its mutable mask into the resident material',
-  );
-  assert.match(
-    viewport,
-    /const exactOverlayVisible =\s*shouldRender &&\s*\(liveFeedbackRequested \|\|[\s\S]*?!residentOverrideBound \|\|[\s\S]*?previewOwnsOverlay \|\|[\s\S]*?residentHandoffPending\)/,
-    'the exact overlay must own every live apply frame and remain visible through resident handoff',
-  );
-  assert.match(
-    viewport,
-    /hasPersistedLayer &&[\s\S]*?residentOverrideBound &&[\s\S]*?previewOwnsOverlay &&[\s\S]*?!liveFeedbackRequested[\s\S]*?scheduleLocalRepaintResidentPresentation/,
-    'a bound resident row must not reclaim presentation while the apply brush is still live',
-  );
-  assert.match(
-    viewport,
-    /const overlayCanOwnPresentation =\s*!existingLayer \|\| sceneState\.paintTool === 'inpaint-apply'/,
-    'a persisted repaint must publish the renderer owner marker during live apply',
+    /while \(!cancelled && !residentOverrideBound[\s\S]*?bindLocalRepaintResidentMaskOverride/,
+    'readiness must wait for the live mask to bind into the resident material',
   );
   assert.match(
     viewport,
     /liclick:projected-material-resident[\s\S]*?syncLocalRepaintGpuOverlayActivity/,
     'the first-row handoff must retry its live-mask binding after the final material commits',
   );
-  assert.match(
-    viewport,
-    /scheduleLocalRepaintResidentPresentation[\s\S]*?requestAnimationFrame\(\(\) => \{[\s\S]*?requestAnimationFrame\(\(\) => \{/,
-    'the resident row must receive a presented frame before the exact overlay is withdrawn',
-  );
+  assert.match(viewport, /phase: 'verifying-render-frame'/);
   assert.match(
     sceneRoot,
     /window\.dispatchEvent\([\s\S]*?liclick:projected-material-resident/,
@@ -273,6 +223,14 @@ try {
     viewport,
     /liveLocalRepaintFastPreview|fastPreviewVisible|fastPreviewCanRender/,
     'the depthless duplicate-mesh preview must stay out of the renderer path',
+  );
+  const pointerStart = viewport.indexOf('const paintStartedAt = performance.now()');
+  const pointerEnd = viewport.indexOf('isPaintingRef.current = true', pointerStart);
+  assert.ok(pointerStart >= 0 && pointerEnd > pointerStart);
+  assert.doesNotMatch(
+    viewport.slice(pointerStart, pointerEnd),
+    /requestLocalRepaintGpuPrepare|bindLocalRepaintResidentMaskOverride|ensureLocalRepaintGpuOverlay/,
+    'pointer-down must consume a completed session without repairing resources',
   );
   assert.match(projectedMaterial, /uniform float liveMaskUsesProjection/);
   assert.match(

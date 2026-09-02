@@ -1,6 +1,6 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
-> 文档版本：`2.14.1`
+> 文档版本：`2.15.0`
 >
 > 生效日期：`2026-09-02`
 >
@@ -306,8 +306,8 @@ UI-09 剪刀
 | `ALG-LR-004` 历史增强边界谐调 | `14.0.0-compatible` | 仅读取/重建旧 v6-v14 Generation 和图层；新 `direct-v1` 任务不调用 |
 | `ALG-LR-005` 历史兼容边界谐调 | `5.0.0-compatible` | 仅保留旧 v3-v5 全幅合成与 legacy 切换的读取兼容；新 `direct-v1` 任务不调用 |
 | `ALG-LR-006` 表面画笔重投影 | `2.0.0` | raycast 命中表面，投射到 frozen source UV；最小绝对 face-on 0.08；世界半径 0.004-0.12 包围盒比例；texture radius 1-72 |
-| `ALG-LR-007` 低延迟实时覆盖 | `2.1.4` | 应用画笔激活期间，当前编辑层由 mutable depth-aware GPU overlay 独占显示并逐笔消费 live canvas；同 ID resident row 保持驻留但临时静音，其他历史局部重绘层不受影响。退出画笔、切层或切换 Generation 时，先解除当前层静音并让 resident row 完整呈现一帧，再经两帧屏障隐藏 overlay。Generation 成功后的预热以 microtask 立即启动并通过内存事件握手，不再依赖 rAF 轮询。pointer-up 保留已有 `contentRevision`，只更新累计 CanvasTexture 与图层保存快照。source、capture projector、depth/normal/surface-lock、图层顺序、颜色、blend、1024 live 上限与排队进度规则不变 |
-| `ALG-LR-008` 延迟投影持久化 | `2.2.6` | interactive UV bake 固定关闭；生图前 Project Command snapshot 后台执行；Generation、对象、目标层与 GPU-ready 标记共同识别驻留 source；成功生图在当前 effect 的 microtask 启动 generation-scoped 解码、目标绑定和 GPU 预热，并通过 `preparing/ready/failed` 内存事件交接，画笔只在 Generation 与 GPU 同时 ready 后自动重放，不再使用 rAF 轮询。若首次点击早于任务锁或 Generation store 发布完成，内存请求跨越该过渡窗口并在 ready 后自动执行；排队请求绑定确切 Generation/目标层，旧 GPU 事件不得解锁新请求。刷新或 renderer effect 取消后，被动恢复的旧 source 不得阻止最新 Generation 接管；source 已选中但 GPU-ready 缺失时通过显式 prepare revision 重新执行准备，并仅由精确事件结束等待，不使用超时冒充完成。pointer-up 两帧内发布权威图层行；idle 3000ms 仍仅合并持久化，needsRebake=true |
+| `ALG-LR-007` 低延迟实时覆盖 | `2.2.0` | 局部重绘只由共享 ordered projected material 显示；renderer preview 仅向该材质栈注入 live source/mask 描述，不再启用或静音第二套 exact overlay mesh。准备阶段等待目标 layerId 驻留并将 `blendMaskTexture` 绑定到正式材质，完成真实渲染帧验证后才开放画笔。pointer-down 只写已就绪 live mask，不解码、不重建材质、不自愈。pointer-up 保留已有 `contentRevision`，只更新累计 CanvasTexture 与图层保存快照。source、capture projector、depth/normal/surface-lock、图层顺序、颜色、blend、1024 live 上限不变 |
+| `ALG-LR-008` 延迟投影持久化 | `2.3.0` | interactive UV bake 固定关闭；生图前 Project Command snapshot 后台执行；唯一内存 `LocalRepaintSession` 以 sessionId、Generation 和目标层标识任务，并按 loading-assets → restoring-mask → building-resident-material → verifying-render-frame → ready/failed/cancelled 推进。旧异步任务因 sessionId 不匹配不得发布 ready/failed；按钮与视口从 Session 读取业务状态，DOM dataset 只保留诊断。高清图/蒙版、视口空闲、历史蒙版和正式材质绑定均有明确失败终态，单次准备总上限 20 秒，正式材质绑定上限 10 秒，不再无限转圈。pointer-up 两帧内发布权威图层行；idle 3000ms 仍仅合并持久化，needsRebake=true |
 | `ALG-LR-009` Inward Crossfade 栈合成 | `1.0.0` | 连续重绘层向内部交叉淡化，避免普通 alpha stacking 在边缘重复显露接缝 |
 | `ALG-LR-010` Provider 兼容编辑 | `1.0.0-compat` | `LocalRepaintDialog` 的 image/edit/protect/hole masks 独立路径，不得与四输入主路径混改 |
 | `ALG-LR-011` 生图透明显示副本 | `1.0.0` | UI-05 重绘效果图和 UI-10 普通投射图层缩略图优先使用 capture linear-view depth 清除明确无几何覆盖的背景，按精确 alpha bounds 仅裁切一次并保留 6% 留白；几何覆盖区的 RGB/alpha 原样保留。深度不可用时只清除与画布边缘连通的近黑外背景，不做第二次 matte、侵蚀或分位裁边。局部重绘图层不走整图副本，继续使用用户涂绘 mask，只显示笔刷授权区域 |
@@ -348,6 +348,8 @@ UI-09 剪刀
 `ALG-LR-007` v2.1.3 修正 UI-06 → M08 的实时显示权冲突。策略层原本已规定 `inpaint-apply` 时专用 overlay 接管，但视口生命周期仍会在 resident live-mask override 已绑定时隐藏 overlay，并清除已持久层的 preview owner，导致 live canvas 正常更新而视口继续显示旧打包 mask。新逻辑让应用画笔激活态无条件优先于 resident override：depth-aware exact overlay 保持可见，SceneRoot 仅静音同 ID resident twin；其他历史局部重绘层、普通投影层和 UV 层继续按原顺序显示。退出画笔、切层或切换 Generation 后才允许 resident row 接管，并沿用一帧呈现加两帧屏障撤下 overlay。该修复不修改作者 mask、source、capture depth、surface-lock、投影/颜色公式、1024 live 上限、CPU/Worker/shader/UV/export、最终分辨率、Project/Layer/Generation/Capture Schema、Revision、ownership 或资产，无数据迁移。回退时恢复 resident override 对 overlay 的优先隐藏及已持久层 preview owner 清理分支；已有图层、蒙版和 Generation 无需删除或改写。
 
 `ALG-LR-007` v2.1.4 / `ALG-LR-008` v2.2.6 合并 UI-10 → M08 的远端性能优化与 UI-06 的实时显示权修复。Generation 成功后在当前 effect 的 microtask 立即启动 generation-scoped 后台解码、目标绑定与 GPU 预热；Viewport 通过只驻留内存的 `preparing/ready/failed` 事件发布交互状态，画笔请求必须同时等待 Generation ready 与 GPU interactive ready，成功后自动重放，失败则终止排队并显示明确错误。旧的逐帧 `requestAnimationFrame` 轮询与额外 timer task 被移除；应用画笔激活期间 exact overlay 继续独占当前编辑层的实时显示，同 ID resident twin 临时静音，其他历史图层持续可见，退出后按原子屏障交接。该合并不改变作者/远端 mask、GPU/CPU/Worker/shader coverage、投影矩阵、depth/surface-lock、颜色、UV/export、最终分辨率、Schema、Revision、ownership 或资产；无迁移。回退应分别恢复事件握手前的调度和 overlay 显示权分支，不得删除 Generation、图层或蒙版。`test:local-repaint-performance-merge` 必须锁定事件握手、microtask 启动、GPU ready 后重放及无 rAF 轮询。
+
+`ALG-LR-007` v2.2.0 / `ALG-LR-008` v2.3.0 将 UI-06/UI-10 → M08 的加载、显示与输入收敛为单一会话和单一显示所有权。`LocalRepaintSession` 是唯一业务状态源，sessionId 防止旧 Generation 的异步完成回写当前任务；DOM dataset 降为诊断。共享 projected material 始终拥有局部重绘显示权，live preview 按同 layerId 合并进 resident stack，正式材质绑定和至少一帧验证成功后才进入 ready；pointer-down 不再补资源或触发 GPU prepare。所有等待均有明确终态，总准备上限 20 秒、正式材质绑定上限 10 秒，失败释放旋转并允许重试。此次不改变作者/远端 mask、投影矩阵、depth/surface-lock、coverage/颜色公式、1024 live 上限、CPU/Worker/UV/export、最终分辨率、Project/Layer/Generation/Capture Schema、Revision、ownership 或资产，无数据迁移。回退可恢复 v2.1.4/v2.2.6 的 dedicated overlay 与事件/DOM 握手；不得删除已有 Generation、图层或蒙版。
 
 UI-05/UI-13 的贴图驻留边界要求所有挂到页面根节点的生成面板 Portal 同样受 `EditorPage.isActive` 门禁。进入 UV 时贴图编辑器可继续保留引擎与面板状态，但“局部生图”固定按钮、生成取消确认和结果大图预览均不得越过隐藏工作区显示；回到贴图页后按原状态恢复。此修复仅改变 React 展示生命周期，不改变局部生成算法版本、任务状态、GPU/CPU/Worker/shader、输入蒙版、Project/Layer/Generation/Capture Schema、对象资产或 Revision，无数据迁移；回退只移除 Portal 活跃态门禁。
 
@@ -630,3 +632,4 @@ M15 体积修复：锁定 `terser@5.51.2` 两轮安全压缩，保留日志和�
 | `2.13.12` | 2026-09-02 | `本次局部重绘实时显示权修复` | UI-06、M08、`ALG-LR-007` v2.1.3：应用画笔激活时由 depth-aware exact GPU overlay 独占当前编辑层显示，已持久 resident twin 保持驻留但临时静音；退出后经原子呈现屏障交回 resident row。修复 live canvas 和图层缩略图已更新但视口仍显示旧 mask 的冲突，其他历史局部重绘层保持显示。投影/颜色公式、作者 mask、CPU/Worker/shader/UV/export、分辨率、Schema、Revision、ownership 与资产不变，无迁移。 |
 | `2.14.0` | 2026-09-02 | `52c4e71 + 本次全链路性能观测提交` | M08/M13/M15、`ALG-LR-007` v2.1.3 / `ALG-LR-008` v2.2.4 / `ALG-PERF-SESSION-001` v1.1.0：同步 generation-scoped 局部重绘 GPU 预热事件握手和 microtask 提前启动，画笔只在 Generation 与 GPU 同时 ready 后自动重放，移除 rAF 轮询；`perfLab=1` 按需启用根 React Profiler，汇总业务 timeline、React commit 与实际 JS chunk 传输/解压/加载耗时，并设置错误、卡死、结果不一致、帧稳定、交互延迟、算法速度/效果和长时内存硬门禁。采集只读且隐私过滤，不写 Project/Scene/Layer/Generation，不改变算法公式、分辨率、Schema、Revision、ownership 或资产，无迁移。 |
 | `2.14.1` | 2026-09-02 | `29e6750 + 58dd8b1 本地合并基线` | 合入远端运行时性能采集、投影降级、橡皮擦历史开销、局部重绘 worker/PNG 编码与云端包体门禁优化；同时保留 `ALG-LR-007` v2.1.4 的实时 overlay 显示权、历史图层持续显示和原子交接，以及 `ALG-LR-008` v2.2.6 的精确 GPU 准备自愈与事件握手。Project/Layer/Generation/Capture Schema、Revision、ownership 与资产不变，无迁移。 |
+| `2.15.0` | 2026-09-02 | `本次局部重绘统一会话与单显示所有权修复` | UI-06/UI-10、M08、`ALG-LR-007` v2.2.0 / `ALG-LR-008` v2.3.0：以 generation/target/sessionId 的唯一内存 Session 串行推进资源、蒙版、正式材质和渲染帧准备，拒绝旧任务晚到事件；共享 projected material 成为唯一显示 owner，移除活动画笔对 dedicated overlay 与 resident twin 的切换；pointer-down 只消费 ready 资源。总准备 20 秒、正式绑定 10 秒后明确失败，不再无限转圈。Schema、Revision、ownership、投影/颜色/分辨率与已有资产不变，无迁移。 |
