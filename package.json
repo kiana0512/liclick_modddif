@@ -59,7 +59,6 @@
     "check:cloud-release-readiness": "node scripts/check-cloud-release-readiness.mjs",
     "validate:release-env": "node scripts/validate-release-env.mjs",
     "verify:modernization": "corepack pnpm run check:cloud-boundary && corepack pnpm run check:project-repository-boundary && corepack pnpm --filter @liclick/web test:cloud-base-path-assets && corepack pnpm run test:contracts",
-    "docs:maintenance": "powershell -ExecutionPolicy Bypass -File scripts/docs/sync-maintenance-manual.ps1",
     "format": "prettier --write ."
   },
   "devDependencies": {

@@ -11,4 +11,3 @@ Before changing this repository, read `docs/00_SYSTEM_MODULES_AND_CHANGE_STANDAR
 7. Do not silently lower output resolution, disable QA, or substitute browser experimental UV/PBR kernels for production services.
 8. Persistence changes must preserve Project Command idempotency, Revision CAS, ownership and verified object assets.
 9. Update the maintenance Markdown, algorithm/schema version and migration/rollback notes when semantics change.
-10. At the end of a completed iteration, add one revision row, run `pnpm docs:maintenance`, visually verify DOCX/PDF, and commit Markdown + DOCX + PDF together.
