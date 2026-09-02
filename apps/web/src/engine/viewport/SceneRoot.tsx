@@ -975,6 +975,11 @@ function useCompositedUvTexture(layers: Layer[], options?: { maxSize?: number })
   return useCompositedUvTextureState(layers, options).texture;
 }
 
+const selectionBoundsCache = new WeakMap<
+  THREE.Object3D,
+  { matrixWorld: THREE.Matrix4; bounds: THREE.Box3 }
+>();
+
 function SelectionBoundsCorners({ object }: { object: THREE.Object3D }) {
   const lastMatrixWorldRef = useRef(
     new THREE.Matrix4().set(Number.NaN, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1),
@@ -1005,8 +1010,21 @@ function SelectionBoundsCorners({ object }: { object: THREE.Object3D }) {
     const paddedBounds = new THREE.Box3();
 
     const update = () => {
-      object.updateMatrixWorld(true);
-      bounds.setFromObject(object, true);
+      object.updateWorldMatrix(true, false);
+      // Selection chrome does not need the per-vertex `precise` path. That path
+      // scans every vertex whenever selection moves to another high-poly model
+      // and blocks presentation. Geometry bounds preserve the indicator's AABB
+      // semantics without touching texture or projection output.
+      const cachedBounds = selectionBoundsCache.get(object);
+      if (cachedBounds?.matrixWorld.equals(object.matrixWorld)) {
+        bounds.copy(cachedBounds.bounds);
+      } else {
+        bounds.setFromObject(object, false);
+        selectionBoundsCache.set(object, {
+          matrixWorld: object.matrixWorld.clone(),
+          bounds: bounds.clone(),
+        });
+      }
       if (bounds.isEmpty()) {
         lines.visible = false;
         return;
@@ -1057,7 +1075,9 @@ function SelectionBoundsCorners({ object }: { object: THREE.Object3D }) {
   }, [indicator]);
 
   useFrame(() => {
-    object.updateMatrixWorld(true);
+    // Camera motion cannot change the model root. Recurse through children only
+    // when a transform tool actually changed this root matrix.
+    object.updateWorldMatrix(true, false);
     if (!lastMatrixWorldRef.current.equals(object.matrixWorld)) indicator.update();
   });
 

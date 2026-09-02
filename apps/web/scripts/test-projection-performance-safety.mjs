@@ -35,6 +35,22 @@ const projectStoreSource = await readFile(
 );
 
 assert.match(
+  sceneRootSource,
+  /function SelectionBoundsCorners[\s\S]*?bounds\.setFromObject\(object, false\)/,
+  'scene selection chrome must use geometry bounds instead of scanning every high-poly vertex',
+);
+assert.match(
+  sceneRootSource,
+  /const selectionBoundsCache = new WeakMap[\s\S]*?cachedBounds\?\.matrixWorld\.equals\(object\.matrixWorld\)[\s\S]*?bounds\.copy\(cachedBounds\.bounds\)/,
+  'reselecting an unchanged model must reuse its world-space selection bounds',
+);
+assert.match(
+  sceneRootSource,
+  /useFrame\(\(\) => \{[\s\S]*?object\.updateWorldMatrix\(true, false\);[\s\S]*?indicator\.update\(\)/,
+  'unchanged selected models must not recursively update their complete object tree every frame',
+);
+
+assert.match(
   materialSource,
   /projectedTextureArrayCircuitBreakers\.has\(options\.renderer\)[\s\S]*?ProjectedTextureArrayCircuitOpenError/,
   'a failed renderer must reject later texture-array attempts before another upload',
