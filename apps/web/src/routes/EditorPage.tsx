@@ -1119,15 +1119,6 @@ export function EditorPage({
   const preferredLocalRepaintGenerationIdRef = useRef<string>();
   const pendingLocalRepaintBackgroundGenerationIdRef = useRef<string>();
   const pendingLocalRepaintActivationRequestRef = useRef(false);
-  const localRepaintInteractiveWaitersRef = useRef(
-    new Map<
-      string,
-      {
-        resolve: (ready: boolean) => void;
-        timeoutId: number;
-      }
-    >(),
-  );
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'failed' | 'offline'>(
     'idle',
   );
@@ -6025,14 +6016,6 @@ export function EditorPage({
         return;
       }
       setLocalRepaintInteractiveState(detail);
-      if (detail.status !== 'preparing') {
-        const waiter = localRepaintInteractiveWaitersRef.current.get(detail.generationId);
-        if (waiter) {
-          window.clearTimeout(waiter.timeoutId);
-          localRepaintInteractiveWaitersRef.current.delete(detail.generationId);
-          waiter.resolve(detail.status === 'ready');
-        }
-      }
       if (detail.status !== 'failed') return;
       pendingLocalRepaintActivationRequestRef.current = false;
       setLocalRepaintActivationQueued(false);
@@ -6054,17 +6037,6 @@ export function EditorPage({
       );
     };
   }, [pushToast]);
-
-  useEffect(
-    () => () => {
-      for (const waiter of localRepaintInteractiveWaitersRef.current.values()) {
-        window.clearTimeout(waiter.timeoutId);
-        waiter.resolve(false);
-      }
-      localRepaintInteractiveWaitersRef.current.clear();
-    },
-    [],
-  );
 
   useEffect(() => {
     const preferredObjectId = selectedObjectId ?? importedModel?.objectId;
@@ -6396,14 +6368,14 @@ export function EditorPage({
   ]);
 
   const handleLocalImageGenerationSettled = useCallback(
-    async (result: LocalImageGenerationSettledResult) => {
+    (result: LocalImageGenerationSettledResult) => {
       useSceneStore.getState().setLocalRepaintGenerationPresentationActive(false);
       setLocalImageGenerationRequested(false);
       if (!result.succeeded) {
         pendingLocalRepaintActivationRequestRef.current = false;
         setLocalRepaintActivationQueued(false);
         setLocalRepaintGenerationSettledAwaitingUnlock(false);
-        return false;
+        return;
       }
       setLocalRepaintGenerationSettledAwaitingUnlock(true);
       preferredLocalRepaintGenerationIdRef.current = result.generationId;
@@ -6412,39 +6384,9 @@ export function EditorPage({
         generationId: result.generationId,
         status: 'preparing',
       });
-      const interactiveReadyPromise = new Promise<boolean>((resolve) => {
-        const previousWaiter = localRepaintInteractiveWaitersRef.current.get(result.generationId);
-        if (previousWaiter) {
-          window.clearTimeout(previousWaiter.timeoutId);
-          previousWaiter.resolve(false);
-        }
-        const timeoutId = window.setTimeout(() => {
-          const waiter = localRepaintInteractiveWaitersRef.current.get(result.generationId);
-          if (!waiter || waiter.timeoutId !== timeoutId) return;
-          localRepaintInteractiveWaitersRef.current.delete(result.generationId);
-          resolve(false);
-        }, 60_000);
-        localRepaintInteractiveWaitersRef.current.set(result.generationId, {
-          resolve,
-          timeoutId,
-        });
-      });
       setLocalImageGenerationSuccessKey((current) => current + 1);
-      const interactiveReady = await interactiveReadyPromise;
-      if (!interactiveReady) {
-        pendingLocalRepaintActivationRequestRef.current = false;
-        setLocalRepaintActivationQueued(false);
-        setLocalRepaintGenerationSettledAwaitingUnlock(false);
-        pushToast({
-          tone: 'error',
-          title: '局部重绘资源准备未完成',
-          description: '生图结果已返回，但纹理、蒙版或 GPU 材质未能及时就绪，请重新生成。',
-          dedupeKey: 'local-repaint-interactive-ready-timeout',
-        });
-      }
-      return interactiveReady;
     },
-    [pushToast],
+    [],
   );
 
   const handleLocalRepaintFromToolbar = useCallback(() => {

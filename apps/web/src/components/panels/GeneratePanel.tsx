@@ -588,9 +588,7 @@ type GeneratePanelProps = {
   workspaceActive?: boolean;
   localImageGenerationRequestKey?: number;
   onRequestLocalImageGeneration?: () => void;
-  onLocalImageGenerationSettled?: (
-    result: LocalImageGenerationSettledResult,
-  ) => void | boolean | Promise<void | boolean>;
+  onLocalImageGenerationSettled?: (result: LocalImageGenerationSettledResult) => void;
   cancelActiveGenerationRequestKey?: number;
   interactionLocked?: boolean;
   onInteractionLocked?: () => void;
@@ -694,9 +692,10 @@ export function GeneratePanel({
     setPendingLocalImageGenerationRequestKey(0);
     void handleLocalRepaintGenerateRef.current().then(
       (succeeded) => {
-        if (!succeeded && !lastCompletedLocalRepaintGenerationIdRef.current) {
-          onLocalImageGenerationSettled?.({ succeeded: false });
-        }
+        const generationId = lastCompletedLocalRepaintGenerationIdRef.current;
+        onLocalImageGenerationSettled?.(
+          succeeded && generationId ? { succeeded: true, generationId } : { succeeded: false },
+        );
       },
       () => onLocalImageGenerationSettled?.({ succeeded: false }),
     );
@@ -3260,17 +3259,6 @@ export function GeneratePanel({
           preserveActiveProjection: true,
           preserveActiveLayer: true,
         });
-      }
-      const interactiveReady = await onLocalImageGenerationSettled?.({
-        succeeded: true,
-        generationId: completedGeneration.id,
-      });
-      if (interactiveReady === false) {
-        setGenerateNotice({
-          tone: 'error',
-          message: '局部生图已返回，但 GPU 纹理准备失败，请重新生成后重试。',
-        });
-        return false;
       }
       setGenerateNotice(undefined);
       setTexturePreviewMode('repaint');
