@@ -104,8 +104,8 @@ assert.match(
 );
 assert.match(
   viewportCanvas,
-  /const exactOverlayVisible = false;[\s\S]*?setLocalRepaintGpuOverlayVisibility\(overlay, exactOverlayVisible, layers\)/,
-  'the shared resident material must remain the sole presentation owner while the legacy overlay stays inert',
+  /const exactOverlayVisible =[\s\S]*?liveFeedbackRequested[\s\S]*?setLocalRepaintGpuOverlayVisibility\(overlay, exactOverlayVisible, layers\)/,
+  'the exact overlay must own interactive apply feedback and hand off outside that phase',
 );
 assert.ok(
   (viewportCanvas.match(/const previewOwnsOverlay =/g) ?? []).length >= 4,

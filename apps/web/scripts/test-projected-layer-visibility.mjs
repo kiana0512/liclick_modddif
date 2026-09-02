@@ -653,7 +653,7 @@ assert.match(
 );
 assert.match(
   viewportCanvasSource,
-  /const localRepaintPresentationReady = isEditingPersistedLocalRepaint[\s\S]*?residentMaskBound[\s\S]*?Boolean\(composite\?\.gpuOverlayReady\)/,
+  /const presentationOwnerReady = isEditingPersistedLocalRepaint\s*\? residentMaskBound\s*:\s*exactOverlayReady;[\s\S]*?const localRepaintPresentationReady = Boolean\([\s\S]*?presentationOwnerReady/,
   'A persisted repaint eraser must require the resident live-mask binding instead of a duplicate overlay.',
 );
 assert.match(
@@ -708,7 +708,7 @@ assert.match(
 );
 assert.match(
   viewportCanvasSource,
-  /const exactOverlayVisible =\s*shouldRender &&\s*\(liveFeedbackRequested \|\|[\s\S]*?residentHandoffPending\);[\s\S]*?const rendererPreviewOwnsPresentation =\s*exactOverlayVisible \|\| \(!hasPersistedLayer && orderedStackOwnsPreview\);[\s\S]*?hasPersistedLayer &&[\s\S]*?residentOverrideBound &&[\s\S]*?previewOwnsOverlay &&[\s\S]*?!liveFeedbackRequested[\s\S]*?setLocalRepaintPreviewLayer\(undefined\);[\s\S]*?scheduleLocalRepaintResidentPresentation\(liveLayerId\);/,
+  /const exactOverlayVisible =\s*shouldRenderExactOverlay &&\s*\(liveFeedbackRequested \|\|[\s\S]*?residentHandoffPending\);[\s\S]*?const rendererPreviewOwnsPresentation =\s*exactOverlayVisible \|\| \(!hasPersistedLayer && orderedStackOwnsPreview\);[\s\S]*?hasPersistedLayer &&[\s\S]*?residentOverrideBound &&[\s\S]*?previewOwnsOverlay &&[\s\S]*?!liveFeedbackRequested[\s\S]*?setLocalRepaintPreviewLayer\(undefined\);[\s\S]*?scheduleLocalRepaintResidentPresentation\(liveLayerId\);/,
   'Apply mode must retain the exact overlay, then transfer ownership only after the resident-mask handoff is allowed.',
 );
 assert.match(
@@ -723,8 +723,8 @@ assert.match(
 );
 assert.match(
   viewportCanvasSource,
-  /syncLocalRepaintGpuOverlayBinding\(overlay,[\s\S]*?if \(visible\) ensureLiveLocalRepaintComposite\(result\.model, source\)/,
-  'Pointer-down must transfer repaint presentation ownership only after making the live overlay visible.',
+  /const exactOverlayReady = Boolean\([\s\S]*?overlay\?\.sourceKey === sourceKey[\s\S]*?const presentationOwnerReady = isEditingPersistedLocalRepaint\s*\? residentMaskBound\s*:\s*exactOverlayReady;/,
+  'Pointer-down must consume the prewarmed exact overlay as the apply-mode presentation owner.',
 );
 assert.match(
   viewportCanvasSource,
@@ -738,7 +738,7 @@ assert.doesNotMatch(
 );
 assert.match(
   viewportCanvasSource,
-  /if \(composite\.restoredMaskPromise\) await composite\.restoredMaskPromise;[\s\S]*?ensureLiveLocalRepaintComposite\(model, source\) !== composite/,
+  /if \(composite\.restoredMaskPromise\) \{[\s\S]*?withLocalRepaintSessionTimeout\([\s\S]*?composite\.restoredMaskPromise[\s\S]*?ensureLocalRepaintGpuOverlay\(model, source, composite\)[\s\S]*?ensureLiveLocalRepaintComposite\(model, source\) !== composite/,
   'Persisted repaint ownership must publish only after mask restore and GPU overlay readiness.',
 );
 assert.match(

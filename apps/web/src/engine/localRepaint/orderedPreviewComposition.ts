@@ -60,15 +60,16 @@ export function shouldPresentLocalRepaintInOrderedStack(
  * above the repaint.
  */
 export function shouldUseDedicatedLocalRepaintOverlay(
-  _layers: readonly Layer[],
-  _preview: Layer | undefined,
-  _liveFeedbackRequested: boolean,
+  layers: readonly Layer[],
+  preview: Layer | undefined,
+  liveFeedbackRequested: boolean,
 ) {
-  // Local repaint is always injected into the shared projected material stack.
-  // A second mesh used to race that resident stack for visibility and sampled
-  // stale masks after eye toggles. Keeping this helper as a compatibility seam
-  // makes old call sites harmless while presentation has one owner.
-  return false;
+  // The apply brush mutates a CanvasTexture every frame. Keep that hot path on
+  // the already-compiled exact overlay; the shared stack is authoritative again
+  // as soon as the gesture/session hands off. This avoids making the first
+  // stroke wait for a resident material publication while preserving ordered
+  // composition outside the interactive phase.
+  return liveFeedbackRequested || !shouldPresentLocalRepaintInOrderedStack(layers, preview);
 }
 
 /**
@@ -79,19 +80,22 @@ export function shouldUseDedicatedLocalRepaintOverlay(
  * and the resident binding is disabled by the preview marker.
  */
 export function shouldMuteLocalRepaintResidentLayer(
-  _layers: readonly Layer[],
-  _preview: Layer | undefined,
-  _layerId: string,
-  _liveFeedbackRequested = false,
+  layers: readonly Layer[],
+  preview: Layer | undefined,
+  layerId: string,
+  liveFeedbackRequested = false,
 ) {
-  return false;
+  return (
+    preview?.id === layerId &&
+    shouldUseDedicatedLocalRepaintOverlay(layers, preview, liveFeedbackRequested)
+  );
 }
 
 export function getOrderedLocalRepaintPreviewLayer(
   layers: readonly Layer[],
   preview: Layer | undefined,
 ) {
-  if (!preview?.imageUrl || !preview.camera || preview.type !== 'projected') return undefined;
+  if (!preview || !shouldPresentLocalRepaintInOrderedStack(layers, preview)) return undefined;
   return resolveLocalRepaintPreviewPresentation(preview, layers);
 }
 

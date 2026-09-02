@@ -8271,6 +8271,9 @@ function SurfacePaintOverlay() {
         : undefined;
     const presentationLayer = persistedLayer ?? livePreviewLayer;
     const previewOwnsOverlay = Boolean(livePreviewLayer);
+    const hasLiveContent = Boolean(
+      composite?.sourceKey === liveSourceKey && composite.hasContent,
+    );
     const liveFeedbackRequested = sceneState.paintTool === 'inpaint-apply';
     const orderedStackOwnsPreview = !shouldUseDedicatedLocalRepaintOverlay(
       layers,
@@ -8291,9 +8294,41 @@ function SurfacePaintOverlay() {
     document.body.dataset.localRepaintResidentMaskOverride = residentOverrideBound
       ? `bound:${liveLayerId}`
       : 'inactive';
-    // The shared projected material is the sole presentation owner. Keep the
-    // legacy overlay object inert while older lifecycle code is phased out.
-    const exactOverlayVisible = false;
+    const erasesPersistedLocalRepaint = isLocalRepaintLayerEraserActive(
+      sceneState.paintTool,
+      layerState.activeProjectedLayerId,
+      liveLayerId,
+      layers,
+    );
+    const keepsLiveLocalRepaintPreview =
+      liveFeedbackRequested ||
+      erasesPersistedLocalRepaint ||
+      (previewOwnsOverlay &&
+        (sceneState.paintTool === 'none' ||
+          sceneState.paintTool === 'inpaint-add' ||
+          sceneState.paintTool === 'inpaint-subtract' ||
+          sceneState.localRepaintGenerationPresentationActive));
+    const shouldRenderExactOverlay = Boolean(
+      hasLiveContent &&
+      !orderedStackOwnsPreview &&
+      (keepsLiveLocalRepaintPreview || !hasPersistedLayer) &&
+      isLocalRepaintOverlayVisible(
+        sceneState.displayMode,
+        presentationLayer?.visible ??
+          (overlay ? readLocalRepaintGpuOverlayLayerVisibility(overlay, layers) : true),
+      ),
+    );
+    const residentHandoffPending =
+      localRepaintResidentPresentationLayerRef.current === liveLayerId;
+    // During apply, the precompiled exact overlay is the single presentation
+    // owner. It samples the mutable blend mask directly and therefore shows the
+    // very first stamp without waiting for SceneRoot to rebuild/publish a stack.
+    const exactOverlayVisible =
+      shouldRenderExactOverlay &&
+      (liveFeedbackRequested ||
+        !residentOverrideBound ||
+        previewOwnsOverlay ||
+        residentHandoffPending);
     if (overlay) {
       changed =
         setLocalRepaintGpuOverlayVisibility(overlay, exactOverlayVisible, layers) || changed;
@@ -10875,10 +10910,9 @@ function SurfacePaintOverlay() {
           await waitForFrame();
         }
         if (cancelled) return;
-        // The shared projected material is the only presentation owner. Wait
-        // for SceneRoot to publish the preview into that stack, then bind the
-        // mutable mask there. A dedicated mesh is intentionally not accepted as
-        // readiness because it caused stale eye-toggle and selection results.
+        // Prepare both presentation paths before accepting input. The exact
+        // overlay owns live apply strokes; resident binding owns historical
+        // rows and the atomic handoff after painting.
         const residentDeadline = Math.min(preparationDeadline, performance.now() + 10_000);
         while (!cancelled && !residentOverrideBound && performance.now() < residentDeadline) {
           ensureLiveLocalRepaintComposite(model, source);
@@ -10890,10 +10924,10 @@ function SurfacePaintOverlay() {
             composite,
           );
         }
-        if (!residentOverrideBound) {
-          throw new Error('局部重绘正式材质未能完成实时蒙版绑定。');
+        const readyOverlay = await ensureLocalRepaintGpuOverlay(model, source, composite);
+        if (!readyOverlay) {
+          throw new Error('局部重绘实时覆盖层未能完成。');
         }
-        clearLocalRepaintGpuOverlay();
         if (ensureLiveLocalRepaintComposite(model, source) !== composite) {
           throw new Error('局部重绘图层在就绪发布前失去绑定。');
         }
@@ -10904,9 +10938,8 @@ function SurfacePaintOverlay() {
           status: 'preparing',
           phase: 'verifying-render-frame',
         });
-        // Both new and restored repaint rows now update their mask inside the
-        // resident projection program. The publication barrier avoids exposing
-        // input before that single owner and its background are renderable.
+        // The publication barrier avoids exposing input before the exact live
+        // owner and its resident handoff target are renderable.
         reportLocalRepaintPrewarmProgress(0.94, '稳定背景贴图材质');
         const backgroundDeadline = performance.now() + 3_000;
         let backgroundReady = false;
@@ -10985,8 +11018,8 @@ function SurfacePaintOverlay() {
     };
   }, [
     bindLocalRepaintResidentMaskOverride,
-    clearLocalRepaintGpuOverlay,
     ensureLiveLocalRepaintComposite,
+    ensureLocalRepaintGpuOverlay,
     getTargetModel,
     gl,
     localRepaintAssetsRevision,
@@ -11399,6 +11432,10 @@ function SurfacePaintOverlay() {
             erasesLocalRepaint ? 'erase' : 'apply',
           );
           if (!erasesLocalRepaint) composite.hasContent = true;
+          // The exact overlay samples blendMaskTexture. Publish that texture
+          // explicitly before toggling overlay visibility so the first visible
+          // overlay frame already contains the first accepted stamp.
+          composite.blendMaskTexture.needsUpdate = true;
           // The prewarmed overlay is deliberately absent from the render list
           // while its mask is empty. Activate it only after the first accepted
           // stamp so merely entering the tool or hovering a 300k-face model
@@ -14435,21 +14472,50 @@ function SurfacePaintOverlay() {
           residentOverride.sourceKey === sourceKey &&
           residentOverride.texture === composite.blendMaskTexture,
         );
+        const overlay = localRepaintGpuOverlayRef.current;
+        const exactOverlayReady = Boolean(
+          composite &&
+            composite.gpuOverlayReady &&
+            overlay?.sourceKey === sourceKey &&
+            overlay.layerId === composite.layerId &&
+            overlay.root.parent === result.model.group &&
+            overlay.material.userData.liclickDisposedMaterial !== true,
+        );
         const repaintSession = getLocalRepaintSessionSnapshot();
+        const presentationOwnerReady = isEditingPersistedLocalRepaint
+          ? residentMaskBound
+          : exactOverlayReady;
         const localRepaintPresentationReady = Boolean(
-          residentMaskBound &&
+          presentationOwnerReady &&
             repaintSession?.status === 'ready' &&
             repaintSession.generationId === (source.generationId ?? '') &&
             repaintSession.targetLayerId === source.targetLayerId,
+        );
+        const shouldRetryGpuPreparation = Boolean(
+          isEditingPersistedLocalRepaint &&
+            (!composite ||
+              (composite.restoredMaskUrl && !composite.restoredMaskReady) ||
+              !localRepaintPresentationReady),
         );
         if (
           !composite ||
           (composite.restoredMaskUrl && !composite.restoredMaskReady) ||
           !localRepaintPresentationReady
         ) {
-          // Pointer input never repairs resources. The explicit preparation
-          // session owns all decode/material work and enables the tool only
-          // after one verified resident render frame.
+          // A persisted eraser may outlive a material rebuild. Ask the session
+          // owner to rebuild it, but keep all GPU work outside pointer-down.
+          if (shouldRetryGpuPreparation) {
+            useSceneStore.getState().requestLocalRepaintGpuPrepare();
+            markPerformanceEvent('local-repaint', 'local-repaint-eraser-prepare', {
+              layerId: activePaintLayerId,
+            });
+            pushToast({
+              tone: 'warning',
+              title: '局部重绘画笔正在准备',
+              description: '资源重新加载完成后即可继续擦除。',
+              dedupeKey: `local-repaint-eraser-prepare:${activePaintLayerId ?? 'unknown'}`,
+            });
+          }
           return;
         }
         const surfaceFacesProjector =

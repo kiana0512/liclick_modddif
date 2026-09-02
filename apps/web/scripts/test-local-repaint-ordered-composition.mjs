@@ -95,8 +95,8 @@ try {
       liveRepaint,
       true,
     ),
-    false,
-    'the shared resident projected stack must own live feedback',
+    true,
+    'the precompiled exact overlay must own frame-by-frame apply feedback',
   );
   assert.equal(
     ordered.shouldMuteLocalRepaintResidentLayer(
@@ -105,8 +105,8 @@ try {
       persistedRepaint.id,
       true,
     ),
-    false,
-    'live feedback must never hide the resident projected row',
+    true,
+    'the resident twin must be muted while the exact live overlay owns apply feedback',
   );
 
   const bottomUp = ordered.mergeOrderedLocalRepaintPreview(
@@ -135,8 +135,8 @@ try {
       { ...liveRepaint, order: 0 },
       repaintOnTop.id,
     ),
-    false,
-    'the resident row stays visible regardless of ordering',
+    true,
+    'the fast exact overlay must mute its resident twin outside ordered-stack presentation',
   );
   assert.equal(
     ordered.shouldMuteLocalRepaintResidentLayer(
@@ -200,8 +200,8 @@ try {
   );
   assert.match(
     viewport,
-    /while \(!cancelled && !residentOverrideBound[\s\S]*?bindLocalRepaintResidentMaskOverride/,
-    'readiness must wait for the live mask to bind into the resident material',
+    /while \(!cancelled && !residentOverrideBound[\s\S]*?bindLocalRepaintResidentMaskOverride[\s\S]*?ensureLocalRepaintGpuOverlay/,
+    'readiness must prepare the resident handoff and the exact live overlay before input',
   );
   assert.match(
     viewport,
@@ -216,15 +216,29 @@ try {
     residentActivityStart,
   );
   const residentActivity = viewport.slice(residentActivityStart, residentActivityEnd);
+  const residentBindingActivity = residentActivity.slice(
+    residentActivity.indexOf('const residentOverrideBound = Boolean('),
+    residentActivity.indexOf('let changed = false;'),
+  );
   assert.match(
     residentActivity,
     /const presentationLayer = persistedLayer \?\? livePreviewLayer;[\s\S]*?presentationLayer\?\.visible[\s\S]*?bindLocalRepaintResidentMaskOverride/,
     'a late material replacement must rebind the empty transient preview before the first stroke',
   );
   assert.doesNotMatch(
-    residentActivity,
+    residentBindingActivity,
     /composite\.hasContent/,
     'resident rebinding must not wait for pointer-up to turn the first empty preview into a persisted row',
+  );
+  assert.match(
+    residentActivity,
+    /const exactOverlayVisible =[\s\S]*?liveFeedbackRequested[\s\S]*?setLocalRepaintGpuOverlayVisibility/,
+    'apply feedback must activate the precompiled overlay on the first accepted stamp',
+  );
+  assert.match(
+    viewport,
+    /composite\.blendMaskTexture\.needsUpdate = true;[\s\S]*?syncLocalRepaintGpuOverlayActivity\(\);/,
+    'the first mask stamp must upload before the exact overlay becomes visible',
   );
   assert.match(viewport, /phase: 'verifying-render-frame'/);
   assert.match(
@@ -242,13 +256,19 @@ try {
     /liveLocalRepaintFastPreview|fastPreviewVisible|fastPreviewCanRender/,
     'the depthless duplicate-mesh preview must stay out of the renderer path',
   );
-  const pointerStart = viewport.indexOf('const paintStartedAt = performance.now()');
+  const pointerHandlerStart = viewport.indexOf(
+    'const handlePointerDown = (event: globalThis.PointerEvent) =>',
+  );
+  const pointerStart = viewport.indexOf(
+    'const paintStartedAt = performance.now()',
+    pointerHandlerStart,
+  );
   const pointerEnd = viewport.indexOf('isPaintingRef.current = true', pointerStart);
   assert.ok(pointerStart >= 0 && pointerEnd > pointerStart);
   assert.doesNotMatch(
     viewport.slice(pointerStart, pointerEnd),
-    /requestLocalRepaintGpuPrepare|bindLocalRepaintResidentMaskOverride|ensureLocalRepaintGpuOverlay/,
-    'pointer-down must consume a completed session without repairing resources',
+    /bindLocalRepaintResidentMaskOverride|ensureLocalRepaintGpuOverlay/,
+    'pointer-down may request session recovery but must never repair GPU resources itself',
   );
   assert.match(projectedMaterial, /uniform float liveMaskUsesProjection/);
   assert.match(
