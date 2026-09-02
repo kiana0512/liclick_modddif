@@ -1,5 +1,5 @@
 import { OrthographicCamera, PerspectiveCamera } from '@react-three/drei';
-import { useThree } from '@react-three/fiber';
+import { useFrame, useThree } from '@react-three/fiber';
 import { useEffect, useRef } from 'react';
 import * as THREE from 'three';
 import { applySerializedCamera } from '@/engine/projection/ProjectionCamera';
@@ -56,6 +56,10 @@ export function CameraController() {
   const importedModelIdsRef = useRef<Set<string>>(new Set());
   const workspaceModeRef = useRef(workspaceMode);
   const { gl, scene, camera, size } = useThree();
+
+  useFrame((_, deltaSeconds) => {
+    controlsRef.current?.updateWheelTransition(deltaSeconds);
+  });
 
   useEffect(() => {
     if (!(camera instanceof THREE.PerspectiveCamera || camera instanceof THREE.OrthographicCamera)) return;

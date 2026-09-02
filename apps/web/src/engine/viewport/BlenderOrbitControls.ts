@@ -6,6 +6,9 @@ type PointerAction = 'orbit' | 'pan' | 'dolly';
 const WORLD_UP = new THREE.Vector3(0, 1, 0);
 const MIN_ORTHOGRAPHIC_ZOOM = 0.01;
 const MAX_ORTHOGRAPHIC_ZOOM = 10_000;
+const WHEEL_ZOOM_SPRING = 18;
+const WHEEL_DELTA_LINE = 1;
+const WHEEL_DELTA_PAGE = 2;
 
 /**
  * Blender-style turntable navigation without OrbitControls' 180-degree polar
@@ -19,7 +22,7 @@ export class BlenderOrbitControls {
   minDistance = 0.3;
   maxDistance = 40;
   rotateSpeed = 0.005;
-  zoomSpeed = 0.0015;
+  zoomSpeed = 0.0008;
   panSpeed = 1;
 
   private activePointerId?: number;
@@ -33,7 +36,9 @@ export class BlenderOrbitControls {
   private readonly yawRotation = new THREE.Quaternion();
   private readonly pitchRotation = new THREE.Quaternion();
   private pendingWheelDelta = 0;
-  private wheelFrame?: number;
+  private targetPerspectiveDistance?: number;
+  private targetOrthographicZoom?: number;
+  private wheelZoomLogVelocity = 0;
   private readonly changeListeners = new Set<() => void>();
 
   constructor(
@@ -52,11 +57,69 @@ export class BlenderOrbitControls {
     domElement.addEventListener('wheel', this.handleWheel, { passive: true });
   }
 
-  update = () => {
+  private syncCameraTransform() {
     this.camera.lookAt(this.target);
     this.camera.updateMatrixWorld();
+  }
+
+  update = () => {
+    this.cancelWheelTransition();
+    this.syncCameraTransform();
     this.changeListeners.forEach((listener) => listener());
   };
+
+  updateWheelTransition(deltaSeconds: number) {
+    if (this.pendingWheelDelta !== 0) {
+      const delta = this.pendingWheelDelta;
+      this.pendingWheelDelta = 0;
+      this.queueWheelZoom(Math.exp(THREE.MathUtils.clamp(delta * this.zoomSpeed, -4, 4)));
+    }
+
+    const frameDelta = THREE.MathUtils.clamp(deltaSeconds, 0, 0.05);
+    if (frameDelta <= 0) return;
+
+    if (this.camera instanceof THREE.OrthographicCamera) {
+      const targetZoom = this.targetOrthographicZoom;
+      if (targetZoom === undefined) return;
+      this.onWheelFrame?.();
+      const currentZoom = this.camera.zoom;
+      const nextZoom = this.stepWheelZoomSpring(currentZoom, targetZoom, frameDelta);
+      const settled = Math.abs(nextZoom - targetZoom) <= Math.max(targetZoom * 0.0005, 1e-6);
+      this.camera.zoom = settled ? targetZoom : nextZoom;
+      this.camera.updateProjectionMatrix();
+      if (settled) {
+        this.targetOrthographicZoom = undefined;
+        this.wheelZoomLogVelocity = 0;
+      }
+      return;
+    }
+
+    const targetDistance = this.targetPerspectiveDistance;
+    if (targetDistance === undefined) return;
+    // Keep background texture uploads and heavy jobs paused for the complete
+    // visible transition, not merely for the raw wheel-event burst.
+    this.onWheelFrame?.();
+    this.offset.copy(this.camera.position).sub(this.target);
+    const currentDistance = this.offset.length();
+    const safeCurrentDistance = Math.max(currentDistance, Number.EPSILON);
+    const nextDistance = this.stepWheelZoomSpring(
+      safeCurrentDistance,
+      targetDistance,
+      frameDelta,
+    );
+    const settled =
+      Math.abs(nextDistance - targetDistance) <= Math.max(targetDistance * 0.0005, 1e-6);
+    if (this.offset.lengthSq() < Number.EPSILON) this.offset.set(0, 0, targetDistance);
+    else this.offset.setLength(settled ? targetDistance : nextDistance);
+    this.camera.position.copy(this.target).add(this.offset);
+    // Dolly keeps the existing viewing direction. Avoid rebuilding the
+    // quaternion on every transition frame; only refresh the camera matrix.
+    this.camera.updateMatrixWorld();
+    if (settled) {
+      this.targetPerspectiveDistance = undefined;
+      this.wheelZoomLogVelocity = 0;
+    }
+  }
 
   subscribeChange(listener: () => void) {
     this.changeListeners.add(listener);
@@ -70,11 +133,7 @@ export class BlenderOrbitControls {
     this.domElement.removeEventListener('pointerup', this.handlePointerUp);
     this.domElement.removeEventListener('pointercancel', this.handlePointerUp);
     this.domElement.removeEventListener('wheel', this.handleWheel);
-    if (this.wheelFrame !== undefined) {
-      this.domElement.ownerDocument.defaultView?.cancelAnimationFrame(this.wheelFrame);
-      this.wheelFrame = undefined;
-    }
-    this.pendingWheelDelta = 0;
+    this.cancelWheelTransition();
     this.changeListeners.clear();
   }
 
@@ -87,6 +146,8 @@ export class BlenderOrbitControls {
 
     const action = this.getPointerAction(event);
     if (!action) return;
+
+    this.cancelWheelTransition();
 
     this.activePointerId = event.pointerId;
     this.pointerAction = action;
@@ -125,23 +186,54 @@ export class BlenderOrbitControls {
     // Preserve the complete physical delta but apply it once per native display
     // frame. This is refresh-rate adaptive (60/120/144Hz), not an FPS cap.
     const deltaScale =
-      event.deltaMode === WheelEvent.DOM_DELTA_LINE
+      event.deltaMode === WHEEL_DELTA_LINE
         ? 16
-        : event.deltaMode === WheelEvent.DOM_DELTA_PAGE
+        : event.deltaMode === WHEEL_DELTA_PAGE
           ? Math.max(this.domElement.clientHeight, 1)
           : 1;
     this.pendingWheelDelta += event.deltaY * deltaScale;
-    if (this.wheelFrame === undefined) {
-      const view = this.domElement.ownerDocument.defaultView;
-      this.wheelFrame = view?.requestAnimationFrame(() => {
-        this.wheelFrame = undefined;
-        const delta = this.pendingWheelDelta;
-        this.pendingWheelDelta = 0;
-        this.onWheelFrame?.();
-        this.zoomByFactor(Math.exp(delta * this.zoomSpeed));
-      });
-    }
   };
+
+  private cancelWheelTransition() {
+    this.pendingWheelDelta = 0;
+    this.targetPerspectiveDistance = undefined;
+    this.targetOrthographicZoom = undefined;
+    this.wheelZoomLogVelocity = 0;
+  }
+
+  private stepWheelZoomSpring(current: number, target: number, deltaSeconds: number) {
+    const currentLog = Math.log(current);
+    const targetLog = Math.log(target);
+    const displacement = currentLog - targetLog;
+    const springStep =
+      (this.wheelZoomLogVelocity + WHEEL_ZOOM_SPRING * displacement) * deltaSeconds;
+    const decay = Math.exp(-WHEEL_ZOOM_SPRING * deltaSeconds);
+    this.wheelZoomLogVelocity =
+      (this.wheelZoomLogVelocity - WHEEL_ZOOM_SPRING * springStep) * decay;
+    return Math.exp(targetLog + (displacement + springStep) * decay);
+  }
+
+  private queueWheelZoom(factor: number) {
+    if (!Number.isFinite(factor) || factor <= 0) return;
+
+    if (this.camera instanceof THREE.OrthographicCamera) {
+      const currentTarget = this.targetOrthographicZoom ?? this.camera.zoom;
+      this.targetOrthographicZoom = THREE.MathUtils.clamp(
+        currentTarget / factor,
+        MIN_ORTHOGRAPHIC_ZOOM,
+        MAX_ORTHOGRAPHIC_ZOOM,
+      );
+      return;
+    }
+
+    const currentDistance = this.camera.position.distanceTo(this.target);
+    const currentTarget = this.targetPerspectiveDistance ?? currentDistance;
+    this.targetPerspectiveDistance = THREE.MathUtils.clamp(
+      currentTarget * factor,
+      this.minDistance,
+      this.maxDistance,
+    );
+  }
 
   private getPointerAction(event: PointerEvent): PointerAction | undefined {
     // Keep the existing left-drag orbit interaction. Plain MMB pans the view
@@ -221,6 +313,9 @@ export class BlenderOrbitControls {
     if (this.offset.lengthSq() < Number.EPSILON) this.offset.set(0, 0, distance);
     else this.offset.setLength(distance);
     this.camera.position.copy(this.target).add(this.offset);
-    this.update();
+    // Perspective dolly changes only the camera distance. View-cube listeners
+    // care about orientation, and notifying them on every coalesced wheel frame
+    // performs redundant model/camera math during the hottest zoom path.
+    this.syncCameraTransform();
   }
 }

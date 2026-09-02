@@ -95,6 +95,10 @@ assert.doesNotMatch(
 );
 assert.match(viewport, /publishLocalRepaintInteractiveState\(\{/);
 assert.match(interactiveState, /'liclick:local-repaint-interactive-state'/);
+assert.match(interactiveState, /userInitiated\?: boolean/);
+assert.match(viewport, /userInitiated: source\.autoActivate !== false/);
+assert.match(editor, /if \(!foregroundFailure\) return/);
+assert.match(editor, /canQueueLocalRepaintActivation &&[\s\S]{0,100}!localRepaintInteractiveFailed/);
 assert.match(
   viewport,
   /projectedBackgroundMaterialRevision[\s\S]{0,500}backgroundDisplayMode === 'flat'[\s\S]{0,120}backgroundDisplayMode === 'pbr'/,

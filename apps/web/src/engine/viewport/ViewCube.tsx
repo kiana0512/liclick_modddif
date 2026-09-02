@@ -1,6 +1,6 @@
 import {
   useCallback,
-  useEffect,
+  useLayoutEffect,
   useRef,
   useState,
   type CSSProperties,
@@ -141,9 +141,11 @@ function getSnapTarget(face: CubeFace, event: MouseEvent<HTMLButtonElement>): Sn
 export function ViewCube() {
   const viewport = useSceneStore((state) => state.viewport);
   const importedModel = useSceneStore((state) => state.importedModel);
-  const [rotation, setRotation] = useState({ pitch: -24, yaw: 38 });
-  const [activeLabel, setActiveLabel] = useState(faceLabels.front);
   const [hoveredTarget, setHoveredTarget] = useState<SnapTarget>();
+  const cubeRef = useRef<HTMLDivElement>(null);
+  const activeLabelElementRef = useRef<HTMLDivElement>(null);
+  const activeLabelRef = useRef(faceLabels.front);
+  const hoveredTargetRef = useRef<SnapTarget>();
   const lastStateRef = useRef({ pitch: -24, yaw: 38, label: faceLabels.front });
   const lastHoverKeyRef = useRef('');
 
@@ -187,6 +189,7 @@ export function ViewCube() {
     if (lastHoverKeyRef.current === nextKey) return;
 
     lastHoverKeyRef.current = nextKey;
+    hoveredTargetRef.current = nextTarget;
     setHoveredTarget(nextTarget);
   }, []);
 
@@ -194,10 +197,11 @@ export function ViewCube() {
     if (!lastHoverKeyRef.current) return;
 
     lastHoverKeyRef.current = '';
+    hoveredTargetRef.current = undefined;
     setHoveredTarget(undefined);
   }, []);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const cameraPosition = new Vector3();
     const target = new Vector3();
     const worldDirection = new Vector3();
@@ -238,8 +242,13 @@ export function ViewCube() {
           previous.label !== nextState.label
         ) {
           lastStateRef.current = nextState;
-          setRotation({ pitch: nextState.pitch, yaw: nextState.yaw });
-          setActiveLabel(nextState.label);
+          activeLabelRef.current = nextState.label;
+          if (cubeRef.current) {
+            cubeRef.current.style.transform = `rotateX(${nextState.pitch}deg) rotateY(${nextState.yaw}deg)`;
+          }
+          if (!hoveredTargetRef.current && activeLabelElementRef.current) {
+            activeLabelElementRef.current.textContent = nextState.label;
+          }
         }
       }
     };
@@ -260,11 +269,12 @@ export function ViewCube() {
     };
   }, [importedModel, viewport]);
 
-  const displayLabel = hoveredTarget?.label ?? activeLabel;
+  const displayLabel = hoveredTarget?.label ?? activeLabelRef.current;
 
   return (
     <div className="absolute right-4 top-4 z-10 grid h-32 w-32 place-items-start justify-items-center">
       <div
+        ref={activeLabelElementRef}
         className={cn(
           'z-10 max-w-[7.5rem] rounded px-1.5 py-0.5 text-[8px] font-black uppercase tracking-normal shadow-[0_3px_12px_rgba(0,0,0,0.3)] transition-colors',
           hoveredTarget ? 'bg-liclick-pink text-white' : 'bg-white/90 text-[#14151d]',
@@ -275,13 +285,11 @@ export function ViewCube() {
       </div>
       <div className="mt-2 [perspective:540px]" style={{ width: cubeSize, height: cubeSize }}>
         <div
+          ref={cubeRef}
           className="relative [transform-style:preserve-3d] will-change-transform"
           style={{
             width: cubeSize,
             height: cubeSize,
-            // `getViewCubeRotation` already returns the inverse camera yaw, so
-            // the model's user-facing RIGHT side stays on the cube's right.
-            transform: `rotateX(${rotation.pitch}deg) rotateY(${rotation.yaw}deg)`,
           }}
         >
           {(Object.keys(faceLabels) as CubeFace[]).map((face) => {

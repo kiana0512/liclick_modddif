@@ -9303,6 +9303,7 @@ function SurfacePaintOverlay() {
       generationId: source.generationId ?? '',
       targetLayerId: source.targetLayerId,
       status: 'preparing',
+      userInitiated: source.autoActivate !== false,
     });
 
     // The former delayed-UV-bake path created an empty merge layer before the
@@ -9443,6 +9444,7 @@ function SurfacePaintOverlay() {
           generationId: source.generationId ?? '',
           targetLayerId: source.targetLayerId,
           status: 'failed',
+          userInitiated: source.autoActivate !== false,
         });
         reportLocalRepaintPrewarmProgress(1, '无法读取高清结果或蒙版，请重试', {
           done: true,
@@ -10857,6 +10859,7 @@ function SurfacePaintOverlay() {
           generationId: source.generationId ?? '',
           targetLayerId: source.targetLayerId,
           status: 'failed',
+          userInitiated: source.autoActivate !== false,
         });
         reportLocalRepaintPrewarmProgress(1, '局部重绘 GPU 覆盖层准备失败，请重试', {
           done: true,
@@ -10873,6 +10876,7 @@ function SurfacePaintOverlay() {
         generationId: source.generationId ?? '',
         targetLayerId: source.targetLayerId,
         status: 'ready',
+        userInitiated: source.autoActivate !== false,
       });
       reportLocalRepaintPrewarmProgress(1, 'GPU 已就绪，可以立即涂抹', { done: true });
       if (
@@ -14592,7 +14596,9 @@ export function ViewportCanvas({
   sceneOverlay,
 }: ViewportCanvasProps) {
   const [isDragging, setIsDragging] = useState(false);
-  const [captureFrameVisible, setCaptureFrameVisible] = useState(false);
+  const captureFrameElementRef = useRef<HTMLDivElement>(null);
+  const captureFrameVisibleRef = useRef(false);
+  const captureFrameLastActivityAtRef = useRef(0);
   const [canvasKey, setCanvasKey] = useState(0);
   const [viewportIssue, setViewportIssue] = useState<string>();
   const recoveryAttemptsRef = useRef(0);
@@ -14620,15 +14626,41 @@ export function ViewportCanvas({
   );
   const t = useT();
 
-  useEffect(() => () => window.clearTimeout(captureFrameTimerRef.current), []);
+  useEffect(
+    () => () => {
+      window.clearTimeout(captureFrameTimerRef.current);
+      captureFrameTimerRef.current = undefined;
+    },
+    [],
+  );
+
+  useEffect(() => {
+    if (workspaceMode !== 'scene' && paintTool === 'none') return;
+    window.clearTimeout(captureFrameTimerRef.current);
+    captureFrameTimerRef.current = undefined;
+    captureFrameVisibleRef.current = false;
+    if (captureFrameElementRef.current) captureFrameElementRef.current.style.opacity = '0';
+  }, [paintTool, workspaceMode]);
+
+  function hideCaptureFrameWhenIdle() {
+    const remainingMs = 1800 - (performance.now() - captureFrameLastActivityAtRef.current);
+    if (remainingMs > 0) {
+      captureFrameTimerRef.current = window.setTimeout(hideCaptureFrameWhenIdle, remainingMs);
+      return;
+    }
+    captureFrameTimerRef.current = undefined;
+    captureFrameVisibleRef.current = false;
+    if (captureFrameElementRef.current) captureFrameElementRef.current.style.opacity = '0';
+  }
 
   function pulseCaptureFrame() {
     if (workspaceMode === 'scene' || paintTool !== 'none') return;
-    setCaptureFrameVisible(true);
-    window.clearTimeout(captureFrameTimerRef.current);
-    captureFrameTimerRef.current = window.setTimeout(() => {
-      setCaptureFrameVisible(false);
-    }, 1800);
+    captureFrameLastActivityAtRef.current = performance.now();
+    if (!captureFrameVisibleRef.current) {
+      captureFrameVisibleRef.current = true;
+      if (captureFrameElementRef.current) captureFrameElementRef.current.style.opacity = '1';
+    }
+    captureFrameTimerRef.current ??= window.setTimeout(hideCaptureFrameWhenIdle, 1800);
   }
 
   function handlePointerMove(event: PointerEvent<HTMLDivElement>) {
@@ -14745,9 +14777,8 @@ export function ViewportCanvas({
       {performanceTestModeEnabled ? <PerformanceTestHud /> : <LightweightPerformanceHud />}
       {showCaptureFrame && (
         <div
-          className={`pointer-events-none absolute left-1/2 top-1/2 z-20 h-[82%] w-[72%] max-w-[1280px] -translate-x-1/2 -translate-y-1/2 rounded-[18px] border-[3px] border-dashed border-[#d9795c]/75 shadow-[0_0_0_1px_rgba(217,121,92,0.12)] transition-opacity duration-300 ${
-            captureFrameVisible && workspaceMode !== 'scene' ? 'opacity-100' : 'opacity-0'
-          }`}
+          ref={captureFrameElementRef}
+          className="pointer-events-none absolute left-1/2 top-1/2 z-20 h-[82%] w-[72%] max-w-[1280px] -translate-x-1/2 -translate-y-1/2 rounded-[18px] border-[3px] border-dashed border-[#d9795c]/75 opacity-0 shadow-[0_0_0_1px_rgba(217,121,92,0.12)] transition-opacity duration-300"
           aria-hidden="true"
         />
       )}

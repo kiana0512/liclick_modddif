@@ -1484,6 +1484,7 @@ export function EditorPage({
       ),
     [generations, localRepaintInteractiveState],
   );
+  const localRepaintInteractiveFailed = localRepaintInteractiveState?.status === 'failed';
   const localImageGenerationStoreRunning = useMemo(() => {
     const preferredObjectId = selectedObjectId ?? importedModel?.objectId;
     return generations.some(
@@ -6017,8 +6018,13 @@ export function EditorPage({
       }
       setLocalRepaintInteractiveState(detail);
       if (detail.status !== 'failed') return;
+      const foregroundFailure =
+        detail.userInitiated === true ||
+        pendingLocalRepaintActivationRequestRef.current ||
+        document.body.dataset.localRepaintPrewarmProgressRequested === '1';
       pendingLocalRepaintActivationRequestRef.current = false;
       setLocalRepaintActivationQueued(false);
+      if (!foregroundFailure) return;
       pushToast({
         tone: 'error',
         title: '局部重绘 GPU 准备失败',
@@ -6397,6 +6403,7 @@ export function EditorPage({
     });
     if (
       canQueueLocalRepaintActivation &&
+      !localRepaintInteractiveFailed &&
       (generationOperationLocked ||
         !localRepaintGenerationReady ||
         !localRepaintInteractiveReady)
@@ -6657,6 +6664,7 @@ export function EditorPage({
     getLocalRepaintProjectionImage,
     importedModel,
     localRepaintGenerationReady,
+    localRepaintInteractiveFailed,
     localRepaintInteractiveReady,
     notifyEditorTaskRunning,
     paintMaskDataUrl,

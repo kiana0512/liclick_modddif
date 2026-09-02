@@ -6,6 +6,7 @@ export type LocalRepaintInteractiveStateDetail = {
   generationId: string;
   targetLayerId?: string;
   status: LocalRepaintInteractiveStatus;
+  userInitiated?: boolean;
 };
 
 export function publishLocalRepaintInteractiveState(detail: LocalRepaintInteractiveStateDetail) {
