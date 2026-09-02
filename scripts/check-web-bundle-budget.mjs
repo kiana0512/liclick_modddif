@@ -24,10 +24,10 @@ const budgets = [
     maxBytes: 850_000,
   },
 ];
-// PERF-LAB-REPORT v2 plus the continuously visible local-repaint resident
-// handoff measure 3,084,586 bytes in the cloud build. Keep roughly 5 KiB of
-// deterministic-build headroom without relaxing shell or shared-pipeline budgets.
-const maxTotalJavaScriptBytes = 3_090_000;
+// The eraser tile-history and sparse local-repaint pipeline measure 3,103,108
+// bytes in the cloud build. Keep roughly 7 KiB of deterministic-build headroom;
+// the tighter shell, editor and shared-pipeline budgets still guard hot paths.
+const maxTotalJavaScriptBytes = 3_110_000;
 
 let entries;
 try {
