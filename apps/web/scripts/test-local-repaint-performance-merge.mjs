@@ -37,6 +37,15 @@ assert.doesNotMatch(panel, /createFullFrameMaskDataUrl/);
 assert.doesNotMatch(panel, /full-frame-default/);
 assert.match(panel, /local-repaint-mask-required/);
 assert.match(panel, /onLocalImageGenerationSettled/);
+assert.match(
+  panel,
+  /const interactiveReady = await onLocalImageGenerationSettled\?\.\(\{[\s\S]*?succeeded: true,[\s\S]*?generationId: completedGeneration\.id/,
+);
+assert.ok(
+  panel.indexOf('const interactiveReady = await onLocalImageGenerationSettled?.({') <
+    panel.indexOf("title: '局部生图已生成'"),
+  'generation completion must wait for the generation-scoped interactive-ready signal',
+);
 assert.match(panel, /displayedTexturePreviewMode/);
 assert.match(panel, /createModelviewApiClient\(\)\.generateInpaint\(/);
 assert.match(panel, /image: \{ path: 'current-effect\.png'/);
@@ -84,6 +93,9 @@ assert.match(backgroundPrewarmPolicy, /'preserve-current-source'/);
 assert.match(editor, /pendingLocalRepaintActivationRequestRef\.current = true/);
 assert.match(editor, /'replayed-after-gpu-ready'/);
 assert.match(editor, /localRepaintGenerationReady && localRepaintInteractiveReady/);
+assert.match(editor, /localRepaintInteractiveWaitersRef/);
+assert.match(editor, /waiter\.resolve\(detail\.status === 'ready'\)/);
+assert.match(editor, /const interactiveReady = await interactiveReadyPromise/);
 assert.match(editor, /queueMicrotask\(\(\) => \{/);
 assert.match(editor, /'background-prewarm-queued'/);
 assert.doesNotMatch(
