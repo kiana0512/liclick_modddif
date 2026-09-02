@@ -3060,7 +3060,22 @@ export function updateProjectedLayerStackMaterial(
 export type ProjectedTextureProfile = 'image' | 'mask' | 'depth' | 'normal';
 
 const projectedTextureCache = new Map<string, Promise<THREE.Texture>>();
+const MAX_PROJECTED_SOURCE_TEXTURE_CACHE_ENTRIES = 48;
 const PROJECTED_TEXTURE_REQUEST_TIMEOUT_MS = 20_000;
+
+function cacheProjectedSourceTexture(cacheKey: string, texture: Promise<THREE.Texture>) {
+  projectedTextureCache.delete(cacheKey);
+  projectedTextureCache.set(cacheKey, texture);
+  // These are decode/packing sources, not the authoritative resident array.
+  // An unbounded map retained every ImageBitmap from every model ever visited.
+  // Dropping the cache reference is safe: live direct materials keep their own
+  // texture references, while future misses decode the unchanged source asset.
+  while (projectedTextureCache.size > MAX_PROJECTED_SOURCE_TEXTURE_CACHE_ENTRIES) {
+    const oldestKey = projectedTextureCache.keys().next().value as string | undefined;
+    if (!oldestKey) break;
+    projectedTextureCache.delete(oldestKey);
+  }
+}
 
 function loadProjectedTextureFallback(imageUrl: string) {
   return new Promise<THREE.Texture>((resolve, reject) => {
@@ -3115,7 +3130,7 @@ export function primeProjectedImageTexture(imageUrl: string, image: HTMLImageEle
   texture.generateMipmaps = true;
   texture.anisotropy = 8;
   texture.needsUpdate = true;
-  projectedTextureCache.set(cacheKey, Promise.resolve(texture));
+  cacheProjectedSourceTexture(cacheKey, Promise.resolve(texture));
 }
 
 export async function loadProjectedTexture(
@@ -3129,7 +3144,10 @@ export async function loadProjectedTexture(
   }
   const cacheKey = getProjectedTextureCacheKey(imageUrl, colorSpace, profile);
   const cachedTexture = projectedTextureCache.get(cacheKey);
-  if (cachedTexture) return cachedTexture;
+  if (cachedTexture) {
+    cacheProjectedSourceTexture(cacheKey, cachedTexture);
+    return cachedTexture;
+  }
 
   const texturePromise = (async () => {
     let texture: THREE.Texture;
@@ -3216,7 +3234,7 @@ export async function loadProjectedTexture(
       throw error;
     });
 
-  projectedTextureCache.set(cacheKey, texturePromise);
+  cacheProjectedSourceTexture(cacheKey, texturePromise);
   return texturePromise;
 }
 
@@ -3726,7 +3744,6 @@ async function createProjectedTextureArray(
     isViewportInteractionBusy,
   );
   if (isCancelled?.()) throw new Error('Projected texture array upload was cancelled.');
-
   return withProjectedArrayUploadLock(async () => {
     // CPU preparation for other profiles continues in parallel. Keep WebGL
     // uploads serialized and yield between slices so input always gets a frame.

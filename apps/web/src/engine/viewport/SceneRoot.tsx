@@ -42,6 +42,7 @@ import {
 } from '@/engine/layers/uvLayerComposition';
 import {
   canCompositeUvLayersInWorker,
+  cancelUvLayerCompositions,
   compositeUvLayerUrlsInWorker,
   compositeUvLayersInWorker,
 } from '@/engine/layers/uvLayerCompositeWorker';
@@ -58,7 +59,10 @@ import {
 import { useLayerStore } from '@/stores/layerStore';
 import { useWorkspaceLayoutStore } from '@/components/workspace/workspaceLayoutStore';
 import { translations, useI18nStore } from '@/stores/i18nStore';
-import { useProjectStore } from '@/stores/projectStore';
+import {
+  scheduleCurrentProjectActiveObjectPersistence,
+  useProjectStore,
+} from '@/stores/projectStore';
 import { useSceneStore } from '@/stores/sceneStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useToastStore } from '@/stores/toastStore';
@@ -667,6 +671,7 @@ function useCompositedUvTextureState(
   );
 
   useEffect(() => {
+    const workerOwnerKey = workerOwnerKeyRef.current;
     const uvLayers = stableLayers.filter((layer) => layer.visible && layer.imageUrl);
     if (uvLayers.length === 0) {
       // Keep finished composites resident. Visibility toggles are frequent and
@@ -822,7 +827,7 @@ function useCompositedUvTextureState(
                       imageUrl: layer.imageUrl!,
                       opacity: layer.opacity,
                     })),
-                    workerOwnerKeyRef.current,
+                    workerOwnerKey,
                   )
                 : await compositeUvLayersInWorker(
                     await Promise.all(
@@ -834,7 +839,7 @@ function useCompositedUvTextureState(
                         };
                       }),
                     ),
-                    workerOwnerKeyRef.current,
+                    workerOwnerKey,
                   );
               if (options?.maxSize && bitmap.width > options.maxSize) {
                 const resizedScale = options.maxSize / Math.max(bitmap.width, bitmap.height);
@@ -954,6 +959,7 @@ function useCompositedUvTextureState(
     return () => {
       cancelled = true;
       runtimeRef.current = undefined;
+      cancelUvLayerCompositions(workerOwnerKey);
     };
   }, [gl, layerKey, options?.maxSize, stableLayers]);
 
@@ -2271,11 +2277,12 @@ function ImportedModel({
             layer.role !== 'local-repaint-draft' &&
             Boolean(layer.imageUrl) &&
             (!layer.objectId || layer.objectId === importedObjectId) &&
-            // Only the selected object's hidden rows can be toggled from the
-            // visible Layers panel. Warming hidden UV rows for every one of a
-            // nine-model project multiplied the cache working set and evicted
-            // in-flight worker bitmaps used by the current object's layers.
-            (layer.visible || selectedObjectId === importedObjectId),
+            // Hidden rows are speculative: warming them automatically can
+            // launch a full-resolution composition after the UI is already
+            // interactive and then stall a later zoom/workspace switch. The
+            // visible stack is the only texture required for the current
+            // frame; a hidden row is prepared on demand if the user enables it.
+            layer.visible,
         )
         .sort((left, right) => {
           const priority = (layer: Layer) =>
@@ -2283,7 +2290,7 @@ function ImportedModel({
           return priority(left) - priority(right) || left.order - right.order;
         })
         .slice(0, MAX_RESIDENT_UV_TOGGLE_TEXTURES),
-    [importedObjectId, layers, selectedObjectId],
+    [importedObjectId, layers],
   );
   const residentUvToggleSignature = useMemo(
     () => residentUvToggleLayers.map((layer) => `${layer.id}:${layer.imageUrl}`).join('|'),
@@ -5115,7 +5122,6 @@ export function SceneRoot() {
   const selectedObjectId = useSceneStore((state) => state.selectedObjectId);
   const workspaceMode = useWorkspaceLayoutStore((state) => state.mode);
   const selectObject = useSceneStore((state) => state.selectObject);
-  const updateCurrentProject = useProjectStore((state) => state.updateCurrentProject);
   const displayMode = useSceneStore((state) => state.displayMode);
   const environmentPreset = useSettingsStore((state) => state.environmentPreset);
   const exposure = useSettingsStore((state) => state.exposure);
@@ -5158,12 +5164,9 @@ export function SceneRoot() {
   const selectImportedObject = useCallback(
     (objectId: string) => {
       selectObject(objectId);
-      updateCurrentProject({
-        objects: useSceneStore.getState().objects,
-        activeObjectId: objectId,
-      });
+      scheduleCurrentProjectActiveObjectPersistence(objectId);
     },
-    [selectObject, updateCurrentProject],
+    [selectObject],
   );
   const clearViewportSelection = useCallback(() => {
     // Texture authoring always needs one active object. Clearing it on an empty

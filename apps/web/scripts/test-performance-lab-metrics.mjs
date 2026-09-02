@@ -13,12 +13,8 @@ const server = await createServer({
 });
 
 try {
-  const metrics = await server.ssrLoadModule(
-    '/src/engine/performance/performanceLabMetrics.ts',
-  );
-  const timeline = await server.ssrLoadModule(
-    '/src/engine/performance/performanceTimeline.ts',
-  );
+  const metrics = await server.ssrLoadModule('/src/engine/performance/performanceLabMetrics.ts');
+  const timeline = await server.ssrLoadModule('/src/engine/performance/performanceTimeline.ts');
   const labPolicy = await server.ssrLoadModule('/src/dev/performanceLabPolicy.ts');
   assert.equal(labPolicy.isPerformanceLabEnabled('?perfLab=1'), true);
   assert.equal(labPolicy.isPerformanceLabEnabled('?perfLab=0'), false);
@@ -72,7 +68,12 @@ try {
     p99: sorted[Math.max(0, Math.ceil(sorted.length * 0.99) - 1)] ?? 0,
     median,
     jitterP95: deviations[Math.max(0, Math.ceil(deviations.length * 0.95) - 1)] ?? 0,
+    missedFrameCount: metrics.estimateMissedFrameCount(samples, 20),
+    missedFramePercent: metrics.estimateMissedFramePercent(samples, 20),
   });
+  const refreshSamples = [16.7, 16.8, 33.4, 50.1].map((durationMs) => ({ durationMs }));
+  assert.equal(metrics.estimateMissedFrameCount(refreshSamples, 16.7), 3);
+  assert.equal(metrics.estimateMissedFramePercent(refreshSamples, 16.7), (3 / 7) * 100);
   assert.deepEqual(metrics.summarizeFramePacing([], 20), {
     count: 0,
     average: 0,
@@ -82,6 +83,8 @@ try {
     p99: 0,
     median: 0,
     jitterP95: 0,
+    missedFrameCount: 0,
+    missedFramePercent: 0,
   });
   timeline.clearPerformanceTimelineEvents();
   timeline.setPerformanceTimelineEnabled(true);
