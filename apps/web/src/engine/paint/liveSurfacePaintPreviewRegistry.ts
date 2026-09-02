@@ -5,6 +5,13 @@ export type LiveSurfacePaintPreview = {
   layerId: string;
   target: 'uv-image' | 'projected-mask';
   assetUrl: string;
+  /**
+   * Stable full-resolution mask binding prepared before the first projected
+   * eraser stroke. The transient assetUrl remains the low-latency multiplier;
+   * this URL only keeps the resident projected material structure stable when
+   * pointer-up publishes the same mask into LayerStore.
+   */
+  residentMaskUrl?: string;
   composition: 'replace' | 'multiply-original-mask';
 };
 
@@ -26,6 +33,7 @@ export function publishLiveSurfacePaintPreview(preview: LiveSurfacePaintPreview)
     currentPreview.layerId === preview.layerId &&
     currentPreview.target === preview.target &&
     currentPreview.assetUrl === preview.assetUrl &&
+    currentPreview.residentMaskUrl === preview.residentMaskUrl &&
     currentPreview.composition === preview.composition
   )
     return;

@@ -314,6 +314,21 @@ assert.match(
 );
 assert.match(
   viewportCanvasInteractionSource,
+  /target === 'projected-mask' && !existingAssetUrl[\s\S]*?fillStyle = '#ffffff'/,
+  'A new projected eraser must start its stable resident mask from neutral white.',
+);
+assert.match(
+  viewportCanvasInteractionSource,
+  /layer\.target === 'projected-mask' && layer\.isReady && !layer\.pendingBaseImage[\s\S]*?residentMaskUrl: layer\.assetUrl/,
+  'A ready projected eraser must prewarm its stable resident mask URL before the first stroke.',
+);
+assert.match(
+  sceneRootSource,
+  /function applyLiveProjectedMaskBinding[\s\S]*?preview\.composition === 'replace' \? preview\.assetUrl : preview\.residentMaskUrl[\s\S]*?maskSpace: 'uv'/,
+  'The projected stack must use the prewarmed resident mask URL during the live eraser handoff.',
+);
+assert.match(
+  viewportCanvasInteractionSource,
   /previewOwnsOverlay &&[\s\S]*?sceneState\.localRepaintGenerationPresentationActive[\s\S]*?localRepaintGenerationPresentationActive,[\s\S]*?paintTool/,
   'A running local generation must keep the previous renderer-owned repaint visible while editing is locked.',
 );

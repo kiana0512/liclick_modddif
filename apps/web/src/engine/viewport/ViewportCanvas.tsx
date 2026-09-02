@@ -6639,6 +6639,9 @@ function beginLiveEraserPreview(layer: UvPaintLayer, root?: THREE.Object3D) {
     layerId: layer.layerId,
     target: layer.target === 'projected-mask' ? 'projected-mask' : 'uv-image',
     assetUrl: layer.liveResultUrl,
+    ...(layer.target === 'projected-mask' && layer.isReady && !layer.pendingBaseImage
+      ? { residentMaskUrl: layer.assetUrl }
+      : {}),
     composition: layer.target === 'projected-mask' ? 'multiply-original-mask' : 'replace',
   });
   // React subscribers intentionally run outside the high-frequency input
@@ -7884,6 +7887,14 @@ function SurfacePaintOverlay() {
         : createPaintCanvas(1, false);
       const paintContext = paint.context;
       if (!paintContext) throw new Error('Could not restore UV paint canvas.');
+      if (target === 'projected-mask' && !existingAssetUrl) {
+        // A one-pixel white mask is a neutral full-coverage placeholder. Bind
+        // its stable live URL during eraser activation, then resize the same
+        // CanvasTexture to the selected project resolution at first commit.
+        // Pointer-up therefore changes pixels, not projected material structure.
+        paintContext.fillStyle = '#ffffff';
+        paintContext.fillRect(0, 0, paint.canvas.width, paint.canvas.height);
+      }
       const assetId = `surface-edit:${target}:${layerId}`;
       const colorSpace = target === 'uv-image' ? THREE.SRGBColorSpace : THREE.NoColorSpace;
       const flipY = target === 'uv-image';
@@ -8048,6 +8059,23 @@ function SurfacePaintOverlay() {
         // so it is safe to prewarm before any pixels are erased.
         beginLiveEraserPreview(layer, model.group);
         invalidate();
+        if (!layer.isReady) {
+          await layer.ready;
+          if (
+            cancelled ||
+            !layer.isReady ||
+            layerRef.current !== layer ||
+            useLayerStore.getState().activeProjectedLayerId !== layer.layerId
+          )
+            return;
+          // Existing persisted masks decode asynchronously. Promote their
+          // stable editable canvas as soon as decoding completes, still before
+          // the first accepted stroke, so they receive the same atomic handoff.
+          ensurePaintBackingCanvasInitialized(layer);
+          markLiveProjectedCanvasTextureUpdated(layer.assetUrl);
+          beginLiveEraserPreview(layer, model.group);
+          invalidate();
+        }
         measureEraserPerformanceEvent('layer-eraser-prewarm', prewarmStartedAt, {
           activeLayerId: activePaintLayerId,
           target: layer.target,

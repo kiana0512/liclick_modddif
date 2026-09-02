@@ -31,6 +31,7 @@ import {
 import {
   getLiveSurfacePaintPreview,
   useLiveSurfacePaintPreview,
+  type LiveSurfacePaintPreview,
 } from '@/engine/paint/liveSurfacePaintPreviewRegistry';
 import {
   createRuntimeProjectionDepth,
@@ -223,6 +224,22 @@ function resolveProjectionMask(layer: Layer, capture: Capture | undefined) {
     return { maskUrl: capture.maskUrl, maskSpace: 'projection' as const };
   }
   return { maskUrl: undefined, maskSpace: layer.maskSpace };
+}
+
+function applyLiveProjectedMaskBinding(
+  layer: Layer,
+  preview: LiveSurfacePaintPreview | undefined,
+  objectId: string | undefined,
+) {
+  if (
+    preview?.target !== 'projected-mask' ||
+    preview.objectId !== objectId ||
+    preview.layerId !== layer.id
+  )
+    return layer;
+  const maskUrl =
+    preview.composition === 'replace' ? preview.assetUrl : preview.residentMaskUrl;
+  return maskUrl ? { ...layer, maskUrl, maskSpace: 'uv' as const } : layer;
 }
 
 function layerPreviewSignature(layer: Layer, relativeOrder = layer.order) {
@@ -1634,16 +1651,7 @@ function ImportedModel({
     )
       .filter((layer) => isProjectedLayerAboveMergedUv(layer, visibleMergedUvBoundaryOrder))
       .map((layer) =>
-        liveSurfacePaintPreview?.target === 'projected-mask' &&
-        liveSurfacePaintPreview.composition === 'replace' &&
-        liveSurfacePaintPreview.objectId === importedObjectId &&
-        liveSurfacePaintPreview.layerId === layer.id
-          ? {
-              ...layer,
-              maskUrl: liveSurfacePaintPreview.assetUrl,
-              maskSpace: 'uv' as const,
-            }
-          : layer,
+        applyLiveProjectedMaskBinding(layer, liveSurfacePaintPreview, importedObjectId),
       );
     if (
       !visibleLocalRepaintPreviewLayer?.imageUrl ||
@@ -1699,16 +1707,7 @@ function ImportedModel({
       // later overlay evaluations preserve that visible stacking order.
       .sort((a, b) => b.order - a.order)
       .map((layer) =>
-        liveSurfacePaintPreview?.target === 'projected-mask' &&
-        liveSurfacePaintPreview.composition === 'replace' &&
-        liveSurfacePaintPreview.objectId === importedObjectId &&
-        liveSurfacePaintPreview.layerId === layer.id
-          ? {
-              ...layer,
-              maskUrl: liveSurfacePaintPreview.assetUrl,
-              maskSpace: 'uv' as const,
-            }
-          : layer,
+        applyLiveProjectedMaskBinding(layer, liveSurfacePaintPreview, importedObjectId),
       );
     if (
       !visibleLocalRepaintPreviewLayer?.imageUrl ||
@@ -1752,16 +1751,7 @@ function ImportedModel({
       )
       .sort((left, right) => right.order - left.order)
       .map((layer) =>
-        liveSurfacePaintPreview?.target === 'projected-mask' &&
-        liveSurfacePaintPreview.composition === 'replace' &&
-        liveSurfacePaintPreview.objectId === importedObjectId &&
-        liveSurfacePaintPreview.layerId === layer.id
-          ? {
-              ...layer,
-              maskUrl: liveSurfacePaintPreview.assetUrl,
-              maskSpace: 'uv' as const,
-            }
-          : layer,
+        applyLiveProjectedMaskBinding(layer, liveSurfacePaintPreview, importedObjectId),
       );
     if (
       !visibleLocalRepaintPreviewLayer?.imageUrl ||
