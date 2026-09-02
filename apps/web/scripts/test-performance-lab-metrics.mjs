@@ -33,6 +33,11 @@ try {
     /right-4 top-16 z-\[28\][^"\n]*2xl:top-4/,
     'the collapsed performance HUD must stay below the editor toolbar until an ultra-wide viewport',
   );
+  assert.match(
+    viewportSource,
+    /const recorded = manualReportRef\.current[\s\S]*?`人工 · \$\{recorded\.averageFps\.toFixed\(1\)\} FPS[\s\S]*?recorded\.droppedFrames/,
+    'a completed manual capture must remain the primary compact metric instead of being overwritten by idle 60 FPS samples',
+  );
   const samples = Array.from({ length: 137 }, (_, index) => ({
     durationMs: ((index * 37) % 71) / 3,
   }));

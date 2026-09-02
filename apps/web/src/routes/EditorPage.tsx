@@ -6112,6 +6112,15 @@ export function EditorPage({
           )
         : undefined) ?? generations.find(matchesUsableLocalRepaintGeneration);
     if (!latestLocalRepaintGeneration?.resultUrl) return undefined;
+    // Only a generation that completed in this live editor session earns the
+    // speculative GPU warmup. Replaying it for persisted generations on every
+    // model/workspace switch caused the exact source decode, depth setup and
+    // material compile to fight the visible transition. Explicit button-3
+    // activation still runs the same authoritative preparation path.
+    if (
+      pendingLocalRepaintBackgroundGenerationIdRef.current !== latestLocalRepaintGeneration.id
+    )
+      return undefined;
     const objectId = preferredObjectId;
     const currentLayers = useLayerStore.getState().layers;
     const generationResultLayer = currentLayers.find(

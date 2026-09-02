@@ -1662,19 +1662,19 @@ function ImportedModel({
     const projectedCandidates = layers.filter(
       (layer) =>
         layer.type === 'projected' &&
+        layer.visible &&
         // Unpublished strokes stay renderer-only. Once published, warm their
         // muted resident row during pointer idle, before the next handoff.
         layer.id !== transientLocalRepaintPreviewLayerId &&
         layer.imageUrl &&
         layer.camera &&
-        (!layer.objectId || layer.objectId === importedObjectId),
+        (!layer.objectId || layer.objectId === importedObjectId) &&
+        isProjectedLayerAboveMergedUv(layer, visibleMergedUvBoundaryOrder),
     );
     const storedLayers = projectedCandidates
-      // Every persisted projection stays resident so an eye click remains a
-      // uniform-only operation. This is also the only stack eligible for initial
-      // publication: the old cold path first exposed a one-layer direct material
-      // and then replaced it with a differently sampled resident array, producing
-      // the visible correct-frame -> comb-frame transition.
+      // Hidden projections contribute zero pixels, so exclude their 4K samplers
+      // from the active shader. Eye-open rebuilds the same authoritative layer;
+      // visible colour and composition remain exact.
       // Layer order 0 is the top row in the panel. Feed the shader bottom-up so
       // later overlay evaluations preserve that visible stacking order.
       .sort((a, b) => b.order - a.order)
@@ -1704,6 +1704,7 @@ function ImportedModel({
     liveSurfacePaintPreview,
     transientLocalRepaintPreviewLayerId,
     texturedRestoreReady,
+    visibleMergedUvBoundaryOrder,
     visibleLocalRepaintPreviewLayer,
   ]);
   const previewProjectedLayerSignature = useMemo(
@@ -1715,16 +1716,19 @@ function ImportedModel({
     previewProjectedLayerSignature,
   );
   const projectedProgramWarmupLayers = useMemo(() => {
-    // Warm the exact resident structure used by the single authoritative
-    // material. Hidden rows remain zero-opacity uniforms until their eye opens.
+    // Warm only the exact visible structure. Compiling hidden 4K projection
+    // samplers on every workspace/model switch created driver long tasks while
+    // producing no pixels.
     const residentLayers = layers
       .filter(
         (layer) =>
           layer.type === 'projected' &&
+          layer.visible &&
           layer.id !== transientLocalRepaintPreviewLayerId &&
           layer.imageUrl &&
           layer.camera &&
-          (!layer.objectId || layer.objectId === importedObjectId),
+          (!layer.objectId || layer.objectId === importedObjectId) &&
+          isProjectedLayerAboveMergedUv(layer, visibleMergedUvBoundaryOrder),
       )
       .sort((left, right) => right.order - left.order)
       .map((layer) =>
@@ -1753,6 +1757,7 @@ function ImportedModel({
     layers,
     liveSurfacePaintPreview,
     transientLocalRepaintPreviewLayerId,
+    visibleMergedUvBoundaryOrder,
     visibleLocalRepaintPreviewLayer,
   ]);
   const projectedProgramWarmupInputs = useMemo<ProjectionLayerStackInput['layers']>(
@@ -3003,16 +3008,15 @@ function ImportedModel({
   // projected material while a live canvas is attached or the layer is dirty;
   // otherwise the layer row updates but the model keeps showing the stale bake.
   const hasResidentProjectedLayers = stablePreviewProjectedLayers.length > 0;
-  // Keep the projected shader and its texture arrays resident even when every
-  // projected layer is hidden. Visibility is already represented by each
-  // layer's opacity uniform, so replacing the shader with a white/baked material
-  // at zero visible layers only destroys GPU state and forces an asynchronous
-  // rebuild when an eye is enabled again. It also lets a stale/blank baked cache
-  // win that race and leave the object permanently white.
-  //
+  // Building hidden texture arrays speculatively creates large GPU queues that
+  // surface later as wheel/drag hitches even when an exact merged UV owns the
+  // visible colour. A real eye-open makes the row visible and immediately
+  // enters the authoritative projected path.
+  const needsInteractiveProjectedMaterial = stableVisibleProjectedLayers.length > 0;
   // Exact baked previews remain useful for legacy stacks that cannot be sampled
-  // as projected layers (for example, records without camera data). A resident
-  // projection stack must stay authoritative for interactive visibility changes.
+  // as projected layers (for example, records without camera data). Once any
+  // projected layer is visible, its stack is authoritative; when all are hidden,
+  // the exact merged UV can render without retaining a duplicate texture array.
   const visibleStackHasBakedPreview =
     Boolean(previewBakedTextureRecord) &&
     !visibleStackNeedsLivePreview &&
@@ -3020,7 +3024,8 @@ function ImportedModel({
   const canPreviewProjectedLayers =
     importedModel.restoreStage !== 'proxy' &&
     !visibleStackHasBakedPreview &&
-    hasResidentProjectedLayers;
+    hasResidentProjectedLayers &&
+    needsInteractiveProjectedMaterial;
   const previewLighting = useMemo(
     () =>
       getPreviewLighting({

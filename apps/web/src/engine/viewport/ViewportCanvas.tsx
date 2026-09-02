@@ -1101,6 +1101,10 @@ function PerformanceTestHud() {
   const [manualReport, setManualReport] = useState<ManualRepaintReport | undefined>(
     readStoredManualRepaintReport,
   );
+  // The compact badge is updated outside React so sampling never makes the HUD
+  // itself part of the measured workload. Keep the completed manual window in
+  // a ref so a later idle 5-second window cannot overwrite the real result.
+  const manualReportRef = useRef(manualReport);
   const manualStartedAtRef = useRef(0);
   const manualStartedUnixMsRef = useRef(0);
   const manualHeapStartMbRef = useRef<number>();
@@ -1321,6 +1325,7 @@ function PerformanceTestHud() {
       manualHeapStartMbRef.current = readUsedJsHeapMb();
       manualDiagnosticsStartRef.current = snapshotPerformanceDiagnostics();
       manualEventsRef.current = [];
+      manualReportRef.current = undefined;
       setManualReport(undefined);
       document.body.dataset.perfManualLocalRepaintRecording = '1';
       window.dispatchEvent(
@@ -1400,6 +1405,7 @@ function PerformanceTestHud() {
       eventRetentionLimit: MAX_MANUAL_REPAINT_EVENTS,
       events,
     };
+    manualReportRef.current = report;
     setManualReport(report);
     try {
       window.sessionStorage.setItem(MANUAL_REPAINT_REPORT_STORAGE_KEY, JSON.stringify(report));
@@ -1570,9 +1576,12 @@ function PerformanceTestHud() {
       );
       const recentFps = recentFrameSummary.average > 0 ? 1_000 / recentFrameSummary.average : 0;
       if (collapsedMetricButtonRef.current) {
-        collapsedMetricButtonRef.current.textContent =
-          `性能 · ${recentFps.toFixed(0)} FPS · P95 ${recentFrameSummary.p95.toFixed(1)}ms` +
-          ` · 峰值 ${recentFrameSummary.maximum.toFixed(0)}ms · 丢帧 ${recentFrameSummary.missedFrameCount}`;
+        const recorded = manualReportRef.current;
+        collapsedMetricButtonRef.current.textContent = recorded
+          ? `人工 · ${recorded.averageFps.toFixed(1)} FPS · P95 ${recorded.frameP95.toFixed(1)}ms` +
+            ` · 峰值 ${recorded.frameMax.toFixed(0)}ms · 丢帧 ${recorded.droppedFrames}`
+          : `性能 · ${recentFps.toFixed(0)} FPS · P95 ${recentFrameSummary.p95.toFixed(1)}ms` +
+            ` · 峰值 ${recentFrameSummary.maximum.toFixed(0)}ms · 丢帧 ${recentFrameSummary.missedFrameCount}`;
       }
       // Keep the rAF/native collectors running, but do not let the large HUD
       // React tree become the workload during a viewport stress window. The
@@ -1705,6 +1714,8 @@ function PerformanceTestHud() {
     recordingStartedAtRef.current = Date.now();
     clearPerformanceTimelineEvents();
     if (collectorOnly) return;
+    manualReportRef.current = undefined;
+    setManualReport(undefined);
     setFrameHistory([]);
     setCpuHistory([]);
     setGpuHistory([]);
@@ -2929,8 +2940,9 @@ function PerformanceTestHud() {
           onClick={() => setCollapsed(false)}
           className="rounded px-2 py-1 transition hover:bg-white/10"
         >
-          性能 · {metrics.fps.toFixed(0)} FPS · P95 {metrics.frameP95.toFixed(1)}ms · 峰值{' '}
-          {metrics.frameMax.toFixed(0)}ms · 丢帧 {metrics.droppedFrames.toFixed(0)}%
+          {manualReport
+            ? `人工 · ${manualReport.averageFps.toFixed(1)} FPS · P95 ${manualReport.frameP95.toFixed(1)}ms · 峰值 ${manualReport.frameMax.toFixed(0)}ms · 丢帧 ${manualReport.droppedFrames}`
+            : `性能 · ${metrics.fps.toFixed(0)} FPS · P95 ${metrics.frameP95.toFixed(1)}ms · 峰值 ${metrics.frameMax.toFixed(0)}ms · 丢帧 ${metrics.droppedFrames.toFixed(0)}%`}
         </button>
         <button
           type="button"
@@ -2939,12 +2951,6 @@ function PerformanceTestHud() {
         >
           {manualRecording ? '■ 结束并分析' : '● 开始人工录制'}
         </button>
-        {manualReport && (
-          <span className={manualReport.droppedFrames === 0 ? 'text-emerald-300' : 'text-rose-300'}>
-            {manualReport.averageFps.toFixed(1)} FPS / 峰值 {manualReport.frameMax.toFixed(0)}ms /
-            丢帧 {manualReport.droppedFrames}
-          </span>
-        )}
       </div>
     );
   }

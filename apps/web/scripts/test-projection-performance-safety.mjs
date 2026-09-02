@@ -211,6 +211,16 @@ assert.match(
 );
 assert.match(
   sceneRootSource,
+  /const needsInteractiveProjectedMaterial = stableVisibleProjectedLayers\.length > 0/,
+  'hidden projected rows must not start speculative texture-array uploads while merged UV owns the visible result',
+);
+assert.doesNotMatch(
+  sceneRootSource,
+  /HIDDEN_PROJECTED_PREWARM_DELAY_MS|selectedForProjectedEditing/,
+  'selection idle must not schedule a delayed hidden-layer upload that can collide with wheel input',
+);
+assert.match(
+  sceneRootSource,
   /!workspaceVisible \|\|\s*selectedObjectId !== importedModel\.objectId \|\|\s*typeof gl\.compileAsync/,
   'projected shader warmup must be reserved for the selected visible model',
 );
