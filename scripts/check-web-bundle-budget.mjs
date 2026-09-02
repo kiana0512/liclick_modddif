@@ -24,10 +24,11 @@ const budgets = [
     maxBytes: 850_000,
   },
 ];
-// The eraser tile-history and sparse local-repaint pipeline measure 3,103,108
-// bytes in the cloud build. Keep roughly 7 KiB of deterministic-build headroom;
-// the tighter shell, editor and shared-pipeline budgets still guard hot paths.
-const maxTotalJavaScriptBytes = 3_110_000;
+// The session-owned local-repaint pipeline, live first-stroke overlay and
+// resident-layer eraser measure 3,113,571 bytes in the cloud build. Keep about
+// 8 KiB of deterministic-build headroom; the tighter shell, editor and shared
+// pipeline budgets still guard hot paths independently.
+const maxTotalJavaScriptBytes = 3_122_000;
 
 let entries;
 try {
