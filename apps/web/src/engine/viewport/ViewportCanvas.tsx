@@ -4488,6 +4488,7 @@ type LocalRepaintCompositeState = {
   restoredMaskUrl?: string;
   restoredMaskPromise?: Promise<void>;
   restoredMaskReady: boolean;
+  restoredMaskError?: string;
   gpuOverlayReady?: boolean;
   benchmarkFalloffPixels?: Uint8ClampedArray;
   hasContent: boolean;
@@ -8354,7 +8355,8 @@ function SurfacePaintOverlay() {
     if (
       paintTool === 'inpaint-apply' ||
       paintTool === 'inpaint-add' ||
-      paintTool === 'inpaint-subtract'
+      paintTool === 'inpaint-subtract' ||
+      isEditingPersistedLocalRepaint
     )
       return undefined;
     const override = localRepaintResidentMaskOverrideRef.current;
@@ -8392,7 +8394,12 @@ function SurfacePaintOverlay() {
     return () => {
       cancelled = true;
     };
-  }, [clearLocalRepaintResidentMaskOverride, invalidate, paintTool]);
+  }, [
+    clearLocalRepaintResidentMaskOverride,
+    invalidate,
+    isEditingPersistedLocalRepaint,
+    paintTool,
+  ]);
 
   const ensurePaintPreviewOverlayForMesh = useCallback((layer: UvPaintLayer, mesh: THREE.Mesh) => {
     if (layer.paintOverlayTargets.has(mesh)) return;
@@ -10081,17 +10088,21 @@ function SurfacePaintOverlay() {
         (composite?.sourceKey === sourceKey
           ? composite.layerId
           : createId(LOCAL_REPAINT_PROJECTION_LAYER_ID_PREFIX));
-      // Prefer the workspace-resolved canonical field. Older project files can
-      // retain a relative localRepaintMaskUrl even though maskUrl is already an
-      // absolute runtime URL after reload.
-      const savedMaskUrl = existingLayer?.localRepaintMaskUrl ?? existingLayer?.maskUrl;
+      // Authored coverage is the editable source of truth. The feathered
+      // display mask is only a compatibility fallback for older project rows
+      // that predate the dedicated local-repaint mask field.
+      const savedMaskUrls = [existingLayer?.localRepaintMaskUrl, existingLayer?.maskUrl].filter(
+        (url, index, urls): url is string => Boolean(url) && urls.indexOf(url) === index,
+      );
       // Live repaint masks use a stable registry URL derived from layerId. Read
       // the old canvas before createLocalRepaintComposite registers the new one
       // at that same URL, otherwise switching back to an older repaint replaces
       // its cumulative mask with a blank canvas before it can be restored.
-      const savedLiveMaskCanvas = savedMaskUrl
-        ? getLiveProjectedCanvasState(savedMaskUrl)?.canvas
-        : undefined;
+      const savedLiveMask = savedMaskUrls
+        .map((url) => ({ url, canvas: getLiveProjectedCanvasState(url)?.canvas }))
+        .find((candidate) => candidate.canvas);
+      const savedMaskUrl = savedLiveMask?.url ?? savedMaskUrls[0];
+      const savedLiveMaskCanvas = savedLiveMask?.canvas;
       if (
         !composite ||
         composite.sourceKey !== sourceKey ||
@@ -10111,13 +10122,16 @@ function SurfacePaintOverlay() {
         if (composite && savedMaskUrl) {
           composite.restoredMaskUrl = savedMaskUrl;
           composite.restoredMaskReady = false;
+          composite.restoredMaskError = undefined;
           document.body.dataset.localRepaintMaskRestoreState = `pending:${composite.layerId}`;
-          const restoreSavedMask = (image: CanvasImageSource) => {
+          const restoreSavedMask = (image: CanvasImageSource, restoredUrl = savedMaskUrl) => {
             if (
               localRepaintCompositeRef.current !== composite ||
-              composite?.restoredMaskUrl !== savedMaskUrl
+              !composite ||
+              !savedMaskUrls.includes(restoredUrl)
             )
               return;
+            composite.restoredMaskUrl = restoredUrl;
             composite.maskContext.save();
             composite.maskContext.globalCompositeOperation = 'copy';
             composite.maskContext.drawImage(
@@ -10130,22 +10144,34 @@ function SurfacePaintOverlay() {
             composite.maskContext.restore();
             composite.hasContent = true;
             composite.restoredMaskReady = true;
+            composite.restoredMaskError = undefined;
             refreshLocalRepaintInwardCrossfadeMask(composite);
             document.body.dataset.localRepaintMaskRestoreState = `ready:${composite.layerId}`;
             delete document.body.dataset.localRepaintMaskRestoreErrorUrl;
             markLiveProjectedCanvasTextureUpdated(composite.maskUrl);
           };
           if (savedLiveMaskCanvas) {
-            restoreSavedMask(savedLiveMaskCanvas);
+            restoreSavedMask(savedLiveMaskCanvas, savedMaskUrl);
             composite.restoredMaskPromise = Promise.resolve();
           } else {
-            composite.restoredMaskPromise = loadImageElement(savedMaskUrl)
-              .then(restoreSavedMask)
-              .catch((error) => {
-                document.body.dataset.localRepaintMaskRestoreState = `failed:${composite?.layerId ?? 'unknown'}`;
-                document.body.dataset.localRepaintMaskRestoreErrorUrl = savedMaskUrl;
-                console.warn('[Liclick 3D Texture] Could not restore local repaint mask:', error);
-              });
+            composite.restoredMaskPromise = (async () => {
+              let lastError: unknown;
+              for (const candidateUrl of savedMaskUrls) {
+                try {
+                  const image = await loadImageElement(candidateUrl);
+                  restoreSavedMask(image, candidateUrl);
+                  if (composite?.restoredMaskReady) return;
+                } catch (error) {
+                  lastError = error;
+                }
+              }
+              if (!composite) return;
+              composite.restoredMaskError =
+                lastError instanceof Error ? lastError.message : 'Could not restore mask.';
+              document.body.dataset.localRepaintMaskRestoreState = `failed:${composite.layerId}`;
+              document.body.dataset.localRepaintMaskRestoreErrorUrl = savedMaskUrls.join('|');
+              console.warn('[Liclick 3D Texture] Could not restore local repaint mask:', lastError);
+            })();
           }
         }
       }
@@ -14405,12 +14431,46 @@ function SurfacePaintOverlay() {
           // continue rendering the persisted row restored from the project.
           if (visible) ensureLiveLocalRepaintComposite(result.model, source);
         }
+        const residentMaskBound = Boolean(
+          isEditingPersistedLocalRepaint &&
+          source &&
+          composite &&
+          composite.restoredMaskReady &&
+          bindLocalRepaintResidentMaskOverride(
+            result.model,
+            createLocalRepaintSourceKey(source, result.model.objectId),
+            composite,
+          ),
+        );
+        const localRepaintPresentationReady = isEditingPersistedLocalRepaint
+          ? residentMaskBound
+          : Boolean(composite?.gpuOverlayReady);
         if (
           !composite ||
           (composite.restoredMaskUrl && !composite.restoredMaskReady) ||
-          !composite.gpuOverlayReady
-        )
+          !localRepaintPresentationReady
+        ) {
+          if (isEditingPersistedLocalRepaint) {
+            const shouldRetryGpuPreparation = Boolean(
+              composite?.restoredMaskError ||
+              (composite?.restoredMaskReady && composite.gpuOverlayReady && !residentMaskBound),
+            );
+            if (shouldRetryGpuPreparation) {
+              useSceneStore.getState().requestLocalRepaintGpuPrepare();
+            }
+            pushToast({
+              tone: composite?.restoredMaskError ? 'error' : 'info',
+              title: composite?.restoredMaskError
+                ? '局部重绘蒙版恢复失败'
+                : '正在准备局部重绘橡皮擦',
+              description: composite?.restoredMaskError
+                ? '未能读取这个图层的原始蒙版，正在重新加载。'
+                : '正在恢复累计蒙版并绑定实时材质，请稍后再试。',
+              dedupeKey: `local-repaint-eraser-prepare:${activePaintLayer?.id ?? 'unknown'}`,
+            });
+          }
           return;
+        }
         const surfaceFacesProjector =
           composite &&
           result.hit.object instanceof THREE.Mesh &&
@@ -14567,6 +14627,7 @@ function SurfacePaintOverlay() {
   }, [
     activePaintLayer,
     activePaintLayerId,
+    bindLocalRepaintResidentMaskOverride,
     commitMaskIfDirty,
     cancelIdleInpaintArchive,
     beginStrokeHistory,
@@ -14585,6 +14646,7 @@ function SurfacePaintOverlay() {
     scheduleIdleInpaintArchive,
     scheduleTextureUpdate,
     paintTool,
+    pushToast,
     raycastModel,
     resolveLocalRepaintStrokeSource,
     setOrbitControlsEnabled,

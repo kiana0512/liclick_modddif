@@ -653,8 +653,23 @@ assert.match(
 );
 assert.match(
   viewportCanvasSource,
-  /!composite \|\|\s*\(composite\.restoredMaskUrl && !composite\.restoredMaskReady\) \|\|\s*!composite\.gpuOverlayReady[\s\S]*?return;\s*const surfaceFacesProjector/,
-  'The eraser must reject its first stroke until persisted coverage and the GPU overlay are ready.',
+  /const localRepaintPresentationReady = isEditingPersistedLocalRepaint[\s\S]*?residentMaskBound[\s\S]*?Boolean\(composite\?\.gpuOverlayReady\)/,
+  'A persisted repaint eraser must require the resident live-mask binding instead of a duplicate overlay.',
+);
+assert.match(
+  viewportCanvasSource,
+  /paintTool === 'inpaint-subtract' \|\|\s*isEditingPersistedLocalRepaint[\s\S]*?return undefined;[\s\S]*?clearLocalRepaintResidentMaskOverride/,
+  'The resident live-mask override must stay bound for the entire persisted repaint eraser session.',
+);
+assert.match(
+  viewportCanvasSource,
+  /const savedMaskUrls = \[existingLayer\?\.localRepaintMaskUrl, existingLayer\?\.maskUrl\][\s\S]*?for \(const candidateUrl of savedMaskUrls\)/,
+  'Mask restoration must prefer authored coverage and fall back to the display mask for legacy projects.',
+);
+assert.match(
+  viewportCanvasSource,
+  /const shouldRetryGpuPreparation = Boolean\([\s\S]*?requestLocalRepaintGpuPrepare\(\);[\s\S]*?local-repaint-eraser-prepare/,
+  'A blocked repaint eraser must request recovery and explain its readiness state instead of silently dropping input.',
 );
 assert.match(
   viewportCanvasSource,
@@ -713,8 +728,8 @@ assert.match(
 );
 assert.match(
   viewportCanvasSource,
-  /const savedLiveMaskCanvas = savedMaskUrl[\s\S]*?getLiveProjectedCanvasState\(savedMaskUrl\)\?\.canvas[\s\S]*?createLocalRepaintComposite\(/,
-  'Switching repaint layers must capture the old stable-URL mask before registering its replacement canvas.',
+  /const savedLiveMask = savedMaskUrls[\s\S]*?getLiveProjectedCanvasState\(url\)\?\.canvas[\s\S]*?const savedLiveMaskCanvas = savedLiveMask\?\.canvas[\s\S]*?createLocalRepaintComposite\(/,
+  'Switching repaint layers must capture any authored live mask before registering its replacement canvas.',
 );
 assert.doesNotMatch(
   viewportCanvasSource,
