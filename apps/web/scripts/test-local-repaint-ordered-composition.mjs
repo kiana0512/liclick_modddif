@@ -208,6 +208,24 @@ try {
     /liclick:projected-material-resident[\s\S]*?syncLocalRepaintGpuOverlayActivity/,
     'the first-row handoff must retry its live-mask binding after the final material commits',
   );
+  const residentActivityStart = viewport.indexOf(
+    'const syncLocalRepaintGpuOverlayActivity = useCallback',
+  );
+  const residentActivityEnd = viewport.indexOf(
+    'syncLocalRepaintGpuOverlayActivityRef.current',
+    residentActivityStart,
+  );
+  const residentActivity = viewport.slice(residentActivityStart, residentActivityEnd);
+  assert.match(
+    residentActivity,
+    /const presentationLayer = persistedLayer \?\? livePreviewLayer;[\s\S]*?presentationLayer\?\.visible[\s\S]*?bindLocalRepaintResidentMaskOverride/,
+    'a late material replacement must rebind the empty transient preview before the first stroke',
+  );
+  assert.doesNotMatch(
+    residentActivity,
+    /composite\.hasContent/,
+    'resident rebinding must not wait for pointer-up to turn the first empty preview into a persisted row',
+  );
   assert.match(viewport, /phase: 'verifying-render-frame'/);
   assert.match(
     sceneRoot,

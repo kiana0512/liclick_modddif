@@ -8265,8 +8265,12 @@ function SurfacePaintOverlay() {
     if (!liveLayerId || !liveSourceKey) return;
     const persistedLayer = layers.find((layer) => layer.id === liveLayerId);
     const hasPersistedLayer = Boolean(persistedLayer);
-    const hasLiveContent = Boolean(composite?.sourceKey === liveSourceKey && composite.hasContent);
-    const previewOwnsOverlay = sceneState.localRepaintPreviewLayer?.id === liveLayerId;
+    const livePreviewLayer =
+      sceneState.localRepaintPreviewLayer?.id === liveLayerId
+        ? sceneState.localRepaintPreviewLayer
+        : undefined;
+    const presentationLayer = persistedLayer ?? livePreviewLayer;
+    const previewOwnsOverlay = Boolean(livePreviewLayer);
     const liveFeedbackRequested = sceneState.paintTool === 'inpaint-apply';
     const orderedStackOwnsPreview = !shouldUseDedicatedLocalRepaintOverlay(
       layers,
@@ -8275,12 +8279,11 @@ function SurfacePaintOverlay() {
     );
     const targetModel = getTargetModel();
     const residentOverrideBound = Boolean(
-      persistedLayer?.visible &&
+      presentationLayer?.visible &&
       composite &&
       targetModel &&
       composite.sourceKey === liveSourceKey &&
       composite.restoredMaskReady &&
-      hasLiveContent &&
       isLocalRepaintOverlayVisible(sceneState.displayMode, true) &&
       bindLocalRepaintResidentMaskOverride(targetModel, liveSourceKey, composite),
     );
