@@ -6103,6 +6103,7 @@ export function EditorPage({
       !project ||
       !importedModel ||
       paintTool === 'inpaint-apply' ||
+      paintTool === 'eraser' ||
       document.body.dataset.localRepaintPrewarmProgressRequested === '1' ||
       document.body.dataset.perfUseCurrentLocalRepaintMask === '1'
     )

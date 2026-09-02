@@ -6051,6 +6051,7 @@ function createLocalRepaintSourceKey(source: LocalRepaintProjectionSource, objec
     source.generationId ?? source.captureId ?? source.imageUrl,
     source.objectId ?? objectId,
     source.targetLayerId ?? '',
+    source.projectionLayerId ?? '',
   ].join('|');
 }
 
@@ -6088,6 +6089,7 @@ function isLocalRepaintSourceForLayer(
   layer: Layer | undefined,
 ) {
   if (!source || !isEditableLocalRepaintProjectionLayer(layer)) return false;
+  if (source.projectionLayerId && source.projectionLayerId !== layer.id) return false;
   if (
     getLocalRepaintSeamMode() === 'enhanced' &&
     layer.localRepaintRawSourceUrl &&
@@ -6142,6 +6144,12 @@ function isMatchingLocalRepaintProjectionLayer(
   objectId: string,
 ) {
   if (!isLocalRepaintProjectionLayer(layer)) return false;
+  if (source.projectionLayerId) {
+    return (
+      layer.id === source.projectionLayerId &&
+      (!layer.objectId || layer.objectId === (source.objectId ?? objectId))
+    );
+  }
   if (source.generationId) {
     return (
       layer.generationId === source.generationId &&
@@ -6932,12 +6940,16 @@ function SurfacePaintOverlay() {
       !hasEditableEnhancedLocalRepaintSource(activePaintLayer)
         ? activePaintLayer.localRepaintRawSourceUrl || enhancedSourceUrl
         : enhancedSourceUrl;
-    const savedMaskUrl = activePaintLayer.maskUrl || activePaintLayer.localRepaintMaskUrl;
+    const savedMaskUrl = activePaintLayer.localRepaintMaskUrl || activePaintLayer.maskUrl;
     if (!sourceUrl || !savedMaskUrl) return;
 
     const currentSource = useSceneStore.getState().localRepaintProjectionSource;
     const targetLayerId = activePaintLayer.replacementTargetLayerId;
-    if (isLocalRepaintSourceForLayer(currentSource, activePaintLayer)) return;
+    if (
+      currentSource?.projectionLayerId === activePaintLayer.id &&
+      isLocalRepaintSourceForLayer(currentSource, activePaintLayer)
+    )
+      return;
 
     let cancelled = false;
     const restoreSource = async () => {
@@ -6965,6 +6977,7 @@ function SurfacePaintOverlay() {
         camera: projectionCamera,
         generationId: activePaintLayer.generationId,
         captureId: activePaintLayer.captureId,
+        projectionLayerId: activePaintLayer.id,
         name: activePaintLayer.name,
         targetLayerId,
         targetLayerType:
@@ -10065,6 +10078,10 @@ function SurfacePaintOverlay() {
       const existingLayer = currentLayers.find((item) =>
         isMatchingLocalRepaintProjectionLayer(item, localRepaintSource, model.objectId),
       );
+      // A persisted eraser session is bound to one exact projected row. If that
+      // row disappeared or selection advanced, do not silently create or reuse
+      // another repaint layer with similar generation/target metadata.
+      if (localRepaintSource.projectionLayerId && !existingLayer) return undefined;
       if (document.body.dataset.perfLocalRepaintMeasuring === '1') {
         document.body.dataset.localRepaintLayerHandoff = JSON.stringify({
           phase: document.body.dataset.perfLocalRepaintPhase,

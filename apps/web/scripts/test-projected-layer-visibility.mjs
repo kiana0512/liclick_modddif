@@ -643,8 +643,8 @@ assert.match(
 );
 assert.match(
   viewportCanvasSource,
-  /const enhancedSourceUrl = activePaintLayer\.imageUrl \|\| activePaintLayer\.localRepaintSourceUrl;[\s\S]*?activePaintLayer\.localRepaintRawSourceUrl \|\| enhancedSourceUrl[\s\S]*?const savedMaskUrl = activePaintLayer\.maskUrl \|\| activePaintLayer\.localRepaintMaskUrl;/,
-  'Reloaded repaint editing must prefer canonical assets while retaining the raw rollback source.',
+  /const enhancedSourceUrl = activePaintLayer\.imageUrl \|\| activePaintLayer\.localRepaintSourceUrl;[\s\S]*?activePaintLayer\.localRepaintRawSourceUrl \|\| enhancedSourceUrl[\s\S]*?const savedMaskUrl = activePaintLayer\.localRepaintMaskUrl \|\| activePaintLayer\.maskUrl;/,
+  'Reloaded repaint editing must prefer authored coverage while retaining canonical and raw color sources.',
 );
 assert.match(
   viewportCanvasSource,

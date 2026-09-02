@@ -12,6 +12,7 @@ const [
   viewportCanvas,
   bottomToolDock,
   backgroundPrewarmPolicy,
+  sceneStore,
 ] = await Promise.all([
   readFile(new URL('engine/localRepaint/sessionLayer.ts', sourceRoot), 'utf8'),
   readFile(new URL('components/panels/GeneratePanel.tsx', sourceRoot), 'utf8'),
@@ -19,7 +20,34 @@ const [
   readFile(new URL('engine/viewport/ViewportCanvas.tsx', sourceRoot), 'utf8'),
   readFile(new URL('components/editor/BottomToolDock.tsx', sourceRoot), 'utf8'),
   readFile(new URL('engine/localRepaint/backgroundPrewarmPolicy.ts', sourceRoot), 'utf8'),
+  readFile(new URL('stores/sceneStore.ts', sourceRoot), 'utf8'),
 ]);
+
+assert.match(
+  sceneStore,
+  /projectionLayerId\?: string/,
+  'persisted repaint editing must carry the exact selected row identity',
+);
+assert.match(
+  viewportCanvas,
+  /source\.projectionLayerId \?\? ''/,
+  'live composite keys must be isolated per selected repaint row',
+);
+assert.match(
+  viewportCanvas,
+  /source\.projectionLayerId && source\.projectionLayerId !== layer\.id/,
+  'a restored source must not claim another repaint row',
+);
+assert.match(
+  viewportCanvas,
+  /projectionLayerId: activePaintLayer\.id/,
+  'selecting a persisted repaint must publish its exact row identity',
+);
+assert.match(
+  editorPage,
+  /paintTool === 'inpaint-apply' \|\|\s*paintTool === 'eraser'/,
+  'newest-generation background prewarm must not steal an active eraser session',
+);
 
 assert.match(sessionLayer, /preserveActiveProjection\?: boolean/);
 assert.match(

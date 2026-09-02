@@ -180,6 +180,21 @@ assert.equal(
   'preserve-current-source',
   'ordinary background scans should preserve a historical source being edited',
 );
+assert.equal(
+  resolveBackgroundPrewarm({
+    currentSource: {
+      generationId: 'generation-1',
+      objectId: 'object-1',
+      targetLayerId: 'target-1',
+      projectionLayerId: 'local-repaint-projection-1',
+      autoActivate: false,
+    },
+    nextSource,
+    pendingGenerationId: 'generation-2',
+  }),
+  'preserve-current-source',
+  'an exact selected repaint row must retain renderer ownership across later generations',
+);
 
 const compiledActivationRequestPolicy = ts.transpileModule(activationRequestPolicy, {
   compilerOptions: {

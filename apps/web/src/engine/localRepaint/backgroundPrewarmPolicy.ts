@@ -2,6 +2,8 @@ export type LocalRepaintBackgroundSourceIdentity = {
   generationId?: string;
   objectId?: string;
   targetLayerId?: string;
+  /** A selected persisted repaint row owns the renderer until editing leaves it. */
+  projectionLayerId?: string;
   /** False identifies a renderer-restored/passively staged source, not a user-owned edit. */
   autoActivate?: boolean;
 };
@@ -27,6 +29,12 @@ export function resolveLocalRepaintBackgroundPrewarmDisposition(input: {
   ) {
     return 'already-staged';
   }
+
+  // A persisted repaint selected for editing is an explicit user-owned source.
+  // Background staging of the newest generation must never replace it, even
+  // when that source was restored with autoActivate=false or another result
+  // finishes while the user is working on the selected row.
+  if (currentSource.projectionLayerId) return 'preserve-current-source';
 
   // A newly completed generation is the only passive flow allowed to replace
   // another live source. Once consumed, selecting a historical repaint keeps

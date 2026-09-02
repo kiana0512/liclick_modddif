@@ -42,6 +42,8 @@ export type LocalRepaintProjectionSource = {
   camera: SerializedCamera;
   generationId?: string;
   captureId?: string;
+  /** Persisted projected row currently owning an eraser edit session. */
+  projectionLayerId?: string;
   name?: string;
   targetLayerId?: string;
   targetLayerType?: 'projected' | 'uv';
