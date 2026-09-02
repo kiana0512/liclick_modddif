@@ -5,6 +5,7 @@ import {
   useRef,
   useState,
   type DragEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
   type ReactNode,
 } from 'react';
 import {
@@ -178,6 +179,32 @@ const browserBakeChannels = new Set<ChannelId>([
   'position',
 ]);
 const defaultOneClickChannels: ChannelId[] = ['normal', 'ambientOcclusion'];
+const bakeFileInputIds = {
+  high: 'li3d-bake-high-file',
+  low: 'li3d-bake-low-file',
+  cage: 'li3d-bake-cage-file',
+  material: 'li3d-bake-material-file',
+  color: 'li3d-bake-color-file',
+  roughness: 'li3d-bake-roughness-file',
+  metallic: 'li3d-bake-metallic-file',
+  normal: 'li3d-bake-normal-file',
+} as const;
+
+function openBakeFilePicker(input: HTMLInputElement) {
+  // Managed Chromium can reject HTMLElement.click() for a display:none file
+  // input. Keep the picker inside the trusted gesture and retain a fallback for
+  // browsers that do not expose showPicker().
+  input.value = '';
+  if (typeof input.showPicker === 'function') {
+    try {
+      input.showPicker();
+      return;
+    } catch {
+      // Fall through to the compatible click path.
+    }
+  }
+  input.click();
+}
 const channelFileSuffix: Record<BakeChannelId, string> = {
   baseColor: 'BaseColor',
   normal: 'Normal',
@@ -1250,9 +1277,7 @@ export function BakeWorkspacePage({
       setBakeError('导入控件尚未就绪，请稍后重试。');
       return;
     }
-    // Clearing first lets users replace an asset with the same local file.
-    input.value = '';
-    input.click();
+    openBakeFilePicker(input);
   }
 
   function handleLowImport(files: File[]) {
@@ -1816,16 +1841,18 @@ export function BakeWorkspacePage({
         }}
       >
         <input
+          id={bakeFileInputIds.high}
           ref={highInputRef}
-          className="hidden"
+          className="sr-only"
           type="file"
           multiple
           accept=".fbx,.obj,.glb,.gltf,.bin,.mtl,image/*"
           onChange={(event) => void handleHighImport(Array.from(event.target.files ?? []))}
         />
         <input
+          id={bakeFileInputIds.low}
           ref={lowInputRef}
-          className="hidden"
+          className="sr-only"
           type="file"
           multiple
           accept=".fbx,.obj,.glb,.gltf"
@@ -1835,8 +1862,9 @@ export function BakeWorkspacePage({
           }}
         />
         <input
+          id={bakeFileInputIds.material}
           ref={materialInputRef}
-          className="hidden"
+          className="sr-only"
           type="file"
           multiple
           accept="image/png,image/jpeg,image/webp,.tga"
@@ -1846,8 +1874,9 @@ export function BakeWorkspacePage({
           }}
         />
         <input
+          id={bakeFileInputIds.color}
           ref={colorInputRef}
-          className="hidden"
+          className="sr-only"
           type="file"
           multiple
           accept="image/png,image/jpeg,image/webp,.tga"
@@ -1857,8 +1886,9 @@ export function BakeWorkspacePage({
           }}
         />
         <input
+          id={bakeFileInputIds.roughness}
           ref={roughnessInputRef}
-          className="hidden"
+          className="sr-only"
           type="file"
           multiple
           accept="image/png,image/jpeg,image/webp,.tga"
@@ -1868,8 +1898,9 @@ export function BakeWorkspacePage({
           }}
         />
         <input
+          id={bakeFileInputIds.metallic}
           ref={metallicInputRef}
-          className="hidden"
+          className="sr-only"
           type="file"
           multiple
           accept="image/png,image/jpeg,image/webp,.tga"
@@ -1879,8 +1910,9 @@ export function BakeWorkspacePage({
           }}
         />
         <input
+          id={bakeFileInputIds.normal}
           ref={normalInputRef}
-          className="hidden"
+          className="sr-only"
           type="file"
           multiple
           accept="image/png,image/jpeg,image/webp,.tga"
@@ -1928,12 +1960,12 @@ export function BakeWorkspacePage({
               </div>
               <div className="workflow-scrollbar grid min-h-0 gap-3 overflow-y-auto p-5 sm:p-6">
                 <MaterialMapSlot
+                  inputId={bakeFileInputIds.color}
                   label="Base Color"
                   description="颜色 / Albedo"
                   fileName={selectedColorName}
                   previewUrl={selectedColorPreview}
                   required={requiresColor}
-                  onClick={() => chooseFiles('color')}
                   onFilesDropped={handleColorImport}
                 >
                   <div className="flex items-center justify-between gap-4 px-4 py-3">
@@ -2113,31 +2145,31 @@ export function BakeWorkspacePage({
                 </MaterialMapSlot>
                 {roughnessSource === 'manual' ? (
                   <MaterialMapSlot
+                    inputId={bakeFileInputIds.roughness}
                     label="Roughness"
                     description="黑色光滑，白色粗糙"
                     fileName={selectedRoughness?.name}
                     previewUrl={selectedRoughnessPreview}
                     required={requiresRoughness}
-                    onClick={() => chooseFiles('roughness')}
                     onFilesDropped={(files) => handleMaterialChannelImport('roughness', files)}
                   />
                 ) : null}
                 <MaterialMapSlot
+                  inputId={bakeFileInputIds.metallic}
                   label="Metallic"
                   description="黑色非金属，白色金属"
                   fileName={selectedMetallic?.name}
                   previewUrl={selectedMetallicPreview}
                   required={requiresMetallic}
-                  onClick={() => chooseFiles('metallic')}
                   onFilesDropped={(files) => handleMaterialChannelImport('metallic', files)}
                 />
                 <MaterialMapSlot
+                  inputId={bakeFileInputIds.normal}
                   label="Normal"
                   description="切线空间法线贴图"
                   fileName={selectedNormal?.name}
                   previewUrl={selectedNormalPreview}
                   required={false}
-                  onClick={() => chooseFiles('normal')}
                   onFilesDropped={(files) => handleMaterialChannelImport('normal', files)}
                 />
                 <div className="rounded-2xl border border-dashed border-white/10 bg-white/[0.02] px-4 py-3 text-center text-[11px] text-white/30">
@@ -2272,6 +2304,7 @@ export function BakeWorkspacePage({
                   ready={Boolean(selectedHigh)}
                   icon={Box}
                   tone="violet"
+                  inputId={bakeFileInputIds.high}
                   actionLabel={highImporting ? '正在导入…' : selectedHigh ? '替换高模' : '选择高模'}
                   onClick={() => chooseFiles('high')}
                   onFilesDropped={(files) => void handleHighImport(files)}
@@ -2297,6 +2330,7 @@ export function BakeWorkspacePage({
                   warning={Boolean(selectedLowInfo && (!hasUv0 || alignmentMismatch))}
                   icon={Layers3}
                   tone="cyan"
+                  inputId={bakeFileInputIds.low}
                   actionLabel={selectedLow ? '替换低模' : '选择模型'}
                   onClick={() => chooseFiles('low')}
                   onFilesDropped={handleLowImport}
@@ -2621,8 +2655,9 @@ export function BakeWorkspacePage({
       }}
     >
       <input
+        id={bakeFileInputIds.low}
         ref={lowInputRef}
-        className="hidden"
+        className="sr-only"
         type="file"
         multiple
         accept=".fbx,.obj,.glb,.gltf"
@@ -2657,8 +2692,9 @@ export function BakeWorkspacePage({
         </div>
       ) : null}
       <input
+        id={bakeFileInputIds.cage}
         ref={cageInputRef}
-        className="hidden"
+        className="sr-only"
         type="file"
         multiple
         accept=".fbx,.obj,.glb,.gltf"
@@ -2673,8 +2709,9 @@ export function BakeWorkspacePage({
         }}
       />
       <input
+        id={bakeFileInputIds.color}
         ref={colorInputRef}
-        className="hidden"
+        className="sr-only"
         type="file"
         multiple
         accept="image/png,image/jpeg,image/webp,.tga"
@@ -3348,21 +3385,21 @@ export function BakeWorkspacePage({
 }
 
 function MaterialMapSlot({
+  inputId,
   label,
   description,
   fileName,
   previewUrl,
   required,
-  onClick,
   onFilesDropped,
   children,
 }: {
+  inputId: string;
   label: string;
   description: string;
   fileName?: string;
   previewUrl?: string;
   required: boolean;
-  onClick: () => void;
   onFilesDropped: (files: File[]) => void;
   children?: ReactNode;
 }) {
@@ -3401,10 +3438,9 @@ function MaterialMapSlot({
         onFilesDropped(Array.from(event.dataTransfer.files));
       }}
     >
-      <button
-        type="button"
+      <label
+        htmlFor={inputId}
         className="flex w-full items-center gap-4 px-4 py-3.5 text-left"
-        onClick={onClick}
       >
         <span
           className={cn(
@@ -3436,7 +3472,7 @@ function MaterialMapSlot({
         <span className="text-xs font-medium text-white/42 transition-colors group-hover:text-white/72">
           {fileName ? '替换' : '导入'}
         </span>
-      </button>
+      </label>
       {children ? <div className="border-t border-white/[0.07]">{children}</div> : null}
     </div>
   );
@@ -3452,6 +3488,7 @@ function OneClickAssetCard({
   warning = false,
   icon: Icon,
   tone,
+  inputId,
   actionLabel,
   onClick,
   onFilesDropped,
@@ -3466,6 +3503,7 @@ function OneClickAssetCard({
   warning?: boolean;
   icon: LucideIcon;
   tone: 'violet' | 'cyan' | 'rose';
+  inputId?: string;
   actionLabel: string;
   onClick: () => void;
   onFilesDropped: (files: File[]) => void;
@@ -3490,22 +3528,30 @@ function OneClickAssetCard({
     cyan: 'border-cyan-200/70 bg-[#071e28]/92 text-cyan-50',
     rose: 'border-fuchsia-200/70 bg-[#241027]/92 text-fuchsia-50',
   }[tone];
+  const Root = inputId ? 'label' : 'button';
 
-  function handleDragEnter(event: DragEvent<HTMLButtonElement>) {
+  function handleFileLabelKeyDown(event: ReactKeyboardEvent<HTMLElement>) {
+    if (!inputId || (event.key !== 'Enter' && event.key !== ' ')) return;
+    event.preventDefault();
+    const input = document.getElementById(inputId);
+    if (input instanceof HTMLInputElement) openBakeFilePicker(input);
+  }
+
+  function handleDragEnter(event: DragEvent<HTMLElement>) {
     event.preventDefault();
     event.stopPropagation();
     dragDepth.current += 1;
     setDragActive(true);
   }
 
-  function handleDragLeave(event: DragEvent<HTMLButtonElement>) {
+  function handleDragLeave(event: DragEvent<HTMLElement>) {
     event.preventDefault();
     event.stopPropagation();
     dragDepth.current = Math.max(0, dragDepth.current - 1);
     if (dragDepth.current === 0) setDragActive(false);
   }
 
-  function handleDrop(event: DragEvent<HTMLButtonElement>) {
+  function handleDrop(event: DragEvent<HTMLElement>) {
     event.preventDefault();
     event.stopPropagation();
     dragDepth.current = 0;
@@ -3515,15 +3561,16 @@ function OneClickAssetCard({
   }
 
   return (
-    <button
-      type="button"
+    <Root
+      {...(inputId ? { htmlFor: inputId, role: 'button', tabIndex: 0 } : { type: 'button' })}
       className={cn(
         'group relative min-h-[270px] overflow-hidden rounded-2xl border bg-gradient-to-br text-left transition-all duration-300 hover:-translate-y-1 hover:bg-white/[0.035] hover:shadow-[0_20px_50px_rgba(0,0,0,.22)]',
         toneClass,
         dragActive && 'scale-[1.015] shadow-[0_24px_60px_rgba(0,0,0,.34)]',
       )}
       title={`点击选择，或将${dropHint}拖到此处`}
-      onClick={onClick}
+      onClick={inputId ? undefined : onClick}
+      onKeyDown={inputId ? handleFileLabelKeyDown : undefined}
       onDragEnter={handleDragEnter}
       onDragOver={(event) => {
         event.preventDefault();
@@ -3604,7 +3651,7 @@ function OneClickAssetCard({
           </span>
         </div>
       </div>
-    </button>
+    </Root>
   );
 }
 

@@ -1,10 +1,28 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { stdout } from 'node:process';
 import { fileURLToPath } from 'node:url';
 import { createServer } from 'vite';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const bakeWorkspaceSource = readFileSync(path.join(root, 'src/routes/BakeWorkspacePage.tsx'), 'utf8');
+
+assert.match(
+  bakeWorkspaceSource,
+  /function openBakeFilePicker[\s\S]*?input\.showPicker\(\)[\s\S]*?input\.click\(\)/,
+  'Bake file controls must prefer the trusted native picker and retain a compatibility fallback.',
+);
+assert.match(
+  bakeWorkspaceSource,
+  /id=\{bakeFileInputIds\.low\}[\s\S]*?className="sr-only"[\s\S]*?inputId=\{bakeFileInputIds\.low\}/,
+  'The one-click low-poly card must target a rendered, visually hidden native file input.',
+);
+assert.match(
+  bakeWorkspaceSource,
+  /function MaterialMapSlot[\s\S]*?<label[\s\S]*?htmlFor=\{inputId\}/,
+  'Material-map slots must use native label-to-input activation instead of a programmatic hidden-input click.',
+);
 const server = await createServer({
   root,
   appType: 'custom',
