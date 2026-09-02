@@ -1,13 +1,40 @@
+import {
+  subscribePerformanceTimeline,
+  type PerformanceTimelineEvent,
+} from '@/engine/performance/performanceTimeline';
+
 export const PERFORMANCE_LAB_REPORT_SCHEMA_VERSION = 2 as const;
-export const PERFORMANCE_LAB_COLLECTOR_VERSION = '2.0.0';
+export const PERFORMANCE_LAB_COLLECTOR_VERSION = '2.1.0';
 
 const CHUNK_INTERVAL_MS = 5_000;
 const MEMORY_INTERVAL_MS = 2_000;
 const STRICT_FRAME_BUDGET_MS = 1_000 / 60;
 const MAX_SUMMARY_FRAME_SAMPLES = 216_000;
 const MAX_RESOURCE_NAME_LENGTH = 240;
+const MAX_TIMELINE_EVENTS_PER_CHUNK = 2_000;
+const MAX_REACT_COMMIT_SAMPLES = 50_000;
+const MAX_SCRIPT_RESOURCE_SAMPLES = 50_000;
+
+const allowedTimelineStringDetailKeys = new Set([
+  'backend',
+  'milestone',
+  'priority',
+  'profilerId',
+  'reactPhase',
+  'scenario',
+  'status',
+]);
 
 type NumericTuple = [elapsedMs: number, durationMs: number];
+
+type PerformanceTimelineChunkEvent = {
+  elapsedMs: number;
+  category: PerformanceTimelineEvent['category'];
+  name: string;
+  phase: PerformanceTimelineEvent['phase'];
+  durationMs?: number;
+  detail?: Record<string, number | string | boolean>;
+};
 
 export type PerformanceLabChunk = {
   schemaVersion: typeof PERFORMANCE_LAB_REPORT_SCHEMA_VERSION;
@@ -70,6 +97,8 @@ export type PerformanceLabChunk = {
     totalJsHeapMb?: number;
     jsHeapLimitMb?: number;
   }>;
+  timelineEvents: PerformanceTimelineChunkEvent[];
+  timelineEventsDropped: number;
   diagnostics: Array<[elapsedMs: number, key: string, value?: string]>;
   visibility: Array<[elapsedMs: number, state: DocumentVisibilityState]>;
   runtimeErrors: Array<[elapsedMs: number, type: 'error' | 'unhandledrejection', message: string]>;
@@ -132,6 +161,17 @@ export type PerformanceLabSessionSummary = {
   longAnimationFrameCount: number;
   eventTimingCount: number;
   resourceTimingCount: number;
+  scriptResourceCount: number;
+  scriptTransferBytes: number;
+  scriptDecodedBodyBytes: number;
+  scriptDurationP95Ms: number;
+  scriptDurationMaximumMs: number;
+  timelineEventCount: number;
+  timelineEventDroppedCount: number;
+  reactCommitCount: number;
+  reactCommitTotalMs: number;
+  reactCommitP95Ms: number;
+  reactCommitMaximumMs: number;
   collectorOverheadP95Ms: number;
   collectorOverheadMaximumMs: number;
   summaryFrameRetentionLimit: number;
@@ -159,6 +199,8 @@ function createChunkBuffers(): ChunkBuffers {
     layoutShifts: [],
     resources: [],
     memory: [],
+    timelineEvents: [],
+    timelineEventsDropped: 0,
     diagnostics: [],
     visibility: [],
     runtimeErrors: [],
@@ -178,6 +220,33 @@ function safeFinite(value: unknown) {
 
 function limitedText(value: unknown, maximum = 160) {
   return typeof value === 'string' ? value.replace(/[\r\n\t]+/g, ' ').slice(0, maximum) : '';
+}
+
+export function isJavaScriptPerformanceResource(
+  entry: Pick<PerformanceResourceTiming, 'initiatorType' | 'name'>,
+) {
+  return entry.initiatorType === 'script' || /\.m?js(?:$|[?#])/i.test(entry.name);
+}
+
+export function sanitizePerformanceTimelineDetail(detail: unknown) {
+  if (!detail || typeof detail !== 'object' || Array.isArray(detail)) return undefined;
+  const output: Record<string, number | string | boolean> = {};
+  for (const [rawKey, value] of Object.entries(detail).slice(0, 24)) {
+    const key = limitedText(rawKey, 60);
+    if (
+      !key ||
+      /(?:prompt|text|url|path|email|token|cookie|asset|project|layer|generation)/i.test(key) ||
+      (key !== 'profilerId' && /id$/i.test(key))
+    ) {
+      continue;
+    }
+    if (typeof value === 'number' && Number.isFinite(value)) output[key] = value;
+    else if (typeof value === 'boolean') output[key] = value;
+    else if (typeof value === 'string' && allowedTimelineStringDetailKeys.has(key)) {
+      output[key] = limitedText(value, 80);
+    }
+  }
+  return Object.keys(output).length > 0 ? output : undefined;
 }
 
 export function createPerformanceLabSessionId() {
@@ -447,6 +516,17 @@ export class PerformanceLabCollector {
   private longAnimationFrameCount = 0;
   private eventTimingCount = 0;
   private resourceTimingCount = 0;
+  private scriptResourceCount = 0;
+  private scriptTransferBytes = 0;
+  private scriptDecodedBodyBytes = 0;
+  private scriptDurations: number[] = [];
+  private scriptDurationMaximumMs = 0;
+  private timelineEventCount = 0;
+  private timelineEventDroppedCount = 0;
+  private reactCommitCount = 0;
+  private reactCommitDurations: number[] = [];
+  private reactCommitTotalMs = 0;
+  private reactCommitMaximumMs = 0;
   private collectorOverheadSamples: number[] = [];
   private stopped = false;
 
@@ -466,6 +546,7 @@ export class PerformanceLabCollector {
     this.installFrameSampler();
     this.installPerformanceObservers();
     this.installInputObservers();
+    this.installTimelineObserver();
     this.installDiagnosticObservers();
     this.sampleMemory();
     this.memoryTimer = window.setInterval(() => this.sampleMemory(), MEMORY_INTERVAL_MS);
@@ -639,6 +720,15 @@ export class PerformanceLabCollector {
           responseStatus: entry.responseStatus,
         });
         this.resourceTimingCount += 1;
+        if (isJavaScriptPerformanceResource(entry)) {
+          this.scriptResourceCount += 1;
+          this.scriptTransferBytes += safeFinite(entry.transferSize);
+          this.scriptDecodedBodyBytes += safeFinite(entry.decodedBodySize);
+          this.scriptDurationMaximumMs = Math.max(this.scriptDurationMaximumMs, entry.duration);
+          if (this.scriptDurations.length < MAX_SCRIPT_RESOURCE_SAMPLES) {
+            this.scriptDurations.push(entry.duration);
+          }
+        }
       }
     });
   }
@@ -685,6 +775,39 @@ export class PerformanceLabCollector {
       window.removeEventListener('wheel', onWheel, true);
       if (wheelFrame) window.cancelAnimationFrame(wheelFrame);
     });
+  }
+
+  private installTimelineObserver() {
+    this.disposers.push(
+      subscribePerformanceTimeline((event) => {
+        if (event.monotonicMs < this.startedAtMonotonicMs) return;
+        this.timelineEventCount += 1;
+        if (event.category === 'react' && event.name === 'react-commit') {
+          const durationMs = event.detail?.actualDurationMs;
+          if (typeof durationMs === 'number' && Number.isFinite(durationMs)) {
+            this.reactCommitCount += 1;
+            this.reactCommitTotalMs += durationMs;
+            this.reactCommitMaximumMs = Math.max(this.reactCommitMaximumMs, durationMs);
+            if (this.reactCommitDurations.length < MAX_REACT_COMMIT_SAMPLES) {
+              this.reactCommitDurations.push(durationMs);
+            }
+          }
+        }
+        if (this.buffers.timelineEvents.length >= MAX_TIMELINE_EVENTS_PER_CHUNK) {
+          this.buffers.timelineEventsDropped += 1;
+          this.timelineEventDroppedCount += 1;
+          return;
+        }
+        this.buffers.timelineEvents.push({
+          elapsedMs: event.monotonicMs - this.startedAtMonotonicMs,
+          category: event.category,
+          name: limitedText(event.name, 120),
+          phase: event.phase,
+          durationMs: event.durationMs,
+          detail: sanitizePerformanceTimelineDetail(event.detail),
+        });
+      }),
+    );
   }
 
   private installDiagnosticObservers() {
@@ -770,7 +893,8 @@ export class PerformanceLabCollector {
       buffers.longAnimationFrames.length +
       buffers.eventTimings.length +
       buffers.inputs.length +
-      buffers.resources.length;
+      buffers.resources.length +
+      buffers.timelineEvents.length;
     if (sampleCount === 0 && buffers.diagnostics.length === 0 && buffers.memory.length === 0) {
       this.chunkStartedAtUnixMs = endedAtUnixMs;
       return;
@@ -820,6 +944,17 @@ export class PerformanceLabCollector {
       longAnimationFrameCount: this.longAnimationFrameCount,
       eventTimingCount: this.eventTimingCount,
       resourceTimingCount: this.resourceTimingCount,
+      scriptResourceCount: this.scriptResourceCount,
+      scriptTransferBytes: this.scriptTransferBytes,
+      scriptDecodedBodyBytes: this.scriptDecodedBodyBytes,
+      scriptDurationP95Ms: percentile(this.scriptDurations, 0.95),
+      scriptDurationMaximumMs: this.scriptDurationMaximumMs,
+      timelineEventCount: this.timelineEventCount,
+      timelineEventDroppedCount: this.timelineEventDroppedCount,
+      reactCommitCount: this.reactCommitCount,
+      reactCommitTotalMs: this.reactCommitTotalMs,
+      reactCommitP95Ms: percentile(this.reactCommitDurations, 0.95),
+      reactCommitMaximumMs: this.reactCommitMaximumMs,
       collectorOverheadP95Ms: percentile(this.collectorOverheadSamples, 0.95),
       collectorOverheadMaximumMs:
         this.collectorOverheadSamples.length > 0 ? Math.max(...this.collectorOverheadSamples) : 0,

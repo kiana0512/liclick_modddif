@@ -300,7 +300,7 @@ assert.match(viewport, /deferred-until-button2/);
 assert.match(viewport, /new WeakMap<THREE\.Object3D, PaintableSurfaceCache>/);
 const immediateLayerRowPublish = viewport.indexOf("perfLocalRepaintPhase = 's6-layer-row-publish'");
 const projectedPersistenceIdleWait = viewport.indexOf(
-  'const canCommit = await waitForPaintCommitIdle(publishWasSuperseded);',
+  'const canCommit = await waitForPaintCommitIdle(',
 );
 assert.ok(immediateLayerRowPublish >= 0, 'local repaint must publish its layer row');
 assert.ok(projectedPersistenceIdleWait >= 0, 'local repaint must retain its persistence idle wait');
@@ -312,6 +312,16 @@ assert.match(
   viewport.slice(immediateLayerRowPublish, projectedPersistenceIdleWait),
   /layerState\.setLayers\(nextLayers\)/,
   'the immediate path must update the authoritative layer store',
+);
+assert.match(
+  viewport.slice(projectedPersistenceIdleWait, projectedPersistenceIdleWait + 1800),
+  /setProjectLayers\(useLayerStore\.getState\(\)\.layers\)/,
+  'a reused layer row must still wake latest-revision project persistence after idle',
+);
+assert.match(
+  viewport.slice(immediateLayerRowPublish, projectedPersistenceIdleWait),
+  /if \(!layerRowAlreadyCurrent\) \{[\s\S]*layerState\.setLayers\(nextLayers\)/,
+  'an unchanged live-canvas layer row must not republish every pointer-up',
 );
 
 assert.doesNotMatch(workflow, /id: 'retopology'/);

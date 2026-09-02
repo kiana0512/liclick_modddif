@@ -6,8 +6,9 @@ import { createServer } from 'vite';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const source = (...segments) => fs.readFile(path.join(root, 'src', ...segments), 'utf8');
-const [appSource, adminPageSource, bridgeSource, collectorSource, workerSource, apiSource] = await Promise.all([
+const [appSource, mainSource, adminPageSource, bridgeSource, collectorSource, workerSource, apiSource] = await Promise.all([
   source('App.tsx'),
+  source('main.tsx'),
   source('routes', 'PerformanceLabAdminPage.tsx'),
   source('features', 'performanceLab', 'PerformanceLabCloudBridge.tsx'),
   source('features', 'performanceLab', 'performanceLabCollector.ts'),
@@ -19,6 +20,11 @@ assert.match(
   appSource,
   /lazy\(\(\) =>[\s\S]*PerformanceLabCloudBridge[\s\S]*performanceLabEnabled \? \(/,
   'The Cloud recorder must be conditionally bundled behind perfLab=1.',
+);
+assert.match(
+  mainSource,
+  /isPerformanceLabEnabled[\s\S]*<Profiler id="app-root"[\s\S]*recordReactProfilerCommit/,
+  'React commit profiling must be mounted only for the explicit performance-lab route.',
 );
 assert.match(
   appSource,
@@ -56,6 +62,21 @@ assert.match(
   collectorSource,
   /WEBGL_debug_renderer_info[\s\S]*detectAngleBackend[\s\S]*timerQuerySupported/,
   'The report must contain real client ANGLE/D3D and WebGL GPU-timer capabilities.',
+);
+assert.match(
+  collectorSource,
+  /subscribePerformanceTimeline[\s\S]*timelineEvents[\s\S]*reactCommitP95Ms/,
+  'Performance chunks must correlate business spans with React commit timings.',
+);
+assert.match(
+  collectorSource,
+  /isJavaScriptPerformanceResource[\s\S]*scriptTransferBytes[\s\S]*scriptDurationP95Ms/,
+  'Session summaries must quantify the JavaScript actually loaded by the recorded workflow.',
+);
+assert.match(
+  collectorSource,
+  /allowedTimelineStringDetailKeys[\s\S]*prompt\|text\|url[\s\S]*MAX_TIMELINE_EVENTS_PER_CHUNK/,
+  'Timeline detail must be privacy-filtered and bounded before upload.',
 );
 assert.match(
   collectorSource,
@@ -108,6 +129,34 @@ try {
     '/src/features/performanceLab/performanceLabCollector.ts',
   );
   assert.equal(collector.PERFORMANCE_LAB_REPORT_SCHEMA_VERSION, 2);
+  assert.equal(collector.PERFORMANCE_LAB_COLLECTOR_VERSION, '2.1.0');
+  assert.equal(
+    collector.isJavaScriptPerformanceResource({
+      initiatorType: 'worker',
+      name: 'https://example.test/assets/texture.worker.js?v=1',
+    }),
+    true,
+  );
+  assert.equal(
+    collector.isJavaScriptPerformanceResource({
+      initiatorType: 'img',
+      name: 'https://example.test/preview.png',
+    }),
+    false,
+  );
+  assert.deepEqual(
+    collector.sanitizePerformanceTimelineDetail({
+      profilerId: 'app-root',
+      reactPhase: 'update',
+      actualDurationMs: 12.5,
+      projectId: 'project-secret',
+      taskId: 42,
+      prompt: 'secret prompt',
+      url: 'https://secret.example/path',
+      nested: { secret: true },
+    }),
+    { profilerId: 'app-root', reactPhase: 'update', actualDurationMs: 12.5 },
+  );
   assert.equal(collector.detectAngleBackend('ANGLE (NVIDIA, Direct3D11 vs_5_0 ps_5_0)'), 'd3d11');
   assert.equal(collector.detectAngleBackend('ANGLE (NVIDIA, Direct3D12)'), 'd3d12');
   assert.equal(collector.detectAngleBackend('ANGLE Vulkan 1.3'), 'vulkan');

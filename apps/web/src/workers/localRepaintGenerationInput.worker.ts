@@ -13,6 +13,7 @@ type GenerationInputWorkerResponse =
       dilationRadius: number;
       featherRadius: number;
       processMs: number;
+      phaseDurationsMs: Record<string, number>;
     }
   | { id: number; error: string };
 
@@ -25,10 +26,34 @@ function readPixels(bitmap: ImageBitmap, width: number, height: number) {
   return context.getImageData(0, 0, width, height);
 }
 
-function maxFilterHorizontal(source: Uint8Array, width: number, height: number, radius: number) {
+type MaskBounds = { minX: number; minY: number; maxX: number; maxY: number };
+
+function expandMaskBounds(
+  bounds: MaskBounds,
+  radius: number,
+  width: number,
+  height: number,
+): MaskBounds {
+  return {
+    minX: Math.max(0, bounds.minX - radius),
+    minY: Math.max(0, bounds.minY - radius),
+    maxX: Math.min(width - 1, bounds.maxX + radius),
+    maxY: Math.min(height - 1, bounds.maxY + radius),
+  };
+}
+
+function maxFilterHorizontal(
+  source: Uint8Array,
+  width: number,
+  height: number,
+  radius: number,
+  bounds?: MaskBounds,
+) {
   const output = new Uint8Array(source.length);
   const queue = new Int32Array(width);
-  for (let y = 0; y < height; y += 1) {
+  const minY = bounds?.minY ?? 0;
+  const maxY = bounds?.maxY ?? height - 1;
+  for (let y = minY; y <= maxY; y += 1) {
     const row = y * width;
     let head = 0;
     let tail = 0;
@@ -50,10 +75,18 @@ function maxFilterHorizontal(source: Uint8Array, width: number, height: number, 
   return output;
 }
 
-function maxFilterVertical(source: Uint8Array, width: number, height: number, radius: number) {
+function maxFilterVertical(
+  source: Uint8Array,
+  width: number,
+  height: number,
+  radius: number,
+  bounds?: MaskBounds,
+) {
   const output = new Uint8Array(source.length);
   const queue = new Int32Array(height);
-  for (let x = 0; x < width; x += 1) {
+  const minX = bounds?.minX ?? 0;
+  const maxX = bounds?.maxX ?? width - 1;
+  for (let x = minX; x <= maxX; x += 1) {
     let head = 0;
     let tail = 0;
     let addedThrough = -1;
@@ -74,18 +107,100 @@ function maxFilterVertical(source: Uint8Array, width: number, height: number, ra
   return output;
 }
 
-function dilateMask(source: Uint8Array, width: number, height: number, radius: number) {
+function dilateMask(
+  source: Uint8Array,
+  width: number,
+  height: number,
+  radius: number,
+  bounds?: MaskBounds,
+) {
   if (radius <= 0) return new Uint8Array(source);
-  return maxFilterVertical(maxFilterHorizontal(source, width, height, radius), width, height, radius);
+  const horizontal = maxFilterHorizontal(source, width, height, radius, bounds);
+  const horizontalBounds = bounds
+    ? {
+        minX: Math.max(0, bounds.minX - radius),
+        minY: bounds.minY,
+        maxX: Math.min(width - 1, bounds.maxX + radius),
+        maxY: bounds.maxY,
+      }
+    : undefined;
+  return maxFilterVertical(horizontal, width, height, radius, horizontalBounds);
 }
 
-function erodeMask(source: Uint8Array, width: number, height: number, radius: number) {
+function minFilterHorizontal(
+  source: Uint8Array,
+  width: number,
+  height: number,
+  radius: number,
+  bounds: MaskBounds,
+) {
+  const output = new Uint8Array(source.length);
+  const queue = new Int32Array(Math.min(width, bounds.maxX - bounds.minX + radius * 2 + 1));
+  const scanMinX = Math.max(0, bounds.minX - radius);
+  const scanMaxX = Math.min(width - 1, bounds.maxX + radius);
+  for (let y = bounds.minY; y <= bounds.maxY; y += 1) {
+    const row = y * width;
+    let head = 0;
+    let tail = 0;
+    let addedThrough = scanMinX - 1;
+    for (let x = bounds.minX; x <= bounds.maxX; x += 1) {
+      const addUntil = Math.min(scanMaxX, x + radius);
+      while (addedThrough < addUntil) {
+        addedThrough += 1;
+        const value = source[row + addedThrough];
+        while (tail > head && source[row + queue[tail - 1]] >= value) tail -= 1;
+        queue[tail++] = addedThrough;
+      }
+      const minimum = Math.max(scanMinX, x - radius);
+      while (tail > head && queue[head] < minimum) head += 1;
+      output[row + x] = source[row + queue[head]];
+    }
+  }
+  return output;
+}
+
+function minFilterVertical(
+  source: Uint8Array,
+  width: number,
+  height: number,
+  radius: number,
+  bounds: MaskBounds,
+) {
+  const output = new Uint8Array(source.length);
+  const queue = new Int32Array(Math.min(height, bounds.maxY - bounds.minY + radius * 2 + 1));
+  const scanMinY = Math.max(0, bounds.minY - radius);
+  const scanMaxY = Math.min(height - 1, bounds.maxY + radius);
+  for (let x = bounds.minX; x <= bounds.maxX; x += 1) {
+    let head = 0;
+    let tail = 0;
+    let addedThrough = scanMinY - 1;
+    for (let y = bounds.minY; y <= bounds.maxY; y += 1) {
+      const addUntil = Math.min(scanMaxY, y + radius);
+      while (addedThrough < addUntil) {
+        addedThrough += 1;
+        const value = source[addedThrough * width + x];
+        while (tail > head && source[queue[tail - 1] * width + x] >= value) tail -= 1;
+        queue[tail++] = addedThrough;
+      }
+      const minimum = Math.max(scanMinY, y - radius);
+      while (tail > head && queue[head] < minimum) head += 1;
+      output[y * width + x] = source[queue[head] * width + x];
+    }
+  }
+  return output;
+}
+
+function erodeMask(
+  source: Uint8Array,
+  width: number,
+  height: number,
+  radius: number,
+  bounds = getMaskBounds(source, width, height),
+) {
   if (radius <= 0) return new Uint8Array(source);
-  const inverted = new Uint8Array(source.length);
-  for (let index = 0; index < source.length; index += 1) inverted[index] = 255 - source[index];
-  const expandedBackground = dilateMask(inverted, width, height, radius);
-  for (let index = 0; index < source.length; index += 1) inverted[index] = 255 - expandedBackground[index];
-  return inverted;
+  if (bounds.maxX < bounds.minX || bounds.maxY < bounds.minY) return new Uint8Array(source.length);
+  const horizontal = minFilterHorizontal(source, width, height, radius, bounds);
+  return minFilterVertical(horizontal, width, height, radius, bounds);
 }
 
 function getMaskBounds(mask: Uint8Array, width: number, height: number) {
@@ -110,9 +225,10 @@ function fillSmallMaskHoles(
   width: number,
   height: number,
   maximumHoleArea: number,
+  sourceBounds?: MaskBounds,
 ) {
   const output = new Uint8Array(source);
-  const bounds = getMaskBounds(source, width, height);
+  const bounds = sourceBounds ?? getMaskBounds(source, width, height);
   if (bounds.maxX < bounds.minX || bounds.maxY < bounds.minY) return output;
   const visited = new Uint8Array(source.length);
   const queue = new Int32Array(source.length);
@@ -175,11 +291,31 @@ function buildCompositeCoreMask(
 ) {
   const candidate = new Uint8Array(authoredStrength.length);
   const strong = new Uint8Array(authoredStrength.length);
+  const candidateBounds: MaskBounds = { minX: width, minY: height, maxX: -1, maxY: -1 };
+  const strongBounds: MaskBounds = { minX: width, minY: height, maxX: -1, maxY: -1 };
+  let x = 0;
+  let y = 0;
   for (let index = 0; index < authoredStrength.length; index += 1) {
-    if (authoredStrength[index] >= 24) candidate[index] = 255;
-    if (authoredStrength[index] >= 96) strong[index] = 255;
+    if (authoredStrength[index] >= 24) {
+      candidate[index] = 255;
+      candidateBounds.minX = Math.min(candidateBounds.minX, x);
+      candidateBounds.minY = Math.min(candidateBounds.minY, y);
+      candidateBounds.maxX = Math.max(candidateBounds.maxX, x);
+      candidateBounds.maxY = Math.max(candidateBounds.maxY, y);
+    }
+    if (authoredStrength[index] >= 96) {
+      strong[index] = 255;
+      strongBounds.minX = Math.min(strongBounds.minX, x);
+      strongBounds.minY = Math.min(strongBounds.minY, y);
+      strongBounds.maxX = Math.max(strongBounds.maxX, x);
+      strongBounds.maxY = Math.max(strongBounds.maxY, y);
+    }
+    x += 1;
+    if (x === width) {
+      x = 0;
+      y += 1;
+    }
   }
-  const candidateBounds = getMaskBounds(candidate, width, height);
   if (candidateBounds.maxX < candidateBounds.minX || candidateBounds.maxY < candidateBounds.minY) {
     throw new Error('The authored local repaint mask is empty.');
   }
@@ -192,11 +328,13 @@ function buildCompositeCoreMask(
     minimumCloseRadius,
     Math.min(maximumCloseRadius, Math.round(minimumDimension * 0.012)),
   );
+  const dilatedCandidate = dilateMask(candidate, width, height, closeRadius, candidateBounds);
   const closedCandidate = erodeMask(
-    dilateMask(candidate, width, height, closeRadius),
+    dilatedCandidate,
     width,
     height,
     closeRadius,
+    expandMaskBounds(candidateBounds, closeRadius, width, height),
   );
   for (let index = 0; index < candidate.length; index += 1) {
     if (candidate[index] > 0) closedCandidate[index] = 255;
@@ -212,6 +350,7 @@ function buildCompositeCoreMask(
   const visited = new Uint8Array(authoredStrength.length);
   const queue = new Int32Array(authoredStrength.length);
   let keptPixelCount = 0;
+  const coreBounds: MaskBounds = { minX: width, minY: height, maxX: -1, maxY: -1 };
   for (let origin = 0; origin < closedCandidate.length; origin += 1) {
     if (closedCandidate[origin] === 0 || visited[origin] !== 0) continue;
     let head = 0;
@@ -238,25 +377,49 @@ function buildCompositeCoreMask(
       }
     }
     if (strongPixelCount === 0 || (tail < minimumIslandArea && bboxArea >= minimumIslandArea)) continue;
-    for (let queueIndex = 0; queueIndex < tail; queueIndex += 1) core[queue[queueIndex]] = 255;
+    for (let queueIndex = 0; queueIndex < tail; queueIndex += 1) {
+      const index = queue[queueIndex];
+      core[index] = 255;
+      const x = index % width;
+      const y = Math.floor(index / width);
+      coreBounds.minX = Math.min(coreBounds.minX, x);
+      coreBounds.minY = Math.min(coreBounds.minY, y);
+      coreBounds.maxX = Math.max(coreBounds.maxX, x);
+      coreBounds.maxY = Math.max(coreBounds.maxY, y);
+    }
     keptPixelCount += tail;
   }
   if (keptPixelCount === 0) {
     for (let index = 0; index < strong.length; index += 1) core[index] = strong[index];
+    coreBounds.minX = strongBounds.minX;
+    coreBounds.minY = strongBounds.minY;
+    coreBounds.maxX = strongBounds.maxX;
+    coreBounds.maxY = strongBounds.maxY;
   }
   const maximumHoleArea = Math.max(
     16,
     Math.round(64 * scale * scale),
     Math.round(bboxArea * 0.0005),
   );
-  return fillSmallMaskHoles(core, width, height, maximumHoleArea);
+  return {
+    core: fillSmallMaskHoles(core, width, height, maximumHoleArea, coreBounds),
+    bounds: coreBounds,
+  };
 }
 
-function boxBlur(source: Uint8Array, width: number, height: number, radius: number) {
+function boxBlur(
+  source: Uint8Array,
+  width: number,
+  height: number,
+  radius: number,
+  bounds?: MaskBounds,
+) {
   if (radius <= 0) return new Uint8Array(source);
   const horizontal = new Float32Array(source.length);
   const output = new Uint8Array(source.length);
-  for (let y = 0; y < height; y += 1) {
+  const minY = bounds?.minY ?? 0;
+  const maxY = bounds?.maxY ?? height - 1;
+  for (let y = minY; y <= maxY; y += 1) {
     const row = y * width;
     let sum = 0;
     for (let x = 0; x <= Math.min(width - 1, radius); x += 1) sum += source[row + x];
@@ -272,7 +435,9 @@ function boxBlur(source: Uint8Array, width: number, height: number, radius: numb
       horizontal[row + x] = sum / (right - left + 1);
     }
   }
-  for (let x = 0; x < width; x += 1) {
+  const minX = bounds ? Math.max(0, bounds.minX - radius) : 0;
+  const maxX = bounds ? Math.min(width - 1, bounds.maxX + radius) : width - 1;
+  for (let x = minX; x <= maxX; x += 1) {
     let sum = 0;
     for (let y = 0; y <= Math.min(height - 1, radius); y += 1) sum += horizontal[y * width + x];
     for (let y = 0; y < height; y += 1) {
@@ -307,6 +472,13 @@ self.onmessage = async (event: MessageEvent<GenerationInputWorkerRequest>) => {
   const { id, currentEffect, clayPreview, authoredMask } = event.data;
   const startedAt = performance.now();
   try {
+    const phaseDurationsMs: Record<string, number> = {};
+    let phaseStartedAt = startedAt;
+    const finishPhase = (name: string) => {
+      const now = performance.now();
+      phaseDurationsMs[name] = now - phaseStartedAt;
+      phaseStartedAt = now;
+    };
     const width = currentEffect.width;
     const height = currentEffect.height;
     if (
@@ -322,6 +494,7 @@ self.onmessage = async (event: MessageEvent<GenerationInputWorkerRequest>) => {
     const currentPixels = readPixels(currentEffect, width, height);
     const clayPixels = readPixels(clayPreview, width, height);
     const maskPixels = readPixels(authoredMask, width, height);
+    finishPhase('read-input-pixels');
     const authoredStrength = new Uint8Array(width * height);
     for (let index = 0; index < authoredStrength.length; index += 1) {
       const offset = index * 4;
@@ -332,17 +505,33 @@ self.onmessage = async (event: MessageEvent<GenerationInputWorkerRequest>) => {
       );
       authoredStrength[index] = value;
     }
+    finishPhase('extract-authored-mask');
 
     const scale = Math.max(width, height) / 2048;
-    const compositeCore = buildCompositeCoreMask(authoredStrength, width, height, scale);
-    const coreBounds = getMaskBounds(compositeCore, width, height);
+    const { core: compositeCore, bounds: coreBounds } = buildCompositeCoreMask(
+      authoredStrength,
+      width,
+      height,
+      scale,
+    );
     if (coreBounds.maxX < coreBounds.minX || coreBounds.maxY < coreBounds.minY) {
       throw new Error('The authored local repaint mask is empty.');
     }
+    finishPhase('build-core-mask');
     const compositeEdgeRadius = Math.max(1, Math.round(1.5 * scale));
-    const compositeAlpha = boxBlur(compositeCore, width, height, compositeEdgeRadius);
-    for (let index = 0; index < compositeCore.length; index += 1) {
-      if (compositeCore[index] > 0) compositeAlpha[index] = 255;
+    const compositeAlpha = boxBlur(
+      compositeCore,
+      width,
+      height,
+      compositeEdgeRadius,
+      coreBounds,
+    );
+    for (let y = coreBounds.minY; y <= coreBounds.maxY; y += 1) {
+      const row = y * width;
+      for (let x = coreBounds.minX; x <= coreBounds.maxX; x += 1) {
+        const index = row + x;
+        if (compositeCore[index] > 0) compositeAlpha[index] = 255;
+      }
     }
     const minX = coreBounds.minX;
     const minY = coreBounds.minY;
@@ -359,23 +548,35 @@ self.onmessage = async (event: MessageEvent<GenerationInputWorkerRequest>) => {
     );
 
     const compositePixels = new Uint8ClampedArray(currentPixels.data);
-    for (let index = 0; index < compositeAlpha.length; index += 1) {
-      const alpha = compositeAlpha[index] / 255;
-      if (alpha <= 0) continue;
-      const offset = index * 4;
-      for (let channel = 0; channel < 4; channel += 1) {
-        compositePixels[offset + channel] = Math.round(
-          currentPixels.data[offset + channel] * (1 - alpha) +
-            clayPixels.data[offset + channel] * alpha,
-        );
+    const compositeBounds = expandMaskBounds(coreBounds, compositeEdgeRadius, width, height);
+    for (let y = compositeBounds.minY; y <= compositeBounds.maxY; y += 1) {
+      const row = y * width;
+      for (let x = compositeBounds.minX; x <= compositeBounds.maxX; x += 1) {
+        const index = row + x;
+        const alpha = compositeAlpha[index] / 255;
+        if (alpha <= 0) continue;
+        const offset = index * 4;
+        for (let channel = 0; channel < 4; channel += 1) {
+          compositePixels[offset + channel] = Math.round(
+            currentPixels.data[offset + channel] * (1 - alpha) +
+              clayPixels.data[offset + channel] * alpha,
+          );
+        }
       }
     }
+    finishPhase('blend-clay-composite');
 
-    const dilated = dilateMask(compositeCore, width, height, dilationRadius);
-    const submittedMask = boxBlur(dilated, width, height, featherRadius);
-    for (let index = 0; index < compositeCore.length; index += 1) {
-      if (compositeCore[index] > 0) submittedMask[index] = 255;
+    const dilated = dilateMask(compositeCore, width, height, dilationRadius, coreBounds);
+    const dilatedBounds = expandMaskBounds(coreBounds, dilationRadius, width, height);
+    const submittedMask = boxBlur(dilated, width, height, featherRadius, dilatedBounds);
+    for (let y = coreBounds.minY; y <= coreBounds.maxY; y += 1) {
+      const row = y * width;
+      for (let x = coreBounds.minX; x <= coreBounds.maxX; x += 1) {
+        const index = row + x;
+        if (compositeCore[index] > 0) submittedMask[index] = 255;
+      }
     }
+    finishPhase('build-submitted-mask');
 
     const compositeCanvas = new OffscreenCanvas(width, height);
     const compositeContext = compositeCanvas.getContext('2d');
@@ -385,10 +586,12 @@ self.onmessage = async (event: MessageEvent<GenerationInputWorkerRequest>) => {
     const maskContext = maskCanvas.getContext('2d');
     if (!maskContext) throw new Error('Could not encode the submitted local repaint mask.');
     maskContext.putImageData(writeMaskPixels(submittedMask, width, height), 0, 0);
+    finishPhase('upload-output-pixels');
     const [compositeBlob, submittedMaskBlob] = await Promise.all([
       compositeCanvas.convertToBlob({ type: 'image/png' }),
       maskCanvas.convertToBlob({ type: 'image/png' }),
     ]);
+    finishPhase('encode-output-png');
     const response: GenerationInputWorkerResponse = {
       id,
       compositeBlob,
@@ -396,6 +599,7 @@ self.onmessage = async (event: MessageEvent<GenerationInputWorkerRequest>) => {
       dilationRadius,
       featherRadius,
       processMs: performance.now() - startedAt,
+      phaseDurationsMs,
     };
     self.postMessage(response);
   } catch (error) {

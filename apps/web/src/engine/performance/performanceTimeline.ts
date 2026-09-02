@@ -1,3 +1,5 @@
+import type { ProfilerOnRenderCallback } from 'react';
+
 export type PerformanceTimelineEvent = {
   id: number;
   unixMs: number;
@@ -10,6 +12,7 @@ export type PerformanceTimelineEvent = {
     | 'model-load'
     | 'projection'
     | 'local-repaint'
+    | 'react'
     | 'system';
   name: string;
   phase: 'instant' | 'start' | 'end' | 'error';
@@ -26,6 +29,24 @@ let enabled = false;
 export function setPerformanceTimelineEnabled(nextEnabled: boolean) {
   enabled = nextEnabled;
 }
+
+export const recordReactProfilerCommit: ProfilerOnRenderCallback = (
+  profilerId,
+  reactPhase,
+  actualDurationMs,
+  baseDurationMs,
+  startTimeMs,
+  commitTimeMs,
+) => {
+  markPerformanceEvent('react', 'react-commit', {
+    profilerId,
+    reactPhase,
+    actualDurationMs,
+    baseDurationMs,
+    startTimeMs,
+    commitTimeMs,
+  });
+};
 
 export function markPerformanceEvent(
   category: PerformanceTimelineEvent['category'],

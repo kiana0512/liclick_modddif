@@ -10,6 +10,7 @@ import {
   createUvOverlayPreviewMaterial,
   disposeGeneratedMaterialTree,
   getProjectedLayerSamplerBudget,
+  isProjectedTextureArrayCircuitOpenError,
   markSparseAlphaBaseTexture,
   syncProjectedLayerMaterialDisplayState,
   syncProjectedLayerMaterialDisplayStateInObject,
@@ -4589,14 +4590,17 @@ function ImportedModel({
               projectedTextureArrayBuildRef.current = undefined;
             }
             if (!useProjectedTextureArrayMaterial || cancelled) throw error;
-            console.warn(
-              '[Liclick 3D Texture] Projected texture arrays are unavailable; switching the complete visible stack to a bounded fallback.',
-              error,
-            );
+            const circuitWasAlreadyOpen = isProjectedTextureArrayCircuitOpenError(error);
+            if (!circuitWasAlreadyOpen) {
+              console.warn(
+                '[Liclick 3D Texture] Projected texture arrays are unavailable; switching the complete visible stack to a bounded fallback.',
+                error,
+              );
+            }
             const visibleLayerCount = projectedLayerInput.layers.filter(
               (layer) => layer.visible,
             ).length;
-            if (visibleLayerCount > 0) {
+            if (visibleLayerCount > 0 && !circuitWasAlreadyOpen) {
               reportProjectedPreviewProgress(
                 1,
                 error instanceof Error ? error.message : '投影纹理加载失败，请重试',

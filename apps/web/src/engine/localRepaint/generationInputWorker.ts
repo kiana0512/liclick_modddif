@@ -6,6 +6,7 @@ export type PreparedLocalRepaintGenerationInput = {
   dilationRadius: number;
   featherRadius: number;
   processMs: number;
+  phaseDurationsMs: Record<string, number>;
 };
 
 type GenerationInputWorkerResponse =
@@ -45,6 +46,7 @@ function getWorker() {
       dilationRadius: event.data.dilationRadius,
       featherRadius: event.data.featherRadius,
       processMs: event.data.processMs,
+      phaseDurationsMs: event.data.phaseDurationsMs,
     });
   };
   worker.onerror = (event) => {

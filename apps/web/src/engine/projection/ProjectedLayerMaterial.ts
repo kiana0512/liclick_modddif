@@ -211,6 +211,19 @@ const BASE_COLOR_PREVIEW_LIGHT_GLSL = `
   }
 `;
 
+// ANGLE's D3D backend reports X4008 when normalize() can receive a zero-length
+// derivative on degenerate or coincident triangles. Keep the normal result
+// identical for valid geometry and provide a deterministic fallback only for
+// the previously undefined zero-length case.
+const SAFE_NORMALIZE_GLSL = `
+  vec3 sn(vec3 v, vec3 f) {
+    float l = dot(v, v);
+    float q = step(1.0e-12, l);
+    vec3 n = v * inversesqrt(max(l, 1.0e-12));
+    return mix(f, n, q);
+  }
+`;
+
 type ProjectedLayerUniformBinding = {
   layerId: string;
   imageUrl: string;
@@ -439,6 +452,8 @@ const fragmentShader = `
   varying vec3 vWorldNormal;
   varying vec2 vUv;
 
+  ${SAFE_NORMALIZE_GLSL}
+
   vec3 linearToSrgb(vec3 color) {
     vec3 low = color * 12.92;
     vec3 high = 1.055 * pow(max(color, vec3(0.0)), vec3(1.0 / 2.4)) - 0.055;
@@ -519,7 +534,10 @@ const fragmentShader = `
       useDepthCheck
     );
     vec3 capturedFaceNormal = normalTexel.rgb * 2.0 - 1.0;
-    float normalAgreement = dot(projectedFaceNormal, normalize(capturedFaceNormal));
+    float normalAgreement = dot(
+      projectedFaceNormal,
+      sn(capturedFaceNormal, projectedFaceNormal)
+    );
     float normalVisibility = step(0.25, length(capturedFaceNormal)) * smoothstep(
       ${MIN_CAPTURE_NORMAL_AGREEMENT.toFixed(2)},
       ${FULL_CAPTURE_NORMAL_AGREEMENT.toFixed(2)},
@@ -619,10 +637,14 @@ const fragmentShader = `
       depthIsLinearView
     );
     vec3 captureViewPosition = (projectorViewMatrix * captureWorldPosition).xyz;
-    vec3 projectedFaceNormal = normalize(
-      cross(dFdx(captureViewPosition), dFdy(captureViewPosition))
+    vec3 captureViewVertexNormal = sn(
+      mat3(projectorViewMatrix) * captureWorldNormal,
+      vec3(0.0, 0.0, 1.0)
     );
-    vec3 captureViewVertexNormal = normalize(mat3(projectorViewMatrix) * captureWorldNormal);
+    vec3 projectedFaceNormal = sn(
+      cross(dFdx(captureViewPosition), dFdy(captureViewPosition)),
+      captureViewVertexNormal
+    );
     projectedFaceNormal *= mix(
       1.0,
       -1.0,
@@ -1381,11 +1403,13 @@ function buildStackFragmentShader(
           vec3 captureViewPosition = (
             compactProjectorViewMatrices[layerIndex] * captureWorldPosition
           ).xyz;
-          vec3 projectedFaceNormal = normalize(
-            cross(dFdx(captureViewPosition), dFdy(captureViewPosition))
+          vec3 captureViewVertexNormal = sn(
+            mat3(compactProjectorViewMatrices[layerIndex]) * captureWorldNormal,
+            vec3(0.0, 0.0, 1.0)
           );
-          vec3 captureViewVertexNormal = normalize(
-            mat3(compactProjectorViewMatrices[layerIndex]) * captureWorldNormal
+          vec3 projectedFaceNormal = sn(
+            cross(dFdx(captureViewPosition), dFdy(captureViewPosition)),
+            captureViewVertexNormal
           );
           projectedFaceNormal *= mix(
             1.0,
@@ -1675,8 +1699,8 @@ function buildStackFragmentShader(
           : DEPTH_EPSILON.toFixed(4)
       };
       vec3 captureViewPosition = (projectorViewMatrix${index} * captureWorldPosition).xyz;
-      vec3 projectedFaceNormal = normalize(cross(dFdx(captureViewPosition), dFdy(captureViewPosition)));
-      vec3 captureViewVertexNormal = normalize(mat3(projectorViewMatrix${index}) * captureWorldNormal);
+      vec3 captureViewVertexNormal = sn(mat3(projectorViewMatrix${index}) * captureWorldNormal, vec3(0.0, 0.0, 1.0));
+      vec3 projectedFaceNormal = sn(cross(dFdx(captureViewPosition), dFdy(captureViewPosition)), captureViewVertexNormal);
       projectedFaceNormal *= mix(1.0, -1.0, step(dot(projectedFaceNormal, captureViewVertexNormal), 0.0));
       float projectionFacingCoverage = ${projectionFacingCoverage(index)};
       ${visibilityNeighborhood(index)}
@@ -1776,8 +1800,8 @@ function buildStackFragmentShader(
           : DEPTH_EPSILON.toFixed(4)
       };
       vec3 captureViewPosition = (projectorViewMatrix${index} * captureWorldPosition).xyz;
-      vec3 projectedFaceNormal = normalize(cross(dFdx(captureViewPosition), dFdy(captureViewPosition)));
-      vec3 captureViewVertexNormal = normalize(mat3(projectorViewMatrix${index}) * captureWorldNormal);
+      vec3 captureViewVertexNormal = sn(mat3(projectorViewMatrix${index}) * captureWorldNormal, vec3(0.0, 0.0, 1.0));
+      vec3 projectedFaceNormal = sn(cross(dFdx(captureViewPosition), dFdy(captureViewPosition)), captureViewVertexNormal);
       projectedFaceNormal *= mix(1.0, -1.0, step(dot(projectedFaceNormal, captureViewVertexNormal), 0.0));
       float projectionFacingCoverage = ${projectionFacingCoverage(index)};
       ${visibilityNeighborhood(index)}
@@ -1928,6 +1952,8 @@ function buildStackFragmentShader(
   varying vec3 vWorldNormal;
   varying vec2 vUv;
 
+  ${SAFE_NORMALIZE_GLSL}
+
   vec3 linearToSrgb(vec3 color) {
     vec3 low = color * 12.92;
     vec3 high = 1.055 * pow(max(color, vec3(0.0)), vec3(1.0 / 2.4)) - 0.055;
@@ -2007,7 +2033,10 @@ function buildStackFragmentShader(
       sampleUsesDepth
     );
     vec3 capturedFaceNormal = normalTexel.rgb * 2.0 - 1.0;
-    float normalAgreement = dot(projectedFaceNormal, normalize(capturedFaceNormal));
+    float normalAgreement = dot(
+      projectedFaceNormal,
+      sn(capturedFaceNormal, projectedFaceNormal)
+    );
     float normalVisibility = step(0.25, length(capturedFaceNormal)) * smoothstep(
       ${MIN_CAPTURE_NORMAL_AGREEMENT.toFixed(2)},
       ${FULL_CAPTURE_NORMAL_AGREEMENT.toFixed(2)},
@@ -4732,22 +4761,32 @@ export async function createProjectedLayerStackMaterial(
       // immediately to the single/direct material path. Disposing shared sources
       // here can invalidate that next material after the array swap has completed.
     } catch (error) {
+      let surfacedError: unknown = error;
       if (typeof document !== 'undefined') {
         document.body.dataset.projectedArrayPipelineStatus = 'error';
       }
       if (!options.isCancelled?.() && options.renderer && !isProjectedArrayCancellation(error)) {
         const reason = error instanceof Error ? error.message : String(error);
-        projectedTextureArrayCircuitBreakers.set(options.renderer, {
-          failedAtUnixMs: Date.now(),
-          reason,
-        });
+        const existingFailure = projectedTextureArrayCircuitBreakers.get(options.renderer);
+        if (existingFailure) {
+          // Another model using the shared renderer already opened the circuit.
+          // Surface the typed circuit error so callers can silently converge on
+          // the same bounded fallback instead of logging/reporting one failure
+          // per model during a concurrent project restore.
+          surfacedError = new ProjectedTextureArrayCircuitOpenError(existingFailure.reason);
+        } else {
+          projectedTextureArrayCircuitBreakers.set(options.renderer, {
+            failedAtUnixMs: Date.now(),
+            reason,
+          });
+        }
         if (typeof document !== 'undefined') {
           document.body.dataset.projectedArrayCircuitStatus = 'open';
-          document.body.dataset.projectedArrayCircuitReason = reason;
+          document.body.dataset.projectedArrayCircuitReason = existingFailure?.reason ?? reason;
         }
       }
       for (const texture of disposableTextures) texture.dispose();
-      throw error;
+      throw surfacedError;
     }
   }
 
