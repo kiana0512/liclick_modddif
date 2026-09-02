@@ -107,7 +107,7 @@ try {
   );
   assert.match(
     viewportCanvasSource,
-    /captureFrameElementRef\.current\.style\.opacity/,
+    /captureFrameElement\.style\.opacity/,
     'The capture-frame transition must remain a presentation-only DOM update',
   );
 
@@ -124,9 +124,9 @@ try {
   };
   const perspectiveCamera = new THREE.PerspectiveCamera(45, 1, 0.1, 100);
   perspectiveCamera.position.set(0, 0, 5);
-  let wheelFrames = 0;
+  let wheelActivitySignals = 0;
   const controls = new BlenderOrbitControls(perspectiveCamera, listenerTarget, () => {
-    wheelFrames += 1;
+    wheelActivitySignals += 1;
   });
   let orientationNotifications = 0;
   controls.subscribeChange(() => {
@@ -151,11 +151,27 @@ try {
   for (let index = 0; index < 4; index += 1) {
     wheelListener({ deltaMode: 0, deltaY: 100 });
   }
+  assert.equal(
+    wheelActivitySignals,
+    4,
+    'Every raw wheel packet must synchronously claim the viewport interaction budget',
+  );
   const distanceBeforeWheelFrame = perspectiveCamera.position.distanceTo(controls.target);
   const expectedWheelTarget = distanceBeforeWheelFrame * Math.exp(4 * 100 * controls.zoomSpeed);
   controls.updateWheelTransition(1 / 60);
   const distanceAfterFirstWheelFrame = perspectiveCamera.position.distanceTo(controls.target);
-  assert.equal(wheelFrames, 1, 'Raw wheel bursts must be consumed once per rendered frame');
+  assert.equal(
+    wheelActivitySignals,
+    5,
+    'The rendered transition must keep interaction priority active after raw input ends',
+  );
+  const firstFrameProgress =
+    Math.log(distanceAfterFirstWheelFrame / distanceBeforeWheelFrame) /
+    Math.log(expectedWheelTarget / distanceBeforeWheelFrame);
+  assert.ok(
+    firstFrameProgress < 0.024,
+    `The first 60 Hz frame must consume under 2.4% of the logarithmic zoom target; received ${(firstFrameProgress * 100).toFixed(2)}%`,
+  );
   assert.ok(
     distanceAfterFirstWheelFrame > distanceBeforeWheelFrame &&
       distanceAfterFirstWheelFrame < expectedWheelTarget,
@@ -163,7 +179,7 @@ try {
   );
   for (let frame = 0; frame < 90; frame += 1) controls.updateWheelTransition(1 / 60);
   assert.ok(
-    wheelFrames > 1,
+    wheelActivitySignals > 5,
     'Viewport interaction priority must stay active until the smooth zoom settles',
   );
   assert.ok(
@@ -174,6 +190,16 @@ try {
     orientationNotifications,
     1,
     'Damped perspective zoom must not notify orientation-only cube listeners',
+  );
+  assert.doesNotMatch(
+    viewportCanvasSource,
+    /onWheelCapture=/,
+    'High-frequency wheel packets must bypass React SyntheticEvent dispatch',
+  );
+  assert.match(
+    viewportCanvasSource,
+    /addEventListener\('wheel', handleWheel, \{ passive: true \}\)/,
+    'Capture-frame wheel observation must use one native passive listener',
   );
   controls.dispose();
 

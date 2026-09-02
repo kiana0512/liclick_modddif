@@ -6,7 +6,11 @@ type PointerAction = 'orbit' | 'pan' | 'dolly';
 const WORLD_UP = new THREE.Vector3(0, 1, 0);
 const MIN_ORTHOGRAPHIC_ZOOM = 0.01;
 const MAX_ORTHOGRAPHIC_ZOOM = 10_000;
-const WHEEL_ZOOM_SPRING = 18;
+// A lower critically-damped frequency keeps the exact accumulated target but
+// reduces the visible first-frame acceleration of a wheel notch by 36.8%
+// (3.69% -> 2.33% target progress at 60 Hz). It also lowers the peak per-frame
+// target progress by 22.1% (10.99% -> 8.56%) without introducing overshoot.
+const WHEEL_ZOOM_SPRING = 14;
 const WHEEL_DELTA_LINE = 1;
 const WHEEL_DELTA_PAGE = 2;
 
@@ -44,7 +48,7 @@ export class BlenderOrbitControls {
   constructor(
     readonly camera: SupportedCamera,
     readonly domElement: HTMLElement,
-    private readonly onWheelFrame?: () => void,
+    private readonly onWheelActivity?: () => void,
   ) {
     domElement.addEventListener('contextmenu', this.handleContextMenu);
     domElement.addEventListener('pointerdown', this.handlePointerDown);
@@ -81,7 +85,7 @@ export class BlenderOrbitControls {
     if (this.camera instanceof THREE.OrthographicCamera) {
       const targetZoom = this.targetOrthographicZoom;
       if (targetZoom === undefined) return;
-      this.onWheelFrame?.();
+      this.onWheelActivity?.();
       const currentZoom = this.camera.zoom;
       const nextZoom = this.stepWheelZoomSpring(currentZoom, targetZoom, frameDelta);
       const settled = Math.abs(nextZoom - targetZoom) <= Math.max(targetZoom * 0.0005, 1e-6);
@@ -98,7 +102,7 @@ export class BlenderOrbitControls {
     if (targetDistance === undefined) return;
     // Keep background texture uploads and heavy jobs paused for the complete
     // visible transition, not merely for the raw wheel-event burst.
-    this.onWheelFrame?.();
+    this.onWheelActivity?.();
     this.offset.copy(this.camera.position).sub(this.target);
     const currentDistance = this.offset.length();
     const safeCurrentDistance = Math.max(currentDistance, Number.EPSILON);
@@ -180,6 +184,10 @@ export class BlenderOrbitControls {
 
   private handleWheel = (event: WheelEvent) => {
     if (!this.enabled) return;
+    // Claim the interaction budget synchronously. Waiting for the next R3F
+    // frame left a 0-16.7ms race in which a ready 4K texture stripe could be
+    // submitted before camera animation marked the viewport busy.
+    this.onWheelActivity?.();
     // Precision wheels and trackpads can dispatch several events in one display
     // interval. Applying lookAt/updateMatrixWorld for every raw event creates an
     // input-rate CPU spike, especially while the local-repaint shader is active.

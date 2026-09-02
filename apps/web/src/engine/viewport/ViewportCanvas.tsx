@@ -10,9 +10,7 @@ import {
   useRef,
   useState,
   type DragEvent,
-  type PointerEvent,
   type ReactNode,
-  type WheelEvent,
 } from 'react';
 import * as THREE from 'three';
 import { useDragInteractionStore } from '@/stores/dragInteractionStore';
@@ -7488,23 +7486,23 @@ function SurfacePaintOverlay() {
               overlaySceneState.localRepaintPreviewLayer ?? overlayVisibilityLayer;
             const overlayErasesPersistedLayer = Boolean(
               expectedOverlayState &&
-                isLocalRepaintLayerEraserActive(
-                  overlaySceneState.paintTool,
-                  useLayerStore.getState().activeProjectedLayerId,
-                  expectedOverlayState.layerId,
-                  overlayLayers,
-                ),
+              isLocalRepaintLayerEraserActive(
+                overlaySceneState.paintTool,
+                useLayerStore.getState().activeProjectedLayerId,
+                expectedOverlayState.layerId,
+                overlayLayers,
+              ),
             );
             const overlayKeepsLivePreview = Boolean(
               expectedOverlayState &&
-                (overlaySceneState.paintTool === 'inpaint-apply' ||
-                  overlayErasesPersistedLayer ||
+              (overlaySceneState.paintTool === 'inpaint-apply' ||
+                overlayErasesPersistedLayer ||
                   (overlaySceneState.localRepaintPreviewLayer?.id ===
                     expectedOverlayState.layerId &&
-                    (overlaySceneState.paintTool === 'none' ||
-                      overlaySceneState.paintTool === 'inpaint-add' ||
-                      overlaySceneState.paintTool === 'inpaint-subtract' ||
-                      overlaySceneState.localRepaintGenerationPresentationActive))),
+                  (overlaySceneState.paintTool === 'none' ||
+                    overlaySceneState.paintTool === 'inpaint-add' ||
+                    overlaySceneState.paintTool === 'inpaint-subtract' ||
+                    overlaySceneState.localRepaintGenerationPresentationActive))),
             );
             // Mirror the renderer's ownership gate rather than assuming that
             // every resident repaint row must also display its dedicated mesh.
@@ -8225,9 +8223,9 @@ function SurfacePaintOverlay() {
     const orderedStackOwnsPreview =
       !shouldUseDedicatedLocalRepaintOverlay(
         layers,
-        sceneState.localRepaintPreviewLayer ?? persistedLayer,
-        liveFeedbackRequested,
-      );
+      sceneState.localRepaintPreviewLayer ?? persistedLayer,
+      liveFeedbackRequested,
+    );
     const erasesPersistedLocalRepaint = isLocalRepaintLayerEraserActive(
       sceneState.paintTool,
       layerState.activeProjectedLayerId,
@@ -8261,13 +8259,13 @@ function SurfacePaintOverlay() {
     const targetModel = getTargetModel();
     const residentOverrideBound = Boolean(
       persistedLayer?.visible &&
-        composite &&
-        targetModel &&
-        composite.sourceKey === liveSourceKey &&
-        composite.restoredMaskReady &&
-        hasLiveContent &&
-        isLocalRepaintOverlayVisible(sceneState.displayMode, true) &&
-        bindLocalRepaintResidentMaskOverride(targetModel, liveSourceKey, composite),
+      composite &&
+      targetModel &&
+      composite.sourceKey === liveSourceKey &&
+      composite.restoredMaskReady &&
+      hasLiveContent &&
+      isLocalRepaintOverlayVisible(sceneState.displayMode, true) &&
+      bindLocalRepaintResidentMaskOverride(targetModel, liveSourceKey, composite),
     );
     let changed = false;
     document.body.dataset.localRepaintResidentMaskOverride = residentOverrideBound
@@ -10684,8 +10682,8 @@ function SurfacePaintOverlay() {
           .layers.some((layer) => layer.id === preparedComposite.layerId && layer.visible);
         let residentOverrideBound = Boolean(
           hasResidentLayer &&
-            preparedComposite.hasContent &&
-            bindLocalRepaintResidentMaskOverride(model, sourceKey, preparedComposite),
+          preparedComposite.hasContent &&
+          bindLocalRepaintResidentMaskOverride(model, sourceKey, preparedComposite),
         );
         await waitForFrame();
         reportLocalRepaintPrewarmProgress(0.84, '校准前后表面遮挡');
@@ -10808,7 +10806,7 @@ function SurfacePaintOverlay() {
             .layers.some((layer) => layer.id === reboundComposite.layerId && layer.visible);
           residentOverrideBound = Boolean(
             reboundResidentLayer &&
-              bindLocalRepaintResidentMaskOverride(model, sourceKey, reboundComposite),
+            bindLocalRepaintResidentMaskOverride(model, sourceKey, reboundComposite),
           );
           readyOverlay = residentOverrideBound
             ? undefined
@@ -11790,18 +11788,18 @@ function SurfacePaintOverlay() {
           : [];
         const layerRowAlreadyCurrent = Boolean(
           existingProjectionLayer &&
-            existingKeys.length === persistedKeys.length &&
-            persistedKeys.every((key) => {
-              const currentValue = existingProjectionLayer?.[key];
-              const nextValue = persistedLayer[key];
-              if (Object.is(currentValue, nextValue)) return true;
-              return (
-                Array.isArray(currentValue) &&
-                Array.isArray(nextValue) &&
-                currentValue.length === nextValue.length &&
-                currentValue.every((value, index) => Object.is(value, nextValue[index]))
-              );
-            }),
+          existingKeys.length === persistedKeys.length &&
+          persistedKeys.every((key) => {
+            const currentValue = existingProjectionLayer?.[key];
+            const nextValue = persistedLayer[key];
+            if (Object.is(currentValue, nextValue)) return true;
+            return (
+              Array.isArray(currentValue) &&
+              Array.isArray(nextValue) &&
+              currentValue.length === nextValue.length &&
+              currentValue.every((value, index) => Object.is(value, nextValue[index]))
+            );
+          }),
         );
         // The mask URLs are stable live-canvas registry keys. A new stroke
         // advances their registry revision, not the layer-row structure. Avoid
@@ -13670,13 +13668,13 @@ function SurfacePaintOverlay() {
           const activeComposite = localRepaintCompositeRef.current;
           const gpuResidentOverrideBound = Boolean(
             residentOverride &&
-              activeComposite &&
-              residentOverride.layerId === activeComposite.layerId &&
-              residentOverride.sourceKey === activeComposite.sourceKey &&
-              residentOverride.texture === activeComposite.blendMaskTexture &&
-              residentOverride.root === model.group &&
-              document.body.dataset.localRepaintResidentMaskOverride ===
-                `bound:${activeComposite.layerId}`,
+            activeComposite &&
+            residentOverride.layerId === activeComposite.layerId &&
+            residentOverride.sourceKey === activeComposite.sourceKey &&
+            residentOverride.texture === activeComposite.blendMaskTexture &&
+            residentOverride.root === model.group &&
+            document.body.dataset.localRepaintResidentMaskOverride ===
+              `bound:${activeComposite.layerId}`,
           );
           if (
             !gpuResidentOverrideBound &&
@@ -14596,6 +14594,7 @@ export function ViewportCanvas({
   sceneOverlay,
 }: ViewportCanvasProps) {
   const [isDragging, setIsDragging] = useState(false);
+  const viewportElementRef = useRef<HTMLDivElement>(null);
   const captureFrameElementRef = useRef<HTMLDivElement>(null);
   const captureFrameVisibleRef = useRef(false);
   const captureFrameLastActivityAtRef = useRef(0);
@@ -14626,52 +14625,55 @@ export function ViewportCanvas({
   );
   const t = useT();
 
-  useEffect(
-    () => () => {
+  useEffect(() => {
+    const viewportElement = viewportElementRef.current;
+    const captureFrameElement = captureFrameElementRef.current;
+    if (!viewportElement) return undefined;
+
+    const hideCaptureFrameWhenIdle = () => {
+      const remainingMs = 1800 - (performance.now() - captureFrameLastActivityAtRef.current);
+      if (remainingMs > 0) {
+        captureFrameTimerRef.current = window.setTimeout(hideCaptureFrameWhenIdle, remainingMs);
+        return;
+      }
+      captureFrameTimerRef.current = undefined;
+      captureFrameVisibleRef.current = false;
+      if (captureFrameElement) captureFrameElement.style.opacity = '0';
+    };
+    const pulseCaptureFrame = () => {
+      if (workspaceMode === 'scene' || paintTool !== 'none') return;
+      captureFrameLastActivityAtRef.current = performance.now();
+      if (!captureFrameVisibleRef.current) {
+        captureFrameVisibleRef.current = true;
+        if (captureFrameElement) captureFrameElement.style.opacity = '1';
+      }
+      captureFrameTimerRef.current ??= window.setTimeout(hideCaptureFrameWhenIdle, 1800);
+    };
+    const handlePointerDown = () => pulseCaptureFrame();
+    const handlePointerMove = (event: globalThis.PointerEvent) => {
+      if (event.buttons !== 0) pulseCaptureFrame();
+    };
+    const handleWheel = (event: globalThis.WheelEvent) => {
+      if (event.deltaX !== 0 || event.deltaY !== 0 || event.deltaZ !== 0) pulseCaptureFrame();
+    };
+
+    // Native passive listeners avoid React SyntheticEvent allocation and root
+    // dispatch for every high-frequency pointer/wheel packet. The capture frame
+    // remains a ref-only presentation detail and cannot rerender the viewport.
+    viewportElement.addEventListener('pointerdown', handlePointerDown, { passive: true });
+    viewportElement.addEventListener('pointermove', handlePointerMove, { passive: true });
+    viewportElement.addEventListener('wheel', handleWheel, { passive: true });
+
+    return () => {
+      viewportElement.removeEventListener('pointerdown', handlePointerDown);
+      viewportElement.removeEventListener('pointermove', handlePointerMove);
+      viewportElement.removeEventListener('wheel', handleWheel);
       window.clearTimeout(captureFrameTimerRef.current);
       captureFrameTimerRef.current = undefined;
-    },
-    [],
-  );
-
-  useEffect(() => {
-    if (workspaceMode !== 'scene' && paintTool === 'none') return;
-    window.clearTimeout(captureFrameTimerRef.current);
-    captureFrameTimerRef.current = undefined;
-    captureFrameVisibleRef.current = false;
-    if (captureFrameElementRef.current) captureFrameElementRef.current.style.opacity = '0';
+      captureFrameVisibleRef.current = false;
+      if (captureFrameElement) captureFrameElement.style.opacity = '0';
+    };
   }, [paintTool, workspaceMode]);
-
-  function hideCaptureFrameWhenIdle() {
-    const remainingMs = 1800 - (performance.now() - captureFrameLastActivityAtRef.current);
-    if (remainingMs > 0) {
-      captureFrameTimerRef.current = window.setTimeout(hideCaptureFrameWhenIdle, remainingMs);
-      return;
-    }
-    captureFrameTimerRef.current = undefined;
-    captureFrameVisibleRef.current = false;
-    if (captureFrameElementRef.current) captureFrameElementRef.current.style.opacity = '0';
-  }
-
-  function pulseCaptureFrame() {
-    if (workspaceMode === 'scene' || paintTool !== 'none') return;
-    captureFrameLastActivityAtRef.current = performance.now();
-    if (!captureFrameVisibleRef.current) {
-      captureFrameVisibleRef.current = true;
-      if (captureFrameElementRef.current) captureFrameElementRef.current.style.opacity = '1';
-    }
-    captureFrameTimerRef.current ??= window.setTimeout(hideCaptureFrameWhenIdle, 1800);
-  }
-
-  function handlePointerMove(event: PointerEvent<HTMLDivElement>) {
-    if (event.buttons === 0) return;
-    pulseCaptureFrame();
-  }
-
-  function handleWheel(event: WheelEvent<HTMLDivElement>) {
-    if (event.deltaX === 0 && event.deltaY === 0 && event.deltaZ === 0) return;
-    pulseCaptureFrame();
-  }
 
   function handleDrop(event: DragEvent<HTMLDivElement>) {
     event.preventDefault();
@@ -14695,11 +14697,9 @@ export function ViewportCanvas({
 
   return (
     <div
+      ref={viewportElementRef}
       className="relative h-full w-full bg-[#080914]"
       style={{ backgroundColor }}
-      onPointerDownCapture={paintTool === 'none' ? pulseCaptureFrame : undefined}
-      onPointerMoveCapture={paintTool === 'none' ? handlePointerMove : undefined}
-      onWheelCapture={paintTool === 'none' ? handleWheel : undefined}
       onDragOver={(event) => {
         if (activeDragType === 'panel') return;
         event.preventDefault();
