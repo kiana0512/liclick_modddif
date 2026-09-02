@@ -38,6 +38,31 @@ assert.match(
 );
 assert.match(
   materialSource,
+  /const existingFailure = projectedTextureArrayCircuitBreakers\.get\(options\.renderer\)[\s\S]*?surfacedError = new ProjectedTextureArrayCircuitOpenError/,
+  'concurrent model failures must converge on the existing renderer circuit instead of reporting duplicates',
+);
+assert.match(
+  sceneRootSource,
+  /isProjectedTextureArrayCircuitOpenError\(error\)[\s\S]*?if \(!circuitWasAlreadyOpen\) \{[\s\S]*?console\.warn/,
+  'SceneRoot must suppress duplicate fallback warnings after the shared renderer circuit opens',
+);
+assert.match(
+  materialSource,
+  /vec3 sn\(vec3 v, vec3 f\)[\s\S]*?inversesqrt\(max\(l, 1\.0e-12\)\)/,
+  'projected shaders must guard zero-length normal derivatives before normalization',
+);
+assert.doesNotMatch(
+  materialSource,
+  /vec3 projectedFaceNormal = normalize\(\s*cross\(dFdx\(captureViewPosition\), dFdy\(captureViewPosition\)\)/,
+  'projected shaders must not directly normalize a potentially zero-length face derivative',
+);
+assert.doesNotMatch(
+  materialSource,
+  /dot\(projectedFaceNormal, normalize\(capturedFaceNormal\)\)/,
+  'visibility sampling must not normalize the zero normal used by layers without a normal map',
+);
+assert.match(
+  materialSource,
   /uploadProjectedTextureArrayInStripes\([\s\S]*?UNPACK_ROW_LENGTH[\s\S]*?renderer\.resetState\(\)/,
   'projected arrays must normalize per-stripe unpack state and reset Three renderer state before presentation',
 );

@@ -1,10 +1,10 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
-> 文档版本：`2.13.9`
+> 文档版本：`2.14.0`
 >
-> 生效日期：`2026-09-01`
+> 生效日期：`2026-09-02`
 >
-> 代码盘点基线：`a3ce6ae + 本次飞书登录安全关联莉刻账号修复`
+> 代码盘点基线：`52c4e71 + 本次全链路性能观测提交`
 >
 > 基线仓库：`E:\Liclick 3D Texture Modernization`
 >
@@ -341,6 +341,8 @@ UI-09 剪刀
 
 `ALG-LR-007` v2.1.2 修正 UI-06 → M08/M06 的首笔发布热路径。旧实现 pointer-up 立即把 renderer exact overlay 判为非所有者，并把持久 mask URL、`contentRevision` 等结构字段写回 LayerStore；正式 projected material 尚未包含该行时会先出现空白帧，URL/sampler 或 revision 变化又会触发完整投影栈重建。新实现以“材质已驻留且 live override 已绑定”取代“LayerStore 已存在该行”的交接条件：SceneRoot 在最终材质挂载后发出驻留通知，视口先解除 preview marker 对 resident row 的静音，保留 exact overlay 覆盖一个完整呈现帧，再在下一帧撤下 overlay。已保存行在画笔预热进度阶段把持久 mask 复制到稳定 live raw/blend canvas URL，落笔后地址不再变化；交互提交保留原 `contentRevision`，项目保存仍按 live registry revision 将 raw/blend mask 转为验证资产。GPU 只改变 URL 切换时机、uniform 绑定和两帧显示屏障；CPU/Worker/shader coverage、投影矩阵、depth/surface-lock、UV raster、最终分辨率与 export compositor 不变。Project/Layer/Generation/Capture Schema、Project Command/Revision、ownership 和资产类别不升级，旧工程在首次进入画笔时惰性提升，无批量迁移。回退可恢复 pointer-up URL 切换、revision 递增和 `hasPersistedLayer` 交接判定；不得删除已保存蒙版、Generation、Layer 或资产。回归与浏览器验收必须证明预热后首笔前后 `projectedMaterialBuildRevision` 不变、结构差异为空、override 持续绑定且测试笔画可撤销。
 
+`ALG-LR-007` v2.1.3 / `ALG-LR-008` v2.2.4 修正 UI-10 → M08 的画笔激活等待时序。Generation 成功后在当前 effect 的 microtask 立即启动 generation-scoped 后台解码、目标绑定与 GPU 预热；Viewport 通过只驻留内存的 `preparing/ready/failed` 事件发布交互状态，画笔请求必须同时等待 Generation ready 与 GPU interactive ready，成功后自动重放，失败则终止排队并显示明确错误。旧的逐帧 `requestAnimationFrame` 轮询与额外 timer task 被移除，避免主线程忙时预热延迟和等待循环开销。该补丁只改变预热启动与状态交接，不改变作者/远端 mask、GPU/CPU/Worker/shader coverage、投影矩阵、depth/surface-lock、颜色、UV/export、最终分辨率、Schema、Revision、ownership 或资产；无迁移。回退可恢复 timer 调度和旧轮询，但不得删除 Generation、图层或蒙版。`test:local-repaint-performance-merge` 必须锁定事件握手、microtask 启动、GPU ready 后重放及无 rAF 轮询。
+
 UI-05/UI-13 的贴图驻留边界要求所有挂到页面根节点的生成面板 Portal 同样受 `EditorPage.isActive` 门禁。进入 UV 时贴图编辑器可继续保留引擎与面板状态，但“局部生图”固定按钮、生成取消确认和结果大图预览均不得越过隐藏工作区显示；回到贴图页后按原状态恢复。此修复仅改变 React 展示生命周期，不改变局部生成算法版本、任务状态、GPU/CPU/Worker/shader、输入蒙版、Project/Layer/Generation/Capture Schema、对象资产或 Revision，无数据迁移；回退只移除 Portal 活跃态门禁。
 
 `ALG-LR-011` 只生成最大 1024 的内存 UI 显示副本，不回写 `Layer.imageUrl`、Generation、对象存储或 Project Revision。GPU/CPU/Worker/shader、投影矩阵、UV raster、持久化与 export compositor 均继续消费原始 source/mask/depth，因此无需数据迁移。回滚只需移除 UI-05/UI-10 显示副本调用；已有图层与资产不变。测试必须证明透明显示不替换投影源、黑色材质与几何边缘不被扣除、普通投射层不再出现黑底、局部重绘层仍仅显示用户涂绘区域。
@@ -448,21 +450,32 @@ Pipeline Revision 与 Project Revision 不同：前者记录 texture/retopology/
 
 ## 13. 身份、安全、容量与性能
 
-### 13.1 客户端性能录制 `ALG-PERF-SESSION-001` v1.0.0
+### 13.1 客户端性能录制 `ALG-PERF-SESSION-001` v1.1.0
 
 A100 发布同时显式配置 `LICLICK_PERFORMANCE_LAB_ENABLED=true` 与构建变量 `VITE_LICLICK_PERFORMANCE_LAB_ENABLED=true` 后，`perfLab=1` 才按需加载云端记录桥；本地默认关闭且不生成/上传统计。既有“开始人工录制/结束并分析”状态从 `data-perf-manual-local-repaint-recording` 驱动一次完整会话。每次开始必须创建新的 `perf_<UUID>`，允许同一用户连续录制多次；结束后由 Worker 计算 SHA-256、写入 IndexedDB 待传队列并按 start → chunk → complete 顺序重试。采集不得写 Project/Scene/Layer Store，也不得触发 Project Command 或 Revision。
 
 | 契约 | 当前版本/规则 |
 | --- | --- |
-| 算法 | `ALG-PERF-SESSION-001` v1.0.0，状态 production-diagnostic |
-| 报告 Schema | `PERF-LAB-REPORT` v2；collector `2.0.0`；5 秒原始数据分块 |
-| 浏览器输入 | rAF 帧时间/P50/P95/P99/最大帧、>16.67ms 掉帧、Long Task、Long Animation Frame、Event Timing、布局偏移、输入节拍、资源瀑布、JS heap、可见性、运行时错误、业务阶段 dataset、WebGL2/ANGLE renderer 与能力/扩展/GPU timer 支持、采集器自身开销 |
-| 隐私边界 | 资源 URL 删除 query/hash，并泛化 UUID/业务 ID；不采集提示词、Cookie、键盘文本、模型/纹理像素；身份只取服务端可信 Session |
+| 算法 | `ALG-PERF-SESSION-001` v1.1.0，状态 production-diagnostic |
+| 报告 Schema | `PERF-LAB-REPORT` v2；collector `2.1.0`；5 秒原始数据分块 |
+| 浏览器输入 | rAF 帧时间/P50/P95/P99/最大帧、>16.67ms 掉帧、Long Task、Long Animation Frame、Event Timing、布局偏移、输入节拍、资源瀑布、实际 JS chunk 数/传输字节/解压字节/P95 与最大加载耗时、JS heap、可见性、运行时错误、业务阶段 timeline、React commit 总量/P95/最大值、WebGL2/ANGLE renderer 与能力/扩展/GPU timer 支持、采集器自身开销 |
+| 隐私边界 | 资源 URL 删除 query/hash，并泛化 UUID/业务 ID；timeline detail 拒绝 prompt/text/url/path/email/token/cookie、业务 ID 与嵌套对象，只允许有限数值、布尔和白名单状态；不采集提示词、Cookie、键盘文本、模型/纹理像素；身份只取服务端可信 Session |
 | 不可观测项 | 零组件浏览器无法直接读取 Windows ETW/DXGI/D3DKMT 调度计数、系统级 CPU/GPU 利用率、VRAM、温度、功耗及其他进程竞争；报告必须写 `unsupportedWithoutNativeComponent`，禁止伪造 |
 | Cloud 职责 | A100/Cloud 只接收、校验、持久化和查询浏览器日志，不采样服务器 GPU，不参与用户视口帧循环 |
 | 身份隔离 | 服务端以 Session user_id 写入，并保存录制时飞书 displayName/avatar/email 快照；普通用户只能通过本人查询读取本人记录；跨用户管理员查询必须使用独立 `/api/performance-lab/admin/sessions` 接口，并同时校验维护者角色与邮箱 allowlist，未命中白名单的普通用户或其他管理员固定返回 403 |
 | 持久化 | SQL migration `003_performance_lab_sessions.sql`；`performance_lab_sessions` + 幂等主键 `(session_id, source, sequence)` 的 `performance_lab_chunks`；分片与最终报告分别校验 SHA-256 |
 | 管理员配置 | `/li3d/performance-lab-admin` 为同源、飞书登录后的专用只读 HTML；`LICLICK_PERFORMANCE_LAB_MAINTAINER_EMAILS` 为可信登录邮箱逗号分隔 allowlist；前端页面不可替代服务端 403 门禁；匹配账号登录时只升级为 maintainer，不因配置临时移除而自动降权 |
+
+体验验收是发布硬门禁，平均值不能掩盖瞬时卡顿。所有门禁必须在固定浏览器、固定参考硬件、固定真实项目和可重复操作脚本下记录前后对比：
+
+| 体验维度 | 发布硬门禁 |
+| --- | --- |
+| 正确性 | 算法错误、未处理异常、错误结果、重复运行不一致、旧工程结果回归均为 0；性能优化必须通过既有数值/图像/状态机回归，不得通过降分辨率、删步骤或改变结果语义换取速度 |
+| 稳定性 | 崩溃、卡死、WebGL context lost、录制中断均为 0；重复操作与不少于 30 分钟稳定性场景不得出现持续 heap 增长、资源未释放或越用越慢 |
+| 帧稳定 | 60Hz 参考场景同时审查 P95/P99/最大帧和连续慢帧；P95 ≤ 16.67ms、P99 ≤ 25ms、最大帧 < 50ms，禁止连续 3 帧超过 16.67ms，任一项不满足即失败；不得只报告平均 FPS |
+| 交互延迟 | 画笔/橡皮输入到首个可见反馈 P95 ≤ 50ms、P99 ≤ 100ms，任何单次 ≥ 200ms 判失败；按钮激活、切层、撤销重做必须记录 Event Timing 与对应业务阶段，不得用 loading 动画隐藏无响应 |
+| 算法速度与效果 | 每个生成、投影、UV、烘焙、重绘、导出阶段分别记录 P50/P95/最大耗时及失败率；优化后 P95 不得回退超过 5%，输出质量与确定性必须保持，任何算法错误或效果退化直接阻断发布 |
+| JS 与主线程 | 记录当前场景实际加载的脚本数量、传输/解压字节、加载 P95/最大值、Long Task、Long Animation Frame 与 React commit；总 bundle budget 继续执行，但拆包只有在首用延迟、主线程阻塞或缓存复用得到实测改善时才接受 |
 
 迁移只新增性能会话/分片表，不回填旧 `sessionStorage` 报告，不改变 Project Command、Revision CAS、对象 ownership 或任何图层资产。回滚可停止挂载 Cloud bridge、关闭性能 API 并保留新增表供审计；IndexedDB 未发送记录可由恢复后的同版本页面继续重试，禁止为回滚删除用户项目或恢复 Windows 本地采集组件。
 
@@ -606,3 +619,4 @@ M15 体积修复：锁定 `terser@5.51.2` 两轮安全压缩，保留日志和�
 | `2.13.7` | 2026-09-01 | `本次局部重绘正式材质实时蒙版修复` | UI-06、M08/M06、`ALG-LR-007` v2.1.1：删除会与正式图层争夺显示权且缺少 depth/normal 的快速 duplicate mesh；已有局部重绘层始终保留在原 ordered projected material，以 projection-space live sampler 只替换当前 layerId 的 authored mask，使旧笔画与新笔画立即同屏反馈，同时继续使用正式 source、capture depth、surface-lock、图层顺序与颜色。无持久行的新结果仍用 depth-aware exact overlay，发布后自动交接；SceneRoot 晚到 marker 不再误静音正式层。CPU/Worker/UV/export、1024 live 上限、最终分辨率、Schema、Revision、ownership 与资产不变，无迁移。 |
 | `2.13.8` | 2026-09-01 | `本次局部重绘首笔原子交接修复` | UI-06、M08/M06、`ALG-LR-007` v2.1.2：持久蒙版 URL/sampler 切换提前到画笔预热进度阶段，pointer-up 不再递增 projected 结构 `contentRevision`；新行 exact overlay 保留到 SceneRoot 最终材质驻留、live override 绑定并完整呈现一帧后，再通过两帧屏障原子撤下。修复首笔结束后短暂消失并伴随整栈重建卡顿的问题。项目保存继续把 live raw/blend mask 按 revision 持久化；CPU/Worker/shader coverage、depth/surface-lock、UV/export、最终分辨率、Schema、Project Revision、ownership 与资产类别不变，旧工程惰性提升，无批量迁移。 |
 | `2.13.9` | 2026-09-01 | `本次飞书登录安全关联莉刻账号修复` | M13、`LICLICK-ACCOUNT-BINDING` v1.1.0：飞书/IDaaS 登录成功后自动进入同源莉刻账号关联，服务端通过 Atlas SkillHub 2.9.1 loopback-only `authenticate` bridge 转交回调令牌并由运行时写入加密缓存；绑定前强制校验 secure cache、有效期、莉刻网关工具、Atlas/飞书 email 一致性与 OAuth 任务归属。禁止 LI3D 写明文 token，运行时不兼容、失败或超时时 fail-closed 并清理临时目录，不回退共享账号。Project/Layer/Capture/Generation Schema、Revision、ownership 与资产不变，无迁移。 |
+| `2.14.0` | 2026-09-02 | `52c4e71 + 本次全链路性能观测提交` | M08/M13/M15、`ALG-LR-007` v2.1.3 / `ALG-LR-008` v2.2.4 / `ALG-PERF-SESSION-001` v1.1.0：同步 generation-scoped 局部重绘 GPU 预热事件握手和 microtask 提前启动，画笔只在 Generation 与 GPU 同时 ready 后自动重放，移除 rAF 轮询；`perfLab=1` 按需启用根 React Profiler，汇总业务 timeline、React commit 与实际 JS chunk 传输/解压/加载耗时，并设置错误、卡死、结果不一致、帧稳定、交互延迟、算法速度/效果和长时内存硬门禁。采集只读且隐私过滤，不写 Project/Scene/Layer/Generation，不改变算法公式、分辨率、Schema、Revision、ownership 或资产，无迁移。 |

@@ -2931,7 +2931,7 @@ function PerformanceTestHud() {
 
   if (collapsed) {
     return (
-      <div className="absolute right-4 top-4 z-[28] flex items-center gap-2 rounded-md border border-liclick-pink/55 bg-black/82 p-1.5 text-xs font-semibold text-white shadow-xl backdrop-blur-md">
+      <div className="absolute right-4 top-16 z-[28] flex items-center gap-2 rounded-md border border-liclick-pink/55 bg-black/82 p-1.5 text-xs font-semibold text-white shadow-xl backdrop-blur-md 2xl:top-4">
         <button
           type="button"
           onClick={() => setCollapsed(false)}
