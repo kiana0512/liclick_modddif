@@ -26,3 +26,10 @@ append_env LICLICK_OBJECT_STORAGE_REGION "${LICLICK_OBJECT_STORAGE_REGION:-auto}
 if [ -n "${LICLICK_OBJECT_STORAGE_SESSION_TOKEN:-}" ]; then
   append_env LICLICK_OBJECT_STORAGE_SESSION_TOKEN "$LICLICK_OBJECT_STORAGE_SESSION_TOKEN"
 fi
+# Optional, unlike the vars above: config.ts reads this with `?? ''` and
+# only disables the local-repaint auto-analysis feature when it's empty,
+# it does not fail server startup — so a missing key here should not block
+# an otherwise-unrelated deploy. See deploy/QWEN_HANDOFF.md.
+if [ -n "${QWEN3_VL_PLUS_API_KEY:-}" ]; then
+  append_env QWEN3_VL_PLUS_API_KEY "$QWEN3_VL_PLUS_API_KEY"
+fi

@@ -56,6 +56,7 @@ Cloud 运行时另需以下受保护 CI/CD 变量，部署脚本会写入既有 
 - LICLICK_OBJECT_STORAGE_SECRET_ACCESS_KEY
 - LICLICK_OBJECT_STORAGE_REGION：可选，默认 auto。
 - LICLICK_OBJECT_STORAGE_SESSION_TOKEN：可选。
+- QWEN3_VL_PLUS_API_KEY：可选，缺失时局部重绘自动分析功能不可用，不阻塞发布（见 QWEN_HANDOFF.md）。
 - LI3D_CLOUD_DATA_READY=true：仅在下述存量数据验收完成后配置。
 
 对象存储须允许正式网站源的 PUT/HEAD/GET 和 checksum/CORS headers，保持 verified asset 校验；
