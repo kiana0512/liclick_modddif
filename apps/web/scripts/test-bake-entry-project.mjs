@@ -30,6 +30,21 @@ assert.equal(
   4,
   'Base Color, Roughness, Metallic and Normal must each use a direct native picker overlay.',
 );
+assert.match(
+  bakeWorkspaceSource,
+  /async function handleLowImport[\s\S]*?await persistImportedFiles\('low', assigned\)[\s\S]*?if \(!saved\)[\s\S]*?setActiveStage\('alignment'\)/,
+  'Low-poly import must await persistence and only advance after a successful save.',
+);
+assert.match(
+  bakeWorkspaceSource,
+  /async function handleColorImport[\s\S]*?await persistImportedFiles\('color', assigned\)[\s\S]*?if \(!saved\)/,
+  'Base Color import must await persistence and roll back its preview when saving fails.',
+);
+assert.match(
+  bakeWorkspaceSource,
+  /async function handleMaterialChannelImport[\s\S]*?await persistImportedFiles\(kind, assigned\)[\s\S]*?if \(!saved\)/,
+  'Material-channel imports must await persistence and roll back their previews when saving fails.',
+);
 const server = await createServer({
   root,
   appType: 'custom',

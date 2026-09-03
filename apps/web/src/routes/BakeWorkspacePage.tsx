@@ -420,6 +420,8 @@ export function BakeWorkspacePage({
   const [bakeError, setBakeError] = useState<string>();
   const [oneClickBakeAttempted, setOneClickBakeAttempted] = useState(false);
   const [highImporting, setHighImporting] = useState(false);
+  const [lowImporting, setLowImporting] = useState(false);
+  const [materialImporting, setMaterialImporting] = useState(false);
   const [assetSaveState, setAssetSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>(
     'idle',
   );
@@ -488,7 +490,7 @@ export function BakeWorkspacePage({
       kind: 'low' | 'cage' | 'color' | 'roughness' | 'metallic' | 'normal',
       assigned: Record<string, File>,
     ) => {
-      if (Object.keys(assigned).length === 0) return;
+      if (Object.keys(assigned).length === 0) return false;
       setAssetSaveState('saving');
       try {
         const uploaded = await Promise.all(
@@ -557,11 +559,13 @@ export function BakeWorkspacePage({
           };
         });
         setAssetSaveState('saved');
+        return true;
       } catch (reason) {
         setAssetSaveState('error');
         setBakeError(
           reason instanceof Error ? `资产自动保存失败：${reason.message}` : '资产自动保存失败',
         );
+        return false;
       }
     },
     [activeStage, persistProjectUpdate, projectId, selectedObjectId],
@@ -1275,7 +1279,8 @@ export function BakeWorkspacePage({
     openBakeFilePicker(input);
   }
 
-  function handleLowImport(files: File[]) {
+  async function handleLowImport(files: File[]) {
+    if (lowImporting) return;
     const modelFiles = files.filter((file) => /\.(fbx|obj|glb|gltf)$/i.test(file.name));
     if (modelFiles.length === 0) {
       setBakeError('低模仅支持 FBX、OBJ、GLB 或 GLTF 文件。');
@@ -1285,15 +1290,38 @@ export function BakeWorkspacePage({
       setBakeError('请先导入高模，再为它添加对应的低模。');
       return;
     }
-    const assigned = assignFilesToObjects(modelFiles, highObjects, selectedHigh.id, {});
-    setLowFiles((current) => ({ ...current, ...assigned }));
-    setBakeJob(undefined);
-    setOneClickBakeAttempted(false);
+    setLowImporting(true);
     setBakeError(undefined);
-    void persistImportedFiles('low', assigned);
+    try {
+      const assigned = assignFilesToObjects(modelFiles, highObjects, selectedHigh.id, {});
+      const previous = Object.fromEntries(
+        Object.keys(assigned).map((objectId) => [objectId, lowFiles[objectId]]),
+      );
+      setLowFiles((current) => ({ ...current, ...assigned }));
+      setBakeJob(undefined);
+      setOneClickBakeAttempted(false);
+      const saved = await persistImportedFiles('low', assigned);
+      if (!saved) {
+        setLowFiles((current) => {
+          const next = { ...current };
+          Object.entries(previous).forEach(([objectId, file]) => {
+            if (file) next[objectId] = file;
+            else delete next[objectId];
+          });
+          return next;
+        });
+        return;
+      }
+      setActiveStage('alignment');
+      setViewportMode('overlay');
+    } finally {
+      setLowImporting(false);
+      if (lowInputRef.current) lowInputRef.current.value = '';
+    }
   }
 
-  function handleColorImport(files: File[]) {
+  async function handleColorImport(files: File[]) {
+    if (materialImporting) return;
     const imageFiles = files.filter(
       (file) => file.type.startsWith('image/') || /\.(png|jpe?g|webp|tga)$/i.test(file.name),
     );
@@ -1305,15 +1333,38 @@ export function BakeWorkspacePage({
       setBakeError('请先导入高模，再添加对应的颜色贴图。');
       return;
     }
-    const assigned = assignFilesToObjects(imageFiles, highObjects, selectedHigh.id, {});
-    setColorFiles((current) => ({ ...current, ...assigned }));
-    setBakeJob(undefined);
-    setOneClickBakeAttempted(false);
+    setMaterialImporting(true);
     setBakeError(undefined);
-    void persistImportedFiles('color', assigned);
+    try {
+      const assigned = assignFilesToObjects(imageFiles, highObjects, selectedHigh.id, {});
+      const previous = Object.fromEntries(
+        Object.keys(assigned).map((objectId) => [objectId, colorFiles[objectId]]),
+      );
+      setColorFiles((current) => ({ ...current, ...assigned }));
+      setBakeJob(undefined);
+      setOneClickBakeAttempted(false);
+      const saved = await persistImportedFiles('color', assigned);
+      if (!saved) {
+        setColorFiles((current) => {
+          const next = { ...current };
+          Object.entries(previous).forEach(([objectId, file]) => {
+            if (file) next[objectId] = file;
+            else delete next[objectId];
+          });
+          return next;
+        });
+      }
+    } finally {
+      setMaterialImporting(false);
+      if (colorInputRef.current) colorInputRef.current.value = '';
+    }
   }
 
-  function handleMaterialChannelImport(kind: 'roughness' | 'metallic' | 'normal', files: File[]) {
+  async function handleMaterialChannelImport(
+    kind: 'roughness' | 'metallic' | 'normal',
+    files: File[],
+  ) {
+    if (materialImporting) return;
     const imageFiles = files.filter(
       (file) => file.type.startsWith('image/') || /\.(png|jpe?g|webp|tga)$/i.test(file.name),
     );
@@ -1325,22 +1376,58 @@ export function BakeWorkspacePage({
       setBakeError('请先导入高模，再添加对应的材质贴图。');
       return;
     }
-    const assigned = assignFilesToObjects(imageFiles, highObjects, selectedHigh.id, {});
-    if (kind === 'roughness') {
-      setRoughnessFiles((current) => ({ ...current, ...assigned }));
-      setRoughnessSource('manual');
-    } else if (kind === 'metallic') {
-      setMetallicFiles((current) => ({ ...current, ...assigned }));
-    } else {
-      setNormalFiles((current) => ({ ...current, ...assigned }));
-    }
-    setBakeJob(undefined);
-    setOneClickBakeAttempted(false);
+    setMaterialImporting(true);
     setBakeError(undefined);
-    void persistImportedFiles(kind, assigned);
+    try {
+      const assigned = assignFilesToObjects(imageFiles, highObjects, selectedHigh.id, {});
+      const sourceFiles =
+        kind === 'roughness'
+          ? roughnessFiles
+          : kind === 'metallic'
+            ? metallicFiles
+            : normalFiles;
+      const previous = Object.fromEntries(
+        Object.keys(assigned).map((objectId) => [objectId, sourceFiles[objectId]]),
+      );
+      if (kind === 'roughness') {
+        setRoughnessFiles((current) => ({ ...current, ...assigned }));
+        setRoughnessSource('manual');
+      } else if (kind === 'metallic') {
+        setMetallicFiles((current) => ({ ...current, ...assigned }));
+      } else {
+        setNormalFiles((current) => ({ ...current, ...assigned }));
+      }
+      setBakeJob(undefined);
+      setOneClickBakeAttempted(false);
+      const saved = await persistImportedFiles(kind, assigned);
+      if (!saved) {
+        const restore = (current: Record<string, File>) => {
+          const next = { ...current };
+          Object.entries(previous).forEach(([objectId, file]) => {
+            if (file) next[objectId] = file;
+            else delete next[objectId];
+          });
+          return next;
+        };
+        if (kind === 'roughness') {
+          setRoughnessFiles(restore);
+          setRoughnessSource(roughnessSource);
+        }
+        else if (kind === 'metallic') setMetallicFiles(restore);
+        else setNormalFiles(restore);
+      }
+    } finally {
+      setMaterialImporting(false);
+      const input = {
+        roughness: roughnessInputRef.current,
+        metallic: metallicInputRef.current,
+        normal: normalInputRef.current,
+      }[kind];
+      if (input) input.value = '';
+    }
   }
 
-  function handleMaterialImport(files: File[]) {
+  async function handleMaterialImport(files: File[]) {
     const imageFiles = files.filter(
       (file) => file.type.startsWith('image/') || /\.(png|jpe?g|webp|tga)$/i.test(file.name),
     );
@@ -1357,10 +1444,10 @@ export function BakeWorkspacePage({
     );
     const classified = new Set([...roughness, ...metallic, ...normal]);
     const color = imageFiles.filter((file) => !classified.has(file)).slice(0, 1);
-    if (color.length > 0) handleColorImport(color);
-    if (roughness.length > 0) handleMaterialChannelImport('roughness', roughness);
-    if (metallic.length > 0) handleMaterialChannelImport('metallic', metallic);
-    if (normal.length > 0) handleMaterialChannelImport('normal', normal);
+    if (color.length > 0) await handleColorImport(color);
+    if (roughness.length > 0) await handleMaterialChannelImport('roughness', roughness);
+    if (metallic.length > 0) await handleMaterialChannelImport('metallic', metallic);
+    if (normal.length > 0) await handleMaterialChannelImport('normal', normal);
     setMaterialDialogOpen(true);
   }
 
@@ -1852,7 +1939,7 @@ export function BakeWorkspacePage({
               }}
               onDrop={(event) => {
                 event.preventDefault();
-                handleMaterialImport(Array.from(event.dataTransfer.files));
+                void handleMaterialImport(Array.from(event.dataTransfer.files));
               }}
             >
               <div className="flex items-start justify-between border-b border-white/[0.08] px-6 py-5">
@@ -1881,13 +1968,13 @@ export function BakeWorkspacePage({
                       type="file"
                       multiple
                       accept="image/png,image/jpeg,image/webp,.tga"
+                      disabled={materialImporting}
                       aria-label="导入 Base Color 贴图"
                       onClick={(event) => {
                         event.currentTarget.value = '';
                       }}
                       onChange={(event) => {
-                        handleColorImport(Array.from(event.target.files ?? []));
-                        event.target.value = '';
+                        void handleColorImport(Array.from(event.target.files ?? []));
                       }}
                     />
                   }
@@ -1896,7 +1983,7 @@ export function BakeWorkspacePage({
                   fileName={selectedColorName}
                   previewUrl={selectedColorPreview}
                   required={requiresColor}
-                  onFilesDropped={handleColorImport}
+                  onFilesDropped={(files) => void handleColorImport(files)}
                 >
                   <div className="flex items-center justify-between gap-4 px-4 py-3">
                     <div className="flex min-w-0 items-start gap-2.5">
@@ -2083,16 +2170,16 @@ export function BakeWorkspacePage({
                         type="file"
                         multiple
                         accept="image/png,image/jpeg,image/webp,.tga"
+                        disabled={materialImporting}
                         aria-label="导入 Roughness 贴图"
                         onClick={(event) => {
                           event.currentTarget.value = '';
                         }}
                         onChange={(event) => {
-                          handleMaterialChannelImport(
+                          void handleMaterialChannelImport(
                             'roughness',
                             Array.from(event.target.files ?? []),
                           );
-                          event.target.value = '';
                         }}
                       />
                     }
@@ -2101,7 +2188,9 @@ export function BakeWorkspacePage({
                     fileName={selectedRoughness?.name}
                     previewUrl={selectedRoughnessPreview}
                     required={requiresRoughness}
-                    onFilesDropped={(files) => handleMaterialChannelImport('roughness', files)}
+                    onFilesDropped={(files) =>
+                      void handleMaterialChannelImport('roughness', files)
+                    }
                   />
                 ) : null}
                 <MaterialMapSlot
@@ -2113,16 +2202,16 @@ export function BakeWorkspacePage({
                       type="file"
                       multiple
                       accept="image/png,image/jpeg,image/webp,.tga"
+                      disabled={materialImporting}
                       aria-label="导入 Metallic 贴图"
                       onClick={(event) => {
                         event.currentTarget.value = '';
                       }}
                       onChange={(event) => {
-                        handleMaterialChannelImport(
+                        void handleMaterialChannelImport(
                           'metallic',
                           Array.from(event.target.files ?? []),
                         );
-                        event.target.value = '';
                       }}
                     />
                   }
@@ -2131,7 +2220,9 @@ export function BakeWorkspacePage({
                   fileName={selectedMetallic?.name}
                   previewUrl={selectedMetallicPreview}
                   required={requiresMetallic}
-                  onFilesDropped={(files) => handleMaterialChannelImport('metallic', files)}
+                  onFilesDropped={(files) =>
+                    void handleMaterialChannelImport('metallic', files)
+                  }
                 />
                 <MaterialMapSlot
                   pickerInput={
@@ -2142,16 +2233,16 @@ export function BakeWorkspacePage({
                       type="file"
                       multiple
                       accept="image/png,image/jpeg,image/webp,.tga"
+                      disabled={materialImporting}
                       aria-label="导入 Normal 贴图"
                       onClick={(event) => {
                         event.currentTarget.value = '';
                       }}
                       onChange={(event) => {
-                        handleMaterialChannelImport(
+                        void handleMaterialChannelImport(
                           'normal',
                           Array.from(event.target.files ?? []),
                         );
-                        event.target.value = '';
                       }}
                     />
                   }
@@ -2160,7 +2251,7 @@ export function BakeWorkspacePage({
                   fileName={selectedNormal?.name}
                   previewUrl={selectedNormalPreview}
                   required={false}
-                  onFilesDropped={(files) => handleMaterialChannelImport('normal', files)}
+                  onFilesDropped={(files) => void handleMaterialChannelImport('normal', files)}
                 />
                 <div className="rounded-2xl border border-dashed border-white/10 bg-white/[0.02] px-4 py-3 text-center text-[11px] text-white/30">
                   将贴图直接拖到对应槽位即可导入。
@@ -2302,6 +2393,7 @@ export function BakeWorkspacePage({
                       type="file"
                       multiple
                       accept=".fbx,.obj,.glb,.gltf,.bin,.mtl,image/*"
+                      disabled={highImporting}
                       aria-label="选择高模文件"
                       onClick={(event) => {
                         fileTargetIdRef.current =
@@ -2346,6 +2438,7 @@ export function BakeWorkspacePage({
                       type="file"
                       multiple
                       accept=".fbx,.obj,.glb,.gltf"
+                      disabled={lowImporting}
                       aria-label="选择低模文件"
                       onClick={(event) => {
                         fileTargetIdRef.current =
@@ -2353,14 +2446,13 @@ export function BakeWorkspacePage({
                         event.currentTarget.value = '';
                       }}
                       onChange={(event) => {
-                        handleLowImport(Array.from(event.target.files ?? []));
-                        event.target.value = '';
+                        void handleLowImport(Array.from(event.target.files ?? []));
                       }}
                     />
                   }
-                  actionLabel={selectedLow ? '替换低模' : '选择模型'}
+                  actionLabel={lowImporting ? '正在导入…' : selectedLow ? '替换低模' : '选择模型'}
                   onClick={() => chooseFiles('low')}
-                  onFilesDropped={handleLowImport}
+                  onFilesDropped={(files) => void handleLowImport(files)}
                   dropHint="低模文件"
                 />
                 <OneClickAssetCard
@@ -2390,9 +2482,9 @@ export function BakeWorkspacePage({
                   }
                   icon={Sparkles}
                   tone="rose"
-                  actionLabel="管理贴图"
+                  actionLabel={materialImporting ? '正在导入…' : '管理贴图'}
                   onClick={() => setMaterialDialogOpen(true)}
-                  onFilesDropped={handleMaterialImport}
+                  onFilesDropped={(files) => void handleMaterialImport(files)}
                   dropHint="Base Color / Roughness / Metallic / Normal"
                 />
               </div>
