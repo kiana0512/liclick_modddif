@@ -32,18 +32,18 @@ assert.equal(
 );
 assert.match(
   bakeWorkspaceSource,
-  /async function handleLowImport[\s\S]*?await persistImportedFiles\('low', assigned\)[\s\S]*?if \(!saved\)[\s\S]*?setActiveStage\('alignment'\)/,
-  'Low-poly import must await persistence and only advance after a successful save.',
+  /function handleLowImport[\s\S]*?setLowFiles[\s\S]*?void persistImportedFiles\('low', assigned\)/,
+  'Low-poly import must display immediately while persistence continues.',
 );
 assert.match(
   bakeWorkspaceSource,
-  /async function handleColorImport[\s\S]*?await persistImportedFiles\('color', assigned\)[\s\S]*?if \(!saved\)/,
-  'Base Color import must await persistence and roll back its preview when saving fails.',
+  /function handleColorImport[\s\S]*?setColorFiles[\s\S]*?void persistImportedFiles\('color', assigned\)/,
+  'Base Color import must display immediately while persistence continues.',
 );
 assert.match(
   bakeWorkspaceSource,
-  /async function handleMaterialChannelImport[\s\S]*?await persistImportedFiles\(kind, assigned\)[\s\S]*?if \(!saved\)/,
-  'Material-channel imports must await persistence and roll back their previews when saving fails.',
+  /function handleMaterialChannelImport[\s\S]*?setRoughnessFiles[\s\S]*?setMetallicFiles[\s\S]*?setNormalFiles[\s\S]*?void persistImportedFiles\(kind, assigned\)/,
+  'Material-channel imports must display immediately while persistence continues.',
 );
 const server = await createServer({
   root,
