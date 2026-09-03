@@ -12102,10 +12102,17 @@ function SurfacePaintOverlay() {
             .filter(([, changed]) => changed)
             .map(([field]) => field),
         );
-        const activeLayerIdBeforePublish = layerState.activeProjectedLayerId;
+        // A newly published repaint row is the user's new editing result and
+        // should become the active layer. Only preserve the current selection
+        // when refreshing an already published row in the background.
+        const activeLayerIdBeforePublish = existingProjectionLayer
+          ? layerState.activeProjectedLayerId
+          : undefined;
         if (!layerRowAlreadyCurrent) {
           layerState.setLayers(nextLayers);
-          restoreLocalRepaintLayerSelection(activeLayerIdBeforePublish);
+          if (existingProjectionLayer) {
+            restoreLocalRepaintLayerSelection(activeLayerIdBeforePublish);
+          }
         }
         const layerRowPublishMs = performance.now() - queueStartedAt;
         document.body.dataset.perfLocalRepaintLayerRowPublishMs = layerRowPublishMs.toFixed(1);
