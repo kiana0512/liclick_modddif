@@ -58,6 +58,7 @@
     "test:liclick-auth-separation": "node scripts/test-liclick-auth-separation.mjs",
     "test:model-import-progress": "node scripts/test-model-import-progress.mjs",
     "test:model-export-texture-orientation": "node scripts/test-model-export-texture-orientation.mjs",
+    "test:object-deletion-history": "node scripts/test-object-deletion-history.mjs",
     "test:model-placement-camera-focus": "node scripts/test-model-placement-camera-focus.mjs",
     "test:local-repaint-bake-batching": "node scripts/test-local-repaint-bake-batching.mjs",
     "test:local-repaint-seam-harmonization": "node scripts/test-local-repaint-seam-harmonization.mjs",

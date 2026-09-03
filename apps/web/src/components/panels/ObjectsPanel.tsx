@@ -19,14 +19,12 @@ import { GLTFExporter } from 'three-stdlib';
 import { cn } from '@/components/common/cn';
 import { Button } from '@/components/ui/Button';
 import { downloadBlob, getExportFilename } from '@/engine/export/exportUtils';
+import { createObjectDeletionTransaction } from '@/engine/history/objectDeletionTransaction';
 import { getBoundingBoxForObject } from '@/engine/scene/boundingBoxUtils';
 import { transformFromObject } from '@/engine/scene/transformActions';
 import { useEditorHistoryStore } from '@/stores/editorHistoryStore';
-import { useGenerationStore } from '@/stores/generationStore';
 import { useT } from '@/stores/i18nStore';
-import { useLayerStore } from '@/stores/layerStore';
 import {
-  IMMEDIATE_PROJECT_SAVE_EVENT,
   scheduleCurrentProjectActiveObjectPersistence,
   useProjectStore,
 } from '@/stores/projectStore';
@@ -149,12 +147,11 @@ export function ObjectsPanel({
   const selectObject = useSceneStore((state) => state.selectObject);
   const toggleObjectVisibility = useSceneStore((state) => state.toggleObjectVisibility);
   const renameObject = useSceneStore((state) => state.renameObject);
-  const deleteObject = useSceneStore((state) => state.deleteObject);
-  const deleteProjectObject = useProjectStore((state) => state.deleteProjectObject);
   const setImportedModel = useSceneStore((state) => state.setImportedModel);
   const setProjectObjects = useProjectStore((state) => state.setProjectObjects);
   const updateCurrentProject = useProjectStore((state) => state.updateCurrentProject);
   const captureHistory = useEditorHistoryStore((state) => state.capture);
+  const captureRuntimeHistory = useEditorHistoryStore((state) => state.captureRuntime);
   const pushToast = useToastStore((state) => state.pushToast);
   const [menu, setMenu] = useState<ObjectMenuState>();
   const [renameState, setRenameState] = useState<RenameState>();
@@ -226,16 +223,16 @@ export function ObjectsPanel({
     }
     const object = objects.find((item) => item.id === objectId);
     if (!object) return;
-    captureHistory(`${t('objectDeleteHistory')}：${object?.name ?? t('model')}`);
-    const layerStore = useLayerStore.getState();
-    layerStore.setLayers(layerStore.layers.filter((layer) => layer.objectId !== objectId));
-    useGenerationStore.getState().deleteObjectData(objectId);
-    deleteObject(objectId);
-    deleteProjectObject(objectId);
-    const scene = useSceneStore.getState();
-    updateCurrentProject({ objects: scene.objects, activeObjectId: scene.selectedObjectId });
+    const transaction = createObjectDeletionTransaction(objectId);
+    if (!transaction) return;
+    const label = `${t('objectDeleteHistory')}：${object.name ?? t('model')}`;
+    transaction.redo();
+    captureRuntimeHistory({
+      label,
+      undo: transaction.undo,
+      redo: transaction.redo,
+    });
     setDeleteCandidateId(undefined);
-    window.dispatchEvent(new Event(IMMEDIATE_PROJECT_SAVE_EVENT));
   }
 
   function handleDuplicateObject(objectId: string) {

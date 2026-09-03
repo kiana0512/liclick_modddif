@@ -114,6 +114,7 @@ import {
   type ModelImportProgressEvent,
 } from '@/engine/loaders/modelImportProgress';
 import { getImportedBaseColorTextureUrl } from '@/engine/loaders/modelLoadUtils';
+import { OBJECT_RUNTIME_RESTORE_REQUEST_EVENT } from '@/engine/history/objectDeletionTransaction';
 import { getReusableProjectModels } from '@/engine/loaders/projectModelRestoreReuse';
 import { placeImportedModelBesideScene } from '@/engine/scene/placeImportedModelBesideScene';
 import { getBoundingBoxForObject } from '@/engine/scene/boundingBoxUtils';
@@ -1068,6 +1069,7 @@ export function EditorPage({
   const routeProjectLoadRevisionRef = useRef(0);
   const restoredModelKeyRef = useRef<string>();
   const modelRestoreRequestRef = useRef(0);
+  const restoreProjectModelRef = useRef<(project: Project) => Promise<void>>(async () => {});
   const hydratedProjectVersionRef = useRef<string>();
   const skipProjectStoreSyncRef = useRef({
     layers: false,
@@ -2938,6 +2940,22 @@ export function EditorPage({
       });
     }
   }
+  restoreProjectModelRef.current = restoreProjectModel;
+
+  useEffect(() => {
+    const restoreMissingObjectRuntime = () => {
+      const currentProject = useProjectStore.getState().getCurrentProject();
+      if (!currentProject || currentProject.id !== projectId) return;
+      // Undo normally republishes the retained Three.js group synchronously.
+      // Reset the dedupe key only for the fallback path where that runtime
+      // instance is no longer available and the durable source must be loaded.
+      restoredModelKeyRef.current = undefined;
+      void restoreProjectModelRef.current(currentProject);
+    };
+    window.addEventListener(OBJECT_RUNTIME_RESTORE_REQUEST_EVENT, restoreMissingObjectRuntime);
+    return () =>
+      window.removeEventListener(OBJECT_RUNTIME_RESTORE_REQUEST_EVENT, restoreMissingObjectRuntime);
+  }, [projectId]);
 
   async function persistAssetUrl(
     projectId: string,

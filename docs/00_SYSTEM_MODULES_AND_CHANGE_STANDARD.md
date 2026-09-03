@@ -1,6 +1,6 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
-> 文档版本：`2.16.6`
+> 文档版本：`2.16.7`
 >
 > 生效日期：`2026-09-03`
 >
@@ -210,6 +210,10 @@ v1.3.3 投影蒙版统一原子交接修复：A100 项目逐个显示投影行�
 撤回/重做在同一任务中恢复持久瓦片、将当前及同层重建实例的 live eraser multiplier 重置为白色中性值、上传纹理并 invalidate；保持驻留 shader 结构，重新绑定 image/mask URL 和 contentRevision，随后同步 Project layers。此处中性白值是内部 keep-mask，不是编辑结果中的白模。后台细化仍采用项目原始分辨率和 3000ms idle；`engine/paint/refineStrokeHistory.ts` 从最早瓦片检查点按笔画顺序重放，分别更新每笔的 before/after。已撤回笔画仅更新 redo 检查点，不重新显示；新分支清除不再属于历史的笔画。每四个瓦片让出执行权，完成后无 await 地原子发布全部像素与历史；切换、撤回或新笔画使旧任务失效时不发布半成品。
 
 审计：GPU live 纹理与持久 UV0/alpha 同步恢复；shader、CPU rasterizer、UV Worker、GPU bake 的覆盖公式与 UV/export 消费契约不变。历史事务仅驻留内存，回退只还原提交边界、即时预览复位和逐笔细化实现，已有图层资产仍兼容。新增 `test:paint-history-transactions` 执行真实历史 store/撤回回调和细化函数，覆盖快速三笔撤回重做、按住画笔时撤回、失败占位、项目重置、同层 runtime 重建、重叠擦除/画笔覆盖、新 UV 岛、redo 归属与中途取消；与历史粒度、输入延迟、目标策略、投影显隐和局部重绘兼容回归一起验证。真实模型连续操作及保存重开仍需交互验收，不以数值回归替代视觉结果。
+
+`OBJECT-DELETE-HISTORY` v1.0.0 将模型删除定义为 M12 runtime 历史事务，而不是只保存 Object/Layer 元数据快照。事务在内存中保留被删 Three.js 模型实例，撤回时同步恢复对象顺序、选择、变换、显隐、图层、Generation/Capture、参考图、烘焙产物和 Bake Workspace，并清除该对象的本地删除墓碑；重做重新执行完整删除并登记墓碑。若运行时实例已不可用，UI-04 通过原项目 `sourcePath` 进入渐进式模型恢复兜底。撤回保留删除保存后最新的 Revision CAS token、asset manifest 和 lastSavedAt，禁止把服务端并发状态回滚到删除前。事务只驻留当前会话历史，不改变 Project Schema、对象资产格式、GPU/CPU/Worker/shader、投影/UV/export 或 ownership；旧项目无需迁移，回退后已有项目与 Revision 仍可读取。
+
+新增 `test:object-deletion-history` 真实执行 Project/Scene/Layer/Generation store 的删除→撤回→重做→撤回，验证同一 Three.js 实例即时回到视窗、其余模型被自动排列后恢复原变换、对象子资源和活动选择完整恢复、删除墓碑清除/重建，以及异步删除保存产生的新 CAS Revision 不被旧快照覆盖。浏览器交互验收仍需覆盖底部按钮与 Ctrl+Z 两个入口。
 
 Layer 以可选 `eraserAlgorithmVersion=1` 标记首次采用该语义的内容修订；未带字段的旧图层按原 image/mask 读取，首次擦除时惰性升级，不执行批量迁移。项目保存继续使用 Project Command v1、Revision CAS 与现有 verified layer asset 上传，未引入新的命令或资产类别。高分辨率提交失败时保留上一持久版本并显示错误，禁止静默写入低分辨率结果。
 
@@ -673,6 +677,7 @@ M15 / CLOUD-DEPLOYMENT v1.0.0（2026-09-03）：正常合并 release 部署历�
 | `2.16.4` | 2026-09-03 | `master 5f880fd + release cd30512` | M15 / CLOUD-DEPLOYMENT v1.0.0：适配 Cloud 镜像、PostgreSQL 初始化、部署门禁与凭据隔离，master 验证两个镜像，不执行生产发布；业务协议不变，保留存量数据，迁移与回滚见变更单。 |
 | `2.16.5` | 2026-09-03 | `本次高频滚轮重复拾取修复` | UI-06/M03、`ALG-VIEW-INPUT-001` v1.0.0：跳过 R3F 原始 wheel 的无用模型拾取，完整滚轮增量继续交给原生相机控制器按帧执行。真实分发回归覆盖 1021→0 拾取、透视/正交缩放、点击/空白选择和监听清理。无画质、算法输出、Schema、Revision 或资产迁移；回退恢复默认 Canvas 事件分发。 |
 | `2.16.6` | 2026-09-03 | `本次局部重绘蒙版持久化边界修复` | UI-06/UI-10、M01/M08/M14、`ALG-LR-008` v2.4.2：局部重绘 live canvas 保存统一读取 canvas/image 注册源并编码上传，按 URL/revision 和资产槽复用 verified asset；注册源已释放且没有已验证映射时本次保存失败重试，禁止把 `liclick-live-projected-canvas:` 写进 Revision。服务端将 live/blob 视为 volatile，优先保留同图层上一 Revision 的 durable mask/source，否则返回 `PROJECT_SAVE_CONFLICT`。GPU/CPU/Worker/shader、coverage、投影/UV/export、分辨率、Schema 与 ownership 不变；旧坏 Revision 保留审计，可从最近 durable Revision 原位恢复，无批量迁移。 |
+| `2.16.7` | 2026-09-03 | `本次模型删除撤回运行时恢复修复` | UI-04、M01/M03/M12、`OBJECT-DELETE-HISTORY` v1.0.0：模型删除改为完整 runtime 历史事务；撤回同步复用被删 Three.js 实例并恢复对象、选择、变换、图层、Generation/Capture、参考图、烘焙与 Bake Workspace，清除删除墓碑，重做再次执行完整删除；实例缺失时按 durable source 渐进恢复。保留最新 Revision CAS/asset manifest/lastSavedAt，不回滚服务端并发状态。Project Schema、对象资产格式、GPU/CPU/Worker/shader、投影/UV/export 与 ownership 不变，无迁移。 |
 
 `ALG-LR-008` v2.4.1：局部重绘仍自动创建独立目标和结果图层；pointer-down 不再依赖当前图层是否选中、可见或为 UV，只检查自身 source/composite/Session/显示资源。默认保持按钮激活、GPU promotion、结果发布前的原选择（含 undefined），防止内部隐藏 draft 触发面板选择普通投影层。普通画笔/橡皮擦限制、GPU/CPU/Worker/shader、作者 mask、投影/UV/export、分辨率、Schema、Revision、ownership 与资产不变。真实 store 三类选择与入口 gate 回归通过；无数据迁移，回退选择保持与 gate 即可。详见 CHG-20260903-LOCAL-REPAINT-SELECTION-INDEPENDENCE。
 

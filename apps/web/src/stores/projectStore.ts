@@ -190,6 +190,10 @@ function clearLocalObjectDeletions(projectId: string, objectIds: string[]) {
   writeLocalObjectDeletions(deletions);
 }
 
+export function clearPendingProjectObjectDeletions(projectId: string, objectIds: string[]) {
+  clearLocalObjectDeletions(projectId, objectIds);
+}
+
 function applyLocalObjectDeletions(project: Project) {
   return (readLocalObjectDeletions()[project.id] ?? []).reduce(
     (current, objectId) => withoutObjectData(current, objectId),
