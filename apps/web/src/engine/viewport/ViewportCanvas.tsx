@@ -59,6 +59,7 @@ import { restoreLocalRepaintLayerSelection } from '@/engine/localRepaint/session
 import { SceneRoot } from './SceneRoot';
 import { getPreviewLighting } from './previewLighting';
 import { CameraController } from './CameraController';
+import { createViewportEvents } from './viewportEvents';
 import { ViewCube } from './ViewCube';
 import {
   isLocalRepaintOverlayVisible,
@@ -14922,6 +14923,7 @@ export function ViewportCanvas({
     >
       <Canvas
         key={canvasKey}
+        events={createViewportEvents}
         frameloop={isActive ? 'always' : 'never'}
         dpr={[1, 1.5]}
         camera={{ position: [3.2, 2.4, 4], fov: 45, near: 0.1, far: 100 }}

@@ -1,6 +1,6 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
-> 文档版本：`2.16.4`
+> 文档版本：`2.16.5`
 >
 > 生效日期：`2026-09-03`
 >
@@ -93,6 +93,10 @@ LI3D Cloud 控制面（无状态 Node.js App）
 `UI-14` 一键烘焙的高模、低模与四类材质贴图入口必须让实际 `<input type="file">` 以透明覆盖层直接承接用户指针事件，不得依赖 `display:none` 输入、程序化 `click()` 或 label 转发作为唯一选择入口；专业页按钮优先调用同一用户手势内的 `showPicker()`，仅为旧浏览器保留 `click()` 回退。低模必须与高模共用同一模型解码器和伴随资源解析规则：选择的 GLTF/OBJ/FBX 可同时携带 BIN、MTL 和贴图，文件名立即进入浏览器状态并明确显示解析进度，只有本地解码成功后才可标记为可用并提交后台持久化；失败保留选择和错误提示，不得无提示回滚。解码结果必须在 UV/对齐检查中复用，不得对同一文件重复解码。资产上传与 Bake Workspace 保存随后在后台队列完成；保存错误必须明确显示，也不得在导入回调中提前切换工作阶段。拖放与文件选择必须进入同一导入函数。
 
 `2568e40` 基线的新选择契约：贴图工作区优先显示用户显式选择的模型；所选 ID 缺失时回退到活动模型；点击空白视口不清空贴图模型选择。超过 20,000 三角面的 Auto UV 错误使用醒目的警告呈现。对应测试为 `test:multi-model-restore-policy`。
+
+高频视口输入路由属于 UI-06 → M03，登记为 `ALG-VIEW-INPUT-001` v1.0.0：滚轮仅由 `BlenderOrbitControls` 的原生被动监听接收并按显示帧累计执行，R3F 的 `onWheel` 分发为空操作，避免对只有点击处理的模型逐原始滚轮包执行递归射线拾取。不调用 preventDefault/stopPropagation，不丢弃物理滚轮增量；R3F 其余点击、空白未命中、hover、指针捕获及原生画笔路径保持原样。新增真实 R3F 分发回归 `test:viewport-wheel-events`，对照 1021 个滚轮包原来产生 1021 次拾取，修复后为 0；透视/正交缩放结果、点击选择、空白未命中和监听清理均须一致。此改动不改变相机公式、GPU/CPU/Worker/shader、投影/UV/画笔覆盖、持久化与导出；分辨率、Schema、Revision、ownership 和资产不变，无迁移。回退仅移除 Canvas 自定义事件路由并恢复默认 R3F wheel 分发；不得删除项目或资产。真实帧稳定性需在相同项目和高频滚轮输入下前后复测，隔离拾取次数测试不代表已消除所有卡顿。
+
+审计卡 `CHG-20260903-VIEWPORT-WHEEL-PICKING`：英文名 Viewport input routing，状态 production；本次实现 Codex，体验验收由仓库维护者执行。输入为 UI-06 DOM WheelEvent（deltaX/deltaY/deltaMode 与原事件保持不变），输出为既有相机距离/zoom 更新，不产生 Layer 或 Project 输出；无新增阈值、颜色空间或矩阵变换，原相机单位/空间沿用 `BlenderOrbitControls` 与 `ALG-CAP-001`。实现仅为 CPU 事件路由 `viewportEvents.ts`，GPU/Worker/shader 无对应新增实现，持久化字段无变更；测试另含 `test:view-cube-orientation`、`test:projection-performance-safety`、`test:multi-model-restore-policy`、Web typecheck/build。迁移与回退见上段。
 
 ## 4. 工程保存、Ctrl+S 与数据格式
 
@@ -397,6 +401,7 @@ Bake 设置包含 resolution、frontal/rear distance、distance/cage、cage infl
 | `ALG-IN-001` 格式路由导入 | GLB/GLTF 正式，FBX/OBJ 兼容；按扩展名/loader 解析为统一 LoadedModel |
 | `ALG-IN-002` 模型归一化 | 通过父 Group 居中、落地、适配相机，不改 mesh 原始顶点 |
 | `ALG-IN-003` 多模型放置 | 按已有场景包围盒并排放置，保留独立 objectId 与 transform |
+| `ALG-VIEW-INPUT-001` 视口输入路由 v1.0.0 | 滚轮交给原生相机控制器按帧累计；R3F wheel 不做模型拾取，其余选择/hover/捕获保持原分发 |
 | `ALG-CAP-001` 相机序列化 | position/quaternion/target/near/far/fov/zoom/P/V/world/aspect 完整保存 |
 | `ALG-CAP-002` Color 捕获 | 线性 RT + 输出变换；viewport/clay/target-only/flat 明确区分 |
 | `ALG-CAP-003` Mask 捕获 | 目标白色 BasicMaterial、黑背景；灰度×alpha 作为连续 mask |
@@ -666,5 +671,6 @@ M15 / CLOUD-DEPLOYMENT v1.0.0（2026-09-03）：正常合并 release 部署历�
 | `2.16.2` | 2026-09-03 | `本次 A100 测试共享莉刻账号开关` | M13、`LICLICK-ACCOUNT-BINDING` v1.2.0：增加默认关闭且仅由服务器 `app.env` 激活的测试共享账号模式；飞书 Session 与 Li3D 项目/Job ownership 继续隔离，但所有莉刻调用、额度、远端个人工作区和生成资产归属配置 owner。共享 Atlas home 必须位于受管目录，账号状态显式标记共享模式，用户菜单不能解绑或删除 owner 凭据；关闭开关立即恢复个人绑定。Token、密钥和具体人员邮箱不进入 Git，无 Schema、Revision 或资产迁移。 |
 | `2.16.3` | 2026-09-03 | `本次烘焙资产对象标识迁移修复` | UI-14/M10：修复首次在烘焙页导入高模时空字符串通过空值合并并把整个 Bake Set 写入 `bakeSets[""]` 的问题。高模、低模和材质导入统一选择首个非空对象 ID；读取旧工程时把空键、高模快照及所含低模/颜色/粗糙度/金属度/法线引用原位迁移到稳定项目级 Bake ID，下一次正常保存写回规范结构。低模选择立即显示，解析、UV/对齐检查与资产保存继续异步执行；失败保留文件名并显示明确原因。资产文件、ownership、Revision 与烘焙算法不变，无批量数据库迁移。 |
 | `2.16.4` | 2026-09-03 | `master 5f880fd + release cd30512` | M15 / CLOUD-DEPLOYMENT v1.0.0：适配 Cloud 镜像、PostgreSQL 初始化、部署门禁与凭据隔离，master 验证两个镜像，不执行生产发布；业务协议不变，保留存量数据，迁移与回滚见变更单。 |
+| `2.16.5` | 2026-09-03 | `本次高频滚轮重复拾取修复` | UI-06/M03、`ALG-VIEW-INPUT-001` v1.0.0：跳过 R3F 原始 wheel 的无用模型拾取，完整滚轮增量继续交给原生相机控制器按帧执行。真实分发回归覆盖 1021→0 拾取、透视/正交缩放、点击/空白选择和监听清理。无画质、算法输出、Schema、Revision 或资产迁移；回退恢复默认 Canvas 事件分发。 |
 
 `ALG-LR-008` v2.4.1：局部重绘仍自动创建独立目标和结果图层；pointer-down 不再依赖当前图层是否选中、可见或为 UV，只检查自身 source/composite/Session/显示资源。默认保持按钮激活、GPU promotion、结果发布前的原选择（含 undefined），防止内部隐藏 draft 触发面板选择普通投影层。普通画笔/橡皮擦限制、GPU/CPU/Worker/shader、作者 mask、投影/UV/export、分辨率、Schema、Revision、ownership 与资产不变。真实 store 三类选择与入口 gate 回归通过；无数据迁移，回退选择保持与 gate 即可。详见 CHG-20260903-LOCAL-REPAINT-SELECTION-INDEPENDENCE。
