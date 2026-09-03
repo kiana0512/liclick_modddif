@@ -570,6 +570,43 @@ const idaasJwtSsoBlockedReason =
 const idaasJwtSsoEnabled = Boolean(
   idaasJwtSso.enabled && idaasJwtSso.url && !idaasJwtSsoBlockedReason,
 );
+const sharedLiclickTestAccountEnabled = booleanFlag(
+  process.env.LICLICK_SHARED_TEST_ACCOUNT_ENABLED,
+  false,
+  'LICLICK_SHARED_TEST_ACCOUNT_ENABLED',
+);
+const sharedLiclickTestAccountEmail =
+  process.env.LICLICK_SHARED_TEST_ACCOUNT_EMAIL?.trim().toLowerCase() ?? '';
+const configuredSharedLiclickTestAtlasHome =
+  process.env.LICLICK_SHARED_TEST_ATLAS_HOME?.trim() ?? '';
+const sharedLiclickTestAtlasHome = configuredSharedLiclickTestAtlasHome
+  ? path.resolve(configuredSharedLiclickTestAtlasHome)
+  : '';
+if (sharedLiclickTestAccountEnabled) {
+  if (!sharedLiclickTestAccountEmail || !configuredSharedLiclickTestAtlasHome) {
+    throw new Error(
+      'Shared Liclick test account requires LICLICK_SHARED_TEST_ACCOUNT_EMAIL and LICLICK_SHARED_TEST_ATLAS_HOME.',
+    );
+  }
+  if (!path.isAbsolute(configuredSharedLiclickTestAtlasHome)) {
+    throw new Error('LICLICK_SHARED_TEST_ATLAS_HOME must be an absolute path.');
+  }
+  const managedAtlasHomesRoot = path.join(workspaceDir, 'atlas-homes');
+  const relativeSharedAtlasHome = path.relative(
+    managedAtlasHomesRoot,
+    sharedLiclickTestAtlasHome,
+  );
+  if (
+    !relativeSharedAtlasHome ||
+    relativeSharedAtlasHome === '..' ||
+    relativeSharedAtlasHome.startsWith(`..${path.sep}`) ||
+    path.isAbsolute(relativeSharedAtlasHome)
+  ) {
+    throw new Error(
+      'LICLICK_SHARED_TEST_ATLAS_HOME must point to one managed Atlas home below LICLICK_WORKSPACE_DIR/atlas-homes.',
+    );
+  }
+}
 const sessionSecret = process.env.SESSION_SECRET ?? 'dev-only-change-me';
 const performanceLabMaintainerEmails = [
   ...new Set(
@@ -635,6 +672,11 @@ export const serverConfig = {
   idaasJwtSso,
   idaasJwtSsoBlockedReason,
   idaasJwtSsoEnabled,
+  sharedLiclickTestAccount: {
+    enabled: sharedLiclickTestAccountEnabled,
+    email: sharedLiclickTestAccountEmail,
+    atlasHomeDir: sharedLiclickTestAtlasHome,
+  },
   sessionCookieName: process.env.SESSION_COOKIE_NAME ?? 'liclick_3d_session',
   sessionSecret,
   performanceLabMaintainerEmails,

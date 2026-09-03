@@ -14,6 +14,7 @@ type LiclickAccountStatus = {
   bound: boolean;
   email?: string;
   reason?: string;
+  sharedTestAccount?: boolean;
 };
 
 type LiclickBindingStatus = {
@@ -268,28 +269,34 @@ export function UserMenu({ onLogout }: UserMenuProps) {
             <span className="inline-flex min-w-0 items-start gap-2">
               <KeyRound className="mt-0.5 h-4 w-4 shrink-0" />
               <span className="min-w-0">
-                <span className="block truncate font-medium">当前用户的莉刻账号</span>
+                <span className="block truncate font-medium">
+                  {liclickAccount?.sharedTestAccount ? '测试共享莉刻账号' : '当前用户的莉刻账号'}
+                </span>
                 <span className={`block truncate text-xs font-medium ${liclickAccount?.bound ? 'text-emerald-400' : 'text-amber-400'}`}>
                   {liclickAccount?.bound ? liclickAccount.email : liclickAccount ? '未绑定' : '检查中...'}
                 </span>
               </span>
             </span>
+            {!liclickAccount?.sharedTestAccount && (
+              <button
+                type="button"
+                onClick={() => void handleSwitchAccount()}
+                disabled={busy}
+                className="shrink-0 text-xs font-semibold text-liclick-pink transition hover:text-white disabled:opacity-50"
+              >
+                {liclickAccount?.bound ? '更换' : '绑定'}
+              </button>
+            )}
+          </div>
+          {!liclickAccount?.sharedTestAccount && (
             <button
               type="button"
-              onClick={() => void handleSwitchAccount()}
-              disabled={busy}
-              className="shrink-0 text-xs font-semibold text-liclick-pink transition hover:text-white disabled:opacity-50"
+              onClick={() => void handleUnlinkAccount()}
+              className="mt-1 flex w-full items-center gap-2 rounded px-3 py-2 text-left text-sm text-white/76 transition hover:bg-white/10 hover:text-white"
             >
-              {liclickAccount?.bound ? '更换' : '绑定'}
+              <Unlink className="h-4 w-4" />解除当前用户的莉刻账号
             </button>
-          </div>
-          <button
-            type="button"
-            onClick={() => void handleUnlinkAccount()}
-            className="mt-1 flex w-full items-center gap-2 rounded px-3 py-2 text-left text-sm text-white/76 transition hover:bg-white/10 hover:text-white"
-          >
-            <Unlink className="h-4 w-4" />解除当前用户的莉刻账号
-          </button>
+          )}
           <button type="button" onClick={() => void handleLogout()} className="mt-1 flex w-full items-center gap-2 rounded px-3 py-2 text-left text-sm text-white/76 transition hover:bg-white/10 hover:text-white">
             <LogOut className="h-4 w-4" />{t('logout')}
           </button>

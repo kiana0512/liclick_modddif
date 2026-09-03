@@ -677,6 +677,20 @@ export async function startPersonalLiclickAccountBinding(
   user: AuthUser,
   options: { linkedOAuthLoginId?: string } = {},
 ) {
+  if (serverConfig.sharedLiclickTestAccount.enabled) {
+    const account = await getPersonalLiclickAccount(user);
+    if (!account.bound) {
+      throw new Error(account.reason ?? '服务器共享测试莉刻账号不可用。');
+    }
+    return {
+      loginId: 'shared-test-account',
+      status: 'bound' as const,
+      redirectUrl: undefined,
+      email: account.email,
+      expiresAt: account.expiresAt,
+      message: '测试环境统一使用服务器配置的莉刻账号。',
+    };
+  }
   if (!user.email) throw new Error('当前飞书账号没有邮箱，无法校验莉刻账号归属。');
   prunePendingAtlasLogins();
   for (const login of pendingAtlasLogins.values()) {
@@ -690,6 +704,9 @@ export async function startPersonalLiclickAccountBinding(
 }
 
 export async function pollPersonalLiclickAccountBinding(loginId: string, user: AuthUser) {
+  if (serverConfig.sharedLiclickTestAccount.enabled && loginId === 'shared-test-account') {
+    return startPersonalLiclickAccountBinding(user);
+  }
   prunePendingAtlasLogins();
   const login = pendingAtlasLogins.get(loginId);
   if (!login || login.userId !== user.id) throw new Error('莉刻账号授权请求不存在或已过期。');
@@ -766,34 +783,68 @@ export async function completePersonalLiclickAccountBinding(
 }
 
 export async function getPersonalLiclickAccount(user: AuthUser) {
-  if (!user.atlasHomeDir) return { bound: false as const };
+  const sharedAccount = serverConfig.sharedLiclickTestAccount;
+  const atlasHomeDir = sharedAccount.enabled ? sharedAccount.atlasHomeDir : user.atlasHomeDir;
+  if (!atlasHomeDir) {
+    return {
+      bound: false as const,
+      sharedTestAccount: sharedAccount.enabled,
+      reason: sharedAccount.enabled
+        ? '服务器共享测试莉刻账号未配置。'
+        : '当前飞书用户尚未绑定个人莉刻账号。',
+    };
+  }
   try {
-    const tokenCache = await readCompatibleAtlasTokenCache(user.atlasHomeDir);
-    assertValidAtlasToken(tokenCache, atlasTokenFile(user.atlasHomeDir));
-    const identity = await getAtlasIdentity(user.atlasHomeDir);
+    const tokenCache = await readCompatibleAtlasTokenCache(atlasHomeDir);
+    assertValidAtlasToken(tokenCache, atlasTokenFile(atlasHomeDir));
+    const identity = await getAtlasIdentity(atlasHomeDir);
+    const expectedEmail = sharedAccount.enabled ? sharedAccount.email : user.email;
     const matches = Boolean(
-      user.email &&
+      expectedEmail &&
       identity.email &&
-      user.email.toLowerCase() === identity.email.toLowerCase(),
+      expectedEmail.toLowerCase() === identity.email.toLowerCase(),
     );
     return {
       bound: matches,
       email: matches ? identity.email : undefined,
       expiresAt: matches ? tokenCache.expires_at : undefined,
-      reason: matches ? undefined : '个人莉刻账号未登录、已过期或与飞书账号不一致。',
+      sharedTestAccount: sharedAccount.enabled,
+      reason: matches
+        ? undefined
+        : sharedAccount.enabled
+          ? '服务器共享测试莉刻账号未登录、已过期或配置账号不一致。'
+          : '个人莉刻账号未登录、已过期或与飞书账号不一致。',
     };
   } catch {
-    return { bound: false as const, reason: '个人莉刻账号不可用，请重新绑定。' };
+    return {
+      bound: false as const,
+      sharedTestAccount: sharedAccount.enabled,
+      reason: sharedAccount.enabled
+        ? '服务器共享测试莉刻账号不可用，请联系管理员更新凭据。'
+        : '个人莉刻账号不可用，请重新绑定。',
+    };
   }
 }
 
 export async function unlinkPersonalLiclickAccount(user: AuthUser) {
+  if (serverConfig.sharedLiclickTestAccount.enabled) {
+    throw new Error('测试共享莉刻账号由服务器管理，不能从用户菜单解除。');
+  }
   await setUserAtlasHomeDir(user.id, undefined);
   await removeManagedAtlasHomeDir(user.atlasHomeDir);
 }
 
+export function resolveLiclickAtlasUser(
+  user: AuthUser,
+  sharedAccount = serverConfig.sharedLiclickTestAccount,
+): AuthUser {
+  if (!sharedAccount.enabled) return user;
+  return { ...user, atlasHomeDir: sharedAccount.atlasHomeDir };
+}
+
 export async function checkLiclickApiAccess(user?: AuthUser) {
-  if (!user?.atlasHomeDir) {
+  const atlasUser = user ? resolveLiclickAtlasUser(user) : undefined;
+  if (!atlasUser?.atlasHomeDir) {
     return {
       ok: false,
       status: { valid: false, message: '当前飞书用户尚未绑定个人莉刻账号。' },
@@ -801,7 +852,7 @@ export async function checkLiclickApiAccess(user?: AuthUser) {
       message: '当前飞书用户尚未绑定个人莉刻账号。',
     };
   }
-  const status = await getAtlasStatus(user?.atlasHomeDir);
+  const status = await getAtlasStatus(atlasUser.atlasHomeDir);
   if (!status.valid) {
     return {
       ok: false,
@@ -814,7 +865,7 @@ export async function checkLiclickApiAccess(user?: AuthUser) {
     ['gateway', 'list-tools', '--service', 'liclick'],
     60_000,
     false,
-    user?.atlasHomeDir,
+    atlasUser.atlasHomeDir,
   );
   const toolNames = [...result.stdout.matchAll(/^\s{2}([a-zA-Z0-9_]+)\(/gm)].map(
     (match) => match[1],

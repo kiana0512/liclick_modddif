@@ -68,6 +68,8 @@ try {
   for (const requiredLabel of ['当前用户的莉刻账号', '更换', '解除当前用户的莉刻账号']) {
     assert.match(userMenuSource, new RegExp(requiredLabel));
   }
+  assert.match(userMenuSource, /测试共享莉刻账号/);
+  assert.match(userMenuSource, /liclickAccount\?\.sharedTestAccount/);
   assert.doesNotMatch(userMenuSource, /startAtlasLogin|pollAtlasLogin|localhost:20265/);
   assert.match(userMenuSource, /\/api\/liclick\/account-binding\/start/);
   assert.match(userMenuSource, /credentials:\s*'include'/);

@@ -8,6 +8,7 @@ import {
   getPersonalLiclickAccount,
   getPersonalLiclickAccountCallbackHtml,
   pollPersonalLiclickAccountBinding,
+  resolveLiclickAtlasUser,
   startPersonalLiclickAccountBinding,
   unlinkPersonalLiclickAccount,
 } from '../auth/atlasAuthService.js';
@@ -718,8 +719,9 @@ export async function handleLiclickRoute(
   const isLiclickRoute = segments[0] === 'api' && segments[1] === 'liclick';
   const isLegacyGenerateRoute = segments[0] === 'api' && segments[1] === 'generate-image';
   if (!isLiclickRoute && !isLegacyGenerateRoute) return false;
-  const user = authenticatedUser ?? (await requireAuth(request, response));
-  if (!user) return true;
+  const authenticatedSessionUser = authenticatedUser ?? (await requireAuth(request, response));
+  if (!authenticatedSessionUser) return true;
+  const user = resolveLiclickAtlasUser(authenticatedSessionUser);
 
   if (isLiclickRoute && request.method === 'GET' && segments[2] === 'account' && !segments[3]) {
     sendJson(response, 200, await getPersonalLiclickAccount(user));
@@ -820,7 +822,14 @@ export async function handleLiclickRoute(
   }
 
   if (isLiclickRoute && request.method === 'DELETE' && segments[2] === 'account' && !segments[3]) {
-    await unlinkPersonalLiclickAccount(user);
+    if (serverConfig.sharedLiclickTestAccount.enabled) {
+      sendJson(response, 409, {
+        code: 'LICLICK_SHARED_TEST_ACCOUNT_LOCKED',
+        error: '测试共享莉刻账号由服务器统一管理，不能从用户菜单解除。',
+      });
+      return true;
+    }
+    await unlinkPersonalLiclickAccount(authenticatedSessionUser);
     sendJson(response, 200, { bound: false });
     return true;
   }
@@ -1059,7 +1068,11 @@ export async function handleLiclickRoute(
 
   if (request.method === 'POST' && isLiclickRoute && segments[2] === 'edit-image') {
     if (!requirePersonalLiclickAccount(response, user)) return true;
-    if (user.atlasHomeDir && user.email) {
+    if (
+      !serverConfig.sharedLiclickTestAccount.enabled &&
+      user.atlasHomeDir &&
+      user.email
+    ) {
       const atlasIdentity = await getAtlasIdentity(user.atlasHomeDir);
       if (atlasIdentity.email && user.email.toLowerCase() !== atlasIdentity.email.toLowerCase()) {
         sendJson(response, 403, {
@@ -1104,7 +1117,11 @@ export async function handleLiclickRoute(
 
   if (request.method === 'POST' && isGenerateImageRoute) {
     if (!requirePersonalLiclickAccount(response, user)) return true;
-    if (user.atlasHomeDir && user.email) {
+    if (
+      !serverConfig.sharedLiclickTestAccount.enabled &&
+      user.atlasHomeDir &&
+      user.email
+    ) {
       const atlasIdentity = await getAtlasIdentity(user.atlasHomeDir);
       if (atlasIdentity.email && user.email.toLowerCase() !== atlasIdentity.email.toLowerCase()) {
         sendJson(response, 403, {
