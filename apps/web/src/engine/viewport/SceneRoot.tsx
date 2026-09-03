@@ -3370,6 +3370,7 @@ const ImportedModel = memo(function ImportedModel({
       !workspaceVisible ||
       !selected ||
       typeof gl.compileAsync !== 'function' ||
+      importedModel.restoreStage !== 'outline' ||
       projectedProgramWarmupInputs.length <= 1 ||
       !projectedProgramWarmupSignature
     ) {
@@ -3464,10 +3465,7 @@ const ImportedModel = memo(function ImportedModel({
         compileMesh.removeFromParent();
         compileGeometry.dispose();
       });
-    sharedWarmups.set(
-      sharedWarmupSignature,
-      sharedWarmupPromise.then(() => undefined),
-    );
+    sharedWarmups.set(sharedWarmupSignature, sharedWarmupPromise);
     void sharedWarmupPromise;
   }, [
     camera,
@@ -3764,6 +3762,8 @@ const ImportedModel = memo(function ImportedModel({
       // into a 400ms+ main-thread driver stall. Preserve exact output and wait
       // for the already-started upload batch to release the renderer first.
       await waitForPreviewTextureUploadsIdle(gl, () => cancelled);
+      // Join any cold-restore anchor before polling this renderer's program.
+      await Promise.all(getProjectedProgramWarmupMap(gl).values());
       await waitForViewportInteractionIdle();
       if (cancelled) return false;
       const compileScene = new THREE.Scene();
@@ -4705,6 +4705,9 @@ const ImportedModel = memo(function ImportedModel({
                   preferTextureArrays: useProjectedTextureArrayMaterial,
                 },
               );
+              // Direct stacks also need a linked program before the visible
+              // render loop can acquire them; arrays already wait above.
+              if (sharedProjectedMaterial) await precompileProjectedMaterial(sharedProjectedMaterial);
             }
           } catch (error) {
             if (
