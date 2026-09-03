@@ -1,5 +1,5 @@
 import { useFrame, useThree } from '@react-three/fiber';
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three';
 import {
   createDisplayModeMaterial,
@@ -77,7 +77,10 @@ import {
   shouldMuteLocalRepaintResidentLayer,
 } from '@/engine/localRepaint/orderedPreviewComposition';
 import { ObjectTransformControls } from './ObjectTransformControls';
-import { isViewportInteractionBusy as isSharedViewportInteractionBusy } from './viewportInteractionState';
+import {
+  isViewportInteractionBusy as isSharedViewportInteractionBusy,
+  markViewportInteractionActivity,
+} from './viewportInteractionState';
 import { getTransientLocalRepaintLayerId } from './localRepaintResidentHandoff';
 import {
   createWorkerBackedPreviewTexture,
@@ -1003,7 +1006,7 @@ const selectionBoundsCache = new WeakMap<
   { matrixWorld: THREE.Matrix4; bounds: THREE.Box3 }
 >();
 
-function SelectionBoundsCorners({ object }: { object: THREE.Object3D }) {
+function SelectionBoundsCorners({ object, objectId }: { object: THREE.Object3D; objectId: string }) {
   const lastMatrixWorldRef = useRef(
     new THREE.Matrix4().set(Number.NaN, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1),
   );
@@ -1021,6 +1024,7 @@ function SelectionBoundsCorners({ object }: { object: THREE.Object3D }) {
       toneMapped: false,
     });
     const lines = new THREE.LineSegments(geometry, material);
+    lines.visible = false;
     lines.name = 'Liclick Selection Bounds Corners';
     lines.renderOrder = 82;
     lines.frustumCulled = false;
@@ -1089,7 +1093,6 @@ function SelectionBoundsCorners({ object }: { object: THREE.Object3D }) {
   }, [object]);
 
   useEffect(() => {
-    indicator.update();
     return () => {
       indicator.lines.removeFromParent();
       indicator.geometry.dispose();
@@ -1098,10 +1101,23 @@ function SelectionBoundsCorners({ object }: { object: THREE.Object3D }) {
   }, [indicator]);
 
   useFrame(() => {
+    // React can still be reconciling the previous model when this frame runs.
+    // Presentation must use the current selection, never a captured prop or a
+    // visibility snapshot restored by an earlier offscreen capture.
+    if (
+      useSceneStore.getState().selectedObjectId !== objectId ||
+      useWorkspaceLayoutStore.getState().mode !== 'scene' ||
+      !object.visible
+    ) {
+      indicator.lines.visible = false;
+      return;
+    }
     // Camera motion cannot change the model root. Recurse through children only
-    // when a transform tool actually changed this root matrix.
+    // when this indicator is activated or a transform changed the root matrix.
     object.updateWorldMatrix(true, false);
-    if (!lastMatrixWorldRef.current.equals(object.matrixWorld)) indicator.update();
+    if (!indicator.lines.visible || !lastMatrixWorldRef.current.equals(object.matrixWorld)) {
+      indicator.update();
+    }
   });
 
   return <primitive object={indicator.lines} />;
@@ -1245,7 +1261,7 @@ function TopologyWireframeOverlay({
   return <primitive object={overlay.group} />;
 }
 
-function ImportedModel({
+const ImportedModel = memo(function ImportedModel({
   importedModel,
   onSelect,
   showSelectionGlow,
@@ -1258,7 +1274,13 @@ function ImportedModel({
 }) {
   const { gl, invalidate, camera } = useThree();
   const displayMode = useSceneStore((state) => state.displayMode);
-  const selectedObjectId = useSceneStore((state) => state.selectedObjectId);
+  // Subscribe to this model's selection bit instead of the global object id.
+  // With nine models mounted in scene view, the string subscription rendered
+  // every complete material pipeline for each click. Only the old and new
+  // selected models need to reconcile selection-owned background preparation.
+  const selected = useSceneStore(
+    (state) => state.selectedObjectId === importedModel.objectId,
+  );
   const objectVisible = useSceneStore(
     (state) =>
       state.objects.find((object) => object.id === importedModel.objectId)?.visible ?? true,
@@ -1476,7 +1498,7 @@ function ImportedModel({
   const acquiredProjectedProgramSignaturesRef = useRef(new Set<string>());
   const projectedPreviewInteractionRef = useRef({ pointerDown: false, lastMovedAt: 0 });
   useEffect(() => {
-    if (!workspaceVisible || selectedObjectId !== importedModel.objectId) return undefined;
+    if (!workspaceVisible || !selected) return undefined;
     let cancelled = false;
     const prepare = async () => {
       await waitForProjectionVisibilityIdle(0);
@@ -1496,7 +1518,7 @@ function ImportedModel({
     return () => {
       cancelled = true;
     };
-  }, [gl, importedModel.objectId, selectedObjectId, workspaceVisible]);
+  }, [gl, importedModel.objectId, selected, workspaceVisible]);
   useEffect(() => {
     // Restore the saved projection stack before rebuilding runtime depth and
     // normal textures. Starting both jobs together changes the material
@@ -1504,7 +1526,7 @@ function ImportedModel({
     // repaint in its disabled preparation state.
     if (
       !workspaceVisible ||
-      selectedObjectId !== importedModel.objectId ||
+      !selected ||
       !texturedRestoreReady ||
       !initialProjectedMaterialReady
     )
@@ -1623,7 +1645,7 @@ function ImportedModel({
     layers,
     texturedRestoreReady,
     visibleLocalRepaintPreviewLayer,
-    selectedObjectId,
+    selected,
     workspaceVisible,
   ]);
   const importedObjectId = importedModel?.objectId;
@@ -3296,7 +3318,7 @@ function ImportedModel({
   useEffect(() => {
     if (
       !workspaceVisible ||
-      selectedObjectId !== importedModel.objectId ||
+      !selected ||
       typeof gl.compileAsync !== 'function' ||
       projectedProgramWarmupInputs.length <= 1 ||
       !projectedProgramWarmupSignature
@@ -3409,7 +3431,7 @@ function ImportedModel({
     progressivePreviewBase?.renderedColorMaskTexture,
     projectedProgramWarmupSignature,
     projectedProgramWarmupStructureSignature,
-    selectedObjectId,
+    selected,
     useProjectedProgramWarmupTextureArrays,
     workspaceVisible,
   ]);
@@ -3429,7 +3451,7 @@ function ImportedModel({
   useEffect(() => {
     if (
       !workspaceVisible ||
-      selectedObjectId !== importedModel.objectId ||
+      !selected ||
       importedModel.restoreStage !== 'outline' ||
       !useProjectedProgramWarmupTextureArrays ||
       projectedProgramWarmupInputs.length <= 1 ||
@@ -3566,7 +3588,7 @@ function ImportedModel({
     previewLighting,
     projectedProgramWarmupInputs,
     projectedProgramWarmupTextureArrayStructureSignature,
-    selectedObjectId,
+    selected,
     textureArrayCompositionFallbackRequired,
     topUvProjectedOverlayInput,
     useProjectedProgramWarmupTextureArrays,
@@ -5161,12 +5183,14 @@ function ImportedModel({
       {initialMaterialPresentationReadyForGroup && importedModel.restoreStage !== 'bounds' && (
         <TopologyWireframeOverlay object={importedModel.group} visible={displayMode === 'wire'} />
       )}
-      {texturedRestoreReady && showSelectionGlow && selectedObjectId === importedModel.objectId && (
-        <SelectionBoundsCorners object={importedModel.group} />
+      {/* Keep each indicator resident: selecting another model only changes
+          visibility, so the last shared line program is not disposed/relinked. */}
+      {texturedRestoreReady && showSelectionGlow && (
+        <SelectionBoundsCorners object={importedModel.group} objectId={importedModel.objectId} />
       )}
     </>
   );
-}
+});
 
 export function SceneRoot() {
   const importedModels = useSceneStore((state) => state.importedModels);
@@ -5215,6 +5239,7 @@ export function SceneRoot() {
   );
   const selectImportedObject = useCallback(
     (objectId: string) => {
+      markViewportInteractionActivity();
       selectObject(objectId);
       scheduleCurrentProjectActiveObjectPersistence(objectId);
     },
@@ -5225,6 +5250,7 @@ export function SceneRoot() {
     // viewport click made the visibility filter remove every model and looked
     // like a failed load. Scene review still supports deliberate deselection.
     if (workspaceMode === 'texture') return;
+    markViewportInteractionActivity();
     selectObject(undefined);
   }, [selectObject, workspaceMode]);
 

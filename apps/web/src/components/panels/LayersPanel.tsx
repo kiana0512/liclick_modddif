@@ -189,6 +189,38 @@ function getLocalRepaintPreviewMaskUrl(layer: Layer) {
 }
 
 function LayerThumbnail({ layer }: { layer: Layer }) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [visible, setVisible] = useState(false);
+  useEffect(() => {
+    const element = containerRef.current;
+    if (!element) return undefined;
+    if (typeof IntersectionObserver === 'undefined') {
+      setVisible(true);
+      return undefined;
+    }
+    let disposed = false;
+    const observer = new IntersectionObserver(([entry]) => {
+      if (!disposed) setVisible(Boolean(entry?.isIntersecting &&
+        entry.intersectionRect.width > 0 && entry.intersectionRect.height > 0));
+    });
+    observer.observe(element);
+    return () => {
+      disposed = true;
+      observer.disconnect();
+    };
+  }, []);
+
+  // Dock panels stay mounted across workspaces. Native img loading="lazy"
+  // does not gate our canvas/depth/PNG preview effects: mount those consumers
+  // only for a thumbnail actually inside the visible, unclipped panel.
+  return (
+    <div ref={containerRef} className="h-full w-full" data-layer-thumbnail={layer.id}>
+      {visible && <VisibleLayerThumbnail layer={layer} />}
+    </div>
+  );
+}
+
+function VisibleLayerThumbnail({ layer }: { layer: Layer }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const displayPreview = useProjectedLayerDisplayPreview(layer);
   const isLocalRepaintPreview = isLocalRepaintPreviewLayer(layer);

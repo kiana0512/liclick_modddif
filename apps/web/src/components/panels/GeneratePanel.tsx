@@ -78,6 +78,7 @@ import type { Layer } from '@/types/layer';
 import type { ReferenceImage } from '@/types/project';
 import { getRegisteredObjectUrlBlob, revokeRegisteredObjectUrl } from '@/utils/blobUrlRegistry';
 import { createId } from '@/utils/id';
+import { waitForBrowserPaint } from '@/utils/browserScheduling';
 import { downloadImageAsset } from '@/utils/downloadImage';
 import { generationBelongsToProject, generationIdentityIds } from '@/utils/generationIdentity';
 import {
@@ -2922,9 +2923,10 @@ export function GeneratePanel({
         message: '正在准备当前蒙版与视角。',
       });
       // Commit the button state and progress text before any GPU capture work.
-      // This guarantees an immediate visual response even on a cold renderer.
-      await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
-      await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+      // A hidden tab has no rAF. Keep submission progressing via the existing
+      // background fallback instead of waiting for the user to return.
+      await waitForBrowserPaint();
+      await waitForBrowserPaint();
       // ModelView receives one square 2K composite: authored BaseColor outside
       // the user's selection and the aligned clay geometry preview inside it.
       // Qwen receives the clean authored view instead, plus the original

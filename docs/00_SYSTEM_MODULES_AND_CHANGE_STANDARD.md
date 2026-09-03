@@ -1,6 +1,6 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
-> 文档版本：`2.16.5`
+> 文档版本：`2.16.9`
 >
 > 生效日期：`2026-09-03`
 >
@@ -94,11 +94,23 @@ LI3D Cloud 控制面（无状态 Node.js App）
 
 `2568e40` 基线的新选择契约：贴图工作区优先显示用户显式选择的模型；所选 ID 缺失时回退到活动模型；点击空白视口不清空贴图模型选择。超过 20,000 三角面的 Auto UV 错误使用醒目的警告呈现。对应测试为 `test:multi-model-restore-policy`。
 
+场景多模型选择性能补丁属于 UI-04/UI-06 → M03，继续沿用 `ALG-IN-003` 的对象身份、并排放置与选择结果，不改变算法语义或版本。空白蒙版/无局部重绘会话时，切换模型不得递增 paint-mask reset revision 或清空、上传 GPU 蒙版目标；每个常驻 ImportedModel 只订阅自身是否选中，未变化模型不得因全局 selectedObjectId 字符串而重跑完整材质组件；对象列表、模型点击与场景清空选择须先登记为视口交互，使既有精确纹理分条上传和后台任务门控在安静窗口内主动让出帧预算。存在作者蒙版、活动画笔或局部重绘 source/preview 时仍执行原有 fail-closed 清理，禁止把会话带到另一模型。投影、UV、PBR、输出分辨率、Project/Layer/Generation/Capture Schema、Revision、ownership 与资产不变，无迁移；回退可恢复无条件 reset revision、全局选择订阅与取消选择交互登记，不删除工程或资产。对应回归为 `test:projection-performance-safety`，真实九模型项目还须记录连续选择的 P95/P99/最大帧与错误数。
+
 高频视口输入路由属于 UI-06 → M03，登记为 `ALG-VIEW-INPUT-001` v1.0.0：滚轮仅由 `BlenderOrbitControls` 的原生被动监听接收并按显示帧累计执行，R3F 的 `onWheel` 分发为空操作，避免对只有点击处理的模型逐原始滚轮包执行递归射线拾取。不调用 preventDefault/stopPropagation，不丢弃物理滚轮增量；R3F 其余点击、空白未命中、hover、指针捕获及原生画笔路径保持原样。新增真实 R3F 分发回归 `test:viewport-wheel-events`，对照 1021 个滚轮包原来产生 1021 次拾取，修复后为 0；透视/正交缩放结果、点击选择、空白未命中和监听清理均须一致。此改动不改变相机公式、GPU/CPU/Worker/shader、投影/UV/画笔覆盖、持久化与导出；分辨率、Schema、Revision、ownership 和资产不变，无迁移。回退仅移除 Canvas 自定义事件路由并恢复默认 R3F wheel 分发；不得删除项目或资产。真实帧稳定性需在相同项目和高频滚轮输入下前后复测，隔离拾取次数测试不代表已消除所有卡顿。
 
 审计卡 `CHG-20260903-VIEWPORT-WHEEL-PICKING`：英文名 Viewport input routing，状态 production；本次实现 Codex，体验验收由仓库维护者执行。输入为 UI-06 DOM WheelEvent（deltaX/deltaY/deltaMode 与原事件保持不变），输出为既有相机距离/zoom 更新，不产生 Layer 或 Project 输出；无新增阈值、颜色空间或矩阵变换，原相机单位/空间沿用 `BlenderOrbitControls` 与 `ALG-CAP-001`。实现仅为 CPU 事件路由 `viewportEvents.ts`，GPU/Worker/shader 无对应新增实现，持久化字段无变更；测试另含 `test:view-cube-orientation`、`test:projection-performance-safety`、`test:multi-model-restore-policy`、Web typecheck/build。迁移与回退见上段。
 
 ## 4. 工程保存、Ctrl+S 与数据格式
+
+变更卡 `CHG-20260903-MODEL-SELECTION-RESIDENCY`：UI-04/UI-06 → M03，登记 `ALG-VIEW-SELECT-001`（Model selection resource residency）v1.0.0，状态 production，实施 Codex、真实体验验收由维护者执行。输入为当前对象、工作区、工具所有权和既有 180ms 交互安静状态；输出为相同选中框和相机取景，不改变 `ALG-IN-003` 对象选择语义。场景中每个可见模型保留小型选中框 geometry/material，选择只切换 visible，模型/工作区卸载时释放；相机确认需要重新取景后才遍历 bounds。画笔预热在空闲门控之后才分配 Canvas/RenderTarget，GPU 上传、编译、深度捕获之间再次检查交互与当前模型/工具所有权；过期任务不继续占用 GPU。复用既有 idle 超时和安静阈值，不改变颜色空间、矩阵或分辨率；CPU 仅调整生命周期/调度，GPU 深度与画笔渲染内容、Worker/shader、投影/UV、蒙版/历史、持久化和导出输出不变，Project Command、Revision CAS、Schema、ownership 与资产不变。无需数据迁移；回退恢复选中框按选择挂载、预热的原分配时机和相机 bounds 顺序，不删除工程或资产。回归 `test:model-selection-residency` 执行实际组件/效果代码和真实 Three 资源，覆盖 71 次切换的资源身份/释放、忙时零预热分配、最终模型完整预热、工具变更取消和相机 guard；另跑多模型恢复、取景、投影安全、滚轮、typecheck/build。原人工九模型录制为 52.8 FPS、P95 17.0ms、最大 150.1ms、估算错失 369 帧；该录制未提供具体函数调用栈，不能据此把全部尖峰归因于本次修复，发布体验仍须同项目复测。
+
+多模型驻留补丁真实复测未通过：人工 97 次输入/72 个 wheel，36.6 FPS、P95 100.2ms、最大 600.5ms、9 个 long task/最大 598ms。隔离测试通过不能替代此体验失败，该补丁尚未作为完整卡顿修复验收。随后 M03 的现有只读 HUD 增加最近 120 条 LoAF 中最慢 8 条的时间、脚本文件名与字符位置，人工报告窗口过滤；不新增采样器、不改变 Project 或性能上传 Schema，图片 invoker 不显示完整资产 URL，已有 phase 仅为阶段标签、不能用于函数归因。
+
+变更卡 `CHG-20260903-SELECTION-BOUNDS-OWNERSHIP`：UI-04/UI-06 → M03，`ALG-VIEW-SELECT-001` v1.0.1（Model selection resource residency），状态 production，实施 Codex、体验验收维护者。用户反馈切换后旧模型选中框跳动。实际组件回归证实两条失配路径：frame 回调使用旧 React visible prop；`applyTargetOnlyMaterial` 的恢复器在提交后恢复一次，异步 readback/PNG 完成后的 finally 又重放旧 visible/material 快照，可能覆盖新的选择和材质。输入为当前 selectedObjectId、workspace mode、对象可见性/矩阵和原捕获快照；输出为每个呈现帧仅当前可见场景对象的选中框，捕获恢复恰好一次。常驻框在 useFrame 呈现前直接核对权威选择，未选中直接隐藏，不等待 React 重组件提交；静止帧不重建 bounds 或上传 position，保留资源驻留与 geometry bounds 缓存。恢复器新增单次执行保护，包含失败时 finally 的首次恢复；不增加计时阈值、矩阵/颜色公式或持久状态。`ALG-IN-003` 对象选择语义及 `ALG-CAP-002/003/004/005` 捕获像素算法不变；GPU/CPU 图像、Worker/shader、投影/UV/重绘/导出、分辨率、Schema、Project Command/Revision CAS、ownership 和资产均不变，无迁移。回退仅还原呈现前选择检查与恢复器单次保护，不删除工程或资产。扩展 `test:model-selection-residency` 执行真实组件与真实捕获恢复器，先复现旧代码两项失败，再验证 71 次无 React 重渲染切换、取消选择、工作区切换、空闲无 position 更新、旧捕获不复活边框/不覆盖新材质，以及原资源驻留、预热和取景回归。隔离回归不替代原项目人工视觉与帧稳定性验收。
+
+变更卡 `CHG-20260903-HIDDEN-LAYER-THUMBNAILS`：UI-09 → M08，`ALG-LR-011`（Generated display preview / 生图透明显示副本）v1.0.1，状态 production，实施 Codex、体验验收维护者。本次聚焦隐藏缩略图消费者，不修改 UV 合成。真实九模型场景 36 次列表切换复现 19.6 FPS、P95 133.5ms、最大 150.2ms；148.4ms LoAF 中三个 IMG.onload 分别 24.7/41.3/53.0ms，构建字符位置定位 `urlToImageData` 的 canvas drawImage/getImageData 及其 Promise 后续预览工作。WorkspaceDock 保留 CSS hidden 图层面板，而 LayerThumbnail 在切换对象后仍启动整图/深度读取、透明副本与 PNG 编码，12 项预览缓存会反复淘汰。输入仍为 Layer/source/depth，IntersectionObserver 只控制缩略图消费者是否挂载：真实可见且裁剪交集非零才进入原管线；隐藏、折叠、滚出屏幕时不启动新工作，卸载断开观察且拒绝迟到事件，不改变面板表单/任务状态。已启动共享预览不在本次强制取消；缺少 Observer 时保留原可用性。CPU 图像公式、1024 显示上限、精确 alpha bounds/6% 留白、深度门控和颜色空间原样保留；GPU/Worker/shader、正式 Layer/Generation、投影/UV/导出、最终分辨率、Schema、Project Command/Revision CAS、ownership 与资产无变更，无迁移。回退只移除缩略图可见性边界，不删除缓存资产或工程。回归 `test:layer-thumbnail-visibility` 执行真实组件，覆盖 71 次隐藏切换零消费者、可见恢复、零面积、移出屏幕、卸载迟到与旧浏览器回退；另跑预览像素、图层保留、typecheck/build，真实同路径前后测另行验收。
+
+变更卡 `CHG-20260903-LOCAL-REPAINT-BACKGROUND-WAIT`：UI-05/UI-06 → M08，`ALG-LR-008` v2.4.2，状态 production，实施 Codex、体验验收维护者。代码证据：提交蒙版/视角之前等待两次裸 rAF，返图 GPU prepare 启动及内部步骤也等待裸 rAF；隐藏页面暂停 rAF 时任务可能悬挂。仅将这些非呈现证明的等待接入既有 `waitForBrowserPaint/scheduleAfterBrowserPaint`（前台帧后执行，后台 timer 兜底），取消时解除未启动任务，GPU prepare 不再被后台残留导航 busy 阻断，但未结束画笔仍保持互斥。输入/输出与图像公式、蒙版/深度/颜色、GPU/CPU/Worker/shader、投影/UV/export、20 秒准备预算和原真实 resident 帧交接校验不变。未将 timer 当成实际呈现帧，也不尝试绕过浏览器冻结/丢弃策略：完全 frozen/discarded 时页面仍无法保证计算；远端 Job 和回来后的既有 reconciliation 才是任务恢复基础。本次不修改服务端 Job、Schema、Revision CAS、ownership、资产、分辨率或系统浏览器参数，无数据迁移。回退仅还原这些等待点。回归 `test:local-repaint-background-scheduling` 执行真实共享调度器与提交等待代码，覆盖起始隐藏、等待中隐藏、完全不派发 rAF 仍完成、取消与恰好一次；真实付费生图/后台冻结需维护者验收，不把模拟调度测试宣称为全链路通过。
 
 ### 4.1 Ctrl+S 一句话答案
 
@@ -319,10 +331,10 @@ UI-09 剪刀
 | `ALG-LR-005` 历史兼容边界谐调 | `5.0.0-compatible` | 仅保留旧 v3-v5 全幅合成与 legacy 切换的读取兼容；新 `direct-v1` 任务不调用 |
 | `ALG-LR-006` 表面画笔重投影 | `2.0.0` | raycast 命中表面，投射到 frozen source UV；最小绝对 face-on 0.08；世界半径 0.004-0.12 包围盒比例；texture radius 1-72 |
 | `ALG-LR-007` 低延迟实时覆盖 | `2.2.0`（显示所有权以本次源码校正为准） | 当前源码在应用画笔激活时使用 depth-aware exact overlay，同 ID resident twin 临时静音；退出后仍由正式材质按图层顺序显示。新建顶层 preview 在首笔发布前不加入背景栈；位于 priority 层下方的 preview 才提前加入 ordered stack。pointer-down 只消费已准备的资源，pointer-up 保留已有 `contentRevision` 并发布累计蒙版。本次仅优化准备调度，不改变 source、capture projector、depth/surface-lock、颜色、blend、1024 live 上限或显示所有权 |
-| `ALG-LR-008` 延迟投影持久化 | `2.4.1` | interactive UV bake 固定关闭；生图前 Project Command snapshot 后台执行。蒙版工具/生图开始即并行编译并持有 exact overlay 程序，预读作者蒙版；返图颜色缩放与 falloff 并行。内存 Session 按 Generation/目标复用活动任务。高清读取和 GPU 准备有 20 秒预算；仅背景栈已有行进入 resident 等待，单层直接蒙版登记完整、辅助网格排除，交接失败明确结束会话。Session 驱动按钮，DOM 仅诊断；pointer-up 两帧内发布权威图层行，idle 3000ms 仅合并持久化，needsRebake=true |
+| `ALG-LR-008` 延迟投影持久化 | `2.4.2` | interactive UV bake 固定关闭；生图前 Project Command snapshot 后台执行。蒙版工具/生图开始即并行编译并持有 exact overlay 程序，预读作者蒙版；返图颜色缩放与 falloff 并行。内存 Session 按 Generation/目标复用活动任务。高清读取和 GPU 准备有 20 秒预算；仅背景栈已有行进入 resident 等待，单层直接蒙版登记完整、辅助网格排除，交接失败明确结束会话。Session 驱动按钮，DOM 仅诊断；pointer-up 两帧内发布权威图层行，idle 3000ms 仅合并持久化，needsRebake=true；提交/GPU 准备调度含隐藏页兜底，不替代真实呈现交接 |
 | `ALG-LR-009` Inward Crossfade 栈合成 | `1.0.0` | 连续重绘层向内部交叉淡化，避免普通 alpha stacking 在边缘重复显露接缝 |
 | `ALG-LR-010` Provider 兼容编辑 | `1.0.0-compat` | `LocalRepaintDialog` 的 image/edit/protect/hole masks 独立路径，不得与四输入主路径混改 |
-| `ALG-LR-011` 生图透明显示副本 | `1.0.0` | UI-05 重绘效果图和 UI-10 普通投射图层缩略图优先使用 capture linear-view depth 清除明确无几何覆盖的背景，按精确 alpha bounds 仅裁切一次并保留 6% 留白；几何覆盖区的 RGB/alpha 原样保留。深度不可用时只清除与画布边缘连通的近黑外背景，不做第二次 matte、侵蚀或分位裁边。局部重绘图层不走整图副本，继续使用用户涂绘 mask，只显示笔刷授权区域 |
+| `ALG-LR-011` 生图透明显示副本 | `1.0.1` | UI-05 重绘效果图和 UI-10 普通投射图层缩略图优先使用 capture linear-view depth 清除明确无几何覆盖的背景，按精确 alpha bounds 仅裁切一次并保留 6% 留白；几何覆盖区的 RGB/alpha 原样保留。深度不可用时只清除与画布边缘连通的近黑外背景，不做第二次 matte、侵蚀或分位裁边。局部重绘图层不走整图副本，继续使用用户涂绘 mask，只显示笔刷授权区域；缩略图仅在面板内实际可见时挂载像素预览消费者 |
 | `ALG-LR-012` 远端重绘输入融合 | `1.1.0` | 专用 Worker 从原始连续 mask 派生 ModelView 合成核：候选/强核阈值为 24/96，8 邻域保留含强核的连通域，应用 `clamp(0.012×mask短边, 2, 6)px@2K` 闭运算、小于 `max(24px², bbox×0.02%)@2K` 的孤岛过滤和小于 `max(64px², bbox×0.05%)@2K` 的封闭孔填充；`composite=current×(1-a)+clay×a` 使用全不透明核和约 1.5px@2K 窄边羽化。远端 mask 从清理后核再按 `clamp(0.25×核短边, 24, 64)px@2K` 外扩、`clamp(0.2×外扩, 4, 10)px@2K` 羽化。Qwen、Capture、Generation 画笔授权与历史恢复仍使用未外扩、未清理的原始作者 mask |
 
 局部生图远端接收生成阶段的 RGB selection mask，但仍不接收 UV 图集、表面深度或用户最终回贴 coverage。远端 latent mask 不承诺蒙版外像素逐点不变；浏览器继续用同一 `allowedMaskUrl`、capture camera 和 depth guard 限制 3D 写回，用户通过表面画笔决定最终图层 coverage。这些几何授权契约与旧版保持一致。
@@ -402,6 +414,7 @@ Bake 设置包含 resolution、frontal/rear distance、distance/cage、cage infl
 | `ALG-IN-002` 模型归一化 | 通过父 Group 居中、落地、适配相机，不改 mesh 原始顶点 |
 | `ALG-IN-003` 多模型放置 | 按已有场景包围盒并排放置，保留独立 objectId 与 transform |
 | `ALG-VIEW-INPUT-001` 视口输入路由 v1.0.0 | 滚轮交给原生相机控制器按帧累计；R3F wheel 不做模型拾取，其余选择/hover/捕获保持原分发 |
+| `ALG-VIEW-SELECT-001` 多模型选择资源驻留 v1.0.1 | 选择框复用且每帧核对当前对象，不依赖旧 React 选择；捕获恢复恰好一次；仅真实取景计算 bounds；模型/工具所有权与交互门控保护预热资源分配及各 GPU 阶段 |
 | `ALG-CAP-001` 相机序列化 | position/quaternion/target/near/far/fov/zoom/P/V/world/aspect 完整保存 |
 | `ALG-CAP-002` Color 捕获 | 线性 RT + 输出变换；viewport/clay/target-only/flat 明确区分 |
 | `ALG-CAP-003` Mask 捕获 | 目标白色 BasicMaterial、黑背景；灰度×alpha 作为连续 mask |
@@ -672,5 +685,9 @@ M15 / CLOUD-DEPLOYMENT v1.0.0（2026-09-03）：正常合并 release 部署历�
 | `2.16.3` | 2026-09-03 | `本次烘焙资产对象标识迁移修复` | UI-14/M10：修复首次在烘焙页导入高模时空字符串通过空值合并并把整个 Bake Set 写入 `bakeSets[""]` 的问题。高模、低模和材质导入统一选择首个非空对象 ID；读取旧工程时把空键、高模快照及所含低模/颜色/粗糙度/金属度/法线引用原位迁移到稳定项目级 Bake ID，下一次正常保存写回规范结构。低模选择立即显示，解析、UV/对齐检查与资产保存继续异步执行；失败保留文件名并显示明确原因。资产文件、ownership、Revision 与烘焙算法不变，无批量数据库迁移。 |
 | `2.16.4` | 2026-09-03 | `master 5f880fd + release cd30512` | M15 / CLOUD-DEPLOYMENT v1.0.0：适配 Cloud 镜像、PostgreSQL 初始化、部署门禁与凭据隔离，master 验证两个镜像，不执行生产发布；业务协议不变，保留存量数据，迁移与回滚见变更单。 |
 | `2.16.5` | 2026-09-03 | `本次高频滚轮重复拾取修复` | UI-06/M03、`ALG-VIEW-INPUT-001` v1.0.0：跳过 R3F 原始 wheel 的无用模型拾取，完整滚轮增量继续交给原生相机控制器按帧执行。真实分发回归覆盖 1021→0 拾取、透视/正交缩放、点击/空白选择和监听清理。无画质、算法输出、Schema、Revision 或资产迁移；回退恢复默认 Canvas 事件分发。 |
+| `2.16.6` | 2026-09-03 | `本次多模型快速选择驻留修复` | UI-04/UI-06/M03、`ALG-VIEW-SELECT-001` v1.0.0：复用选中框，跳过不改变取景的全场景 bounds；空闲后才分配预热资源，分阶段检查模型/工具及交互。无图像算法、画质、Schema 或数据迁移，九模型实际帧稳定性复测未通过，不能认定已消除卡顿。 |
+| `2.16.7` | 2026-09-03 | `本次隐藏缩略图消费者门控` | UI-09/M08、`ALG-LR-011` v1.0.1：以真实 LoAF 定位多模型切换时隐藏图层缩略图的同步像素处理；不可见/零面积时不挂载预览消费者，可见后使用原完整管线。无图像公式、输出质量、Schema 或资产迁移；页面体验待新构建复测。 |
+| `2.16.8` | 2026-09-03 | `本次局部重绘后台任务等待修复` | UI-05/UI-06/M08、`ALG-LR-008` v2.4.2：提交及返图 GPU 准备不再依赖裸 rAF，使用既有后台兜底；保留真实呈现、画笔互斥与任务身份校验。不保证冻结/丢弃页执行，无 Schema、图像质量或资产迁移。 |
+| `2.16.9` | 2026-09-03 | `本次选中边框所有权修复` | UI-04/UI-06/M03、`ALG-VIEW-SELECT-001` v1.0.1：呈现前核对权威选择，捕获恢复只执行一次，避免旧显隐/材质快照回写。保留资源复用、静止帧零 bounds 上传；无捕获像素、画质、Schema 或数据迁移。 |
 
 `ALG-LR-008` v2.4.1：局部重绘仍自动创建独立目标和结果图层；pointer-down 不再依赖当前图层是否选中、可见或为 UV，只检查自身 source/composite/Session/显示资源。默认保持按钮激活、GPU promotion、结果发布前的原选择（含 undefined），防止内部隐藏 draft 触发面板选择普通投影层。普通画笔/橡皮擦限制、GPU/CPU/Worker/shader、作者 mask、投影/UV/export、分辨率、Schema、Revision、ownership 与资产不变。真实 store 三类选择与入口 gate 回归通过；无数据迁移，回退选择保持与 gate 即可。详见 CHG-20260903-LOCAL-REPAINT-SELECTION-INDEPENDENCE。

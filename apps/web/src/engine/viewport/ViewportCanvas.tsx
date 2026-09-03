@@ -74,7 +74,7 @@ import type { UvBakeResolution } from '@/engine/bake/uvBakeTypes';
 import type { Layer } from '@/types/layer';
 import type { SerializedCamera } from '@/types/capture';
 import { createId } from '@/utils/id';
-import { waitForBrowserPaint, yieldToBrowserTask } from '@/utils/browserScheduling';
+import { scheduleAfterBrowserPaint, waitForBrowserPaint, yieldToBrowserTask } from '@/utils/browserScheduling';
 import {
   shouldPresentLocalRepaintInOrderedStack,
   shouldUseDedicatedLocalRepaintOverlay,
@@ -1211,12 +1211,19 @@ function PerformanceTestHud() {
   const longTaskSamplesRef = useRef<PerformanceLongTaskSample[]>([]);
   const longAnimationFrameSamplesRef = useRef<
     Array<{
+      unixMs: number;
       durationMs: number;
       blockingDurationMs: number;
       renderDurationMs: number;
       styleAndLayoutDurationMs: number;
       phase?: string;
-      scripts: Array<{ durationMs: number; invoker?: string; sourceFunctionName?: string }>;
+      scripts: Array<{
+        durationMs: number;
+        invoker?: string;
+        sourceFunctionName?: string;
+        sourceFile?: string;
+        sourceCharPosition?: number;
+      }>;
     }>
   >([]);
   const nativeSamplesRef = useRef<NativePerformanceSnapshot[]>([]);
@@ -1502,10 +1509,13 @@ function PerformanceTestHud() {
                   duration?: number;
                   invoker?: string;
                   sourceFunctionName?: string;
+                  sourceURL?: string;
+                  sourceCharPosition?: number;
                 }>;
               };
               if (entry.duration <= 20) continue;
               longAnimationFrameSamplesRef.current.push({
+                unixMs: performance.timeOrigin + entry.startTime,
                 durationMs: entry.duration,
                 blockingDurationMs: entry.blockingDuration ?? 0,
                 renderDurationMs:
@@ -1525,8 +1535,11 @@ function PerformanceTestHud() {
                   document.body.dataset.perfScenarioPhase,
                 scripts: (entry.scripts ?? []).slice(0, 8).map((script) => ({
                   durationMs: script.duration ?? 0,
-                  invoker: script.invoker,
+                  invoker: script.invoker?.replace(/\[src="[^"]*"\]/g, '[src]'),
                   sourceFunctionName: script.sourceFunctionName,
+                  // Expose only the bundle filename, never asset URLs/query credentials.
+                  sourceFile: script.sourceURL?.split(/[?#]/, 1)[0].split('/').pop(),
+                  sourceCharPosition: script.sourceCharPosition,
                 })),
               });
               if (longAnimationFrameSamplesRef.current.length > 120) {
@@ -3221,6 +3234,20 @@ function PerformanceTestHud() {
           value={metrics.paintSamples ? `${metrics.paintP95.toFixed(1)} ms` : '等待绘制'}
           tone={metricTone(metrics.paintP95, 8, 16)}
         />
+        <details className="col-span-2 text-[11px] text-slate-300">
+          <summary>长帧脚本定位（最近 120 条中的最慢 8 条）</summary>
+          <pre className="max-h-64 overflow-auto whitespace-pre-wrap select-text">
+            {JSON.stringify(
+              longAnimationFrameSamplesRef.current
+                .filter((sample) => !manualReport || (
+                  sample.unixMs >= manualReport.startedAtUnixMs &&
+                  sample.unixMs <= manualReport.endedAtUnixMs
+                ))
+                .slice().sort((a, b) => b.durationMs - a.durationMs).slice(0, 8),
+              null, 2,
+            )}
+          </pre>
+        </details>
         <PerformanceMetric
           label="上笔 UV 断点 / 射线未命中"
           value={
@@ -8819,30 +8846,38 @@ function SurfacePaintOverlay() {
       return undefined;
     const model = getTargetModel();
     if (!model) return undefined;
-    const layer = getUvPaintLayer(model);
-    const resourceKey = `${model.objectId}:${layer.layerId}:${layer.projectionTexture.uuid}`;
-    if (inpaintMaskPrewarmResourceKeyRef.current === resourceKey) return undefined;
+    // Selection must not allocate/dispose paint canvases before the idle gate.
+    // A rapid object sweep should prepare only the final, still-selected model.
+    let layer: UvPaintLayer | undefined;
     let cancelled = false;
     let idleId: number | undefined;
     let timeoutId: ReturnType<typeof setTimeout> | undefined;
-    let frameId: number | undefined;
-    const waitForFrame = () =>
-      new Promise<void>((resolve) => {
-        frameId = window.requestAnimationFrame(() => resolve());
-      });
-    const canContinuePrewarm = () => !cancelled && useSceneStore.getState().paintTool === 'none';
+    const canContinuePrewarm = () =>
+      !cancelled &&
+      useSceneStore.getState().paintTool === 'none' &&
+      getTargetModel()?.group === model.group &&
+      (!layer || layerRef.current === layer);
+    const waitForQuietFrame = async () => {
+      do {
+        await waitForBrowserPaint();
+        if (!canContinuePrewarm()) return false;
+      } while (isPaintingRef.current || isViewportInteractionBusy());
+      return true;
+    };
     const hidePrewarmedMaskIfInactive = () => {
       const currentTool = useSceneStore.getState().paintTool;
-      if (currentTool !== 'inpaint-add' && currentTool !== 'inpaint-subtract') {
+      if (
+        layer && layerRef.current === layer &&
+        currentTool !== 'inpaint-add' && currentTool !== 'inpaint-subtract'
+      ) {
         hideInpaintMaskPresentation(layer);
       }
     };
     const prepare = async () => {
-      if (!canContinuePrewarm()) return;
-      if (isPaintingRef.current || document.body.dataset.perfSimulatedViewportInteraction === '1') {
-        timeoutId = setTimeout(() => void prepare(), 250);
-        return;
-      }
+      if (!(await waitForQuietFrame())) return;
+      layer = getUvPaintLayer(model);
+      const resourceKey = `${model.objectId}:${layer.layerId}:${layer.projectionTexture.uuid}`;
+      if (inpaintMaskPrewarmResourceKeyRef.current === resourceKey) return;
       syncInpaintMaskProjection(model);
       const meshes = getPaintableSurfaceCache(model.group).positionedMeshes;
       for (let index = 0; index < meshes.length; index += 1) {
@@ -8851,7 +8886,10 @@ function SurfacePaintOverlay() {
           return;
         }
         ensureOverlayForMesh(layer, meshes[index]);
-        if ((index + 1) % 3 === 0) await waitForFrame();
+        if ((index + 1) % 3 === 0 && !(await waitForQuietFrame())) {
+          hidePrewarmedMaskIfInactive();
+          return;
+        }
         if (!canContinuePrewarm()) {
           hidePrewarmedMaskIfInactive();
           return;
@@ -8876,7 +8914,7 @@ function SurfacePaintOverlay() {
         }
       };
       try {
-        if (!canContinuePrewarm()) return;
+        if (!(await waitForQuietFrame())) return;
         gl.initTexture(layer.projectionTexture);
         // Compile only isolated mesh shells for the local-repaint programs.
         // Passing the live scene here lets compileAsync retain unrelated
@@ -8886,12 +8924,12 @@ function SurfacePaintOverlay() {
         // The isolated scene warms the identical material programs without
         // touching live visibility or unrelated material lifetimes.
         await compileIsolatedMeshes(layer.accumulatedMaskOverlays);
-        if (!canContinuePrewarm()) return;
+        if (!(await waitForQuietFrame())) return;
         // Compile the front-most-depth pass before the selection tool becomes
         // interactive. The pass remains pixel-identical; only shader linking is
         // moved out of the first user stroke.
         await compileIsolatedMeshes(meshes, inpaintDepthMaterial);
-        if (!canContinuePrewarm()) return;
+        if (!(await waitForQuietFrame())) return;
         // Allocate and fill the front-most depth target while idle as well.
         // Shader pre-linking alone still left the first selection stroke paying
         // the render-target allocation/first-render cost on the visible frame.
@@ -8917,7 +8955,6 @@ function SurfacePaintOverlay() {
       cancelled = true;
       if (idleId !== undefined && 'cancelIdleCallback' in window) window.cancelIdleCallback(idleId);
       if (timeoutId !== undefined) clearTimeout(timeoutId);
-      if (frameId !== undefined) window.cancelAnimationFrame(frameId);
       hidePrewarmedMaskIfInactive();
     };
   }, [
@@ -10768,17 +10805,15 @@ function SurfacePaintOverlay() {
     let cancelled = false;
     reportLocalRepaintPrewarmProgress(0.08, '读取高清生成结果');
     const finishGpuPreparation = trackLocalRepaintPreparation(repaintSession.sessionId);
-    let timeoutId: number | undefined;
-    let frameId: number | undefined;
-    const waitForFrame = () =>
-      new Promise<void>((resolve) => {
-        frameId = window.requestAnimationFrame(() => resolve());
-      });
+    // Preparation is task work, not proof that a visible frame was presented.
+    // Keep the separate resident-handoff presentation barriers unchanged.
+    const waitForFrame = waitForBrowserPaint;
     const prepare = async () => {
       if (cancelled) return;
       const preparationDeadline = performance.now() + 20_000;
       const waitForViewportIdle = async () => {
-        while (!cancelled && (isPaintingRef.current || isViewportInteractionBusy())) {
+        while (!cancelled && (isPaintingRef.current ||
+          (document.visibilityState !== 'hidden' && isViewportInteractionBusy()))) {
           if (performance.now() >= preparationDeadline) {
             throw new Error('等待视口空闲超时，请结束当前操作后重试。');
           }
@@ -11094,12 +11129,11 @@ function SurfacePaintOverlay() {
     // for requestIdleCallback left shader/material creation until the first
     // brush gesture on busy scenes, so a valid stroke could remain invisible
     // for several frames while the projected material was being prepared.
-    frameId = window.requestAnimationFrame(() => void prepare().finally(finishGpuPreparation));
+    const cancelStart = scheduleAfterBrowserPaint(() => void prepare().finally(finishGpuPreparation));
     return () => {
       cancelled = true;
+      cancelStart();
       finishGpuPreparation();
-      if (frameId !== undefined) window.cancelAnimationFrame(frameId);
-      if (timeoutId !== undefined) window.clearTimeout(timeoutId);
     };
   }, [
     bindLocalRepaintResidentMaskOverride,
