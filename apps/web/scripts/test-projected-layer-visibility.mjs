@@ -724,8 +724,18 @@ assert.match(
 );
 assert.match(
   viewportCanvasSource,
-  /const presentationOwnerReady = isEditingPersistedLocalRepaint\s*\? residentMaskBound\s*:\s*exactOverlayReady;[\s\S]*?const localRepaintPresentationReady = Boolean\([\s\S]*?presentationOwnerReady/,
-  'A persisted repaint eraser must require the resident live-mask binding instead of a duplicate overlay.',
+  /const exactOverlayOwnsPersistedEraser = Boolean\([\s\S]*?exactOverlayReady && repaintPreviewLayer\?\.id === composite\?\.layerId[\s\S]*?const presentationOwnerReady = isEditingPersistedLocalRepaint\s*\? residentMaskBound \|\| exactOverlayOwnsPersistedEraser\s*:\s*exactOverlayReady/,
+  'A just-published repaint must remain editable through its exact overlay until the resident eraser mask is bound.',
+);
+assert.match(
+  viewportCanvasSource,
+  /const eraserHandoffUsesExactOverlay =\s*erasesPersistedLocalRepaint && previewOwnsOverlay;[\s\S]*?const exactOverlayPresentationRequired =\s*liveFeedbackRequested \|\| eraserHandoffUsesExactOverlay \|\| residentHandoffPending;[\s\S]*?shouldUseDedicatedLocalRepaintOverlay\([\s\S]*?exactOverlayPresentationRequired/,
+  'Switching directly from local repaint to eraser must retain the visible exact overlay during resident material preparation.',
+);
+assert.match(
+  sceneRootSource,
+  /const localRepaintLiveFeedbackRequested =\s*localRepaintPaintTool === 'inpaint-apply' \|\|\s*\(localRepaintPaintTool === 'eraser' && localRepaintPreviewLayer\?\.id === activeLayerId\)/,
+  'SceneRoot must keep the resident repaint row muted until the eraser overlay handoff completes.',
 );
 assert.match(
   viewportCanvasSource,
@@ -794,8 +804,8 @@ assert.match(
 );
 assert.match(
   viewportCanvasSource,
-  /const exactOverlayReady = Boolean\([\s\S]*?overlay\?\.sourceKey === sourceKey[\s\S]*?const presentationOwnerReady = isEditingPersistedLocalRepaint\s*\? residentMaskBound\s*:\s*exactOverlayReady;/,
-  'Pointer-down must consume the prewarmed exact overlay as the apply-mode presentation owner.',
+  /const exactOverlayReady = Boolean\([\s\S]*?overlay\?\.sourceKey === sourceKey[\s\S]*?const exactOverlayOwnsPersistedEraser = Boolean\([\s\S]*?const presentationOwnerReady = isEditingPersistedLocalRepaint\s*\? residentMaskBound \|\| exactOverlayOwnsPersistedEraser\s*:\s*exactOverlayReady;/,
+  'Pointer-down must consume the prewarmed exact overlay for apply mode and the pending persisted-eraser handoff.',
 );
 assert.match(
   viewportCanvasSource,

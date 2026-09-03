@@ -8396,10 +8396,27 @@ function SurfacePaintOverlay() {
       composite?.sourceKey === liveSourceKey && composite.hasContent,
     );
     const liveFeedbackRequested = sceneState.paintTool === 'inpaint-apply';
+    const erasesPersistedLocalRepaint = isLocalRepaintLayerEraserActive(
+      sceneState.paintTool,
+      layerState.activeProjectedLayerId,
+      liveLayerId,
+      layers,
+    );
+    const eraserHandoffUsesExactOverlay =
+      erasesPersistedLocalRepaint && previewOwnsOverlay;
+    const residentHandoffPending =
+      localRepaintResidentPresentationLayerRef.current === liveLayerId;
+    // A newly published repaint can still be represented by the exact GPU
+    // overlay while SceneRoot is building its first resident projected stack.
+    // Selecting the eraser must not withdraw that only visible owner. Keep the
+    // already-present overlay authoritative until the resident mask is bound,
+    // then use the existing two-frame handoff to swap owners atomically.
+    const exactOverlayPresentationRequired =
+      liveFeedbackRequested || eraserHandoffUsesExactOverlay || residentHandoffPending;
     const orderedStackOwnsPreview = !shouldUseDedicatedLocalRepaintOverlay(
       layers,
       sceneState.localRepaintPreviewLayer ?? persistedLayer,
-      liveFeedbackRequested,
+      exactOverlayPresentationRequired,
     );
     const targetModel = getTargetModel();
     const residentOverrideBound = Boolean(
@@ -8415,12 +8432,6 @@ function SurfacePaintOverlay() {
     document.body.dataset.localRepaintResidentMaskOverride = residentOverrideBound
       ? `bound:${liveLayerId}`
       : 'inactive';
-    const erasesPersistedLocalRepaint = isLocalRepaintLayerEraserActive(
-      sceneState.paintTool,
-      layerState.activeProjectedLayerId,
-      liveLayerId,
-      layers,
-    );
     const keepsLiveLocalRepaintPreview =
       liveFeedbackRequested ||
       erasesPersistedLocalRepaint ||
@@ -8439,11 +8450,10 @@ function SurfacePaintOverlay() {
           (overlay ? readLocalRepaintGpuOverlayLayerVisibility(overlay, layers) : true),
       ),
     );
-    const residentHandoffPending =
-      localRepaintResidentPresentationLayerRef.current === liveLayerId;
-    // During apply, the precompiled exact overlay is the single presentation
-    // owner. It samples the mutable blend mask directly and therefore shows the
-    // very first stamp without waiting for SceneRoot to rebuild/publish a stack.
+    // During apply and a just-published eraser handoff, the precompiled exact
+    // overlay is the single presentation owner. It samples the mutable blend
+    // mask directly and therefore stays interactive while the resident stack
+    // is still compiling in the background.
     const exactOverlayVisible =
       shouldRenderExactOverlay &&
       (liveFeedbackRequested ||
@@ -14640,8 +14650,12 @@ function SurfacePaintOverlay() {
             overlay.material.userData.liclickDisposedMaterial !== true,
         );
         const repaintSession = getLocalRepaintSessionSnapshot();
+        const repaintPreviewLayer = useSceneStore.getState().localRepaintPreviewLayer;
+        const exactOverlayOwnsPersistedEraser = Boolean(
+          exactOverlayReady && repaintPreviewLayer?.id === composite?.layerId,
+        );
         const presentationOwnerReady = isEditingPersistedLocalRepaint
-          ? residentMaskBound
+          ? residentMaskBound || exactOverlayOwnsPersistedEraser
           : exactOverlayReady;
         const localRepaintPresentationReady = Boolean(
           presentationOwnerReady &&

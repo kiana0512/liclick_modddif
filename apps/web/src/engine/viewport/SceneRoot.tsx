@@ -1341,9 +1341,11 @@ const ImportedModel = memo(function ImportedModel({
   const pbrLightAzimuth = useSettingsStore((state) => state.pbrLightAzimuth);
   const resolution = useSettingsStore((state) => state.resolution);
   const localRepaintPreviewLayer = useSceneStore((state) => state.localRepaintPreviewLayer);
-  const localRepaintLiveFeedbackRequested = useSceneStore(
-    (state) => state.paintTool === 'inpaint-apply',
-  );
+  const localRepaintPaintTool = useSceneStore((state) => state.paintTool);
+  const activeLayerId = useLayerStore((state) => state.activeProjectedLayerId);
+  const localRepaintLiveFeedbackRequested =
+    localRepaintPaintTool === 'inpaint-apply' ||
+    (localRepaintPaintTool === 'eraser' && localRepaintPreviewLayer?.id === activeLayerId);
   const transientWhitePresentationObjectId = useSceneStore(
     (state) => state.transientWhitePresentationObjectId,
   );
@@ -1450,7 +1452,6 @@ const ImportedModel = memo(function ImportedModel({
         : undefined,
     [layers, localRepaintLiveFeedbackRequested, localRepaintPreviewLayer],
   );
-  const activeLayerId = useLayerStore((state) => state.activeProjectedLayerId);
   const project = useProjectStore((state) =>
     state.currentProjectId
       ? state.projects.find((item) => item.id === state.currentProjectId)
