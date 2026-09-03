@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { createServer } from 'vite';
+import { createServer, transformWithEsbuild } from 'vite';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const server = await createServer({ root, logLevel: 'silent', server: { middlewareMode: true } });
@@ -122,6 +122,16 @@ try {
   const repaintOnTop = { ...persistedRepaint, order: 0 };
   const singleBelow = { ...single, order: 1 };
   const needsResident = ordered.shouldWaitForLocalRepaintResidentMaterial;
+  const merged = makeLayer({ id: 'merged', type: 'uv', role: 'merged-uv', order: 0 });
+  assert.equal(needsResident([merged, persistedRepaint], liveRepaint, liveRepaint.id), false,
+    'a repaint below the merged UV boundary has no resident binding to wait for');
+  for (const upper of [
+    { ...merged, visible: false }, { ...merged, imageUrl: '' },
+    { ...merged, objectId: 'other' }, { ...merged, role: 'paint' }, { ...merged, order: 2 },
+  ]) {
+    assert.equal(needsResident([upper, persistedRepaint], liveRepaint, liveRepaint.id), true,
+      'only the actual visible same-object merged UV boundary can remove the wait');
+  }
   assert.equal(needsResident([singleBelow], liveRepaint, liveRepaint.id), false,
     'a new topmost preview must not spend 10 seconds waiting for an unpublished row');
   assert.equal(needsResident([single], { ...liveRepaint, order: 1 }, liveRepaint.id), true,
@@ -206,6 +216,35 @@ try {
     new URL('../src/engine/projection/ProjectedLayerMaterial.ts', import.meta.url),
     'utf8',
   );
+  // Execute the source-switch handoff predicate, not a reimplementation of it.
+  const releaseBlock = viewport.slice(viewport.indexOf('const releasePreviousPreview = async'));
+  const readyBody = releaseBlock.match(/ready: \(\) => \{([\s\S]*?)\n {8}\},/);
+  assert.ok(readyBody);
+  const canRelease = new Function('storedLayers', 'isLocalRepaintBelowMergedUv', 'resident', `
+    const previousLayerId = 'local-repaint-result', previousRoot = {};
+    const previousOverride = { root: previousRoot, layerId: previousLayerId };
+    const useLayerStore = { getState: () => ({ layers: storedLayers }) };
+    const isLocalRepaintLayerResident = () => resident;
+    const promoteLocalRepaintResidentMaskTexture = () => resident;
+    ${readyBody[1]}
+  `);
+  assert.equal(canRelease([merged, persistedRepaint], ordered.isLocalRepaintBelowMergedUv, false), true);
+  assert.equal(canRelease([persistedRepaint], ordered.isLocalRepaintBelowMergedUv, false), false);
+  assert.equal(canRelease([persistedRepaint], ordered.isLocalRepaintBelowMergedUv, true), true);
+  // Current renderer boundary is authoritative, including equal order and global UV rows.
+  const boundaryStart = sceneRoot.indexOf('function getVisibleMergedUvBoundaryOrder');
+  const boundaryEnd = sceneRoot.indexOf('function useStableValueBySignature', boundaryStart);
+  const boundaryJs = (await transformWithEsbuild(
+    sceneRoot.slice(boundaryStart, boundaryEnd), 'boundary.ts', { loader: 'ts' },
+  )).code;
+  const rendererExcludes = new Function('layers', 'target', `${boundaryJs}
+    return !isProjectedLayerAboveMergedUv(target, getVisibleMergedUvBoundaryOrder(layers, target.objectId));`);
+  for (const uv of [merged, { ...merged, objectId: undefined }, { ...merged, order: 1 },
+    { ...merged, visible: false }, { ...merged, imageUrl: '' }, { ...merged, objectId: 'other' },
+    { ...merged, role: 'paint' }, { ...merged, order: 2 }]) {
+    assert.equal(ordered.isLocalRepaintBelowMergedUv([uv, persistedRepaint], persistedRepaint),
+      rendererExcludes([uv, persistedRepaint], persistedRepaint));
+  }
   assert.match(sceneRoot, /mergeOrderedLocalRepaintPreview/);
   assert.match(sceneRoot, /getOrderedLocalRepaintPreviewLayer/);
   // Execute the actual viewport wait block with a deterministic frame clock.
@@ -239,6 +278,8 @@ try {
     { elapsed: 64, residentOverrideBound: true }, 'ordered previews must retain the real binding barrier');
   assert.deepEqual(await runResidentWait([persistedRepaint], liveRepaint, Infinity, needsResident),
     { elapsed: 10000, residentOverrideBound: false }, 'existing target timeout must remain bounded');
+  assert.deepEqual(await runResidentWait([merged, persistedRepaint], liveRepaint, Infinity, needsResident),
+    { elapsed: 0, residentOverrideBound: false }, 'merged-away targets must not burn the 10s deadline');
   assert.match(
     sceneRoot,
     /previewProjectionInputs\.slice\(liveRepaintIndex\)/,

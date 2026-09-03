@@ -76,6 +76,7 @@ import type { SerializedCamera } from '@/types/capture';
 import { createId } from '@/utils/id';
 import { scheduleAfterBrowserPaint, waitForBrowserPaint, yieldToBrowserTask } from '@/utils/browserScheduling';
 import {
+  isLocalRepaintBelowMergedUv,
   shouldPresentLocalRepaintInOrderedStack,
   shouldUseDedicatedLocalRepaintOverlay,
   shouldWaitForLocalRepaintResidentMaterial,
@@ -8524,14 +8525,18 @@ function SurfacePaintOverlay() {
       cancelled: () => cancelled,
       now: () => performance.now(),
       nextFrame: () => new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve())),
-      ready: () =>
-        isLocalRepaintLayerResident(override.root, override.layerId) &&
-        promoteLocalRepaintResidentMaskTexture({
-          root: override.root,
-          layerId: override.layerId,
-          maskUrl: override.maskUrl,
-          texture: override.texture,
-        }),
+      ready: () => {
+        const layers = useLayerStore.getState().layers;
+        const layer = layers.find((item) => item.id === override.layerId);
+        return !layer || !layer.visible || isLocalRepaintBelowMergedUv(layers, layer) ||
+          (isLocalRepaintLayerResident(override.root, override.layerId) &&
+            promoteLocalRepaintResidentMaskTexture({
+              root: override.root,
+              layerId: override.layerId,
+              maskUrl: override.maskUrl,
+              texture: override.texture,
+            }));
+      },
     }).then((ready) => {
       if (!ready || cancelled || localRepaintResidentMaskOverrideRef.current !== override) return;
       clearLocalRepaintResidentMaskOverride();
@@ -9431,10 +9436,12 @@ function SurfacePaintOverlay() {
         nextFrame: () =>
           new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve())),
         ready: () => {
-          const layer = useLayerStore.getState().layers.find((item) => item.id === previousLayerId);
+          const layers = useLayerStore.getState().layers;
+          const layer = layers.find((item) => item.id === previousLayerId);
           return (
             !layer ||
             !layer.visible ||
+            isLocalRepaintBelowMergedUv(layers, layer) ||
             !previousRoot ||
             (isLocalRepaintLayerResident(previousRoot, previousLayerId) &&
               (!previousOverride ||

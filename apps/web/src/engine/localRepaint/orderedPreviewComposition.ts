@@ -103,12 +103,24 @@ export function getOrderedLocalRepaintPreviewLayer(
   return resolveLocalRepaintPreviewPresentation(preview, layers);
 }
 
-/** A new topmost preview is overlay-only until its first stroke is published. */
+/** Match SceneRoot's merged UV boundary; covered rows have no resident sampler. */
+export function isLocalRepaintBelowMergedUv(layers: readonly Layer[], target: Layer) {
+  return layers.some((layer) =>
+    layer.type === 'uv' && layer.role === 'merged-uv' && layer.visible &&
+    Boolean(layer.imageUrl) && (!layer.objectId || layer.objectId === target.objectId) &&
+    Number.isFinite(layer.order) && layer.order <= target.order,
+  );
+}
+
+/** New foreground or merged-away rows have no resident binding to wait for. */
 export function shouldWaitForLocalRepaintResidentMaterial(
   layers: readonly Layer[],
   preview: Layer | undefined,
   layerId: string,
 ) {
+  const target = layers.find((layer) => layer.id === layerId) ??
+    (preview?.id === layerId ? preview : undefined);
+  if (target && isLocalRepaintBelowMergedUv(layers, target)) return false;
   return (
     layers.some((layer) => layer.id === layerId && layer.visible) ||
     getOrderedLocalRepaintPreviewLayer(layers, preview)?.id === layerId
