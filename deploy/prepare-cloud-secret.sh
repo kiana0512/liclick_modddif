@@ -10,6 +10,11 @@ umask 077
 : "${LICLICK_OBJECT_STORAGE_ACCESS_KEY_ID:?LICLICK_OBJECT_STORAGE_ACCESS_KEY_ID is required}"
 : "${LICLICK_OBJECT_STORAGE_SECRET_ACCESS_KEY:?LICLICK_OBJECT_STORAGE_SECRET_ACCESS_KEY is required}"
 case "$LICLICK_CLOUD_DATABASE_URL" in postgres://*|postgresql://*) ;; *) echo 'Cloud database must use PostgreSQL' >&2; exit 1;; esac
+# Kept strict: the object storage endpoint reaches the browser as a
+# presigned URL, so it must be HTTPS or browser uploads break on mixed
+# content. zprod's RGW is plain HTTP internally, but it's fronted by the
+# HTTPS ingress in deploy/k8s/infra/object-storage-ingress/ — point this
+# at that hostname, not at the RGW address directly.
 case "$LICLICK_OBJECT_STORAGE_ENDPOINT" in https://*) ;; *) echo 'Object storage must use HTTPS' >&2; exit 1;; esac
 append_env() {
   # kustomize env files are one key/value per line; reject newline injection.

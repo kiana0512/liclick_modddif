@@ -1,0 +1,110 @@
+# HTTPS front door for the internal Ceph RGW object storage.
+#
+# Why this exists: the app is served at https://li3d.lilithgames.com and
+# uploads assets browser-direct via presigned URLs
+# (apps/web/src/services/workspaceApiClient.ts -> request.open(intent.upload.url)).
+# RGW itself is http://10.104.151.13:7480 — plain HTTP only (no TLS on 7480
+# or 7481, verified 2026-09-03) on an RFC1918 address. Handing the browser
+# an http:// URL from an https:// page is hard-blocked as mixed content, and
+# the private IP isn't necessarily routable from every client anyway. This
+# Ingress terminates TLS on a real hostname and proxies to RGW.
+#
+# SigV4 note: the signature covers the `host` header. ingress-nginx forwards
+# the original Host upstream, so as long as LICLICK_OBJECT_STORAGE_ENDPOINT
+# is set to https://li3d-s3.lilithgames.com (what the server signs for),
+# RGW validates against that same value and the signature matches. Do not
+# add a Host-rewriting annotation here — it would break every signature.
+#
+#   kubectl --context zprod apply -f deploy/k8s/infra/object-storage-ingress/object-storage.yaml
+#
+# Requires a DNS A record: li3d-s3.lilithgames.com -> 10.104.250.16
+# (the ingress-nginx LB address; there is no *.lilithgames.com wildcard).
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: object-storage
+  namespace: li3d
+  labels:
+    app: li3d
+    component: object-storage
+spec:
+  # No selector: the backend is outside the cluster, addressed by the
+  # hand-maintained Endpoints below.
+  ports:
+    - name: http
+      port: 7480
+      targetPort: 7480
+      protocol: TCP
+---
+apiVersion: v1
+kind: Endpoints
+metadata:
+  name: object-storage
+  namespace: li3d
+  labels:
+    app: li3d
+    component: object-storage
+subsets:
+  - addresses:
+      - ip: 10.104.151.13
+    ports:
+      - name: http
+        port: 7480
+        protocol: TCP
+---
+# TLS: no cert-manager Certificate here, unlike deploy/k8s/overlays/zprod's.
+# cert-manager currently CANNOT issue new certificates in this cluster — its
+# Aliyun DNS credential for the DNS-01 solver is disabled
+# ("InvalidAccessKeyId.Inactive: Specified access key is disabled"), so the
+# ACME challenge never completes. HTTP-01 isn't an alternative either: the
+# ingress is on an RFC1918 address Let's Encrypt can't reach from outside.
+#
+# So this reuses the existing wildcard cert (zstack-middleware's
+# `lilithgames.com`, covering `*.lilithgames.com`), copied into this
+# namespace as li3d-s3-tls-wildcard:
+#
+#   kubectl --context zprod -n zstack-middleware get secret lilithgames.com -o json \
+#     | <strip metadata, set name/namespace> | kubectl --context zprod apply -f -
+#
+# THIS IS A MANUAL COPY AND WILL GO STALE. That wildcard expires 2026-10-12
+# and tries to renew ~2026-09-12 — which will also fail while the Aliyun
+# credential stays disabled. Fixing that credential is the real fix (the
+# main li3d.lilithgames.com cert renews ~2026-10-24 and hits the same wall).
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: li3d-object-storage
+  namespace: li3d
+  annotations:
+    # Assets are 3D models/textures — ASSET_SERVICE_MAX_UPLOAD_BYTES allows
+    # 2 GiB, so don't let the proxy be the thing that truncates them.
+    nginx.ingress.kubernetes.io/proxy-body-size: "2g"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "600"
+    # Browser-direct upload is cross-origin (page on li3d.lilithgames.com,
+    # PUT to li3d-s3.lilithgames.com). These three request headers are set by
+    # putDirectAsset() and are part of the SigV4 signed header set.
+    nginx.ingress.kubernetes.io/enable-cors: "true"
+    nginx.ingress.kubernetes.io/cors-allow-origin: "https://li3d.lilithgames.com"
+    nginx.ingress.kubernetes.io/cors-allow-methods: "GET, PUT, HEAD, OPTIONS"
+    nginx.ingress.kubernetes.io/cors-allow-headers: "content-type,x-amz-checksum-sha256,x-amz-meta-liclick-sha256,x-amz-content-sha256,x-amz-date,authorization"
+    nginx.ingress.kubernetes.io/cors-expose-headers: "etag,x-amz-checksum-sha256,x-amz-request-id"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - li3d-s3.lilithgames.com
+      secretName: li3d-s3-tls-wildcard
+  rules:
+    - host: li3d-s3.lilithgames.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: object-storage
+                port:
+                  number: 7480
