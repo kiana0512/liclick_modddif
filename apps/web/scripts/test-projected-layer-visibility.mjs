@@ -850,12 +850,12 @@ assert.match(
 );
 assert.match(
   generatePanelSource,
-  /isLocalRepaintGeneration\(displayedPreviewGeneration\)[\s\S]*?'generated-display'[\s\S]*?createGeneratedDisplayPreview\(sourceUrl, previewProcessingDepthUrl\)[\s\S]*?preview\.fittedUrl/,
+  /isLocalRepaintGeneration\(displayedPreviewGeneration\)[\s\S]*?'generated-display'[\s\S]*?createGeneratedDisplayPreview\(sourceUrl, previewProcessingDepthUrl, previewRequest\)[\s\S]*?preview\.fittedUrl/,
   'Local repaint cards must use one depth-authored transparent and fitted UI display copy.',
 );
 assert.match(
   layersPanelSource,
-  /layer\.type === 'projected'[\s\S]*?createGeneratedDisplayPreview\(sourceUrl, depthUrl\)[\s\S]*?displayPreview\.fittedUrl/,
+  /layer\.type === 'projected'[\s\S]*?createGeneratedDisplayPreview\(sourceUrl, depthUrl, \{[\s\S]*?signal: controller.signal,[\s\S]*?revision: layer.contentRevision,[\s\S]*?displayPreview\.fittedUrl/,
   'Projected layer thumbnails must share the generated transparent display path.',
 );
 assert.match(

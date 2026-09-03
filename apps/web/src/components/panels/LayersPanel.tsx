@@ -95,7 +95,7 @@ function useLayerImageSource(url: string, enabled: boolean) {
 
 function useProjectedLayerDisplayPreview(layer: Layer) {
   const [preview, setPreview] = useState<
-    (GeneratedDisplayPreview & { sourceUrl: string; depthUrl?: string }) | undefined
+    (GeneratedDisplayPreview & { sourceUrl: string; depthUrl?: string; revision?: number }) | undefined
   >();
   const enabled =
     layer.type === 'projected' && Boolean(layer.imageUrl) && !isLocalRepaintPreviewLayer(layer);
@@ -104,11 +104,14 @@ function useProjectedLayerDisplayPreview(layer: Layer) {
     let cancelled = false;
     setPreview(undefined);
     if (!enabled) return undefined;
+    const controller = new AbortController();
     const sourceUrl = layer.imageUrl;
     const depthUrl = layer.depthUrl;
-    void createGeneratedDisplayPreview(sourceUrl, depthUrl)
+    void createGeneratedDisplayPreview(sourceUrl, depthUrl, {
+      signal: controller.signal, revision: layer.contentRevision,
+    })
       .then((nextPreview) => {
-        if (!cancelled) setPreview({ ...nextPreview, sourceUrl, depthUrl });
+        if (!cancelled) setPreview({ ...nextPreview, sourceUrl, depthUrl, revision: layer.contentRevision });
       })
       .catch((error) => {
         if (!cancelled)
@@ -116,10 +119,12 @@ function useProjectedLayerDisplayPreview(layer: Layer) {
       });
     return () => {
       cancelled = true;
+      controller.abort();
     };
   }, [enabled, layer.contentRevision, layer.depthUrl, layer.imageUrl]);
 
-  return preview?.sourceUrl === layer.imageUrl && preview.depthUrl === layer.depthUrl
+  return preview?.sourceUrl === layer.imageUrl && preview.depthUrl === layer.depthUrl &&
+    preview.revision === layer.contentRevision
     ? preview
     : undefined;
 }

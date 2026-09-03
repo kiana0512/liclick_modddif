@@ -4,6 +4,7 @@ import { stdout } from 'node:process';
 import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
 import { createServer } from 'vite';
+const { AbortController } = globalThis;
 
 // Execute the production dispatch expression: both reachable modes must keep
 // their exact source/mask/depth arguments without retaining the dead fallback.
@@ -24,13 +25,14 @@ const dispatchJs = ts.transpileModule(`const result = ${dispatch};`, {
 for (const mode of ['capture-mask', 'generated-display']) {
   const calls = [];
   const run = new Function('previewProcessingMode', 'sourceUrl', 'capturePreviewMaskUrl',
-    'previewProcessingDepthUrl', 'createCaptureMaskedPreview', 'createGeneratedDisplayPreview',
+    'previewProcessingDepthUrl', 'previewRequest', 'createCaptureMaskedPreview', 'createGeneratedDisplayPreview',
     `${dispatchJs}\nreturn result;`);
-  const result = await run(mode, 'source', 'mask', 'depth',
+  const previewRequest = { signal: new AbortController().signal };
+  const result = await run(mode, 'source', 'mask', 'depth', previewRequest,
     async (...args) => { calls.push(['mask', ...args]); return 'masked'; },
     async (...args) => { calls.push(['depth', ...args]); return { fittedUrl: 'fitted' }; });
   assert.equal(result, mode === 'capture-mask' ? 'masked' : 'fitted');
-  assert.deepEqual(calls, [mode === 'capture-mask' ? ['mask', 'source', 'mask'] : ['depth', 'source', 'depth']]);
+  assert.deepEqual(calls, [mode === 'capture-mask' ? ['mask', 'source', 'mask', previewRequest] : ['depth', 'source', 'depth', previewRequest]]);
 }
 
 class TestImageData {

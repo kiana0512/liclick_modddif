@@ -1078,17 +1078,21 @@ export function GeneratePanel({
       ? subjectFilledPreview.previewUrl
       : previewRawResultUrl;
 
+  const previewProcessingVisible = workspaceActive && (previewImageOpen ||
+    (generatePanelExpanded && displayedTexturePreviewMode !== 'multi'));
   useEffect(() => {
     const sourceUrl = previewRawResultUrl;
-    if (!sourceUrl || !previewProcessingMode) {
+    if (!previewProcessingVisible || !sourceUrl || !previewProcessingMode) {
       setSubjectFilledPreview(undefined);
       return undefined;
     }
     let cancelled = false;
+    const controller = new AbortController();
+    const previewRequest = { signal: controller.signal };
     const previewPromise =
       previewProcessingMode === 'capture-mask'
-        ? createCaptureMaskedPreview(sourceUrl, capturePreviewMaskUrl!)
-        : createGeneratedDisplayPreview(sourceUrl, previewProcessingDepthUrl).then(
+        ? createCaptureMaskedPreview(sourceUrl, capturePreviewMaskUrl!, previewRequest)
+        : createGeneratedDisplayPreview(sourceUrl, previewProcessingDepthUrl, previewRequest).then(
             (preview) => preview.fittedUrl,
           );
     void previewPromise
@@ -1113,12 +1117,14 @@ export function GeneratePanel({
       });
     return () => {
       cancelled = true;
+      controller.abort();
     };
   }, [
     capturePreviewMaskUrl,
     previewProcessingDepthUrl,
     previewProcessingMaskUrl,
     previewProcessingMode,
+    previewProcessingVisible,
     previewRawResultUrl,
   ]);
 

@@ -1,6 +1,6 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
-> 文档版本：`2.16.10`
+> 文档版本：`2.16.11`
 >
 > 生效日期：`2026-09-03`
 >
@@ -11,6 +11,10 @@
 > 审计口径：`0a2519d + 607e82f + 2568e40`，不包含错误文档提交 `2bde8c6/e03bab2/d1c5f78`
 
 ## 1. 文档地位与强制边界
+
+上述预览调度的实测（2026-09-03，index-nvUnMjWl / EditorPage-DyV1qQlL）：经维护者明确授权在 Unsaved 状态按最后保存版本刷新，九模型/4K/贴图工作区，生成与图层面板保持展开，按同一对象顺序各 36 次点击、不进行滚轮或画笔操作。原构建 25.5 FPS / P95 133.3ms / 最大 166.7ms；新版第一轮 45.9 FPS / P95 33.4ms / 最大 600.5ms，第二轮 51.4 FPS / P95 33.4ms / 最大 133.3ms。P95 改善但不判定无卡顿通过：第一轮 598.8ms 脚本落在 bakeHighSnapshot-b3C-6i8s.js 字符位置 88054，映射共享 scheduleAfterBrowserPaint 的定时回调，尚不能据此识别具体下游任务；第二轮仍有 urlToImageData IMG.onload 26–30ms 以及无完整脚本归因的 80–107ms render 段。不能按阶段标签断言 GPU，也不能把第二轮热态最大值代替第一轮长尖峰。78 项 Web 回归、typecheck、修改文件 lint（零错误、8 条既有警告）、完整发布参数 build:release、Cloud artifact 及原包体门禁均通过。此次只处理预览调度，Worker 像素/PNG 与剩余长帧继续分阶段定位，不降低 QA 或输出质量。
+
+变更卡 `CHG-20260903-TEXTURE-PREVIEW-QUEUE`：UI-05/UI-09/UI-11 → M08，`ALG-LR-011` v1.1.0（显示预览消费者调度），实施 Codex、体验验收维护者。原九模型贴图页 36 次切换测得 25.5 FPS、P95 133.3ms、最大 166.7ms；LoAF 151.1ms 中多个 IMG.onload 为 46–56.7ms，定位到图像读取及其后续处理，不据阶段标签归因 GPU。折叠对照因模型恢复自动展开图层面板而无效。本次把 display/capture-mask UI 预览合用串行队列，前台沿用 180ms 交互安静窗口、32ms 任务检查；旧消费者卸载用 AbortSignal 释放，最后消费者退出取消排队与后续阶段，其他消费者仍存活的共享任务保留。运行中的浏览器图像解码不会被强制中断，但迟到结果不缓存、不发布，CPU 后续阶段再检查交互与取消。完成缓存按 source/depth 或 source/mask/contentRevision 识别并按 LRU 更新，最多 64 项 / 32 MiB 编码字符串估算（每字符两字节，含 key），不缓存 ImageData，不淘汰仍有消费者的运行任务；失败不污染缓存。模型归属变化不自动展开图层面板，同模型显式换层仍沿用打开行为。多视图无结果卡、折叠/隐藏的生成面板不启动显示预览；独立预览模态打开时仍可处理，不卸载生成任务/表单。1024 显示上限、颜色/深度/mask/裁切/PNG 像素公式与原图、投影、UV、GPU、Worker/shader、持久化和导出均不变；Schema、Project Command 幂等性、Revision CAS、ownership 与资产不变，无迁移。回退只移除 UI 调度队列和面板可见性/归属保护，不删除工程。`test:display-preview-queue` 覆盖 71 次过期切换零处理、共享取消、运行任务晚到与同 key 重获、27 预览缓存、LRU/字节上限、失败重试、后台无需 rAF 和面板归属；实际预览分派、像素、图层可见性/保留、选中框、typecheck/lint/build 另测。此为第一阶段，未宣称已将像素处理/PNG 移至 Worker，真实新构建帧时间仍须同项目、同样展开面板复测。
 
 2026-09-03 CI 包体修复（M08 / `ALG-LR-011`，M15 验证）：流水线 624621 的构建及 Cloud artifact 检查成功，总 JavaScript 为 3,122,032 字节，超过 3,122,000 字节门禁 32 字节。生成预览分派在排除 undefined 后只有 capture-mask / generated-display 两种模式，移除不可达的 subject-filled 旧回退及其导入，让构建裁剪无消费者的旧预览路径；两种可达处理及源图回退保持不变。算法版本、Schema、GPU/CPU/Worker/shader、投影、持久化及导出语义不变，无数据迁移；回退仅恢复该导入和不可达分支。禁止通过提高预算或关闭质量检查解决本次失败；验证须使用 CI 的完整发布身份参数。本地以完整发布参数执行 build:release、check:cloud-artifact、check:web-bundle-budget，通过 79 chunks / 3,119,610 bytes；test:generation-preview-edge-decontamination 执行实际分派表达式和两条像素处理回归通过。此结果不代表远端新流水线已经通过。
 
@@ -336,7 +340,7 @@ UI-09 剪刀
 | `ALG-LR-008` 延迟投影持久化 | `2.4.2` | interactive UV bake 固定关闭；生图前 Project Command snapshot 后台执行。蒙版工具/生图开始即并行编译并持有 exact overlay 程序，预读作者蒙版；返图颜色缩放与 falloff 并行。内存 Session 按 Generation/目标复用活动任务。高清读取和 GPU 准备有 20 秒预算；仅背景栈已有行进入 resident 等待，单层直接蒙版登记完整、辅助网格排除，交接失败明确结束会话。Session 驱动按钮，DOM 仅诊断；pointer-up 两帧内发布权威图层行，idle 3000ms 仅合并持久化，needsRebake=true；提交/GPU 准备调度含隐藏页兜底，不替代真实呈现交接 |
 | `ALG-LR-009` Inward Crossfade 栈合成 | `1.0.0` | 连续重绘层向内部交叉淡化，避免普通 alpha stacking 在边缘重复显露接缝 |
 | `ALG-LR-010` Provider 兼容编辑 | `1.0.0-compat` | `LocalRepaintDialog` 的 image/edit/protect/hole masks 独立路径，不得与四输入主路径混改 |
-| `ALG-LR-011` 生图透明显示副本 | `1.0.1` | UI-05 重绘效果图和 UI-10 普通投射图层缩略图优先使用 capture linear-view depth 清除明确无几何覆盖的背景，按精确 alpha bounds 仅裁切一次并保留 6% 留白；几何覆盖区的 RGB/alpha 原样保留。深度不可用时只清除与画布边缘连通的近黑外背景，不做第二次 matte、侵蚀或分位裁边。局部重绘图层不走整图副本，继续使用用户涂绘 mask，只显示笔刷授权区域；缩略图仅在面板内实际可见时挂载像素预览消费者 |
+| `ALG-LR-011` 生图透明显示副本 | `1.1.0` | UI-05 重绘效果图和 UI-10 普通投射图层缩略图优先使用 capture linear-view depth 清除明确无几何覆盖的背景，按精确 alpha bounds 仅裁切一次并保留 6% 留白；几何覆盖区的 RGB/alpha 原样保留。深度不可用时只清除与画布边缘连通的近黑外背景，不做第二次 matte、侵蚀或分位裁边。局部重绘图层不走整图副本，继续使用用户涂绘 mask，只显示笔刷授权区域；实际可见消费者串行、交互空闲调度，支持共享取消与 source/depth/mask/revision 有界 LRU；切模型不强制展开图层面板 |
 | `ALG-LR-012` 远端重绘输入融合 | `1.1.0` | 专用 Worker 从原始连续 mask 派生 ModelView 合成核：候选/强核阈值为 24/96，8 邻域保留含强核的连通域，应用 `clamp(0.012×mask短边, 2, 6)px@2K` 闭运算、小于 `max(24px², bbox×0.02%)@2K` 的孤岛过滤和小于 `max(64px², bbox×0.05%)@2K` 的封闭孔填充；`composite=current×(1-a)+clay×a` 使用全不透明核和约 1.5px@2K 窄边羽化。远端 mask 从清理后核再按 `clamp(0.25×核短边, 24, 64)px@2K` 外扩、`clamp(0.2×外扩, 4, 10)px@2K` 羽化。Qwen、Capture、Generation 画笔授权与历史恢复仍使用未外扩、未清理的原始作者 mask |
 
 局部生图远端接收生成阶段的 RGB selection mask，但仍不接收 UV 图集、表面深度或用户最终回贴 coverage。远端 latent mask 不承诺蒙版外像素逐点不变；浏览器继续用同一 `allowedMaskUrl`、capture camera 和 depth guard 限制 3D 写回，用户通过表面画笔决定最终图层 coverage。这些几何授权契约与旧版保持一致。
@@ -691,5 +695,7 @@ M15 / CLOUD-DEPLOYMENT v1.0.0（2026-09-03）：正常合并 release 部署历�
 | `2.16.7` | 2026-09-03 | `本次隐藏缩略图消费者门控` | UI-09/M08、`ALG-LR-011` v1.0.1：以真实 LoAF 定位多模型切换时隐藏图层缩略图的同步像素处理；不可见/零面积时不挂载预览消费者，可见后使用原完整管线。无图像公式、输出质量、Schema 或资产迁移；页面体验待新构建复测。 |
 | `2.16.8` | 2026-09-03 | `本次局部重绘后台任务等待修复` | UI-05/UI-06/M08、`ALG-LR-008` v2.4.2：提交及返图 GPU 准备不再依赖裸 rAF，使用既有后台兜底；保留真实呈现、画笔互斥与任务身份校验。不保证冻结/丢弃页执行，无 Schema、图像质量或资产迁移。 |
 | `2.16.9` | 2026-09-03 | `本次选中边框所有权修复` | UI-04/UI-06/M03、`ALG-VIEW-SELECT-001` v1.0.1：呈现前核对权威选择，捕获恢复只执行一次，避免旧显隐/材质快照回写。保留资源复用、静止帧零 bounds 上传；无捕获像素、画质、Schema 或数据迁移。 |
+| `2.16.10` | 2026-09-03 | `a06f421` | 移除不可达的旧预览分支；完整发布参数构建及包体门禁通过，不提高预算、不改变可达像素处理。 |
+| `2.16.11` | 2026-09-03 | `本次贴图预览任务调度` | M08、`ALG-LR-011` v1.1.0：串行空闲预览、消费者取消、有界 LRU、隐藏结果门控及面板归属保护；78 项 Web 回归通过，完整发布参数包体 3,121,381 字节低于原门禁。无图像公式、输出分辨率或持久化迁移。 |
 
 `ALG-LR-008` v2.4.1：局部重绘仍自动创建独立目标和结果图层；pointer-down 不再依赖当前图层是否选中、可见或为 UV，只检查自身 source/composite/Session/显示资源。默认保持按钮激活、GPU promotion、结果发布前的原选择（含 undefined），防止内部隐藏 draft 触发面板选择普通投影层。普通画笔/橡皮擦限制、GPU/CPU/Worker/shader、作者 mask、投影/UV/export、分辨率、Schema、Revision、ownership 与资产不变。真实 store 三类选择与入口 gate 回归通过；无数据迁移，回退选择保持与 gate 即可。详见 CHG-20260903-LOCAL-REPAINT-SELECTION-INDEPENDENCE。

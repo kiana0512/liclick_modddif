@@ -87,6 +87,7 @@
     "test:model-selection-residency": "node scripts/test-model-selection-residency.mjs",
     "test:layer-thumbnail-visibility": "node scripts/test-layer-thumbnail-visibility.mjs",
     "test:local-repaint-background-scheduling": "node scripts/test-local-repaint-background-scheduling.mjs",
+    "test:display-preview-queue": "node scripts/test-display-preview-queue.mjs",
     "test:regression": "corepack pnpm --filter @liclick/contracts build && node scripts/run-regression-suite.mjs",
     "smoke:sites-auth": "node scripts/smoke-sites-auth.mjs",
     "lint": "eslint .",
