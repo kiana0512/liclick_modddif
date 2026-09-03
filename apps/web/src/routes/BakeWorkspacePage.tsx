@@ -5,7 +5,6 @@ import {
   useRef,
   useState,
   type DragEvent,
-  type KeyboardEvent as ReactKeyboardEvent,
   type ReactNode,
 } from 'react';
 import {
@@ -183,7 +182,6 @@ const bakeFileInputIds = {
   high: 'li3d-bake-high-file',
   low: 'li3d-bake-low-file',
   cage: 'li3d-bake-cage-file',
-  material: 'li3d-bake-material-file',
   color: 'li3d-bake-color-file',
   roughness: 'li3d-bake-roughness-file',
   metallic: 'li3d-bake-metallic-file',
@@ -326,7 +324,6 @@ export function BakeWorkspacePage({
   const highInputRef = useRef<HTMLInputElement>(null);
   const lowInputRef = useRef<HTMLInputElement>(null);
   const cageInputRef = useRef<HTMLInputElement>(null);
-  const materialInputRef = useRef<HTMLInputElement>(null);
   const colorInputRef = useRef<HTMLInputElement>(null);
   const roughnessInputRef = useRef<HTMLInputElement>(null);
   const metallicInputRef = useRef<HTMLInputElement>(null);
@@ -1255,7 +1252,6 @@ export function BakeWorkspacePage({
       | 'high'
       | 'low'
       | 'cage'
-      | 'material'
       | 'color'
       | 'roughness'
       | 'metallic'
@@ -1267,7 +1263,6 @@ export function BakeWorkspacePage({
       high: highInputRef.current,
       low: lowInputRef.current,
       cage: cageInputRef.current,
-      material: materialInputRef.current,
       color: colorInputRef.current,
       roughness: roughnessInputRef.current,
       metallic: metallicInputRef.current,
@@ -1840,88 +1835,6 @@ export function BakeWorkspacePage({
           onOpenBake: () => undefined,
         }}
       >
-        <input
-          id={bakeFileInputIds.high}
-          ref={highInputRef}
-          className="sr-only"
-          type="file"
-          multiple
-          accept=".fbx,.obj,.glb,.gltf,.bin,.mtl,image/*"
-          onChange={(event) => void handleHighImport(Array.from(event.target.files ?? []))}
-        />
-        <input
-          id={bakeFileInputIds.low}
-          ref={lowInputRef}
-          className="sr-only"
-          type="file"
-          multiple
-          accept=".fbx,.obj,.glb,.gltf"
-          onChange={(event) => {
-            handleLowImport(Array.from(event.target.files ?? []));
-            event.target.value = '';
-          }}
-        />
-        <input
-          id={bakeFileInputIds.material}
-          ref={materialInputRef}
-          className="sr-only"
-          type="file"
-          multiple
-          accept="image/png,image/jpeg,image/webp,.tga"
-          onChange={(event) => {
-            handleMaterialImport(Array.from(event.target.files ?? []));
-            event.target.value = '';
-          }}
-        />
-        <input
-          id={bakeFileInputIds.color}
-          ref={colorInputRef}
-          className="sr-only"
-          type="file"
-          multiple
-          accept="image/png,image/jpeg,image/webp,.tga"
-          onChange={(event) => {
-            handleColorImport(Array.from(event.target.files ?? []));
-            event.target.value = '';
-          }}
-        />
-        <input
-          id={bakeFileInputIds.roughness}
-          ref={roughnessInputRef}
-          className="sr-only"
-          type="file"
-          multiple
-          accept="image/png,image/jpeg,image/webp,.tga"
-          onChange={(event) => {
-            handleMaterialChannelImport('roughness', Array.from(event.target.files ?? []));
-            event.target.value = '';
-          }}
-        />
-        <input
-          id={bakeFileInputIds.metallic}
-          ref={metallicInputRef}
-          className="sr-only"
-          type="file"
-          multiple
-          accept="image/png,image/jpeg,image/webp,.tga"
-          onChange={(event) => {
-            handleMaterialChannelImport('metallic', Array.from(event.target.files ?? []));
-            event.target.value = '';
-          }}
-        />
-        <input
-          id={bakeFileInputIds.normal}
-          ref={normalInputRef}
-          className="sr-only"
-          type="file"
-          multiple
-          accept="image/png,image/jpeg,image/webp,.tga"
-          onChange={(event) => {
-            handleMaterialChannelImport('normal', Array.from(event.target.files ?? []));
-            event.target.value = '';
-          }}
-        />
-
         {materialDialogOpen ? (
           <div
             className="fixed inset-0 z-[105] grid place-items-center bg-black/82 p-5 backdrop-blur-md"
@@ -1960,7 +1873,24 @@ export function BakeWorkspacePage({
               </div>
               <div className="workflow-scrollbar grid min-h-0 gap-3 overflow-y-auto p-5 sm:p-6">
                 <MaterialMapSlot
-                  inputId={bakeFileInputIds.color}
+                  pickerInput={
+                    <input
+                      id={bakeFileInputIds.color}
+                      ref={colorInputRef}
+                      className="absolute inset-0 z-10 h-full w-full cursor-pointer opacity-0"
+                      type="file"
+                      multiple
+                      accept="image/png,image/jpeg,image/webp,.tga"
+                      aria-label="导入 Base Color 贴图"
+                      onClick={(event) => {
+                        event.currentTarget.value = '';
+                      }}
+                      onChange={(event) => {
+                        handleColorImport(Array.from(event.target.files ?? []));
+                        event.target.value = '';
+                      }}
+                    />
+                  }
                   label="Base Color"
                   description="颜色 / Albedo"
                   fileName={selectedColorName}
@@ -2145,7 +2075,27 @@ export function BakeWorkspacePage({
                 </MaterialMapSlot>
                 {roughnessSource === 'manual' ? (
                   <MaterialMapSlot
-                    inputId={bakeFileInputIds.roughness}
+                    pickerInput={
+                      <input
+                        id={bakeFileInputIds.roughness}
+                        ref={roughnessInputRef}
+                        className="absolute inset-0 z-10 h-full w-full cursor-pointer opacity-0"
+                        type="file"
+                        multiple
+                        accept="image/png,image/jpeg,image/webp,.tga"
+                        aria-label="导入 Roughness 贴图"
+                        onClick={(event) => {
+                          event.currentTarget.value = '';
+                        }}
+                        onChange={(event) => {
+                          handleMaterialChannelImport(
+                            'roughness',
+                            Array.from(event.target.files ?? []),
+                          );
+                          event.target.value = '';
+                        }}
+                      />
+                    }
                     label="Roughness"
                     description="黑色光滑，白色粗糙"
                     fileName={selectedRoughness?.name}
@@ -2155,7 +2105,27 @@ export function BakeWorkspacePage({
                   />
                 ) : null}
                 <MaterialMapSlot
-                  inputId={bakeFileInputIds.metallic}
+                  pickerInput={
+                    <input
+                      id={bakeFileInputIds.metallic}
+                      ref={metallicInputRef}
+                      className="absolute inset-0 z-10 h-full w-full cursor-pointer opacity-0"
+                      type="file"
+                      multiple
+                      accept="image/png,image/jpeg,image/webp,.tga"
+                      aria-label="导入 Metallic 贴图"
+                      onClick={(event) => {
+                        event.currentTarget.value = '';
+                      }}
+                      onChange={(event) => {
+                        handleMaterialChannelImport(
+                          'metallic',
+                          Array.from(event.target.files ?? []),
+                        );
+                        event.target.value = '';
+                      }}
+                    />
+                  }
                   label="Metallic"
                   description="黑色非金属，白色金属"
                   fileName={selectedMetallic?.name}
@@ -2164,7 +2134,27 @@ export function BakeWorkspacePage({
                   onFilesDropped={(files) => handleMaterialChannelImport('metallic', files)}
                 />
                 <MaterialMapSlot
-                  inputId={bakeFileInputIds.normal}
+                  pickerInput={
+                    <input
+                      id={bakeFileInputIds.normal}
+                      ref={normalInputRef}
+                      className="absolute inset-0 z-10 h-full w-full cursor-pointer opacity-0"
+                      type="file"
+                      multiple
+                      accept="image/png,image/jpeg,image/webp,.tga"
+                      aria-label="导入 Normal 贴图"
+                      onClick={(event) => {
+                        event.currentTarget.value = '';
+                      }}
+                      onChange={(event) => {
+                        handleMaterialChannelImport(
+                          'normal',
+                          Array.from(event.target.files ?? []),
+                        );
+                        event.target.value = '';
+                      }}
+                    />
+                  }
                   label="Normal"
                   description="切线空间法线贴图"
                   fileName={selectedNormal?.name}
@@ -2304,7 +2294,25 @@ export function BakeWorkspacePage({
                   ready={Boolean(selectedHigh)}
                   icon={Box}
                   tone="violet"
-                  inputId={bakeFileInputIds.high}
+                  pickerInput={
+                    <input
+                      id={bakeFileInputIds.high}
+                      ref={highInputRef}
+                      className="absolute inset-0 z-30 h-full w-full cursor-pointer opacity-0"
+                      type="file"
+                      multiple
+                      accept=".fbx,.obj,.glb,.gltf,.bin,.mtl,image/*"
+                      aria-label="选择高模文件"
+                      onClick={(event) => {
+                        fileTargetIdRef.current =
+                          selectedHigh?.id ?? selectedObjectId ?? handoff?.objectId;
+                        event.currentTarget.value = '';
+                      }}
+                      onChange={(event) =>
+                        void handleHighImport(Array.from(event.target.files ?? []))
+                      }
+                    />
+                  }
                   actionLabel={highImporting ? '正在导入…' : selectedHigh ? '替换高模' : '选择高模'}
                   onClick={() => chooseFiles('high')}
                   onFilesDropped={(files) => void handleHighImport(files)}
@@ -2330,7 +2338,26 @@ export function BakeWorkspacePage({
                   warning={Boolean(selectedLowInfo && (!hasUv0 || alignmentMismatch))}
                   icon={Layers3}
                   tone="cyan"
-                  inputId={bakeFileInputIds.low}
+                  pickerInput={
+                    <input
+                      id={bakeFileInputIds.low}
+                      ref={lowInputRef}
+                      className="absolute inset-0 z-30 h-full w-full cursor-pointer opacity-0"
+                      type="file"
+                      multiple
+                      accept=".fbx,.obj,.glb,.gltf"
+                      aria-label="选择低模文件"
+                      onClick={(event) => {
+                        fileTargetIdRef.current =
+                          selectedHigh?.id ?? selectedObjectId ?? handoff?.objectId;
+                        event.currentTarget.value = '';
+                      }}
+                      onChange={(event) => {
+                        handleLowImport(Array.from(event.target.files ?? []));
+                        event.target.value = '';
+                      }}
+                    />
+                  }
                   actionLabel={selectedLow ? '替换低模' : '选择模型'}
                   onClick={() => chooseFiles('low')}
                   onFilesDropped={handleLowImport}
@@ -3385,7 +3412,7 @@ export function BakeWorkspacePage({
 }
 
 function MaterialMapSlot({
-  inputId,
+  pickerInput,
   label,
   description,
   fileName,
@@ -3394,7 +3421,7 @@ function MaterialMapSlot({
   onFilesDropped,
   children,
 }: {
-  inputId: string;
+  pickerInput: ReactNode;
   label: string;
   description: string;
   fileName?: string;
@@ -3438,10 +3465,8 @@ function MaterialMapSlot({
         onFilesDropped(Array.from(event.dataTransfer.files));
       }}
     >
-      <label
-        htmlFor={inputId}
-        className="flex w-full items-center gap-4 px-4 py-3.5 text-left"
-      >
+      <div className="relative flex w-full items-center gap-4 px-4 py-3.5 text-left">
+        {pickerInput}
         <span
           className={cn(
             'grid h-14 w-14 shrink-0 place-items-center overflow-hidden rounded-xl border',
@@ -3472,7 +3497,7 @@ function MaterialMapSlot({
         <span className="text-xs font-medium text-white/42 transition-colors group-hover:text-white/72">
           {fileName ? '替换' : '导入'}
         </span>
-      </label>
+      </div>
       {children ? <div className="border-t border-white/[0.07]">{children}</div> : null}
     </div>
   );
@@ -3488,7 +3513,7 @@ function OneClickAssetCard({
   warning = false,
   icon: Icon,
   tone,
-  inputId,
+  pickerInput,
   actionLabel,
   onClick,
   onFilesDropped,
@@ -3503,7 +3528,7 @@ function OneClickAssetCard({
   warning?: boolean;
   icon: LucideIcon;
   tone: 'violet' | 'cyan' | 'rose';
-  inputId?: string;
+  pickerInput?: ReactNode;
   actionLabel: string;
   onClick: () => void;
   onFilesDropped: (files: File[]) => void;
@@ -3528,14 +3553,7 @@ function OneClickAssetCard({
     cyan: 'border-cyan-200/70 bg-[#071e28]/92 text-cyan-50',
     rose: 'border-fuchsia-200/70 bg-[#241027]/92 text-fuchsia-50',
   }[tone];
-  const Root = inputId ? 'label' : 'button';
-
-  function handleFileLabelKeyDown(event: ReactKeyboardEvent<HTMLElement>) {
-    if (!inputId || (event.key !== 'Enter' && event.key !== ' ')) return;
-    event.preventDefault();
-    const input = document.getElementById(inputId);
-    if (input instanceof HTMLInputElement) openBakeFilePicker(input);
-  }
+  const Root = pickerInput ? 'div' : 'button';
 
   function handleDragEnter(event: DragEvent<HTMLElement>) {
     event.preventDefault();
@@ -3562,15 +3580,14 @@ function OneClickAssetCard({
 
   return (
     <Root
-      {...(inputId ? { htmlFor: inputId, role: 'button', tabIndex: 0 } : { type: 'button' })}
+      {...(pickerInput ? {} : { type: 'button' })}
       className={cn(
         'group relative min-h-[270px] overflow-hidden rounded-2xl border bg-gradient-to-br text-left transition-all duration-300 hover:-translate-y-1 hover:bg-white/[0.035] hover:shadow-[0_20px_50px_rgba(0,0,0,.22)]',
         toneClass,
         dragActive && 'scale-[1.015] shadow-[0_24px_60px_rgba(0,0,0,.34)]',
       )}
       title={`点击选择，或将${dropHint}拖到此处`}
-      onClick={inputId ? undefined : onClick}
-      onKeyDown={inputId ? handleFileLabelKeyDown : undefined}
+      onClick={pickerInput ? undefined : onClick}
       onDragEnter={handleDragEnter}
       onDragOver={(event) => {
         event.preventDefault();
@@ -3580,6 +3597,7 @@ function OneClickAssetCard({
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
     >
+      {pickerInput}
       {dragActive ? (
         <span
           className={cn(

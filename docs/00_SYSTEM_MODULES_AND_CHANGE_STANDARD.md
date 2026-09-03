@@ -90,7 +90,7 @@ LI3D Cloud 控制面（无状态 Node.js App）
 
 `UI-13 → UI-14` 的 UV/烘焙交接只把最新 `uv-model/low-model` 写入 Bake Set 的 `low`；UV 输入的 `high-model/model` 仅保留为 Pipeline 来源证据，不得自动写入或恢复为烘焙高模。烘焙页固定从资产阶段开始，高模由用户显式导入并保存为 Bake 专用 `high/highObject`；若 UV 低模已就绪，手动高模复用该 Bake Set objectId 后进入对齐阶段。历史工程中引用 Pipeline 高模资产的旧自动快照在读取时忽略但不删除；用户曾显式导入且不属于 Pipeline 的高模继续恢复。Project Pipeline、Bake Workspace Schema 与 Revision 协议版本不变，无批量迁移；回退可恢复旧自动高模 hydration，已有低模、高模与历史资产均不得删除。
 
-`UI-14` 一键烘焙的高模、低模与四类材质贴图入口必须由原生 `<label htmlFor>` 直接关联仍在渲染树中的视觉隐藏 `<input type="file">`；专业页按钮优先调用同一用户手势内的 `showPicker()`，仅为旧浏览器保留 `click()` 回退。不得使用 `display:none` 文件输入作为唯一选择入口，否则受管 Chromium/远端 HTTP 页面可能不产生文件选择事件。拖放、格式/UV 校验、对象配对、资产上传和 Bake Workspace 持久化语义不变。
+`UI-14` 一键烘焙的高模、低模与四类材质贴图入口必须让实际 `<input type="file">` 以透明覆盖层直接承接用户指针事件，不得依赖 `display:none` 输入、程序化 `click()` 或 label 转发作为唯一选择入口；专业页按钮优先调用同一用户手势内的 `showPicker()`，仅为旧浏览器保留 `click()` 回退。拖放、格式/UV 校验、对象配对、资产上传和 Bake Workspace 持久化语义不变。
 
 `2568e40` 基线的新选择契约：贴图工作区优先显示用户显式选择的模型；所选 ID 缺失时回退到活动模型；点击空白视口不清空贴图模型选择。超过 20,000 三角面的 Auto UV 错误使用醒目的警告呈现。对应测试为 `test:multi-model-restore-policy`。
 
@@ -645,3 +645,4 @@ M15 体积修复：锁定 `terser@5.51.2` 两轮安全压缩，保留日志和�
 | `2.15.2` | 2026-09-02 | `本次投影橡皮显隐持久修复` | UI-06/UI-10、M05/M06/M08、`ALG-ERASE-001` v1.3.2：纹理数组键纳入 live keep-mask revision，取消旧蒙版快照并重打包当前像素；新 array 驻留前保留累计 live multiplier，原子发布后再清除，修复擦除后关闭/重开图层预览恢复旧效果。direct 路径、覆盖、历史、补缝、持久化、分辨率、Schema、Revision、ownership 与资产类别不变，无迁移。 |
 | `2.15.3` | 2026-09-02 | `本次投影蒙版统一原子交接修复` | UI-06/UI-10、M05/M06/M08、`ALG-ERASE-001` v1.3.3：按本地真实源码链路消除输入层与材质层的双重清理权；`endLiveEraserPreview()` 只结束输入/注册表状态，SceneRoot 根据已提交结构键独占 GPU live multiplier 到持久 keep-mask 的原子交接。覆盖 A100 逐层显示常见的 direct 路径和多层 array 路径，修复本地快路径正常而 A100 慢恢复路径关开预览丢失擦除的差异。覆盖、历史、补缝、持久化、分辨率、Schema、Revision、ownership 与资产类别不变，无迁移。 |
 | `2.15.4` | 2026-09-02 | `本次烘焙资产文件选择修复` | UI-14/M10：A100 实际页面复现低模卡片未产生 filechooser；将一键烘焙高低模卡片和 Base Color/Roughness/Metallic/Normal 槽位改为原生 label-input 关联，文件输入从 `display:none` 改为视觉隐藏但保持渲染，专业页统一优先 `showPicker()` 并保留 click 回退。修复受管 Edge/HTTP 部署中低模与材质贴图无法选择的问题；拖放、格式/UV 校验、配对、上传、Schema、Revision、ownership 与资产类别不变，无迁移。 |
+| `2.15.5` | 2026-09-03 | `本次烘焙原生文件控件直达修复` | UI-14/M10：A100 实测 label-input 转发仍未稳定触发文件选择；一键烘焙高低模卡片与 Base Color/Roughness/Metallic/Normal 槽位改由透明的真实文件输入覆盖点击区域，用户手势直接命中文件控件，不再经过程序化唤起或 label 转发。专业页 `showPicker()` 回退、拖放、格式/UV 校验、配对、上传、Schema、Revision、ownership 与资产类别不变，无迁移。 |

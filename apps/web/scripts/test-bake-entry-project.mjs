@@ -15,13 +15,20 @@ assert.match(
 );
 assert.match(
   bakeWorkspaceSource,
-  /id=\{bakeFileInputIds\.low\}[\s\S]*?className="sr-only"[\s\S]*?inputId=\{bakeFileInputIds\.low\}/,
-  'The one-click low-poly card must target a rendered, visually hidden native file input.',
+  /pickerInput=\{\s*<input[\s\S]*?id=\{bakeFileInputIds\.low\}[\s\S]*?className="absolute inset-0 z-30 h-full w-full cursor-pointer opacity-0"[\s\S]*?aria-label="选择低模文件"/,
+  'The one-click low-poly card must be covered by the real native file input.',
 );
 assert.match(
   bakeWorkspaceSource,
-  /function MaterialMapSlot[\s\S]*?<label[\s\S]*?htmlFor=\{inputId\}/,
-  'Material-map slots must use native label-to-input activation instead of a programmatic hidden-input click.',
+  /function MaterialMapSlot[\s\S]*?<div className="relative flex w-full items-center gap-4 px-4 py-3\.5 text-left">\s*\{pickerInput\}/,
+  'Material-map slots must embed the real native file input over the clickable row.',
+);
+assert.equal(
+  bakeWorkspaceSource.match(
+    /className="absolute inset-0 z-10 h-full w-full cursor-pointer opacity-0"/g,
+  )?.length,
+  4,
+  'Base Color, Roughness, Metallic and Normal must each use a direct native picker overlay.',
 );
 const server = await createServer({
   root,
