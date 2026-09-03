@@ -91,6 +91,7 @@
     "test:local-repaint-background-scheduling": "node scripts/test-local-repaint-background-scheduling.mjs",
     "test:display-preview-queue": "node scripts/test-display-preview-queue.mjs",
     "test:regression": "corepack pnpm --filter @liclick/contracts build && node scripts/run-regression-suite.mjs",
+    "test:live-projected-texture-registry": "node --test src/engine/projection/__tests__/liveProjectedCanvasTextureRegistry.test.mjs",
     "smoke:sites-auth": "node scripts/smoke-sites-auth.mjs",
     "lint": "eslint .",
     "typecheck": "tsc -b --noEmit"
