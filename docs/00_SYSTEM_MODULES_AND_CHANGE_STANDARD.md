@@ -1,6 +1,6 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
-> 文档版本：`2.16.17`
+> 文档版本：`2.16.18`
 >
 > 生效日期：`2026-09-03`
 >
@@ -711,6 +711,7 @@ M15 / CLOUD-DEPLOYMENT v1.0.0（2026-09-03）：正常合并 release 部署历�
 | `2.16.15` | 2026-09-03 | `本次投影橡皮纹理级原子交接修复` | UI-06/UI-10、M03/M06/M12、`ALG-ERASE-001` v1.3.4：普通 projected 橡皮提交和历史恢复直接把正式全分辨率 CanvasTexture 提升到所有驻留材质，验证全部绑定后才撤下实时 multiplier；图层、眼睛或预览在提交中切换时保留 root，最后一个 pending commit 完成后再清理。修复擦除后切换图层/预览旧内容回弹、刷新后才恢复的问题；覆盖公式、补缝、持久化、分辨率、Schema、资产与 ownership 不变，无迁移。 |
 | `2.16.16` | 2026-09-03 | `本次场景变换手柄视觉中心修复` | UI-04/M03/M12、`OBJECT-TRANSFORM-PIVOT` v1.0.0：场景移动、旋转、缩放不再把 TransformControls 直接绑定到可能带 FBX/GLTF 原始枢轴偏移的模型根节点，而以当前世界包围盒中心创建独立代理枢轴；拖动期间用代理世界矩阵相对起点的增量驱动完整模型，正确换算父级矩阵，结束后仍走既有 Transform、BoundingBox、Project 保存与历史事务。切换模型、撤回或外部变换会重新对齐代理；不修改模型层级、顶点、导入归一化、场景排列、Schema、Revision、资产或 ownership，无迁移。 |
 | `2.16.17` | 2026-09-03 | `本次局部重绘结果图层自动选择修复` | UI-06/UI-10/M08、`LOCAL-REPAINT-RESULT-SELECTION` v1.0.0：新局部重绘结果真正发布到可见图层栈时保持 `setLayers` 对首个可见新结果的选择，使其立即高亮并成为当前编辑层；已发布结果的后台刷新、空白目标准备、GPU 预热仍保留用户当时选择，不提前跳层，也不强制展开图层面板。投影、蒙版、GPU/CPU/Worker/shader、UV/export、Schema、Revision、ownership 与资产不变，无迁移。 |
+| `2.16.18` | 2026-09-03 | `本次项目恢复模型贴图原子显示修复` | UI-04/M02/M03/M12、`PROJECT-TEXTURED-ATOMIC-REVEAL` v1.0.0：刷新或打开项目时，服务端项目数据返回前显示页面加载动画；进入视口后，每个恢复模型在自身位置独立显示旋转动画，bounds、outline 与 512px proxy 保持隐藏，只在该模型 full 阶段且权威 UV/投影材质绑定完成后立即单独显示，不等待其他模型。无贴图模型在 full 阶段显示最终白模；普通手动导入不延迟。合并性能版与本次功能后的生产 JS 实测 3,125,470 bytes，总预算重定标为 3,134,000 bytes，仍保留约 8 KiB 余量且 shell/editor/bake/shared 分包硬门禁不变。模型、材质、投影、UV、Schema、Revision、资产与 ownership 不变，无迁移。 |
 
 `ALG-LR-008` v2.4.1：局部重绘仍自动创建独立目标和结果图层；pointer-down 不再依赖当前图层是否选中、可见或为 UV，只检查自身 source/composite/Session/显示资源。默认保持按钮激活、GPU promotion、结果发布前的原选择（含 undefined），防止内部隐藏 draft 触发面板选择普通投影层。普通画笔/橡皮擦限制、GPU/CPU/Worker/shader、作者 mask、投影/UV/export、分辨率、Schema、Revision、ownership 与资产不变。真实 store 三类选择与入口 gate 回归通过；无数据迁移，回退选择保持与 gate 即可。详见 CHG-20260903-LOCAL-REPAINT-SELECTION-INDEPENDENCE。
 

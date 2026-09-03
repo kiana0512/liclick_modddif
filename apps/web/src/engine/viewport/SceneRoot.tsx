@@ -1261,6 +1261,56 @@ function TopologyWireframeOverlay({
   return <primitive object={overlay.group} />;
 }
 
+function ModelRestoreLoadingIndicator({ object }: { object: THREE.Object3D }) {
+  const billboardRef = useRef<THREE.Group>(null);
+  const spinnerRef = useRef<THREE.Group>(null);
+  const frame = useMemo(() => {
+    object.updateWorldMatrix(true, true);
+    const bounds = new THREE.Box3().setFromObject(object);
+    const center = bounds.isEmpty()
+      ? object.getWorldPosition(new THREE.Vector3())
+      : bounds.getCenter(new THREE.Vector3());
+    const size = bounds.isEmpty() ? 1 : bounds.getSize(new THREE.Vector3()).length();
+    return { center, radius: THREE.MathUtils.clamp(size * 0.055, 0.08, 0.28) };
+  }, [object]);
+
+  useFrame(({ camera, clock }, delta) => {
+    if (billboardRef.current) billboardRef.current.quaternion.copy(camera.quaternion);
+    if (!spinnerRef.current) return;
+    spinnerRef.current.rotation.z -= delta * 2.8;
+    spinnerRef.current.scale.setScalar(1 + Math.sin(clock.elapsedTime * 4) * 0.08);
+  });
+
+  return (
+    <group ref={billboardRef} position={frame.center} renderOrder={1000}>
+      <group ref={spinnerRef}>
+        <mesh>
+          <torusGeometry args={[frame.radius, frame.radius * 0.13, 8, 48, Math.PI * 1.55]} />
+          <meshBasicMaterial
+            color="#e24acb"
+            depthTest={false}
+            depthWrite={false}
+            toneMapped={false}
+            transparent
+            opacity={0.95}
+          />
+        </mesh>
+        <mesh>
+          <circleGeometry args={[frame.radius * 0.12, 20]} />
+          <meshBasicMaterial
+            color="#ffffff"
+            depthTest={false}
+            depthWrite={false}
+            toneMapped={false}
+            transparent
+            opacity={0.9}
+          />
+        </mesh>
+      </group>
+    </group>
+  );
+}
+
 const ImportedModel = memo(function ImportedModel({
   importedModel,
   onSelect,
@@ -1420,20 +1470,20 @@ const ImportedModel = memo(function ImportedModel({
   );
   const initialMaterialPresentationReadyForGroup = presentedMaterialGroup === importedModel.group;
   const initialMaterialPresentationVisibleForGroup =
-    // With no authored texture, the white membrane is the final presentation,
-    // not a temporary placeholder. Keep the replacement Group visible in the
-    // same React commit so progressive restore cannot produce a one-frame wipe.
-    !hasAuthoritativeVisibleTextureLayer ||
-    importedModel.restoreStage === 'bounds' ||
-    importedModel.group.userData.liclickRestoreOutlinePrepared === true ||
-    initialMaterialPresentationReadyForGroup;
+    // Imported models remain immediate. Project restoration, however, must not
+    // expose bounds, flat outlines or a 512px proxy before the exact material
+    // is ready. A textureless full-stage model may show its final white material.
+    !importedModel.restoreStage ||
+    (importedModel.restoreStage === 'full' &&
+      (!hasAuthoritativeVisibleTextureLayer || initialMaterialPresentationReadyForGroup));
   const revealInitialMaterialPresentation = useCallback(() => {
+    if (importedModel.restoreStage && importedModel.restoreStage !== 'full') return;
     // Progressive restore replaces the Group while retaining the same object id.
     // Store the exact published Group instead of a boolean: writing `true` again
     // after a replacement is a React no-op and leaves the new white membrane
     // permanently hidden.
     setPresentedMaterialGroup(importedModel.group);
-  }, [importedModel.group]);
+  }, [importedModel.group, importedModel.restoreStage]);
   useEffect(() => {
     document.body.dataset.atomicModelRevealObjectId = importedModel.objectId;
     document.body.dataset.atomicModelRevealStage = importedModel.restoreStage ?? 'imported';
@@ -3844,7 +3894,6 @@ const ImportedModel = memo(function ImportedModel({
       if (model.restoreStage === 'bounds') return;
       if (model.restoreStage === 'outline') {
         if (model.group.userData.liclickRestoreOutlinePrepared === true) {
-          revealInitialMaterialPresentation();
           return;
         }
         const outlineMaterial = createFlatPreviewMaterial(
@@ -3873,12 +3922,9 @@ const ImportedModel = memo(function ImportedModel({
           processedLayerIds: [],
           missingLayerIds: [],
         };
-        // Never leave the viewport empty while the authoritative colour stack
-        // is decoding. The parsed geometry is already exact at this stage, so
-        // present one canonical flat material and keep it resident until the
-        // complete UV/projected material replaces it. Bounds placeholders and
-        // partial one-camera projections remain gated out.
-        revealInitialMaterialPresentation();
+        // Keep the exact geometry hidden while its authoritative colour stack
+        // is decoding. This model's loading indicator owns presentation until
+        // the full material is resident.
         return;
       }
       if (
@@ -3888,10 +3934,7 @@ const ImportedModel = memo(function ImportedModel({
         !loadedContentAwareUnderlayTexture &&
         !liveTopUvTexture
       ) {
-        // Keep the prepared neutral material until a complete proxy sampler is
-        // resident. Publishing an empty PBR/UV material here caused the dark
-        // flash seen between the white membrane and the first texture frame.
-        revealInitialMaterialPresentation();
+        // A proxy is an internal warm-up stage, not user-visible project state.
         return;
       }
       const selected = false;
@@ -5180,6 +5223,9 @@ const ImportedModel = memo(function ImportedModel({
           onSelect(importedModel.objectId);
         }}
       />
+      {!initialMaterialPresentationVisibleForGroup && (
+        <ModelRestoreLoadingIndicator object={importedModel.group} />
+      )}
       {initialMaterialPresentationReadyForGroup && importedModel.restoreStage !== 'bounds' && (
         <TopologyWireframeOverlay object={importedModel.group} visible={displayMode === 'wire'} />
       )}

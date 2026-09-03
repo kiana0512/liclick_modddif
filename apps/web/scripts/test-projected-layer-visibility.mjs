@@ -561,8 +561,8 @@ assert.match(
 );
 assert.match(
   sceneRootSource,
-  /!hasAuthoritativeVisibleTextureLayer \|\|[\s\S]*?importedModel\.restoreStage === 'bounds'[\s\S]*?liclickRestoreOutlinePrepared === true[\s\S]*?initialMaterialPresentationReadyForGroup/,
-  'A refresh must stay non-empty from saved bounds through prepared outline and final material.',
+  /!importedModel\.restoreStage \|\|[\s\S]*?importedModel\.restoreStage === 'full'[\s\S]*?!hasAuthoritativeVisibleTextureLayer \|\| initialMaterialPresentationReadyForGroup/,
+  'A refresh must keep bounds, outline and proxy stages hidden until the full material is ready.',
 );
 assert.match(
   sceneRootSource,
@@ -580,14 +580,24 @@ assert.match(
   'The editor reveal signal must wait until the first WebGL model frame has actually been presented.',
 );
 assert.match(
-  editorPageSource,
-  /!isEditorProjectViewportReady\(\{[\s\S]*?presentedViewportProjectId,[\s\S]*?objectCount: project\.objects\.length,[\s\S]*?fixed inset-0 z-\[220\]/,
-  'The project loading cover must remain above an initializing viewport until model content is presented.',
+  sceneRootSource,
+  /!initialMaterialPresentationVisibleForGroup[\s\S]*?ModelRestoreLoadingIndicator object=\{importedModel\.group\}/,
+  'Each restoring model must own an independent loading indicator until its material is presented.',
 );
 assert.match(
   sceneRootSource,
-  /model\.restoreStage === 'outline'[\s\S]*?createFlatPreviewMaterial[\s\S]*?revealInitialMaterialPresentation\(\)/,
-  'Cold restore must reveal exact geometry with the canonical flat material instead of leaving an empty viewport.',
+  /function ModelRestoreLoadingIndicator[\s\S]*?useFrame[\s\S]*?rotation\.z -= delta[\s\S]*?torusGeometry/,
+  'The per-model loading indicator must animate in the 3D viewport.',
+);
+const outlineRestoreBlock = sceneRootSource.slice(
+  sceneRootSource.indexOf("if (model.restoreStage === 'outline')"),
+  sceneRootSource.indexOf("if (\n        model.restoreStage === 'proxy'"),
+);
+assert.match(outlineRestoreBlock, /createFlatPreviewMaterial/);
+assert.doesNotMatch(
+  outlineRestoreBlock,
+  /revealInitialMaterialPresentation\(\)/,
+  'Cold restore must not reveal the model while it still has the flat outline material.',
 );
 assert.match(
   sceneRootSource,

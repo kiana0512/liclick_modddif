@@ -24,11 +24,11 @@ const budgets = [
     maxBytes: 850_000,
   },
 ];
-// The session-owned local-repaint pipeline, live first-stroke overlay and
-// resident-layer eraser measure 3,113,571 bytes in the cloud build. Keep about
-// 8 KiB of deterministic-build headroom; the tighter shell, editor and shared
-// pipeline budgets still guard hot paths independently.
-const maxTotalJavaScriptBytes = 3_122_000;
+// The integrated performance release, centered transform proxy and per-model
+// atomic texture reveal measure 3,125,470 bytes in the cloud build. Keep about
+// 8 KiB of deterministic-build headroom; the tighter shell, editor, bake and
+// shared-pipeline budgets still guard every hot path independently.
+const maxTotalJavaScriptBytes = 3_134_000;
 
 let entries;
 try {

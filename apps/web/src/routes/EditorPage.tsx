@@ -8,7 +8,7 @@ import {
   type SyntheticEvent,
 } from 'react';
 import { createPortal } from 'react-dom';
-import { AlertTriangle, Download, Plus } from 'lucide-react';
+import { AlertTriangle, Download, LoaderCircle, Plus } from 'lucide-react';
 import * as THREE from 'three';
 import { BottomToolDock } from '@/components/editor/BottomToolDock';
 import { ExportMenu, type ExportActionId } from '@/components/editor/ExportMenu';
@@ -212,10 +212,8 @@ import {
 import { EditorShell } from '@/layouts/EditorShell';
 import { importProjectJson } from '@/services/projectService';
 import {
-  EDITOR_PROJECT_VIEWPORT_PRESENTATION_TIMEOUT_MS,
   isCurrentEditorProjectLoad,
   isEditorProjectServerReady,
-  isEditorProjectViewportReady,
   shouldLoadEditorProjectRoute,
   type EditorProjectLoadToken,
 } from '@/services/editorProjectRouteLoad';
@@ -1140,8 +1138,6 @@ export function EditorPage({
     'idle',
   );
   const [serverReadyProjectId, setServerReadyProjectId] = useState<string>();
-  const [presentedViewportProjectId, setPresentedViewportProjectId] = useState<string>();
-  const [presentationTimedOutProjectId, setPresentationTimedOutProjectId] = useState<string>();
   const [publishingToRetopology, setPublishingToRetopology] = useState(false);
   const publishingToBakeRef = useRef(false);
   const [publishingToBake, setPublishingToBake] = useState(false);
@@ -1204,7 +1200,6 @@ export function EditorPage({
   );
   const project = useProjectStore((state) => state.projects.find((item) => item.id === projectId));
   const projectEditVersion = useProjectStore((state) => state.editVersions[projectId] ?? 0);
-  const routeProjectObjectCount = project?.objects.length ?? 0;
   const replaceCurrentProject = useProjectStore((state) => state.replaceCurrentProject);
   const updateCurrentProject = useProjectStore((state) => state.updateCurrentProject);
   const updateProjectById = useProjectStore((state) => state.updateProjectById);
@@ -1724,8 +1719,6 @@ export function EditorPage({
     reusableProjectionBakeCacheRef.current.clear();
     setRouteProjectStatus('idle');
     setServerReadyProjectId(undefined);
-    setPresentedViewportProjectId(undefined);
-    setPresentationTimedOutProjectId(undefined);
     delete document.body.dataset.atomicModelRevealPainted;
     delete document.body.dataset.atomicModelRevealPaintedObjectId;
     restoredHistoryProjectIdRef.current = undefined;
@@ -1738,67 +1731,6 @@ export function EditorPage({
     setModelImportBusy(modelImportRunningRef.current);
     setModelImportProgress(undefined);
   }, [authenticatedUserId, authStatus, projectId]);
-
-  useEffect(() => {
-    const markPresentedIfCurrentProject = (objectId?: string) => {
-      const currentProject = useProjectStore
-        .getState()
-        .projects.find((item) => item.id === projectId);
-      if (
-        objectId &&
-        currentProject &&
-        !currentProject.objects.some((item) => item.id === objectId)
-      ) {
-        return;
-      }
-      setPresentedViewportProjectId(projectId);
-    };
-    const reconcilePaintedFrame = () => {
-      if (document.body.dataset.atomicModelRevealPainted !== '1') return;
-      markPresentedIfCurrentProject(document.body.dataset.atomicModelRevealPaintedObjectId);
-    };
-    const handleInitialModelFramePresented = (event: Event) => {
-      markPresentedIfCurrentProject((event as CustomEvent<{ objectId?: string }>).detail?.objectId);
-    };
-    window.addEventListener(
-      'liclick:initial-model-frame-presented',
-      handleInitialModelFramePresented,
-    );
-    const observer = new MutationObserver(reconcilePaintedFrame);
-    observer.observe(document.body, {
-      attributes: true,
-      attributeFilter: [
-        'data-atomic-model-reveal-painted',
-        'data-atomic-model-reveal-painted-object-id',
-      ],
-    });
-    reconcilePaintedFrame();
-    return () => {
-      window.removeEventListener(
-        'liclick:initial-model-frame-presented',
-        handleInitialModelFramePresented,
-      );
-      observer.disconnect();
-    };
-  }, [projectId]);
-
-  useEffect(() => {
-    if (
-      serverReadyProjectId !== projectId ||
-      routeProjectObjectCount === 0 ||
-      presentedViewportProjectId === projectId
-    ) {
-      return undefined;
-    }
-    const timer = window.setTimeout(() => {
-      setPresentationTimedOutProjectId(projectId);
-      console.warn(
-        '[Liclick 3D Texture] Model presentation timed out; releasing the project loading cover.',
-        { projectId },
-      );
-    }, EDITOR_PROJECT_VIEWPORT_PRESENTATION_TIMEOUT_MS);
-    return () => window.clearTimeout(timer);
-  }, [presentedViewportProjectId, projectId, routeProjectObjectCount, serverReadyProjectId]);
 
   useEffect(
     () => () => {
@@ -8034,6 +7966,9 @@ export function EditorPage({
     return (
       <main className="liclick-surface grid min-h-screen place-items-center px-6 text-white">
         <section className="w-full max-w-md rounded-lg border border-white/12 bg-black/34 p-6 text-center shadow-[0_22px_70px_rgba(0,0,0,0.38)] backdrop-blur-md">
+          {routeProjectStatus !== 'missing' && (
+            <LoaderCircle className="mx-auto mb-4 h-9 w-9 animate-spin text-fuchsia-400" />
+          )}
           <div className="text-lg font-semibold">
             {routeProjectStatus === 'missing' ? t('projectLoadFailed') : t('projectLoading')}
           </div>
@@ -8052,20 +7987,6 @@ export function EditorPage({
 
   return (
     <>
-      {!isEditorProjectViewportReady({
-        routeProjectId: projectId,
-        serverReadyProjectId,
-        presentedViewportProjectId,
-        presentationTimedOutProjectId,
-        objectCount: project.objects.length,
-      }) && (
-        <main className="liclick-surface fixed inset-0 z-[220] grid place-items-center px-6 text-white">
-          <section className="w-full max-w-md rounded-lg border border-white/12 bg-black/34 p-6 text-center shadow-[0_22px_70px_rgba(0,0,0,0.38)] backdrop-blur-md">
-            <div className="text-lg font-semibold">{t('projectLoading')}</div>
-            <p className="mt-2 text-sm leading-6 text-white/54">{t('projectLoadingHelp')}</p>
-          </section>
-        </main>
-      )}
       <input
         ref={modelInputRef}
         type="file"
