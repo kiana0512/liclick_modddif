@@ -1,6 +1,6 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
-> 文档版本：`2.16.9`
+> 文档版本：`2.16.10`
 >
 > 生效日期：`2026-09-03`
 >
@@ -11,6 +11,8 @@
 > 审计口径：`0a2519d + 607e82f + 2568e40`，不包含错误文档提交 `2bde8c6/e03bab2/d1c5f78`
 
 ## 1. 文档地位与强制边界
+
+2026-09-03 CI 包体修复（M08 / `ALG-LR-011`，M15 验证）：流水线 624621 的构建及 Cloud artifact 检查成功，总 JavaScript 为 3,122,032 字节，超过 3,122,000 字节门禁 32 字节。生成预览分派在排除 undefined 后只有 capture-mask / generated-display 两种模式，移除不可达的 subject-filled 旧回退及其导入，让构建裁剪无消费者的旧预览路径；两种可达处理及源图回退保持不变。算法版本、Schema、GPU/CPU/Worker/shader、投影、持久化及导出语义不变，无数据迁移；回退仅恢复该导入和不可达分支。禁止通过提高预算或关闭质量检查解决本次失败；验证须使用 CI 的完整发布身份参数。本地以完整发布参数执行 build:release、check:cloud-artifact、check:web-bundle-budget，通过 79 chunks / 3,119,610 bytes；test:generation-preview-edge-decontamination 执行实际分派表达式和两条像素处理回归通过。此结果不代表远端新流水线已经通过。
 
 本文档是 LI3D Cloud 当前模块边界、算法语义、调用关系、持久化协议和变更流程的唯一维护准则。日期型审计、旧设计稿和历史 ADR 只能提供背景，若与本文档或基线源码冲突，以基线源码和本文档的明确状态为准。
 

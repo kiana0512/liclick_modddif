@@ -19,7 +19,6 @@ import {
   createCaptureMaskedProjectionImage,
   createCaptureMaskedPreview,
   createGeneratedDisplayPreview,
-  createSubjectFilledPreview,
 } from '@/engine/localRepaint/resultPreviewUtils';
 import { ensureLocalRepaintSessionLayer as ensurePersistentLocalRepaintSessionLayer } from '@/engine/localRepaint/sessionLayer';
 import { generationBelongsToObject } from '@/engine/localRepaint/objectBinding';
@@ -1089,11 +1088,9 @@ export function GeneratePanel({
     const previewPromise =
       previewProcessingMode === 'capture-mask'
         ? createCaptureMaskedPreview(sourceUrl, capturePreviewMaskUrl!)
-        : previewProcessingMode === 'generated-display'
-          ? createGeneratedDisplayPreview(sourceUrl, previewProcessingDepthUrl).then(
-              (preview) => preview.fittedUrl,
-            )
-          : createSubjectFilledPreview(sourceUrl, 'neutral');
+        : createGeneratedDisplayPreview(sourceUrl, previewProcessingDepthUrl).then(
+            (preview) => preview.fittedUrl,
+          );
     void previewPromise
       .then((previewUrl) => {
         if (!cancelled)
