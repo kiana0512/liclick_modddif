@@ -84,7 +84,7 @@ workspace/
 
 ## Save And Compatibility
 
-- local-server 工程使用 1.5 秒 debounce autosave，并保留滚动 autosave。
+- 现行 Cloud 编辑器使用 2 秒 trailing debounce、10 秒最长等待；文件型 Repository 的滚动 autosave 仅用于隔离开发，不是生产权威历史。
 - 浏览器 File System Access/JSON 下载与导入是回退路径；Blob URL 本身不能跨会话持久化。
 - 旧工程缺少 multiview pair、pipeline、bakeWorkspace 或新 layer 字段时保持兼容默认值。
 - 当前服务端读入项目 JSON 时没有统一使用完整共享 runtime schema。新增字段必须同时检查 Web 类型、序列化/资产物化、服务端保存和恢复测试，不能只更新 `packages/core`。

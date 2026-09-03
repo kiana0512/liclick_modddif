@@ -48,6 +48,27 @@ button {
   cursor: pointer;
 }
 
+@keyframes local-repaint-activation-progress {
+  from {
+    transform: translateX(-110%);
+  }
+
+  to {
+    transform: translateX(220%);
+  }
+}
+
+.local-repaint-activation-progress {
+  animation: local-repaint-activation-progress 0.9s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .local-repaint-activation-progress {
+    animation: none;
+    transform: translateX(50%);
+  }
+}
+
 .liclick-surface {
   background:
     radial-gradient(circle at top left, rgba(255, 92, 207, 0.18), transparent 28rem),

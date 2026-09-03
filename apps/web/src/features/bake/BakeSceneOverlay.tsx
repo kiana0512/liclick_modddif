@@ -13,6 +13,8 @@ type OverlaySource = {
   sourceUnitScaleFactor?: number;
 };
 
+const noResourceFiles: File[] = [];
+
 function disposeObject(root: THREE.Object3D) {
   root.traverse((child) => {
     if (!(child instanceof THREE.Mesh)) return;
@@ -30,7 +32,7 @@ function sourceMaxDimension(source?: OverlaySource) {
   return Math.max(size.x, size.y, size.z, 1e-6);
 }
 
-function useOverlaySource(file?: File) {
+function useOverlaySource(file?: File, resourceFiles: File[] = noResourceFiles) {
   const [source, setSource] = useState<OverlaySource>();
 
   useEffect(() => {
@@ -39,25 +41,33 @@ function useOverlaySource(file?: File) {
     setSource(undefined);
     if (!file) return;
 
-    void loadModelFromFile(file, {
-      normalize: false,
-      ground: false,
-      targetMaxDimension: 3,
-      recenter: false,
-    }).then((loaded) => {
-      loadedSource = {
-        root: loaded.root,
-        sourceUrl: loaded.sourceUrl,
-        format: loaded.result.format,
-        sourceUnitScaleFactor: loaded.result.sourceUnitScaleFactor,
-      };
-      if (cancelled) {
-        disposeObject(loaded.root);
-        if (loaded.sourceUrl.startsWith('blob:')) URL.revokeObjectURL(loaded.sourceUrl);
-        return;
-      }
-      setSource(loadedSource);
-    });
+    void loadModelFromFile(
+      file,
+      {
+        normalize: false,
+        ground: false,
+        targetMaxDimension: 3,
+        recenter: false,
+      },
+      resourceFiles,
+    )
+      .then((loaded) => {
+        loadedSource = {
+          root: loaded.root,
+          sourceUrl: loaded.sourceUrl,
+          format: loaded.result.format,
+          sourceUnitScaleFactor: loaded.result.sourceUnitScaleFactor,
+        };
+        if (cancelled) {
+          disposeObject(loaded.root);
+          if (loaded.sourceUrl.startsWith('blob:')) URL.revokeObjectURL(loaded.sourceUrl);
+          return;
+        }
+        setSource(loadedSource);
+      })
+      // Import readiness and the visible error are owned by the parent import
+      // transaction. The preview loader must not create an unhandled rejection.
+      .catch(() => undefined);
 
     return () => {
       cancelled = true;
@@ -65,7 +75,7 @@ function useOverlaySource(file?: File) {
       disposeObject(loadedSource.root);
       if (loadedSource.sourceUrl.startsWith('blob:')) URL.revokeObjectURL(loadedSource.sourceUrl);
     };
-  }, [file]);
+  }, [file, resourceFiles]);
 
   return source;
 }
@@ -148,17 +158,19 @@ function OverlayModel({
 export function BakeSceneOverlay({
   highObject,
   lowFile,
+  lowResourceFiles,
   cageFile,
   mode,
   cageInflation,
 }: {
   highObject: SceneObject;
   lowFile?: File;
+  lowResourceFiles?: File[];
   cageFile?: File;
   mode: BakeViewportMode;
   cageInflation: number;
 }) {
-  const lowSource = useOverlaySource(lowFile);
+  const lowSource = useOverlaySource(lowFile, lowResourceFiles);
   const cageSource = useOverlaySource(cageFile);
   // Inflate an automatically generated cage in the low mesh's own source
   // units. Using the high mesh bounds here produces a 100x error whenever a

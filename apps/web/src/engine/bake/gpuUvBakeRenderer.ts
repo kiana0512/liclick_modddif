@@ -41,6 +41,8 @@ const FULL_CAPTURE_NORMAL_AGREEMENT = 0.92;
 const PROJECTION_FACING_FEATHER = 0.08;
 const SURFACE_LOCKED_FACING_START = 0.015;
 const SURFACE_LOCKED_FACING_END = 0.06;
+const SURFACE_LOCKED_MIN_SAFE_FACING = 0.25;
+const SURFACE_LOCKED_VISIBILITY_FEATHER = 0.05;
 const gpuUvSeamPairCache = new WeakMap<THREE.Object3D, ReturnType<typeof collectUvSeamPairs>>();
 
 type GpuLayerStackBakeInput = {
@@ -500,7 +502,11 @@ const fragmentShader = `
     );
     visibilityCoverage = mix(
       visibilityCoverage,
-      smoothstep(0.0, 1.0, visibilitySupport),
+      smoothstep(
+        0.0,
+        ${SURFACE_LOCKED_VISIBILITY_FEATHER.toFixed(2)},
+        visibilitySupport
+      ),
       surfaceLockedVisibility
     );
     angleCoverage = mix(angleCoverage, lockedFacingCoverage, surfaceLockedVisibility);
@@ -512,10 +518,30 @@ const fragmentShader = `
     if (sourceAlpha < 0.01) discard;
     float angleWeight = computeAngleWeight(visibilityBackedNdv, layerStrength);
     float coverageEdge = computeImageEdgeFade(projectedSampleUv, 0.015);
-    float coverage = clamp(layerOpacity * sourceAlpha * angleCoverage * visibilityCoverage * projectionFacingCoverage * mix(0.35, 1.0, coverageEdge), 0.0, 1.0);
+    float continuousCoverage = clamp(layerOpacity * sourceAlpha * angleCoverage * visibilityCoverage * projectionFacingCoverage * mix(0.35, 1.0, coverageEdge), 0.0, 1.0);
+    float lockedSafetyCoverage = mix(
+      smoothstep(
+        ${(SURFACE_LOCKED_MIN_SAFE_FACING - 0.08).toFixed(2)},
+        ${(SURFACE_LOCKED_MIN_SAFE_FACING + 0.08).toFixed(2)},
+        projectionFacingFactor
+      ),
+      1.0,
+      useDepthCheck
+    );
+    float lockedCoverage =
+      layerOpacity *
+      sourceAlpha *
+      projectionFacingCoverage *
+      lockedSafetyCoverage *
+      visibilityCoverage;
+    float coverage = mix(continuousCoverage, lockedCoverage, surfaceLockedVisibility);
     if (coverage <= max(0.025, minimumOutputCoverage)) discard;
     float qualityEdge = computeImageEdgeFade(projectedSampleUv, 0.035);
     float quality = coverage * depthWeight * angleWeight * mix(0.3, 1.0, qualityEdge);
+    // Keep the baked priority-overlay result equivalent to the live stack:
+    // accepted surface-locked coverage is depth authoritative, not normal-angle
+    // confidence that can vary across the same captured surface.
+    quality = mix(quality, max(quality, coverage), surfaceLockedVisibility);
     float qualityAlpha = clamp(max(quality, coverage * ${QUALITY_FLOOR_FROM_COVERAGE.toFixed(2)}), 0.0, 1.0);
     float writeAlpha = mix(qualityAlpha, coverage, useCoverageAlpha);
 

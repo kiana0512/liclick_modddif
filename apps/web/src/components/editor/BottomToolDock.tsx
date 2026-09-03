@@ -1,6 +1,7 @@
 import {
   ChevronRight,
   ChevronUp,
+  Eraser,
   ImagePlus,
   LoaderCircle,
   MousePointer2,
@@ -12,7 +13,7 @@ import {
   Undo2,
   WandSparkles,
 } from 'lucide-react';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { cn } from '@/components/common/cn';
 import { IconTooltip } from '@/components/common/IconTooltip';
 import {
@@ -23,8 +24,11 @@ import {
   type TransformMode,
 } from '@/stores/sceneStore';
 import { useToastStore } from '@/stores/toastStore';
+import { useLayerStore } from '@/stores/layerStore';
 import type { WorkspaceMode } from '@/components/workspace/workspacePanelTypes';
 import { runPaintMaskHistoryAction } from '@/engine/paint/paintMaskHistoryActions';
+import { getEraserTargetPolicy } from '@/engine/paint/eraserTargetPolicy';
+import { resolveLocalRepaintActivationDisposition } from '@/engine/localRepaint/activationRequestPolicy';
 
 type BottomToolDockProps = {
   mode: WorkspaceMode;
@@ -37,6 +41,8 @@ type BottomToolDockProps = {
   localImageGenerationRunning: boolean;
   localImageGenerationSuccessKey: number;
   canLocalRepaint: boolean;
+  canQueueLocalRepaintActivation?: boolean;
+  localRepaintActivationQueued?: boolean;
   canUndo: boolean;
   canRedo: boolean;
   onUndo: () => void;
@@ -54,6 +60,7 @@ type BottomToolDockProps = {
     inpaintUnselect: string;
     undo: string;
     redo: string;
+    eraser: string;
     brushSize: string;
     brushFeather: string;
     resetInpaintRegion: string;
@@ -63,9 +70,12 @@ type BottomToolDockProps = {
     rotateHelp: string;
     scaleHelp: string;
     layersHelp: string;
+    eraserToolHelp: string;
     localRepaintHelp: string;
     inpaintSelectHelp: string;
     inpaintUnselectHelp: string;
+    viewportOrbit: string;
+    viewportOrbitHelp: string;
   };
 };
 
@@ -92,6 +102,8 @@ export function BottomToolDock({
   localImageGenerationRunning,
   localImageGenerationSuccessKey,
   canLocalRepaint,
+  canQueueLocalRepaintActivation = false,
+  localRepaintActivationQueued = false,
   canUndo,
   canRedo,
   onUndo,
@@ -102,7 +114,7 @@ export function BottomToolDock({
 }: BottomToolDockProps) {
   const dockRef = useRef<HTMLDivElement>(null);
   const [activeMenu, setActiveMenu] = useState<
-    'inpaint-add' | 'inpaint-subtract' | 'inpaint-apply' | undefined
+    'eraser' | 'inpaint-add' | 'inpaint-subtract' | 'inpaint-apply' | undefined
   >();
   const [generationGuideActive, setGenerationGuideActive] = useState(false);
   const [repaintGuideActive, setRepaintGuideActive] = useState(false);
@@ -112,11 +124,23 @@ export function BottomToolDock({
     paintTool === 'inpaint-add' || paintTool === 'inpaint-subtract',
   );
   const paintMaskSettings = useSceneStore((state) => state.paintMaskSettings);
+  const paintMaskPresentationVisible = useSceneStore(
+    (state) => state.paintMaskPresentationVisible,
+  );
+  const setPaintMaskPresentationVisible = useSceneStore(
+    (state) => state.setPaintMaskPresentationVisible,
+  );
   const setPaintMaskSettings = useSceneStore((state) => state.setPaintMaskSettings);
   const localRepaintBrushSettings = useSceneStore((state) => state.localRepaintBrushSettings);
   const setLocalRepaintBrushSettings = useSceneStore((state) => state.setLocalRepaintBrushSettings);
+  const paintToolSettings = useSceneStore((state) => state.paintToolSettings);
+  const setPaintToolSettings = useSceneStore((state) => state.setPaintToolSettings);
   const clearPaintMask = useSceneStore((state) => state.clearPaintMask);
   const invertPaintMask = useSceneStore((state) => state.invertPaintMask);
+  const activeLayer = useLayerStore((state) =>
+    state.layers.find((layer) => layer.id === state.activeProjectedLayerId),
+  );
+  const eraserPolicy = useMemo(() => getEraserTargetPolicy(activeLayer), [activeLayer]);
   const pushToast = useToastStore((state) => state.pushToast);
   const baseButton =
     'grid h-11 w-11 shrink-0 place-items-center rounded-md border border-white/10 bg-black/34 text-white/72 transition hover:border-white/22 hover:bg-white/12 hover:text-white focus:outline-none focus:ring-2 focus:ring-liclick-pink/45 disabled:cursor-not-allowed disabled:opacity-42';
@@ -134,6 +158,16 @@ export function BottomToolDock({
   const isTextureMode = mode === 'texture';
   const isMaskPaintTool = paintTool === 'inpaint-add' || paintTool === 'inpaint-subtract';
   const localRepaintReady = canLocalRepaint;
+  const localRepaintActivationDisposition = resolveLocalRepaintActivationDisposition({
+    localRepaintReady,
+    operationLocked: interactionLocked || localImageGenerationRunning,
+    localGenerationRunning: localImageGenerationRunning,
+    canQueueDuringTransition: canQueueLocalRepaintActivation,
+  });
+  const localRepaintActivationAvailable =
+    localRepaintActivationDisposition === 'activate-now' ||
+    localRepaintActivationDisposition === 'queue-until-unlocked';
+  const canEraseSelectedLayer = Boolean(activeLayer?.visible && eraserPolicy.canActivate);
   const inpaintMenuVisible =
     activeMenu === 'inpaint-add' ||
     activeMenu === 'inpaint-subtract' ||
@@ -142,6 +176,12 @@ export function BottomToolDock({
   useEffect(() => {
     if (isTextureMode && paintTool === 'brush') onPaintToolChange('none');
   }, [isTextureMode, onPaintToolChange, paintTool]);
+
+  useEffect(() => {
+    if (paintTool !== 'eraser' || canEraseSelectedLayer) return;
+    onPaintToolChange('none');
+    setActiveMenu(undefined);
+  }, [canEraseSelectedLayer, onPaintToolChange, paintTool]);
 
   useEffect(() => {
     if (localImageGenerationRunning) {
@@ -192,6 +232,17 @@ export function BottomToolDock({
       title: '局部生图正在处理',
       description: '生成完成后会自动解锁“应用重绘”。',
       dedupeKey: 'local-workflow-generation-running',
+    });
+  }
+
+  function notifyEraserUnavailable() {
+    pushToast({
+      tone: eraserPolicy.requiresEditableUvCopy ? 'info' : 'warning',
+      title: eraserPolicy.label,
+      description:
+        eraserPolicy.reason ??
+        (activeLayer?.visible ? '当前图层不能使用橡皮擦。' : '请先显示当前图层。'),
+      dedupeKey: `layer-eraser-unavailable:${activeLayer?.id ?? 'none'}`,
     });
   }
 
@@ -297,6 +348,12 @@ export function BottomToolDock({
         if (!interactionLocked) return;
         const target = event.target as HTMLElement;
         if (!target.closest('button, input, select, textarea')) return;
+        if (
+          localRepaintActivationDisposition === 'queue-until-unlocked' &&
+          target.closest('[data-local-repaint-apply="true"]')
+        ) {
+          return;
+        }
         event.preventDefault();
         event.stopPropagation();
         onInteractionLocked?.();
@@ -305,12 +362,19 @@ export function BottomToolDock({
         if (!interactionLocked) return;
         const target = event.target as HTMLElement;
         if (!target.closest('button, input, select, textarea')) return;
+        if (
+          localRepaintActivationDisposition === 'queue-until-unlocked' &&
+          target.closest('[data-local-repaint-apply="true"]')
+        ) {
+          return;
+        }
         event.preventDefault();
         event.stopPropagation();
         onInteractionLocked?.();
       }}
       data-texture-onboarding="edit-tools"
       data-onboarding-complete={
+        paintTool === 'eraser' ||
         paintTool === 'inpaint-add' ||
         paintTool === 'inpaint-subtract' ||
         paintTool === 'inpaint-apply'
@@ -329,6 +393,130 @@ export function BottomToolDock({
 
       {isTextureMode && (
         <>
+          <IconTooltip label={labels.viewportOrbit} description={labels.viewportOrbitHelp}>
+            <button
+              type="button"
+              className={cn(
+                baseButton,
+                paintTool === 'none' &&
+                  'border-[#6f93ff] bg-[#4568db]/18 text-white shadow-[0_0_0_1px_rgba(111,147,255,0.55),0_0_16px_rgba(69,104,219,0.24)]',
+              )}
+              onClick={() => {
+                onPaintToolChange('none');
+                onTransformModeChange('select');
+                setPaintMaskPresentationVisible(false);
+                setActiveMenu(undefined);
+              }}
+              aria-pressed={paintTool === 'none' && !paintMaskPresentationVisible}
+              aria-label={labels.viewportOrbit}
+            >
+              <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" aria-hidden="true">
+                <path d="m12 3 2.4 2.4L12 7.8 9.6 5.4 12 3Zm0 13.2 2.4 2.4L12 21l-2.4-2.4 2.4-2.4ZM3 12l2.4-2.4L7.8 12l-2.4 2.4L3 12Zm13.2 0 2.4-2.4L21 12l-2.4 2.4-2.4-2.4Z" fill="currentColor" />
+                <rect x="9" y="9" width="6" height="6" rx="1.2" stroke="currentColor" strokeWidth="1.8" />
+              </svg>
+            </button>
+          </IconTooltip>
+          <span className="relative inline-flex">
+            {activeMenu === 'eraser' && paintTool === 'eraser' && (
+              <div className="absolute bottom-full left-0 z-50 mb-2 w-[248px] rounded-lg border border-white/16 bg-[#050509] p-2.5 text-white shadow-[0_18px_42px_rgba(0,0,0,0.54)]">
+                <div className="mb-2 rounded-md bg-white/[0.07] px-2.5 py-2 text-xs font-semibold text-white/78">
+                  {eraserPolicy.label} · {labels.brushSize} / {labels.brushFeather}
+                </div>
+                <label className="grid gap-1.5 text-[13px] font-semibold">
+                  <span className="flex items-center justify-between">
+                    <span>{labels.brushSize}</span>
+                    <input
+                      type="number"
+                      min="0.5"
+                      max="256"
+                      step="0.5"
+                      value={paintToolSettings.eraserSize}
+                      onChange={(event) =>
+                        setPaintToolSettings({ eraserSize: Number(event.target.value) })
+                      }
+                      className="h-8 w-24 rounded-md border border-white/28 bg-[#111116] px-2 text-right text-sm text-white outline-none focus:border-[#6f93ff]"
+                    />
+                  </span>
+                  <input
+                    type="range"
+                    min="0.5"
+                    max="256"
+                    step="0.5"
+                    value={paintToolSettings.eraserSize}
+                    onChange={(event) =>
+                      setPaintToolSettings({ eraserSize: Number(event.target.value) })
+                    }
+                    className="w-full accent-[#6f93ff]"
+                  />
+                </label>
+                <label className="mt-2 grid gap-1.5 border-t border-white/16 pt-2 text-[13px] font-semibold">
+                  <span className="flex items-center justify-between">
+                    <span>{labels.brushFeather}</span>
+                    <span className="flex items-center gap-1">
+                      <input
+                        type="number"
+                        min="0"
+                        max="100"
+                        step="1"
+                        value={Math.round(paintToolSettings.eraserFeather ?? 50)}
+                        onChange={(event) =>
+                          setPaintToolSettings({ eraserFeather: Number(event.target.value) })
+                        }
+                        className="h-8 w-20 rounded-md border border-white/28 bg-[#111116] px-2 text-right text-sm text-white outline-none focus:border-[#6f93ff]"
+                      />
+                      <span className="text-xs text-white/60">%</span>
+                    </span>
+                  </span>
+                  <input
+                    type="range"
+                    min="0"
+                    max="100"
+                    step="1"
+                    value={paintToolSettings.eraserFeather ?? 50}
+                    onChange={(event) =>
+                      setPaintToolSettings({ eraserFeather: Number(event.target.value) })
+                    }
+                    className="w-full accent-[#6f93ff]"
+                  />
+                </label>
+              </div>
+            )}
+            <IconTooltip
+              label={labels.eraser}
+              description={`${labels.eraserToolHelp} ${eraserPolicy.label}`}
+              shortcut="E"
+            >
+              <button
+                type="button"
+                className={cn(
+                  baseButton,
+                  paintTool === 'eraser' &&
+                    'border-[#6f93ff] bg-[#4568db]/18 text-white shadow-[0_0_0_1px_rgba(111,147,255,0.55),0_0_16px_rgba(69,104,219,0.24)]',
+                )}
+                onClick={() => {
+                  if (paintTool === 'eraser') {
+                    toggleMenu('eraser');
+                    return;
+                  }
+                  if (!canEraseSelectedLayer) {
+                    notifyEraserUnavailable();
+                    return;
+                  }
+                  onPaintToolChange('eraser');
+                  setActiveMenu('eraser');
+                }}
+                aria-pressed={paintTool === 'eraser'}
+                aria-label={labels.eraser}
+              >
+                <span className="relative grid place-items-center">
+                  <Eraser className="h-5 w-5" />
+                  {paintTool === 'eraser' && (
+                    <ChevronUp className="absolute -right-3 -top-3 h-3.5 w-3.5" />
+                  )}
+                </span>
+              </button>
+            </IconTooltip>
+          </span>
           <div className="ml-1 flex items-center gap-1.5">
             <span className="pointer-events-none flex shrink-0 items-center gap-1.5 whitespace-nowrap px-0.5 text-[12px] font-semibold tracking-wide text-white/62">
               <span
@@ -535,46 +723,75 @@ export function BottomToolDock({
                     type="button"
                     className={cn(
                       workflowButton,
+                      'relative overflow-hidden',
                       paintTool === 'inpaint-apply' && activeWorkflowButton,
                       repaintGuideActive &&
                         localRepaintReady &&
                         !localImageGenerationRunning &&
                         paintTool !== 'inpaint-apply' &&
                         guideWorkflowButton,
-                      (!localRepaintReady || localImageGenerationRunning) && lockedWorkflowButton,
+                      localRepaintActivationQueued && runningWorkflowButton,
+                      !localRepaintActivationAvailable && lockedWorkflowButton,
                     )}
+                    data-local-repaint-apply="true"
+                    aria-busy={localRepaintActivationQueued}
                     onClick={() => {
-                      if (localImageGenerationRunning) {
+                      if (localRepaintActivationDisposition === 'blocked-generation-running') {
                         notifyGenerationInProgress();
                         return;
                       }
-                      if (!localRepaintReady) {
+                      if (localRepaintActivationDisposition === 'blocked-no-result') {
                         notifyGenerationRequired();
                         return;
                       }
+                      if (localRepaintActivationDisposition === 'blocked-operation') {
+                        onInteractionLocked?.();
+                        return;
+                      }
                       setRepaintGuideActive(false);
+                      if (localRepaintActivationDisposition === 'queue-until-unlocked') {
+                        onLocalRepaint();
+                        setActiveMenu('inpaint-apply');
+                        return;
+                      }
                       if (paintTool === 'inpaint-apply') {
                         toggleMenu('inpaint-apply');
                         return;
                       } else {
                         onLocalRepaint();
                       }
-                      toggleMenu('inpaint-apply');
+                      setActiveMenu('inpaint-apply');
                     }}
                     aria-label={
-                      localImageGenerationRunning
-                        ? '应用局部重绘（等待局部生图完成）'
-                        : localRepaintReady
-                          ? '应用局部重绘'
-                          : '应用局部重绘（需先完成局部生图）'
+                      localRepaintActivationDisposition === 'queue-until-unlocked'
+                        ? '应用局部重绘（准备完成后自动启用）'
+                        : localImageGenerationRunning
+                          ? '应用局部重绘（等待局部生图完成）'
+                          : localRepaintReady
+                            ? '应用局部重绘'
+                            : '应用局部重绘（需先完成局部生图）'
                     }
                   >
                     <span className="relative grid place-items-center">
-                      <WandSparkles className="h-4.5 w-4.5" />
+                      {localRepaintActivationQueued ? (
+                        <LoaderCircle className="h-4.5 w-4.5 animate-spin" />
+                      ) : (
+                        <WandSparkles className="h-4.5 w-4.5" />
+                      )}
                       {paintTool === 'inpaint-apply' && (
                         <ChevronUp className="absolute -right-3 -top-3 h-3.5 w-3.5" />
                       )}
                     </span>
+                    {localRepaintActivationQueued && (
+                      <span
+                        className="absolute inset-x-1 bottom-0.5 h-1 overflow-hidden rounded-full bg-white/14"
+                        role="progressbar"
+                        aria-label="正在等待局部重绘画笔就绪"
+                        aria-valuetext="生成结果准备完成后将自动启用"
+                      >
+                        <span className="local-repaint-activation-progress block h-full w-1/2 rounded-full bg-gradient-to-r from-[#ff5ccf] to-[#8f5cff]" />
+                      </span>
+                    )}
                   </button>
                 </IconTooltip>
               </span>

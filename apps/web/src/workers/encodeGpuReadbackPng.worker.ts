@@ -1,4 +1,4 @@
-import { encodeRgbaPngBytes } from '@/utils/encodeRgbaPngCore';
+import { encodeGrayscalePngBytes, encodeRgbaPngBytes } from '@/utils/encodeRgbaPngCore';
 
 export {};
 
@@ -9,6 +9,7 @@ type EncodeRequest = {
   height: number;
   outputWidth?: number;
   outputHeight?: number;
+  pixelFormat?: 'rgba' | 'grayscale';
 };
 type EncodeResponse =
   | { id: number; png: ArrayBuffer }
@@ -64,9 +65,37 @@ function resizeRgbaBilinear(
 }
 
 scope.onmessage = (event) => {
-  const { id, pixels, width, height, outputWidth = width, outputHeight = height } = event.data;
+  const {
+    id,
+    pixels,
+    width,
+    height,
+    outputWidth = width,
+    outputHeight = height,
+    pixelFormat = 'rgba',
+  } = event.data;
   try {
     const source = new Uint8Array(pixels);
+    if (pixelFormat === 'grayscale') {
+      if (outputWidth !== width || outputHeight !== height) {
+        throw new Error('Grayscale GPU readback encoding does not support resizing.');
+      }
+      const grayscale = new Uint8Array(width * height);
+      for (let y = 0; y < height; y += 1) {
+        const sourceRow = (height - y - 1) * width * 4;
+        const outputRow = y * width;
+        for (let x = 0; x < width; x += 1) {
+          grayscale[outputRow + x] = source[sourceRow + x * 4];
+        }
+      }
+      const encoded = encodeGrayscalePngBytes(width, height, grayscale);
+      const png = encoded.buffer.slice(
+        encoded.byteOffset,
+        encoded.byteOffset + encoded.byteLength,
+      ) as ArrayBuffer;
+      scope.postMessage({ id, png }, [png]);
+      return;
+    }
     const flipped = new Uint8ClampedArray(source.byteLength);
     const rowStride = width * 4;
     for (let y = 0; y < height; y += 1) {

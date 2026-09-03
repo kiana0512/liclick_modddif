@@ -44,8 +44,10 @@ import { cn } from '@/components/common/cn';
 import { HistorySidePanel } from '@/components/history/HistorySidePanel';
 import { Button } from '@/components/ui/Button';
 import {
+  inspectBakeModel,
   useBakeModelAnalysis,
   type BakeModelFileInput,
+  type BakeModelInfo,
 } from '@/features/bake/useBakeModelAnalysis';
 import { BakeSceneOverlay, type BakeViewportMode } from '@/features/bake/BakeSceneOverlay';
 import {
@@ -67,7 +69,11 @@ import {
 import { loadModelFromFile } from '@/engine/loaders/loadModelFromFile';
 import { dehighlightBaseColorFile } from '@/engine/materials/dehighlightBaseColor';
 import { resolveImageAssetUrl } from '@/engine/bake/imageSampler';
-import { getBakeHighObjects, replaceBakeHighSnapshot } from '@/services/bakeHighSnapshot';
+import {
+  getBakeHighObjects,
+  normalizeBakeWorkspaceObjectIds,
+  replaceBakeHighSnapshot,
+} from '@/services/bakeHighSnapshot';
 import {
   getLatestUsablePipelineStageRevision,
   resolvePipelineBakeTargetObjectId,
@@ -178,6 +184,31 @@ const browserBakeChannels = new Set<ChannelId>([
   'position',
 ]);
 const defaultOneClickChannels: ChannelId[] = ['normal', 'ambientOcclusion'];
+const bakeFileInputIds = {
+  high: 'li3d-bake-high-file',
+  low: 'li3d-bake-low-file',
+  cage: 'li3d-bake-cage-file',
+  color: 'li3d-bake-color-file',
+  roughness: 'li3d-bake-roughness-file',
+  metallic: 'li3d-bake-metallic-file',
+  normal: 'li3d-bake-normal-file',
+} as const;
+
+function openBakeFilePicker(input: HTMLInputElement) {
+  // Managed Chromium can reject HTMLElement.click() for a display:none file
+  // input. Keep the picker inside the trusted gesture and retain a fallback for
+  // browsers that do not expose showPicker().
+  input.value = '';
+  if (typeof input.showPicker === 'function') {
+    try {
+      input.showPicker();
+      return;
+    } catch {
+      // Fall through to the compatible click path.
+    }
+  }
+  input.click();
+}
 const channelFileSuffix: Record<BakeChannelId, string> = {
   baseColor: 'BaseColor',
   normal: 'Normal',
@@ -234,6 +265,10 @@ function fileStem(value: string) {
     .replace(/\.[^.]+$/, '')
     .toLowerCase()
     .replace(/(?:_low|_high|_cage|low|high|cage)$/g, '');
+}
+
+function firstNonEmptyId(...values: Array<string | undefined>) {
+  return values.find((value): value is string => Boolean(value?.trim()));
 }
 
 function isLowOrCageName(value: string) {
@@ -299,7 +334,6 @@ export function BakeWorkspacePage({
   const highInputRef = useRef<HTMLInputElement>(null);
   const lowInputRef = useRef<HTMLInputElement>(null);
   const cageInputRef = useRef<HTMLInputElement>(null);
-  const materialInputRef = useRef<HTMLInputElement>(null);
   const colorInputRef = useRef<HTMLInputElement>(null);
   const roughnessInputRef = useRef<HTMLInputElement>(null);
   const metallicInputRef = useRef<HTMLInputElement>(null);
@@ -314,10 +348,9 @@ export function BakeWorkspacePage({
   const restoredJobRef = useRef('');
   const saveQueueRef = useRef<Promise<void>>(Promise.resolve());
   const autoLowPairRef = useRef(new Set<string>());
-  const pipelineAssetHydrationRef = useRef('');
   const pipelineLowRecoveryRef = useRef('');
-  const pendingPipelineLowRef = useRef<File>();
-  const { project, isLoading, error } = useWorkflowProject(projectId);
+  const { project: loadedProject, isLoading, error } = useWorkflowProject(projectId);
+  const project = useMemo(() => normalizeBakeWorkspaceObjectIds(loadedProject), [loadedProject]);
   const replaceCurrentProject = useProjectStore((state) => state.replaceCurrentProject);
   const [highObjectOverrides, setHighObjectOverrides] = useState<Record<string, SceneObject>>({});
   const workspaceObjects = useMemo(() => project?.objects ?? [], [project?.objects]);
@@ -355,16 +388,14 @@ export function BakeWorkspacePage({
     [highObjects, project],
   );
   const [selectedObjectId, setSelectedObjectId] = useState(handoff?.objectId ?? '');
-  const [activeStage, setActiveStage] = useState<BakeStage>(
-    handoff?.lowModel?.file ? 'alignment' : 'assets',
-  );
-  const [viewportMode, setViewportMode] = useState<BakeViewportMode>(
-    handoff?.lowModel?.file ? 'overlay' : 'high',
-  );
+  const [activeStage, setActiveStage] = useState<BakeStage>('assets');
+  const [viewportMode, setViewportMode] = useState<BakeViewportMode>('high');
   const [viewportResetKey, setViewportResetKey] = useState(0);
   const [lowFiles, setLowFiles] = useState<Record<string, File>>(() =>
     handoff?.lowModel?.file ? { [handoff.objectId]: handoff.lowModel.file } : {},
   );
+  const [lowResourceFiles, setLowResourceFiles] = useState<Record<string, File[]>>({});
+  const [lowInspection, setLowInspection] = useState<Record<string, BakeModelInfo>>({});
   const [cageFiles, setCageFiles] = useState<Record<string, File>>({});
   const [colorFiles, setColorFiles] = useState<Record<string, File>>({});
   const [roughnessFiles, setRoughnessFiles] = useState<Record<string, File>>({});
@@ -402,6 +433,9 @@ export function BakeWorkspacePage({
   const [bakeError, setBakeError] = useState<string>();
   const [oneClickBakeAttempted, setOneClickBakeAttempted] = useState(false);
   const [highImporting, setHighImporting] = useState(false);
+  const [lowImporting, setLowImporting] = useState(false);
+  const lowImportLockRef = useRef(false);
+  const [lowImportErrors, setLowImportErrors] = useState<Record<string, string>>({});
   const [assetSaveState, setAssetSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>(
     'idle',
   );
@@ -416,10 +450,12 @@ export function BakeWorkspacePage({
       Object.entries(lowFiles).map(([objectId, file]) => ({
         objectId,
         file,
+        resourceFiles: lowResourceFiles[objectId],
+        precomputedInfo: lowInspection[objectId],
         sourceUnitScaleFactor:
           project?.bakeWorkspace?.bakeSets[objectId]?.low?.sourceUnitScaleFactor,
       })),
-    [lowFiles, project?.bakeWorkspace?.bakeSets],
+    [lowFiles, lowInspection, lowResourceFiles, project?.bakeWorkspace?.bakeSets],
   );
   const cageInputs = useMemo<BakeModelFileInput[]>(
     () => Object.entries(cageFiles).map(([objectId, file]) => ({ objectId, file })),
@@ -455,7 +491,8 @@ export function BakeWorkspacePage({
         .then(async () => {
           const current = useProjectStore.getState().projects.find((item) => item.id === projectId);
           if (!current) return;
-          const next = update(current);
+          const normalizedCurrent = normalizeBakeWorkspaceObjectIds(current) ?? current;
+          const next = update(normalizedCurrent);
           replaceCurrentProject(next);
           const result = await saveProject(next);
           replaceCurrentProject(result.project);
@@ -469,6 +506,10 @@ export function BakeWorkspacePage({
     async (
       kind: 'low' | 'cage' | 'color' | 'roughness' | 'metallic' | 'normal',
       assigned: Record<string, File>,
+      options?: {
+        sourceUnitScaleFactors?: Record<string, number | undefined>;
+        selectedObjectId?: string;
+      },
     ) => {
       if (Object.keys(assigned).length === 0) return;
       setAssetSaveState('saving');
@@ -509,7 +550,10 @@ export function BakeWorkspacePage({
           uploaded.forEach(([objectId, asset]) => {
             const previous = bakeSets[objectId] ?? { objectId };
             const inheritedUnitScaleFactor =
-              kind === 'low' ? previous.low?.sourceUnitScaleFactor : undefined;
+              kind === 'low'
+                ? (options?.sourceUnitScaleFactors?.[objectId] ??
+                  previous.low?.sourceUnitScaleFactor)
+                : undefined;
             bakeSets[objectId] = {
               ...previous,
               [kind]: {
@@ -533,7 +577,11 @@ export function BakeWorkspacePage({
             bakeWorkspace: {
               version: 1,
               activeStage,
-              selectedObjectId: fileTargetIdRef.current ?? selectedObjectId,
+              selectedObjectId: firstNonEmptyId(
+                options?.selectedObjectId,
+                fileTargetIdRef.current,
+                selectedObjectId,
+              ),
               bakeSets,
             },
           };
@@ -612,7 +660,7 @@ export function BakeWorkspacePage({
     const restoreKind = async (
       kind: 'low' | 'cage' | 'color' | 'roughness' | 'metallic' | 'normal',
     ) => {
-      const entries = await Promise.all(
+      const results = await Promise.allSettled(
         Object.entries(workspace.bakeSets).map(async ([objectId, set]) => {
           const asset = set[kind];
           if (!asset?.url) return undefined;
@@ -623,9 +671,13 @@ export function BakeWorkspacePage({
           ] as const;
         }),
       );
-      return Object.fromEntries(
-        entries.filter((entry): entry is readonly [string, File] => Boolean(entry)),
+      const entries = results.flatMap((result) =>
+        result.status === 'fulfilled' && result.value ? [result.value] : [],
       );
+      return {
+        files: Object.fromEntries(entries),
+        failedCount: results.filter((result) => result.status === 'rejected').length,
+      };
     };
     void Promise.all([
       restoreKind('low'),
@@ -639,19 +691,28 @@ export function BakeWorkspacePage({
         if (cancelled) return;
         // Route handoff is newer than the server restore started at mount. Keep
         // its in-memory low model if both operations finish in the same frame.
-        setLowFiles((current) => ({ ...low, ...current }));
-        setCageFiles(cage);
-        setColorFiles(
-          Object.fromEntries(
-            Object.entries(color).filter(
-              ([objectId]) => !hasWorkflowBakeBaseColor(project.layers, objectId, handoff),
-            ),
+        // A restore can finish after the user has already selected a local
+        // replacement. Restored server state is older in that race, so local
+        // files must win for every bake input, not only the low model.
+        setLowFiles((current) => ({ ...low.files, ...current }));
+        setCageFiles((current) => ({ ...cage.files, ...current }));
+        const restoredColor = Object.fromEntries(
+          Object.entries(color.files).filter(
+            ([objectId]) => !hasWorkflowBakeBaseColor(project.layers, objectId, handoff),
           ),
         );
-        setRoughnessFiles(roughness);
-        setMetallicFiles(metallic);
-        setNormalFiles(normal);
-        setAssetSaveState('saved');
+        setColorFiles((current) => ({ ...restoredColor, ...current }));
+        setRoughnessFiles((current) => ({ ...roughness.files, ...current }));
+        setMetallicFiles((current) => ({ ...metallic.files, ...current }));
+        setNormalFiles((current) => ({ ...normal.files, ...current }));
+        const failedCount = [low, cage, color, roughness, metallic, normal].reduce(
+          (sum, result) => sum + result.failedCount,
+          0,
+        );
+        setAssetSaveState(failedCount > 0 ? 'error' : 'saved');
+        if (failedCount > 0) {
+          setBakeError(`有 ${failedCount} 个历史烘焙资产无法恢复，请重新导入对应文件。`);
+        }
       })
       .catch((reason: unknown) => {
         if (!cancelled) {
@@ -730,12 +791,13 @@ export function BakeWorkspacePage({
     [handoff, project],
   );
 
-  const selectedLow = selectedHigh ? lowFiles[selectedHigh.id] : undefined;
-  const selectedCage = selectedHigh ? cageFiles[selectedHigh.id] : undefined;
-  const selectedColor = selectedHigh ? colorFiles[selectedHigh.id] : undefined;
-  const selectedRoughness = selectedHigh ? roughnessFiles[selectedHigh.id] : undefined;
-  const selectedMetallic = selectedHigh ? metallicFiles[selectedHigh.id] : undefined;
-  const selectedNormal = selectedHigh ? normalFiles[selectedHigh.id] : undefined;
+  const selectedBakeObjectId = selectedHigh?.id || selectedObjectId || handoff?.objectId;
+  const selectedLow = selectedBakeObjectId ? lowFiles[selectedBakeObjectId] : undefined;
+  const selectedCage = selectedBakeObjectId ? cageFiles[selectedBakeObjectId] : undefined;
+  const selectedColor = selectedBakeObjectId ? colorFiles[selectedBakeObjectId] : undefined;
+  const selectedRoughness = selectedBakeObjectId ? roughnessFiles[selectedBakeObjectId] : undefined;
+  const selectedMetallic = selectedBakeObjectId ? metallicFiles[selectedBakeObjectId] : undefined;
+  const selectedNormal = selectedBakeObjectId ? normalFiles[selectedBakeObjectId] : undefined;
   const selectedProjectColor = selectedHigh ? projectColorForObject(selectedHigh.id) : undefined;
   const selectedColorName = selectedColor?.name ?? selectedProjectColor?.name;
   const autoRoughnessEnabled = roughnessSource === 'comfy';
@@ -750,6 +812,9 @@ export function BakeWorkspacePage({
     Number(Boolean(selectedMetallic)) +
     Number(Boolean(selectedNormal));
   const selectedLowInfo = selectedHigh ? alignmentInfo.low[selectedHigh.id] : undefined;
+  const selectedLowImportError = selectedBakeObjectId
+    ? lowImportErrors[selectedBakeObjectId]
+    : undefined;
   const loadSelectedBaseColorFile = useCallback(async () => {
     if (selectedColor) return selectedColor;
     if (!selectedProjectColor?.imageUrl) throw new Error('Base Color 烘焙需要高模颜色贴图。');
@@ -1229,23 +1294,19 @@ export function BakeWorkspacePage({
   ]);
 
   function chooseFiles(
-    kind:
-      | 'high'
-      | 'low'
-      | 'cage'
-      | 'material'
-      | 'color'
-      | 'roughness'
-      | 'metallic'
-      | 'normal',
+    kind: 'high' | 'low' | 'cage' | 'color' | 'roughness' | 'metallic' | 'normal',
     objectId?: string,
   ) {
-    fileTargetIdRef.current = objectId ?? selectedHigh?.id;
+    fileTargetIdRef.current = firstNonEmptyId(
+      objectId,
+      selectedHigh?.id,
+      selectedObjectId,
+      handoff?.objectId,
+    );
     const input = {
       high: highInputRef.current,
       low: lowInputRef.current,
       cage: cageInputRef.current,
-      material: materialInputRef.current,
       color: colorInputRef.current,
       roughness: roughnessInputRef.current,
       metallic: metallicInputRef.current,
@@ -1255,12 +1316,13 @@ export function BakeWorkspacePage({
       setBakeError('导入控件尚未就绪，请稍后重试。');
       return;
     }
-    // Clearing first lets users replace an asset with the same local file.
-    input.value = '';
-    input.click();
+    openBakeFilePicker(input);
   }
 
-  function handleLowImport(files: File[]) {
+  async function handleLowImport(files: File[]) {
+    // React state updates on the next render. A ref is the synchronous lock
+    // that prevents a fast double click/drop from starting duplicate decoders.
+    if (lowImportLockRef.current) return;
     const modelFiles = files.filter((file) => /\.(fbx|obj|glb|gltf)$/i.test(file.name));
     if (modelFiles.length === 0) {
       setBakeError('低模仅支持 FBX、OBJ、GLB 或 GLTF 文件。');
@@ -1270,12 +1332,58 @@ export function BakeWorkspacePage({
       setBakeError('请先导入高模，再为它添加对应的低模。');
       return;
     }
-    const assigned = assignFilesToObjects(modelFiles, highObjects, selectedHigh.id, {});
+    const targetObjectId = selectedHigh.id;
+    const assigned = assignFilesToObjects(modelFiles, highObjects, targetObjectId, {});
+    const resourceFiles = files.filter((file) => !modelFiles.includes(file));
+    const assignedResources = Object.fromEntries(
+      Object.keys(assigned).map((objectId) => [objectId, resourceFiles]),
+    );
+    lowImportLockRef.current = true;
+    setLowImporting(true);
+    setBakeError(undefined);
+    // Acknowledge the local selection immediately. Parsing controls readiness
+    // and persistence, but neither may silently roll the chosen file back.
     setLowFiles((current) => ({ ...current, ...assigned }));
+    setLowResourceFiles((current) => ({ ...current, ...assignedResources }));
+    setLowInspection((current) => {
+      const next = { ...current };
+      Object.keys(assigned).forEach((objectId) => delete next[objectId]);
+      return next;
+    });
+    setLowImportErrors((current) => {
+      const next = { ...current };
+      Object.keys(assigned).forEach((objectId) => delete next[objectId]);
+      return next;
+    });
     setBakeJob(undefined);
     setOneClickBakeAttempted(false);
-    setBakeError(undefined);
-    void persistImportedFiles('low', assigned);
+    try {
+      const inspectedEntries = await Promise.all(
+        Object.entries(assigned).map(async ([objectId, file]) => {
+          const inspected = await inspectBakeModel({ objectId, file, resourceFiles });
+          return [objectId, inspected.info] as const;
+        }),
+      );
+      const inspected = Object.fromEntries(inspectedEntries);
+      setLowInspection((current) => ({ ...current, ...inspected }));
+      void persistImportedFiles('low', assigned, {
+        selectedObjectId: targetObjectId,
+        sourceUnitScaleFactors: Object.fromEntries(
+          inspectedEntries.map(([objectId, info]) => [objectId, info.sourceUnitScaleFactor]),
+        ),
+      });
+    } catch (reason) {
+      const message = reason instanceof Error ? reason.message : '无法解析模型文件';
+      setLowImportErrors((current) => ({
+        ...current,
+        ...Object.fromEntries(Object.keys(assigned).map((objectId) => [objectId, message])),
+      }));
+      setBakeError(`低模导入失败：${message}`);
+    } finally {
+      lowImportLockRef.current = false;
+      setLowImporting(false);
+      if (lowInputRef.current) lowInputRef.current.value = '';
+    }
   }
 
   function handleColorImport(files: File[]) {
@@ -1290,12 +1398,13 @@ export function BakeWorkspacePage({
       setBakeError('请先导入高模，再添加对应的颜色贴图。');
       return;
     }
-    const assigned = assignFilesToObjects(imageFiles, highObjects, selectedHigh.id, {});
+    const targetObjectId = selectedHigh.id;
+    const assigned = assignFilesToObjects(imageFiles, highObjects, targetObjectId, {});
     setColorFiles((current) => ({ ...current, ...assigned }));
     setBakeJob(undefined);
     setOneClickBakeAttempted(false);
     setBakeError(undefined);
-    void persistImportedFiles('color', assigned);
+    void persistImportedFiles('color', assigned, { selectedObjectId: targetObjectId });
   }
 
   function handleMaterialChannelImport(kind: 'roughness' | 'metallic' | 'normal', files: File[]) {
@@ -1310,7 +1419,8 @@ export function BakeWorkspacePage({
       setBakeError('请先导入高模，再添加对应的材质贴图。');
       return;
     }
-    const assigned = assignFilesToObjects(imageFiles, highObjects, selectedHigh.id, {});
+    const targetObjectId = selectedHigh.id;
+    const assigned = assignFilesToObjects(imageFiles, highObjects, targetObjectId, {});
     if (kind === 'roughness') {
       setRoughnessFiles((current) => ({ ...current, ...assigned }));
       setRoughnessSource('manual');
@@ -1322,7 +1432,7 @@ export function BakeWorkspacePage({
     setBakeJob(undefined);
     setOneClickBakeAttempted(false);
     setBakeError(undefined);
-    void persistImportedFiles(kind, assigned);
+    void persistImportedFiles(kind, assigned, { selectedObjectId: targetObjectId });
   }
 
   function handleMaterialImport(files: File[]) {
@@ -1369,7 +1479,14 @@ export function BakeWorkspacePage({
         { normalize: false, ground: false, targetMaxDimension: 3 },
         resourceFiles,
       );
-      objectId = selectedHigh?.id ?? loaded.object.id;
+      objectId = firstNonEmptyId(
+        fileTargetIdRef.current,
+        selectedHigh?.id,
+        selectedObjectId,
+        handoff?.objectId,
+        loaded.object.id,
+      );
+      if (!objectId) throw new Error('无法为高模创建有效的烘焙对象标识。');
       previousOverride = highObjectOverrides[objectId];
 
       loaded.root.name = modelFile.name;
@@ -1419,6 +1536,10 @@ export function BakeWorkspacePage({
           highObject: importedObject,
         }),
       );
+      if (lowFiles[objectId]) {
+        setActiveStage('alignment');
+        setViewportMode('overlay');
+      }
       if (temporaryObjectUrl) {
         URL.revokeObjectURL(temporaryObjectUrl);
         temporaryObjectUrl = undefined;
@@ -1444,7 +1565,7 @@ export function BakeWorkspacePage({
   }
 
   useEffect(() => {
-    if (!project || highObjects.length === 0) return;
+    if (!project) return;
     const uvRevision = getLatestUsablePipelineStageRevision(project.pipeline, 'uv');
     const lowAsset = uvRevision?.outputAssets.find(
       (asset) => asset.kind === 'uv-model' || asset.kind === 'low-model',
@@ -1452,11 +1573,14 @@ export function BakeWorkspacePage({
     if (!lowAsset) return;
 
     const selectedWorkspaceObjectId = project.bakeWorkspace?.selectedObjectId;
-    const targetObjectId = resolvePipelineBakeTargetObjectId(
-      highObjects.map((object) => object.id),
-      lowAsset.objectId,
-      selectedWorkspaceObjectId,
-    );
+    const targetObjectId =
+      resolvePipelineBakeTargetObjectId(
+        highObjects.map((object) => object.id),
+        lowAsset.objectId,
+        selectedWorkspaceObjectId,
+      ) ??
+      lowAsset.objectId ??
+      selectedWorkspaceObjectId;
     if (!targetObjectId) return;
     if (lowFiles[targetObjectId] || project.bakeWorkspace?.bakeSets[targetObjectId]?.low) return;
 
@@ -1476,8 +1600,13 @@ export function BakeWorkspacePage({
         const assigned = { [targetObjectId]: lowFile };
         setSelectedObjectId(targetObjectId);
         setLowFiles((current) => ({ ...current, ...assigned }));
-        setActiveStage('alignment');
-        setViewportMode('overlay');
+        if (highObjects.some((object) => object.id === targetObjectId)) {
+          setActiveStage('alignment');
+          setViewportMode('overlay');
+        } else {
+          setActiveStage('assets');
+          setViewportMode('high');
+        }
         void persistImportedFiles('low', assigned);
       })
       .catch((reason: unknown) => {
@@ -1497,65 +1626,6 @@ export function BakeWorkspacePage({
       }
     };
   }, [highObjects, lowFiles, persistImportedFiles, project]);
-
-  useEffect(() => {
-    if (!project || highObjects.length > 0) return;
-    const textureRevision = getLatestUsablePipelineStageRevision(project.pipeline, 'texture');
-    const uvRevision = getLatestUsablePipelineStageRevision(project.pipeline, 'uv');
-    const highAsset = textureRevision?.outputAssets.find(
-      (asset) => asset.kind === 'high-model' || asset.kind === 'model',
-    );
-    const lowAsset = uvRevision?.outputAssets.find(
-      (asset) => asset.kind === 'uv-model' || asset.kind === 'low-model',
-    );
-    if (!highAsset) return;
-    const hydrationKey = `${project.id}:${highAsset.id}:${lowAsset?.id ?? 'no-low'}`;
-    if (pipelineAssetHydrationRef.current === hydrationKey) return;
-    pipelineAssetHydrationRef.current = hydrationKey;
-    let cancelled = false;
-
-    const readAssetFile = async (asset: NonNullable<typeof highAsset>) => {
-      const blob = await readWorkspaceAssetBlob(asset.url);
-      return new File([blob], asset.name, {
-        type: asset.mimeType || blob.type || 'application/octet-stream',
-      });
-    };
-
-    void Promise.all([readAssetFile(highAsset), lowAsset ? readAssetFile(lowAsset) : undefined])
-      .then(([highFile, lowFile]) => {
-        if (cancelled) return;
-        if (lowFile) pendingPipelineLowRef.current = lowFile;
-        void handleHighImport([highFile]);
-      })
-      .catch((reason: unknown) => {
-        if (cancelled) return;
-        pipelineAssetHydrationRef.current = '';
-        setBakeError(
-          reason instanceof Error
-            ? `流程资产自动接入失败：${reason.message}`
-            : '流程资产自动接入失败',
-        );
-      });
-    return () => {
-      cancelled = true;
-    };
-    // The hydration key makes this effect idempotent while the import callback
-    // intentionally uses the latest component state.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [highObjects.length, project]);
-
-  useEffect(() => {
-    const lowFile = pendingPipelineLowRef.current;
-    const high = highObjects[0];
-    if (!lowFile || !high) return;
-    pendingPipelineLowRef.current = undefined;
-    const assigned = { [high.id]: lowFile };
-    setSelectedObjectId(high.id);
-    setLowFiles((current) => ({ ...current, ...assigned }));
-    setActiveStage('alignment');
-    setViewportMode('overlay');
-    void persistImportedFiles('low', assigned);
-  }, [highObjects, persistImportedFiles]);
 
   function openStage(stage: BakeStage) {
     setActiveStage(stage);
@@ -1623,7 +1693,7 @@ export function BakeWorkspacePage({
     try {
       const high = await createHighFile();
       const baseColor = requiresColor
-        ? (processedBaseColor ?? await loadSelectedBaseColorFile())
+        ? (processedBaseColor ?? (await loadSelectedBaseColorFile()))
         : undefined;
       const job = await submitNormalBake({
         projectId: project.id,
@@ -1763,15 +1833,15 @@ export function BakeWorkspacePage({
     bakeJob?.status === 'running' ||
     bakeJob?.status === 'cancelling';
   const bakeFeedback =
-    oneClickBakeAttempted || bakeJob?.status === 'cancelled' || bakeJob?.status === 'failed'
-      ? (bakeError ??
-        bakeJob?.error ??
+    bakeError ??
+    (oneClickBakeAttempted || bakeJob?.status === 'cancelled' || bakeJob?.status === 'failed'
+      ? (bakeJob?.error ??
         (bakeJob?.status === 'cancelled'
           ? '烘焙任务已取消，未生成贴图，请重新提交。'
           : bakeJob?.status === 'failed'
             ? '烘焙任务失败，请重新提交；若再次失败请联系管理员。'
             : undefined))
-      : undefined;
+      : undefined);
   const oneClickActionLabel = bakerStatusChecking
     ? '正在连接远端烘焙服务'
     : bakerMissing
@@ -1862,81 +1932,6 @@ export function BakeWorkspacePage({
           onOpenBake: () => undefined,
         }}
       >
-        <input
-          ref={highInputRef}
-          className="hidden"
-          type="file"
-          multiple
-          accept=".fbx,.obj,.glb,.gltf,.bin,.mtl,image/*"
-          onChange={(event) => void handleHighImport(Array.from(event.target.files ?? []))}
-        />
-        <input
-          ref={lowInputRef}
-          className="hidden"
-          type="file"
-          multiple
-          accept=".fbx,.obj,.glb,.gltf"
-          onChange={(event) => {
-            handleLowImport(Array.from(event.target.files ?? []));
-            event.target.value = '';
-          }}
-        />
-        <input
-          ref={materialInputRef}
-          className="hidden"
-          type="file"
-          multiple
-          accept="image/png,image/jpeg,image/webp,.tga"
-          onChange={(event) => {
-            handleMaterialImport(Array.from(event.target.files ?? []));
-            event.target.value = '';
-          }}
-        />
-        <input
-          ref={colorInputRef}
-          className="hidden"
-          type="file"
-          multiple
-          accept="image/png,image/jpeg,image/webp,.tga"
-          onChange={(event) => {
-            handleColorImport(Array.from(event.target.files ?? []));
-            event.target.value = '';
-          }}
-        />
-        <input
-          ref={roughnessInputRef}
-          className="hidden"
-          type="file"
-          multiple
-          accept="image/png,image/jpeg,image/webp,.tga"
-          onChange={(event) => {
-            handleMaterialChannelImport('roughness', Array.from(event.target.files ?? []));
-            event.target.value = '';
-          }}
-        />
-        <input
-          ref={metallicInputRef}
-          className="hidden"
-          type="file"
-          multiple
-          accept="image/png,image/jpeg,image/webp,.tga"
-          onChange={(event) => {
-            handleMaterialChannelImport('metallic', Array.from(event.target.files ?? []));
-            event.target.value = '';
-          }}
-        />
-        <input
-          ref={normalInputRef}
-          className="hidden"
-          type="file"
-          multiple
-          accept="image/png,image/jpeg,image/webp,.tga"
-          onChange={(event) => {
-            handleMaterialChannelImport('normal', Array.from(event.target.files ?? []));
-            event.target.value = '';
-          }}
-        />
-
         {materialDialogOpen ? (
           <div
             className="fixed inset-0 z-[105] grid place-items-center bg-black/82 p-5 backdrop-blur-md"
@@ -1975,12 +1970,29 @@ export function BakeWorkspacePage({
               </div>
               <div className="workflow-scrollbar grid min-h-0 gap-3 overflow-y-auto p-5 sm:p-6">
                 <MaterialMapSlot
+                  pickerInput={
+                    <input
+                      id={bakeFileInputIds.color}
+                      ref={colorInputRef}
+                      className="absolute inset-0 z-10 h-full w-full cursor-pointer opacity-0"
+                      type="file"
+                      multiple
+                      accept="image/png,image/jpeg,image/webp,.tga"
+                      aria-label="导入 Base Color 贴图"
+                      onClick={(event) => {
+                        event.currentTarget.value = '';
+                      }}
+                      onChange={(event) => {
+                        handleColorImport(Array.from(event.target.files ?? []));
+                        event.target.value = '';
+                      }}
+                    />
+                  }
                   label="Base Color"
                   description="颜色 / Albedo"
                   fileName={selectedColorName}
                   previewUrl={selectedColorPreview}
                   required={requiresColor}
-                  onClick={() => chooseFiles('color')}
                   onFilesDropped={handleColorImport}
                 >
                   <div className="flex items-center justify-between gap-4 px-4 py-3">
@@ -2160,31 +2172,88 @@ export function BakeWorkspacePage({
                 </MaterialMapSlot>
                 {roughnessSource === 'manual' ? (
                   <MaterialMapSlot
+                    pickerInput={
+                      <input
+                        id={bakeFileInputIds.roughness}
+                        ref={roughnessInputRef}
+                        className="absolute inset-0 z-10 h-full w-full cursor-pointer opacity-0"
+                        type="file"
+                        multiple
+                        accept="image/png,image/jpeg,image/webp,.tga"
+                        aria-label="导入 Roughness 贴图"
+                        onClick={(event) => {
+                          event.currentTarget.value = '';
+                        }}
+                        onChange={(event) => {
+                          handleMaterialChannelImport(
+                            'roughness',
+                            Array.from(event.target.files ?? []),
+                          );
+                          event.target.value = '';
+                        }}
+                      />
+                    }
                     label="Roughness"
                     description="黑色光滑，白色粗糙"
                     fileName={selectedRoughness?.name}
                     previewUrl={selectedRoughnessPreview}
                     required={requiresRoughness}
-                    onClick={() => chooseFiles('roughness')}
                     onFilesDropped={(files) => handleMaterialChannelImport('roughness', files)}
                   />
                 ) : null}
                 <MaterialMapSlot
+                  pickerInput={
+                    <input
+                      id={bakeFileInputIds.metallic}
+                      ref={metallicInputRef}
+                      className="absolute inset-0 z-10 h-full w-full cursor-pointer opacity-0"
+                      type="file"
+                      multiple
+                      accept="image/png,image/jpeg,image/webp,.tga"
+                      aria-label="导入 Metallic 贴图"
+                      onClick={(event) => {
+                        event.currentTarget.value = '';
+                      }}
+                      onChange={(event) => {
+                        handleMaterialChannelImport(
+                          'metallic',
+                          Array.from(event.target.files ?? []),
+                        );
+                        event.target.value = '';
+                      }}
+                    />
+                  }
                   label="Metallic"
                   description="黑色非金属，白色金属"
                   fileName={selectedMetallic?.name}
                   previewUrl={selectedMetallicPreview}
                   required={requiresMetallic}
-                  onClick={() => chooseFiles('metallic')}
                   onFilesDropped={(files) => handleMaterialChannelImport('metallic', files)}
                 />
                 <MaterialMapSlot
+                  pickerInput={
+                    <input
+                      id={bakeFileInputIds.normal}
+                      ref={normalInputRef}
+                      className="absolute inset-0 z-10 h-full w-full cursor-pointer opacity-0"
+                      type="file"
+                      multiple
+                      accept="image/png,image/jpeg,image/webp,.tga"
+                      aria-label="导入 Normal 贴图"
+                      onClick={(event) => {
+                        event.currentTarget.value = '';
+                      }}
+                      onChange={(event) => {
+                        handleMaterialChannelImport('normal', Array.from(event.target.files ?? []));
+                        event.target.value = '';
+                      }}
+                    />
+                  }
                   label="Normal"
                   description="切线空间法线贴图"
                   fileName={selectedNormal?.name}
                   previewUrl={selectedNormalPreview}
                   required={false}
-                  onClick={() => chooseFiles('normal')}
                   onFilesDropped={(files) => handleMaterialChannelImport('normal', files)}
                 />
                 <div className="rounded-2xl border border-dashed border-white/10 bg-white/[0.02] px-4 py-3 text-center text-[11px] text-white/30">
@@ -2319,6 +2388,29 @@ export function BakeWorkspacePage({
                   ready={Boolean(selectedHigh)}
                   icon={Box}
                   tone="violet"
+                  pickerInput={
+                    <input
+                      id={bakeFileInputIds.high}
+                      ref={highInputRef}
+                      className="absolute inset-0 z-30 h-full w-full cursor-pointer opacity-0"
+                      type="file"
+                      multiple
+                      accept=".fbx,.obj,.glb,.gltf,.bin,.mtl,image/*"
+                      disabled={highImporting}
+                      aria-label="选择高模文件"
+                      onClick={(event) => {
+                        fileTargetIdRef.current = firstNonEmptyId(
+                          selectedHigh?.id,
+                          selectedObjectId,
+                          handoff?.objectId,
+                        );
+                        event.currentTarget.value = '';
+                      }}
+                      onChange={(event) =>
+                        void handleHighImport(Array.from(event.target.files ?? []))
+                      }
+                    />
+                  }
                   actionLabel={highImporting ? '正在导入…' : selectedHigh ? '替换高模' : '选择高模'}
                   onClick={() => chooseFiles('high')}
                   onFilesDropped={(files) => void handleHighImport(files)}
@@ -2330,23 +2422,52 @@ export function BakeWorkspacePage({
                   english="LOW POLY"
                   description={
                     selectedLow
-                      ? selectedLowInfo
-                        ? !hasUv0
-                          ? '缺少 UV0，请重新导出'
-                          : alignmentMismatch
-                            ? '不是同一模型，或变换未对齐'
-                            : 'UV0 与模型匹配已通过'
-                        : '正在检查 UV…'
+                      ? selectedLowImportError
+                        ? `解析失败：${selectedLowImportError}`
+                        : selectedLowInfo
+                          ? !hasUv0
+                            ? '缺少 UV0，请重新导出'
+                            : alignmentMismatch
+                              ? '不是同一模型，或变换未对齐'
+                              : 'UV0 与模型匹配已通过'
+                          : lowImporting
+                            ? '正在读取并解析模型…'
+                            : '正在检查 UV…'
                       : '需要包含 UV0 的模型'
                   }
                   value={selectedLow?.name ?? '点击导入低模'}
                   ready={Boolean(selectedLow && selectedLowInfo && hasUv0 && !alignmentMismatch)}
-                  warning={Boolean(selectedLowInfo && (!hasUv0 || alignmentMismatch))}
+                  warning={Boolean(
+                    selectedLowImportError || (selectedLowInfo && (!hasUv0 || alignmentMismatch)),
+                  )}
                   icon={Layers3}
                   tone="cyan"
-                  actionLabel={selectedLow ? '替换低模' : '选择模型'}
+                  pickerInput={
+                    <input
+                      id={bakeFileInputIds.low}
+                      ref={lowInputRef}
+                      className="absolute inset-0 z-30 h-full w-full cursor-pointer opacity-0"
+                      type="file"
+                      multiple
+                      accept=".fbx,.obj,.glb,.gltf,.bin,.mtl,image/*"
+                      disabled={lowImporting}
+                      aria-label="选择低模文件"
+                      onClick={(event) => {
+                        fileTargetIdRef.current = firstNonEmptyId(
+                          selectedHigh?.id,
+                          selectedObjectId,
+                          handoff?.objectId,
+                        );
+                        event.currentTarget.value = '';
+                      }}
+                      onChange={(event) => {
+                        void handleLowImport(Array.from(event.target.files ?? []));
+                      }}
+                    />
+                  }
+                  actionLabel={lowImporting ? '正在读取…' : selectedLow ? '替换低模' : '选择模型'}
                   onClick={() => chooseFiles('low')}
-                  onFilesDropped={handleLowImport}
+                  onFilesDropped={(files) => void handleLowImport(files)}
                   dropHint="低模文件"
                 />
                 <OneClickAssetCard
@@ -2396,7 +2517,9 @@ export function BakeWorkspacePage({
                         key={channel}
                         type="button"
                         disabled={!supported}
-                        title={supported ? '由真实 Substance Baker 生成' : '当前服务版本暂不支持该通道'}
+                        title={
+                          supported ? '由真实 Substance Baker 生成' : '当前服务版本暂不支持该通道'
+                        }
                         className={cn(
                           'inline-flex h-8 items-center justify-center gap-1.5 rounded-lg border px-2.5 text-xs font-medium transition-all',
                           selected
@@ -2447,14 +2570,20 @@ export function BakeWorkspacePage({
                   <div className="rounded-2xl border border-white/[0.07] bg-white/[0.025] p-4 sm:flex sm:items-center sm:justify-between sm:gap-5">
                     <div className="mb-4 sm:mb-0">
                       <p className="text-sm font-semibold text-white/82">输出贴图大小</p>
-                      <p className="mt-1 text-xs text-white/34">远端 Substance Baker 支持完整 PBR 通道与 1K / 2K / 4K 输出</p>
+                      <p className="mt-1 text-xs text-white/34">
+                        远端 Substance Baker 支持完整 PBR 通道与 1K / 2K / 4K 输出
+                      </p>
                     </div>
                     <div className="grid grid-cols-3 gap-2">
                       {([1024, 2048, 4096] as const).map((size) => (
                         <button
                           key={size}
                           type="button"
-                          title={size === 4096 ? '4K 由远端 Substance Worker 处理，耗时取决于模型和通道数量' : undefined}
+                          title={
+                            size === 4096
+                              ? '4K 由远端 Substance Worker 处理，耗时取决于模型和通道数量'
+                              : undefined
+                          }
                           className={cn(
                             'h-12 min-w-[58px] rounded-xl border text-sm font-semibold transition-all duration-200',
                             resolution === size
@@ -2497,7 +2626,9 @@ export function BakeWorkspacePage({
                     <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-white/[0.06]">
                       <div
                         className="h-full rounded-full bg-gradient-to-r from-fuchsia-400 to-violet-400 transition-[width] duration-500"
-                        style={{ width: `${Math.max(4, bakeSubmitting ? 4 : (bakeJob?.progress ?? 0))}%` }}
+                        style={{
+                          width: `${Math.max(4, bakeSubmitting ? 4 : (bakeJob?.progress ?? 0))}%`,
+                        }}
                       />
                     </div>
                     {bakeJob && ['queued', 'running', 'cancelling'].includes(bakeJob.status) ? (
@@ -2668,8 +2799,9 @@ export function BakeWorkspacePage({
       }}
     >
       <input
+        id={bakeFileInputIds.low}
         ref={lowInputRef}
-        className="hidden"
+        className="sr-only"
         type="file"
         multiple
         accept=".fbx,.obj,.glb,.gltf"
@@ -2704,8 +2836,9 @@ export function BakeWorkspacePage({
         </div>
       ) : null}
       <input
+        id={bakeFileInputIds.cage}
         ref={cageInputRef}
-        className="hidden"
+        className="sr-only"
         type="file"
         multiple
         accept=".fbx,.obj,.glb,.gltf"
@@ -2720,8 +2853,9 @@ export function BakeWorkspacePage({
         }}
       />
       <input
+        id={bakeFileInputIds.color}
         ref={colorInputRef}
-        className="hidden"
+        className="sr-only"
         type="file"
         multiple
         accept="image/png,image/jpeg,image/webp,.tga"
@@ -2871,6 +3005,9 @@ export function BakeWorkspacePage({
                   <BakeSceneOverlay
                     highObject={selectedHigh}
                     lowFile={selectedLow}
+                    lowResourceFiles={
+                      selectedBakeObjectId ? lowResourceFiles[selectedBakeObjectId] : undefined
+                    }
                     cageFile={selectedCage}
                     mode={viewportMode}
                     cageInflation={cageInflation}
@@ -3395,21 +3532,21 @@ export function BakeWorkspacePage({
 }
 
 function MaterialMapSlot({
+  pickerInput,
   label,
   description,
   fileName,
   previewUrl,
   required,
-  onClick,
   onFilesDropped,
   children,
 }: {
+  pickerInput: ReactNode;
   label: string;
   description: string;
   fileName?: string;
   previewUrl?: string;
   required: boolean;
-  onClick: () => void;
   onFilesDropped: (files: File[]) => void;
   children?: ReactNode;
 }) {
@@ -3448,11 +3585,8 @@ function MaterialMapSlot({
         onFilesDropped(Array.from(event.dataTransfer.files));
       }}
     >
-      <button
-        type="button"
-        className="flex w-full items-center gap-4 px-4 py-3.5 text-left"
-        onClick={onClick}
-      >
+      <div className="relative flex w-full items-center gap-4 px-4 py-3.5 text-left">
+        {pickerInput}
         <span
           className={cn(
             'grid h-14 w-14 shrink-0 place-items-center overflow-hidden rounded-xl border',
@@ -3483,7 +3617,7 @@ function MaterialMapSlot({
         <span className="text-xs font-medium text-white/42 transition-colors group-hover:text-white/72">
           {fileName ? '替换' : '导入'}
         </span>
-      </button>
+      </div>
       {children ? <div className="border-t border-white/[0.07]">{children}</div> : null}
     </div>
   );
@@ -3499,6 +3633,7 @@ function OneClickAssetCard({
   warning = false,
   icon: Icon,
   tone,
+  pickerInput,
   actionLabel,
   onClick,
   onFilesDropped,
@@ -3513,6 +3648,7 @@ function OneClickAssetCard({
   warning?: boolean;
   icon: LucideIcon;
   tone: 'violet' | 'cyan' | 'rose';
+  pickerInput?: ReactNode;
   actionLabel: string;
   onClick: () => void;
   onFilesDropped: (files: File[]) => void;
@@ -3537,22 +3673,23 @@ function OneClickAssetCard({
     cyan: 'border-cyan-200/70 bg-[#071e28]/92 text-cyan-50',
     rose: 'border-fuchsia-200/70 bg-[#241027]/92 text-fuchsia-50',
   }[tone];
+  const Root = pickerInput ? 'div' : 'button';
 
-  function handleDragEnter(event: DragEvent<HTMLButtonElement>) {
+  function handleDragEnter(event: DragEvent<HTMLElement>) {
     event.preventDefault();
     event.stopPropagation();
     dragDepth.current += 1;
     setDragActive(true);
   }
 
-  function handleDragLeave(event: DragEvent<HTMLButtonElement>) {
+  function handleDragLeave(event: DragEvent<HTMLElement>) {
     event.preventDefault();
     event.stopPropagation();
     dragDepth.current = Math.max(0, dragDepth.current - 1);
     if (dragDepth.current === 0) setDragActive(false);
   }
 
-  function handleDrop(event: DragEvent<HTMLButtonElement>) {
+  function handleDrop(event: DragEvent<HTMLElement>) {
     event.preventDefault();
     event.stopPropagation();
     dragDepth.current = 0;
@@ -3562,15 +3699,15 @@ function OneClickAssetCard({
   }
 
   return (
-    <button
-      type="button"
+    <Root
+      {...(pickerInput ? {} : { type: 'button' })}
       className={cn(
         'group relative min-h-[270px] overflow-hidden rounded-2xl border bg-gradient-to-br text-left transition-all duration-300 hover:-translate-y-1 hover:bg-white/[0.035] hover:shadow-[0_20px_50px_rgba(0,0,0,.22)]',
         toneClass,
         dragActive && 'scale-[1.015] shadow-[0_24px_60px_rgba(0,0,0,.34)]',
       )}
       title={`点击选择，或将${dropHint}拖到此处`}
-      onClick={onClick}
+      onClick={pickerInput ? undefined : onClick}
       onDragEnter={handleDragEnter}
       onDragOver={(event) => {
         event.preventDefault();
@@ -3580,6 +3717,7 @@ function OneClickAssetCard({
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
     >
+      {pickerInput}
       {dragActive ? (
         <span
           className={cn(
@@ -3651,7 +3789,7 @@ function OneClickAssetCard({
           </span>
         </div>
       </div>
-    </button>
+    </Root>
   );
 }
 

@@ -1,207 +1,82 @@
-# Deploy: Docker + Kubernetes
+# LI3D Cloud 发布与 master 验证
 
-Everything needed to containerize and deploy Liclick 3D Texture to
-Kubernetes lives under this directory:
+维护范围：M15，部署契约 CLOUD-DEPLOYMENT v1.0.0。业务 ALG、Project Command v1、Revision CAS、ownership 和资产协议不变。
 
-```
-deploy/
-  Dockerfile                          multi-stage build, two targets: server, web
-  Dockerfile.dockerignore             build-context excludes (BuildKit auto-picks this up)
-  docker-compose.yml                  local build/run of both images, no k8s needed
-  docker/nginx/default.conf.template  nginx conf for the web image (SPA + reverse proxy)
-  k8s/base/                           Kustomize base: Deployments, Services, PVC, Ingress
-  k8s/overlays/prod/                  generic example overlay
-  k8s/overlays/zprod/                 the real overlay for the company zprod cluster
-```
+## 当前操作范围
 
-Two images come out of one pnpm monorepo, mirroring the split
-`scripts/setup-linux-a100.sh` already sets up with bare-metal nginx:
-`li3d-server` (Node backend, Prisma + SQLite on a PVC) and `li3d-web`
-(nginx serving the built SPA, reverse-proxying `/api` and `/workspace` to
-the backend Service).
+先在 master 完成 CI 验证。本次不推送 release、不触发正式部署、不修改集群或生产数据。
+代码准备基于 master 5f880fd，合并 release cd30512 的部署历史。两条分支原来没有共同祖先；
+合并保留双方历史，应用代码使用当前 master，逐项适配 release 的部署配置。禁止强推或以旧正文覆盖现行维护标准。
 
-There are two overlays:
+## 流水线
 
-- **`k8s/overlays/prod`** — a generic, illustrative example (placeholder
-  `registry.example.com` / `example.com`). Copy this pattern for a new
-  environment.
-- **`k8s/overlays/zprod`** — the real overlay for the company `zprod`
-  cluster (kubectl context `zprod`, cluster `kubernetes-h657hbh267`),
-  namespace `li3d`, ingress host `li3d.lilithgames.com`, PVC pinned to
-  the `zstack-csi-rbd` StorageClass (zprod has no default StorageClass —
-  confirmed via `kubectl get storageclass`, none carry the
-  `storageclass.kubernetes.io/is-default-class` annotation).
+- 所有分支保留 contracts、Cloud 边界、typecheck、web/server regression、lint 和 release build。
+- 新增部署配置回归：校验 YAML、启动配置、镜像路径、迁移入口、分支规则与凭据排除。
+- master/MR 的 container:verify 并行构建 server、web 两个真实镜像目标，使用 --no-push，不写镜像仓库或集群。
+- release 的 build:server/build:web 只有在上述门禁通过后才推送镜像。
+- deploy:k8s 同时要求 release 分支和最终提交信息包含 [deploy]；生产部署串行执行。
+- 两镜像和 db-push 初始化容器使用同一提交 SHA；apply 前已写入最终镜像标签，避免先启动旧标签。
+- Runner、ACR 地址、namespace、域名、TLS、现有 PVC 名称及容量继承效率组配置。
 
-## 1. Build and push images (you run this — no Docker in this environment)
+## 镜像与服务
 
-Build context is the **repo root**, not `deploy/` — the Dockerfile `COPY`s
-`apps/`, `packages/`, etc. Always pass `-f`. `zprod` already runs other
-internal services (`p4-account-service`, `swarm-event-gateway`, in the
-`liycolith-svcs` namespace) out of this registry, so the zprod overlay
-targets the same one:
+Docker/Kaniko 都使用根目录 .dockerignore，Dockerfile 专用副本与之保持一致。
+禁止将 .env、密钥、用户 workspace、OAuth 缓存或本机 node_modules 放入构建上下文。
 
-```bash
-TAG=0.1.3   # or a git short SHA, whatever you want to roll back to later
-REGISTRY=tsh-devops-prod-all-0001-registry.cn-shanghai.cr.aliyuncs.com/devops
+构建先安装完整七个工作区的冻结依赖，包含 @liclick/contracts；执行 build:release、
+Cloud artifact 和既有包体门禁。前后端使用相同 release ID、Git SHA、版本、构建时间及 cloud 模式。
+后端保留 /app/apps/server 目录层级，打包生产依赖、SQL 与现有 PostgreSQL 迁移脚本；
+Atlas SkillHub 2.9.1 从现有公司 npm registry 安装到服务端镜像，仅托管每用户授权。
+不导入个人密钥，不启用共享测试账号，不恢复已退休安装器路由。
 
-docker build -f deploy/Dockerfile --target server -t $REGISTRY/li3d-server:$TAG .
-docker build -f deploy/Dockerfile --target web    -t $REGISTRY/li3d-web:$TAG    .
-docker push $REGISTRY/li3d-server:$TAG
-docker push $REGISTRY/li3d-web:$TAG
-```
+现有 db-push 名称保留，但命令改为配置校验及 migrate-cloud-projects.mjs；
+使用已有事务和 advisory lock 执行 SQL 001–003，不运行旧 SQLite Prisma db push。
+启动缺少 PostgreSQL 或 HTTPS 对象存储配置会明确失败，不回退文件存储。
 
-Then point the zprod overlay at the tag you just pushed:
+PVC 保留给 Atlas 受管目录、兼容历史文件和临时缓存。项目权威文档写 PostgreSQL，大资产写对象存储。
+仍保持一个后端副本与 Recreate 策略，不能在未解决受管授权目录共享前直接扩容。
+nginx 代理同源 /api、/workspace，保留可信 ingress 的 HTTPS scheme，允许同步 ModelView 等待 2700 秒。
 
-```bash
-cd deploy/k8s/overlays/zprod
-kustomize edit set image \
-  li3d-server=$REGISTRY/li3d-server:$TAG \
-  li3d-web=$REGISTRY/li3d-web:$TAG
-```
+## 生产环境配置（不影响 master CI）
 
-(or just edit the `REPLACE_ME` tags in
-[`k8s/overlays/zprod/kustomization.yaml`](k8s/overlays/zprod/kustomization.yaml)
-directly).
+效率组保管和配置 Qwen 实际密钥及注入，见 QWEN_HANDOFF.md。
+发布脚本继续消费既有受保护变量：
 
-**Local build without any registry/cluster**, e.g. to sanity-check the
-images build and boot before pushing anywhere:
+- KUBE_CONFIG_B64；可选 KUBE_CONTEXT
+- LI3D_SESSION_SECRET
+- LI3D_FEISHU_CLIENT_ID
+- LI3D_FEISHU_CLIENT_SECRET
 
-```bash
-docker compose -f deploy/docker-compose.yml build
-docker compose -f deploy/docker-compose.yml up
-curl -fsS http://127.0.0.1:8080/healthz
-curl -fsS http://127.0.0.1:4517/api/health
-```
+Cloud 运行时另需以下受保护 CI/CD 变量，部署脚本会写入既有 li3d-server-secrets：
 
-This runs `AUTH_MODE=dev-mock` (no real Feishu/IDaaS needed) with a named
-Docker volume standing in for the PVC — it's a dev convenience, not how
-`k8s/` actually deploys the app.
+- LICLICK_CLOUD_DATABASE_URL：目标 PostgreSQL 数据库连接串。
+- LICLICK_OBJECT_STORAGE_ENDPOINT：浏览器和服务端可访问的 HTTPS S3-compatible endpoint。
+- LICLICK_OBJECT_STORAGE_BUCKET
+- LICLICK_OBJECT_STORAGE_ACCESS_KEY_ID
+- LICLICK_OBJECT_STORAGE_SECRET_ACCESS_KEY
+- LICLICK_OBJECT_STORAGE_REGION：可选，默认 auto。
+- LICLICK_OBJECT_STORAGE_SESSION_TOKEN：可选。
+- LI3D_CLOUD_DATA_READY=true：仅在下述存量数据验收完成后配置。
 
-## 2. Fill in secrets
+对象存储须允许正式网站源的 PUT/HEAD/GET 和 checksum/CORS headers，保持 verified asset 校验；
+服务端网络须可访问数据库、对象存储、公司 npm registry、IDaaS、千问及正式 GPU 服务。
+这些地址、账号和现网状态尚未由本次本地修改验证，不能据 master CI 绿色认定正式环境已就绪。
 
-```bash
-cp deploy/k8s/base/secrets/server.env.example deploy/k8s/base/secrets/server.env
-```
+## 存量数据、迁移与回滚
 
-Edit `deploy/k8s/base/secrets/server.env` **directly in an editor** (don't
-paste the client secret into chat/tickets):
+SQL 初始化只创建/升级表，不会把旧 PVC 的工程 JSON、SQLite 元数据或文件自动迁进新后端。
+正式部署前必须备份原 PVC 和数据库，确认目标库包含原用户身份、工程、Revision、命令幂等回执与 ownership，
+对象资产经长度、类型和 SHA-256 验证；旧项目保存、重开、历史与下载验收通过后才设置 LI3D_CLOUD_DATA_READY。
+没有实际现网数据与服务连接信息时，不运行数据迁移，也不宣称迁移完成。本次保留原 PVC，禁止清空或重建。
 
-- `SESSION_SECRET` → `openssl rand -hex 32`
-- `FEISHU_OAUTH_CLIENT_ID` / `FEISHU_OAUTH_CLIENT_SECRET` → from the
-  IDaaS/Feishu app registration for `li3d.lilithgames.com`'s callback
-  (`https://li3d.lilithgames.com/api/auth/feishu/callback`, already set in
-  the zprod overlay's config override)
+回滚使用已验收且兼容相同 Cloud 数据协议的不可变镜像 SHA，同时切换 server/web/db-push。
+保留新增表、对象资产、原 PVC 和历史，不运行 drop、--accept-data-loss 或以 SQLite 作为生产回退。
+Qwen 的效率组补丁必须正常合并，不能用这里的旧变量片段覆盖。
 
-This file is gitignored — never commit it. `kubectl apply -k` reads it at
-apply time via `secretGenerator`, shared by every overlay under `base/`.
+## 可选容器验收
 
-Also set `FEISHU_OAUTH_AUTHORIZE_URL` / `FEISHU_OAUTH_TOKEN_URL` /
-`FEISHU_OAUTH_USERINFO_URL` in
-[`k8s/base/server-config.env`](k8s/base/server-config.env) (or a zprod
-override) — they're blank placeholders in the base config and
-`AUTH_MODE=feishu-oauth` won't come up healthy without them.
-
-## 3. Review remaining config
-
-`COMFYUI_BASE_URL` / `COMFYUI_INPAINT_BASE_URL` in
-[`k8s/base/server-config.env`](k8s/base/server-config.env) still point at
-placeholder hosts — set them to your real GPU inference endpoints before
-deploying, or image generation will fail even though the app itself comes
-up healthy.
-
-## 4. Deploy
-
-```bash
-kubectl --context zprod apply -k deploy/k8s/overlays/zprod
-```
-
-Verify:
-
-```bash
-kubectl --context zprod -n li3d get pods
-kubectl --context zprod -n li3d logs deploy/liclick-server -c db-push   # schema push, once per pod start
-kubectl --context zprod -n li3d port-forward svc/liclick-server 4517:4517 &
-curl -fsS http://127.0.0.1:4517/api/health
-```
-
-## 5. GitLab CI (`.gitlab-ci.yml`, repo root)
-
-Modeled on the sibling `lipixel` project's pipeline. Only runs on the
-`release` branch (created 2026-08-25 from the fixed `feat/ci` tip and pushed
-to origin). The deploy stage additionally requires `[deploy]` in the commit
-message (same
-double-gate lipixel uses). It builds `build:server` and `build:web` via
-Kaniko (one Dockerfile, two `--target`s), then `deploy:k8s` applies
-`deploy/k8s/overlays/zprod` and updates both Deployments' images —
-`liclick-server`'s `db-push` initContainer and `server` container always
-move together, same tag.
-
-**Runner**: no new runner — li3d's project Settings > CI/CD > Runners
-showed lipixel's existing runner (`#3274`, unlocked, physically running in
-the **ztest** cluster) as an assignable project runner, and it's now
-assigned to li3d. That's why the tags below are `ztest, k8s` — a subset of
-that runner's actual tags (`ztest, lipixel, k8s`), specific enough that no
-other k8s-tagged runner in the group would match. Where the runner
-physically runs doesn't matter for the deploy job: it authenticates to
-zprod at runtime via `KUBE_CONFIG_B64`, the same way it already
-authenticates to the ACR registry regardless of which cluster it builds in.
-
-Required GitLab CI/CD variables (masked + protected, set on the li3d
-project — Settings > CI/CD > Variables):
-
-```text
-KUBE_CONFIG_B64          base64-encoded kubeconfig for a scoped
-                          ServiceAccount (li3d-ci-deployer, see
-                          deploy/k8s/infra/ci-deployer/rbac.yaml — NOT
-                          cluster-admin, confined to the resource kinds
-                          deploy/k8s/overlays/zprod actually contains,
-                          inside the li3d namespace)
-LI3D_SESSION_SECRET       becomes SESSION_SECRET
-LI3D_FEISHU_CLIENT_ID     becomes FEISHU_OAUTH_CLIENT_ID
-LI3D_FEISHU_CLIENT_SECRET becomes FEISHU_OAUTH_CLIENT_SECRET
-```
-
-The deploy job writes those last three into
-`deploy/k8s/base/secrets/server.env` right before `kubectl apply -k` (that
-path is gitignored — kustomize's `secretGenerator` needs it to exist as a
-real file, unlike lipixel's imperative `kubectl create secret`) and shreds
-it immediately after. Optional: `KUBE_CONTEXT` if the kubeconfig has more
-than one context (ours only has one, `zprod`, so this isn't needed).
-
-`NODE_IMAGE` / `NGINX_IMAGE` point at ACR mirrors under `devops/` — pushed
-there 2026-08-25 (`node:22-bookworm-slim` and
-`nginxinc/nginx-unprivileged:1.27-alpine` specifically; neither is one of
-lipixel's existing mirrored bases, which only covers `node:22-alpine`), so
-Kaniko doesn't need outbound network access to Docker Hub.
-
-**Before this runs for real, still need:** `KUBE_CONFIG_B64`,
-`LI3D_SESSION_SECRET`, `LI3D_FEISHU_CLIENT_ID`, `LI3D_FEISHU_CLIENT_SECRET`
-set as CI/CD variables on the li3d project (see above) — none of these can
-be set from this environment.
-
-## Things worth knowing before you run this for real
-
-- **SQLite ⇒ one backend replica.** `liclick-server` is pinned to
-  `replicas: 1` with `strategy: Recreate` because the workspace database is
-  a single SQLite file on a `ReadWriteOnce` PVC — do not scale it out or
-  switch the volume to `ReadWriteMany`. `apps/server/src/db/migrations.md`
-  notes Postgres as a future option if you need multi-replica; that would
-  mean changing `datasource.provider` in `apps/server/prisma/schema.prisma`
-  and pointing `DATABASE_URL` at a Postgres Service instead of the PVC.
-- **Schema sync runs as an initContainer**, not on every container restart —
-  `prisma db push` against the PVC, once per pod (re)start. It's
-  additive-only by default; a destructive schema change needs a manual
-  `kubectl exec` run with `--accept-data-loss`.
-- **Atlas Skillhub CLI login is not available in-cluster** — it depends on
-  host-installed tooling and a local token cache file (see
-  `docs/27_LINUX_A100_DEPLOYMENT.md`). `LICLICK_ENABLE_ATLAS_LOCAL_LOGIN` is
-  set to `false` here; use direct Feishu OAuth or the IDaaS SP flow instead.
-- **The frontend calls same-origin `/api` and `/workspace`** (no backend URL
-  baked into the JS bundle) — `li3d-web`'s nginx proxies those paths to the
-  `liclick-server` Service, same as the existing nginx site config in
-  `scripts/setup-linux-a100.sh`. If you rebuild the web image with a custom
-  `VITE_LICLICK_WORKSPACE_API`, make sure it matches wherever the Ingress
-  actually exposes the app.
-- **Nothing here backs up the PVC.** `workspace/` holds the SQLite DB plus
-  every user's projects/assets/generated images — put a volume snapshot or
-  backup policy in front of it before treating this as production.
+安装 Docker 的环境可用 deploy/docker-compose.yml 对接独立验收数据库和对象存储。
+设置 RELEASE_ID、GIT_SHA（40 位）、RELEASE_VERSION、BUILD_TIME，
+按 server.env.example 在未跟踪的 server.env 中填入验收凭据，并调整非秘密 URL 配置。
+Compose 的 migrate 先成功，server 才启动；Web 只映射至 127.0.0.1:8080。
+此验收不替代正式 OAuth、个人莉刻绑定、生成、工程保存与数据迁移验收。

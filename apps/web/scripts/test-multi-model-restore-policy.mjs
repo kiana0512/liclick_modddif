@@ -67,6 +67,7 @@ try {
     path.join(root, 'src/workers/previewImageBitmap.worker.ts'),
     'utf8',
   );
+  const projectStoreSource = await readFile(path.join(root, 'src/stores/projectStore.ts'), 'utf8');
   assert.doesNotMatch(
     editorSource,
     /models\.some\(\(model\) => model\.restoreStage && model\.restoreStage !== 'full'\)[\s\S]{0,120}return undefined/,
@@ -89,8 +90,23 @@ try {
   );
   assert.match(
     sceneRootSource,
-    /workspaceMode === 'texture'[\s\S]{0,180}importedModels\.filter\(\(model\) => model\.objectId === selectedObjectId\)[\s\S]{0,80}: importedModels/,
-    'texture authoring must render only the selected model while other workspaces retain the scene arrangement',
+    /const textureObjectId = selectedObjectId \?\? activeImportedModelId;[\s\S]{0,180}workspaceMode === 'texture'[\s\S]{0,120}importedModels\.filter\(\(model\) => model\.objectId === textureObjectId\)[\s\S]{0,80}: importedModels/,
+    'texture authoring must render the selected model with the current runtime model as a defensive fallback',
+  );
+  assert.match(
+    sceneRootSource,
+    /const clearViewportSelection = useCallback\(\(\) => \{[\s\S]{0,320}if \(workspaceMode === 'texture'\) return;[\s\S]{0,80}selectObject\(undefined\);/,
+    'an empty texture-viewport click must preserve the active object while scene review may still deselect',
+  );
+  assert.match(
+    sceneRootSource,
+    /const showSelectionGlow = workspaceMode === 'scene';/,
+    'selection bounds must stay hidden while texture authoring and only render in scene review',
+  );
+  assert.match(
+    sceneRootSource,
+    /<group onPointerMissed=\{clearViewportSelection\}>/,
+    'the scene pointer-miss boundary must use the workspace-aware selection guard',
   );
   assert.match(
     sceneRootSource,
@@ -124,8 +140,13 @@ try {
   );
   assert.match(
     sceneRootSource,
-    /updateCurrentProject\(\{[\s\S]{0,120}activeObjectId: objectId/,
-    'viewport selection must persist through the same active-object contract as the object list',
+    /scheduleCurrentProjectActiveObjectPersistence\(objectId\)/,
+    'viewport selection must use the shared deferred active-object persistence contract',
+  );
+  assert.match(
+    projectStoreSource,
+    /setTimeout\([\s\S]{0,700}updateProjectById\(projectId, \{ activeObjectId \}\)/,
+    'rapid model selection must coalesce project persistence while preserving the final active object',
   );
 
   stdout.write('Multi-model restore policy regression test passed.\n');

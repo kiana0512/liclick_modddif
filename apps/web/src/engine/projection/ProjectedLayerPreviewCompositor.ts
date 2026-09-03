@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { loadProjectedTexture } from './ProjectedLayerMaterial';
+import { loadProjectedTextureWithRetry } from './ProjectedLayerMaterial';
 import { buildProjectionMatrixBundle } from './projectionMath';
 import type { ProjectionLayerStackInput } from './projectionTypes';
 import {
@@ -37,6 +37,7 @@ const MIN_CAPTURE_NORMAL_AGREEMENT = 0.72;
 const FULL_CAPTURE_NORMAL_AGREEMENT = 0.92;
 const SURFACE_LOCKED_FACING_START = 0.015;
 const SURFACE_LOCKED_FACING_END = 0.06;
+const SURFACE_LOCKED_VISIBILITY_FEATHER = 0.05;
 const SURFACE_LOCKED_MIN_SAFE_FACING = 0.25;
 
 type PreviewLayer = ProjectionLayerStackInput['layers'][number];
@@ -398,7 +399,11 @@ const candidateFragmentShader = `
       ${SURFACE_LOCKED_FACING_END.toFixed(3)},
       projectionFacingFactor
     );
-    float lockedVisibilityCoverage = smoothstep(0.0, 1.0, visibilitySupport);
+    float lockedVisibilityCoverage = smoothstep(
+      0.0,
+      ${SURFACE_LOCKED_VISIBILITY_FEATHER.toFixed(2)},
+      visibilitySupport
+    );
     visibilityCoverage = mix(
       visibilityCoverage,
       lockedVisibilityCoverage,
@@ -423,10 +428,15 @@ const candidateFragmentShader = `
     );
     // Keep depth authoritative while preserving a continuous angular and
     // neighbourhood feather; no triangle-level decision reaches output alpha.
+    float depthAuthoritativeFacingCoverage = mix(
+      lockedFacingCoverage,
+      1.0,
+      useDepthCheck
+    );
     float lockedCoverage =
       layerOpacity *
       sourceAlpha *
-      lockedFacingCoverage *
+      depthAuthoritativeFacingCoverage *
       lockedSafetyCoverage *
       visibilityCoverage;
     float coverage = mix(continuousCoverage, lockedCoverage, surfaceLockedVisibility);
@@ -434,6 +444,10 @@ const candidateFragmentShader = `
     float strength = clamp(layerStrength, 0.25, 3.0);
     float angleWeight = smoothstep(0.02, 0.25, visibilityBackedNdv) * pow(clamp(visibilityBackedNdv, 0.0, 1.0), 4.0 / strength);
     float quality = coverage * depthWeight * angleWeight * mix(0.3, 1.0, edgeFade(uv, 0.035));
+    // Surface-locked coverage has already passed the capture depth/mask test.
+    // Preserve that confidence for priority composition instead of fading the
+    // accepted surface a second time with the mesh-normal angle.
+    quality = mix(quality, max(quality, coverage), surfaceLockedVisibility);
     float score = max(quality, coverage * ${QUALITY_FLOOR_FROM_COVERAGE.toFixed(2)});
     candidateColor = vec4(texel.rgb, score);
     candidateInfo = vec4(coverage, renderedColor, 0.0, 1.0);
@@ -561,6 +575,7 @@ const overlayFragmentShader = `
   uniform sampler2D candidateMap;
   uniform sampler2D candidateInfoMap;
   uniform vec2 tileUvScale;
+  uniform float priorityOverlay;
   in vec2 vUv;
   layout(location = 0) out vec4 composedColor;
   layout(location = 1) out vec4 composedRenderedMask;
@@ -712,15 +727,15 @@ async function createCandidateMaterial(group: THREE.Group, layer: PreviewLayer) 
   const neutral = new THREE.DataTexture(new Uint8Array([255, 255, 255, 255]), 1, 1);
   neutral.needsUpdate = true;
   const [projectedMap, maskMap, depthMap, normalMap] = await Promise.all([
-    loadProjectedTexture(layer.imageUrl),
+    loadProjectedTextureWithRetry(layer.imageUrl),
     layer.useMask && layer.maskUrl
-      ? loadProjectedTexture(layer.maskUrl, THREE.NoColorSpace, 'mask')
+      ? loadProjectedTextureWithRetry(layer.maskUrl, THREE.NoColorSpace, 'mask')
       : Promise.resolve(neutral),
     layer.useDepthCheck && layer.depthUrl
-      ? loadProjectedTexture(layer.depthUrl, THREE.NoColorSpace, 'depth')
+      ? loadProjectedTextureWithRetry(layer.depthUrl, THREE.NoColorSpace, 'depth')
       : Promise.resolve(neutral),
     layer.useNormalCheck && layer.normalUrl
-      ? loadProjectedTexture(layer.normalUrl, THREE.NoColorSpace, 'normal')
+      ? loadProjectedTextureWithRetry(layer.normalUrl, THREE.NoColorSpace, 'normal')
       : Promise.resolve(neutral),
   ]);
   const objectMatrixDelta = createObjectMatrixDelta(group, layer);
@@ -820,6 +835,9 @@ function disposeJob(job: CompositeJob) {
 export class ProjectedLayerPreviewCompositor {
   private revision = 0;
   private job?: CompositeJob;
+  private failedSignature?: string;
+  private failedAttemptCount = 0;
+  private retryTimer?: number;
   private publishedTarget?: THREE.WebGLRenderTarget;
   private readonly neutralRenderedColorMask = (() => {
     const texture = new THREE.DataTexture(new Uint8Array([0, 0, 0, 255]), 1, 1);
@@ -830,6 +848,12 @@ export class ProjectedLayerPreviewCompositor {
 
   request(request: ProjectedPreviewCompositeRequest) {
     if (this.job?.request.signature === request.signature) return;
+    if (this.failedSignature === request.signature && this.retryTimer !== undefined) return;
+    if (this.failedSignature !== request.signature) {
+      this.clearRetry();
+      this.failedSignature = undefined;
+      this.failedAttemptCount = 0;
+    }
     const revision = ++this.revision;
     request.onProgress?.({
       signature: request.signature,
@@ -842,14 +866,52 @@ export class ProjectedLayerPreviewCompositor {
       this.job = undefined;
     }
     void this.prepareJob(request, revision).catch((error) => {
-      if (revision === this.revision) request.onError(error);
+      if (revision === this.revision) {
+        this.handleFailure(request, error);
+      }
     });
+  }
+
+  private clearRetry() {
+    if (this.retryTimer !== undefined) window.clearTimeout(this.retryTimer);
+    this.retryTimer = undefined;
+  }
+
+  private handleFailure(request: ProjectedPreviewCompositeRequest, error: unknown) {
+    this.failedSignature = request.signature;
+    this.failedAttemptCount += 1;
+    request.onError(error);
+    // Texture decode, GPU allocation and framebuffer work can fail transiently
+    // while another model is releasing its 4K arrays. A permanent signature
+    // latch leaves projection-only models white until some unrelated edit
+    // changes the stack. Retry a bounded number of times with backoff; model
+    // hide/show calls cancelPending(), which resets this budget for a fresh run.
+    if (this.failedAttemptCount >= 4) return;
+    const failedRevision = this.revision;
+    const retryDelayMs = Math.min(2000, 250 * 2 ** (this.failedAttemptCount - 1));
+    this.clearRetry();
+    this.retryTimer = window.setTimeout(() => {
+      this.retryTimer = undefined;
+      if (
+        this.revision !== failedRevision ||
+        this.failedSignature !== request.signature ||
+        this.job
+      )
+        return;
+      // Keep failedSignature and failedAttemptCount intact while retrying the
+      // same stack. Clearing the signature here makes request() treat every
+      // retry as a brand-new failure series and defeats the four-attempt cap.
+      this.request(request);
+    }, retryDelayMs);
   }
 
   cancelPending() {
     this.revision += 1;
+    this.clearRetry();
     if (this.job) disposeJob(this.job);
     this.job = undefined;
+    this.failedSignature = undefined;
+    this.failedAttemptCount = 0;
   }
 
   private async prepareJob(request: ProjectedPreviewCompositeRequest, revision: number) {
@@ -928,6 +990,7 @@ export class ProjectedLayerPreviewCompositor {
       candidateMap: candidateTarget.textures[0],
       candidateInfoMap: candidateTarget.textures[1],
       tileUvScale: new THREE.Vector2(1, 1),
+      priorityOverlay: 0,
     });
     this.job = {
       revision,
@@ -994,7 +1057,7 @@ export class ProjectedLayerPreviewCompositor {
     } catch (error) {
       if (this.job === job) this.job = undefined;
       disposeJob(job);
-      job.request.onError(error);
+      this.handleFailure(job.request, error);
     }
   }
 
@@ -1211,6 +1274,9 @@ export class ProjectedLayerPreviewCompositor {
 
   private publish(job: CompositeJob) {
     if (job.revision !== this.revision) return;
+    this.clearRetry();
+    this.failedSignature = undefined;
+    this.failedAttemptCount = 0;
     const previousPublished = this.publishedTarget;
     this.publishedTarget = job.outputTarget;
     job.outputTarget = createMrt(1, 1, 2);
@@ -1235,8 +1301,11 @@ export class ProjectedLayerPreviewCompositor {
 
   dispose() {
     this.revision += 1;
+    this.clearRetry();
     if (this.job) disposeJob(this.job);
     this.job = undefined;
+    this.failedSignature = undefined;
+    this.failedAttemptCount = 0;
     this.publishedTarget?.dispose();
     this.publishedTarget = undefined;
     this.neutralRenderedColorMask.dispose();

@@ -2,6 +2,7 @@ export {};
 
 type Request =
   | { type: 'decode'; id: number; url: string; maxSize?: number }
+  | { type: 'adopt'; id: number; bitmap: ImageBitmap }
   | { type: 'stripe'; id: number; requestId: number; y: number; height: number }
   | { type: 'release'; id: number };
 type Response =
@@ -58,6 +59,17 @@ scope.onmessage = (event) => {
         });
         return;
       }
+      if (request.type === 'adopt') {
+        bitmaps.get(request.id)?.close();
+        bitmaps.set(request.id, request.bitmap);
+        scope.postMessage({
+          type: 'ready',
+          id: request.id,
+          width: request.bitmap.width,
+          height: request.bitmap.height,
+        });
+        return;
+      }
       const source = bitmaps.get(request.id);
       if (!source) throw new Error('Decoded preview texture is no longer resident.');
       const rowCount = Math.max(1, Math.min(request.height, source.height - request.y));
@@ -68,7 +80,7 @@ scope.onmessage = (event) => {
     } catch (error) {
       scope.postMessage({
         type: 'error',
-        ...(request.type === 'decode' ? { id: request.id } : { requestId: request.requestId }),
+        ...(request.type === 'stripe' ? { requestId: request.requestId } : { id: request.id }),
         message: errorMessage(error),
       });
     }

@@ -40,8 +40,34 @@ function Read-AtlasStatus {
     [Parameter(Mandatory = $true)][string]$TokenFile
   )
 
-  $StatusText = (& node $Runtime gateway status --token-file $TokenFile 2>$null | Out-String).Trim()
-  if ($LASTEXITCODE -ne 0 -or !$StatusText) { return $null }
+  # Atlas currently prints a valid status document before Node 24 on Windows
+  # aborts while closing an async handle. Capture stdout independently so a
+  # valid credential is not rejected only because the child cleanup failed.
+  $NodeExecutable = (Get-Command node -ErrorAction Stop).Source
+  $StartInfo = [Diagnostics.ProcessStartInfo]::new()
+  $StartInfo.FileName = $NodeExecutable
+  $StartInfo.UseShellExecute = $false
+  $StartInfo.CreateNoWindow = $true
+  $StartInfo.RedirectStandardOutput = $true
+  $StartInfo.RedirectStandardError = $true
+  # Windows PowerShell 5.1 does not expose ProcessStartInfo.ArgumentList.
+  # These paths are resolved locally and quoted before being passed to Node.
+  $EscapedRuntime = $Runtime.Replace('"', '\"')
+  $EscapedTokenFile = $TokenFile.Replace('"', '\"')
+  $StartInfo.Arguments = '"' + $EscapedRuntime + '" gateway status --token-file "' + $EscapedTokenFile + '"'
+
+  $Process = [Diagnostics.Process]::new()
+  $Process.StartInfo = $StartInfo
+  try {
+    $Process.Start() | Out-Null
+    $StatusText = $Process.StandardOutput.ReadToEnd()
+    $ErrorText = $Process.StandardError.ReadToEnd()
+    $Process.WaitForExit()
+  } finally {
+    $Process.Dispose()
+  }
+  if (!$StatusText) { return $null }
+  $StatusText = $StatusText.Trim()
   try {
     return $StatusText | ConvertFrom-Json
   } catch {

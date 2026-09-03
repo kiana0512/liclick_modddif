@@ -42,6 +42,8 @@ export type LocalRepaintProjectionSource = {
   camera: SerializedCamera;
   generationId?: string;
   captureId?: string;
+  /** Persisted projected row currently owning an eraser edit session. */
+  projectionLayerId?: string;
   name?: string;
   targetLayerId?: string;
   targetLayerType?: 'projected' | 'uv';
@@ -111,8 +113,12 @@ type SceneStore = {
   paintMaskInvertRevision: number;
   paintMaskDataUrl?: string;
   paintMaskHasContent: boolean;
+  /** Ephemeral viewport-only visibility; never clears or persists the authored mask. */
+  paintMaskPresentationVisible: boolean;
   paintMaskCapture?: PaintMaskCapture;
   localRepaintProjectionSource?: LocalRepaintProjectionSource;
+  /** Explicit renderer retry token; incrementing restarts source decode/GPU binding. */
+  localRepaintGpuPrepareRevision: number;
   localRepaintPreviewLayer?: Layer;
   /**
    * Renderer-only handoff guard used while a local image generation is in
@@ -153,8 +159,10 @@ type SceneStore = {
   setPaintTool: (mode: PaintToolMode) => void;
   markPaintMaskChanged: () => void;
   setPaintMaskDataUrl: (dataUrl?: string, hasContent?: boolean) => void;
+  setPaintMaskPresentationVisible: (visible: boolean) => void;
   setPaintMaskCapture: (capture?: PaintMaskCapture) => void;
   setLocalRepaintProjectionSource: (source?: LocalRepaintProjectionSource) => void;
+  requestLocalRepaintGpuPrepare: () => void;
   setLocalRepaintPreviewLayer: (layer?: Layer) => void;
   setLocalRepaintGenerationPresentationActive: (active: boolean) => void;
   setTransientWhitePresentationObject: (objectId?: string) => void;
@@ -180,6 +188,7 @@ function resetLocalRepaintForObjectChange(state: SceneStore, nextObjectId: strin
     paintTool: 'none' as const,
     paintMaskDataUrl: undefined,
     paintMaskHasContent: false,
+    paintMaskPresentationVisible: true,
     localRepaintProjectionSource: undefined,
     localRepaintPreviewLayer: undefined,
     localRepaintGenerationPresentationActive: false,
@@ -265,8 +274,10 @@ export const useSceneStore = create<SceneStore>()(
       paintMaskInvertRevision: 0,
       paintMaskDataUrl: undefined,
       paintMaskHasContent: false,
+      paintMaskPresentationVisible: true,
       paintMaskCapture: undefined,
       localRepaintProjectionSource: undefined,
+      localRepaintGpuPrepareRevision: 0,
       localRepaintPreviewLayer: undefined,
       localRepaintGenerationPresentationActive: false,
       transientWhitePresentationObjectId: undefined,
@@ -504,11 +515,17 @@ export const useSceneStore = create<SceneStore>()(
             : { transformMode, paintTool: 'none' },
         ),
       setPaintTool: (paintTool) =>
-        set((state) =>
-          state.paintTool === paintTool && state.transformMode === 'select'
+        set((state) => {
+          const paintMaskPresentationVisible =
+            paintTool === 'inpaint-add' || paintTool === 'inpaint-subtract'
+              ? true
+              : state.paintMaskPresentationVisible;
+          return state.paintTool === paintTool &&
+            state.transformMode === 'select' &&
+            state.paintMaskPresentationVisible === paintMaskPresentationVisible
             ? state
-            : { paintTool, transformMode: 'select' },
-        ),
+            : { paintTool, transformMode: 'select', paintMaskPresentationVisible };
+        }),
       markPaintMaskChanged: () =>
         set((state) => ({ paintMaskRevision: state.paintMaskRevision + 1 })),
       setPaintMaskDataUrl: (paintMaskDataUrl, paintMaskHasContent) =>
@@ -518,9 +535,15 @@ export const useSceneStore = create<SceneStore>()(
             paintMaskHasContent ?? (paintMaskDataUrl ? state.paintMaskHasContent : false),
           paintMaskRevision: state.paintMaskRevision + 1,
         })),
+      setPaintMaskPresentationVisible: (paintMaskPresentationVisible) =>
+        set({ paintMaskPresentationVisible }),
       setPaintMaskCapture: (paintMaskCapture) => set({ paintMaskCapture }),
       setLocalRepaintProjectionSource: (localRepaintProjectionSource) =>
         set({ localRepaintProjectionSource }),
+      requestLocalRepaintGpuPrepare: () =>
+        set((state) => ({
+          localRepaintGpuPrepareRevision: state.localRepaintGpuPrepareRevision + 1,
+        })),
       setLocalRepaintPreviewLayer: (localRepaintPreviewLayer) => set({ localRepaintPreviewLayer }),
       setLocalRepaintGenerationPresentationActive: (localRepaintGenerationPresentationActive) =>
         set({ localRepaintGenerationPresentationActive }),

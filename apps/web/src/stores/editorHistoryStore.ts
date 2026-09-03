@@ -5,6 +5,7 @@ import { useSceneStore } from './sceneStore';
 import { useToastStore } from './toastStore';
 import type { Layer } from '@/types/layer';
 import type { SceneObject } from '@/types/model';
+import { paintHistoryBoundary } from '@/engine/paint/paintHistoryBoundary';
 
 type EditorSnapshot = {
   objects: SceneObject[];
@@ -31,7 +32,7 @@ type EditorHistoryStore = {
   past: EditorHistoryStep[];
   future: EditorHistoryStep[];
   capture: (label?: string) => void;
-  captureRuntime: (step: Omit<EditorRuntimeStep, 'kind'>) => void;
+  captureRuntime: (step: Omit<EditorRuntimeStep, 'kind'>) => () => void;
   persistCurrentSnapshot: (projectId?: string) => void;
   restorePersisted: (projectId: string) => void;
   undo: () => void;
@@ -88,7 +89,7 @@ function persistHistory(
   projectId: string | undefined,
   past: EditorHistoryStep[],
   future: EditorHistoryStep[],
-  current = cloneSnapshot(getSnapshot()),
+  current?: EditorSnapshot,
 ) {
   void projectId;
   void past;
@@ -119,7 +120,10 @@ export const useEditorHistoryStore = create<EditorHistoryStore>((set, get) => ({
     const snapshot = cloneSnapshot(getSnapshot());
     set((state) => {
       const past = state.projectId === projectId ? state.past : [];
-      const nextPast: EditorHistoryStep[] = [...past.slice(-(maxHistory - 1)), { kind: 'snapshot', label, snapshot }];
+      const nextPast: EditorHistoryStep[] = [
+        ...past.slice(-(maxHistory - 1)),
+        { kind: 'snapshot', label, snapshot },
+      ];
       persistHistory(projectId, nextPast, []);
       return {
         projectId,
@@ -130,9 +134,10 @@ export const useEditorHistoryStore = create<EditorHistoryStore>((set, get) => ({
   },
   captureRuntime: (step) => {
     const projectId = getCurrentProjectId();
+    const entry: EditorRuntimeStep = { kind: 'runtime', ...step };
     set((state) => {
       const past = state.projectId === projectId ? state.past : [];
-      const nextPast: EditorHistoryStep[] = [...past.slice(-(maxHistory - 1)), { kind: 'runtime', ...step }];
+      const nextPast: EditorHistoryStep[] = [...past.slice(-(maxHistory - 1)), entry];
       persistHistory(projectId, nextPast, []);
       return {
         projectId,
@@ -140,66 +145,92 @@ export const useEditorHistoryStore = create<EditorHistoryStore>((set, get) => ({
         future: [],
       };
     });
+    return () =>
+      set((state) => ({
+        past: state.past.filter((item) => item !== entry),
+        future: state.future.filter((item) => item !== entry),
+      }));
   },
   persistCurrentSnapshot: (projectId = getCurrentProjectId()) => {
     void projectId;
   },
   restorePersisted: (projectId) => {
+    paintHistoryBoundary.reset();
     set({
       projectId,
       past: [],
       future: [],
     });
   },
-  undo: () => {
-    const state = get();
-    const previous = state.past.at(-1);
-    if (!previous) return;
-    if (previous.kind === 'runtime') {
-      previous.undo();
-      set({
-        projectId: state.projectId,
-        past: state.past.slice(0, -1),
-        future: [previous, ...state.future].slice(0, maxHistory),
-      });
-      persistHistory(state.projectId, state.past.slice(0, -1), [previous, ...state.future].slice(0, maxHistory));
+  undo: () =>
+    paintHistoryBoundary.run(() => {
+      const state = get();
+      const previous = state.past.at(-1);
+      if (!previous) return;
+      if (previous.kind === 'runtime') {
+        previous.undo();
+        set({
+          projectId: state.projectId,
+          past: state.past.slice(0, -1),
+          future: [previous, ...state.future].slice(0, maxHistory),
+        });
+        persistHistory(
+          state.projectId,
+          state.past.slice(0, -1),
+          [previous, ...state.future].slice(0, maxHistory),
+        );
+        showHistoryToast('undo', previous);
+        return;
+      }
+      const current: EditorHistoryStep = {
+        kind: 'snapshot',
+        label: previous.label,
+        snapshot: cloneSnapshot(getSnapshot()),
+      };
+      const past = state.past.slice(0, -1);
+      const future = [current, ...state.future].slice(0, maxHistory);
+      set({ projectId: state.projectId, past, future });
+      applySnapshot(previous.snapshot);
+      persistHistory(state.projectId, past, future);
       showHistoryToast('undo', previous);
-      return;
-    }
-    const current: EditorHistoryStep = { kind: 'snapshot', label: previous.label, snapshot: cloneSnapshot(getSnapshot()) };
-    const past = state.past.slice(0, -1);
-    const future = [current, ...state.future].slice(0, maxHistory);
-    set({ projectId: state.projectId, past, future });
-    applySnapshot(previous.snapshot);
-    persistHistory(state.projectId, past, future);
-    showHistoryToast('undo', previous);
-  },
-  redo: () => {
-    const state = get();
-    const next = state.future[0];
-    if (!next) return;
-    if (next.kind === 'runtime') {
-      next.redo();
-      set({
-        projectId: state.projectId,
-        past: [...state.past, next].slice(-maxHistory),
-        future: state.future.slice(1),
-      });
-      persistHistory(state.projectId, [...state.past, next].slice(-maxHistory), state.future.slice(1));
+    }),
+  redo: () =>
+    paintHistoryBoundary.run(() => {
+      const state = get();
+      const next = state.future[0];
+      if (!next) return;
+      if (next.kind === 'runtime') {
+        next.redo();
+        set({
+          projectId: state.projectId,
+          past: [...state.past, next].slice(-maxHistory),
+          future: state.future.slice(1),
+        });
+        persistHistory(
+          state.projectId,
+          [...state.past, next].slice(-maxHistory),
+          state.future.slice(1),
+        );
+        showHistoryToast('redo', next);
+        return;
+      }
+      const current: EditorHistoryStep = {
+        kind: 'snapshot',
+        label: next.label,
+        snapshot: cloneSnapshot(getSnapshot()),
+      };
+      const past = [...state.past, current].slice(-maxHistory);
+      const future = state.future.slice(1);
+      set({ projectId: state.projectId, past, future });
+      applySnapshot(next.snapshot);
+      persistHistory(state.projectId, past, future);
       showHistoryToast('redo', next);
-      return;
-    }
-    const current: EditorHistoryStep = { kind: 'snapshot', label: next.label, snapshot: cloneSnapshot(getSnapshot()) };
-    const past = [...state.past, current].slice(-maxHistory);
-    const future = state.future.slice(1);
-    set({ projectId: state.projectId, past, future });
-    applySnapshot(next.snapshot);
-    persistHistory(state.projectId, past, future);
-    showHistoryToast('redo', next);
-  },
+    }),
   clear: () => {
+    paintHistoryBoundary.reset();
     const projectId = get().projectId;
-    if (projectId && typeof window !== 'undefined') window.sessionStorage.removeItem(historyStorageKey(projectId));
+    if (projectId && typeof window !== 'undefined')
+      window.sessionStorage.removeItem(historyStorageKey(projectId));
     set({ projectId, past: [], future: [] });
   },
 }));

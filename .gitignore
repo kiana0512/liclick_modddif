@@ -9,6 +9,7 @@ dist-plugins/
 .turbo
 .DS_Store
 Thumbs.db
+~$*.docx
 *.log
 *.tsbuildinfo
 __pycache__/
@@ -35,6 +36,7 @@ workspace/
 workspace-auth-smoke/
 workspace-auth-smoke-feishu/
 .codex-tmp/
+tmp/
 workspace-smoke*/
 .codex/*.png
 *_contact_sheet.png
@@ -43,6 +45,5 @@ workspace-smoke*/
 *.psd
 *.psb
 
-# Real k8s secret values — copy from *.env.example and fill in locally.
+# Production secret material is created only at deploy time.
 deploy/k8s/base/secrets/server.env
-deploy/k8s/overlays/*/secrets/*.env

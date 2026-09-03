@@ -1,10 +1,100 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { stdout } from 'node:process';
 import { fileURLToPath } from 'node:url';
 import { createServer } from 'vite';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const bakeWorkspaceSource = readFileSync(
+  path.join(root, 'src/routes/BakeWorkspacePage.tsx'),
+  'utf8',
+);
+const bakeAnalysisSource = readFileSync(
+  path.join(root, 'src/features/bake/useBakeModelAnalysis.ts'),
+  'utf8',
+);
+const bakeOverlaySource = readFileSync(
+  path.join(root, 'src/features/bake/BakeSceneOverlay.tsx'),
+  'utf8',
+);
+const gltfLoaderSource = readFileSync(
+  path.join(root, 'src/engine/loaders/loadGltfModel.ts'),
+  'utf8',
+);
+
+assert.match(
+  bakeWorkspaceSource,
+  /function openBakeFilePicker[\s\S]*?input\.showPicker\(\)[\s\S]*?input\.click\(\)/,
+  'Bake file controls must prefer the trusted native picker and retain a compatibility fallback.',
+);
+assert.match(
+  bakeWorkspaceSource,
+  /pickerInput=\{\s*<input[\s\S]*?id=\{bakeFileInputIds\.low\}[\s\S]*?className="absolute inset-0 z-30 h-full w-full cursor-pointer opacity-0"[\s\S]*?aria-label="选择低模文件"/,
+  'The one-click low-poly card must be covered by the real native file input.',
+);
+assert.match(
+  bakeWorkspaceSource,
+  /function MaterialMapSlot[\s\S]*?<div className="relative flex w-full items-center gap-4 px-4 py-3\.5 text-left">\s*\{pickerInput\}/,
+  'Material-map slots must embed the real native file input over the clickable row.',
+);
+assert.equal(
+  bakeWorkspaceSource.match(
+    /className="absolute inset-0 z-10 h-full w-full cursor-pointer opacity-0"/g,
+  )?.length,
+  4,
+  'Base Color, Roughness, Metallic and Normal must each use a direct native picker overlay.',
+);
+assert.match(
+  bakeWorkspaceSource,
+  /async function handleLowImport[\s\S]*?setLowFiles[\s\S]*?await Promise\.all\([\s\S]*?inspectBakeModel[\s\S]*?void persistImportedFiles\('low', assigned/,
+  'Low-poly import must acknowledge the local file immediately, validate it, and only then persist it.',
+);
+assert.match(
+  bakeWorkspaceSource,
+  /setColorFiles\(\(current\) => \(\{ \.\.\.restoredColor, \.\.\.current \}\)\)[\s\S]*?setRoughnessFiles\(\(current\) => \(\{ \.\.\.roughness\.files, \.\.\.current \}\)\)[\s\S]*?setMetallicFiles\(\(current\) => \(\{ \.\.\.metallic\.files, \.\.\.current \}\)\)[\s\S]*?setNormalFiles\(\(current\) => \(\{ \.\.\.normal\.files, \.\.\.current \}\)\)/,
+  'Late server hydration must not overwrite newer local material-map selections.',
+);
+assert.match(
+  bakeWorkspaceSource,
+  /const bakeFeedback =\s*bakeError \?\?/,
+  'Import errors must be visible without requiring a bake submission first.',
+);
+assert.match(
+  bakeWorkspaceSource,
+  /id=\{bakeFileInputIds\.low\}[\s\S]*?accept="\.fbx,\.obj,\.glb,\.gltf,\.bin,\.mtl,image\/\*"[\s\S]*?disabled=\{lowImporting\}/,
+  'Low-poly import must accept the same model companion resources and loading lifecycle as high-poly import.',
+);
+assert.match(
+  bakeAnalysisSource,
+  /loadModelFromFile\([\s\S]*?resourceFiles,\s*\)[\s\S]*?inputs\.map\(inspectBakeModel\)/,
+  'Low-poly inspection must resolve companion resources through the shared model loader.',
+);
+assert.match(
+  bakeOverlaySource,
+  /useOverlaySource\(lowFile, lowResourceFiles\)/,
+  'The bake overlay must use the same companion resources as low-poly inspection.',
+);
+assert.match(
+  gltfLoaderSource,
+  /createGltfLoadingManager\(options\.resourceFiles \?\? \[\]\)[\s\S]*?new GLTFLoader\(resourceManager\.manager\)/,
+  'External GLTF buffers and textures must resolve from the selected companion files.',
+);
+assert.match(
+  bakeWorkspaceSource,
+  /function handleColorImport[\s\S]*?setColorFiles[\s\S]*?void persistImportedFiles\('color', assigned\)/,
+  'Base Color import must display immediately while persistence continues.',
+);
+assert.match(
+  bakeWorkspaceSource,
+  /function handleMaterialChannelImport[\s\S]*?setRoughnessFiles[\s\S]*?setMetallicFiles[\s\S]*?setNormalFiles[\s\S]*?void persistImportedFiles\(kind, assigned/,
+  'Material-channel imports must display immediately while persistence continues.',
+);
+assert.match(
+  bakeWorkspaceSource,
+  /objectId = firstNonEmptyId\([\s\S]*?loaded\.object\.id[\s\S]*?if \(!objectId\) throw new Error/,
+  'High-poly import must never persist a Bake Set under an empty object id.',
+);
 const server = await createServer({
   root,
   appType: 'custom',
@@ -27,6 +117,41 @@ function summary(id, updatedAt) {
 try {
   const { resolveBakeEntryProject, selectMostRecentProject } = await server.ssrLoadModule(
     '/src/features/workflow/resolveBakeEntryProject.ts',
+  );
+  const { normalizeBakeWorkspaceObjectIds } = await server.ssrLoadModule(
+    '/src/services/bakeHighSnapshot.ts',
+  );
+
+  const legacyBakeProject = {
+    id: 'legacy-empty-id',
+    activeObjectId: '',
+    objects: [],
+    bakeWorkspace: {
+      version: 1,
+      activeStage: 'assets',
+      selectedObjectId: '',
+      bakeSets: {
+        '': {
+          objectId: '',
+          high: { name: 'high.fbx', url: '/high.fbx' },
+          highObject: { id: '', name: 'high.fbx' },
+          low: { name: 'low.fbx', url: '/low.fbx' },
+          color: { name: 'color.png', url: '/color.png' },
+        },
+      },
+    },
+  };
+  const repairedBakeProject = normalizeBakeWorkspaceObjectIds(legacyBakeProject);
+  const repairedId = 'bake-target-legacy-empty-id';
+  assert.equal(repairedBakeProject.bakeWorkspace.selectedObjectId, repairedId);
+  assert.equal(repairedBakeProject.bakeWorkspace.bakeSets[repairedId].objectId, repairedId);
+  assert.equal(repairedBakeProject.bakeWorkspace.bakeSets[repairedId].highObject.id, repairedId);
+  assert.equal(repairedBakeProject.bakeWorkspace.bakeSets[repairedId].low.name, 'low.fbx');
+  assert.equal(repairedBakeProject.bakeWorkspace.bakeSets[repairedId].color.name, 'color.png');
+  assert.equal(
+    repairedBakeProject.bakeWorkspace.bakeSets[''],
+    undefined,
+    'Legacy empty Bake Set keys must be removed after normalization.',
   );
 
   const cachedProject = { id: 'cached-project' };

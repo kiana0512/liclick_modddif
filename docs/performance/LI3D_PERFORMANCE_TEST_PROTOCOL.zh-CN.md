@@ -36,13 +36,22 @@ flowchart LR
 ?perfLab=1
 ```
 
+该入口同时启用性能 HUD 和默认 `100-layers` 基准：浏览器内创建 1 个隔离合成模型、100 个投影层及 1 张精确图层栈纹理。它不会读取、修改或保存 URL 中项目 ID 对应的真实工程。需要指定其他负载时可追加：
+
+```text
+&perfScenario=100-models
+&perfScenario=100-layers
+&perfScenario=100-layers-unbaked
+&perfScenario=paint-layer
+```
+
 自动持续旋转压力模式追加：
 
 ```text
 ?perfLab=1&perfOrbit=1
 ```
 
-Windows 正式发行版由 `LIclick 3D Texture Local Component` 安装器携带原生采集器，不需要管理员权限或额外驱动。面板的“导出 JSON”包含浏览器帧、长任务、WebGL、业务事件、逐核心 CPU、GPU、显存和系统内存原始样本。
+当前零组件云端版不依赖 Windows 本地组件、安装器或 localhost 采集服务。面板的“导出 JSON”以浏览器可观测的帧、Long Task、WebGL/WebGPU 和业务事件为准；宿主 CPU/GPU/显存指标只有在受支持的云端遥测接口真实返回时展示，不可用时必须明确标记，不得伪造。
 
 ## 4. 固定测试条件
 

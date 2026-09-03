@@ -133,6 +133,26 @@ const server = createServer(async (request, response) => {
     return;
   }
 
+  if (request.method === 'GET' && url.pathname === '/sso') {
+    const redirectUri = url.searchParams.get('redirect_uri') ?? '';
+    if (!redirectUri) {
+      sendHtml(response, 400, '<h1>IDaaS mock SSO request invalid</h1>');
+      return;
+    }
+    const user = {
+      sub: 'mock-user-001',
+      unionId: 'mock-union-001',
+      openId: 'mock-open-001',
+      email: 'mock.user@liclick.local',
+      name: 'Liclick Mock User',
+    };
+    const callback = new URL(redirectUri);
+    callback.hash = new URLSearchParams({ id_token: fakeIdToken(user) }).toString();
+    response.writeHead(302, { location: callback.toString(), 'cache-control': 'no-store' });
+    response.end();
+    return;
+  }
+
   if (request.method === 'POST' && url.pathname === '/approve') {
     const body = new URLSearchParams(await readBody(request));
     const redirectUri = body.get('redirect_uri') ?? '';

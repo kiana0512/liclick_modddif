@@ -19,9 +19,13 @@ const projectedWorkerSource = readFileSync(
   'utf8',
 );
 
+const projectedMaterialBusyGuard = sceneRootSource.match(
+  /const isViewportInteractionBusy = \(\) => \{([\s\S]*?)\n {4}\};/,
+);
+assert.ok(projectedMaterialBusyGuard, 'The projected material busy guard must remain explicit.');
 assert.doesNotMatch(
-  sceneRootSource,
-  /const isViewportInteractionBusy = \(\) => \{[\s\S]*?paintTool === 'inpaint-apply'/,
+  projectedMaterialBusyGuard[1],
+  /paintTool === 'inpaint-apply'/,
   'Selecting a repaint tool must not indefinitely block projected material publication.',
 );
 assert.match(

@@ -1,7 +1,18 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
-import { checkLiclickApiAccess, getAtlasIdentity } from '../auth/atlasAuthService.js';
+import {
+  checkLiclickApiAccess,
+  completePersonalLiclickAccountBinding,
+  getAtlasIdentity,
+  getPersonalLiclickAccount,
+  getPersonalLiclickAccountCallbackHtml,
+  pollPersonalLiclickAccountBinding,
+  resolveLiclickAtlasUser,
+  startPersonalLiclickAccountBinding,
+  unlinkPersonalLiclickAccount,
+} from '../auth/atlasAuthService.js';
+import { completeWebOAuthLiclickBinding } from '../auth/webOAuthService.js';
 import type { AuthUser } from '../auth/authTypes.js';
 import { requireAuth } from '../auth/authMiddleware.js';
 import {
@@ -13,6 +24,7 @@ import {
   type LiclickImageSubmission,
 } from '../services/liclickGenerationService.js';
 import { getLiclickUserErrorMessage } from '../services/liclickErrorMessage.js';
+import { polishPrompt, type PromptPolishInput } from '../services/promptPolishService.js';
 import { serverConfig } from '../config.js';
 import { getPathSegments, readJsonBody, sendJson } from './httpUtils.js';
 
@@ -68,6 +80,7 @@ type EditImageJob = {
 
 const generationJobs = new Map<string, GenerationJob>();
 const editImageJobs = new Map<string, EditImageJob>();
+const promptPolishUsers = new Set<string>();
 let jobsLoadPromise: Promise<void> | undefined;
 let writeQueue = Promise.resolve();
 const transientWriteErrorCodes = new Set([
@@ -677,13 +690,21 @@ function getJobListResponse(job: GenerationJob) {
 }
 
 function assertJobUsesPersonalLiclickAccount(
-  _job: Pick<GenerationJob | EditImageJob, 'atlasHomeDir'>,
+  job: Pick<GenerationJob | EditImageJob, 'atlasHomeDir'>,
 ) {
-  // Browser users submit through the authenticated cloud control plane. The
-  // production service owns upstream credentials; no device account is needed.
+  if (!job.atlasHomeDir) {
+    throw new Error('LICLICK_PERSONAL_ACCOUNT_REQUIRED: 当前任务没有绑定个人莉刻账号。');
+  }
 }
 
-function requirePersonalLiclickAccount(_response: ServerResponse, _user: AuthUser) {
+function requirePersonalLiclickAccount(response: ServerResponse, user: AuthUser) {
+  if (!user.atlasHomeDir) {
+    sendJson(response, 409, {
+      code: 'LICLICK_PERSONAL_ACCOUNT_REQUIRED',
+      error: '当前飞书用户尚未绑定个人莉刻账号，请在右上角账号菜单完成绑定后重试。',
+    });
+    return false;
+  }
   return true;
 }
 
@@ -698,8 +719,241 @@ export async function handleLiclickRoute(
   const isLiclickRoute = segments[0] === 'api' && segments[1] === 'liclick';
   const isLegacyGenerateRoute = segments[0] === 'api' && segments[1] === 'generate-image';
   if (!isLiclickRoute && !isLegacyGenerateRoute) return false;
-  const user = authenticatedUser ?? (await requireAuth(request, response));
-  if (!user) return true;
+  const authenticatedSessionUser = authenticatedUser ?? (await requireAuth(request, response));
+  if (!authenticatedSessionUser) return true;
+  const user = resolveLiclickAtlasUser(authenticatedSessionUser);
+
+  if (isLiclickRoute && request.method === 'GET' && segments[2] === 'account' && !segments[3]) {
+    sendJson(response, 200, await getPersonalLiclickAccount(user));
+    return true;
+  }
+
+  if (
+    isLiclickRoute &&
+    request.method === 'GET' &&
+    segments[2] === 'account-binding' &&
+    segments[3] === 'callback'
+  ) {
+    try {
+      const loginId = url.searchParams.get('loginId') ?? '';
+      const html = getPersonalLiclickAccountCallbackHtml(loginId, user);
+      response.writeHead(200, {
+        'content-type': 'text/html; charset=utf-8',
+        'cache-control': 'no-store',
+        'referrer-policy': 'no-referrer',
+        'content-security-policy': "default-src 'none'; script-src 'unsafe-inline'; connect-src 'self'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'",
+        'permissions-policy': 'camera=(), microphone=(), geolocation=()',
+      });
+      response.end(html);
+    } catch (error) {
+      response.writeHead(410, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' });
+      response.end(error instanceof Error ? error.message : '莉刻账号授权请求已失效。');
+    }
+    return true;
+  }
+
+  if (
+    isLiclickRoute &&
+    request.method === 'POST' &&
+    segments[2] === 'account-binding' &&
+    segments[3] === 'callback'
+  ) {
+    try {
+      const loginId = url.searchParams.get('loginId') ?? '';
+      const body = await readJsonBody<{ idToken?: string; accessToken?: string }>(request, 128 * 1024);
+      if (
+        (!body.idToken && !body.accessToken) ||
+        (body.idToken?.length ?? 0) > 48 * 1024 ||
+        (body.accessToken?.length ?? 0) > 48 * 1024
+      ) {
+        throw new Error('IDaaS 回调缺少有效身份令牌。');
+      }
+      const result = await completePersonalLiclickAccountBinding(loginId, user, body);
+      if (result.linkedOAuthLoginId) {
+        await completeWebOAuthLiclickBinding(result.linkedOAuthLoginId, loginId, user);
+      }
+      sendJson(response, 200, {
+        status: result.status,
+        email: result.email,
+        expiresAt: result.expiresAt,
+        message: result.message,
+      });
+    } catch (error) {
+      sendJson(response, 409, {
+        code: 'LICLICK_ACCOUNT_BINDING_CALLBACK_FAILED',
+        error: error instanceof Error ? error.message : '莉刻账号关联失败。',
+      });
+    }
+    return true;
+  }
+
+  if (
+    isLiclickRoute &&
+    request.method === 'POST' &&
+    segments[2] === 'account-binding' &&
+    segments[3] === 'start'
+  ) {
+    try {
+      sendJson(response, 200, await startPersonalLiclickAccountBinding(user));
+    } catch (error) {
+      sendJson(response, 409, {
+        code: 'LICLICK_ACCOUNT_BINDING_START_FAILED',
+        error: error instanceof Error ? error.message : '莉刻账号授权启动失败。',
+      });
+    }
+    return true;
+  }
+
+  if (
+    isLiclickRoute &&
+    request.method === 'GET' &&
+    segments[2] === 'account-binding' &&
+    segments[3]
+  ) {
+    try {
+      sendJson(response, 200, await pollPersonalLiclickAccountBinding(segments[3], user));
+    } catch (error) {
+      sendJson(response, 409, {
+        code: 'LICLICK_ACCOUNT_BINDING_FAILED',
+        error: error instanceof Error ? error.message : '莉刻账号授权失败。',
+      });
+    }
+    return true;
+  }
+
+  if (isLiclickRoute && request.method === 'DELETE' && segments[2] === 'account' && !segments[3]) {
+    if (serverConfig.sharedLiclickTestAccount.enabled) {
+      sendJson(response, 409, {
+        code: 'LICLICK_SHARED_TEST_ACCOUNT_LOCKED',
+        error: '测试共享莉刻账号由服务器统一管理，不能从用户菜单解除。',
+      });
+      return true;
+    }
+    await unlinkPersonalLiclickAccount(authenticatedSessionUser);
+    sendJson(response, 200, { bound: false });
+    return true;
+  }
+
+  if (isLiclickRoute && request.method === 'POST' && segments[2] === 'prompt-polish') {
+    if (promptPolishUsers.has(user.id)) {
+      sendJson(response, 409, { code: 'PROMPT_POLISH_BUSY', error: '智能润色正在处理中。' });
+      return true;
+    }
+    const input = await readJsonBody<PromptPolishInput>(request, 48 * 1024 * 1024);
+    const context = input.context === 'local-repaint' ? input.context : 'general';
+    if (context === 'general' && !requirePersonalLiclickAccount(response, user)) return true;
+    const prompt = typeof input.prompt === 'string' ? input.prompt.trim() : '';
+    const maxLength = context === 'local-repaint' ? 4096 : 12_000;
+    if ((context === 'general' && !prompt) || Array.from(prompt).length > maxLength) {
+      sendJson(response, 400, {
+        code: 'PROMPT_POLISH_INVALID_INPUT',
+        error: `提示词不能为空且不能超过 ${maxLength} 个字符。`,
+      });
+      return true;
+    }
+    if (
+      context === 'local-repaint' &&
+      (![input.currentEffectImage, input.maskImage, input.referenceImage].every(
+        (image) => image && typeof image.name === 'string' && typeof image.dataUrl === 'string',
+      ) ||
+        input.hasMask !== true)
+    ) {
+      sendJson(response, 400, {
+        code: 'PROMPT_POLISH_VISUAL_INPUT_REQUIRED',
+        error: '局部重绘智能润色需要当前效果图、白色蒙版和材质参考图。',
+      });
+      return true;
+    }
+    promptPolishUsers.add(user.id);
+    try {
+      const polishedPrompt = await polishPrompt(
+        {
+          prompt,
+          context,
+          modelName: typeof input.modelName === 'string' ? input.modelName : undefined,
+          objectName: typeof input.objectName === 'string' ? input.objectName : undefined,
+          referenceNames: Array.isArray(input.referenceNames)
+            ? input.referenceNames.filter((name): name is string => typeof name === 'string')
+            : undefined,
+          hasMask: typeof input.hasMask === 'boolean' ? input.hasMask : undefined,
+          currentEffectImage: input.currentEffectImage,
+          maskImage: input.maskImage,
+          referenceImage: input.referenceImage,
+        },
+        user.atlasHomeDir,
+      );
+      sendJson(response, 200, { polishedPrompt });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '';
+      const authFailure = /401|403|unauthorized|forbidden|login|auth|token|登录|认证|授权/i.test(
+        message,
+      );
+      const timeout = /timeout|timed out|超时/i.test(message);
+      const invalidVisualInput = /PROMPT_POLISH_INVALID_VISUAL_INPUT/.test(message);
+      const incompleteResult = /PROMPT_POLISH_QWEN_INCOMPLETE/.test(message);
+      const invalidResult = /PROMPT_POLISH_(?:EMPTY|INVALID|RESULT_TOO_LONG)/.test(message);
+      const qwenNotConfigured = /PROMPT_POLISH_QWEN_NOT_CONFIGURED/.test(message);
+      const qwenAuthFailure = /PROMPT_POLISH_QWEN_HTTP_(?:401|403)/.test(message);
+      const qwenInvalidRequest = /PROMPT_POLISH_QWEN_HTTP_(?:400|413|415)/.test(message);
+      sendJson(
+        response,
+        qwenNotConfigured || qwenAuthFailure
+          ? 503
+          : authFailure
+            ? 401
+            : qwenInvalidRequest
+              ? 400
+              : timeout
+                ? 504
+                : invalidVisualInput
+                  ? 400
+                  : incompleteResult
+                    ? 502
+                    : invalidResult
+                      ? 502
+                      : 503,
+        {
+          code: qwenNotConfigured
+            ? 'PROMPT_POLISH_QWEN_NOT_CONFIGURED'
+            : qwenAuthFailure
+              ? 'PROMPT_POLISH_QWEN_AUTH_FAILED'
+              : authFailure
+                ? 'PROMPT_POLISH_AUTH_REQUIRED'
+                : qwenInvalidRequest
+                  ? 'PROMPT_POLISH_QWEN_INVALID_REQUEST'
+                  : timeout
+                    ? 'PROMPT_POLISH_TIMEOUT'
+                    : invalidVisualInput
+                      ? 'PROMPT_POLISH_INVALID_VISUAL_INPUT'
+                      : incompleteResult
+                        ? 'PROMPT_POLISH_INCOMPLETE_RESULT'
+                        : invalidResult
+                          ? 'PROMPT_POLISH_INVALID_RESULT'
+                          : 'PROMPT_POLISH_UNAVAILABLE',
+          error: qwenNotConfigured
+            ? '局部重绘智能润色服务尚未配置，请联系管理员。'
+            : qwenAuthFailure
+              ? '局部重绘智能润色服务鉴权失败，请联系管理员。'
+              : authFailure
+                ? '莉刻登录状态已失效，请重新登录后再试。'
+                : qwenInvalidRequest
+                  ? '局部重绘视觉输入未被智能润色服务接受，请重试。'
+                  : timeout
+                    ? '智能润色响应超时，请稍后重试。'
+                    : invalidVisualInput
+                      ? '智能润色图片格式或大小不符合要求，请重试。'
+                      : incompleteResult
+                        ? '智能润色返回内容不完整，请重试。'
+                        : invalidResult
+                          ? '智能润色未返回有效内容，请重试。'
+                          : '智能润色暂时不可用，请稍后重试。',
+        },
+      );
+    } finally {
+      promptPolishUsers.delete(user.id);
+    }
+    return true;
+  }
 
   if (isLiclickRoute && request.method === 'GET' && segments[2] === 'status') {
     if (!requirePersonalLiclickAccount(response, user)) return true;
@@ -780,22 +1034,6 @@ export async function handleLiclickRoute(
     if (!requirePersonalLiclickAccount(response, user)) return true;
     const job = findEditImageJob(segments[3]);
     if (!job || job.userId !== user.id) {
-      try {
-        const result = await pollLiclickImageTask(segments[3], { atlasHomeDir: user.atlasHomeDir });
-        sendJson(response, 200, {
-          id: segments[3],
-          status: result.resultUrl ? 'succeeded' : 'running',
-          outputImage: result.resultUrl ? await remoteImageToDataUrl(result.resultUrl) : undefined,
-          resultUrl: result.resultUrl,
-          resultUrls: result.resultUrls,
-          taskId: segments[3],
-          updatedAt: new Date().toISOString(),
-          raw: result.raw,
-        });
-        return true;
-      } catch {
-        // Fall through to the normal not-found response when the id is not a remote Liclick task id.
-      }
       sendJson(response, 404, { error: 'Edit image job not found.' });
       return true;
     }
@@ -830,12 +1068,13 @@ export async function handleLiclickRoute(
 
   if (request.method === 'POST' && isLiclickRoute && segments[2] === 'edit-image') {
     if (!requirePersonalLiclickAccount(response, user)) return true;
-    if (user.atlasHomeDir && user.email) {
+    if (
+      !serverConfig.sharedLiclickTestAccount.enabled &&
+      user.atlasHomeDir &&
+      user.email
+    ) {
       const atlasIdentity = await getAtlasIdentity(user.atlasHomeDir);
-      if (
-        atlasIdentity.email &&
-        user.email.toLowerCase() !== atlasIdentity.email.toLowerCase()
-      ) {
+      if (atlasIdentity.email && user.email.toLowerCase() !== atlasIdentity.email.toLowerCase()) {
         sendJson(response, 403, {
           error:
             'Current Atlas / Liclick account does not match this browser session. Please log in again.',
@@ -878,12 +1117,13 @@ export async function handleLiclickRoute(
 
   if (request.method === 'POST' && isGenerateImageRoute) {
     if (!requirePersonalLiclickAccount(response, user)) return true;
-    if (user.atlasHomeDir && user.email) {
+    if (
+      !serverConfig.sharedLiclickTestAccount.enabled &&
+      user.atlasHomeDir &&
+      user.email
+    ) {
       const atlasIdentity = await getAtlasIdentity(user.atlasHomeDir);
-      if (
-        atlasIdentity.email &&
-        user.email.toLowerCase() !== atlasIdentity.email.toLowerCase()
-      ) {
+      if (atlasIdentity.email && user.email.toLowerCase() !== atlasIdentity.email.toLowerCase()) {
         sendJson(response, 403, {
           error:
             'Current Atlas / Liclick account does not match this browser session. Please log in again.',
@@ -916,10 +1156,7 @@ export async function handleLiclickRoute(
       sendJson(response, 409, { error: 'Generation job id is already owned by another user.' });
       return true;
     }
-    if (
-      existingJob &&
-      (existingJob.projectId !== projectId || existingJob.workflow !== workflow)
-    ) {
+    if (existingJob && (existingJob.projectId !== projectId || existingJob.workflow !== workflow)) {
       sendJson(response, 409, { error: 'Generation job id belongs to another project.' });
       return true;
     }

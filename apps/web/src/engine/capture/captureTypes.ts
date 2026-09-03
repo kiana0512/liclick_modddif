@@ -26,7 +26,7 @@ export type CaptureCurrentViewRequest = {
   /** Frozen at the user action boundary so deferred passes cannot drift with viewport navigation. */
   cameraSnapshot?: SerializedCameraInput;
   framing?: 'current' | 'fit-object';
-  colorMode?: 'viewport' | 'clay-target' | 'target-only' | 'flat-target';
+  colorMode?: 'viewport' | 'viewport-clean' | 'clay-target' | 'target-only' | 'flat-target';
   fillRatio?: number;
   viewDirection?: [number, number, number];
   viewUp?: [number, number, number];

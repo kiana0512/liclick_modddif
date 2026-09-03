@@ -21,7 +21,9 @@ type EraserPerformanceWindow = Window & {
 const maximumEvents = 4_000;
 const relevantWindowMs = 3_000;
 const droppedFrameThresholdMs = 34;
-const enabled = import.meta.env.DEV && typeof window !== 'undefined';
+const enabled =
+  typeof window !== 'undefined' &&
+  (import.meta.env.DEV || new URLSearchParams(window.location.search).has('perfLab'));
 
 const log: EraserPerformanceLog | undefined = enabled
   ? (() => {

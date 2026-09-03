@@ -10,6 +10,9 @@
     "dev:raw": "corepack pnpm --parallel --filter @liclick/server --filter @liclick/web dev",
     "dev:web": "corepack pnpm --filter @liclick/web dev",
     "dev:server": "corepack pnpm --filter @liclick/server dev",
+    "dev:4517": "powershell -ExecutionPolicy Bypass -File scripts/run-real-local-preview.ps1",
+    "build:4517": "corepack pnpm --filter @liclick/server build && corepack pnpm --filter @liclick/web build",
+    "start:4517": "powershell -ExecutionPolicy Bypass -File scripts/run-real-local-preview.ps1 -SkipBuild",
     "configure:dev:feishu": "powershell -ExecutionPolicy Bypass -File scripts/configure-windows-dev-feishu.ps1",
     "serve:server": "corepack pnpm --filter @liclick/server serve",
     "workspace:up": "powershell -ExecutionPolicy Bypass -File scripts/start-workspace-server.ps1",
@@ -59,6 +62,7 @@
     "format": "prettier --write ."
   },
   "devDependencies": {
+    "@eslint/js": "9.39.4",
     "@typescript-eslint/eslint-plugin": "^8.34.1",
     "@typescript-eslint/parser": "^8.34.1",
     "eslint": "^9.29.0",
@@ -67,6 +71,7 @@
     "eslint-plugin-react-refresh": "^0.4.20",
     "prettier": "^3.5.3",
     "typescript": "^5.8.3",
-    "typescript-eslint": "^8.34.1"
+    "typescript-eslint": "^8.34.1",
+    "js-yaml": "4.2.0"
   }
 }

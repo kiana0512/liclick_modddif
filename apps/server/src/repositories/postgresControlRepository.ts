@@ -1,7 +1,10 @@
 import type { AuthSource, AuthUser, UserSession } from '../auth/authTypes.js';
 import type { WorkspaceFolder } from '../types/folder.js';
 import type { AssetJobHistoryRecord } from '../services/assetJobOwnership.js';
-import { getSharedPgProjectSqlDatabase, type ProjectSqlDatabase } from './postgresProjectRepository.js';
+import {
+  getSharedPgProjectSqlDatabase,
+  type ProjectSqlDatabase,
+} from './postgresProjectRepository.js';
 
 type UserRow = {
   user_id: string;
@@ -16,6 +19,50 @@ type UserRow = {
   updated_at: Date | string;
   last_login_at: Date | string | null;
 };
+
+type PerformanceLabSessionRow = {
+  session_id: string;
+  user_id: string;
+  project_id: string | null;
+  status: 'recording' | 'completed';
+  schema_version: number;
+  collector_version: string;
+  user_display_name: string;
+  user_avatar_url: string | null;
+  user_email: string | null;
+  current_display_name?: string | null;
+  current_avatar_url?: string | null;
+  current_email?: string | null;
+  started_at: Date | string;
+  ended_at: Date | string | null;
+  client_context_json: Record<string, unknown>;
+  summary_json: Record<string, unknown> | null;
+  report_json: Record<string, unknown> | null;
+  report_sha256: string | null;
+  chunk_count: number;
+  sample_count: number | string | bigint;
+  total_bytes: number | string | bigint;
+  created_at: Date | string;
+  updated_at: Date | string;
+};
+
+type PerformanceLabChunkRow = {
+  source: 'browser';
+  sequence: number;
+  started_at: Date | string;
+  ended_at: Date | string;
+  sample_count: number;
+  byte_count: number;
+  payload_sha256: string;
+  payload_json: Record<string, unknown>;
+};
+
+export class PerformanceLabPersistenceConflictError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'PerformanceLabPersistenceConflictError';
+  }
+}
 
 function iso(value: Date | string) {
   return value instanceof Date ? value.toISOString() : new Date(value).toISOString();
@@ -37,6 +84,55 @@ function userFromRow(row: UserRow): AuthUser {
   };
 }
 
+function performanceLabSessionFromRow(row: PerformanceLabSessionRow) {
+  const startedAt = iso(row.started_at);
+  const endedAt = row.ended_at ? iso(row.ended_at) : undefined;
+  return {
+    sessionId: row.session_id,
+    userId: row.user_id,
+    ...(row.project_id ? { projectId: row.project_id } : {}),
+    status: row.status,
+    schemaVersion: row.schema_version,
+    collectorVersion: row.collector_version,
+    user: {
+      id: row.user_id,
+      displayName: row.current_display_name ?? row.user_display_name,
+      ...((row.current_avatar_url ?? row.user_avatar_url)
+        ? { avatarUrl: row.current_avatar_url ?? row.user_avatar_url ?? undefined }
+        : {}),
+      ...((row.current_email ?? row.user_email)
+        ? { email: row.current_email ?? row.user_email ?? undefined }
+        : {}),
+      snapshot: {
+        displayName: row.user_display_name,
+        ...(row.user_avatar_url ? { avatarUrl: row.user_avatar_url } : {}),
+        ...(row.user_email ? { email: row.user_email } : {}),
+      },
+    },
+    startedAt,
+    ...(endedAt
+      ? { endedAt, durationMs: Math.max(0, Date.parse(endedAt) - Date.parse(startedAt)) }
+      : {}),
+    clientContext: row.client_context_json,
+    ...(row.summary_json ? { summary: row.summary_json } : {}),
+    ...(row.report_json ? { report: row.report_json } : {}),
+    ...(row.report_sha256 ? { reportSha256: row.report_sha256 } : {}),
+    chunkCount: Number(row.chunk_count),
+    sampleCount: Number(row.sample_count),
+    totalBytes: Number(row.total_bytes),
+    createdAt: iso(row.created_at),
+    updatedAt: iso(row.updated_at),
+  };
+}
+
+const performanceLabSessionColumns = `
+  s.session_id, s.user_id, s.project_id, s.status, s.schema_version,
+  s.collector_version, s.user_display_name, s.user_avatar_url, s.user_email,
+  u.display_name AS current_display_name, u.avatar_url AS current_avatar_url,
+  u.email AS current_email, s.started_at, s.ended_at, s.client_context_json,
+  s.summary_json, s.report_json, s.report_sha256, s.chunk_count,
+  s.sample_count, s.total_bytes, s.created_at, s.updated_at`;
+
 export function createPostgresControlRepository(database: ProjectSqlDatabase) {
   return {
     async upsertUser(input: {
@@ -46,6 +142,7 @@ export function createPostgresControlRepository(database: ProjectSqlDatabase) {
       avatarUrl?: string;
       authSource: AuthSource;
       atlasHomeDir?: string;
+      role?: string;
     }) {
       return database.transaction(async (connection) => {
         const existing = await connection.query<UserRow>(
@@ -60,21 +157,49 @@ export function createPostgresControlRepository(database: ProjectSqlDatabase) {
           const result = await connection.query<UserRow>(
             `UPDATE cloud_users SET display_name = $2, email = COALESCE($3, email),
                avatar_url = COALESCE($4, avatar_url), auth_source = $5,
-               atlas_home_dir = COALESCE($6, atlas_home_dir), updated_at = $7::timestamptz,
-               last_login_at = $7::timestamptz WHERE user_id = $1 RETURNING *`,
-            [id, input.displayName, input.email ?? null, input.avatarUrl ?? null, input.authSource, input.atlasHomeDir ?? null, now],
+               atlas_home_dir = COALESCE($6, atlas_home_dir),
+               role = COALESCE($7, role), updated_at = $8::timestamptz,
+               last_login_at = $8::timestamptz WHERE user_id = $1 RETURNING *`,
+            [
+              id,
+              input.displayName,
+              input.email ?? null,
+              input.avatarUrl ?? null,
+              input.authSource,
+              input.atlasHomeDir ?? null,
+              input.role ?? null,
+              now,
+            ],
           );
           return userFromRow(result.rows[0]);
         }
         const result = await connection.query<UserRow>(
           `INSERT INTO cloud_users (user_id, display_name, email, avatar_url, role, status,
              auth_source, atlas_home_dir, created_at, updated_at, last_login_at)
-           VALUES ($1,$2,$3,$4,'user','active',$5,$6,$7::timestamptz,$7::timestamptz,$7::timestamptz)
+           VALUES ($1,$2,$3,$4,COALESCE($7,'user'),'active',$5,$6,$8::timestamptz,$8::timestamptz,$8::timestamptz)
            RETURNING *`,
-          [id, input.displayName, input.email ?? null, input.avatarUrl ?? null, input.authSource, input.atlasHomeDir ?? null, now],
+          [
+            id,
+            input.displayName,
+            input.email ?? null,
+            input.avatarUrl ?? null,
+            input.authSource,
+            input.atlasHomeDir ?? null,
+            input.role ?? null,
+            now,
+          ],
         );
         return userFromRow(result.rows[0]);
       });
+    },
+
+    async setUserAtlasHomeDir(userId: string, atlasHomeDir?: string) {
+      const result = await database.query<UserRow>(
+        `UPDATE cloud_users SET atlas_home_dir = $2, updated_at = NOW()
+          WHERE user_id = $1 RETURNING *`,
+        [userId, atlasHomeDir ?? null],
+      );
+      return result.rows[0] ? userFromRow(result.rows[0]) : undefined;
     },
 
     async createSession(session: UserSession) {
@@ -82,7 +207,15 @@ export function createPostgresControlRepository(database: ProjectSqlDatabase) {
       await database.query(
         `INSERT INTO cloud_user_sessions (session_id,user_id,session_token_hash,source,expires_at,created_at,updated_at)
          VALUES ($1,$2,$3,$4,$5::timestamptz,$6::timestamptz,$7::timestamptz)`,
-        [session.id, session.userId, session.sessionTokenHash, session.source, session.expiresAt, session.createdAt, session.updatedAt],
+        [
+          session.id,
+          session.userId,
+          session.sessionTokenHash,
+          session.source,
+          session.expiresAt,
+          session.createdAt,
+          session.updatedAt,
+        ],
       );
     },
 
@@ -96,15 +229,30 @@ export function createPostgresControlRepository(database: ProjectSqlDatabase) {
     },
 
     async revokeSession(sessionTokenHash: string) {
-      await database.query('DELETE FROM cloud_user_sessions WHERE session_token_hash = $1', [sessionTokenHash]);
+      await database.query('DELETE FROM cloud_user_sessions WHERE session_token_hash = $1', [
+        sessionTokenHash,
+      ]);
     },
 
     async listFolders(userId: string): Promise<WorkspaceFolder[]> {
       const result = await database.query<{
-        folder_id: string; name: string; sort_order: number; created_at: Date | string; updated_at: Date | string;
-      }>(`SELECT folder_id,name,sort_order,created_at,updated_at FROM workspace_folders
-           WHERE user_id = $1 AND deleted_at IS NULL ORDER BY sort_order, created_at`, [userId]);
-      return result.rows.map((row) => ({ id: row.folder_id, name: row.name, order: row.sort_order, createdAt: iso(row.created_at), updatedAt: iso(row.updated_at) }));
+        folder_id: string;
+        name: string;
+        sort_order: number;
+        created_at: Date | string;
+        updated_at: Date | string;
+      }>(
+        `SELECT folder_id,name,sort_order,created_at,updated_at FROM workspace_folders
+           WHERE user_id = $1 AND deleted_at IS NULL ORDER BY sort_order, created_at`,
+        [userId],
+      );
+      return result.rows.map((row) => ({
+        id: row.folder_id,
+        name: row.name,
+        order: row.sort_order,
+        createdAt: iso(row.created_at),
+        updatedAt: iso(row.updated_at),
+      }));
     },
 
     async createFolder(userId: string, folder: WorkspaceFolder) {
@@ -128,7 +276,8 @@ export function createPostgresControlRepository(database: ProjectSqlDatabase) {
     async deleteFolder(userId: string, folderId: string, deletedAt: string) {
       const result = await database.query(
         `UPDATE workspace_folders SET deleted_at=$3::timestamptz,updated_at=$3::timestamptz
-          WHERE user_id=$1 AND folder_id=$2 AND deleted_at IS NULL`, [userId, folderId, deletedAt],
+          WHERE user_id=$1 AND folder_id=$2 AND deleted_at IS NULL`,
+        [userId, folderId, deletedAt],
       );
       return result.affectedRows === 1;
     },
@@ -144,7 +293,8 @@ export function createPostgresControlRepository(database: ProjectSqlDatabase) {
 
     async getAssetJob(userId: string, jobId: string) {
       const result = await database.query<{ record_json: AssetJobHistoryRecord }>(
-        'SELECT record_json FROM asset_job_history WHERE user_id=$1 AND job_id=$2', [userId, jobId],
+        'SELECT record_json FROM asset_job_history WHERE user_id=$1 AND job_id=$2',
+        [userId, jobId],
       );
       return result.rows[0]?.record_json;
     },
@@ -158,36 +308,52 @@ export function createPostgresControlRepository(database: ProjectSqlDatabase) {
     },
 
     async putAssetTransfer(record: {
-      userId: string; intentId: string; assetId: string; projectId: string;
-      status: string; createdAt: string; verifiedAt?: string;
+      userId: string;
+      intentId: string;
+      assetId: string;
+      projectId: string;
+      status: string;
+      createdAt: string;
+      verifiedAt?: string;
     }) {
       await database.query(
         `INSERT INTO asset_transfers (user_id,intent_id,asset_id,project_id,status,record_json,created_at,updated_at)
          VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7::timestamptz,$8::timestamptz)
          ON CONFLICT (user_id,intent_id) DO UPDATE SET status=EXCLUDED.status,
            record_json=EXCLUDED.record_json,updated_at=EXCLUDED.updated_at`,
-        [record.userId, record.intentId, record.assetId, record.projectId, record.status, record,
-          record.createdAt, record.verifiedAt ?? record.createdAt],
+        [
+          record.userId,
+          record.intentId,
+          record.assetId,
+          record.projectId,
+          record.status,
+          record,
+          record.createdAt,
+          record.verifiedAt ?? record.createdAt,
+        ],
       );
     },
 
     async getAssetTransferByIntent<T>(userId: string, intentId: string) {
       const result = await database.query<{ record_json: T }>(
-        'SELECT record_json FROM asset_transfers WHERE user_id=$1 AND intent_id=$2', [userId, intentId],
+        'SELECT record_json FROM asset_transfers WHERE user_id=$1 AND intent_id=$2',
+        [userId, intentId],
       );
       return result.rows[0]?.record_json;
     },
 
     async getAssetTransferByAsset<T>(userId: string, assetId: string) {
       const result = await database.query<{ record_json: T }>(
-        'SELECT record_json FROM asset_transfers WHERE user_id=$1 AND asset_id=$2', [userId, assetId],
+        'SELECT record_json FROM asset_transfers WHERE user_id=$1 AND asset_id=$2',
+        [userId, assetId],
       );
       return result.rows[0]?.record_json;
     },
 
     async getUserSettings<T>(userId: string) {
       const result = await database.query<{ settings_json: T }>(
-        'SELECT settings_json FROM user_settings WHERE user_id=$1', [userId],
+        'SELECT settings_json FROM user_settings WHERE user_id=$1',
+        [userId],
       );
       return result.rows[0]?.settings_json;
     },
@@ -198,6 +364,238 @@ export function createPostgresControlRepository(database: ProjectSqlDatabase) {
          ON CONFLICT (user_id) DO UPDATE SET settings_json=EXCLUDED.settings_json,updated_at=EXCLUDED.updated_at`,
         [userId, settings],
       );
+    },
+
+    async createPerformanceLabSession(input: {
+      userId: string;
+      sessionId: string;
+      projectId?: string;
+      schemaVersion: number;
+      collectorVersion: string;
+      startedAt: string;
+      clientContext: Record<string, unknown>;
+    }) {
+      return database.transaction(async (connection) => {
+        const existing = await connection.query<PerformanceLabSessionRow>(
+          `SELECT ${performanceLabSessionColumns}
+             FROM performance_lab_sessions s
+             JOIN cloud_users u ON u.user_id = s.user_id
+            WHERE s.session_id = $1 FOR UPDATE`,
+          [input.sessionId],
+        );
+        if (existing.rows[0]) {
+          const row = existing.rows[0];
+          if (
+            row.user_id !== input.userId ||
+            row.schema_version !== input.schemaVersion ||
+            row.collector_version !== input.collectorVersion ||
+            (row.project_id ?? undefined) !== input.projectId
+          ) {
+            throw new PerformanceLabPersistenceConflictError(
+              'This performance session id is already bound to different immutable input.',
+            );
+          }
+          return performanceLabSessionFromRow(row);
+        }
+        const inserted = await connection.query<{ session_id: string }>(
+          `INSERT INTO performance_lab_sessions (
+             session_id, user_id, project_id, status, schema_version, collector_version,
+             user_display_name, user_avatar_url, user_email, started_at,
+             client_context_json, created_at, updated_at
+           )
+           SELECT $1, u.user_id, $3, 'recording', $4, $5,
+                  u.display_name, u.avatar_url, u.email, $6::timestamptz,
+                  $7::jsonb, NOW(), NOW()
+             FROM cloud_users u WHERE u.user_id = $2
+           RETURNING session_id`,
+          [
+            input.sessionId,
+            input.userId,
+            input.projectId ?? null,
+            input.schemaVersion,
+            input.collectorVersion,
+            input.startedAt,
+            input.clientContext,
+          ],
+        );
+        if (!inserted.rows[0]) throw new Error('Authenticated Cloud user was not found.');
+        const result = await connection.query<PerformanceLabSessionRow>(
+          `SELECT ${performanceLabSessionColumns}
+             FROM performance_lab_sessions s
+             JOIN cloud_users u ON u.user_id = s.user_id
+            WHERE s.session_id = $1`,
+          [input.sessionId],
+        );
+        return performanceLabSessionFromRow(result.rows[0]);
+      });
+    },
+
+    async appendPerformanceLabChunk(input: {
+      userId: string;
+      sessionId: string;
+      sequence: number;
+      startedAt: string;
+      endedAt: string;
+      sampleCount: number;
+      byteCount: number;
+      payloadSha256: string;
+      payload: Record<string, unknown>;
+    }) {
+      return database.transaction(async (connection) => {
+        const session = await connection.query<{
+          user_id: string;
+          status: 'recording' | 'completed';
+        }>(
+          'SELECT user_id, status FROM performance_lab_sessions WHERE session_id = $1 FOR UPDATE',
+          [input.sessionId],
+        );
+        const row = session.rows[0];
+        if (!row || row.user_id !== input.userId) return undefined;
+        const existing = await connection.query<{ payload_sha256: string }>(
+          `SELECT payload_sha256 FROM performance_lab_chunks
+            WHERE session_id = $1 AND source = 'browser' AND sequence = $2`,
+          [input.sessionId, input.sequence],
+        );
+        if (existing.rows[0]) {
+          if (existing.rows[0].payload_sha256 !== input.payloadSha256) {
+            throw new PerformanceLabPersistenceConflictError(
+              'A different performance chunk already used this sequence.',
+            );
+          }
+          return { accepted: true as const, idempotent: true as const };
+        }
+        if (row.status !== 'recording') {
+          throw new PerformanceLabPersistenceConflictError(
+            'Completed performance sessions cannot accept new chunks.',
+          );
+        }
+        await connection.query(
+          `INSERT INTO performance_lab_chunks (
+             session_id, source, sequence, started_at, ended_at, sample_count,
+             byte_count, payload_sha256, payload_json, created_at
+           ) VALUES ($1, 'browser', $2, $3::timestamptz, $4::timestamptz,
+                     $5, $6, $7, $8::jsonb, NOW())`,
+          [
+            input.sessionId,
+            input.sequence,
+            input.startedAt,
+            input.endedAt,
+            input.sampleCount,
+            input.byteCount,
+            input.payloadSha256,
+            input.payload,
+          ],
+        );
+        await connection.query(
+          `UPDATE performance_lab_sessions
+              SET chunk_count = chunk_count + 1,
+                  sample_count = sample_count + $2,
+                  total_bytes = total_bytes + $3,
+                  updated_at = NOW()
+            WHERE session_id = $1`,
+          [input.sessionId, input.sampleCount, input.byteCount],
+        );
+        return { accepted: true as const, idempotent: false as const };
+      });
+    },
+
+    async completePerformanceLabSession(input: {
+      userId: string;
+      sessionId: string;
+      endedAt: string;
+      summary: Record<string, unknown>;
+      report: Record<string, unknown>;
+      reportSha256: string;
+    }) {
+      return database.transaction(async (connection) => {
+        const selected = await connection.query<PerformanceLabSessionRow>(
+          `SELECT ${performanceLabSessionColumns}
+             FROM performance_lab_sessions s
+             JOIN cloud_users u ON u.user_id = s.user_id
+            WHERE s.session_id = $1 FOR UPDATE`,
+          [input.sessionId],
+        );
+        const row = selected.rows[0];
+        if (!row || row.user_id !== input.userId) return undefined;
+        if (row.status === 'completed') {
+          if (row.report_sha256 !== input.reportSha256) {
+            throw new PerformanceLabPersistenceConflictError(
+              'This performance session was already completed with a different report.',
+            );
+          }
+          return performanceLabSessionFromRow(row);
+        }
+        await connection.query(
+          `UPDATE performance_lab_sessions
+              SET status = 'completed', ended_at = $2::timestamptz,
+                  summary_json = $3::jsonb, report_json = $4::jsonb,
+                  report_sha256 = $5, updated_at = NOW()
+            WHERE session_id = $1`,
+          [input.sessionId, input.endedAt, input.summary, input.report, input.reportSha256],
+        );
+        const result = await connection.query<PerformanceLabSessionRow>(
+          `SELECT ${performanceLabSessionColumns}
+             FROM performance_lab_sessions s
+             JOIN cloud_users u ON u.user_id = s.user_id
+            WHERE s.session_id = $1`,
+          [input.sessionId],
+        );
+        return performanceLabSessionFromRow(result.rows[0]);
+      });
+    },
+
+    async listPerformanceLabSessions(input: {
+      requesterUserId: string;
+      includeAllUsers: boolean;
+      limit: number;
+    }) {
+      const result = await database.query<PerformanceLabSessionRow>(
+        `SELECT ${performanceLabSessionColumns}
+           FROM performance_lab_sessions s
+           JOIN cloud_users u ON u.user_id = s.user_id
+          WHERE ($1::boolean = TRUE OR s.user_id = $2)
+          ORDER BY s.started_at DESC
+          LIMIT $3`,
+        [input.includeAllUsers, input.requesterUserId, input.limit],
+      );
+      return result.rows.map(performanceLabSessionFromRow);
+    },
+
+    async getPerformanceLabSession(input: {
+      requesterUserId: string;
+      includeAllUsers: boolean;
+      sessionId: string;
+    }) {
+      const selected = await database.query<PerformanceLabSessionRow>(
+        `SELECT ${performanceLabSessionColumns}
+           FROM performance_lab_sessions s
+           JOIN cloud_users u ON u.user_id = s.user_id
+          WHERE s.session_id = $1 AND ($2::boolean = TRUE OR s.user_id = $3)`,
+        [input.sessionId, input.includeAllUsers, input.requesterUserId],
+      );
+      const row = selected.rows[0];
+      if (!row) return undefined;
+      const chunks = await database.query<PerformanceLabChunkRow>(
+        `SELECT source, sequence, started_at, ended_at, sample_count, byte_count,
+                payload_sha256, payload_json
+           FROM performance_lab_chunks
+          WHERE session_id = $1
+          ORDER BY source, sequence`,
+        [input.sessionId],
+      );
+      return {
+        ...performanceLabSessionFromRow(row),
+        chunks: chunks.rows.map((chunk) => ({
+          source: chunk.source,
+          sequence: chunk.sequence,
+          startedAt: iso(chunk.started_at),
+          endedAt: iso(chunk.ended_at),
+          sampleCount: chunk.sample_count,
+          byteCount: chunk.byte_count,
+          payloadSha256: chunk.payload_sha256,
+          payload: chunk.payload_json,
+        })),
+      };
     },
 
     async putOAuthLogin(loginId: string, state: string, payload: unknown, expiresAt: string) {
@@ -213,7 +611,8 @@ export function createPostgresControlRepository(database: ProjectSqlDatabase) {
 
     async getOAuthLogin<T>(loginId: string) {
       const result = await database.query<{ payload_json: T }>(
-        'SELECT payload_json FROM oauth_login_transactions WHERE login_id=$1 AND expires_at>NOW()', [loginId],
+        'SELECT payload_json FROM oauth_login_transactions WHERE login_id=$1 AND expires_at>NOW()',
+        [loginId],
       );
       return result.rows[0]?.payload_json;
     },
@@ -221,7 +620,8 @@ export function createPostgresControlRepository(database: ProjectSqlDatabase) {
     async consumeOAuthState<T>(state: string) {
       const result = await database.query<{ payload_json: T }>(
         `UPDATE oauth_login_transactions SET state_consumed=TRUE,updated_at=NOW()
-          WHERE oauth_state=$1 AND state_consumed=FALSE AND expires_at>NOW() RETURNING payload_json`, [state],
+          WHERE oauth_state=$1 AND state_consumed=FALSE AND expires_at>NOW() RETURNING payload_json`,
+        [state],
       );
       return result.rows[0]?.payload_json;
     },
@@ -237,6 +637,7 @@ export type PostgresControlRepository = ReturnType<typeof createPostgresControlR
 export const postgresControlRepository = (() => {
   if (process.env.LICLICK_PROJECT_REPOSITORY !== 'postgres') return undefined;
   const connectionString = process.env.LICLICK_CLOUD_DATABASE_URL?.trim();
-  if (!connectionString) throw new Error('Cloud control plane requires LICLICK_CLOUD_DATABASE_URL.');
+  if (!connectionString)
+    throw new Error('Cloud control plane requires LICLICK_CLOUD_DATABASE_URL.');
   return createPostgresControlRepository(getSharedPgProjectSqlDatabase(connectionString));
 })();

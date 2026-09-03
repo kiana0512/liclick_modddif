@@ -3,7 +3,7 @@ import { getWorkspaceApiBase } from './workspaceApiBase';
 
 const workspaceApiBase = getWorkspaceApiBase(import.meta.env.VITE_LICLICK_WORKSPACE_API);
 
-export type ModelviewInpaintInput = {
+type ModelviewGenerationInput = {
   clientGenerationId: string;
   projectId?: string;
   prompt?: string;
@@ -17,15 +17,21 @@ export type ModelviewInpaintInput = {
     path: string;
     dataUrl: string;
   };
-  viewportReference: {
-    path: string;
-    dataUrl: string;
-  };
   materialReferenceId?: string;
   materialReferenceGroupId?: string;
   materialReferenceName?: string;
   materialReferenceRole?: 'multi-view' | 'single-view';
+  modelViewReferenceId?: string;
 };
+
+export type ModelviewInpaintInput = ModelviewGenerationInput & {
+  mask: {
+    path: string;
+    dataUrl: string;
+  };
+};
+
+export type ModelviewSingleViewInput = ModelviewGenerationInput;
 
 async function requestJson<T>(
   path: string,
@@ -68,6 +74,53 @@ async function requestJson<T>(
 
 export function createModelviewApiClient() {
   return {
+    async generateSingleView(
+      input: ModelviewSingleViewInput,
+      options?: { signal?: AbortSignal },
+    ): Promise<Generation> {
+      const result = await requestJson<{
+        id: string;
+        resultUrl?: string;
+        resultUrls?: string[];
+        modelviewJobId?: string;
+        modelviewClientId?: string;
+        output?: unknown;
+      }>('/api/modelview/single-view', {
+        method: 'POST',
+        signal: options?.signal,
+        body: JSON.stringify(input),
+      });
+      return {
+        id: input.clientGenerationId,
+        mode: 'single',
+        prompt: input.prompt ?? '',
+        referenceIds: [input.modelViewReferenceId, input.materialReferenceId].filter(
+          (id): id is string => typeof id === 'string' && id.length > 0,
+        ),
+        captureId: input.captureId,
+        resultUrl: result.resultUrl,
+        status: result.resultUrl ? 'succeeded' : 'failed',
+        metadata: {
+          provider: 'modelview-single-view',
+          workflow: 'texture-map',
+          modelviewWorkflow: '2026.08.26-c0e6218-single-view-4step-r1',
+          clientGenerationId: input.clientGenerationId,
+          serverJobId: result.modelviewJobId ?? result.id,
+          projectId: input.projectId,
+          modelviewJobId: result.modelviewJobId,
+          modelviewClientId: result.modelviewClientId,
+          resultUrls: result.resultUrls,
+          output: result.output,
+          objectId: input.objectId,
+          materialReferenceId: input.materialReferenceId,
+          materialReferenceGroupId: input.materialReferenceGroupId,
+          materialReferenceName: input.materialReferenceName,
+          materialReferenceRole: input.materialReferenceRole,
+          singleViewProvider: 'remote',
+          serverSubmitted: true,
+        },
+      };
+    },
     async generateInpaint(
       input: ModelviewInpaintInput,
       options?: { signal?: AbortSignal },
@@ -95,7 +148,7 @@ export function createModelviewApiClient() {
         metadata: {
           provider: 'modelview-int8',
           workflow: 'local-repaint',
-          modelviewWorkflow: '2026.08.17-a9dbbca-flux2-klein-truev3-3input-r2',
+          modelviewWorkflow: '2026.08.28-cd48a78-truev3-gguf-mask-4input-rseed-r1',
           clientGenerationId: input.clientGenerationId,
           serverJobId: result.modelviewJobId ?? result.id,
           projectId: input.projectId,

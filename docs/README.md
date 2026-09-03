@@ -2,7 +2,7 @@
 
 本目录同时包含当前实现说明、历史阶段记录和未来方案。三类文档不能混用：
 
-1. 当前行为以代码和本页列出的“当前真源”文档为准。
+1. 模块边界、算法调用关系和修改规则以 [00_SYSTEM_MODULES_AND_CHANGE_STANDARD.md](00_SYSTEM_MODULES_AND_CHANGE_STANDARD.md) 为唯一准则；代码是验证具体实现的最终证据。
 2. 带日期的 audit、merge、optimization、release 文档只描述当时快照，不保证仍然成立。
 3. 名称含 `PLAN`、`SPEC`、`V0_1` 或以 Phase/Week 为主的文档是设计输入，不代表已经交付。
 
@@ -12,6 +12,7 @@
 
 | 主题 | 文档 |
 | --- | --- |
+| 模块边界、界面调用、算法参数、图层语义、版本和变更规范（唯一准则） | [00_SYSTEM_MODULES_AND_CHANGE_STANDARD.md](00_SYSTEM_MODULES_AND_CHANGE_STANDARD.md) |
 | 总览、运行方式、功能状态、已知问题 | [../README.md](../README.md) |
 | 现代化架构、收尾汇总与真实服务证据 | [modernization/README.md](modernization/README.md)、[modernization/CLOSING_REPORT_2026-08-22.zh-CN.md](modernization/CLOSING_REPORT_2026-08-22.zh-CN.md)、[modernization/FEATURE_ACCEPTANCE_MATRIX.md](modernization/FEATURE_ACCEPTANCE_MATRIX.md) |
 | 产品目标与功能矩阵 | [00_PRODUCT_GOAL.md](00_PRODUCT_GOAL.md)、[01_MODDDIF_FEATURE_BREAKDOWN.md](01_MODDDIF_FEATURE_BREAKDOWN.md) |

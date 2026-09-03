@@ -12,16 +12,24 @@ import {
 } from './viewportInteractionState';
 
 // Enough for a nine-model scene to retain one 512px proxy and one upgrading
-// exact texture per model. Older proxies naturally retire as full textures win
-// the LRU, keeping the fast path without turning the cache into unbounded VRAM.
-const MAX_PREVIEW_TEXTURE_CACHE_SIZE = 18;
+// exact texture per model, plus the selected object's bounded six-layer eye
+// toggle working set. The former 18-entry limit evicted worker bitmaps while
+// those selected-layer uploads were still requesting stripes, which made some
+// repaint/UV rows disappear after a multi-layer restore.
+const MAX_PREVIEW_TEXTURE_CACHE_SIZE = 24;
 const bakedTextureCache = new Map<string, Promise<THREE.Texture>>();
 export const residentPreviewTextureCache = new Map<string, THREE.Texture>();
+// Bulk prewarm callers await decode as a group and only then start striped GPU
+// uploads. Keep those cache entries pinned for the whole transaction: evicting
+// an early-resolved worker bitmap while a later sibling is still decoding made
+// the subsequent upload fail with "no longer resident" in nine-model restores.
+const pinnedPreviewTextureCacheKeys = new Map<string, number>();
 const previewTextureUploadPromises = new WeakMap<
   THREE.Texture,
   WeakMap<THREE.WebGLRenderer, Promise<void>>
 >();
 const previewTextureReadyRenderers = new WeakMap<THREE.Texture, WeakSet<THREE.WebGLRenderer>>();
+const activePreviewTextureUploads = new WeakMap<THREE.WebGLRenderer, number>();
 // Detached contexts stay at roughly 0.5MB. Larger detached submissions did
 // not improve S9 wall time and increased long frames on NVIDIA/Windows. The
 // visible renderer instead uses the frame-budget governor below.
@@ -34,6 +42,32 @@ const PREVIEW_BITMAP_DECODE_TIMEOUT_MS = 15_000;
 const PREVIEW_BITMAP_STRIPE_TIMEOUT_MS = 15_000;
 const PREVIEW_TEXTURE_FALLBACK_TIMEOUT_MS = 20_000;
 let registeredPreviewRenderer: THREE.WebGLRenderer | undefined;
+
+function markPreviewTextureUploadStarted(renderer: THREE.WebGLRenderer) {
+  activePreviewTextureUploads.set(renderer, (activePreviewTextureUploads.get(renderer) ?? 0) + 1);
+}
+
+function markPreviewTextureUploadFinished(renderer: THREE.WebGLRenderer) {
+  const remaining = Math.max(0, (activePreviewTextureUploads.get(renderer) ?? 1) - 1);
+  if (remaining === 0) activePreviewTextureUploads.delete(renderer);
+  else activePreviewTextureUploads.set(renderer, remaining);
+}
+
+/**
+ * Shader linking and 4K texSubImage work share the same ANGLE command stream.
+ * Let critical program compilation wait until every already-started preview
+ * upload has released that renderer; this changes scheduling only, never the
+ * texture or shader result.
+ */
+export async function waitForPreviewTextureUploadsIdle(
+  renderer: THREE.WebGLRenderer,
+  shouldCancel?: () => boolean,
+) {
+  while ((activePreviewTextureUploads.get(renderer) ?? 0) > 0) {
+    if (shouldCancel?.()) throw new DOMException('Texture upload wait superseded.', 'AbortError');
+    await waitForBrowserPaint();
+  }
+}
 
 /**
  * A decoded preview enters the resident cache before its striped GPU upload
@@ -156,6 +190,27 @@ function decodePreviewBitmapInWorker(imageUrl: string, maxSize?: number) {
   });
 }
 
+function adoptPreviewBitmapInWorker(bitmap: ImageBitmap) {
+  const id = nextBitmapId++;
+  return new Promise<{ id: number; width: number; height: number }>((resolve, reject) => {
+    const timeoutId = window.setTimeout(() => {
+      if (!pendingBitmapMetadata.has(id)) return;
+      resetBitmapWorker(new Error('Preview texture adoption timed out.'));
+    }, PREVIEW_BITMAP_DECODE_TIMEOUT_MS);
+    pendingBitmapMetadata.set(id, {
+      resolve: (value) => {
+        window.clearTimeout(timeoutId);
+        resolve(value);
+      },
+      reject: (error) => {
+        window.clearTimeout(timeoutId);
+        reject(error);
+      },
+    });
+    getBitmapWorker().postMessage({ type: 'adopt', id, bitmap }, [bitmap]);
+  });
+}
+
 function requestPreviewBitmapStripe(id: number, y: number, height: number) {
   const requestId = nextStripeRequestId++;
   return new Promise<ImageBitmap>((resolve, reject) => {
@@ -246,7 +301,11 @@ export function registerPreviewTextureRenderer(renderer: THREE.WebGLRenderer | u
 
 function trimBakedTextureCache() {
   while (bakedTextureCache.size > MAX_PREVIEW_TEXTURE_CACHE_SIZE) {
-    const oldestKey = bakedTextureCache.keys().next().value as string | undefined;
+    const oldestKey = [...bakedTextureCache.keys()].find(
+      (key) => (pinnedPreviewTextureCacheKeys.get(key) ?? 0) === 0,
+    );
+    // A temporary over-cap cache is safer than invalidating an in-flight
+    // exact texture. The prewarm transaction trims again after unpinning.
     if (!oldestKey) break;
     const texturePromise = bakedTextureCache.get(oldestKey);
     bakedTextureCache.delete(oldestKey);
@@ -270,6 +329,32 @@ function configurePreviewTexture(texture: THREE.Texture) {
   texture.anisotropy = 8;
   texture.needsUpdate = true;
   return texture;
+}
+
+/**
+ * Transfers a freshly composited full-resolution bitmap back to the resident
+ * bitmap worker. The UI thread keeps only a dimension-only DataTexture and
+ * later receives bounded upload stripes, avoiding a full 4K crop on the main
+ * thread while preserving the exact bitmap pixels.
+ */
+export async function createWorkerBackedPreviewTexture(bitmap: ImageBitmap) {
+  const result = await adoptPreviewBitmapInWorker(bitmap);
+  const texture = new THREE.DataTexture(
+    null,
+    result.width,
+    result.height,
+    THREE.RGBAFormat,
+    THREE.UnsignedByteType,
+  );
+  texture.userData.liclickPreviewWorkerBitmapId = result.id;
+  texture.source.dataReady = false;
+  texture.flipY = false;
+  const release = () => {
+    releaseWorkerBitmap(result.id);
+    texture.removeEventListener('dispose', release);
+  };
+  texture.addEventListener('dispose', release);
+  return configurePreviewTexture(texture);
 }
 
 function invalidatePreviewTextureAfterUploadFailure(texture: THREE.Texture) {
@@ -345,22 +430,38 @@ export async function prewarmPreviewTextures(
   options?: { allowWhileInteracting?: boolean; maxSize?: number },
 ) {
   const uniqueUrls = [...new Set(imageUrls.filter(Boolean))];
-  const startedAt = performance.now();
-  const results = await Promise.allSettled(
-    uniqueUrls.map((url) => loadPreviewTexture(url, { maxSize: options?.maxSize })),
-  );
-  const renderer = registeredPreviewRenderer;
-  if (renderer) {
-    for (const result of results) {
-      if (result.status !== 'fulfilled') continue;
-      await uploadPreviewTextureInStripes(renderer, result.value, options);
-    }
+  const cacheKeys = uniqueUrls.map((url) => getPreviewTextureCacheKey(url, options));
+  for (const cacheKey of cacheKeys) {
+    pinnedPreviewTextureCacheKeys.set(
+      cacheKey,
+      (pinnedPreviewTextureCacheKeys.get(cacheKey) ?? 0) + 1,
+    );
   }
-  document.body.dataset.previewTextureEarlyPrewarmMs = (performance.now() - startedAt).toFixed(1);
-  document.body.dataset.previewTextureEarlyPrewarmReadyCount = String(
-    results.filter((result) => result.status === 'fulfilled').length,
-  );
-  return results;
+  const startedAt = performance.now();
+  try {
+    const results = await Promise.allSettled(
+      uniqueUrls.map((url) => loadPreviewTexture(url, { maxSize: options?.maxSize })),
+    );
+    const renderer = registeredPreviewRenderer;
+    if (renderer) {
+      for (const result of results) {
+        if (result.status !== 'fulfilled') continue;
+        await uploadPreviewTextureInStripes(renderer, result.value, options);
+      }
+    }
+    document.body.dataset.previewTextureEarlyPrewarmMs = (performance.now() - startedAt).toFixed(1);
+    document.body.dataset.previewTextureEarlyPrewarmReadyCount = String(
+      results.filter((result) => result.status === 'fulfilled').length,
+    );
+    return results;
+  } finally {
+    for (const cacheKey of cacheKeys) {
+      const remaining = Math.max(0, (pinnedPreviewTextureCacheKeys.get(cacheKey) ?? 1) - 1);
+      if (remaining === 0) pinnedPreviewTextureCacheKeys.delete(cacheKey);
+      else pinnedPreviewTextureCacheKeys.set(cacheKey, remaining);
+    }
+    trimBakedTextureCache();
+  }
 }
 
 export function releasePreviewTexture(imageUrl: string) {
@@ -391,6 +492,7 @@ export function uploadPreviewTextureInStripes(
   }
   const pending = rendererUploads.get(renderer);
   if (pending) return pending;
+  markPreviewTextureUploadStarted(renderer);
   const upload = (async () => {
     const throwIfCancelled = () => {
       if (options?.shouldCancel?.()) {
@@ -620,7 +722,7 @@ export function uploadPreviewTextureInStripes(
     } finally {
       frameMonitor?.stop();
     }
-  })();
+  })().finally(() => markPreviewTextureUploadFinished(renderer));
   rendererUploads.set(renderer, upload);
   void upload.catch(() => rendererUploads?.delete(renderer));
   return upload;

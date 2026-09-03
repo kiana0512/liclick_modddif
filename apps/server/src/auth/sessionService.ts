@@ -228,6 +228,10 @@ export async function upsertUser(input: {
   authSource: AuthSource;
   atlasHomeDir?: string;
 }) {
+  const configuredRole =
+    input.email && serverConfig.performanceLabMaintainerEmails.includes(input.email.trim().toLowerCase())
+      ? 'maintainer'
+      : undefined;
   if (postgresControlRepository) {
     const savedUser = await postgresControlRepository.upsertUser({
       id: input.id ?? createId('user'),
@@ -236,6 +240,7 @@ export async function upsertUser(input: {
       avatarUrl: input.avatarUrl,
       authSource: input.authSource,
       atlasHomeDir: input.atlasHomeDir,
+      role: configuredRole,
     });
     return savedUser;
   }
@@ -255,6 +260,7 @@ export async function upsertUser(input: {
           avatarUrl: input.avatarUrl ?? existing.avatarUrl,
           authSource: input.authSource,
           atlasHomeDir: input.atlasHomeDir ?? existing.atlasHomeDir,
+          role: configuredRole ?? existing.role,
           updatedAt: now,
           lastLoginAt: now,
         }
@@ -263,7 +269,7 @@ export async function upsertUser(input: {
           displayName: input.displayName,
           email: input.email,
           avatarUrl: input.avatarUrl,
-          role: 'user',
+          role: configuredRole ?? 'user',
           status: 'active',
           authSource: input.authSource,
           atlasHomeDir: input.atlasHomeDir,
@@ -279,4 +285,24 @@ export async function upsertUser(input: {
   });
   await ensureUserWorkspace(savedUser!.id);
   return savedUser!;
+}
+
+export async function setUserAtlasHomeDir(userId: string, atlasHomeDir?: string) {
+  if (postgresControlRepository) {
+    return postgresControlRepository.setUserAtlasHomeDir(userId, atlasHomeDir);
+  }
+  let savedUser: AuthUser | undefined;
+  await updateAuthDatabase((database) => ({
+    ...database,
+    users: database.users.map((user) => {
+      if (user.id !== userId) return user;
+      savedUser = {
+        ...user,
+        atlasHomeDir,
+        updatedAt: new Date().toISOString(),
+      };
+      return savedUser;
+    }),
+  }));
+  return savedUser;
 }

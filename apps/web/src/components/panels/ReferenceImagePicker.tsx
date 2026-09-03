@@ -159,7 +159,7 @@ export function ReferenceImagePicker({
     setPendingImport(undefined);
     // The editor snapshot reads the reference store directly, so this event can
     // persist the newly imported pixels immediately instead of waiting for the
-    // five-second autosave window (where a refresh would otherwise lose them).
+    // deferred autosave window (where a refresh would otherwise lose them).
     window.dispatchEvent(new Event(IMMEDIATE_PROJECT_SAVE_EVENT));
   }
 

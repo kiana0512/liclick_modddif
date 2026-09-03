@@ -30,6 +30,7 @@ model CloudUser {
   updatedAt   DateTime       @updatedAt
   projects    CloudProject[]
   commands    CloudProjectCommand[]
+  performanceSessions PerformanceLabSession[]
 
   @@unique([tenantId, externalId])
   @@index([tenantId, status])
@@ -128,4 +129,50 @@ model CloudAuditEvent {
 
   @@index([tenantId, occurredAt])
   @@index([tenantId, projectId, occurredAt])
+}
+
+model PerformanceLabSession {
+  sessionId        String                    @id
+  userId           String
+  user             CloudUser                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  projectId        String?
+  status           String
+  schemaVersion    Int
+  collectorVersion String
+  userDisplayName  String
+  userAvatarUrl    String?
+  userEmail        String?
+  startedAt        DateTime
+  endedAt          DateTime?
+  clientContext    Json
+  summary          Json?
+  report           Json?
+  reportSha256     String?
+  chunkCount       Int                       @default(0)
+  sampleCount      BigInt                    @default(0)
+  totalBytes       BigInt                    @default(0)
+  createdAt        DateTime                  @default(now())
+  updatedAt        DateTime                  @updatedAt
+  chunks           PerformanceLabChunk[]
+
+  @@index([userId, startedAt])
+  @@index([status, startedAt])
+  @@index([projectId, startedAt])
+}
+
+model PerformanceLabChunk {
+  sessionId     String
+  session       PerformanceLabSession @relation(fields: [sessionId], references: [sessionId], onDelete: Cascade)
+  source        String
+  sequence      Int
+  startedAt     DateTime
+  endedAt       DateTime
+  sampleCount   Int
+  byteCount     Int
+  payloadSha256 String
+  payload       Json
+  createdAt     DateTime              @default(now())
+
+  @@id([sessionId, source, sequence])
+  @@index([sessionId, startedAt, sequence])
 }

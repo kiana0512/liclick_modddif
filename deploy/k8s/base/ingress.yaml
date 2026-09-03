@@ -6,6 +6,8 @@ kind: Ingress
 metadata:
   name: li3d
   annotations:
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "2700"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "2700"
     nginx.ingress.kubernetes.io/proxy-body-size: "256m"
 spec:
   ingressClassName: nginx

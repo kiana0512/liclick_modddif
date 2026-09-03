@@ -1,68 +1,45 @@
-# Builds the same two images the Dockerfile produces, from the repo root
-# as build context. Run this from anywhere with:
-#
-#   docker compose -f deploy/docker-compose.yml build
-#   docker compose -f deploy/docker-compose.yml build server   # just one
-#
-# Set SERVER_IMAGE / WEB_IMAGE to control the resulting tag, e.g.:
-#   SERVER_IMAGE=myregistry/li3d-server:0.1.3 \
-#   WEB_IMAGE=myregistry/li3d-web:0.1.3 \
-#   docker compose -f deploy/docker-compose.yml build
-#
-# `docker compose -f deploy/docker-compose.yml up` also runs the built
-# images locally for a quick smoke test (AUTH_MODE=dev-mock, no real
-# Feishu/IDaaS credentials needed) — see deploy/README.md. This is a dev
-# convenience, not how deploy/k8s/ actually deploys the app.
-
+# Optional container acceptance against separately provisioned Cloud services.
+# Required build metadata and runtime env files are documented in README.md.
+x-release-args: &release_args
+  RELEASE_ID: ${RELEASE_ID:?Set RELEASE_ID}
+  GIT_SHA: ${GIT_SHA:?Set GIT_SHA}
+  RELEASE_VERSION: ${RELEASE_VERSION:?Set RELEASE_VERSION}
+  BUILD_TIME: ${BUILD_TIME:?Set BUILD_TIME}
+x-runtime-env: &runtime_env
+  - ./k8s/base/server-config.env
+  - ./k8s/base/secrets/server.env
 services:
-  server:
+  migrate:
+    image: li3d-server:${RELEASE_ID:?Set RELEASE_ID}
     build:
       context: ..
       dockerfile: deploy/Dockerfile
       target: server
-    image: tsh-devops-prod-all-0001-registry.cn-shanghai.cr.aliyuncs.com/devops/li3d-server:v0.1.0
-    ports:
-      - "4517:4517"
-    environment:
-      # Non-loopback SERVER_HOST (baked into the image) means the app's own
-      # config.ts refuses to start with the literal default session secret
-      # — this just has to differ from "dev-only-change-me", it is not a
-      # real secret. Override with a real one for anything beyond your own
-      # machine.
-      SESSION_SECRET: docker-compose-local-secret
-      AUTH_MODE: dev-mock
-      LICLICK_PUBLIC_WORKSPACE_URL: http://localhost:8080
-      LICLICK_FRONTEND_URL: http://localhost:8080
-      LICLICK_ALLOWED_ORIGINS: http://localhost:8080
-    healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4517/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
-      interval: 10s
-      timeout: 5s
-      start_period: 15s
-      retries: 5
-
-  # One-off schema sync, equivalent to the initContainer in
-  # deploy/k8s/base/server-deployment.yaml. Runs once per `up`, exits, and
-  # `server` waits for it — it does not run again on a plain restart. No
-  # `build:` here on purpose — it reuses the image the `server` service
-  # builds (same tag) rather than building it a second time.
-   
-
+      args: *release_args
+    env_file: *runtime_env
+    command: ["sh", "-c", "node deploy/validate-runtime-env.mjs && node apps/server/scripts/migrate-cloud-projects.mjs"]
+  server:
+    image: li3d-server:${RELEASE_ID:?Set RELEASE_ID}
+    env_file: *runtime_env
+    volumes:
+      - workspace:/data/workspace
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
   web:
+    image: li3d-web:${RELEASE_ID:?Set RELEASE_ID}
     build:
       context: ..
       dockerfile: deploy/Dockerfile
       target: web
-      args:
-        VITE_PUBLIC_PATH: ${VITE_PUBLIC_PATH:-}
-        VITE_LICLICK_WORKSPACE_API: ${VITE_LICLICK_WORKSPACE_API:-}
-    image:  tsh-devops-prod-all-0001-registry.cn-shanghai.cr.aliyuncs.com/devops/li3d-web:v0.1.0
+      args: *release_args
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
     environment:
       BACKEND_HOST: server
       BACKEND_PORT: "4517"
     depends_on:
       server:
         condition: service_healthy
-
+volumes:
+  workspace:

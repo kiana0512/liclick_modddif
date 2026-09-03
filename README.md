@@ -2,7 +2,7 @@
 
 Liclick 3D Texture（LI3D）现代化分支是一套零安装浏览器工作台。统一首页连接贴图绘制、自动展 UV、模型烘焙和生产工具箱；用户不需要下载 LI3D 本地组件。
 
-当前隔离开发分支为 `codex/modernization`，基线为远端 `master@ea86557`。本页描述该分支的真实行为；完整交付说明见 [2026-08-21 现代化交付记录](docs/modernization/HANDOFF_2026-08-21.zh-CN.md)，文档分类见 [docs/README.md](docs/README.md)。
+本文描述当前主线代码的真实行为。系统模块、算法调用和强制变更规则以 [系统模块与变更唯一准则](docs/00_SYSTEM_MODULES_AND_CHANGE_STANDARD.md) 为准；现代化演进的完整交付说明见 [2026-08-21 现代化交付记录](docs/modernization/HANDOFF_2026-08-21.zh-CN.md)，其它文档分类见 [docs/README.md](docs/README.md)。
 
 ## 产品与计算边界
 

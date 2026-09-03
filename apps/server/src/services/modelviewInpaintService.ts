@@ -4,26 +4,45 @@ import http from 'node:http';
 import https from 'node:https';
 import tls from 'node:tls';
 import { createHash, randomUUID } from 'node:crypto';
+import sharp from 'sharp';
 import { serverConfig } from '../config.js';
 import { gpuControlLanCa } from '../certs/gpuControlLanCa.js';
-import {
-  maxLocalAssetBytes,
-  saveBinaryAsset,
-  saveUserRecoveryAsset,
-} from './assetFileService.js';
+import { maxLocalAssetBytes, saveBinaryAsset, saveUserRecoveryAsset } from './assetFileService.js';
 
 type ModelviewControlFile = {
   path: string;
   dataUrl: string;
 };
 
-export type ModelviewInpaintInput = {
+type ModelviewGenerationInput = {
   clientGenerationId?: string;
   projectId?: string;
   prompt?: string;
   image: ModelviewControlFile;
   materialImage: ModelviewControlFile;
-  viewportReference: ModelviewControlFile;
+};
+
+export type ModelviewInpaintInput = ModelviewGenerationInput & {
+  mask: ModelviewControlFile;
+};
+
+export type ModelviewSingleViewInput = ModelviewGenerationInput;
+
+type ModelviewServiceKind = 'inpaint' | 'single-view';
+
+type ModelviewServiceDefinition = {
+  kind: ModelviewServiceKind;
+  label: string;
+  url: string;
+  caPath: string;
+  apiKey: string;
+  timeoutMs: number;
+  jobPrefix: string;
+  idempotencySuffix: string;
+  filenameSuffix: string;
+  source: string;
+  workflow: string;
+  finalNode: string;
 };
 
 type RemoteResponse = {
@@ -42,18 +61,50 @@ export class ModelviewInpaintError extends Error {
   }
 }
 
-function inpaintUrl() {
-  const url = new URL(serverConfig.modelviewInpaintUrl);
+function serviceDefinition(kind: ModelviewServiceKind): ModelviewServiceDefinition {
+  if (kind === 'single-view') {
+    return {
+      kind,
+      label: 'ModelView 单视图生成',
+      url: serverConfig.modelviewSingleViewUrl,
+      caPath: serverConfig.modelviewSingleViewCaPath,
+      apiKey: serverConfig.modelviewSingleViewApiKey,
+      timeoutMs: serverConfig.modelviewSingleViewTimeoutMs,
+      jobPrefix: 'modelview-single-view',
+      idempotencySuffix: 'single-view:4step-r1',
+      filenameSuffix: 'modelview-single-view',
+      source: 'modelview-single-view',
+      workflow: '2026.08.26-c0e6218-single-view-4step-r1',
+      finalNode: 'SaveImage #29',
+    };
+  }
+  return {
+    kind,
+    label: 'ModelView 局部重绘',
+    url: serverConfig.modelviewInpaintUrl,
+    caPath: serverConfig.modelviewInpaintCaPath,
+    apiKey: serverConfig.modelviewInpaintApiKey,
+    timeoutMs: serverConfig.modelviewInpaintTimeoutMs,
+    jobPrefix: 'modelview-inpaint',
+    idempotencySuffix: 'inpaint:4input-rseed-r1',
+    filenameSuffix: 'modelview-int8',
+    source: 'modelview-inpaint',
+    workflow: '2026.08.28-cd48a78-truev3-gguf-mask-4input-rseed-r1',
+    finalNode: 'SaveImage #29',
+  };
+}
+
+function serviceUrl(service: ModelviewServiceDefinition) {
+  const url = new URL(service.url);
   const isLoopback = ['127.0.0.1', 'localhost', '::1', '[::1]'].includes(url.hostname);
   if (url.protocol !== 'https:' && !(url.protocol === 'http:' && isLoopback)) {
-    throw new ModelviewInpaintError('ModelView 局部重绘接口必须使用 HTTPS。', 500);
+    throw new ModelviewInpaintError(`${service.label}接口必须使用 HTTPS。`, 500);
   }
   return url;
 }
 
-function inpaintTrust() {
-  const configuredPath =
-    serverConfig.modelviewInpaintCaPath || process.env.NODE_EXTRA_CA_CERTS?.trim() || '';
+function serviceTrust(service: ModelviewServiceDefinition) {
+  const configuredPath = service.caPath || process.env.NODE_EXTRA_CA_CERTS?.trim() || '';
   const candidates = configuredPath
     ? [path.resolve(configuredPath)]
     : [
@@ -80,11 +131,7 @@ function inpaintTrust() {
   ).getCACertificates;
   if (getCACertificates) {
     return Array.from(
-      new Set([
-        ...getCACertificates('default'),
-        ...getCACertificates('system'),
-        gpuControlLanCa,
-      ]),
+      new Set([...getCACertificates('default'), ...getCACertificates('system'), gpuControlLanCa]),
     );
   }
   return [...tls.rootCertificates, gpuControlLanCa];
@@ -117,15 +164,15 @@ function safeFilename(value: string, fallback: string) {
   return safe || fallback;
 }
 
-function createIdempotencyKey(jobId: string) {
+function createIdempotencyKey(jobId: string, service: ModelviewServiceDefinition) {
   const stableId = jobId.replace(/[^a-z0-9._-]+/gi, '-').slice(0, 160) || randomUUID();
-  return `${stableId}:inpaint:3input-r2:attempt-1`;
+  return `${stableId}:${service.idempotencySuffix}`;
 }
 
 function multipartBody(input: {
   boundary: string;
   files: Array<{
-    field: 'image' | 'material_image' | 'viewport_reference';
+    field: 'image' | 'material_image' | 'mask';
     filename: string;
     mime: string;
     image: Buffer;
@@ -160,18 +207,62 @@ function multipartBody(input: {
   return Buffer.concat(chunks);
 }
 
-function requestInpaint(body: Buffer, boundary: string, idempotencyKey: string, signal?: AbortSignal) {
-  const url = inpaintUrl();
-  const timeoutMs = serverConfig.modelviewInpaintTimeoutMs;
+async function validateInpaintImageAndMask(image: { buffer: Buffer }, mask: { buffer: Buffer }) {
+  try {
+    const [imageMetadata, maskMetadata, maskStats] = await Promise.all([
+      sharp(image.buffer, { failOn: 'error' }).metadata(),
+      sharp(mask.buffer, { failOn: 'error' }).metadata(),
+      sharp(mask.buffer, { failOn: 'error' }).stats(),
+    ]);
+    if (
+      !imageMetadata.width ||
+      !imageMetadata.height ||
+      !maskMetadata.width ||
+      !maskMetadata.height
+    ) {
+      throw new ModelviewInpaintError('当前效果图或蒙版缺少有效尺寸。', 422);
+    }
+    if (
+      imageMetadata.width !== maskMetadata.width ||
+      imageMetadata.height !== maskMetadata.height
+    ) {
+      throw new ModelviewInpaintError(
+        `蒙版尺寸 ${maskMetadata.width}×${maskMetadata.height} 必须与当前效果图 ${imageMetadata.width}×${imageMetadata.height} 完全一致。`,
+        422,
+      );
+    }
+    if ((maskStats.channels[0]?.max ?? 0) <= 0) {
+      throw new ModelviewInpaintError('蒙版红色通道为全黑，请先绘制局部重绘区域。', 422);
+    }
+  } catch (error) {
+    if (error instanceof ModelviewInpaintError) throw error;
+    throw new ModelviewInpaintError(
+      error instanceof Error
+        ? `无法校验当前效果图与蒙版：${error.message}`
+        : '无法校验当前效果图与蒙版。',
+      422,
+    );
+  }
+}
+
+function requestModelview(
+  body: Buffer,
+  boundary: string,
+  idempotencyKey: string,
+  service: ModelviewServiceDefinition,
+  signal?: AbortSignal,
+) {
+  const url = serviceUrl(service);
+  const timeoutMs = service.timeoutMs;
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
-    throw new ModelviewInpaintError('ModelView 局部重绘超时配置无效。', 500);
+    throw new ModelviewInpaintError(`${service.label}超时配置无效。`, 500);
   }
   const transport = url.protocol === 'https:' ? https : http;
   return new Promise<RemoteResponse>((resolve, reject) => {
     let settled = false;
     let connectTimer: NodeJS.Timeout | undefined;
     const totalTimer = setTimeout(() => {
-      request.destroy(new Error(`ModelView 局部重绘等待超过 ${Math.round(timeoutMs / 1000)} 秒。`));
+      request.destroy(new Error(`${service.label}等待超过 ${Math.round(timeoutMs / 1000)} 秒。`));
     }, timeoutMs);
     const settle = (callback: () => void) => {
       if (settled) return;
@@ -181,15 +272,13 @@ function requestInpaint(body: Buffer, boundary: string, idempotencyKey: string, 
       signal?.removeEventListener('abort', abortRequest);
       callback();
     };
-    const abortRequest = () => request.destroy(new Error('ModelView 局部重绘请求已取消。'));
+    const abortRequest = () => request.destroy(new Error(`${service.label}请求已取消。`));
     const headers: Record<string, string | number> = {
       accept: 'image/png',
       'content-type': `multipart/form-data; boundary=${boundary}`,
       'content-length': body.byteLength,
       'idempotency-key': idempotencyKey,
-      ...(serverConfig.modelviewInpaintApiKey
-        ? { 'x-api-key': serverConfig.modelviewInpaintApiKey }
-        : {}),
+      ...(service.apiKey ? { 'x-api-key': service.apiKey } : {}),
     };
     const request = transport.request(
       url,
@@ -197,7 +286,7 @@ function requestInpaint(body: Buffer, boundary: string, idempotencyKey: string, 
         method: 'POST',
         headers,
         ...(url.protocol === 'https:'
-          ? { ca: inpaintTrust(), rejectUnauthorized: true }
+          ? { ca: serviceTrust(service), rejectUnauthorized: true }
           : {}),
       },
       (response) => {
@@ -207,7 +296,7 @@ function requestInpaint(body: Buffer, boundary: string, idempotencyKey: string, 
           const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
           totalBytes += buffer.byteLength;
           if (totalBytes > maxLocalAssetBytes) {
-            response.destroy(new Error('ModelView 局部重绘响应图片过大。'));
+            response.destroy(new Error(`${service.label}响应图片过大。`));
             return;
           }
           chunks.push(buffer);
@@ -226,7 +315,7 @@ function requestInpaint(body: Buffer, boundary: string, idempotencyKey: string, 
     );
     request.once('socket', (socket) => {
       connectTimer = setTimeout(() => {
-        request.destroy(new Error('连接 ModelView 局部重绘服务超过 10 秒。'));
+        request.destroy(new Error(`连接${service.label}服务超过 10 秒。`));
       }, 10_000);
       socket.once(url.protocol === 'https:' ? 'secureConnect' : 'connect', () => {
         if (connectTimer) clearTimeout(connectTimer);
@@ -243,9 +332,9 @@ function requestInpaint(body: Buffer, boundary: string, idempotencyKey: string, 
   });
 }
 
-function responseErrorMessage(response: RemoteResponse) {
+function responseErrorMessage(response: RemoteResponse, service: ModelviewServiceDefinition) {
   const text = response.body.toString('utf8').trim();
-  if (!text) return `ModelView 局部重绘请求失败：HTTP ${response.statusCode}`;
+  if (!text) return `${service.label}请求失败：HTTP ${response.statusCode}`;
   try {
     const payload = JSON.parse(text) as Record<string, unknown>;
     const detail = payload.detail;
@@ -274,45 +363,61 @@ function responseErrorMessage(response: RemoteResponse) {
   return text.slice(0, 1000);
 }
 
-export function checkModelviewInpaintServiceStatus() {
-  const url = inpaintUrl();
+function checkModelviewServiceStatus(kind: ModelviewServiceKind) {
+  const service = serviceDefinition(kind);
+  const url = serviceUrl(service);
   return {
     statusCode: 200,
     serviceUrl: url.toString(),
-    timeoutSeconds: Math.round(serverConfig.modelviewInpaintTimeoutMs / 1000),
+    timeoutSeconds: Math.round(service.timeoutMs / 1000),
   };
 }
 
-export async function generateModelviewInpaint(
-  input: ModelviewInpaintInput,
+export function checkModelviewInpaintServiceStatus() {
+  return checkModelviewServiceStatus('inpaint');
+}
+
+export function checkModelviewSingleViewServiceStatus() {
+  return checkModelviewServiceStatus('single-view');
+}
+
+async function generateModelviewImage(
+  input: ModelviewInpaintInput | ModelviewSingleViewInput,
   userId: string,
-  options: { signal?: AbortSignal } = {},
+  kind: ModelviewServiceKind,
+  options: { signal?: AbortSignal },
 ) {
+  const service = serviceDefinition(kind);
+  const operationLabel = kind === 'inpaint' ? '局部重绘' : '单视图生成';
   const projectId = input.projectId;
-  if (!projectId) throw new ModelviewInpaintError('局部重绘需要当前项目 ID。', 400);
-  if (!input.image?.dataUrl) throw new ModelviewInpaintError('局部重绘白模主图不能为空。', 422);
-  if (!input.materialImage?.dataUrl) {
-    throw new ModelviewInpaintError('局部重绘多视图材质参考图不能为空。', 422);
+  if (!projectId) throw new ModelviewInpaintError(`${operationLabel}需要当前项目 ID。`, 400);
+  const imageLabel = kind === 'inpaint' ? '当前效果图' : '白模主图';
+  if (!input.image?.dataUrl) {
+    throw new ModelviewInpaintError(`${operationLabel}${imageLabel}不能为空。`, 422);
   }
-  if (!input.viewportReference?.dataUrl) {
-    throw new ModelviewInpaintError('局部重绘当前视角预览图不能为空。', 422);
+  if (!input.materialImage?.dataUrl) {
+    throw new ModelviewInpaintError(`${operationLabel}多视图材质参考图不能为空。`, 422);
+  }
+  const inpaintInput = kind === 'inpaint' ? (input as ModelviewInpaintInput) : undefined;
+  if (inpaintInput && !inpaintInput.mask?.dataUrl) {
+    throw new ModelviewInpaintError(`${operationLabel}蒙版不能为空。`, 422);
   }
   const prompt = input.prompt?.trim() ?? '';
   if (Array.from(prompt).length > 4096) {
-    throw new ModelviewInpaintError('局部重绘提示词不能超过 4096 个字符。', 400);
+    throw new ModelviewInpaintError(`${operationLabel}提示词不能超过 4096 个字符。`, 400);
   }
 
-  const jobId = input.clientGenerationId || `modelview-inpaint-${randomUUID()}`;
-  const idempotencyKey = createIdempotencyKey(jobId);
-  const image = dataUrlToBuffer(input.image.dataUrl, '局部重绘白模主图');
+  const jobId = input.clientGenerationId || `${service.jobPrefix}-${randomUUID()}`;
+  const idempotencyKey = createIdempotencyKey(jobId, service);
+  const image = dataUrlToBuffer(input.image.dataUrl, `${operationLabel}${imageLabel}`);
   const materialImage = dataUrlToBuffer(
     input.materialImage.dataUrl,
-    '局部重绘多视图材质参考图',
+    `${operationLabel}多视图材质参考图`,
   );
-  const viewportReference = dataUrlToBuffer(
-    input.viewportReference.dataUrl,
-    '局部重绘当前视角预览图',
-  );
+  const mask = inpaintInput
+    ? dataUrlToBuffer(inpaintInput.mask.dataUrl, `${operationLabel}蒙版`)
+    : undefined;
+  if (mask) await validateInpaintImageAndMask(image, mask);
   const boundaryHash = createHash('sha256').update(idempotencyKey).digest('hex').slice(0, 32);
   const boundary = `----Li3DModelview${boundaryHash}`;
   const body = multipartBody({
@@ -320,7 +425,10 @@ export async function generateModelviewInpaint(
     files: [
       {
         field: 'image',
-        filename: safeFilename(input.image.path, 'white-model.png'),
+        filename: safeFilename(
+          input.image.path,
+          kind === 'inpaint' ? 'current-effect.png' : 'white-model.png',
+        ),
         mime: image.mime,
         image: image.buffer,
       },
@@ -330,16 +438,20 @@ export async function generateModelviewInpaint(
         mime: materialImage.mime,
         image: materialImage.buffer,
       },
-      {
-        field: 'viewport_reference',
-        filename: safeFilename(input.viewportReference.path, 'viewport-reference.png'),
-        mime: viewportReference.mime,
-        image: viewportReference.buffer,
-      },
+      ...(mask && inpaintInput
+        ? [
+            {
+              field: 'mask' as const,
+              filename: safeFilename(inpaintInput.mask.path, 'mask.png'),
+              mime: mask.mime,
+              image: mask.buffer,
+            },
+          ]
+        : []),
     ],
     prompt: prompt || undefined,
   });
-  const response = await requestInpaint(body, boundary, idempotencyKey, options.signal);
+  const response = await requestModelview(body, boundary, idempotencyKey, service, options.signal);
   const remoteJobId =
     typeof response.headers['x-job-id'] === 'string' ? response.headers['x-job-id'] : undefined;
   const remoteClientId =
@@ -349,7 +461,7 @@ export async function generateModelviewInpaint(
   if (response.statusCode !== 200) {
     const status =
       response.statusCode >= 400 && response.statusCode <= 599 ? response.statusCode : 502;
-    throw new ModelviewInpaintError(responseErrorMessage(response), status, remoteJobId);
+    throw new ModelviewInpaintError(responseErrorMessage(response, service), status, remoteJobId);
   }
   const contentType = String(response.headers['content-type'] ?? '')
     .split(';')[0]
@@ -357,7 +469,7 @@ export async function generateModelviewInpaint(
     .toLowerCase();
   if (!contentType.startsWith('image/')) {
     throw new ModelviewInpaintError(
-      `ModelView 局部重绘返回了非图片内容：${contentType || 'unknown'}`,
+      `${service.label}返回了非图片内容：${contentType || 'unknown'}`,
       502,
       remoteJobId,
     );
@@ -370,7 +482,7 @@ export async function generateModelviewInpaint(
     category: 'generations',
     mime: contentType,
     buffer: response.body,
-    filename: `${jobId}-modelview-int8.png`,
+    filename: `${jobId}-${service.filenameSuffix}.png`,
   });
   const saved =
     projectAsset ??
@@ -378,17 +490,20 @@ export async function generateModelviewInpaint(
       userId,
       mime: contentType,
       buffer: response.body,
-      filename: `${jobId}-modelview-int8.png`,
+      filename: `${jobId}-${service.filenameSuffix}.png`,
     }));
   if (!projectAsset) {
-    console.warn('[ModelView Inpaint] project missing after remote completion; saved recovery asset', {
-      userId,
-      projectId,
-      jobId: remoteJobId ?? '(missing X-Job-ID)',
-      resultUrl: saved.url,
-    });
+    console.warn(
+      `[${service.label}] project missing after remote completion; saved recovery asset`,
+      {
+        userId,
+        projectId,
+        jobId: remoteJobId ?? '(missing X-Job-ID)',
+        resultUrl: saved.url,
+      },
+    );
   }
-  console.info('[ModelView Inpaint] completed', {
+  console.info(`[${service.label}] completed`, {
     jobId: remoteJobId ?? '(missing X-Job-ID)',
     clientId: remoteClientId,
     idempotencyKey,
@@ -405,10 +520,26 @@ export async function generateModelviewInpaint(
       contentType,
       bytes: response.body.byteLength,
       sha256,
-      source: 'modelview-inpaint',
+      source: service.source,
       storage: projectAsset ? 'project' : 'user-recovery',
-      workflow: '2026.08.17-a9dbbca-flux2-klein-truev3-3input-r2',
-      finalNode: 'SaveImage #32',
+      workflow: service.workflow,
+      finalNode: service.finalNode,
     },
   };
+}
+
+export function generateModelviewInpaint(
+  input: ModelviewInpaintInput,
+  userId: string,
+  options: { signal?: AbortSignal } = {},
+) {
+  return generateModelviewImage(input, userId, 'inpaint', options);
+}
+
+export function generateModelviewSingleView(
+  input: ModelviewSingleViewInput,
+  userId: string,
+  options: { signal?: AbortSignal } = {},
+) {
+  return generateModelviewImage(input, userId, 'single-view', options);
 }

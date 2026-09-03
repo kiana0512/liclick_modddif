@@ -9,6 +9,11 @@ export const ATLAS_REFERENCE_PAYLOAD_RESERVE_BYTES = 512 * 1024;
 export const ATLAS_REFERENCE_SAFE_DATA_URL_LENGTH =
   ATLAS_REFERENCE_REQUEST_LIMIT_BYTES - ATLAS_REFERENCE_PAYLOAD_RESERVE_BYTES;
 
+// A2A FilePart uploads are not constrained by the older 4 MiB tool-call JSON
+// envelope. Keep enough headroom under the server's 16 MiB decoded-image limit
+// while preserving small text and surface detail in multiview references.
+export const PROMPT_POLISH_REFERENCE_SAFE_DATA_URL_LENGTH = 20 * 1024 * 1024;
+
 // Keep 4K detail whenever the byte budget permits. A small encoded WebP does
 // not by itself mean low quality: simple renders and transparent backgrounds
 // can compress very efficiently even at full resolution and quality 1.0.
@@ -91,6 +96,7 @@ function canvasToBlob(canvas: HTMLCanvasElement, type: string, quality: number) 
 async function compressReference(
   reference: ReferenceImage,
   sourceBlob: Blob,
+  safeDataUrlLength = ATLAS_REFERENCE_SAFE_DATA_URL_LENGTH,
 ): Promise<PreparedReference> {
   let bitmap: ImageBitmap;
   try {
@@ -125,7 +131,7 @@ async function compressReference(
             throw new Error('当前浏览器不支持参考图自动压缩，请将图片转换为 WebP 后重试。');
           }
           const dataUrl = await blobToDataUrl(blob);
-          if (dataUrl.length <= ATLAS_REFERENCE_SAFE_DATA_URL_LENGTH) {
+          if (dataUrl.length <= safeDataUrlLength) {
             return {
               id: reference.id,
               name: reference.name,
@@ -162,35 +168,58 @@ async function compressReference(
   }
 }
 
-async function prepareReferenceUncached(reference: ReferenceImage): Promise<PreparedReference> {
+async function prepareReferenceUncached(
+  reference: ReferenceImage,
+  safeDataUrlLength = ATLAS_REFERENCE_SAFE_DATA_URL_LENGTH,
+): Promise<PreparedReference> {
   const sourceBlob = await referenceUrlToBlob(reference.url);
   const sourceDataUrl = reference.url.startsWith('data:')
     ? reference.url
     : await blobToDataUrl(sourceBlob);
-  if (sourceDataUrl.length <= ATLAS_REFERENCE_SAFE_DATA_URL_LENGTH) {
+  if (sourceDataUrl.length <= safeDataUrlLength) {
     return {
       id: reference.id,
       name: reference.name,
       url: sourceDataUrl,
     };
   }
-  return compressReference(reference, sourceBlob);
+  return compressReference(reference, sourceBlob, safeDataUrlLength);
 }
 
-export function prepareReferenceForAtlas(reference: ReferenceImage) {
-  const existing = preparationCache.get(reference.id);
+function prepareReferenceWithBudget(
+  reference: ReferenceImage,
+  cacheKey: string,
+  safeDataUrlLength: number,
+) {
+  const existing = preparationCache.get(cacheKey);
   if (existing?.sourceUrl === reference.url) return existing.promise;
 
-  const promise = prepareReferenceUncached(reference).catch((error) => {
-    const cached = preparationCache.get(reference.id);
-    if (cached?.promise === promise) preparationCache.delete(reference.id);
+  const promise = prepareReferenceUncached(reference, safeDataUrlLength).catch((error) => {
+    const cached = preparationCache.get(cacheKey);
+    if (cached?.promise === promise) preparationCache.delete(cacheKey);
     throw error;
   });
-  preparationCache.set(reference.id, { sourceUrl: reference.url, promise });
+  preparationCache.set(cacheKey, { sourceUrl: reference.url, promise });
   while (preparationCache.size > maxCacheEntries) {
     const oldestKey = preparationCache.keys().next().value as string | undefined;
     if (!oldestKey) break;
     preparationCache.delete(oldestKey);
   }
   return promise;
+}
+
+export function prepareReferenceForAtlas(reference: ReferenceImage) {
+  return prepareReferenceWithBudget(
+    reference,
+    `atlas-tool:${reference.id}`,
+    ATLAS_REFERENCE_SAFE_DATA_URL_LENGTH,
+  );
+}
+
+export function prepareReferenceForPromptPolish(reference: ReferenceImage) {
+  return prepareReferenceWithBudget(
+    reference,
+    `prompt-polish-a2a:${reference.id}`,
+    PROMPT_POLISH_REFERENCE_SAFE_DATA_URL_LENGTH,
+  );
 }

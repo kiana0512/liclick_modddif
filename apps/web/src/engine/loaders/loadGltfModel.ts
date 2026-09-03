@@ -1,3 +1,4 @@
+import { LoadingManager } from 'three';
 import { GLTFLoader } from 'three-stdlib';
 import {
   materialSlotsToSceneSlots,
@@ -12,24 +13,57 @@ import { summarizeLoadedGroup } from './modelLoadUtils';
 // UnitScaleFactor values (which are centimeters per source unit).
 const GLTF_CENTIMETERS_PER_UNIT = 100;
 
+function normalizeResourcePath(value: string) {
+  const withoutQuery = decodeURIComponent(value.split(/[?#]/, 1)[0] ?? value);
+  return withoutQuery.replace(/\\/g, '/').replace(/^\.\//, '').toLowerCase();
+}
+
+function createGltfLoadingManager(resourceFiles: File[]) {
+  const manager = new LoadingManager();
+  const objectUrls: string[] = [];
+  const resources = new Map<string, string>();
+  resourceFiles.forEach((file) => {
+    const url = URL.createObjectURL(file);
+    objectUrls.push(url);
+    const relativePath = normalizeResourcePath(file.webkitRelativePath || file.name);
+    const basename = relativePath.split('/').pop() ?? relativePath;
+    resources.set(relativePath, url);
+    if (!resources.has(basename)) resources.set(basename, url);
+  });
+  manager.setURLModifier((requestedUrl) => {
+    const normalized = normalizeResourcePath(requestedUrl);
+    const basename = normalized.split('/').pop() ?? normalized;
+    return resources.get(normalized) ?? resources.get(basename) ?? requestedUrl;
+  });
+  return {
+    manager,
+    dispose: () => objectUrls.forEach((url) => URL.revokeObjectURL(url)),
+  };
+}
+
 export async function loadGltfModel(options: ModelImportOptions): Promise<LoadedModel> {
-  const loader = new GLTFLoader();
+  const resourceManager = createGltfLoadingManager(options.resourceFiles ?? []);
+  const loader = new GLTFLoader(resourceManager.manager);
   const format = options.fileName.toLowerCase().endsWith('.gltf') ? 'gltf' : 'glb';
   let gltf;
-  if (format === 'glb' && options.sourceBuffer) {
-    options.onProgress?.({ phase: 'parsing' });
-    await yieldForModelImportProgressPaint();
-    gltf = await loader.parseAsync(options.sourceBuffer, '');
-  } else {
-    options.onProgress?.({ phase: 'reading', phaseProgress: 0 });
-    gltf = await loader.loadAsync(options.sourceUrl, (event) => {
-      options.onProgress?.({
-        phase: 'reading',
-        loadedBytes: event.loaded,
-        totalBytes:
-          event.lengthComputable && event.total > 0 ? event.total : options.sourceByteLength,
+  try {
+    if (format === 'glb' && options.sourceBuffer) {
+      options.onProgress?.({ phase: 'parsing' });
+      await yieldForModelImportProgressPaint();
+      gltf = await loader.parseAsync(options.sourceBuffer, '');
+    } else {
+      options.onProgress?.({ phase: 'reading', phaseProgress: 0 });
+      gltf = await loader.loadAsync(options.sourceUrl, (event) => {
+        options.onProgress?.({
+          phase: 'reading',
+          loadedBytes: event.loaded,
+          totalBytes:
+            event.lengthComputable && event.total > 0 ? event.total : options.sourceByteLength,
+        });
       });
-    });
+    }
+  } finally {
+    resourceManager.dispose();
   }
   options.onProgress?.({ phase: 'parsing', phaseProgress: 1 });
   options.onProgress?.({ phase: 'materials' });

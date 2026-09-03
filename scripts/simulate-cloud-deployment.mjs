@@ -43,6 +43,28 @@ async function buildCloudArtifacts() {
   });
 }
 
+async function createMockAtlasRuntime() {
+  const root = path.join(workspace, 'atlas-runtime');
+  const dist = path.join(root, 'dist');
+  await fs.mkdir(dist, { recursive: true });
+  await fs.writeFile(
+    path.join(root, 'package.json'),
+    JSON.stringify({ name: '@lilith/atlas-skillhub', version: '2.9.1', type: 'module' }),
+  );
+  await fs.writeFile(
+    path.join(dist, 'index.js'),
+    `const args=process.argv.slice(2);if(args.includes('list-tools')){process.stdout.write('  mock_generate_image()\\n');process.exit(0)}process.exit(0);`,
+  );
+  await fs.writeFile(
+    path.join(dist, 'secure-runtime.js'),
+    `import fs from 'node:fs';import http from 'node:http';import path from 'node:path';
+function readCache(tokenFile){try{const wrapper=JSON.parse(fs.readFileSync(tokenFile,'utf8'));return JSON.parse(Buffer.from(wrapper.encrypted_payload,'base64url').toString('utf8'))}catch{return undefined}}
+function authenticate(options){return new Promise((resolve,reject)=>{const server=http.createServer((request,response)=>{if(request.method!=='POST'||request.url!=='/callback/token'){response.writeHead(404);response.end();return}let body='';request.on('data',chunk=>body+=chunk);request.on('end',()=>{try{const input=JSON.parse(body);const token=input.id_token||input.access_token;if(!token)throw new Error('missing token');const claims=JSON.parse(Buffer.from(token.split('.')[1],'base64url').toString('utf8'));const cache={version:'v1',access_token:token,token_type:'Bearer',expires_in:Math.max(1,claims.exp-Math.floor(Date.now()/1000)),expires_at:new Date(claims.exp*1000).toISOString(),gateway_url:options.gatewayBaseUrl};fs.mkdirSync(path.dirname(options.tokenFile),{recursive:true});fs.writeFileSync(options.tokenFile,JSON.stringify({encrypted_payload:Buffer.from(JSON.stringify(cache)).toString('base64url')}),{mode:0o600});response.writeHead(200,{'content-type':'application/json'});response.end(JSON.stringify({ok:true}));server.close(()=>resolve(token))}catch(error){response.writeHead(400,{'content-type':'application/json'});response.end(JSON.stringify({ok:false}));server.close(()=>reject(error))}})});server.once('error',reject);server.listen(options.callbackPort,'127.0.0.1')})}
+export {readCache,authenticate,};`,
+  );
+  return path.join(dist, 'index.js');
+}
+
 function listen(server) {
   return new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
 }
@@ -139,7 +161,7 @@ function startMockIdentityProvider(port) {
   return child;
 }
 
-function startCloudServer(port, objectStorageEndpoint, identityEndpoint) {
+function startCloudServer(port, objectStorageEndpoint, identityEndpoint, atlasRuntimePath) {
   const publicUrl = `http://127.0.0.1:${port}${publicPath}`;
   const child = spawn(process.execPath, [path.join(repoRoot, 'apps/server/dist/index.js')], {
     cwd: repoRoot,
@@ -168,6 +190,8 @@ function startCloudServer(port, objectStorageEndpoint, identityEndpoint) {
       FEISHU_OAUTH_SCOPE: '',
       FEISHU_OAUTH_TOKEN_REQUEST_FORMAT: 'json',
       FEISHU_OAUTH_ALLOW_LOOPBACK_PROVIDER: 'true',
+      IDAAS_JWT_SSO_URL: `${identityEndpoint}/sso`,
+      ATLAS_SKILLHUB_PATH: atlasRuntimePath,
       LICLICK_OBJECT_STORAGE_ENDPOINT: objectStorageEndpoint,
       LICLICK_OBJECT_STORAGE_REGION: 'simulated-region-1',
       LICLICK_OBJECT_STORAGE_BUCKET: 'liclick-simulated',
@@ -268,10 +292,28 @@ async function completeSimulatedOAuth(publicUrl, identityEndpoint) {
     headers: { cookie: browserNonce },
     redirect: 'manual',
   });
-  assert.equal(callback.status, 200);
-  const callbackHtml = await callback.text();
-  assert.match(callbackHtml, /Liclick 登录成功/);
+  assert.equal(callback.status, 302);
   const cookie = cookiePair(callback.headers.get('set-cookie'), 'liclick_3d_session');
+  const bindingSsoUrl = callback.headers.get('location');
+  assert.ok(bindingSsoUrl);
+  const bindingSso = await fetch(bindingSsoUrl, { redirect: 'manual' });
+  assert.equal(bindingSso.status, 302);
+  const bindingCallbackWithFragment = bindingSso.headers.get('location');
+  assert.ok(bindingCallbackWithFragment);
+  const bindingCallbackUrl = new URL(bindingCallbackWithFragment);
+  const idToken = new URLSearchParams(bindingCallbackUrl.hash.slice(1)).get('id_token');
+  assert.ok(idToken);
+  bindingCallbackUrl.hash = '';
+  const bindingPage = await fetch(bindingCallbackUrl, { headers: { cookie } });
+  assert.equal(bindingPage.status, 200);
+  assert.match(await bindingPage.text(), /正在关联莉刻账号/);
+  const bindingResult = await jsonRequest(bindingCallbackUrl, {
+    method: 'POST',
+    headers: { cookie, 'content-type': 'application/json' },
+    body: JSON.stringify({ idToken }),
+  });
+  assert.equal(bindingResult.response.status, 200);
+  assert.equal(bindingResult.payload.status, 'bound');
 
   const me = await jsonRequest(`${publicUrl}/api/auth/me`, { headers: { cookie } });
   assert.equal(me.response.status, 200);
@@ -291,8 +333,9 @@ const identityPort = await reservePort();
 const identityEndpoint = `http://127.0.0.1:${identityPort}`;
 const identityProvider = startMockIdentityProvider(identityPort);
 await waitForJson(`${identityEndpoint}/health`, 'Simulated IDaaS');
+const atlasRuntimePath = await createMockAtlasRuntime();
 const cloudPort = await reservePort();
-let cloud = startCloudServer(cloudPort, objectStorageEndpoint, identityEndpoint);
+let cloud = startCloudServer(cloudPort, objectStorageEndpoint, identityEndpoint, atlasRuntimePath);
 
 try {
   const health = await waitForHealth(cloud.publicUrl);
@@ -423,7 +466,7 @@ try {
     assert.equal(shutdown.code, 0);
     assert.equal(shutdown.signal, null);
   }
-  cloud = startCloudServer(cloudPort, objectStorageEndpoint, identityEndpoint);
+  cloud = startCloudServer(cloudPort, objectStorageEndpoint, identityEndpoint, atlasRuntimePath);
   await waitForHealth(cloud.publicUrl);
   const recovered = await jsonRequest(`${cloud.publicUrl}/api/projects/${projectId}`, {
     headers: { cookie, origin: simulatedWebOrigin },

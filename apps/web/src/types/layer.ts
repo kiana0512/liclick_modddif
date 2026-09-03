@@ -72,6 +72,8 @@ export type Layer = {
   isBaked?: boolean;
   needsRebake?: boolean;
   contentRevision?: number;
+  /** Coverage-edit semantics used by the active-layer eraser (ALG-ERASE-001). */
+  eraserAlgorithmVersion?: 1;
   /** Version of the editor-side projected/UV flattening semantics. */
   uvMergeVersion?: number;
   createdAt: string;

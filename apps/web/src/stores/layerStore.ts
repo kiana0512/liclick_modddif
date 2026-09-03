@@ -4,6 +4,7 @@ import type { Capture } from '@/types/capture';
 import type { Generation } from '@/types/generation';
 import type { Layer, LayerAdjustments } from '@/types/layer';
 import { markPerformanceEvent } from '@/engine/performance/performanceTimeline';
+import { isContentAwareEraserUnderlay } from '@/engine/paint/eraserTargetPolicy';
 import { isViewportInteractionBusy } from '@/engine/viewport/viewportInteractionState';
 import { useSceneStore } from './sceneStore';
 
@@ -57,6 +58,7 @@ type LayerStore = {
   updateLayerImage: (layerId: string, imageUrl: string) => void;
   updateLayer: (layerId: string, patch: Partial<Layer>) => void;
   duplicateLayer: (layerId: string) => void;
+  duplicateContentAwareLayerAsEditableUv: (layerId: string) => Layer | undefined;
   moveLayer: (layerId: string, direction: 'up' | 'down') => void;
   reorderLayer: (layerId: string, targetLayerId: string, placement?: 'before' | 'after') => void;
   markLayerBaked: (layerId: string, bakedTextureId: string, bakedAt: string) => void;
@@ -67,6 +69,11 @@ type LayerStore = {
 
 const legacyTransparentImage =
   'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGJ5JrGJQAAAABJRU5ErkJggg==';
+
+// A generated single-view projection already carries capture depth and a
+// silhouette mask. Vertex normals on scanned/dense meshes are not reliable
+// enough to attenuate its accepted pixels a second time.
+export const SINGLE_VIEW_GENERATED_MINIMUM_PROJECTION_FACING = 0;
 
 function createEmptyLayer(
   input: {
@@ -138,6 +145,14 @@ function normalizeLayer(layer: Layer) {
     Boolean(layer.generationId) &&
     name === '投射贴图 · 当前视角' &&
     !layer.replacementTargetLayerId;
+  const projectionCompositeMode =
+    layer.projectionCompositeMode ??
+    (legacySingleViewPriority ? 'single-view-priority-v1' : undefined);
+  const singleViewGeneratedProjection =
+    layer.type === 'projected' &&
+    Boolean(layer.generationId) &&
+    projectionCompositeMode === 'single-view-priority-v1' &&
+    !layer.replacementTargetLayerId;
   return {
     ...layer,
     name,
@@ -148,9 +163,19 @@ function normalizeLayer(layer: Layer) {
       lightness: layer.adjustments?.lightness ?? 0,
     },
     strength: layer.strength ?? 1,
-    projectionCompositeMode:
-      layer.projectionCompositeMode ??
-      (legacySingleViewPriority ? 'single-view-priority-v1' : undefined),
+    projectionCompositeMode,
+    // Generated single-view PNGs are not guaranteed to carry a useful alpha
+    // channel. Keep their authored capture silhouette and use depth-backed
+    // surface locking so dense folds do not alternate between accepted and
+    // rejected triangles after a tiny camera change.
+    ignoreSourceAlpha:
+      layer.ignoreSourceAlpha ?? (singleViewGeneratedProjection ? true : undefined),
+    minimumProjectionFacing:
+      layer.minimumProjectionFacing ??
+      (singleViewGeneratedProjection ? SINGLE_VIEW_GENERATED_MINIMUM_PROJECTION_FACING : undefined),
+    projectionVisibilityPolicy:
+      layer.projectionVisibilityPolicy ??
+      (singleViewGeneratedProjection ? 'surface-locked-v1' : undefined),
   };
 }
 
@@ -229,10 +254,14 @@ export const useLayerStore = create<LayerStore>((set, get) => ({
     return layer;
   },
   addProjectedLayerFromGeneration: (generation, capture, objectId, layerId) => {
+    const singleViewTexture = isSingleViewTextureGeneration(generation);
+    const captureMaskUrl = singleViewTexture ? capture?.maskUrl : undefined;
     const cameraViewLabel =
       typeof generation.metadata.cameraViewLabel === 'string'
         ? generation.metadata.cameraViewLabel.trim()
         : '';
+    const projectionUsesSourceAlpha =
+      generation.metadata.projectionEdgeBlendMode === 'distance-field-v1';
     const layer: Layer = {
       id: layerId ?? uuid(),
       name: cameraViewLabel
@@ -245,9 +274,11 @@ export const useLayerStore = create<LayerStore>((set, get) => ({
       objectId: objectId ?? capture?.objectId,
       objectMatrixWorld: getObjectMatrixWorld(generation),
       camera: capture?.camera,
-      // Capture silhouettes guide generation and remain available to repaint
-      // workflows, but ordinary projected layers use their own alpha plus depth.
-      maskUrl: undefined,
+      // Single-view providers may return an opaque RGB PNG. Persist the exact
+      // capture silhouette instead of asking provider-specific alpha to define
+      // the projection footprint.
+      maskUrl: captureMaskUrl,
+      maskSpace: captureMaskUrl ? 'projection' : undefined,
       depthUrl: capture?.depthUrl,
       depthEncoding: capture?.depthEncoding,
       generationId: generation.id,
@@ -255,9 +286,15 @@ export const useLayerStore = create<LayerStore>((set, get) => ({
         generation.metadata.alphaMode === 'geometry-mask-separated'
           ? 'source-alpha-depth'
           : undefined,
-      projectionCompositeMode: isSingleViewTextureGeneration(generation)
-        ? 'single-view-priority-v1'
+      projectionCompositeMode: singleViewTexture ? 'single-view-priority-v1' : undefined,
+      // Fresh single-view overlays may carry an editor-authored distance-field
+      // alpha. Legacy/provider PNG alpha remains ignored unless this explicit
+      // contract is present.
+      ignoreSourceAlpha: singleViewTexture ? !projectionUsesSourceAlpha : undefined,
+      minimumProjectionFacing: singleViewTexture
+        ? SINGLE_VIEW_GENERATED_MINIMUM_PROJECTION_FACING
         : undefined,
+      projectionVisibilityPolicy: singleViewTexture ? 'surface-locked-v1' : undefined,
       captureId: capture?.id ?? generation.captureId,
       visible: true,
       opacity: 1,
@@ -380,16 +417,21 @@ export const useLayerStore = create<LayerStore>((set, get) => ({
       layerType: target?.type,
       nextVisible: !target?.visible,
     });
+    if (target?.visible && get().activeProjectedLayerId === layerId) {
+      useSceneStore.getState().setPaintTool('none');
+    }
     set((state) => {
       const target = state.layers.find((layer) => layer.id === layerId);
       const nextVisible = !target?.visible;
       const layers = state.layers.map((layer) =>
         layer.id === layerId ? { ...layer, visible: nextVisible } : layer,
       );
+      const activeLayer = layers.find(
+        (layer) => layer.id === state.activeProjectedLayerId && layer.visible,
+      );
       return {
         layers,
-        activeProjectedLayerId:
-          state.activeProjectedLayerId ?? layers.find((layer) => layer.visible)?.id,
+        activeProjectedLayerId: activeLayer?.id ?? layers.find((layer) => layer.visible)?.id,
       };
     });
   },
@@ -402,16 +444,24 @@ export const useLayerStore = create<LayerStore>((set, get) => ({
       ),
       visible,
     });
+    if (
+      !visible &&
+      get().activeProjectedLayerId &&
+      layerIds.includes(get().activeProjectedLayerId!)
+    ) {
+      useSceneStore.getState().setPaintTool('none');
+    }
     set((state) => {
       const layerIdSet = new Set(layerIds);
       const layers = state.layers.map((layer) =>
         layerIdSet.has(layer.id) ? { ...layer, visible } : layer,
       );
+      const activeLayer = layers.find(
+        (layer) => layer.id === state.activeProjectedLayerId && layer.visible,
+      );
       return {
         layers,
-        activeProjectedLayerId: layers.some((layer) => layer.id === state.activeProjectedLayerId)
-          ? state.activeProjectedLayerId
-          : layers.find((layer) => layer.visible)?.id,
+        activeProjectedLayerId: activeLayer?.id ?? layers.find((layer) => layer.visible)?.id,
       };
     });
   },
@@ -508,6 +558,32 @@ export const useLayerStore = create<LayerStore>((set, get) => ({
       layers.splice(index + 1, 0, layer);
       return { layers: withOrder(layers), activeProjectedLayerId: layer.id };
     }),
+  duplicateContentAwareLayerAsEditableUv: (layerId) => {
+    const source = get().layers.find((layer) => layer.id === layerId);
+    if (!source || !source.imageUrl || !isContentAwareEraserUnderlay(source)) return undefined;
+    const layer: Layer = {
+      ...source,
+      id: uuid(),
+      name: `${source.name} · 可编辑副本`,
+      type: 'uv',
+      role: undefined,
+      generationId: undefined,
+      bakedTextureId: undefined,
+      bakedAt: undefined,
+      isBaked: false,
+      needsRebake: false,
+      contentRevision: 1,
+      createdAt: new Date().toISOString(),
+    };
+    set((state) => {
+      const sourceIndex = state.layers.findIndex((item) => item.id === layerId);
+      if (sourceIndex < 0) return state;
+      const layers = [...state.layers];
+      layers.splice(sourceIndex, 0, layer);
+      return { layers: withOrder(layers), activeProjectedLayerId: layer.id };
+    });
+    return layer;
+  },
   moveLayer: (layerId, direction) =>
     set((state) => {
       const index = state.layers.findIndex((layer) => layer.id === layerId);

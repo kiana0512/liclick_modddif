@@ -120,11 +120,35 @@ export default defineConfig({
   plugins: [cloudPublicAssetsPlugin(), eraserPerformanceDiagnosticsPlugin(publicBase), react()],
   publicDir: false,
   base: publicBase,
+  // THIRD_PARTY_NOTICES.txt is shipped with every cloud artifact. Avoid
+  // repeating the same dependency license banners inside multiple lazy JS
+  // chunks; this keeps route budgets focused on executable payload bytes.
+  esbuild: { legalComments: 'none' },
   build: {
+    // Production-only compression: preserve diagnostics and public property
+    // names while removing more redundant expressions than the fast dev tool.
+    minify: 'terser',
+    terserOptions: {
+      compress: { passes: 3, drop_console: false, unsafe: false },
+      mangle: { properties: false },
+      // Licenses remain available in the shipped THIRD_PARTY_NOTICES.txt.
+      format: { comments: false },
+    },
     // The zero-install client already requires modern browser primitives such as
     // Web Workers, WebGL2 and the File System APIs. Avoid transpiling the same
     // code back to legacy syntax that those supported browsers do not need.
     target: 'es2022',
+    rollupOptions: {
+      output: {
+        // Zod is stable vendor code shared by editor and bake routes. Keep it
+        // cacheable outside the large viewport snapshot instead of reparsing it
+        // as part of that feature chunk on every release.
+        manualChunks(id) {
+          if (id.includes('/node_modules/.pnpm/zod@')) return 'vendor-zod';
+          return undefined;
+        },
+      },
+    },
   },
   resolve: {
     alias: [

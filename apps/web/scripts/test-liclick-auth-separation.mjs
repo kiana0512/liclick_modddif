@@ -65,10 +65,14 @@ function assertCloudOnlyRequest(request, pathName) {
 
 try {
   const userMenuSource = await fs.readFile(path.join(root, 'src/components/auth/UserMenu.tsx'), 'utf8');
-  for (const requiredLabel of ['此电脑的莉刻账号', '更换', '解除当前电脑的莉刻账号']) {
+  for (const requiredLabel of ['当前用户的莉刻账号', '更换', '解除当前用户的莉刻账号']) {
     assert.match(userMenuSource, new RegExp(requiredLabel));
   }
+  assert.match(userMenuSource, /测试共享莉刻账号/);
+  assert.match(userMenuSource, /liclickAccount\?\.sharedTestAccount/);
   assert.doesNotMatch(userMenuSource, /startAtlasLogin|pollAtlasLogin|localhost:20265/);
+  assert.match(userMenuSource, /\/api\/liclick\/account-binding\/start/);
+  assert.match(userMenuSource, /credentials:\s*'include'/);
 
   globalThis.window = {
     setTimeout: globalThis.setTimeout,

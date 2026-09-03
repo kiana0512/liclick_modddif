@@ -37,6 +37,14 @@ import {
 } from '@/engine/projection/liveProjectedCanvasTextureRegistry';
 import { isFlattenableUvMergeSource } from '@/engine/layers/mergeUvComposition';
 import {
+  createGeneratedDisplayPreview,
+  type GeneratedDisplayPreview,
+} from '@/engine/localRepaint/resultPreviewUtils';
+import {
+  getEraserTargetPolicy,
+  hasClearableProjectedEraserMask,
+} from '@/engine/paint/eraserTargetPolicy';
+import {
   isViewportInteractionBusy,
   subscribeViewportInteraction,
 } from '@/engine/viewport/viewportInteractionState';
@@ -83,6 +91,37 @@ function useLayerImageSource(url: string, enabled: boolean) {
   }, [enabled, url]);
 
   return image;
+}
+
+function useProjectedLayerDisplayPreview(layer: Layer) {
+  const [preview, setPreview] = useState<
+    (GeneratedDisplayPreview & { sourceUrl: string; depthUrl?: string }) | undefined
+  >();
+  const enabled =
+    layer.type === 'projected' && Boolean(layer.imageUrl) && !isLocalRepaintPreviewLayer(layer);
+
+  useEffect(() => {
+    let cancelled = false;
+    setPreview(undefined);
+    if (!enabled) return undefined;
+    const sourceUrl = layer.imageUrl;
+    const depthUrl = layer.depthUrl;
+    void createGeneratedDisplayPreview(sourceUrl, depthUrl)
+      .then((nextPreview) => {
+        if (!cancelled) setPreview({ ...nextPreview, sourceUrl, depthUrl });
+      })
+      .catch((error) => {
+        if (!cancelled)
+          console.warn('[Liclick 3D Texture] Could not prepare projected display preview.', error);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [enabled, layer.contentRevision, layer.depthUrl, layer.imageUrl]);
+
+  return preview?.sourceUrl === layer.imageUrl && preview.depthUrl === layer.depthUrl
+    ? preview
+    : undefined;
 }
 
 function useInteractionDeferredLayers() {
@@ -134,10 +173,28 @@ function useInteractionDeferredLayers() {
   return layers;
 }
 
+function isLocalRepaintPreviewLayer(layer: Layer) {
+  return Boolean(
+    layer.replacementTargetLayerId ||
+    layer.localRepaintMaskUrl ||
+    layer.localRepaintSourceUrl ||
+    isLocalRepaintVisibilityLayer(layer) ||
+    (layer.type === 'projected' && layer.generationId?.startsWith('local-repaint-')),
+  );
+}
+
+function getLocalRepaintPreviewMaskUrl(layer: Layer) {
+  if (!isLocalRepaintPreviewLayer(layer)) return undefined;
+  return layer.localRepaintMaskUrl || layer.maskUrl;
+}
+
 function LayerThumbnail({ layer }: { layer: Layer }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const displayPreview = useProjectedLayerDisplayPreview(layer);
+  const isLocalRepaintPreview = isLocalRepaintPreviewLayer(layer);
+  const previewMaskUrl = getLocalRepaintPreviewMaskUrl(layer);
   const liveSourceState = getLiveProjectedTextureSourceState(layer.imageUrl);
-  const liveMaskState = layer.maskUrl ? getLiveProjectedCanvasState(layer.maskUrl) : undefined;
+  const liveMaskState = previewMaskUrl ? getLiveProjectedCanvasState(previewMaskUrl) : undefined;
   const liveSource = liveSourceState?.source;
   const liveMaskCanvas = liveMaskState?.canvas;
   // A persisted local-repaint layer intentionally combines a durable colour
@@ -153,7 +210,7 @@ function LayerThumbnail({ layer }: { layer: Layer }) {
     if (!context) return;
     context.clearRect(0, 0, canvas.width, canvas.height);
     context.drawImage(thumbnailSource, 0, 0, canvas.width, canvas.height);
-    if (layer.replacementTargetLayerId && liveMaskCanvas) {
+    if (isLocalRepaintPreview && liveMaskCanvas) {
       context.save();
       context.globalCompositeOperation = 'destination-in';
       context.drawImage(liveMaskCanvas, 0, 0, canvas.width, canvas.height);
@@ -161,21 +218,34 @@ function LayerThumbnail({ layer }: { layer: Layer }) {
     }
   }, [
     layer.contentRevision,
-    layer.replacementTargetLayerId,
+    isLocalRepaintPreview,
     liveMaskCanvas,
     liveMaskState?.revision,
     liveSourceState?.revision,
     thumbnailSource,
   ]);
 
+  if (displayPreview)
+    return (
+      <img
+        src={displayPreview.fittedUrl}
+        alt=""
+        loading="lazy"
+        decoding="async"
+        className="h-full w-full object-contain"
+        draggable={false}
+      />
+    );
+
   if (liveSource || liveMaskCanvas)
     return <canvas ref={canvasRef} width={48} height={48} className="h-full w-full object-cover" />;
   if (!layer.imageUrl) return null;
+  if (isLocalRepaintPreview && !previewMaskUrl) return null;
   const localRepaintMaskStyle =
-    layer.replacementTargetLayerId && layer.maskUrl
+    isLocalRepaintPreview && previewMaskUrl
       ? {
-          WebkitMaskImage: `url("${layer.maskUrl}")`,
-          maskImage: `url("${layer.maskUrl}")`,
+          WebkitMaskImage: `url("${previewMaskUrl}")`,
+          maskImage: `url("${previewMaskUrl}")`,
           WebkitMaskSize: '100% 100%',
           maskSize: '100% 100%',
           WebkitMaskRepeat: 'no-repeat',
@@ -197,8 +267,11 @@ function LayerThumbnail({ layer }: { layer: Layer }) {
 
 function LayerPreviewImage({ layer }: { layer: Layer }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const displayPreview = useProjectedLayerDisplayPreview(layer);
+  const isLocalRepaintPreview = isLocalRepaintPreviewLayer(layer);
+  const previewMaskUrl = getLocalRepaintPreviewMaskUrl(layer);
   const liveSourceState = getLiveProjectedTextureSourceState(layer.imageUrl);
-  const liveMaskState = layer.maskUrl ? getLiveProjectedCanvasState(layer.maskUrl) : undefined;
+  const liveMaskState = previewMaskUrl ? getLiveProjectedCanvasState(previewMaskUrl) : undefined;
   const liveSource = liveSourceState?.source;
   const liveMaskCanvas = liveMaskState?.canvas;
   const decodedSource = useLayerImageSource(layer.imageUrl, !liveSource && Boolean(liveMaskCanvas));
@@ -219,7 +292,6 @@ function LayerPreviewImage({ layer }: { layer: Layer }) {
     : 1;
   const width = previewSource ? Math.max(1, Math.round(sourceWidth * scale)) : 1;
   const height = previewSource ? Math.max(1, Math.round(sourceHeight * scale)) : 1;
-  const isLocalRepaintPreview = Boolean(layer.replacementTargetLayerId);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -228,7 +300,7 @@ function LayerPreviewImage({ layer }: { layer: Layer }) {
     if (!context) return;
     context.clearRect(0, 0, canvas.width, canvas.height);
     context.drawImage(previewSource, 0, 0, canvas.width, canvas.height);
-    if (layer.replacementTargetLayerId && liveMaskCanvas) {
+    if (isLocalRepaintPreview && liveMaskCanvas) {
       context.save();
       context.globalCompositeOperation = 'destination-in';
       context.drawImage(liveMaskCanvas, 0, 0, canvas.width, canvas.height);
@@ -237,13 +309,28 @@ function LayerPreviewImage({ layer }: { layer: Layer }) {
   }, [
     height,
     layer.contentRevision,
-    layer.replacementTargetLayerId,
+    isLocalRepaintPreview,
     liveMaskCanvas,
     liveMaskState?.revision,
     liveSourceState?.revision,
     previewSource,
     width,
   ]);
+
+  if (displayPreview)
+    return (
+      <div
+        className="overflow-hidden rounded-md border border-white/30 p-2 shadow-2xl"
+        style={checkerStyle}
+      >
+        <img
+          src={displayPreview.fittedUrl}
+          alt=""
+          className="block max-h-[88vh] max-w-[92vw] object-contain"
+          draggable={false}
+        />
+      </div>
+    );
 
   if (liveSource || liveMaskCanvas) {
     const preview = (
@@ -267,11 +354,18 @@ function LayerPreviewImage({ layer }: { layer: Layer }) {
       </div>
     );
   }
+  if (isLocalRepaintPreview && !previewMaskUrl) {
+    return (
+      <div className="rounded-md border border-white/30 bg-[#181818] px-5 py-4 text-sm text-white/62 shadow-2xl">
+        该旧局部重绘图层缺少涂绘蒙版，无法显示区域预览。
+      </div>
+    );
+  }
   const localRepaintMaskStyle =
-    layer.replacementTargetLayerId && layer.maskUrl
+    isLocalRepaintPreview && previewMaskUrl
       ? {
-          WebkitMaskImage: `url("${layer.maskUrl}")`,
-          maskImage: `url("${layer.maskUrl}")`,
+          WebkitMaskImage: `url("${previewMaskUrl}")`,
+          maskImage: `url("${previewMaskUrl}")`,
           WebkitMaskSize: '100% 100%',
           maskSize: '100% 100%',
           WebkitMaskRepeat: 'no-repeat',
@@ -379,8 +473,11 @@ export function LayersPanel({
   onMutationLocked,
 }: LayersPanelProps = {}) {
   const t = useT();
-  const layers = useInteractionDeferredLayers();
-  const authoritativeLayers = useLayerStore((state) => state.layers);
+  const pushToast = useToastStore((state) => state.pushToast);
+  // Visibility is interactive renderer state. Rendering it from the deferred
+  // snapshot made rapid clicks calculate the next value from an older frame.
+  const layers = useLayerStore((state) => state.layers);
+  const authoritativeLayers = layers;
   const selectedObjectId = useSceneStore((state) => state.selectedObjectId);
   const setLayerVisibility = useLayerStore((state) => state.setLayerVisibility);
   const setOpacity = useLayerStore((state) => state.setOpacity);
@@ -389,6 +486,9 @@ export function LayersPanel({
   const setActiveLayer = useLayerStore((state) => state.setActiveLayer);
   const deleteLayers = useLayerStore((state) => state.deleteLayers);
   const duplicateLayer = useLayerStore((state) => state.duplicateLayer);
+  const duplicateContentAwareLayerAsEditableUv = useLayerStore(
+    (state) => state.duplicateContentAwareLayerAsEditableUv,
+  );
   const renameLayer = useLayerStore((state) => state.renameLayer);
   const updateLayer = useLayerStore((state) => state.updateLayer);
   const moveLayer = useLayerStore((state) => state.moveLayer);
@@ -678,7 +778,14 @@ export function LayersPanel({
       setSelectedLayerIds([]);
       setLastSelectedLayerId(undefined);
     },
-    [blockMutation, captureHistory, deleteLayers, describeLayerSelection, layerIdSet, setLayerVisibility],
+    [
+      blockMutation,
+      captureHistory,
+      deleteLayers,
+      describeLayerSelection,
+      layerIdSet,
+      setLayerVisibility,
+    ],
   );
 
   useEffect(() => {
@@ -715,6 +822,39 @@ export function LayersPanel({
     setRenameState(undefined);
   }
 
+  function clearProjectedEraserMask(layer: Layer) {
+    if (blockMutation('清理蒙版')) return;
+    const latestLayer = useLayerStore.getState().layers.find((item) => item.id === layer.id);
+    if (!latestLayer || !hasClearableProjectedEraserMask(latestLayer)) return;
+    captureHistory(`清理橡皮蒙版：${latestLayer.name}`);
+    // Stop the live multiplier and any deferred high-resolution seam pass
+    // before removing store ownership; otherwise a late eraser task can
+    // republish the just-cleared mask.
+    window.dispatchEvent(
+      new CustomEvent('liclick:clear-projected-eraser-mask', {
+        detail: { layerId: latestLayer.id },
+      }),
+    );
+    const sceneState = useSceneStore.getState();
+    if (useLayerStore.getState().activeProjectedLayerId === latestLayer.id) {
+      sceneState.setPaintTool('none');
+    }
+    updateLayer(latestLayer.id, {
+      maskUrl: undefined,
+      maskSpace: undefined,
+      eraserAlgorithmVersion: undefined,
+      contentRevision: (latestLayer.contentRevision ?? 0) + 1,
+      isBaked: false,
+      needsRebake: true,
+    });
+    pushToast({
+      tone: 'success',
+      title: t('eraserMaskCleared'),
+      description: t('eraserMaskClearedHelp'),
+      dedupeKey: `eraser-mask-cleared:${latestLayer.id}`,
+    });
+  }
+
   function selectLayer(layerId: string, event: React.MouseEvent<HTMLDivElement>) {
     setActiveLayer(layerId);
     setLastSelectedLayerId(layerId);
@@ -739,27 +879,27 @@ export function LayersPanel({
     setSelectedLayerIds([layerId]);
   }
 
-  function getAffectedLayerIds(layerId: string) {
+  function getAffectedLayerIds(layerId: string, currentLayers: Layer[]) {
     const selectedIds =
       selectedLayerIdSet.has(layerId) && selectedLayerIds.length > 1 ? selectedLayerIds : [layerId];
-    return expandLocalRepaintVisibilityIds(layers, selectedIds);
+    return expandLocalRepaintVisibilityIds(currentLayers, selectedIds);
   }
 
   function beginVisibilityDrag(layer: Layer) {
-    const nextVisible = !layer.visible;
-    const ids = getAffectedLayerIds(layer.id);
-    // The renderer's Zustand subscriber applies the visibility uniform
-    // synchronously. React can reconcile the large layer/editor tree at
-    // transition priority so pointer-driven viewport frames stay responsive.
-    startTransition(() => setLayerVisibility(ids, nextVisible));
+    const currentLayers = useLayerStore.getState().layers;
+    const currentLayer = currentLayers.find((item) => item.id === layer.id);
+    if (!currentLayer) return;
+    const nextVisible = !currentLayer.visible;
+    const ids = getAffectedLayerIds(layer.id, currentLayers);
+    setLayerVisibility(ids, nextVisible);
     setVisibilityDrag({ visible: nextVisible, touched: new Set(ids) });
   }
 
   function continueVisibilityDrag(layerId: string) {
     if (!visibilityDrag || visibilityDrag.touched.has(layerId)) return;
-    const affectedIds = expandLocalRepaintVisibilityIds(layers, [layerId]);
+    const affectedIds = expandLocalRepaintVisibilityIds(useLayerStore.getState().layers, [layerId]);
     affectedIds.forEach((id) => visibilityDrag.touched.add(id));
-    startTransition(() => setLayerVisibility(affectedIds, visibilityDrag.visible));
+    setLayerVisibility(affectedIds, visibilityDrag.visible);
     setVisibilityDrag({
       visible: visibilityDrag.visible,
       touched: new Set(visibilityDrag.touched),
@@ -914,6 +1054,20 @@ export function LayersPanel({
               captureHistory(`复制图层：${describeLayerSelection([menu.layerId])}`);
               duplicateLayer(menu.layerId);
             }}
+            onCreateEditableUvCopy={(layer) => {
+              if (blockMutation('创建可编辑 UV 副本')) return;
+              captureHistory(`创建可编辑 UV 副本：${layer.name}`);
+              const editableLayer = duplicateContentAwareLayerAsEditableUv(layer.id);
+              if (!editableLayer) return;
+              setSelectedLayerIds([editableLayer.id]);
+              setLastSelectedLayerId(editableLayer.id);
+              pushToast({
+                tone: 'success',
+                title: t('contentAwareEditableCopyDone'),
+                description: '原内容填补底图保持不变；橡皮只会编辑新建副本。',
+                dedupeKey: `content-aware-editable-copy:${layer.id}`,
+              });
+            }}
             onImageEdit={(layer) => {
               if (blockMutation('编辑图层图片')) return;
               onLayerImageEdit?.(layer);
@@ -930,6 +1084,7 @@ export function LayersPanel({
             onDownloadImage={(layer) => {
               void downloadImageAsset(layer.imageUrl, `liclick_layer_${layer.name || layer.id}`);
             }}
+            onClearEraserMask={clearProjectedEraserMask}
             onRename={(layer) => setRenameState({ layerId: layer.id, value: layer.name })}
             onDelete={() => {
               const ids = selectedLayerIds.includes(menu.layerId)
@@ -1437,11 +1592,13 @@ function LayerMenu({
   onClose,
   onView,
   onDuplicate,
+  onCreateEditableUvCopy,
   onImageEdit,
   imageEditAvailable,
   onMergeSelectedToUvLayer,
   onMergeIntoSelectedBlankUvLayer,
   onDownloadImage,
+  onClearEraserMask,
   onRename,
   onDelete,
 }: {
@@ -1452,11 +1609,13 @@ function LayerMenu({
   onClose: () => void;
   onView: () => void;
   onDuplicate: () => void;
+  onCreateEditableUvCopy: (layer: Layer) => void;
   onImageEdit: (layer: Layer) => void;
   imageEditAvailable: boolean;
   onMergeSelectedToUvLayer: (layerIds: string[]) => void;
   onMergeIntoSelectedBlankUvLayer: (layerIds: string[], blankUvLayerId: string) => void;
   onDownloadImage: (layer: Layer) => void;
+  onClearEraserMask: (layer: Layer) => void;
   onRename: (layer: Layer) => void;
   onDelete: () => void;
 }) {
@@ -1468,6 +1627,7 @@ function LayerMenu({
   );
   const selectedBlankUvLayer = selectedLayers.find((item) => item.type === 'uv' && !item.imageUrl);
   const isMulti = selectedLayers.length > 1;
+  const eraserPolicy = getEraserTargetPolicy(layer);
 
   function run(action: () => void) {
     action();
@@ -1517,8 +1677,8 @@ function LayerMenu({
           <MenuButton onClick={() => run(onView)} icon={<Eye className="h-4 w-4" />}>
             {t('view')}
           </MenuButton>
-          {(layer.type === 'projected' || layer.type === 'uv') && (
-            imageEditAvailable ? (
+          {(layer.type === 'projected' || layer.type === 'uv') &&
+            (imageEditAvailable ? (
               <MenuButton
                 onClick={() => run(() => onImageEdit(layer))}
                 icon={<PencilLine className="h-4 w-4" />}
@@ -1526,12 +1686,19 @@ function LayerMenu({
               >
                 {t('imageEditLayerMenu')}
               </MenuButton>
-            ) : null
-          )}
+            ) : null)}
           <MenuButton onClick={() => run(onDuplicate)} icon={<Copy className="h-4 w-4" />}>
             {t('duplicate')}
             <span className="ml-auto rounded bg-white/85 px-1 text-xs text-[#202020]">CTRL D</span>
           </MenuButton>
+          {eraserPolicy.requiresEditableUvCopy && (
+            <MenuButton
+              onClick={() => run(() => onCreateEditableUvCopy(layer))}
+              icon={<Eraser className="h-4 w-4" />}
+            >
+              {t('contentAwareEditableCopy')}
+            </MenuButton>
+          )}
           {layer.imageUrl && (
             <MenuButton
               onClick={() => run(() => onDownloadImage(layer))}
@@ -1540,6 +1707,13 @@ function LayerMenu({
               {t('downloadImage')}
             </MenuButton>
           )}
+          <MenuButton
+            onClick={() => run(() => onClearEraserMask(layer))}
+            icon={<Eraser className="h-4 w-4" />}
+            disabled={!hasClearableProjectedEraserMask(layer)}
+          >
+            {t('clearEraserMask')}
+          </MenuButton>
           <MenuButton
             onClick={() => run(() => onRename(layer))}
             icon={<TextCursorInput className="h-4 w-4" />}

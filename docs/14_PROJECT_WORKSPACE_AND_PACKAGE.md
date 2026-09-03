@@ -82,7 +82,7 @@ projects/<projectSlug>/
 
 ## Autosave And Assets
 
-- Dirty project 在约 1.5 秒 debounce 后保存。
+- 现行 Cloud 编辑器的 Dirty project 在停止编辑约 2 秒后保存，持续编辑最长等待 10 秒；以下文件型 autosave 只描述隔离开发 Repository。
 - JSON 写入采用临时文件 + rename；autosave 保留有限滚动副本。
 - Capture/generation/layer/baked 图像和模型写入二进制 assets，项目 JSON 保存相对路径/安全 URL。
 - 服务公开 workspace 文件时只允许匹配的用户/项目资产路径，并检查 path traversal 与 realpath 边界。

@@ -7,6 +7,10 @@ import type { ModelBoundingBox, ModelFormat } from '@/types/model';
 export type BakeModelFileInput = {
   objectId: string;
   file: File;
+  /** Companion files required by GLTF/OBJ/FBX imports, such as BIN, MTL and textures. */
+  resourceFiles?: File[];
+  /** Reuses the import-time inspection result so the same model is not decoded twice. */
+  precomputedInfo?: BakeModelInfo;
   /** Overrides a container-format default for derived assets such as OBJ -> GLB Auto UV. */
   sourceUnitScaleFactor?: number;
 };
@@ -37,13 +41,24 @@ function disposeLoadedRoot(root: THREE.Object3D) {
   });
 }
 
-async function inspectModel({ objectId, file, sourceUnitScaleFactor }: BakeModelFileInput) {
-  const loaded = await loadModelFromFile(file, {
-    normalize: false,
-    ground: false,
-    targetMaxDimension: 3,
-    recenter: false,
-  });
+export async function inspectBakeModel({
+  objectId,
+  file,
+  resourceFiles = [],
+  precomputedInfo,
+  sourceUnitScaleFactor,
+}: BakeModelFileInput) {
+  if (precomputedInfo) return { objectId, info: precomputedInfo };
+  const loaded = await loadModelFromFile(
+    file,
+    {
+      normalize: false,
+      ground: false,
+      targetMaxDimension: 3,
+      recenter: false,
+    },
+    resourceFiles,
+  );
   try {
     return {
       objectId,
@@ -68,7 +83,7 @@ async function inspectModel({ objectId, file, sourceUnitScaleFactor }: BakeModel
 }
 
 async function inspectCollection(inputs: BakeModelFileInput[]) {
-  const results = await Promise.all(inputs.map(inspectModel));
+  const results = await Promise.all(inputs.map(inspectBakeModel));
   return Object.fromEntries(results.map(({ objectId, info }) => [objectId, info]));
 }
 

@@ -72,8 +72,8 @@ assert.match(viewportSource, /maskUrl:\s*composite\.blendMaskUrl/);
 assert.match(viewportSource, /localRepaintMaskUrl:\s*composite\.maskUrl/);
 assert.match(
   viewportSource,
-  /existingLayer\?\.localRepaintMaskUrl\s*\?\?\s*existingLayer\?\.maskUrl/,
-  'reloading must restore the canonical authored mask rather than the derived stack mask',
+  /const savedMaskUrls = \[existingLayer\?\.localRepaintMaskUrl, existingLayer\?\.maskUrl\]/,
+  'reloading must try the canonical authored mask before the derived compatibility mask',
 );
 assert.match(editorPageSource, /-local-repaint-authored-mask\.png/);
 assert.doesNotMatch(

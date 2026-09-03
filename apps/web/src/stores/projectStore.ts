@@ -12,16 +12,30 @@ import {
 
 export const IMMEDIATE_PROJECT_SAVE_EVENT = 'liclick:immediate-project-save';
 const LOCAL_OBJECT_DELETION_KEY = 'liclick:pending-object-deletions:v1';
+const ACTIVE_OBJECT_PERSIST_DELAY_MS = 4_000;
+
+let pendingActiveObjectPersistence:
+  | { projectId: string; activeObjectId: string; timer: number }
+  | undefined;
 
 type ProjectStore = {
   projects: Project[];
   currentProjectId: string;
+  editVersions: Record<string, number>;
   setProjects: (projects: Project[]) => void;
   setCurrentProject: (projectId: string) => void;
   getCurrentProject: () => Project | undefined;
   replaceCurrentProject: (project: Project) => void;
   updateProjectById: (projectId: string, patch: Partial<Project>) => void;
   updateCurrentProject: (patch: Partial<Project>) => void;
+  getProjectEditVersion: (projectId: string) => number;
+  markProjectEdited: (projectId: string) => void;
+  completeProjectSaveById: (
+    projectId: string,
+    savedEditVersion: number,
+    patch: Partial<Project>,
+    savedOnlyPatch?: Partial<Project>,
+  ) => boolean;
   setProjectObjects: (objects: SceneObject[]) => void;
   setProjectLayers: (layers: Layer[]) => void;
   setProjectGenerations: (generations: Generation[]) => void;
@@ -191,16 +205,30 @@ function updateProject(projects: Project[], projectId: string, patch: Partial<Pr
   );
 }
 
+function incrementEditVersion(editVersions: Record<string, number>, projectId: string) {
+  return {
+    ...editVersions,
+    [projectId]: (editVersions[projectId] ?? 0) + 1,
+  };
+}
+
 export const useProjectStore = create<ProjectStore>((set, get) => ({
   projects: [],
   currentProjectId: '',
+  editVersions: {},
   setProjects: (projects) =>
-    set((state) => ({
-      projects: projects.map(applyLocalObjectDeletions),
-      currentProjectId: projects.some((project) => project.id === state.currentProjectId)
-        ? state.currentProjectId
-        : (projects[0]?.id ?? ''),
-    })),
+    set((state) => {
+      const nextProjects = projects.map(applyLocalObjectDeletions);
+      return {
+        projects: nextProjects,
+        currentProjectId: projects.some((project) => project.id === state.currentProjectId)
+          ? state.currentProjectId
+          : (projects[0]?.id ?? ''),
+        editVersions: Object.fromEntries(
+          nextProjects.map((project) => [project.id, state.editVersions[project.id] ?? 0]),
+        ),
+      };
+    }),
   setCurrentProject: (projectId) => set({ currentProjectId: projectId }),
   getCurrentProject: () =>
     get().projects.find((project) => project.id === get().currentProjectId) ?? get().projects[0],
@@ -210,6 +238,10 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
       const exists = state.projects.some((item) => item.id === project.id);
       return {
         currentProjectId: project.id,
+        editVersions: {
+          ...state.editVersions,
+          [project.id]: exists ? (state.editVersions[project.id] ?? 0) + 1 : 0,
+        },
         projects: exists
           ? state.projects.map((item) =>
               item.id === project.id ? projectWithLocalDeletions : item,
@@ -220,11 +252,34 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
   updateProjectById: (projectId, patch) =>
     set((state) => ({
       projects: updateProject(state.projects, projectId, patch),
+      editVersions: incrementEditVersion(state.editVersions, projectId),
     })),
   updateCurrentProject: (patch) =>
     set((state) => ({
       projects: updateProject(state.projects, state.currentProjectId, patch),
+      editVersions: incrementEditVersion(state.editVersions, state.currentProjectId),
     })),
+  getProjectEditVersion: (projectId) => get().editVersions[projectId] ?? 0,
+  markProjectEdited: (projectId) =>
+    set((state) => ({
+      projects: updateProject(state.projects, projectId, { dirty: true }),
+      editVersions: incrementEditVersion(state.editVersions, projectId),
+    })),
+  completeProjectSaveById: (projectId, savedEditVersion, patch, savedOnlyPatch) => {
+    const project = get().projects.find((item) => item.id === projectId);
+    if (!project) return false;
+    const savedLatestSnapshot = (get().editVersions[projectId] ?? 0) === savedEditVersion;
+    if (savedLatestSnapshot) clearLocalObjectDeletions(projectId, project.deletedObjectIds ?? []);
+    set((state) => ({
+      projects: updateProject(state.projects, projectId, {
+        ...patch,
+        ...(savedLatestSnapshot ? savedOnlyPatch : undefined),
+        dirty: !savedLatestSnapshot,
+        ...(savedLatestSnapshot ? { deletedObjectIds: [] } : undefined),
+      }),
+    }));
+    return savedLatestSnapshot;
+  },
   setProjectObjects: (objects) => get().updateCurrentProject({ objects }),
   setProjectLayers: (layers) => get().updateCurrentProject({ layers }),
   setProjectGenerations: (generations) =>
@@ -242,6 +297,7 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
         projects: state.projects.map((project) =>
           project.id === state.currentProjectId ? withoutObjectData(project, objectId) : project,
         ),
+        editVersions: incrementEditVersion(state.editVersions, state.currentProjectId),
       };
     }),
   setWorkspaceState: (workspaceState) => get().updateCurrentProject(workspaceState),
@@ -249,12 +305,8 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
   markSaved: (lastSavedAt, assetManifest) =>
     get().markSavedById(get().currentProjectId, lastSavedAt, assetManifest),
   markSavedById: (projectId, lastSavedAt, assetManifest) => {
-    const project = get().projects.find((item) => item.id === projectId);
-    if (project) clearLocalObjectDeletions(project.id, project.deletedObjectIds ?? []);
-    get().updateProjectById(projectId, {
+    get().completeProjectSaveById(projectId, get().getProjectEditVersion(projectId), {
       lastSavedAt,
-      dirty: false,
-      deletedObjectIds: [],
       assetManifest,
     });
   },
@@ -274,6 +326,7 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
               : object,
           ),
         }),
+        editVersions: incrementEditVersion(state.editVersions, state.currentProjectId),
       };
     }),
   addCapture: (capture) =>
@@ -283,6 +336,7 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
         projects: updateProject(state.projects, state.currentProjectId, {
           captures: [capture, ...(project?.captures ?? [])],
         }),
+        editVersions: incrementEditVersion(state.editVersions, state.currentProjectId),
       };
     }),
   addGeneration: (generation) =>
@@ -294,6 +348,7 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
         projects: updateProject(state.projects, projectId, {
           generations: upsertGenerationByIdentity(project?.generations ?? [], generation),
         }),
+        editVersions: incrementEditVersion(state.editVersions, projectId),
       };
     }),
   addBakedTexture: (bakedTexture) =>
@@ -303,6 +358,34 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
         projects: updateProject(state.projects, state.currentProjectId, {
           bakedTextures: [bakedTexture, ...(project?.bakedTextures ?? [])],
         }),
+        editVersions: incrementEditVersion(state.editVersions, state.currentProjectId),
       };
     }),
 }));
+
+/**
+ * Model selection is navigation state. Updating the full Project store for
+ * every click re-renders the editor route and starts the max-wait autosave,
+ * which structured-clones the complete image-heavy project during a rapid
+ * sweep. Keep selection immediate in sceneStore, then persist only the last
+ * stable object. Explicit save/back snapshots already read sceneStore directly.
+ */
+export function scheduleCurrentProjectActiveObjectPersistence(activeObjectId: string) {
+  const projectId = useProjectStore.getState().currentProjectId;
+  if (!projectId || typeof window === 'undefined') return;
+  if (pendingActiveObjectPersistence) {
+    window.clearTimeout(pendingActiveObjectPersistence.timer);
+  }
+  const timer = window.setTimeout(() => {
+    const pending = pendingActiveObjectPersistence;
+    pendingActiveObjectPersistence = undefined;
+    if (!pending || pending.projectId !== projectId || pending.activeObjectId !== activeObjectId)
+      return;
+    const state = useProjectStore.getState();
+    if (state.currentProjectId !== projectId) return;
+    const project = state.projects.find((item) => item.id === projectId);
+    if (!project || project.activeObjectId === activeObjectId) return;
+    state.updateProjectById(projectId, { activeObjectId });
+  }, ACTIVE_OBJECT_PERSIST_DELAY_MS);
+  pendingActiveObjectPersistence = { projectId, activeObjectId, timer };
+}

@@ -2,9 +2,12 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { requireAuth } from '../auth/authMiddleware.js';
 import {
   checkModelviewInpaintServiceStatus,
+  checkModelviewSingleViewServiceStatus,
   generateModelviewInpaint,
+  generateModelviewSingleView,
   ModelviewInpaintError,
   type ModelviewInpaintInput,
+  type ModelviewSingleViewInput,
 } from '../services/modelviewInpaintService.js';
 import { getPathSegments, readJsonBody, sendJson } from './httpUtils.js';
 
@@ -31,6 +34,18 @@ export async function handleModelviewRoute(
     return true;
   }
 
+  if (request.method === 'GET' && segments[2] === 'single-view' && segments[3] === 'status') {
+    try {
+      sendJson(response, 200, { ok: true, ...checkModelviewSingleViewServiceStatus() });
+    } catch (error) {
+      sendJson(response, 503, {
+        ok: false,
+        error: error instanceof Error ? error.message : 'ModelView 单视图生成服务配置无效。',
+      });
+    }
+    return true;
+  }
+
   if (request.method === 'POST' && segments[2] === 'inpaint') {
     const input = await readJsonBody<ModelviewInpaintInput>(request);
     const controller = new AbortController();
@@ -46,6 +61,33 @@ export async function handleModelviewRoute(
       if (response.destroyed || response.writableEnded) return true;
       sendJson(response, error instanceof ModelviewInpaintError ? error.httpStatus : 500, {
         error: error instanceof Error ? error.message : 'ModelView 局部重绘请求失败。',
+        ...(error instanceof ModelviewInpaintError && error.remoteJobId
+          ? { jobId: error.remoteJobId }
+          : {}),
+      });
+    } finally {
+      request.removeListener('aborted', abortRemoteRequest);
+      response.removeListener('close', abortRemoteRequest);
+    }
+    return true;
+  }
+
+
+  if (request.method === 'POST' && segments[2] === 'single-view') {
+    const input = await readJsonBody<ModelviewSingleViewInput>(request);
+    const controller = new AbortController();
+    const abortRemoteRequest = () => controller.abort();
+    request.once('aborted', abortRemoteRequest);
+    response.once('close', abortRemoteRequest);
+    try {
+      const result = await generateModelviewSingleView(input, user.id, {
+        signal: controller.signal,
+      });
+      if (!response.destroyed && !response.writableEnded) sendJson(response, 200, result);
+    } catch (error) {
+      if (response.destroyed || response.writableEnded) return true;
+      sendJson(response, error instanceof ModelviewInpaintError ? error.httpStatus : 500, {
+        error: error instanceof Error ? error.message : 'ModelView 单视图生成请求失败。',
         ...(error instanceof ModelviewInpaintError && error.remoteJobId
           ? { jobId: error.remoteJobId }
           : {}),

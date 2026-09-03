@@ -11,6 +11,13 @@ export function getLiclickUserErrorMessage(
 
   if (/用户已终止|cancelled|canceled|aborted/.test(normalized)) return '用户已终止生成任务。';
   if (
+    /atlas_runtime_(?:incompatible|unavailable)|secure token cache reader|atlas runtime is unavailable/.test(
+      normalized,
+    )
+  ) {
+    return '服务器莉刻运行时版本不兼容，请联系管理员升级服务。';
+  }
+  if (
     /atlas token cache is missing|atlas.*凭证.*过期|atlas.*token.*expired|atlas.*access_token/.test(
       normalized,
     )

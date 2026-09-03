@@ -7,9 +7,8 @@ metadata:
     component: server
 spec:
   replicas: 1
-  # SQLite lives on the PVC below — never run more than one replica, and
-  # use Recreate so the old pod releases the ReadWriteOnce volume before
-  # the new one claims it.
+  # Retain the existing RWO volume for managed Atlas homes and temporary files.
+  # Project documents and binary assets use PostgreSQL and object storage.
   strategy:
     type: Recreate
   selector:
@@ -28,14 +27,10 @@ spec:
         runAsNonRoot: true
         fsGroup: 10001
       initContainers:
-        # Applies the Prisma schema to the SQLite file on the persistent
-        # volume (`prisma db push`, the same workflow as `pnpm db:push`).
-        # Runs once per pod start; it never runs on a plain container
-        # restart, and it is additive-only unless run manually with
-        # --accept-data-loss (see k8s/README.md).
+        # Keep the name so CI updates this and the server to the same SHA.
         - name: db-push
           image: li3d-server
-          command: ["node_modules/.bin/prisma", "db", "push", "--schema", "prisma/schema.prisma", "--skip-generate"]
+          command: ["sh", "-c", "node deploy/validate-runtime-env.mjs && node apps/server/scripts/migrate-cloud-projects.mjs"]
           envFrom:
             - configMapRef:
                 name: li3d-server-config

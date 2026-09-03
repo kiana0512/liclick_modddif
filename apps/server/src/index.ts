@@ -1,6 +1,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import {
+  getAtlasRuntimeCompatibility,
+  type AtlasRuntimeCompatibility,
+} from './auth/atlasAuthService.js';
 import { requireAuth } from './auth/authMiddleware.js';
 import { materializeGpuControlLanCa } from './certs/gpuControlLanCa.js';
 import { serverConfig } from './config.js';
@@ -16,6 +20,7 @@ import { handleIdentityRoute } from './routes/identity.js';
 import { handleLiclickRoute } from './routes/liclick.js';
 import { handleLocalSettingsRoute } from './routes/localSettings.js';
 import { handleModelviewRoute } from './routes/modelview.js';
+import { handlePerformanceLabRoute } from './routes/performanceLab.js';
 import { corsHeaders, isAllowedRequestOrigin, sendJson, sendNoContent } from './routes/httpUtils.js';
 import { handleProjectsRoute } from './routes/projects.js';
 import { initializeWorkspace } from './services/workspaceService.js';
@@ -116,6 +121,7 @@ function stripPublicPath(url: URL) {
 async function handleWorkspaceRequest(
   request: IncomingMessage,
   response: ServerResponse,
+  atlasRuntime: AtlasRuntimeCompatibility,
 ) {
   const rawUrl = new URL(request.url ?? '/', `http://${request.headers.host ?? '127.0.0.1'}`);
   const url = stripPublicPath(rawUrl);
@@ -145,6 +151,14 @@ async function handleWorkspaceRequest(
       workspaceVersion: '0.6.0',
       release: serverReleaseManifest,
       host: serverConfig.host,
+      dependencies: {
+        atlasRuntime: {
+          ok: atlasRuntime.ok,
+          version: atlasRuntime.version,
+          minimumVersion: atlasRuntime.minimumVersion,
+          secureTokenCacheReader: atlasRuntime.secureTokenCacheReader,
+        },
+      },
       features: {
         webOAuthCookieSession:
           serverConfig.feishuWebOAuthEnabled || serverConfig.idaasJwtSsoEnabled,
@@ -158,6 +172,7 @@ async function handleWorkspaceRequest(
         sharedPostgresControlPlane: process.env.LICLICK_PROJECT_REPOSITORY === 'postgres',
         browserLocalGraphics: true,
         serverGraphicsFallback: false,
+        clientPerformanceLabPersistence: process.env.LICLICK_PROJECT_REPOSITORY === 'postgres',
       },
     });
     return;
@@ -175,6 +190,7 @@ async function handleWorkspaceRequest(
   if (url.pathname.startsWith('/api/identity') && (await handleIdentityRoute(request, response, url))) return;
   if (url.pathname === '/api/events' && (await handleEventsRoute(request, response, url))) return;
   if (url.pathname === '/api/local-settings' && (await handleLocalSettingsRoute(request, response, url))) return;
+  if (url.pathname.startsWith('/api/performance-lab') && (await handlePerformanceLabRoute(request, response, url))) return;
   if (url.pathname.startsWith('/api/performance')) {
     sendJson(response, 404, {
       error: 'Native host telemetry is not exposed by the Browser/Cloud runtime.',
@@ -271,6 +287,10 @@ function startTelemetryAggregateWorker() {
 }
 
 async function startServer() {
+  const atlasRuntime = await getAtlasRuntimeCompatibility();
+  if (serverReleaseManifest.runtimeMode === 'cloud' && !atlasRuntime.ok) {
+    throw new Error(atlasRuntime.message ?? 'ATLAS_RUNTIME_INCOMPATIBLE');
+  }
   await materializeGpuControlLanCa(
     serverConfig.modelviewInpaintCaPath,
     serverConfig.modelviewInpaintCaManaged,
@@ -306,7 +326,7 @@ async function startServer() {
     response.once('finish', completeRequest);
     response.once('close', completeRequest);
     try {
-      await handleWorkspaceRequest(request, response);
+      await handleWorkspaceRequest(request, response, atlasRuntime);
     } catch (error) {
       console.error('[Liclick Workspace Server]', error);
       sendJson(response, 500, { error: error instanceof Error ? error.message : 'Internal server error.' });

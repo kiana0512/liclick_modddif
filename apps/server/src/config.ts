@@ -72,6 +72,34 @@ const modelviewInpaintApiKey =
 const modelviewInpaintTimeoutMs = Number(
   process.env.LICLICK_MODELVIEW_INPAINT_TIMEOUT_MS ?? 1_900_000,
 );
+const modelviewSingleViewUrl =
+  process.env.LICLICK_MODELVIEW_SINGLE_VIEW_URL?.trim() ||
+  'https://10.3.34.11/api/v1/services/modelview-single-view';
+const explicitModelviewSingleViewCaPath =
+  process.env.LICLICK_MODELVIEW_SINGLE_VIEW_CA_PATH?.trim() ||
+  explicitModelviewInpaintCaPath;
+const modelviewSingleViewCaManaged =
+  !explicitModelviewSingleViewCaPath ||
+  path.resolve(explicitModelviewSingleViewCaPath) === path.resolve(managedGpuControlLanCaPath);
+const modelviewSingleViewCaPath = path.resolve(
+  explicitModelviewSingleViewCaPath || managedGpuControlLanCaPath,
+);
+const modelviewSingleViewApiKey =
+  process.env.LICLICK_MODELVIEW_SINGLE_VIEW_API_KEY?.trim() || modelviewInpaintApiKey;
+const modelviewSingleViewTimeoutMs = Number(
+  process.env.LICLICK_MODELVIEW_SINGLE_VIEW_TIMEOUT_MS ?? 2_600_000,
+);
+const qwen3VlPlusBaseUrl = serverHttpUrl(
+  process.env.QWEN3_VL_PLUS_API_BASE_URL?.trim() || 'https://llm-proxy.lilith.com/v1',
+  'QWEN3_VL_PLUS_API_BASE_URL',
+);
+const qwen3VlPlusApiKey = process.env.QWEN3_VL_PLUS_API_KEY?.trim() ?? '';
+const qwen3VlPlusModel = process.env.QWEN3_VL_PLUS_MODEL?.trim() || 'qwen3-vl-plus';
+const qwen3VlPlusTimeoutMs = positiveNumber(
+  process.env.QWEN3_VL_PLUS_TIMEOUT_MS,
+  65_000,
+  'QWEN3_VL_PLUS_TIMEOUT_MS',
+);
 const substanceBakerBaseUrl = (
   process.env.LICLICK_SUBSTANCE_BAKER_BASE_URL ?? 'https://10.3.34.11'
 ).replace(/\/$/, '');
@@ -542,7 +570,53 @@ const idaasJwtSsoBlockedReason =
 const idaasJwtSsoEnabled = Boolean(
   idaasJwtSso.enabled && idaasJwtSso.url && !idaasJwtSsoBlockedReason,
 );
+const sharedLiclickTestAccountEnabled = booleanFlag(
+  process.env.LICLICK_SHARED_TEST_ACCOUNT_ENABLED,
+  false,
+  'LICLICK_SHARED_TEST_ACCOUNT_ENABLED',
+);
+const sharedLiclickTestAccountEmail =
+  process.env.LICLICK_SHARED_TEST_ACCOUNT_EMAIL?.trim().toLowerCase() ?? '';
+const configuredSharedLiclickTestAtlasHome =
+  process.env.LICLICK_SHARED_TEST_ATLAS_HOME?.trim() ?? '';
+const sharedLiclickTestAtlasHome = configuredSharedLiclickTestAtlasHome
+  ? path.resolve(configuredSharedLiclickTestAtlasHome)
+  : '';
+if (sharedLiclickTestAccountEnabled) {
+  if (!sharedLiclickTestAccountEmail || !configuredSharedLiclickTestAtlasHome) {
+    throw new Error(
+      'Shared Liclick test account requires LICLICK_SHARED_TEST_ACCOUNT_EMAIL and LICLICK_SHARED_TEST_ATLAS_HOME.',
+    );
+  }
+  if (!path.isAbsolute(configuredSharedLiclickTestAtlasHome)) {
+    throw new Error('LICLICK_SHARED_TEST_ATLAS_HOME must be an absolute path.');
+  }
+  const managedAtlasHomesRoot = path.join(workspaceDir, 'atlas-homes');
+  const relativeSharedAtlasHome = path.relative(
+    managedAtlasHomesRoot,
+    sharedLiclickTestAtlasHome,
+  );
+  if (
+    !relativeSharedAtlasHome ||
+    relativeSharedAtlasHome === '..' ||
+    relativeSharedAtlasHome.startsWith(`..${path.sep}`) ||
+    path.isAbsolute(relativeSharedAtlasHome)
+  ) {
+    throw new Error(
+      'LICLICK_SHARED_TEST_ATLAS_HOME must point to one managed Atlas home below LICLICK_WORKSPACE_DIR/atlas-homes.',
+    );
+  }
+}
 const sessionSecret = process.env.SESSION_SECRET ?? 'dev-only-change-me';
+const performanceLabMaintainerEmails = [
+  ...new Set(
+    (process.env.LICLICK_PERFORMANCE_LAB_MAINTAINER_EMAILS ?? '')
+      .split(',')
+      .map((email) => email.trim().toLowerCase())
+      .filter(Boolean),
+  ),
+];
+const performanceLabEnabled = process.env.LICLICK_PERFORMANCE_LAB_ENABLED === 'true';
 const loopbackHosts = new Set(['127.0.0.1', 'localhost', '::1']);
 
 if (!loopbackHosts.has(host) && sessionSecret === 'dev-only-change-me') {
@@ -598,8 +672,15 @@ export const serverConfig = {
   idaasJwtSso,
   idaasJwtSsoBlockedReason,
   idaasJwtSsoEnabled,
+  sharedLiclickTestAccount: {
+    enabled: sharedLiclickTestAccountEnabled,
+    email: sharedLiclickTestAccountEmail,
+    atlasHomeDir: sharedLiclickTestAtlasHome,
+  },
   sessionCookieName: process.env.SESSION_COOKIE_NAME ?? 'liclick_3d_session',
   sessionSecret,
+  performanceLabMaintainerEmails,
+  performanceLabEnabled,
   sessionMaxAgeDays: Number(process.env.SESSION_MAX_AGE_DAYS ?? 14),
   sessionCookieSecure: process.env.SESSION_COOKIE_SECURE === 'true',
   frontendUrl,
@@ -610,6 +691,15 @@ export const serverConfig = {
   modelviewInpaintCaManaged,
   modelviewInpaintApiKey,
   modelviewInpaintTimeoutMs,
+  modelviewSingleViewUrl,
+  modelviewSingleViewCaPath,
+  modelviewSingleViewCaManaged,
+  modelviewSingleViewApiKey,
+  modelviewSingleViewTimeoutMs,
+  qwen3VlPlusBaseUrl,
+  qwen3VlPlusApiKey,
+  qwen3VlPlusModel,
+  qwen3VlPlusTimeoutMs,
   substanceBakerBaseUrl,
   substanceBakerCaPath,
   substanceBakerCaManaged,

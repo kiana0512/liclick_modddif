@@ -11,3 +11,5 @@
 *.exe binary
 *.glb binary
 *.fbx binary
+*.docx binary
+*.pdf binary

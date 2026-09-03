@@ -13,6 +13,7 @@ type RouteState =
   | { name: 'home' }
   | { name: 'projects'; module: 'texture' | 'bake' }
   | { name: 'modelingToolbox' }
+  | { name: 'performanceLabAdmin' }
   | { name: 'autoRetopology'; projectId?: string }
   | { name: 'autoUv'; projectId?: string }
   | {
@@ -51,6 +52,16 @@ const AutoUvPage = lazy(() =>
 const EditorPage = lazy(() =>
   import('./routes/EditorPage').then((module) => ({ default: module.EditorPage })),
 );
+const PerformanceLabCloudBridge = lazy(() =>
+  import('./features/performanceLab/PerformanceLabCloudBridge').then((module) => ({
+    default: module.PerformanceLabCloudBridge,
+  })),
+);
+const PerformanceLabAdminPage = lazy(() =>
+  import('./routes/PerformanceLabAdminPage').then((module) => ({
+    default: module.PerformanceLabAdminPage,
+  })),
+);
 const BakeWorkspacePage = lazy(() =>
   import('./routes/BakeWorkspacePage').then((module) => ({ default: module.BakeWorkspacePage })),
 );
@@ -79,7 +90,17 @@ function OptionalEngineSessionBoundary({
 
 function appBasePath() {
   const normalized = `/${(import.meta.env.BASE_URL ?? '/').split('/').filter(Boolean).join('/')}`;
-  return normalized === '/' ? '' : normalized;
+  if (normalized !== '/') return normalized;
+  // A100 historically exposes the same SPA both at `/` and `/li3d`. Keep the
+  // alias stable for direct bookmarks instead of normalizing an admin link
+  // back to the home route.
+  if (
+    typeof window !== 'undefined' &&
+    (window.location.pathname === '/li3d' || window.location.pathname.startsWith('/li3d/'))
+  ) {
+    return '/li3d';
+  }
+  return '';
 }
 
 function stripAppBasePath(pathname: string) {
@@ -90,6 +111,7 @@ function stripAppBasePath(pathname: string) {
 
 function routeFromPath(pathname: string): RouteState {
   const segments = stripAppBasePath(pathname).split('/').filter(Boolean).map(decodeURIComponent);
+  if (segments[0] === 'performance-lab-admin') return { name: 'performanceLabAdmin' };
   if (segments[0] === 'texture') {
     if (segments[1] === 'project' && segments[2]) return { name: 'editor', projectId: segments[2] };
     return { name: 'projects', module: 'texture' };
@@ -131,6 +153,7 @@ function pathFromRoute(route: RouteState) {
   if (route.name === 'home') path = '/';
   else if (route.name === 'projects') path = route.module === 'texture' ? '/texture' : '/baking';
   else if (route.name === 'modelingToolbox') path = '/tools';
+  else if (route.name === 'performanceLabAdmin') path = '/performance-lab-admin';
   else if (route.name === 'autoRetopology') path = route.projectId
     ? `/project/${encodeURIComponent(route.projectId)}/retopology`
     : '/retopology';
@@ -163,6 +186,9 @@ function pathFromRouteWithDiagnostics(route: RouteState) {
 
 export function App() {
   const [route, setRoute] = useState<RouteState>(() => routeFromPath(window.location.pathname));
+  const performanceLabEnabled =
+    import.meta.env.VITE_LICLICK_PERFORMANCE_LAB_ENABLED === 'true' &&
+    new URLSearchParams(window.location.search).get('perfLab') === '1';
   const navigationRevisionRef = useRef(0);
   const entryProjectPromiseRef = useRef<Promise<Project | undefined> | null>(null);
   const residentTextureProjectIdRef = useRef<string>();
@@ -366,6 +392,17 @@ export function App() {
     );
   }
 
+  if (route.name === 'performanceLabAdmin') {
+    return (
+      <>
+        <Suspense fallback={<AppRouteFallback />}>
+          <PerformanceLabAdminPage onBack={navigation.openHome} />
+        </Suspense>
+        <ToastHost />
+      </>
+    );
+  }
+
   if (route.name === 'editor' || preserveTextureWorkspaceForUv) {
     const textureProjectId =
       route.name === 'editor' ? route.projectId : residentTextureProjectIdRef.current!;
@@ -388,6 +425,11 @@ export function App() {
               />
             </Suspense>
           </div>
+          {textureWorkspaceActive && performanceLabEnabled ? (
+            <Suspense fallback={null}>
+              <PerformanceLabCloudBridge projectId={textureProjectId} />
+            </Suspense>
+          ) : null}
         </TextureRuntimeBoundary>
         {route.name === 'autoUv' ? (
           <Suspense fallback={<AppRouteFallback />}>

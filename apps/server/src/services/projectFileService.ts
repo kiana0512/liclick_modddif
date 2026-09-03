@@ -6,7 +6,7 @@ import {
   type ProjectRevision,
 } from '@liclick/contracts';
 import type { ProjectSummary, WorkspaceProject } from '../types/project.js';
-import { writeAutosave } from './autosaveService.js';
+import { queueAutosave } from './autosaveService.js';
 import {
   createId,
   ensureDir,
@@ -23,6 +23,11 @@ const assetFolders = ['models', 'references', 'captures', 'generations', 'layers
 const MIN_SAVED_PROJECTED_BAKE_COVERAGE_RATIO = 0.35;
 const MAX_APPLIED_PROJECT_COMMAND_IDS = 64;
 const projectSaveTails = new Map<string, Promise<void>>();
+const projectSlugById = new Map<string, string>();
+
+function projectSlugCacheKey(userId: string, projectId: string) {
+  return `${userId}:${projectId}`;
+}
 
 async function runSerializedProjectSave<T>(key: string, operation: () => Promise<T>): Promise<T> {
   const previous = projectSaveTails.get(key) ?? Promise.resolve();
@@ -657,8 +662,36 @@ export async function listProjects(userId: string): Promise<ProjectSummary[]> {
 }
 
 export async function findProjectSlug(userId: string, projectId: string) {
+  const cacheKey = projectSlugCacheKey(userId, projectId);
+  const cached = projectSlugById.get(cacheKey);
+  if (cached) {
+    try {
+      await fs.access(getProjectFile(getProjectDir(userId, cached)));
+      return cached;
+    } catch {
+      projectSlugById.delete(cacheKey);
+    }
+  }
+
+  // Project slugs contain the final id segment. On Windows, inspect only the
+  // matching candidate instead of reading and parsing every project document.
+  const safeId = projectId.replace(/[^a-zA-Z0-9_-]/g, '').slice(-8);
+  const entries = await fs.readdir(getUserProjectsDir(userId), { withFileTypes: true });
+  for (const entry of entries) {
+    if (!entry.isDirectory() || (safeId && !entry.name.includes(safeId))) continue;
+    const project = await readJsonFile<WorkspaceProject | undefined>(
+      getProjectFile(getProjectDir(userId, entry.name)),
+      undefined,
+    );
+    if (project?.id !== projectId) continue;
+    projectSlugById.set(cacheKey, entry.name);
+    return entry.name;
+  }
+
   const projects = await listProjects(userId);
-  return projects.find((project) => project.id === projectId)?.slug;
+  const slug = projects.find((project) => project.id === projectId)?.slug;
+  if (slug) projectSlugById.set(cacheKey, slug);
+  return slug;
 }
 
 function getProjectDir(userId: string, slug: string) {
@@ -928,9 +961,20 @@ async function saveProjectUnlocked(
     (await allocateProjectSlug(userId, projectId, inputProject.name));
   const projectDir = getProjectDir(userId, slug);
   const rawExistingProject = await loadRawProjectBySlug(userId, slug);
-  const existingProject = rawExistingProject
-    ? await repairMissingLayerImageReferences(userId, slug, rawExistingProject)
-    : undefined;
+  // Repair probes are a legacy-load fallback and can issue hundreds of
+  // fs.access calls for a large project. A normal current-client save already
+  // supplies every projected image, so keep those probes out of the hot path.
+  // Only repair the previous document when it is actually needed to recover a
+  // missing required projected image from an older/incomplete client snapshot.
+  const needsExistingLayerRepair = inputProject.layers.some((layer) => {
+    if (!isProjectedLayerRecord(layer)) return false;
+    const imageUrl = readString(layer.imageUrl);
+    return !imageUrl || isBlobUrl(imageUrl);
+  });
+  const existingProject =
+    rawExistingProject && needsExistingLayerRepair
+      ? await repairMissingLayerImageReferences(userId, slug, rawExistingProject)
+      : rawExistingProject;
   const project = prepareProjectDocumentForSave({
     userId,
     slug,
@@ -941,7 +985,7 @@ async function saveProjectUnlocked(
   });
   await ensureProjectFolders(projectDir);
   await writeJsonFile(getProjectFile(projectDir), project);
-  await writeAutosave(projectDir, project);
+  queueAutosave(projectDir, project);
   return { project: resolveProjectAssets(userId, slug, project), slug };
 }
 

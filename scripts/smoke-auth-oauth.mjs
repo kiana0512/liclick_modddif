@@ -71,9 +71,37 @@ function cookiePair(setCookieHeader, name) {
   return match[1];
 }
 
+function fakeJwt(email) {
+  const encode = (value) => Buffer.from(JSON.stringify(value)).toString('base64url');
+  return `${encode({ alg: 'none', typ: 'JWT' })}.${encode({ email, sub: email, exp: Math.floor(Date.now() / 1000) + 3600 })}.`;
+}
+
+async function createMockAtlasRuntime() {
+  const root = path.join(tmpRoot, 'atlas-runtime');
+  const dist = path.join(root, 'dist');
+  await fs.mkdir(dist, { recursive: true });
+  await fs.writeFile(
+    path.join(root, 'package.json'),
+    JSON.stringify({ name: '@lilith/atlas-skillhub', version: '2.9.1', type: 'module' }),
+  );
+  await fs.writeFile(
+    path.join(dist, 'index.js'),
+    `const args=process.argv.slice(2);if(args.includes('list-tools')){process.stdout.write('  mock_generate_image()\\n');process.exit(0)}if(args.includes('status')){process.stdout.write(JSON.stringify({valid:true}));process.exit(0)}process.exit(0);`,
+  );
+  await fs.writeFile(
+    path.join(dist, 'secure-runtime.js'),
+    `import fs from 'node:fs';import http from 'node:http';import path from 'node:path';
+function readCache(tokenFile){try{const wrapper=JSON.parse(fs.readFileSync(tokenFile,'utf8'));return JSON.parse(Buffer.from(wrapper.encrypted_payload,'base64url').toString('utf8'))}catch{return undefined}}
+function authenticate(options){return new Promise((resolve,reject)=>{const server=http.createServer((request,response)=>{if(request.method!=='POST'||request.url!=='/callback/token'){response.writeHead(404);response.end();return}let body='';request.on('data',chunk=>body+=chunk);request.on('end',()=>{try{const input=JSON.parse(body);const token=input.id_token||input.access_token;if(!token)throw new Error('missing token');const claims=JSON.parse(Buffer.from(token.split('.')[1],'base64url').toString('utf8'));const expiresAt=new Date(claims.exp*1000).toISOString();const cache={version:'v1',access_token:token,token_type:'Bearer',expires_in:Math.max(1,claims.exp-Math.floor(Date.now()/1000)),expires_at:expiresAt,gateway_url:options.gatewayBaseUrl};fs.mkdirSync(path.dirname(options.tokenFile),{recursive:true});fs.writeFileSync(options.tokenFile,JSON.stringify({encrypted_payload:Buffer.from(JSON.stringify(cache)).toString('base64url')}),{mode:0o600});response.writeHead(200,{'content-type':'application/json'});response.end(JSON.stringify({ok:true}));server.close(()=>resolve(token))}catch(error){response.writeHead(400,{'content-type':'application/json'});response.end(JSON.stringify({ok:false}));server.close(()=>reject(error))}})});server.once('error',reject);server.listen(options.callbackPort,'127.0.0.1')})}
+export {readCache,authenticate,};`,
+  );
+  return path.join(dist, 'index.js');
+}
+
 async function main() {
   await fs.rm(tmpRoot, { recursive: true, force: true });
   await fs.mkdir(tmpRoot, { recursive: true });
+  const atlasRuntimePath = await createMockAtlasRuntime();
 
   const mock = startProcess(process.execPath, ['scripts/mock-idaas-server.mjs'], {
     MOCK_IDAAS_PORT: String(mockPort),
@@ -100,6 +128,8 @@ async function main() {
     FEISHU_OAUTH_TOKEN_REQUEST_FORMAT: 'json',
     FEISHU_OAUTH_ALLOW_LOOPBACK_PROVIDER: 'true',
     FEISHU_OAUTH_EXTRA_AUTHORIZE_PARAMS: 'mock_auto=1',
+    IDAAS_JWT_SSO_URL: `${mockIssuer}/sso`,
+    ATLAS_SKILLHUB_PATH: atlasRuntimePath,
   });
 
   try {
@@ -136,12 +166,41 @@ async function main() {
       redirect: 'manual',
       headers: { cookie: oauthBrowserCookie },
     });
-    const callbackHtml = await callbackResponse.text();
     const setCookie = callbackResponse.headers.get('set-cookie');
-    if (!callbackResponse.ok || !setCookie || !callbackHtml.includes('Liclick 登录成功')) {
-      throw new Error(`Callback failed: status=${callbackResponse.status} cookie=${Boolean(setCookie)}`);
+    const bindingSsoUrl = callbackResponse.headers.get('location');
+    if (callbackResponse.status !== 302 || !setCookie || !bindingSsoUrl) {
+      throw new Error(`Callback did not enter account binding: status=${callbackResponse.status}`);
+    }
+    if (bindingSsoUrl.includes('localhost:20265')) {
+      throw new Error('OAuth callback leaked the Atlas loopback callback to the browser.');
     }
     const sessionCookie = cookiePair(setCookie, 'liclick_3d_session');
+
+    const bindingSsoResponse = await fetch(bindingSsoUrl, { redirect: 'manual' });
+    const bindingCallbackWithFragment = bindingSsoResponse.headers.get('location');
+    if (bindingSsoResponse.status !== 302 || !bindingCallbackWithFragment) {
+      throw new Error(`Mock IDaaS SSO failed: status=${bindingSsoResponse.status}`);
+    }
+    const bindingCallbackUrl = new URL(bindingCallbackWithFragment);
+    const idToken = new URLSearchParams(bindingCallbackUrl.hash.slice(1)).get('id_token');
+    bindingCallbackUrl.hash = '';
+    if (!idToken) throw new Error('Mock IDaaS callback did not provide an id_token.');
+
+    const bindingPageResponse = await fetch(bindingCallbackUrl, {
+      headers: { cookie: sessionCookie },
+    });
+    const bindingPageHtml = await bindingPageResponse.text();
+    if (!bindingPageResponse.ok || !bindingPageHtml.includes('正在关联莉刻账号')) {
+      throw new Error(`Account-binding callback page failed: status=${bindingPageResponse.status}`);
+    }
+    const bindingResult = await requestJson(bindingCallbackUrl.toString(), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: sessionCookie },
+      body: JSON.stringify({ idToken }),
+    });
+    if (bindingResult.response.status !== 200 || bindingResult.payload?.status !== 'bound') {
+      throw new Error(`Automatic Liclick account binding failed: ${JSON.stringify(bindingResult.payload)}`);
+    }
 
     const replayResponse = await fetch(callbackUrl, {
       redirect: 'manual',

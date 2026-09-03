@@ -206,6 +206,7 @@ export function getProjectedLayerStackSignature(
         getStableLayerAssetKey(layer.maskUrl),
         layer.maskSpace ?? 'projection',
         layer.contentRevision ?? 0,
+        layer.eraserAlgorithmVersion ?? 0,
         getStableLayerAssetKey(layer.depthUrl),
         layer.visible ? 1 : 0,
         layer.opacity,

@@ -15,13 +15,13 @@ const layersPanelSource = readFileSync(
 
 assert.match(
   sceneRootSource,
-  /const visibleUvContentChanged = objectUvLayers\.some[\s\S]*?previousLayer\.imageUrl !== layer\.imageUrl[\s\S]*?reopenedUvLayer \|\| reopenedProjectedLayer \|\| visibleUvContentChanged[\s\S]*?setUvVisibilityRenderRevision/,
+  /const visibleUvContentChanged = objectUvLayers\.some[\s\S]*?previousLayer\.imageUrl !== layer\.imageUrl[\s\S]*?if \(\s*reopenedUvLayer \|\|\s*reopenedProjectedLayer \|\|\s*visibleUvContentChanged \|\|\s*visibleProjectedContentChanged\s*\)[\s\S]*?setUvVisibilityRenderRevision/,
   'Publishing a merged UV must force one material reconciliation without a page refresh.',
 );
 
 assert.match(
   layersPanelSource,
-  /const authoritativeLayers = useLayerStore\(\(state\) => state\.layers\);[\s\S]*?return authoritativeLayers\.find\(\(layer\) => layer\.id === previewLayerId && layer\.imageUrl\)/,
+  /const layers = useLayerStore\(\(state\) => state\.layers\);[\s\S]*?const authoritativeLayers = layers;[\s\S]*?return authoritativeLayers\.find\(\(layer\) => layer\.id === previewLayerId && layer\.imageUrl\)/,
   'Layer image preview must resolve from the authoritative store during the UV-merge handoff.',
 );
 

@@ -412,7 +412,7 @@ export function LocalRepaintDialog({
     );
     const strokeBounds = getStrokeBounds(point, previousPoint, strokeSize);
     const maskBrush = getMaskBrushPattern(context);
-    const drawStroke = (
+    const configureStrokeContext = (
       targetContext: CanvasRenderingContext2D,
       fillStyle: string | CanvasPattern,
     ) => {
@@ -420,36 +420,44 @@ export function LocalRepaintDialog({
       targetContext.globalCompositeOperation =
         strokeTool === 'erase' ? 'destination-out' : 'source-over';
       targetContext.fillStyle = fillStyle;
-      if (previousPoint) {
-        const distance = Math.hypot(point.x - previousPoint.x, point.y - previousPoint.y);
-        const spacing = Math.max(
-          0.75,
-          Math.min(pressureSize(previousPoint.pressure), pressureSize(point.pressure)) * 0.2,
-        );
-        const steps = Math.max(1, Math.ceil(distance / spacing));
-        for (let index = 0; index <= steps; index += 1) {
-          const ratio = index / steps;
-          const pressure =
-            previousPoint.pressure + (point.pressure - previousPoint.pressure) * ratio;
-          targetContext.beginPath();
-          targetContext.arc(
-            previousPoint.x + (point.x - previousPoint.x) * ratio,
-            previousPoint.y + (point.y - previousPoint.y) * ratio,
-            pressureSize(pressure) / 2,
-            0,
-            Math.PI * 2,
-          );
-          targetContext.fill();
-        }
-      } else {
-        targetContext.beginPath();
-        targetContext.arc(point.x, point.y, pressureSize(point.pressure) / 2, 0, Math.PI * 2);
-        targetContext.fill();
-      }
-      targetContext.restore();
     };
-    drawStroke(context, maskBrush);
-    if (logicalContext) drawStroke(logicalContext, '#ffffff');
+    configureStrokeContext(context, maskBrush);
+    if (logicalContext) configureStrokeContext(logicalContext, '#ffffff');
+    // Interpolate each stamp once and replay the exact original arc/fill
+    // sequence into both independent canvases. This removes duplicate pressure,
+    // spacing and coordinate work without changing rasterization or alpha
+    // accumulation on either the visible hatch or the authoritative mask.
+    const drawStamp = (x: number, y: number, pressure: number) => {
+      const radius = pressureSize(pressure) / 2;
+      context.beginPath();
+      context.arc(x, y, radius, 0, Math.PI * 2);
+      context.fill();
+      if (logicalContext) {
+        logicalContext.beginPath();
+        logicalContext.arc(x, y, radius, 0, Math.PI * 2);
+        logicalContext.fill();
+      }
+    };
+    if (previousPoint) {
+      const distance = Math.hypot(point.x - previousPoint.x, point.y - previousPoint.y);
+      const spacing = Math.max(
+        0.75,
+        Math.min(pressureSize(previousPoint.pressure), pressureSize(point.pressure)) * 0.2,
+      );
+      const steps = Math.max(1, Math.ceil(distance / spacing));
+      for (let index = 0; index <= steps; index += 1) {
+        const ratio = index / steps;
+        drawStamp(
+          previousPoint.x + (point.x - previousPoint.x) * ratio,
+          previousPoint.y + (point.y - previousPoint.y) * ratio,
+          previousPoint.pressure + (point.pressure - previousPoint.pressure) * ratio,
+        );
+      }
+    } else {
+      drawStamp(point.x, point.y, point.pressure);
+    }
+    context.restore();
+    logicalContext?.restore();
     lastPointRef.current = point;
     if (strokeTool === 'brush') clipMaskToObject(strokeBounds);
   }

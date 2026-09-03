@@ -12,7 +12,36 @@ export type FramePacingSummary = DurationSummary & {
   p99: number;
   median: number;
   jitterP95: number;
+  missedFrameCount: number;
+  missedFramePercent: number;
 };
+
+/**
+ * Estimates refresh opportunities that were actually missed. A normal
+ * 16.8 ms rAF sample on a 60 Hz display is one presented frame, not a drop;
+ * 33.4 ms is one missed refresh, 50.1 ms is two, and so on.
+ */
+export function estimateMissedFrameCount(
+  samples: readonly DurationSample[],
+  targetFrameMs: number,
+) {
+  if (!Number.isFinite(targetFrameMs) || targetFrameMs <= 0) return 0;
+  let missedFrames = 0;
+  for (const sample of samples) {
+    if (!Number.isFinite(sample.durationMs) || sample.durationMs <= 0) continue;
+    missedFrames += Math.max(0, Math.round(sample.durationMs / targetFrameMs) - 1);
+  }
+  return missedFrames;
+}
+
+export function estimateMissedFramePercent(
+  samples: readonly DurationSample[],
+  targetFrameMs: number,
+) {
+  const missedFrames = estimateMissedFrameCount(samples, targetFrameMs);
+  const refreshOpportunities = samples.length + missedFrames;
+  return refreshOpportunities > 0 ? (missedFrames / refreshOpportunities) * 100 : 0;
+}
 
 export function summarizeDurationSamples(
   samples: readonly DurationSample[],
@@ -61,7 +90,14 @@ export function summarizeFramePacing(
 ): FramePacingSummary {
   const summary = summarizeDurationSamples(samples, thresholdMs);
   if (samples.length === 0) {
-    return { ...summary, p99: 0, median: 0, jitterP95: 0 };
+    return {
+      ...summary,
+      p99: 0,
+      median: 0,
+      jitterP95: 0,
+      missedFrameCount: 0,
+      missedFramePercent: 0,
+    };
   }
   const durations = samples.map((sample) => sample.durationMs).sort((left, right) => left - right);
   const percentile = (ratio: number) =>
@@ -71,5 +107,12 @@ export function summarizeFramePacing(
     .map((duration) => Math.abs(duration - median))
     .sort((left, right) => left - right);
   const jitterP95 = deviations[Math.max(0, Math.ceil(deviations.length * 0.95) - 1)] ?? 0;
-  return { ...summary, p99: percentile(0.99), median, jitterP95 };
+  return {
+    ...summary,
+    p99: percentile(0.99),
+    median,
+    jitterP95,
+    missedFrameCount: estimateMissedFrameCount(samples, thresholdMs),
+    missedFramePercent: estimateMissedFramePercent(samples, thresholdMs),
+  };
 }

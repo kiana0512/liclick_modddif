@@ -121,23 +121,43 @@ assert.throws(
 
 assert.match(
   generatePanelSource,
-  /const LOCAL_REPAINT_COMPOSITE_RESOLUTION = 2048;/,
-  'local repaint result compositing must stay at 2K',
+  /const LOCAL_REPAINT_INPUT_RESOLUTION = 2048;/,
+  'the current effect and submitted mask must stay aligned at 2K',
 );
 assert.match(
   generatePanelSource,
-  /width: LOCAL_REPAINT_COMPOSITE_RESOLUTION,[\s\S]*height: LOCAL_REPAINT_COMPOSITE_RESOLUTION/,
-  'the worker output dimensions must be explicitly pinned to 2K',
+  /captureCurrentLocalRepaintView\([\s\S]*resolution: LOCAL_REPAINT_INPUT_RESOLUTION,[\s\S]*colorMode: 'flat-target'/,
+  'the generation path must first capture the frozen-camera current BaseColor effect',
 );
 assert.match(
   generatePanelSource,
-  /minBlendWidth: 12,[\s\S]*maxBlendWidth: 40,[\s\S]*minSampleWidth: 8,[\s\S]*maxSampleWidth: 32,[\s\S]*edgeOpacity: 1,[\s\S]*localSampleCellSize: 64,[\s\S]*correctionDepth: 96,[\s\S]*coreColorMatchStrength: 1,[\s\S]*enableColorMatch: true/,
-  'the enhanced 2K composite must keep the whole mask opaque and fade only outside it',
+  /prepareLocalRepaintGenerationInput\(\{[\s\S]*currentEffectUrl: flatCurrentEffectUrl,[\s\S]*clayPreviewUrl,[\s\S]*authoredMaskUrl: currentPaintMaskDataUrl/,
+  'the remote image input must composite aligned clay geometry only inside the authored mask',
 );
 assert.match(
   generatePanelSource,
-  /const seamHarmonizationVersion = seamHarmonizationMode === 'enhanced' \? 14 : 5/,
-  'enhanced and legacy composites must remain independently identifiable and reversible',
+  /urlToDataUrl\(capture\.colorUrl\)[\s\S]*urlToDataUrl\(preparedGenerationInput\.submittedMaskUrl\)/,
+  'ModelView must receive the composite image and the expanded/feathered mask',
+);
+assert.match(
+  generatePanelSource,
+  /prepareLocalRepaintPromptPolishInputs\(\{[\s\S]*currentEffectUrl: promptAnalysisCurrentEffectUrl,[\s\S]*maskUrl: currentPaintMaskDataUrl/,
+  'Qwen must receive the clean current effect and the original non-dilated mask',
+);
+assert.match(
+  generatePanelSource,
+  /image: \{ path: 'current-effect\.png',[\s\S]*materialImage: \{[\s\S]*mask: \{ path: `\$\{generationId\}-mask\.png`/,
+  'the local repaint request must submit current effect, material reference and mask',
+);
+assert.match(
+  generatePanelSource,
+  /resultUrl: generation\.resultUrl,[\s\S]*resultComposition: 'direct-v1'/,
+  'new workflow results must be used directly without browser colour harmonization',
+);
+assert.doesNotMatch(
+  generatePanelSource,
+  /harmonizeLocalRepaintInWorker|\u6b63\u5728\u878d\u5408\u5c40\u90e8\u91cd\u7ed8\u7ed3\u679c/,
+  'the new generation path must not run the retired colour correction step',
 );
 assert.doesNotMatch(
   generatePanelSource,
@@ -146,8 +166,18 @@ assert.doesNotMatch(
 );
 assert.match(
   generatePanelSource,
-  /maskUrl: currentPaintMaskDataUrl,[\s\S]*syncGeneration\(completedGeneration\);/,
-  'each task must archive its exact submitted mask independently of the retained live mask',
+  /capture = \{[\s\S]*colorUrl: preparedGenerationInput\.compositeUrl,[\s\S]*maskUrl: currentPaintMaskDataUrl/,
+  'capture and paintback must retain the authored mask instead of the expanded remote blending mask',
+);
+assert.match(
+  generatePanelSource,
+  /authoredMaskUrl: currentPaintMaskDataUrl,[\s\S]*submittedMaskUrl: preparedGenerationInput\.submittedMaskUrl/,
+  'each task must archive the remote blending mask separately from the retained authored mask',
+);
+assert.match(
+  generatePanelSource,
+  /maskUrl: persistedAuthoredMaskUrl,[\s\S]*authoredMaskUrl: persistedAuthoredMaskUrl,[\s\S]*submittedMaskUrl: persistedSubmittedMaskUrl/,
+  'durable generation metadata must keep the authored and remote-submitted masks separate',
 );
 assert.doesNotMatch(
   generatePanelSource,
@@ -161,8 +191,13 @@ assert.match(
 );
 assert.match(
   generatePanelSource,
-  /paintMaskCapture\?\.\(\{[\s\S]*resolution: LOCAL_REPAINT_COMPOSITE_RESOLUTION/,
-  'the canonical submitted mask must be captured at the same 2K resolution as the composite',
+  /paintMaskCapture\?\.\(\{[\s\S]*resolution: LOCAL_REPAINT_INPUT_RESOLUTION/,
+  'the canonical submitted mask must be captured at the same 2K resolution as the current effect',
+);
+assert.doesNotMatch(
+  generatePanelSource,
+  /PaintedLocalRepaintPreview|paintedPreviewLayer/,
+  'the repaint result panel must keep showing the complete returned image instead of switching to the painted layer mask',
 );
 assert.match(
   sceneStoreSource,

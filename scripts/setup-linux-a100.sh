@@ -29,6 +29,7 @@ GIT_REMOTE="${GIT_REMOTE:-origin}"
 UPDATE_FROM_GIT="${UPDATE_FROM_GIT:-0}"
 INSTALL_ATLAS="${INSTALL_ATLAS:-0}"
 ATLAS_NPM_REGISTRY="${ATLAS_NPM_REGISTRY:-https://registry-cnpm.lilithgame.com/}"
+ATLAS_SKILLHUB_VERSION="${ATLAS_SKILLHUB_VERSION:-2.9.1}"
 ATLAS_LOGIN_MODE="${ATLAS_LOGIN_MODE:-service-token}"
 ATLAS_TOKEN_FILE="${ATLAS_TOKEN_FILE:-}"
 LICLICK_ENABLE_ATLAS_LOCAL_LOGIN="false"
@@ -225,14 +226,20 @@ corepack prepare pnpm@9.15.4 --activate
 if [[ "${INSTALL_ATLAS}" == "1" ]]; then
   echo "==> Installing Atlas Skillhub runtime"
   ATLAS_EXISTING="$(npm root -g 2>/dev/null)/@lilith/atlas-skillhub/dist/index.js"
+  ATLAS_EXISTING_VERSION=""
   if [[ -f "${ATLAS_EXISTING}" ]]; then
-    echo "Atlas Skillhub already exists at ${ATLAS_EXISTING}"
-  else
-    if ! npm install -g @lilith/atlas-skillhub --registry="${ATLAS_NPM_REGISTRY}"; then
-      echo "WARN: @lilith/atlas-skillhub install failed from ${ATLAS_NPM_REGISTRY}."
-      echo "WARN: Deployment will continue. Configure ATLAS_SKILLHUB_PATH after installing the Atlas runtime manually."
-    fi
+    ATLAS_EXISTING_VERSION="$(node "${ATLAS_EXISTING}" --version 2>/dev/null || true)"
   fi
+  if [[ "${ATLAS_EXISTING_VERSION}" != "${ATLAS_SKILLHUB_VERSION}" ]]; then
+    npm install -g "@lilith/atlas-skillhub@${ATLAS_SKILLHUB_VERSION}" \
+      --registry="${ATLAS_NPM_REGISTRY}"
+  fi
+  ATLAS_INSTALLED_VERSION="$(node "${ATLAS_EXISTING}" --version 2>/dev/null || true)"
+  if [[ "${ATLAS_INSTALLED_VERSION}" != "${ATLAS_SKILLHUB_VERSION}" ]]; then
+    echo "ERROR: Atlas Skillhub ${ATLAS_SKILLHUB_VERSION} is required, found ${ATLAS_INSTALLED_VERSION:-missing}." >&2
+    exit 1
+  fi
+  echo "Atlas Skillhub ${ATLAS_INSTALLED_VERSION} is ready at ${ATLAS_EXISTING}"
 fi
 
 echo "==> Creating runtime user and directories"
@@ -325,6 +332,11 @@ FEISHU_BITABLE_SYNC_INTERVAL_MS="${FEISHU_BITABLE_SYNC_INTERVAL_MS:-30000}"
 SESSION_SECRET="${SESSION_SECRET:-$(env_value SESSION_SECRET)}"
 SESSION_SECRET="${SESSION_SECRET:-$(openssl rand -hex 32)}"
 ATLAS_PATH="${ATLAS_SKILLHUB_PATH:-$(npm root -g 2>/dev/null)/@lilith/atlas-skillhub/dist/index.js}"
+ATLAS_RUNTIME_VERSION="$(node "${ATLAS_PATH}" --version 2>/dev/null || true)"
+if [[ "${ATLAS_RUNTIME_VERSION}" != "${ATLAS_SKILLHUB_VERSION}" ]]; then
+  echo "ERROR: Atlas Skillhub ${ATLAS_SKILLHUB_VERSION} is required, found ${ATLAS_RUNTIME_VERSION:-missing} at ${ATLAS_PATH}." >&2
+  exit 1
+fi
 APP_HOME="$(getent passwd "${APP_USER}" | cut -d: -f6)"
 APP_HOME="${APP_HOME:-/home/${APP_USER}}"
 ATLAS_TOKEN_TARGET="${APP_HOME}/.atlas-ai-gateway-oauth.json"

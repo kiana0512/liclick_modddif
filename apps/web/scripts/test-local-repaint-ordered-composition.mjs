@@ -80,6 +80,34 @@ try {
     true,
     'a visible priority single-view above repaint must disable the always-on-top fast path',
   );
+  assert.equal(
+    ordered.shouldMuteLocalRepaintResidentLayer(
+      [single, persistedRepaint],
+      liveRepaint,
+      persistedRepaint.id,
+    ),
+    false,
+    'ordered-stack ownership must keep the resident repaint binding visible',
+  );
+  assert.equal(
+    ordered.shouldUseDedicatedLocalRepaintOverlay(
+      [single, persistedRepaint],
+      liveRepaint,
+      true,
+    ),
+    true,
+    'the precompiled exact overlay must own frame-by-frame apply feedback',
+  );
+  assert.equal(
+    ordered.shouldMuteLocalRepaintResidentLayer(
+      [single, persistedRepaint],
+      liveRepaint,
+      persistedRepaint.id,
+      true,
+    ),
+    true,
+    'the resident twin must be muted while the exact live overlay owns apply feedback',
+  );
 
   const bottomUp = ordered.mergeOrderedLocalRepaintPreview(
     [single, persistedRepaint],
@@ -93,6 +121,21 @@ try {
 
   const repaintOnTop = { ...persistedRepaint, order: 0 };
   const singleBelow = { ...single, order: 1 };
+  const needsResident = ordered.shouldWaitForLocalRepaintResidentMaterial;
+  assert.equal(needsResident([singleBelow], liveRepaint, liveRepaint.id), false,
+    'a new topmost preview must not spend 10 seconds waiting for an unpublished row');
+  assert.equal(needsResident([single], { ...liveRepaint, order: 1 }, liveRepaint.id), true,
+    'a new preview below a priority layer must still wait for the ordered stack');
+  assert.equal(needsResident([persistedRepaint], undefined, persistedRepaint.id), true,
+    'reopening an existing repaint must retain its resident readiness barrier');
+  assert.equal(needsResident([{ ...single, objectId: "other" }],
+    { ...liveRepaint, order: 1 }, liveRepaint.id), false,
+    'an unrelated model must not add a resident wait');
+  assert.equal(needsResident([{ ...single, visible: false }],
+    { ...liveRepaint, order: 1 }, liveRepaint.id), false,
+    'a hidden priority layer must not add a resident wait');
+  assert.equal(needsResident([single], { ...liveRepaint, order: 1 }, 'other'), false,
+    'a different preview cannot satisfy this preparation target');
   assert.equal(
     ordered.shouldPresentLocalRepaintInOrderedStack([repaintOnTop, singleBelow], {
       ...liveRepaint,
@@ -100,6 +143,24 @@ try {
     }),
     false,
     'moving repaint above the single-view must restore the clear low-latency foreground path',
+  );
+  assert.equal(
+    ordered.shouldMuteLocalRepaintResidentLayer(
+      [repaintOnTop, singleBelow],
+      { ...liveRepaint, order: 0 },
+      repaintOnTop.id,
+    ),
+    false,
+    'a persisted repaint outside apply mode must remain resident for erasing and eye toggles',
+  );
+  assert.equal(
+    ordered.shouldMuteLocalRepaintResidentLayer(
+      [single, persistedRepaint],
+      liveRepaint,
+      'another-layer',
+    ),
+    false,
+    'preview ownership must never mute an unrelated resident layer',
   );
   assert.equal(
     ordered.shouldPresentLocalRepaintInOrderedStack(
@@ -141,7 +202,43 @@ try {
     new URL('../src/engine/viewport/ViewportCanvas.tsx', import.meta.url),
     'utf8',
   );
+  const projectedMaterial = readFileSync(
+    new URL('../src/engine/projection/ProjectedLayerMaterial.ts', import.meta.url),
+    'utf8',
+  );
   assert.match(sceneRoot, /mergeOrderedLocalRepaintPreview/);
+  assert.match(sceneRoot, /getOrderedLocalRepaintPreviewLayer/);
+  // Execute the actual viewport wait block with a deterministic frame clock.
+  // This catches accidental reintroduction of the 10s wait, beyond policy tests.
+  const waitStart = viewport.indexOf('const requiresResidentMaterial =');
+  const waitEnd = viewport.indexOf('const readyOverlay =', waitStart);
+  assert.ok(waitStart >= 0 && waitEnd > waitStart);
+  const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+  const runResidentWait = new AsyncFunction('layers', 'preview', 'bindAfterMs', 'policy', `
+    let elapsed = 0, residentOverrideBound = false;
+    const cancelled = false, preparationDeadline = 20000;
+    const model = {}, source = {}, sourceKey = 'test';
+    const composite = { layerId: preview.id };
+    const performance = { now: () => elapsed };
+    const document = { body: { dataset: {} } };
+    const useLayerStore = { getState: () => ({ layers }) };
+    const useSceneStore = { getState: () => ({ localRepaintPreviewLayer: preview }) };
+    const shouldWaitForLocalRepaintResidentMaterial = policy;
+    const ensureLiveLocalRepaintComposite = () => composite;
+    const invalidate = () => {};
+    const waitForFrame = async () => { elapsed += 16; };
+    const bindLocalRepaintResidentMaskOverride = () => elapsed >= bindAfterMs;
+    ${viewport.slice(waitStart, waitEnd)}
+    return { elapsed, residentOverrideBound };
+  `);
+  assert.deepEqual(await runResidentWait([singleBelow], liveRepaint, Infinity, needsResident),
+    { elapsed: 0, residentOverrideBound: false }, 'unpublished foreground must have zero resident wait');
+  assert.deepEqual(await runResidentWait([persistedRepaint], liveRepaint, 48, needsResident),
+    { elapsed: 48, residentOverrideBound: true }, 'saved rows must wait until binding succeeds');
+  assert.deepEqual(await runResidentWait([single], { ...liveRepaint, order: 1 }, 64, needsResident),
+    { elapsed: 64, residentOverrideBound: true }, 'ordered previews must retain the real binding barrier');
+  assert.deepEqual(await runResidentWait([persistedRepaint], liveRepaint, Infinity, needsResident),
+    { elapsed: 10000, residentOverrideBound: false }, 'existing target timeout must remain bounded');
   assert.match(
     sceneRoot,
     /previewProjectionInputs\.slice\(liveRepaintIndex\)/,
@@ -149,8 +246,111 @@ try {
   );
   assert.match(
     viewport,
-    /!orderedStackOwnsPreview[\s\S]*?setLocalRepaintGpuOverlayVisibility/,
-    'the renderer-only GPU mesh must be hidden while the ordered stack owns presentation',
+    /while \(\s*requiresResidentMaterial && !cancelled &&\s*!residentOverrideBound[\s\S]*?bindLocalRepaintResidentMaskOverride[\s\S]*?ensureLocalRepaintGpuOverlay/,
+    'readiness must prepare eligible resident targets and always prepare the exact live overlay before input',
+  );
+  assert.match(
+    viewport,
+    /liclick:projected-material-resident[\s\S]*?syncLocalRepaintGpuOverlayActivity/,
+    'the first-row handoff must retry its live-mask binding after the final material commits',
+  );
+  const residentActivityStart = viewport.indexOf(
+    'const syncLocalRepaintGpuOverlayActivity = useCallback',
+  );
+  const residentActivityEnd = viewport.indexOf(
+    'syncLocalRepaintGpuOverlayActivityRef.current',
+    residentActivityStart,
+  );
+  const residentActivity = viewport.slice(residentActivityStart, residentActivityEnd);
+  const residentBindingActivity = residentActivity.slice(
+    residentActivity.indexOf('const residentOverrideBound = Boolean('),
+    residentActivity.indexOf('let changed = false;'),
+  );
+  assert.match(
+    residentActivity,
+    /const presentationLayer = persistedLayer \?\? livePreviewLayer;[\s\S]*?presentationLayer\?\.visible[\s\S]*?bindLocalRepaintResidentMaskOverride/,
+    'a late material replacement must rebind the empty transient preview before the first stroke',
+  );
+  assert.doesNotMatch(
+    residentBindingActivity,
+    /composite\.hasContent/,
+    'resident rebinding must not wait for pointer-up to turn the first empty preview into a persisted row',
+  );
+  assert.match(
+    residentActivity,
+    /const exactOverlayVisible =[\s\S]*?liveFeedbackRequested[\s\S]*?setLocalRepaintGpuOverlayVisibility/,
+    'apply feedback must activate the precompiled overlay on the first accepted stamp',
+  );
+  assert.match(
+    viewport,
+    /composite\.blendMaskTexture\.needsUpdate = true;[\s\S]*?syncLocalRepaintGpuOverlayActivity\(\);/,
+    'the first mask stamp must upload before the exact overlay becomes visible',
+  );
+  assert.match(viewport, /phase: 'verifying-render-frame'/);
+  assert.match(
+    sceneRoot,
+    /window\.dispatchEvent\([\s\S]*?liclick:projected-material-resident/,
+    'SceneRoot must announce the exact point at which a rebuilt projected material is resident',
+  );
+  assert.match(
+    viewport,
+    /isLocalRepaintLayerResident\(override\.root, override\.layerId\)[\s\S]*?clearLocalRepaintResidentMaskOverride\(\)/,
+    'leaving apply mode must release the live mask only after the formal layer is resident',
+  );
+  assert.doesNotMatch(
+    viewport,
+    /liveLocalRepaintFastPreview|fastPreviewVisible|fastPreviewCanRender/,
+    'the depthless duplicate-mesh preview must stay out of the renderer path',
+  );
+  const pointerHandlerStart = viewport.indexOf(
+    'const handlePointerDown = (event: globalThis.PointerEvent) =>',
+  );
+  const pointerStart = viewport.indexOf(
+    'const paintStartedAt = performance.now()',
+    pointerHandlerStart,
+  );
+  const pointerEnd = viewport.indexOf('isPaintingRef.current = true', pointerStart);
+  assert.ok(pointerStart >= 0 && pointerEnd > pointerStart);
+  assert.doesNotMatch(
+    viewport.slice(pointerStart, pointerEnd),
+    /bindLocalRepaintResidentMaskOverride|ensureLocalRepaintGpuOverlay/,
+    'pointer-down may request session recovery but must never repair GPU resources itself',
+  );
+  assert.match(projectedMaterial, /uniform float liveMaskUsesProjection/);
+  assert.match(
+    projectedMaterial,
+    /syncProjectedLayerLiveMaskOverrideInObject[\s\S]*?const nextMode = enabled \? 1 : 0[\s\S]*?liveMaskUsesProjection\.value = nextMode/,
+    'resident materials must switch the reserved live mask to projection-space replacement mode',
+  );
+  assert.match(
+    projectedMaterial,
+    /maskAlpha = mix\(maskAlpha, liveMaskAlpha, liveMaskActive\)/,
+    'the shared stack shader must replace only the selected layer mask',
+  );
+  assert.match(
+    sceneRoot,
+    /authoritativeMutedPreviewLayerId[\s\S]*?shouldMuteLocalRepaintResidentLayer/,
+    'late display synchronization must not mute a row merely because a preview id exists',
+  );
+  assert.match(
+    sceneRoot,
+    /visibleProjectedContentChanged[\s\S]*?previousLayer\.contentRevision !== layer\.contentRevision[\s\S]*?requiresMaterialReconciliation = true/,
+    'durable projected content revisions must still rebuild the formal presentation',
+  );
+  assert.match(
+    viewport,
+    /contentRevision:\s*existingProjectionLayer\?\.contentRevision \?\? 0/,
+    'interactive repaint commits must retain their structural revision and avoid a full stack rebuild',
+  );
+  assert.match(
+    viewport,
+    /residentLayer\.maskUrl !== liveMaskComposite\.blendMaskUrl[\s\S]*?切换实时蒙版通道[\s\S]*?maskUrl: liveMaskComposite\.blendMaskUrl[\s\S]*?localRepaintMaskUrl: liveMaskComposite\.maskUrl/,
+    'durable masks must move to their stable live URLs during prewarm instead of on first pointer-up',
+  );
+  assert.doesNotMatch(
+    viewport,
+    /contentRevision:\s*\(existingProjectionLayer\?\.contentRevision \?\? 0\) \+ 1/,
+    'pointer-up must not invalidate the projected material structure',
   );
 
   console.log('Local repaint ordered composition invariants passed.');

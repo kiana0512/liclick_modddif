@@ -1,8 +1,8 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { KeyRound, Languages, LogIn, LogOut, Unlink } from 'lucide-react';
 import { devLogin, logout } from '@/services/authApiClient';
-import { clearClientIdentity } from '@/services/clientIdentity';
 import { runFeishuLoginFlow } from '@/services/feishuLoginFlow';
+import { getWorkspaceApiBase } from '@/services/workspaceApiBase';
 import { useAuthStore } from '@/stores/authStore';
 import { useGenerationStore } from '@/stores/generationStore';
 import { useI18nStore, useT } from '@/stores/i18nStore';
@@ -10,10 +10,38 @@ import { useToastStore } from '@/stores/toastStore';
 
 type UserMenuProps = { onLogout: () => void };
 
+type LiclickAccountStatus = {
+  bound: boolean;
+  email?: string;
+  reason?: string;
+  sharedTestAccount?: boolean;
+};
+
+type LiclickBindingStatus = {
+  loginId: string;
+  status: 'pending' | 'bound';
+  redirectUrl?: string;
+  email?: string;
+  message?: string;
+};
+
+const workspaceApiBase = getWorkspaceApiBase(import.meta.env.VITE_LICLICK_WORKSPACE_API);
+
+async function liclickAccountRequest<T>(path: string, init?: RequestInit) {
+  const response = await fetch(`${workspaceApiBase}${path}`, {
+    ...init,
+    credentials: 'include',
+  });
+  const payload = (await response.json().catch(() => ({}))) as T & { error?: string };
+  if (!response.ok) throw new Error(payload.error || '莉刻账号服务暂时不可用。');
+  return payload;
+}
+
 export function UserMenu({ onLogout }: UserMenuProps) {
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [loginStatus, setLoginStatus] = useState('');
+  const [liclickAccount, setLiclickAccount] = useState<LiclickAccountStatus>();
   const t = useT();
   const language = useI18nStore((state) => state.language);
   const setLanguage = useI18nStore((state) => state.setLanguage);
@@ -25,6 +53,21 @@ export function UserMenu({ onLogout }: UserMenuProps) {
   const refreshProviderStatus = useAuthStore((state) => state.refreshProviderStatus);
   const pushToast = useToastStore((state) => state.pushToast);
   const generationRunning = useGenerationStore((state) => state.isGenerating);
+
+  useEffect(() => {
+    if (!open || !user) return;
+    let cancelled = false;
+    void liclickAccountRequest<LiclickAccountStatus>('/api/liclick/account')
+      .then((status) => {
+        if (!cancelled) setLiclickAccount(status);
+      })
+      .catch(() => {
+        if (!cancelled) setLiclickAccount({ bound: false, reason: '账号状态读取失败' });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, user]);
 
   async function handleLogin(forceReauthorize = false) {
     if (busy) return;
@@ -89,8 +132,51 @@ export function UserMenu({ onLogout }: UserMenuProps) {
 
   async function handleSwitchAccount() {
     if (busy) return;
-    setOpen(false);
-    await handleLogin(true);
+    const popup = window.open('about:blank', 'liclick-account-auth', 'popup,width=720,height=780');
+    setBusy(true);
+    setLoginStatus('正在启动莉刻账号授权...');
+    try {
+      let status = await liclickAccountRequest<LiclickBindingStatus>(
+        '/api/liclick/account-binding/start',
+        { method: 'POST' },
+      );
+      let openedUrl = '';
+      const deadline = Date.now() + 10 * 60 * 1000;
+      while (status.status !== 'bound' && Date.now() < deadline) {
+        if (status.redirectUrl && status.redirectUrl !== openedUrl) {
+          openedUrl = status.redirectUrl;
+          if (popup) popup.location.href = openedUrl;
+          else window.open(openedUrl, '_blank', 'noopener,noreferrer');
+        }
+        setLoginStatus(status.message || '请在授权窗口完成莉刻账号授权...');
+        await new Promise((resolve) => window.setTimeout(resolve, 1_000));
+        status = await liclickAccountRequest<LiclickBindingStatus>(
+          `/api/liclick/account-binding/${encodeURIComponent(status.loginId)}`,
+        );
+      }
+      if (status.status !== 'bound') throw new Error('莉刻账号授权超时，请重试。');
+      popup?.close();
+      setLiclickAccount({ bound: true, email: status.email });
+      setLoginStatus('');
+      pushToast({
+        tone: 'success',
+        title: '莉刻账号已绑定',
+        description: `后续生图只会使用 ${status.email ?? '当前用户'} 的个人额度。`,
+        dedupeKey: 'liclick-account-bound',
+      });
+    } catch (error) {
+      popup?.close();
+      const message = error instanceof Error ? error.message : '莉刻账号绑定失败。';
+      setLoginStatus('');
+      pushToast({
+        tone: 'error',
+        title: '莉刻账号绑定失败',
+        description: message,
+        dedupeKey: 'liclick-account-bind-failed',
+      });
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function handleUnlinkAccount() {
@@ -100,9 +186,28 @@ export function UserMenu({ onLogout }: UserMenuProps) {
     ) {
       return;
     }
-    setOpen(false);
-    clearClientIdentity();
-    await handleLogout();
+    setBusy(true);
+    try {
+      await liclickAccountRequest<LiclickAccountStatus>('/api/liclick/account', {
+        method: 'DELETE',
+      });
+      setLiclickAccount({ bound: false });
+      pushToast({
+        tone: 'success',
+        title: '已解除莉刻账号',
+        description: '飞书会话仍然有效；重新绑定个人莉刻账号后才能继续生图。',
+        dedupeKey: 'liclick-account-unlinked',
+      });
+    } catch (error) {
+      pushToast({
+        tone: 'error',
+        title: '解除莉刻账号失败',
+        description: error instanceof Error ? error.message : '请稍后重试。',
+        dedupeKey: 'liclick-account-unlink-failed',
+      });
+    } finally {
+      setBusy(false);
+    }
   }
 
   if (!user) {
@@ -164,26 +269,34 @@ export function UserMenu({ onLogout }: UserMenuProps) {
             <span className="inline-flex min-w-0 items-start gap-2">
               <KeyRound className="mt-0.5 h-4 w-4 shrink-0" />
               <span className="min-w-0">
-                <span className="block truncate font-medium">此电脑的莉刻账号</span>
-                <span className="block truncate text-xs font-medium text-emerald-400">{user.email ?? user.displayName}</span>
+                <span className="block truncate font-medium">
+                  {liclickAccount?.sharedTestAccount ? '测试共享莉刻账号' : '当前用户的莉刻账号'}
+                </span>
+                <span className={`block truncate text-xs font-medium ${liclickAccount?.bound ? 'text-emerald-400' : 'text-amber-400'}`}>
+                  {liclickAccount?.bound ? liclickAccount.email : liclickAccount ? '未绑定' : '检查中...'}
+                </span>
               </span>
             </span>
+            {!liclickAccount?.sharedTestAccount && (
+              <button
+                type="button"
+                onClick={() => void handleSwitchAccount()}
+                disabled={busy}
+                className="shrink-0 text-xs font-semibold text-liclick-pink transition hover:text-white disabled:opacity-50"
+              >
+                {liclickAccount?.bound ? '更换' : '绑定'}
+              </button>
+            )}
+          </div>
+          {!liclickAccount?.sharedTestAccount && (
             <button
               type="button"
-              onClick={() => void handleSwitchAccount()}
-              disabled={busy}
-              className="shrink-0 text-xs font-semibold text-liclick-pink transition hover:text-white disabled:opacity-50"
+              onClick={() => void handleUnlinkAccount()}
+              className="mt-1 flex w-full items-center gap-2 rounded px-3 py-2 text-left text-sm text-white/76 transition hover:bg-white/10 hover:text-white"
             >
-              更换
+              <Unlink className="h-4 w-4" />解除当前用户的莉刻账号
             </button>
-          </div>
-          <button
-            type="button"
-            onClick={() => void handleUnlinkAccount()}
-            className="mt-1 flex w-full items-center gap-2 rounded px-3 py-2 text-left text-sm text-white/76 transition hover:bg-white/10 hover:text-white"
-          >
-            <Unlink className="h-4 w-4" />解除当前电脑的莉刻账号
-          </button>
+          )}
           <button type="button" onClick={() => void handleLogout()} className="mt-1 flex w-full items-center gap-2 rounded px-3 py-2 text-left text-sm text-white/76 transition hover:bg-white/10 hover:text-white">
             <LogOut className="h-4 w-4" />{t('logout')}
           </button>

@@ -6,8 +6,15 @@ import process from 'node:process';
 
 const assetsDir = path.resolve('apps/web/dist/assets');
 const budgets = [
-  { label: 'application shell', prefix: 'index-', maxBytes: 265_000 },
-  { label: 'editor route', prefix: 'EditorPage-', maxBytes: 490_000 },
+  {
+    label: 'application shell',
+    prefix: 'index-',
+    maxBytes: 265_000,
+    // Lazy routes may produce a tiny generated index facade. It is not the
+    // application shell and is counted by the total JavaScript budget below.
+    minimumMatchBytes: 100_000,
+  },
+  { label: 'editor route', prefix: 'EditorPage-', maxBytes: 495_000 },
   { label: 'high bake snapshot', prefix: 'bakeHighSnapshot-', maxBytes: 700_000 },
   {
     label: 'shared 3D pipeline',
@@ -17,7 +24,11 @@ const budgets = [
     maxBytes: 850_000,
   },
 ];
-const maxTotalJavaScriptBytes = 3_050_000;
+// The session-owned local-repaint pipeline, live first-stroke overlay and
+// resident-layer eraser measure 3,113,571 bytes in the cloud build. Keep about
+// 8 KiB of deterministic-build headroom; the tighter shell, editor and shared
+// pipeline budgets still guard hot paths independently.
+const maxTotalJavaScriptBytes = 3_122_000;
 
 let entries;
 try {
@@ -48,9 +59,8 @@ for (const budget of budgets) {
   // A tiny route helper can legitimately keep the exportUtils facade while
   // Rollup names the actual shared 3D graph projectPipeline (or vice versa).
   // Budget the single substantial graph, not an unrelated 1 kB facade.
-  const matches = prefixes.length > 1
-    ? prefixMatches.filter((script) => script.bytes >= 100_000)
-    : prefixMatches;
+  const minimumMatchBytes = budget.minimumMatchBytes ?? (prefixes.length > 1 ? 100_000 : 0);
+  const matches = prefixMatches.filter((script) => script.bytes >= minimumMatchBytes);
   if (matches.length !== 1) {
     failures.push(
       `${budget.label}: expected one of ${prefixes.join(', ')}*.js, found ${matches.length}`,

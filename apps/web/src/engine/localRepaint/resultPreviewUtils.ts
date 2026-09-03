@@ -1,12 +1,20 @@
-import { blobToDataUrl, imageDataToBlob, urlToImageData } from './imageUtils';
+import { blobToDataUrl, imageDataToBlob, resizeImageData, urlToImageData } from './imageUtils';
 
 const previewCache = new Map<string, Promise<string>>();
-const captureMaskedPreviewCache = new Map<
+const captureMaskedPreviewCache = new Map<string, { maskUrl: string; promise: Promise<string> }>();
+const captureMaskedProjectionCache = new Map<
   string,
   { maskUrl: string; promise: Promise<string> }
 >();
+const generatedDisplayPreviewCache = new Map<string, Promise<GeneratedDisplayPreview>>();
 const MAX_PREVIEW_CACHE_ENTRIES = 12;
 const SUBJECT_PADDING_RATIO = 0.02;
+const GENERATED_DISPLAY_PADDING_RATIO = 0.06;
+const GENERATED_DISPLAY_MAX_DIMENSION = 1024;
+const CAPTURE_PREVIEW_EDGE_DETECT_RADIUS = 4;
+const CAPTURE_PREVIEW_EDGE_PULL_DISTANCE = 6;
+const CAPTURE_PREVIEW_EDGE_GRADIENT_START = 8;
+const CAPTURE_PREVIEW_EDGE_GRADIENT_END = 128;
 
 // Temporarily show local-repaint previews exactly as returned by ModelView.
 // The preview flood-fill can mistake authored black material, narrow gaps, and
@@ -28,6 +36,108 @@ function getTone(data: Uint8ClampedArray, offset: number) {
 
 export type BackgroundRemovalMode = 'neutral' | 'dark-only';
 
+export type GeneratedDisplayPreview = {
+  /** Source-sized copy for UI surfaces that must preserve capture alignment. */
+  alignedUrl: string;
+  /** Single-cropped copy for cards, zoom previews and layer thumbnails. */
+  fittedUrl: string;
+};
+
+/**
+ * Applies renderer-authored geometry coverage to a generated display copy.
+ *
+ * This is deliberately UI-only. It never changes the Generation result, Layer
+ * imageUrl, projection source, UV bake input or export asset. Depth is safer
+ * than colour-key matting because black generated material remains content.
+ */
+export function applyPackedDepthDisplayMask(source: ImageData, packedDepth: ImageData) {
+  if (source.width !== packedDepth.width || source.height !== packedDepth.height) {
+    throw new Error('Generated display source and depth dimensions must match.');
+  }
+  const output = new ImageData(new Uint8ClampedArray(source.data), source.width, source.height);
+  let changedPixels = 0;
+  for (let offset = 0; offset < output.data.length; offset += 4) {
+    const clearPixel =
+      packedDepth.data[offset] >= 254 &&
+      packedDepth.data[offset + 1] >= 254 &&
+      packedDepth.data[offset + 2] >= 254;
+    if (!clearPixel) continue;
+    if (
+      output.data[offset] !== 0 ||
+      output.data[offset + 1] !== 0 ||
+      output.data[offset + 2] !== 0 ||
+      output.data[offset + 3] !== 0
+    )
+      changedPixels += 1;
+    output.data[offset] = 0;
+    output.data[offset + 1] = 0;
+    output.data[offset + 2] = 0;
+    output.data[offset + 3] = 0;
+  }
+  return { imageData: output, changedPixels };
+}
+
+/**
+ * Conservative fallback for legacy generated rows without capture depth.
+ * Only an almost-black region connected to the outer frame is cleared. There
+ * is no detached-region search, erosion, percentile trim or second matte pass.
+ */
+export function removeStrictOuterDarkDisplayBackground(source: ImageData) {
+  const { width, height, data } = source;
+  const output = new ImageData(new Uint8ClampedArray(data), width, height);
+  const visited = new Uint8Array(width * height);
+  const queue = new Int32Array(width * height);
+  let head = 0;
+  let tail = 0;
+  const accepts = (index: number, seed: boolean) => {
+    const tone = getTone(data, index * 4);
+    if (tone.alpha <= (seed ? 8 : 16)) return true;
+    return seed
+      ? tone.luma <= 11 && tone.max <= 24 && tone.chroma <= 20
+      : tone.luma <= 17 && tone.max <= 32 && tone.chroma <= 24;
+  };
+  const enqueue = (index: number, seed: boolean) => {
+    if (visited[index] || !accepts(index, seed)) return;
+    visited[index] = 1;
+    queue[tail] = index;
+    tail += 1;
+  };
+  for (let x = 0; x < width; x += 1) {
+    enqueue(x, true);
+    enqueue((height - 1) * width + x, true);
+  }
+  for (let y = 1; y < height - 1; y += 1) {
+    enqueue(y * width, true);
+    enqueue(y * width + width - 1, true);
+  }
+  while (head < tail) {
+    const current = queue[head];
+    head += 1;
+    const x = current % width;
+    const y = Math.floor(current / width);
+    if (x > 0) enqueue(current - 1, false);
+    if (x < width - 1) enqueue(current + 1, false);
+    if (y > 0) enqueue(current - width, false);
+    if (y < height - 1) enqueue(current + width, false);
+  }
+  let changedPixels = 0;
+  for (let index = 0; index < tail; index += 1) {
+    const offset = queue[index] * 4;
+    if (
+      output.data[offset] !== 0 ||
+      output.data[offset + 1] !== 0 ||
+      output.data[offset + 2] !== 0 ||
+      output.data[offset + 3] !== 0
+    )
+      changedPixels += 1;
+    output.data[offset] = 0;
+    output.data[offset + 1] = 0;
+    output.data[offset + 2] = 0;
+    output.data[offset + 3] = 0;
+  }
+  return { imageData: output, changedPixels };
+}
+
 /**
  * Turns a packed linear-depth capture into a geometry-only coverage mask.
  * Depth captures clear pixels without geometry to opaque white. Using this
@@ -38,8 +148,7 @@ export function createPackedDepthVisibilityMask(depthImageData: ImageData) {
   const { width, height, data } = depthImageData;
   const output = new ImageData(width, height);
   for (let offset = 0; offset < data.length; offset += 4) {
-    const isClearPixel =
-      data[offset] >= 254 && data[offset + 1] >= 254 && data[offset + 2] >= 254;
+    const isClearPixel = data[offset] >= 254 && data[offset + 1] >= 254 && data[offset + 2] >= 254;
     output.data[offset] = 255;
     output.data[offset + 1] = 255;
     output.data[offset + 2] = 255;
@@ -48,11 +157,7 @@ export function createPackedDepthVisibilityMask(depthImageData: ImageData) {
   return output;
 }
 
-function isBackgroundSeed(
-  data: Uint8ClampedArray,
-  offset: number,
-  mode: BackgroundRemovalMode,
-) {
+function isBackgroundSeed(data: Uint8ClampedArray, offset: number, mode: BackgroundRemovalMode) {
   const { alpha, max, min, chroma, luma } = getTone(data, offset);
   if (alpha <= 32) return true;
   const black = luma <= 28 && max <= 42 && chroma <= 24;
@@ -220,6 +325,377 @@ function getAlphaContentBounds(imageData: ImageData) {
   };
 }
 
+function getExactAlphaContentBounds(imageData: ImageData) {
+  const { width, height, data } = imageData;
+  let left = width;
+  let top = height;
+  let right = -1;
+  let bottom = -1;
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      if (data[(y * width + x) * 4 + 3] === 0) continue;
+      left = Math.min(left, x);
+      top = Math.min(top, y);
+      right = Math.max(right, x);
+      bottom = Math.max(bottom, y);
+    }
+  }
+  if (right < left || bottom < top) return undefined;
+  return { x: left, y: top, width: right - left + 1, height: bottom - top + 1 };
+}
+
+async function encodeDisplayImage(imageData: ImageData) {
+  return blobToDataUrl(await imageDataToBlob(imageData));
+}
+
+async function createGeneratedDisplayPreviewUncached(
+  sourceUrl: string,
+  depthUrl?: string,
+): Promise<GeneratedDisplayPreview> {
+  const decoded = await urlToImageData(sourceUrl);
+  const scale = Math.min(
+    1,
+    GENERATED_DISPLAY_MAX_DIMENSION / Math.max(decoded.width, decoded.height, 1),
+  );
+  const source =
+    scale < 1
+      ? resizeImageData(
+          decoded,
+          Math.max(1, Math.round(decoded.width * scale)),
+          Math.max(1, Math.round(decoded.height * scale)),
+        )
+      : decoded;
+  let processed: ReturnType<typeof removeStrictOuterDarkDisplayBackground>;
+  if (depthUrl) {
+    try {
+      processed = applyPackedDepthDisplayMask(
+        source,
+        await urlToImageData(depthUrl, source.width, source.height),
+      );
+    } catch {
+      // Depth is the safest display authority, but old/expired project assets must
+      // still render. The fallback only clears an edge-connected, nearly-black
+      // outer region and never runs a second matte over the generated subject.
+      processed = removeStrictOuterDarkDisplayBackground(source);
+    }
+  } else {
+    processed = removeStrictOuterDarkDisplayBackground(source);
+  }
+  const transparent = processed.imageData;
+  const bounds = getExactAlphaContentBounds(transparent);
+  if (!bounds) return { alignedUrl: sourceUrl, fittedUrl: sourceUrl };
+
+  const alignedUrl =
+    processed.changedPixels > 0 || scale < 1
+      ? await encodeDisplayImage(transparent)
+      : sourceUrl;
+  const padding = Math.max(
+    4,
+    Math.round(Math.max(bounds.width, bounds.height) * GENERATED_DISPLAY_PADDING_RATIO),
+  );
+  const cropX = Math.max(0, bounds.x - padding);
+  const cropY = Math.max(0, bounds.y - padding);
+  const cropRight = Math.min(source.width, bounds.x + bounds.width + padding);
+  const cropBottom = Math.min(source.height, bounds.y + bounds.height + padding);
+  const cropWidth = Math.max(1, cropRight - cropX);
+  const cropHeight = Math.max(1, cropBottom - cropY);
+  if (cropWidth === source.width && cropHeight === source.height)
+    return { alignedUrl, fittedUrl: alignedUrl };
+
+  const sourceCanvas = document.createElement('canvas');
+  sourceCanvas.width = source.width;
+  sourceCanvas.height = source.height;
+  const sourceContext = sourceCanvas.getContext('2d');
+  if (!sourceContext) return { alignedUrl, fittedUrl: alignedUrl };
+  sourceContext.putImageData(transparent, 0, 0);
+  const fittedCanvas = document.createElement('canvas');
+  fittedCanvas.width = cropWidth;
+  fittedCanvas.height = cropHeight;
+  const fittedContext = fittedCanvas.getContext('2d', { willReadFrequently: true });
+  if (!fittedContext) return { alignedUrl, fittedUrl: alignedUrl };
+  fittedContext.drawImage(
+    sourceCanvas,
+    cropX,
+    cropY,
+    cropWidth,
+    cropHeight,
+    0,
+    0,
+    cropWidth,
+    cropHeight,
+  );
+  return {
+    alignedUrl,
+    fittedUrl: await encodeDisplayImage(
+      fittedContext.getImageData(0, 0, cropWidth, cropHeight),
+    ),
+  };
+}
+
+export function createGeneratedDisplayPreview(sourceUrl: string, depthUrl?: string) {
+  const cacheKey = `${depthUrl ?? 'strict-dark'}:${sourceUrl}`;
+  const cached = generatedDisplayPreviewCache.get(cacheKey);
+  if (cached) return cached;
+  const promise = createGeneratedDisplayPreviewUncached(sourceUrl, depthUrl).catch((error) => {
+    if (generatedDisplayPreviewCache.get(cacheKey) === promise)
+      generatedDisplayPreviewCache.delete(cacheKey);
+    throw error;
+  });
+  generatedDisplayPreviewCache.set(cacheKey, promise);
+  while (generatedDisplayPreviewCache.size > MAX_PREVIEW_CACHE_ENTRIES) {
+    const oldestKey = generatedDisplayPreviewCache.keys().next().value as string | undefined;
+    if (!oldestKey) break;
+    generatedDisplayPreviewCache.delete(oldestKey);
+  }
+  return promise;
+}
+
+function smoothstep(edge0: number, edge1: number, value: number) {
+  const t = Math.min(1, Math.max(0, (value - edge0) / Math.max(1e-6, edge1 - edge0)));
+  return t * t * (3 - 2 * t);
+}
+
+/**
+ * Applies the geometry capture mask while replacing background-contaminated
+ * silhouette RGB with a nearby interior colour. Keeping the antialiased alpha
+ * but decontaminating its RGB prevents a dark halo over the preview checkerboard.
+ */
+export function applyCapturePreviewMask(source: ImageData, mask: ImageData) {
+  const { width, height } = source;
+  if (mask.width !== width || mask.height !== height)
+    throw new Error('Capture preview mask dimensions must match the source image.');
+
+  const output = new ImageData(new Uint8ClampedArray(source.data), width, height);
+  const coverage = new Uint8Array(width * height);
+  for (let index = 0; index < coverage.length; index += 1) {
+    const offset = index * 4;
+    const maskLuminance =
+      mask.data[offset] * 0.299 + mask.data[offset + 1] * 0.587 + mask.data[offset + 2] * 0.114;
+    coverage[index] = Math.round(maskLuminance * (mask.data[offset + 3] / 255));
+  }
+
+  const coverageAt = (x: number, y: number) => {
+    const clampedX = Math.min(width - 1, Math.max(0, x));
+    const clampedY = Math.min(height - 1, Math.max(0, y));
+    return coverage[clampedY * width + clampedX];
+  };
+  const sourceChannelAt = (x: number, y: number, channel: number) => {
+    const clampedX = Math.min(width - 1, Math.max(0, x));
+    const clampedY = Math.min(height - 1, Math.max(0, y));
+    return source.data[(clampedY * width + clampedX) * 4 + channel];
+  };
+  const sampleSourceChannel = (x: number, y: number, channel: number) => {
+    const x0 = Math.floor(x);
+    const y0 = Math.floor(y);
+    const x1 = x0 + 1;
+    const y1 = y0 + 1;
+    const tx = x - x0;
+    const ty = y - y0;
+    const top = sourceChannelAt(x0, y0, channel) * (1 - tx) + sourceChannelAt(x1, y0, channel) * tx;
+    const bottom =
+      sourceChannelAt(x0, y1, channel) * (1 - tx) + sourceChannelAt(x1, y1, channel) * tx;
+    return top * (1 - ty) + bottom * ty;
+  };
+
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const index = y * width + x;
+      const offset = index * 4;
+      const maskCoverage = coverage[index] / 255;
+      const nextAlpha = Math.round(source.data[offset + 3] * maskCoverage);
+      output.data[offset + 3] = nextAlpha;
+      if (nextAlpha <= 0) {
+        output.data[offset] = 0;
+        output.data[offset + 1] = 0;
+        output.data[offset + 2] = 0;
+        continue;
+      }
+
+      const gradientX =
+        coverageAt(x + CAPTURE_PREVIEW_EDGE_DETECT_RADIUS, y) -
+        coverageAt(x - CAPTURE_PREVIEW_EDGE_DETECT_RADIUS, y);
+      const gradientY =
+        coverageAt(x, y + CAPTURE_PREVIEW_EDGE_DETECT_RADIUS) -
+        coverageAt(x, y - CAPTURE_PREVIEW_EDGE_DETECT_RADIUS);
+      const gradientLength = Math.hypot(gradientX, gradientY);
+      const edgeMix = smoothstep(
+        CAPTURE_PREVIEW_EDGE_GRADIENT_START,
+        CAPTURE_PREVIEW_EDGE_GRADIENT_END,
+        gradientLength,
+      );
+      if (edgeMix <= 0) continue;
+
+      const pullX = x + (gradientX / gradientLength) * CAPTURE_PREVIEW_EDGE_PULL_DISTANCE;
+      const pullY = y + (gradientY / gradientLength) * CAPTURE_PREVIEW_EDGE_PULL_DISTANCE;
+      for (let channel = 0; channel < 3; channel += 1) {
+        const interior = sampleSourceChannel(pullX, pullY, channel);
+        output.data[offset + channel] = Math.round(
+          source.data[offset + channel] * (1 - edgeMix) + interior * edgeMix,
+        );
+      }
+    }
+  }
+  return output;
+}
+
+/**
+ * Produces a projection-safe counterpart of the cropped panel preview. The
+ * image stays at the capture resolution so projected UVs remain unchanged,
+ * while cleaned silhouette colours are bled into the masked-out background.
+ * The projected material owns coverage through its separate capture mask, so
+ * this colour image is intentionally opaque to keep browsers from discarding
+ * useful RGB stored under transparent pixels during PNG encoding.
+ */
+export function applyCaptureProjectionImage(
+  source: ImageData,
+  mask: ImageData,
+  options: { edgeBlend?: boolean } = {},
+) {
+  const { width, height } = source;
+  if (mask.width !== width || mask.height !== height)
+    throw new Error('Capture projection mask dimensions must match the source image.');
+
+  const cleaned = applyCapturePreviewMask(source, mask);
+  const output = new ImageData(new Uint8ClampedArray(source.data), width, height);
+  const coverage = new Uint8Array(width * height);
+  // When a quality-blended texture already exists below the single-view
+  // paintover, keep a small non-zero alpha outside the authoritative geometry
+  // mask. That preserves the bled RGB during PNG encoding while the alpha
+  // inside the silhouette can act as a wide transition weight.
+  const minimumBlendAlpha = Math.round(255 * 0.12);
+  for (let index = 0; index < coverage.length; index += 1) {
+    const offset = index * 4;
+    const maskLuminance =
+      mask.data[offset] * 0.299 + mask.data[offset + 1] * 0.587 + mask.data[offset + 2] * 0.114;
+    coverage[index] = Math.round(maskLuminance * (mask.data[offset + 3] / 255));
+    output.data[offset + 3] = options.edgeBlend ? minimumBlendAlpha : 255;
+    if (coverage[index] <= 0) continue;
+    output.data[offset] = cleaned.data[offset];
+    output.data[offset + 1] = cleaned.data[offset + 1];
+    output.data[offset + 2] = cleaned.data[offset + 2];
+  }
+
+  // A bounded breadth-first dilation is linear in the number of pixels in the
+  // edge band, unlike repeatedly scanning the full 2K/4K frame. The band is
+  // wide enough to survive minification/mipmap sampling but never changes the
+  // projection footprint because the separate mask remains authoritative.
+  const maximumBleedDistance = Math.min(
+    48,
+    Math.max(8, Math.round(Math.max(width, height) * 0.015)),
+  );
+  const distances = new Uint16Array(width * height);
+  const queue = new Int32Array(width * height);
+  let head = 0;
+  let tail = 0;
+  const isOutside = (x: number, y: number) =>
+    x < 0 || x >= width || y < 0 || y >= height || coverage[y * width + x] <= 0;
+
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const index = y * width + x;
+      if (
+        coverage[index] <= 0 ||
+        (!isOutside(x - 1, y) &&
+          !isOutside(x + 1, y) &&
+          !isOutside(x, y - 1) &&
+          !isOutside(x, y + 1))
+      )
+        continue;
+      distances[index] = 1;
+      queue[tail] = index;
+      tail += 1;
+    }
+  }
+
+  const neighborOffsets = [
+    [-1, -1],
+    [0, -1],
+    [1, -1],
+    [-1, 0],
+    [1, 0],
+    [-1, 1],
+    [0, 1],
+    [1, 1],
+  ] as const;
+
+  if (options.edgeBlend) {
+    // Build an inward distance field from the captured silhouette. The core of
+    // the single view stays fully authoritative; only a resolution-independent
+    // boundary band crossfades into the older multiview/UV result.
+    const maximumBlendDistance = Math.min(
+      128,
+      Math.max(24, Math.round(Math.max(width, height) * 0.035)),
+    );
+    // Reuse the outward-bleed queue and distance buffer. A second pair of
+    // full-frame typed arrays would add about 100 MB at 4K resolution.
+    const boundaryTail = tail;
+    while (head < tail) {
+      const current = queue[head];
+      head += 1;
+      const distance = distances[current];
+      if (distance >= maximumBlendDistance) continue;
+      const x = current % width;
+      const y = Math.floor(current / width);
+      for (const [offsetX, offsetY] of neighborOffsets) {
+        const neighborX = x + offsetX;
+        const neighborY = y + offsetY;
+        if (neighborX < 0 || neighborX >= width || neighborY < 0 || neighborY >= height) continue;
+        const neighbor = neighborY * width + neighborX;
+        if (coverage[neighbor] <= 0 || distances[neighbor] !== 0) continue;
+        distances[neighbor] = distance + 1;
+        queue[tail] = neighbor;
+        tail += 1;
+      }
+    }
+    for (let index = 0; index < coverage.length; index += 1) {
+      if (coverage[index] <= 0) continue;
+      const distance = distances[index];
+      if (distance === 0) {
+        output.data[index * 4 + 3] = 255;
+        continue;
+      }
+      const linear = Math.min(1, Math.max(0, (distance - 1) / maximumBlendDistance));
+      const smooth = linear * linear * (3 - 2 * linear);
+      output.data[index * 4 + 3] = Math.round(
+        minimumBlendAlpha + (255 - minimumBlendAlpha) * smooth,
+      );
+    }
+    // Restore the boundary-only frontier before growing RGB into the masked
+    // background. The first boundaryTail queue entries were never overwritten.
+    for (let index = 0; index < coverage.length; index += 1) {
+      if (coverage[index] > 0 && distances[index] > 1) distances[index] = 0;
+    }
+    head = 0;
+    tail = boundaryTail;
+  }
+
+  while (head < tail) {
+    const current = queue[head];
+    head += 1;
+    const distance = distances[current];
+    if (distance > maximumBleedDistance) continue;
+    const x = current % width;
+    const y = Math.floor(current / width);
+    const sourceOffset = current * 4;
+    for (const [offsetX, offsetY] of neighborOffsets) {
+      const neighborX = x + offsetX;
+      const neighborY = y + offsetY;
+      if (neighborX < 0 || neighborX >= width || neighborY < 0 || neighborY >= height) continue;
+      const neighbor = neighborY * width + neighborX;
+      if (coverage[neighbor] > 0 || distances[neighbor] !== 0) continue;
+      const neighborOffset = neighbor * 4;
+      output.data[neighborOffset] = output.data[sourceOffset];
+      output.data[neighborOffset + 1] = output.data[sourceOffset + 1];
+      output.data[neighborOffset + 2] = output.data[sourceOffset + 2];
+      output.data[neighborOffset + 3] = options.edgeBlend ? minimumBlendAlpha : 255;
+      distances[neighbor] = distance + 1;
+      queue[tail] = neighbor;
+      tail += 1;
+    }
+  }
+  return output;
+}
+
 async function createPreviewUncached(sourceUrl: string, mode: BackgroundRemovalMode) {
   const source = await urlToImageData(sourceUrl);
   const backgroundResult = removeEdgeConnectedNeutralBackground(source, mode);
@@ -282,18 +758,7 @@ async function createPreviewUncached(sourceUrl: string, mode: BackgroundRemovalM
 async function createCaptureMaskedPreviewUncached(sourceUrl: string, maskUrl: string) {
   const source = await urlToImageData(sourceUrl);
   const mask = await urlToImageData(maskUrl, source.width, source.height);
-  const masked = new ImageData(new Uint8ClampedArray(source.data), source.width, source.height);
-  for (let offset = 0; offset < masked.data.length; offset += 4) {
-    const maskLuminance =
-      mask.data[offset] * 0.299 + mask.data[offset + 1] * 0.587 + mask.data[offset + 2] * 0.114;
-    const maskCoverage = (maskLuminance / 255) * (mask.data[offset + 3] / 255);
-    const nextAlpha = Math.round(masked.data[offset + 3] * maskCoverage);
-    masked.data[offset + 3] = nextAlpha;
-    if (nextAlpha > 0) continue;
-    masked.data[offset] = 0;
-    masked.data[offset + 1] = 0;
-    masked.data[offset + 2] = 0;
-  }
+  const masked = applyCapturePreviewMask(source, mask);
 
   const bounds = getAlphaContentBounds(masked);
   if (!bounds) return sourceUrl;
@@ -349,6 +814,38 @@ export function createCaptureMaskedPreview(sourceUrl: string, maskUrl: string) {
     const oldestKey = captureMaskedPreviewCache.keys().next().value as string | undefined;
     if (!oldestKey) break;
     captureMaskedPreviewCache.delete(oldestKey);
+  }
+  return promise;
+}
+
+async function createCaptureMaskedProjectionImageUncached(
+  sourceUrl: string,
+  maskUrl: string,
+  options: { edgeBlend?: boolean },
+) {
+  const source = await urlToImageData(sourceUrl);
+  const mask = await urlToImageData(maskUrl, source.width, source.height);
+  return blobToDataUrl(await imageDataToBlob(applyCaptureProjectionImage(source, mask, options)));
+}
+
+export function createCaptureMaskedProjectionImage(
+  sourceUrl: string,
+  maskUrl: string,
+  options: { edgeBlend?: boolean } = {},
+) {
+  const cacheKey = `${options.edgeBlend ? 'blend' : 'opaque'}:${sourceUrl}`;
+  const cached = captureMaskedProjectionCache.get(cacheKey);
+  if (cached?.maskUrl === maskUrl) return cached.promise;
+  const promise = createCaptureMaskedProjectionImageUncached(sourceUrl, maskUrl, options).catch((error) => {
+    if (captureMaskedProjectionCache.get(cacheKey)?.promise === promise)
+      captureMaskedProjectionCache.delete(cacheKey);
+    throw error;
+  });
+  captureMaskedProjectionCache.set(cacheKey, { maskUrl, promise });
+  while (captureMaskedProjectionCache.size > MAX_PREVIEW_CACHE_ENTRIES) {
+    const oldestKey = captureMaskedProjectionCache.keys().next().value as string | undefined;
+    if (!oldestKey) break;
+    captureMaskedProjectionCache.delete(oldestKey);
   }
   return promise;
 }

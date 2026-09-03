@@ -10,7 +10,10 @@ export function isAllowedRequestOrigin(request: IncomingMessage) {
 
 export function corsHeaders(response: ServerResponse) {
   const requestOrigin = response.req.headers.origin;
-  const allowOrigin = requestOrigin && allowedOrigins.has(requestOrigin) ? requestOrigin : serverConfig.frontendOrigin;
+  const allowOrigin =
+    requestOrigin && allowedOrigins.has(requestOrigin)
+      ? requestOrigin
+      : serverConfig.frontendOrigin;
   return {
     'access-control-allow-origin': allowOrigin,
     'access-control-allow-credentials': 'true',
@@ -24,10 +27,17 @@ export function corsHeaders(response: ServerResponse) {
   };
 }
 
-export async function readJsonBody<T>(request: IncomingMessage): Promise<T> {
+export async function readJsonBody<T>(
+  request: IncomingMessage,
+  maxBytes = Number.POSITIVE_INFINITY,
+): Promise<T> {
   const chunks: Buffer[] = [];
+  let totalBytes = 0;
   for await (const chunk of request) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    totalBytes += buffer.byteLength;
+    if (totalBytes > maxBytes) throw new Error('Request body is too large.');
+    chunks.push(buffer);
   }
   const raw = Buffer.concat(chunks).toString('utf8');
   return raw ? (JSON.parse(raw) as T) : ({} as T);
