@@ -36,6 +36,13 @@ spec:
                 name: li3d-server-config
             - secretRef:
                 name: li3d-server-secrets
+            # Object storage AK/SK. Separate from li3d-server-secrets on
+            # purpose: that one is regenerated from CI/CD variables on every
+            # deploy, this one is created once directly in the cluster so the
+            # keys never pass through git or CI. See
+            # deploy/k8s/infra/object-storage-ingress/README.md.
+            - secretRef:
+                name: li3d-object-storage
           volumeMounts:
             - name: workspace
               mountPath: /data/workspace
@@ -50,6 +57,13 @@ spec:
                 name: li3d-server-config
             - secretRef:
                 name: li3d-server-secrets
+            # Object storage AK/SK. Separate from li3d-server-secrets on
+            # purpose: that one is regenerated from CI/CD variables on every
+            # deploy, this one is created once directly in the cluster so the
+            # keys never pass through git or CI. See
+            # deploy/k8s/infra/object-storage-ingress/README.md.
+            - secretRef:
+                name: li3d-object-storage
           volumeMounts:
             - name: workspace
               mountPath: /data/workspace
