@@ -142,6 +142,53 @@ async function main() {
     `${projectUrlPrefix}/assets/layers/repaint-mask.png`,
   );
 
+  // A late GPU/runtime snapshot must never replace already durable masks.
+  // This models the autosave race where the renderer promotes a layer to its
+  // live canvas URL after a previous save has uploaded the exact same pixels.
+  const runtimeMaskUrl =
+    'liclick-live-projected-canvas://local-repaint-projection-test:inward-crossfade';
+  const runtimeAuthoredMaskUrl =
+    'liclick-live-projected-canvas://local-repaint-projection-test';
+  const volatileSave = await saveProject(userId, created.project.id, {
+    ...loaded.project,
+    layers: loaded.project.layers.map((layer) =>
+      layer.id === 'local-repaint-projection-test'
+        ? {
+            ...layer,
+            maskUrl: runtimeMaskUrl,
+            localRepaintMaskUrl: runtimeAuthoredMaskUrl,
+          }
+        : layer,
+    ),
+  });
+  const protectedLocalRepaint = volatileSave.project.layers.find(
+    (layer) => layer.id === 'local-repaint-projection-test',
+  );
+  assert.equal(protectedLocalRepaint.maskUrl, `${projectUrlPrefix}/assets/layers/repaint-mask.png`);
+  assert.equal(
+    protectedLocalRepaint.localRepaintMaskUrl,
+    `${projectUrlPrefix}/assets/layers/repaint-mask.png`,
+  );
+
+  await assert.rejects(
+    () =>
+      saveProject(userId, created.project.id, {
+        ...volatileSave.project,
+        layers: [
+          ...volatileSave.project.layers,
+          {
+            id: 'local-repaint-projection-without-durable-mask',
+            type: 'projected',
+            objectId: modelObject.id,
+            imageUrl: `${projectUrlPrefix}/assets/generations/repaint-new.png`,
+            maskUrl: 'liclick-live-projected-canvas://missing-mask',
+            localRepaintMaskUrl: 'liclick-live-projected-canvas://missing-authored-mask',
+          },
+        ],
+      }),
+    (error) => error?.code === 'PROJECT_SAVE_CONFLICT',
+  );
+
   // Simulate an older/partial client that knows neither the pipeline field nor
   // the model metadata it owns. Existing pipeline state must be retained, and
   // its object reference must prevent data loss.
@@ -149,11 +196,12 @@ async function main() {
   delete legacyClientProject.pipeline;
   const secondSave = await saveProject(userId, created.project.id, {
     ...legacyClientProject,
-    updatedAt: firstSave.project.updatedAt,
+    revision: volatileSave.project.revision,
+    updatedAt: volatileSave.project.updatedAt,
     objects: [anchorObject],
   });
-  assert.equal(secondSave.project.revision.number, 3);
-  assert.equal(secondSave.project.revision.parentRevisionId, firstSave.project.revision.id);
+  assert.equal(secondSave.project.revision.number, 4);
+  assert.equal(secondSave.project.revision.parentRevisionId, volatileSave.project.revision.id);
   assert.equal(secondSave.project.pipeline.revisions[0].id, 'texture-r1');
   assert.deepEqual(
     secondSave.project.objects.map((object) => object.id).sort(),
@@ -167,7 +215,7 @@ async function main() {
     objects: [anchorObject],
     deletedObjectIds: [modelObject.id],
   });
-  assert.equal(deletionSave.project.revision.number, 4);
+  assert.equal(deletionSave.project.revision.number, 5);
   assert.deepEqual(
     deletionSave.project.objects.map((object) => object.id),
     ['anchor-model'],
@@ -186,7 +234,7 @@ async function main() {
   assert.ok(commandResult);
   assert.equal(commandResult.command.replayed, false);
   assert.equal(commandResult.project.name, 'Command-renamed project');
-  assert.equal(commandResult.project.revision.number, 5);
+  assert.equal(commandResult.project.revision.number, 6);
 
   const commandReceiptPath = path.join(
     workspace,
@@ -208,7 +256,7 @@ async function main() {
   assert.ok(replayedCommand);
   assert.equal(replayedCommand.command.replayed, true);
   assert.equal(replayedCommand.project.revision.id, commandResult.project.revision.id);
-  assert.equal(replayedCommand.project.revision.number, 5);
+  assert.equal(replayedCommand.project.revision.number, 6);
   await fs.access(commandReceiptPath);
 
   await assert.rejects(

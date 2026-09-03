@@ -76,6 +76,21 @@ assert.match(
   'reloading must try the canonical authored mask before the derived compatibility mask',
 );
 assert.match(editorPageSource, /-local-repaint-authored-mask\.png/);
+assert.match(
+  editorPageSource,
+  /getLiveProjectedTextureSourceState\(url\)/,
+  'workspace save must verify that a live projected source still exists before persistence',
+);
+assert.match(
+  editorPageSource,
+  /if \(url && isLiveProjectedCanvasUrl\(url\)\) throw error/,
+  'workspace save must never fall back to a runtime-only projected URL',
+);
+assert.match(
+  editorPageSource,
+  /rememberPersistedProjectAsset\(assetSlotKey, url, result\.asset\.url\)/,
+  'a verified live projected upload must remain available after the runtime texture is released',
+);
 assert.doesNotMatch(
   editorPageSource,
   /layer\.localRepaintMaskUrl\s*=\s*layer\.maskUrl/,

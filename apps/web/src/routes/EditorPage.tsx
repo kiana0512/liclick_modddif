@@ -86,8 +86,8 @@ import {
   setDebugUvBakeVerbose,
 } from '@/engine/bake/uvBakeDebugControls';
 import {
-  getLiveProjectedCanvasState,
   getLiveProjectedTextureBlob,
+  getLiveProjectedTextureSourceState,
   isLiveProjectedCanvasUrl,
 } from '@/engine/projection/liveProjectedCanvasTextureRegistry';
 import {
@@ -3063,16 +3063,29 @@ export function EditorPage({
     ) => {
       try {
         if (url && isLiveProjectedCanvasUrl(url)) {
-          const liveState = getLiveProjectedCanvasState(url);
+          const assetSlotKey = [projectForSave.id, category, filename].join('|');
+          const cachedSourceAssetUrl = persistedProjectAssetBySlot.get(assetSlotKey)?.get(url);
+          const liveState = getLiveProjectedTextureSourceState(url);
+          if (!liveState) {
+            if (cachedSourceAssetUrl) return cachedSourceAssetUrl;
+            throw new Error(
+              'The live projected asset was released before it could be persisted.',
+            );
+          }
           const revisionCacheKey = liveState
             ? [projectForSave.id, category, filename, url, liveState.revision].join('|')
             : undefined;
           const cachedAssetUrl = revisionCacheKey
             ? persistedLiveProjectedAssetByRevision.get(revisionCacheKey)
             : undefined;
-          if (cachedAssetUrl) return cachedAssetUrl;
+          if (cachedAssetUrl) {
+            return rememberPersistedProjectAsset(assetSlotKey, url, cachedAssetUrl);
+          }
           const blobPromise = getLiveProjectedTextureBlob(url);
-          if (!blobPromise) return fallback;
+          if (!blobPromise) {
+            if (cachedSourceAssetUrl) return cachedSourceAssetUrl;
+            throw new Error('The live projected asset could not be encoded for persistence.');
+          }
           const result = await saveBlobAsset({
             projectId: projectForSave.id,
             category,
@@ -3089,10 +3102,14 @@ export function EditorPage({
               persistedLiveProjectedAssetByRevision.delete(oldestKey);
             }
           }
-          return result.asset.url;
+          return rememberPersistedProjectAsset(assetSlotKey, url, result.asset.url);
         }
         return await persistAssetUrl(projectForSave.id, url, category, filename);
       } catch (error) {
+        // A runtime registry URL is never a durable project asset. If its
+        // backing texture disappeared before encoding, fail this save instead
+        // of committing a project revision that cannot be reopened.
+        if (url && isLiveProjectedCanvasUrl(url)) throw error;
         console.warn(
           `[Liclick 3D Texture] Skipping unavailable optional asset ${category}/${filename}.`,
           error,

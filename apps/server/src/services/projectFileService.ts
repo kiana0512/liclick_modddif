@@ -130,6 +130,14 @@ function isBlobUrl(value: unknown) {
   return typeof value === 'string' && value.startsWith('blob:');
 }
 
+function isLiveProjectedCanvasUrl(value: unknown) {
+  return typeof value === 'string' && value.startsWith('liclick-live-projected-canvas:');
+}
+
+function isVolatileLayerAssetUrl(value: unknown) {
+  return isBlobUrl(value) || isLiveProjectedCanvasUrl(value);
+}
+
 function getBakedTextureCoverageRatio(texture: Record<string, unknown>) {
   const directCoverageRatio = readNumber(texture.coverageRatio);
   if (directCoverageRatio !== undefined) return directCoverageRatio;
@@ -209,7 +217,7 @@ function sanitizeVolatileLayerAssets(
   );
   const durableUrl = (value: unknown) => {
     const url = readString(value);
-    return url && !isBlobUrl(url) ? url : undefined;
+    return url && !isVolatileLayerAssetUrl(url) ? url : undefined;
   };
   let changed = false;
   const layers = project.layers.map((layer) => {
@@ -217,12 +225,42 @@ function sanitizeVolatileLayerAssets(
     const capture = capturesById.get(readString(layer.captureId) ?? '');
     const existingLayer = existingLayersById.get(readString(layer.id) ?? '');
     const nextLayer: Record<string, unknown> = { ...layer };
-    if (isBlobUrl(nextLayer.maskUrl)) {
-      nextLayer.maskUrl = durableUrl(existingLayer?.maskUrl) ?? durableUrl(capture?.maskUrl);
+    if (isVolatileLayerAssetUrl(nextLayer.maskUrl)) {
+      const previousMaskUrl =
+        durableUrl(existingLayer?.maskUrl) ??
+        (isBlobUrl(nextLayer.maskUrl) ? durableUrl(capture?.maskUrl) : undefined);
+      if (!previousMaskUrl && isLiveProjectedCanvasUrl(nextLayer.maskUrl)) {
+        throw new ProjectSaveConflictError(
+          'Layer mask is still a runtime GPU canvas. Retry after the mask asset has been saved.',
+        );
+      }
+      nextLayer.maskUrl = previousMaskUrl;
       changed = true;
     }
-    if (isBlobUrl(nextLayer.depthUrl)) {
-      nextLayer.depthUrl = durableUrl(existingLayer?.depthUrl) ?? durableUrl(capture?.depthUrl);
+    if (isVolatileLayerAssetUrl(nextLayer.localRepaintMaskUrl)) {
+      const previousAuthoredMaskUrl = durableUrl(existingLayer?.localRepaintMaskUrl);
+      if (!previousAuthoredMaskUrl && isLiveProjectedCanvasUrl(nextLayer.localRepaintMaskUrl)) {
+        throw new ProjectSaveConflictError(
+          'Local repaint mask is still a runtime GPU canvas. Retry after the authored mask asset has been saved.',
+        );
+      }
+      nextLayer.localRepaintMaskUrl = previousAuthoredMaskUrl;
+      changed = true;
+    }
+    if (isVolatileLayerAssetUrl(nextLayer.depthUrl)) {
+      nextLayer.depthUrl =
+        durableUrl(existingLayer?.depthUrl) ?? durableUrl(capture?.depthUrl);
+      changed = true;
+    }
+    if (isLiveProjectedCanvasUrl(nextLayer.localRepaintSourceUrl)) {
+      const previousSourceUrl =
+        durableUrl(existingLayer?.localRepaintSourceUrl) ?? durableUrl(nextLayer.imageUrl);
+      if (!previousSourceUrl) {
+        throw new ProjectSaveConflictError(
+          'Local repaint source is still a runtime GPU image. Retry after the source asset has been saved.',
+        );
+      }
+      nextLayer.localRepaintSourceUrl = previousSourceUrl;
       changed = true;
     }
     if (isProjectedLayerRecord(nextLayer) && !durableUrl(nextLayer.imageUrl)) {
