@@ -158,10 +158,13 @@ export async function renderSceneToPngUrl(
   const previousRendererState = captureSharedRendererState(request.gl);
   const previousBackground = request.scene.background;
   const pixels = new Uint8Array(request.width * request.height * 4);
-  try {
-    if (options.ignoreSceneBackground) request.scene.background = null;
+  const bindCaptureTarget = () => {
     request.gl.setRenderTarget(sceneTarget);
     request.gl.setClearColor(request.clearColor ?? '#000000', request.clearAlpha ?? 1);
+  };
+  try {
+    if (options.ignoreSceneBackground) request.scene.background = null;
+    bindCaptureTarget();
     request.gl.setScissorTest(false);
     request.gl.clear();
     const tileSize = Math.max(
@@ -173,55 +176,56 @@ export async function renderSceneToPngUrl(
     );
     const tiled = tileSize < request.width || tileSize < request.height;
     if (tiled) {
-      const tiles: Array<{ x: number; y: number; width: number; height: number }> = [];
+      // ALG-CAP-006 v1.0.0: the first idle wait yields to R3F too.
+      // Never leave the capture framebuffer or background installed there.
+      restoreSharedRendererState(request.gl, previousRendererState);
+      request.scene.background = previousBackground;
+      let presentationBudgetStartedAt = performance.now();
       for (let y = 0; y < request.height; y += tileSize) {
         for (let x = 0; x < request.width; x += tileSize) {
-          tiles.push({
+          await options.waitForViewportIdle?.();
+          markCapturePerformancePhase(options.performancePhasePrefix, 'render-tile');
+          bindCaptureTarget();
+          request.gl.setScissorTest(true);
+          request.gl.setScissor(
             x,
             y,
-            width: Math.min(tileSize, request.width - x),
-            height: Math.min(tileSize, request.height - y),
-          });
-        }
-      }
-      let presentationBudgetStartedAt = performance.now();
-      for (let index = 0; index < tiles.length; index += 1) {
-        await options.waitForViewportIdle?.();
-        const tile = tiles[index];
-        markCapturePerformancePhase(options.performancePhasePrefix, 'render-tile');
-        request.gl.setRenderTarget(sceneTarget);
-        request.gl.setScissorTest(true);
-        request.gl.setScissor(tile.x, tile.y, tile.width, tile.height);
-        const restorePreparedScene = options.prepareScene?.();
-        try {
-          request.gl.render(request.scene, request.camera);
-        } finally {
-          restorePreparedScene?.();
-        }
-        // Do not let a detached depth/normal capture queue outrun the physical
-        // GPU. A flush only submits work; it does not prevent several 256px
-        // tiles accumulating behind the onscreen renderer and stealing a later
-        // presentation interval. The asynchronous fence drains this tile while
-        // leaving the main thread and viewport fully responsive.
-        const tileCompletion = waitForSubmittedGpuWork(request.gl);
-        // The capture target retains every completed tile. Restore the live
-        // renderer before yielding so React Three Fiber cannot inherit our
-        // target/scissor state.
-        restoreSharedRendererState(request.gl, previousRendererState);
-        markCapturePerformancePhase(options.performancePhasePrefix, 'gpu-wait');
-        await tileCompletion;
-        if (
-          index + 1 < tiles.length &&
-          performance.now() - presentationBudgetStartedAt >= INTERACTIVE_CAPTURE_GPU_BUDGET_MS
-        ) {
-          // Resume after every rAF callback (including R3F presentation) has
-          // submitted for this frame. Resolving directly inside rAF resumes in
-          // a microtask and can put the next detached capture tile in front of
-          // the visible viewport. Fast tiles may share the same bounded 4ms
-          // window; this removes dozens of empty 16.7ms waits without allowing
-          // background capture to monopolize a presentation interval.
-          await waitForBrowserPaint();
-          presentationBudgetStartedAt = performance.now();
+            Math.min(tileSize, request.width - x),
+            Math.min(tileSize, request.height - y),
+          );
+          if (options.ignoreSceneBackground) request.scene.background = null;
+          const restorePreparedScene = options.prepareScene?.();
+          try {
+            request.gl.render(request.scene, request.camera);
+          } finally {
+            restorePreparedScene?.();
+            request.scene.background = previousBackground;
+          }
+          // Do not let a detached depth/normal capture queue outrun the physical
+          // GPU. A flush only submits work; it does not prevent several 256px
+          // tiles accumulating behind the onscreen renderer and stealing a later
+          // presentation interval. The asynchronous fence drains this tile while
+          // leaving the main thread and viewport fully responsive.
+          const tileCompletion = waitForSubmittedGpuWork(request.gl);
+          // The capture target retains every completed tile. Restore the live
+          // renderer before yielding so React Three Fiber cannot inherit our
+          // target/scissor state.
+          restoreSharedRendererState(request.gl, previousRendererState);
+          markCapturePerformancePhase(options.performancePhasePrefix, 'gpu-wait');
+          await tileCompletion;
+          if (
+            (x + tileSize < request.width || y + tileSize < request.height) &&
+            performance.now() - presentationBudgetStartedAt >= INTERACTIVE_CAPTURE_GPU_BUDGET_MS
+          ) {
+            // Resume after every rAF callback (including R3F presentation) has
+            // submitted for this frame. Resolving directly inside rAF resumes in
+            // a microtask and can put the next detached capture tile in front of
+            // the visible viewport. Fast tiles may share the same bounded 4ms
+            // window; this removes dozens of empty 16.7ms waits without allowing
+            // background capture to monopolize a presentation interval.
+            await waitForBrowserPaint();
+            presentationBudgetStartedAt = performance.now();
+          }
         }
       }
       request.gl.setRenderTarget(sceneTarget);
@@ -316,16 +320,21 @@ export async function renderScenePassesToPngUrl(
     request.gl.setRenderTarget(target);
     request.gl.setClearColor(request.clearColor ?? '#000000', request.clearAlpha ?? 1);
     request.gl.clear(true, true, true);
+    restoreSharedRendererState(request.gl, previousRendererState);
+    request.scene.background = previousBackground;
     for (let index = 0; index < passes.length; index += 1) {
       await options.waitForViewportIdle?.();
       request.gl.setRenderTarget(target);
+      request.gl.setClearColor(request.clearColor ?? '#000000', request.clearAlpha ?? 1);
       request.gl.setScissorTest(false);
       request.gl.autoClear = false;
+      if (options.ignoreSceneBackground) request.scene.background = null;
       const restore = passes[index].prepare();
       try {
         request.gl.render(request.scene, request.camera);
       } finally {
         restore();
+        request.scene.background = previousBackground;
       }
       // A repaint mask may contain many archived projector strokes. Submitting
       // every pass in one uninterrupted loop made button 2 monopolise the GPU
@@ -344,6 +353,7 @@ export async function renderScenePassesToPngUrl(
         request.gl.setScissorTest(false);
         request.gl.autoClear = false;
         request.gl.clearDepth();
+        restoreSharedRendererState(request.gl, previousRendererState);
       }
     }
     request.gl.setRenderTarget(target);
