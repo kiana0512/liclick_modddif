@@ -1,12 +1,28 @@
 stages:
   - verify
   - build
+  - containerize
+  - deploy
 
 variables:
   # Keep both pnpm packages and Prisma engine downloads inside the project so
   # GitLab's project-scoped cache can actually restore them on the next job.
   PNPM_STORE_DIR: '$CI_PROJECT_DIR/.pnpm-store'
   XDG_CACHE_HOME: '$CI_PROJECT_DIR/.cache'
+  REGISTRY_HOST: "tsh-devops-prod-all-0001-registry.cn-shanghai.cr.aliyuncs.com"
+  REGISTRY_NAMESPACE: "devops"
+  IMAGE_REPOSITORY_SERVER: "tsh-devops-prod-all-0001-registry.cn-shanghai.cr.aliyuncs.com/devops/li3d-server"
+  IMAGE_REPOSITORY_WEB: "tsh-devops-prod-all-0001-registry.cn-shanghai.cr.aliyuncs.com/devops/li3d-web"
+  CI_KANIKO_IMAGE: "tsh-devops-prod-all-0001-registry.cn-shanghai.cr.aliyuncs.com/devops/kaniko:debug"
+  CI_KUBECTL_IMAGE: "tsh-devops-prod-all-0001-registry.cn-shanghai.cr.aliyuncs.com/devops/kubectl:1.30"
+  NODE_IMAGE: "tsh-devops-prod-all-0001-registry.cn-shanghai.cr.aliyuncs.com/devops/node:22-bookworm-slim"
+  NGINX_IMAGE: "tsh-devops-prod-all-0001-registry.cn-shanghai.cr.aliyuncs.com/devops/nginx-unprivileged:1.27-alpine"
+  IMAGE_TAG: "$CI_COMMIT_SHORT_SHA"
+  RELEASE_TAG: "release-latest"
+  KUSTOMIZE_OVERLAY: "deploy/k8s/overlays/zprod"
+  KUBE_NAMESPACE: "li3d"
+  ACR_DOCKER_CONFIG: "/acr-docker-config"
+
 
 default:
   image: node:22-bookworm
@@ -40,6 +56,7 @@ contracts-and-cloud-boundary:
     - corepack pnpm run check:cloud-boundary
     - corepack pnpm run check:project-repository-boundary
     - corepack pnpm run test:contracts
+    - node --test scripts/test-cloud-deployment.mjs
 
 typecheck:
   stage: verify
@@ -91,3 +108,124 @@ build:
       - apps/server/dist/
       - apps/web/dist/
       - packages/contracts/dist/
+
+.containerize_template: &containerize_template
+  stage: containerize
+  image:
+    name: "$CI_KANIKO_IMAGE"
+    entrypoint: [""]
+  tags:
+    - ztest
+    - k8s
+  # Keep all verify/build gates on every branch, including release.
+  needs:
+    - job: build
+      artifacts: false
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "release"'
+      when: on_success
+    - when: never
+  before_script:
+    - test -r "$ACR_DOCKER_CONFIG/config.json"
+    - mkdir -p /kaniko/.docker
+    - cp "$ACR_DOCKER_CONFIG/config.json" /kaniko/.docker/config.json
+
+build:server:
+  <<: *containerize_template
+  script:
+    - /kaniko/executor
+      --context "$CI_PROJECT_DIR"
+      --dockerfile "$CI_PROJECT_DIR/deploy/Dockerfile"
+      --target server
+      --build-arg "NODE_IMAGE=$NODE_IMAGE"
+      --build-arg "NGINX_IMAGE=$NGINX_IMAGE"
+      --build-arg "RELEASE_ID=$CI_COMMIT_REF_SLUG-$CI_COMMIT_SHORT_SHA"
+      --build-arg "GIT_SHA=$CI_COMMIT_SHA"
+      --build-arg "RELEASE_VERSION=0.1.13"
+      --build-arg "BUILD_TIME=$CI_PIPELINE_CREATED_AT"
+      --destination "$IMAGE_REPOSITORY_SERVER:$IMAGE_TAG"
+      --destination "$IMAGE_REPOSITORY_SERVER:$RELEASE_TAG"
+      --cache=true
+
+build:web:
+  <<: *containerize_template
+  script:
+    - /kaniko/executor
+      --context "$CI_PROJECT_DIR"
+      --dockerfile "$CI_PROJECT_DIR/deploy/Dockerfile"
+      --target web
+      --build-arg "NODE_IMAGE=$NODE_IMAGE"
+      --build-arg "NGINX_IMAGE=$NGINX_IMAGE"
+      --build-arg "RELEASE_ID=$CI_COMMIT_REF_SLUG-$CI_COMMIT_SHORT_SHA"
+      --build-arg "GIT_SHA=$CI_COMMIT_SHA"
+      --build-arg "RELEASE_VERSION=0.1.13"
+      --build-arg "BUILD_TIME=$CI_PIPELINE_CREATED_AT"
+      --destination "$IMAGE_REPOSITORY_WEB:$IMAGE_TAG"
+      --destination "$IMAGE_REPOSITORY_WEB:$RELEASE_TAG"
+      --cache=true
+
+deploy:k8s:
+  stage: deploy
+  resource_group: li3d-production
+  image:
+    name: "$CI_KUBECTL_IMAGE"
+    entrypoint: [""]
+  tags:
+    - ztest
+    - k8s
+  needs:
+    - build:server
+    - build:web
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "release" && $CI_COMMIT_MESSAGE =~ /\[deploy\]/'
+      when: on_success
+    - when: never
+  before_script:
+    - test -n "$KUBE_CONFIG_B64"
+    - mkdir -p "$HOME/.kube"
+    - printf '%s' "$KUBE_CONFIG_B64" | base64 -d > "$HOME/.kube/config"
+    - if [ -n "$KUBE_CONTEXT" ]; then kubectl config use-context "$KUBE_CONTEXT"; fi
+  script:
+    # kustomize's secretGenerator (deploy/k8s/base/kustomization.yaml) reads
+    # this path as a real file — it's gitignored on purpose (never commit
+    # real secrets), so the deploy job has to materialize it from masked
+    # CI/CD variables every run, then apply, then shred it.
+    - umask 077
+    - trap 'rm -f deploy/k8s/base/secrets/server.env' EXIT
+    - test -n "$LI3D_SESSION_SECRET"
+    - test -n "$LI3D_FEISHU_CLIENT_ID"
+    - test -n "$LI3D_FEISHU_CLIENT_SECRET"
+    - |
+      cat > deploy/k8s/base/secrets/server.env <<EOF
+      SESSION_SECRET=$LI3D_SESSION_SECRET
+      FEISHU_OAUTH_CLIENT_ID=$LI3D_FEISHU_CLIENT_ID
+      FEISHU_OAUTH_CLIENT_SECRET=$LI3D_FEISHU_CLIENT_SECRET
+      EOF
+    - test "$LI3D_CLOUD_DATA_READY" = "true"
+    - sh deploy/prepare-cloud-secret.sh
+    # Set immutable tags before any cluster mutation.
+    - 'sed -i "s/newTag: .*/newTag: $IMAGE_TAG/" "$KUSTOMIZE_OVERLAY/kustomization.yaml"'
+    - kubectl apply -k "$KUSTOMIZE_OVERLAY"
+    - shred -u deploy/k8s/base/secrets/server.env 2>/dev/null || rm -f deploy/k8s/base/secrets/server.env
+    # db-push (initContainer) and server must move together — same image,
+    # same tag, or the schema-sync step could run stale logic against a
+    # newer app version.
+    - kubectl -n "$KUBE_NAMESPACE" set image "deployment/liclick-server" "db-push=$IMAGE_REPOSITORY_SERVER:$IMAGE_TAG" "server=$IMAGE_REPOSITORY_SERVER:$IMAGE_TAG"
+    - kubectl -n "$KUBE_NAMESPACE" set image "deployment/li3d-web" "web=$IMAGE_REPOSITORY_WEB:$IMAGE_TAG"
+    - kubectl -n "$KUBE_NAMESPACE" annotate "deployment/liclick-server" "ci.gitlab.com/pipeline=$CI_PIPELINE_URL" --overwrite
+    - kubectl -n "$KUBE_NAMESPACE" annotate "deployment/li3d-web" "ci.gitlab.com/pipeline=$CI_PIPELINE_URL" --overwrite
+    - kubectl -n "$KUBE_NAMESPACE" rollout status "deployment/liclick-server" --timeout=180s
+    - kubectl -n "$KUBE_NAMESPACE" rollout status "deployment/li3d-web" --timeout=180s
+
+# Check both images on master without pushing or deploying.
+container:verify:
+  <<: *containerize_template
+  parallel:
+    matrix:
+      - IMAGE_TARGET: [server, web]
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "master" || $CI_PIPELINE_SOURCE == "merge_request_event"'
+      when: on_success
+    - when: never
+  script:
+    - /kaniko/executor --context "$CI_PROJECT_DIR" --dockerfile "$CI_PROJECT_DIR/deploy/Dockerfile" --target "$IMAGE_TARGET" --no-push --no-push-cache --build-arg "NODE_IMAGE=$NODE_IMAGE" --build-arg "NGINX_IMAGE=$NGINX_IMAGE" --build-arg "RELEASE_ID=$CI_COMMIT_REF_SLUG-$CI_COMMIT_SHORT_SHA" --build-arg "GIT_SHA=$CI_COMMIT_SHA" --build-arg "RELEASE_VERSION=0.1.13" --build-arg "BUILD_TIME=$CI_PIPELINE_CREATED_AT"

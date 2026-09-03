@@ -1,0 +1,14 @@
+# Holds the SQLite database (liclick.db) plus per-user project/asset files
+# (see docs/27_LINUX_A100_DEPLOYMENT.md's "Runtime Paths"). ReadWriteOnce is
+# sufficient because the server runs as a single replica — SQLite does not
+# support concurrent writers across pods.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: li3d-server-workspace
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 20Gi

@@ -1,0 +1,78 @@
+# Scoped credentials for the GitLab CI deploy job (KUBE_CONFIG_B64) —
+# NOT cluster-admin. Can only read/write the specific resource kinds
+# deploy/k8s/overlays/zprod actually contains, inside the li3d namespace,
+# plus a read-only `get` on the li3d Namespace object itself (namespaces
+# are cluster-scoped, so that one rule needs a ClusterRole — narrowed to
+# just this one namespace via resourceNames rather than granted cluster-wide).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: li3d-ci-deployer
+  namespace: li3d
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: li3d-ci-deployer
+  namespace: li3d
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps", "secrets", "services", "persistentvolumeclaims"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "deployments/status"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+  - apiGroups: ["cert-manager.io"]
+    resources: ["certificates"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: li3d-ci-deployer
+  namespace: li3d
+subjects:
+  - kind: ServiceAccount
+    name: li3d-ci-deployer
+    namespace: li3d
+roleRef:
+  kind: Role
+  name: li3d-ci-deployer
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: li3d-ci-deployer-namespace-read
+rules:
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get"]
+    resourceNames: ["li3d"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: li3d-ci-deployer-namespace-read
+subjects:
+  - kind: ServiceAccount
+    name: li3d-ci-deployer
+    namespace: li3d
+roleRef:
+  kind: ClusterRole
+  name: li3d-ci-deployer-namespace-read
+  apiGroup: rbac.authorization.k8s.io
+---
+# Long-lived token (unlike `kubectl create token`, which expires — CI needs
+# a durable credential). Standard pattern for a k8s 1.24+ ServiceAccount.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: li3d-ci-deployer-token
+  namespace: li3d
+  annotations:
+    kubernetes.io/service-account.name: li3d-ci-deployer
+type: kubernetes.io/service-account-token

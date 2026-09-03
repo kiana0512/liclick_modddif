@@ -1,0 +1,38 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# The real overlay for the company `zprod` cluster (context: zprod,
+# cluster kubernetes-h657hbh267).
+#
+# Declared explicitly here, not just inherited from base — base's
+# `namespace: li3d` only transforms resources base itself lists. Anything
+# added directly to *this* kustomization's own `resources:` (certificate.yaml)
+# sits at this layer and needs its own namespace field, or it lands in
+# `default`.
+namespace: li3d
+
+resources:
+  - ../../base
+  - certificate.yaml
+
+# Set the real tag after you build & push (see deploy/README.md):
+#   cd deploy/k8s/overlays/zprod
+#   kustomize edit set image li3d-server=tsh-devops-prod-all-0001-registry.cn-shanghai.cr.aliyuncs.com/devops/li3d-server:<tag>
+#   kustomize edit set image li3d-web=tsh-devops-prod-all-0001-registry.cn-shanghai.cr.aliyuncs.com/devops/li3d-web:<tag>
+images:
+  - name: li3d-server
+    newName: tsh-devops-prod-all-0001-registry.cn-shanghai.cr.aliyuncs.com/devops/li3d-server
+    newTag: v0.1.0
+  - name: li3d-web
+    newName: tsh-devops-prod-all-0001-registry.cn-shanghai.cr.aliyuncs.com/devops/li3d-web
+    newTag: v0.1.0
+
+configMapGenerator:
+  - name: li3d-server-config
+    behavior: merge
+    envs:
+      - server-config.zprod.env
+
+patches:
+  - path: ingress-patch.yaml
+  - path: pvc-patch.yaml

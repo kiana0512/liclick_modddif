@@ -1,0 +1,24 @@
+# Everything goes to li3d-web — it serves the SPA and reverse-proxies
+# /api and /workspace to liclick-server itself (see docker/nginx/default.conf.template),
+# so the Ingress doesn't need to know about path splitting.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: li3d
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "2700"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "2700"
+    nginx.ingress.kubernetes.io/proxy-body-size: "256m"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: li3d.lilithgames.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: li3d-web
+                port:
+                  number: 80

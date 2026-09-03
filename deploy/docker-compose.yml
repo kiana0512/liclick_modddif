@@ -1,0 +1,45 @@
+# Optional container acceptance against separately provisioned Cloud services.
+# Required build metadata and runtime env files are documented in README.md.
+x-release-args: &release_args
+  RELEASE_ID: ${RELEASE_ID:?Set RELEASE_ID}
+  GIT_SHA: ${GIT_SHA:?Set GIT_SHA}
+  RELEASE_VERSION: ${RELEASE_VERSION:?Set RELEASE_VERSION}
+  BUILD_TIME: ${BUILD_TIME:?Set BUILD_TIME}
+x-runtime-env: &runtime_env
+  - ./k8s/base/server-config.env
+  - ./k8s/base/secrets/server.env
+services:
+  migrate:
+    image: li3d-server:${RELEASE_ID:?Set RELEASE_ID}
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+      target: server
+      args: *release_args
+    env_file: *runtime_env
+    command: ["sh", "-c", "node deploy/validate-runtime-env.mjs && node apps/server/scripts/migrate-cloud-projects.mjs"]
+  server:
+    image: li3d-server:${RELEASE_ID:?Set RELEASE_ID}
+    env_file: *runtime_env
+    volumes:
+      - workspace:/data/workspace
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+  web:
+    image: li3d-web:${RELEASE_ID:?Set RELEASE_ID}
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+      target: web
+      args: *release_args
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      BACKEND_HOST: server
+      BACKEND_PORT: "4517"
+    depends_on:
+      server:
+        condition: service_healthy
+volumes:
+  workspace:

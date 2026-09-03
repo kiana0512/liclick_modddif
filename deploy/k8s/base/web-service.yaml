@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: li3d-web
+  labels:
+    app: li3d
+    component: web
+spec:
+  selector:
+    app: li3d
+    component: web
+  ports:
+    - name: http
+      port: 80
+      targetPort: http

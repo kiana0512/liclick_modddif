@@ -1,0 +1,16 @@
+# Own cert-manager Certificate in the li3d namespace rather than syncing the
+# zstack-middleware team's lilithgames.com wildcard Secret across namespaces
+# — same ClusterIssuer (letsencrypt-prod, ACME via the dnspod webhook), own
+# lifecycle, cert-manager renews it automatically (~30 days before the
+# notAfter date) with no cross-namespace coupling.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: li3d-lilithgames-com
+spec:
+  secretName: li3d-tls
+  dnsNames:
+    - li3d.lilithgames.com
+  issuerRef:
+    kind: ClusterIssuer
+    name: letsencrypt-prod

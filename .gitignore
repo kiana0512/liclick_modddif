@@ -44,3 +44,6 @@ workspace-smoke*/
 # Adobe working documents are local recovery data, never source assets.
 *.psd
 *.psb
+
+# Production secret material is created only at deploy time.
+deploy/k8s/base/secrets/server.env

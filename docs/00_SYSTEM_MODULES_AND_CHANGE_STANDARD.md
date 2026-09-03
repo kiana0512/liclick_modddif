@@ -1,6 +1,6 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
-> 文档版本：`2.16.1`
+> 文档版本：`2.16.4`
 >
 > 生效日期：`2026-09-03`
 >
@@ -566,6 +566,8 @@ M15 lint 发布修复（2026-08-31）：根工作区显式声明与锁文件一�
 
 M15 体积修复：锁定 `terser@5.51.2` 两轮安全压缩，保留日志和属性名；JS 总量实测 3,067,290 字节，原门禁不变。新增真实构建等价性回归；业务、算法、数据均不变，无迁移。回退仅恢复压缩配置和依赖，发布仍须全 CI 验证。
 
+M15 / CLOUD-DEPLOYMENT v1.0.0（2026-09-03）：正常合并 release 部署历史与 master 应用基线；修正完整 workspace 镜像构建、Cloud 构建身份、运行目录和 PostgreSQL SQL 001–003 初始化。所有分支保留完整 verify/build 门禁，master/MR 额外验证 server/web 镜像但不推送；仅 release 且最终提交含 [deploy] 才允许生产部署。Docker/Kaniko 上下文排除真实凭据和用户数据；Qwen 密钥注入由效率组管理。原 PVC 保留，生产权威数据必须使用 PostgreSQL＋HTTPS 对象存储，存量数据独立迁移验收后才设置 LI3D_CLOUD_DATA_READY；缺配置不得静默回退。Project Command v1、Revision CAS、ownership、verified assets 与全部业务算法版本不变，无自动数据迁移。回滚只切换兼容 Cloud 协议的已验证镜像，不删除库、对象或 PVC。详见 CHG-20260903-CLOUD-DEPLOYMENT-CI 与 deploy/README.md。
+
 ## 16. 固定审计卡格式
 
 以后新增或修改算法必须记录：ALG ID、中英文名称、SemVer、状态（production/experimental/deprecated/disabled）、所有调用 UI/use case、输入、输出、单位、颜色空间、矩阵空间、常量、CPU/GPU/Worker/shader 对应实现、持久化字段、回退、迁移、测试、负责人和变更单。
@@ -663,5 +665,6 @@ M15 体积修复：锁定 `terser@5.51.2` 两轮安全压缩，保留日志和�
 | `2.16.1` | 2026-09-03 | `本次莉刻账号绑定公开路径修复` | M13、`LICLICK-ACCOUNT-BINDING` v1.1.1：账号绑定的 IDaaS Service URL 合并 `LICLICK_PUBLIC_PATH`，A100 从错误的 `/api/liclick/account-binding/callback` 修正为 `/li3d/api/liclick/account-binding/callback`；任意具备莉刻权限且邮箱与当前飞书 Session 一致的用户均可绑定自己的独立账号。无显式 public path 时继续回退公开 URL pathname；令牌、独立 Atlas home、Schema、Revision、ownership 与资产不变，无迁移。 |
 | `2.16.2` | 2026-09-03 | `本次 A100 测试共享莉刻账号开关` | M13、`LICLICK-ACCOUNT-BINDING` v1.2.0：增加默认关闭且仅由服务器 `app.env` 激活的测试共享账号模式；飞书 Session 与 Li3D 项目/Job ownership 继续隔离，但所有莉刻调用、额度、远端个人工作区和生成资产归属配置 owner。共享 Atlas home 必须位于受管目录，账号状态显式标记共享模式，用户菜单不能解绑或删除 owner 凭据；关闭开关立即恢复个人绑定。Token、密钥和具体人员邮箱不进入 Git，无 Schema、Revision 或资产迁移。 |
 | `2.16.3` | 2026-09-03 | `本次烘焙资产对象标识迁移修复` | UI-14/M10：修复首次在烘焙页导入高模时空字符串通过空值合并并把整个 Bake Set 写入 `bakeSets[""]` 的问题。高模、低模和材质导入统一选择首个非空对象 ID；读取旧工程时把空键、高模快照及所含低模/颜色/粗糙度/金属度/法线引用原位迁移到稳定项目级 Bake ID，下一次正常保存写回规范结构。低模选择立即显示，解析、UV/对齐检查与资产保存继续异步执行；失败保留文件名并显示明确原因。资产文件、ownership、Revision 与烘焙算法不变，无批量数据库迁移。 |
+| `2.16.4` | 2026-09-03 | `master 5f880fd + release cd30512` | M15 / CLOUD-DEPLOYMENT v1.0.0：适配 Cloud 镜像、PostgreSQL 初始化、部署门禁与凭据隔离，master 验证两个镜像，不执行生产发布；业务协议不变，保留存量数据，迁移与回滚见变更单。 |
 
 `ALG-LR-008` v2.4.1：局部重绘仍自动创建独立目标和结果图层；pointer-down 不再依赖当前图层是否选中、可见或为 UV，只检查自身 source/composite/Session/显示资源。默认保持按钮激活、GPU promotion、结果发布前的原选择（含 undefined），防止内部隐藏 draft 触发面板选择普通投影层。普通画笔/橡皮擦限制、GPU/CPU/Worker/shader、作者 mask、投影/UV/export、分辨率、Schema、Revision、ownership 与资产不变。真实 store 三类选择与入口 gate 回归通过；无数据迁移，回退选择保持与 gate 即可。详见 CHG-20260903-LOCAL-REPAINT-SELECTION-INDEPENDENCE。

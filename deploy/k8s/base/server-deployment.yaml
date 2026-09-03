@@ -1,0 +1,78 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: liclick-server
+  labels:
+    app: li3d
+    component: server
+spec:
+  replicas: 1
+  # Retain the existing RWO volume for managed Atlas homes and temporary files.
+  # Project documents and binary assets use PostgreSQL and object storage.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: li3d
+      component: server
+  template:
+    metadata:
+      labels:
+        app: li3d
+        component: server
+    spec:
+      securityContext:
+        runAsUser: 10001
+        runAsGroup: 10001
+        runAsNonRoot: true
+        fsGroup: 10001
+      initContainers:
+        # Keep the name so CI updates this and the server to the same SHA.
+        - name: db-push
+          image: li3d-server
+          command: ["sh", "-c", "node deploy/validate-runtime-env.mjs && node apps/server/scripts/migrate-cloud-projects.mjs"]
+          envFrom:
+            - configMapRef:
+                name: li3d-server-config
+            - secretRef:
+                name: li3d-server-secrets
+          volumeMounts:
+            - name: workspace
+              mountPath: /data/workspace
+      containers:
+        - name: server
+          image: li3d-server
+          ports:
+            - name: http
+              containerPort: 4517
+          envFrom:
+            - configMapRef:
+                name: li3d-server-config
+            - secretRef:
+                name: li3d-server-secrets
+          volumeMounts:
+            - name: workspace
+              mountPath: /data/workspace
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+      volumes:
+        - name: workspace
+          persistentVolumeClaim:
+            claimName: li3d-server-workspace
