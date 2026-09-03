@@ -338,6 +338,22 @@ export function validateLocalRepaintDiagnosis(value: string) {
   );
 }
 
+export function buildQwenAutomaticLocalRepaintRequest(input: PromptPolishInput) {
+  const request = buildQwen3VlPlusRequest(input);
+  request.messages[0].content += `
+用户没有填写编辑要求。本次在同一次请求中先确定有证据的修复要求，再据此编写上述英文提示词。
+只诊断原始独立蒙版白色区域内的人工纹理接缝、突兀色差、纹理断裂、重影、投影造成的重复/拉伸/错位，以及已有文字的重复、扭曲、缺笔或错位。保留真实焊缝、面板接缝、开口、零件边界，不能把正常明暗、反射或自然磨损当成缺陷。参考图仅辅助确认异常，不恢复全部参考特征，不改变整体配色或新增零件。
+diagnosis 必须是一句4至120字符、以“修复”开头的中文要求，只列出确定问题；无明确异常时必须为“未发现明确异常，保留现有外观。”。
+prompt 只将 diagnosis 中明确的修复要求转为上述100至180词、2至3段英文提示词，不得增加其他修复目标。只有 diagnosis 明确要求修复已有文字、且图像中对应拼写可辨时才能指定字符，不得猜测文字或品牌；无明确缺陷时只描述保留现有外观。
+本次响应格式覆盖前文的纯文本输出要求：仅返回一个合法 JSON 对象，包含两个字符串字段 diagnosis 和 prompt，不要代码围栏或额外字段。英文提示词本身仍遵守前文的材质证据、真实结构与蒙版外保护规则。`;
+  (request.messages[1].content as QwenContentPart[])[0] = {
+    type: 'text',
+    text: 'Use all four visual inputs. Identify only evidenced defects inside the independent mask, then convert that diagnosis into the English prompt. Return only the JSON object with diagnosis and prompt.',
+  };
+  request.temperature = 0.2;
+  return request;
+}
+
 function readQwenMessageContent(payload: unknown) {
   if (!payload || typeof payload !== 'object' || !('choices' in payload)) return '';
   const choices = (payload as { choices?: unknown }).choices;
@@ -393,39 +409,39 @@ async function invokeQwenChat(
 
 async function invokeQwen3VlPlus(input: PromptPolishInput) {
   if (!serverConfig.qwen3VlPlusApiKey) throw new Error('PROMPT_POLISH_QWEN_NOT_CONFIGURED');
-  // Diagnosis and conversion share one deadline and the same normalized images.
-  // Manual requests skip diagnosis entirely. Klein accepts free-form instructions,
-  // so presentation-style deviations never trigger a second Qwen request.
+  // One visual request for both automatic diagnosis and conversion. Retain the
+  // diagnosis validator, without paying a second four-image model round trip.
   const signal = AbortSignal.timeout(serverConfig.qwen3VlPlusTimeoutMs);
   const normalizedInput = await normalizeQwen3VlPlusVisualInputs(input);
   const needsDiagnosis = !input.prompt.trim();
   let conversionInput = normalizedInput;
-  if (needsDiagnosis) {
-    const payload = await invokeQwenChat(
-      buildQwenLocalRepaintDiagnosisRequest(normalizedInput),
-      signal,
-    );
-    const diagnosis = readQwenMessageContent(payload).trim();
-    const finishReason = (payload as { choices?: Array<{ finish_reason?: string }> } | null)
-      ?.choices?.[0]?.finish_reason;
-    if (
-      !validateLocalRepaintDiagnosis(diagnosis) ||
-      finishReason === 'length' ||
-      finishReason === 'content_filter'
-    )
-      throw new Error('PROMPT_POLISH_INVALID_LOCAL_REPAINT_DIAGNOSIS');
-    conversionInput = { ...normalizedInput, prompt: diagnosis };
-  }
-  const request = buildQwen3VlPlusRequest(conversionInput);
-  if (needsDiagnosis) {
-    request.messages[0].content +=
-      '\nThe editing request above is a one-sentence visual diagnosis. Convert only its stated repairs into the final prompt; do not diagnose additional problems or add new editing goals. Use the images to describe the required local materials, perspective and continuity, while preserving valid content and real component boundaries. Repair existing text only if the diagnosis explicitly requests it and the correct characters are supported by readable evidence; never invent words or brands. If the diagnosis reports no clear defect, describe preserving the existing appearance without inventing any repairs.';
-  }
+  const request = needsDiagnosis
+    ? buildQwenAutomaticLocalRepaintRequest(normalizedInput)
+    : buildQwen3VlPlusRequest(normalizedInput);
   const payload = await invokeQwenChat(request, signal);
+  const finishReason = (payload as { choices?: Array<{ finish_reason?: string }> } | null)
+    ?.choices?.[0]?.finish_reason;
+  if (finishReason === 'length' || finishReason === 'content_filter')
+    throw new Error('PROMPT_POLISH_QWEN_INCOMPLETE');
+  let promptContent = readQwenMessageContent(payload);
+  if (needsDiagnosis) {
+    let result: { diagnosis?: unknown; prompt?: unknown } | null;
+    try {
+      result = JSON.parse(promptContent);
+    } catch {
+      throw new Error('PROMPT_POLISH_INVALID_LOCAL_REPAINT_DIAGNOSIS');
+    }
+    if (typeof result?.diagnosis !== 'string' || !validateLocalRepaintDiagnosis(result.diagnosis))
+      throw new Error('PROMPT_POLISH_INVALID_LOCAL_REPAINT_DIAGNOSIS');
+    if (typeof result.prompt !== 'string') throw new Error('PROMPT_POLISH_EMPTY_RESULT');
+    const diagnosis = result.diagnosis.trim();
+    conversionInput = { ...normalizedInput, prompt: diagnosis };
+    promptContent = result.prompt;
+  }
   const prompt = ensureLocalRepaintNoTextConstraint(
     ensureLocalRepaintImplicitRemovalConstraint(
       ensureLocalRepaintMaskScope(
-        normalizeLocalRepaintPrompt(parsePolishedPrompt(readQwenMessageContent(payload))),
+        normalizeLocalRepaintPrompt(parsePolishedPrompt(promptContent)),
         input.hasMask !== false,
       ),
       conversionInput.prompt,
@@ -434,10 +450,6 @@ async function invokeQwen3VlPlus(input: PromptPolishInput) {
   );
   if (!prompt) throw new Error('PROMPT_POLISH_EMPTY_RESULT');
   if (prompt.length > 12_000) throw new Error('PROMPT_POLISH_RESULT_TOO_LONG');
-  const finishReason = (payload as { choices?: Array<{ finish_reason?: string }> } | null)
-    ?.choices?.[0]?.finish_reason;
-  if (finishReason === 'length' || finishReason === 'content_filter')
-    throw new Error('PROMPT_POLISH_QWEN_INCOMPLETE');
   const advisoryIssues = getLocalRepaintPromptFormatIssues(prompt, input.hasMask !== false);
   if (advisoryIssues.length > 0) {
     // Advisory only: Klein accepts free-form instructions. Never log prompt text,

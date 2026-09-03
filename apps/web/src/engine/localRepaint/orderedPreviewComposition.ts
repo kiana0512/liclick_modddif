@@ -103,6 +103,18 @@ export function getOrderedLocalRepaintPreviewLayer(
   return resolveLocalRepaintPreviewPresentation(preview, layers);
 }
 
+/** A new topmost preview is overlay-only until its first stroke is published. */
+export function shouldWaitForLocalRepaintResidentMaterial(
+  layers: readonly Layer[],
+  preview: Layer | undefined,
+  layerId: string,
+) {
+  return (
+    layers.some((layer) => layer.id === layerId && layer.visible) ||
+    getOrderedLocalRepaintPreviewLayer(layers, preview)?.id === layerId
+  );
+}
+
 /** Layer order zero is the top row; renderer inputs are consumed bottom-up. */
 export function mergeOrderedLocalRepaintPreview(
   layers: readonly Layer[],

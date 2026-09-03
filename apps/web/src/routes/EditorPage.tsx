@@ -159,7 +159,7 @@ import {
   type LocalRepaintSeamMode,
 } from '@/engine/localRepaint/seamHarmonizationMode';
 import { harmonizeLocalRepaintInWorker } from '@/engine/localRepaint/seamHarmonizationWorker';
-import { ensureLocalRepaintSessionLayer } from '@/engine/localRepaint/sessionLayer';
+import { ensureLocalRepaintSessionLayer, restoreLocalRepaintLayerSelection } from '@/engine/localRepaint/sessionLayer';
 import { resolveLocalRepaintBackgroundPrewarmDisposition } from '@/engine/localRepaint/backgroundPrewarmPolicy';
 import {
   createLocalRepaintActivationRequest,
@@ -169,6 +169,7 @@ import {
 } from '@/engine/localRepaint/activationRequestPolicy';
 import {
   getLocalRepaintSessionSnapshot,
+  isLocalRepaintPreparationInFlight,
   LOCAL_REPAINT_INTERACTIVE_STATE_EVENT,
   requestLocalRepaintSessionActivation,
   type LocalRepaintInteractiveStateDetail,
@@ -6045,7 +6046,7 @@ export function EditorPage({
       pushToast({
         tone: 'error',
         title: '局部重绘 GPU 准备失败',
-        description: '高清结果或蒙版无法上传，请重新生成局部重绘结果。',
+        description: detail.error ?? '高清结果或蒙版无法上传，请重试。',
         dedupeKey: 'local-repaint-gpu-prewarm-failed',
       });
     };
@@ -6181,6 +6182,7 @@ export function EditorPage({
         session.generationId === generationId &&
         session.targetLayerId === targetLayerId;
       if (ready) return false;
+      if (isLocalRepaintPreparationInFlight(generationId, targetLayerId)) return true;
       const requestKey = `${generationId}:${targetLayerId}`;
       if (localRepaintGpuPrepareRequestedKeyRef.current !== requestKey) {
         localRepaintGpuPrepareRequestedKeyRef.current = requestKey;
@@ -6616,10 +6618,11 @@ export function EditorPage({
           preparedTargetId,
         );
         setLocalRepaintActivationQueued(true);
-        // The source can already be selected while its prior renderer effect was
-        // cancelled before publishing GPU readiness. Restart that exact source
-        // immediately; the ready/failed event, not a timer, resolves the button.
-        useSceneStore.getState().requestLocalRepaintGpuPrepare();
+        // Join live background work; only restart if its renderer owner was
+        // cancelled. Restarting an active decode/compile discards its progress.
+        if (!isLocalRepaintPreparationInFlight(latestLocalRepaintGeneration.id, preparedTargetId)) {
+          useSceneStore.getState().requestLocalRepaintGpuPrepare();
+        }
         return;
       }
 
@@ -6708,7 +6711,9 @@ export function EditorPage({
         currentTargetLayer.id,
       );
       if (collapsedLayers.length !== currentLayers.length) {
+        const selectedLayerId = useLayerStore.getState().activeProjectedLayerId;
         setLayers(collapsedLayers);
+        restoreLocalRepaintLayerSelection(selectedLayerId);
         setProjectLayers(useLayerStore.getState().layers);
       }
       setLocalRepaintProjectionSource({

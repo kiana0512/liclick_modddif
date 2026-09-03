@@ -38,6 +38,31 @@ type LocalRepaintSessionUpdate = {
 let revision = 0;
 let current: LocalRepaintInteractiveStateDetail | undefined;
 const listeners = new Set<() => void>();
+const activePreparations = new Map<string, Set<symbol>>();
+
+/** Track actual work, not a potentially abandoned `preparing` snapshot. */
+export function trackLocalRepaintPreparation(sessionId: string | undefined) {
+  if (!sessionId) return () => undefined;
+  const tasks = activePreparations.get(sessionId) ?? new Set<symbol>();
+  const task = Symbol();
+  tasks.add(task);
+  activePreparations.set(sessionId, tasks);
+  return () => {
+    tasks.delete(task);
+    if (tasks.size === 0 && activePreparations.get(sessionId) === tasks) {
+      activePreparations.delete(sessionId);
+    }
+  };
+}
+
+export function isLocalRepaintPreparationInFlight(generationId: string, targetLayerId?: string) {
+  return Boolean(
+    matchesIdentity(current, generationId, targetLayerId) &&
+      current?.status === 'preparing' &&
+      current.sessionId &&
+      activePreparations.get(current.sessionId)?.size,
+  );
+}
 
 function matchesIdentity(
   state: LocalRepaintInteractiveStateDetail | undefined,

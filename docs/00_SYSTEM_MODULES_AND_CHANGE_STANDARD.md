@@ -1,10 +1,10 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
-> 文档版本：`2.15.9`
+> 文档版本：`2.16.1`
 >
-> 生效日期：`2026-09-02`
+> 生效日期：`2026-09-03`
 >
-> 代码盘点基线：`29e6750 + 58dd8b1 本地合并基线`
+> 代码盘点基线：`18f2793 + 本次局部重绘修复`
 >
 > 基线仓库：`E:\Liclick 3D Texture Modernization`
 >
@@ -220,7 +220,7 @@ Layer 以可选 `eraserAlgorithmVersion=1` 标记首次采用该语义的内容�
 | `ALG-PROJ-003` 深度-法线表面可见性 | `3.0.0` | preview/GPU UV | linear-view depth + 3×3 支持；surface-locked 深度邻域支持在 0→0.05 内转为完整可见性，可靠 depth 命中不再被插值 mesh normal 二次衰减 | 缺 depth 才走角度退化，不伪造可见性 |
 | `ALG-PROJ-004` Top-3 颜色一致性合成 | `2.0.0` | 普通多视图 | 每 texel 保留 score 最高 3 个；线性 RGB 离群降权 | WebGPU parity 不通过使用 CPU exact 输出 |
 | `ALG-PROJ-005` Priority 单视图覆盖 | `2.0.0` | single-view layer | 核心沿用 priority coverage/quality；若同对象已有可见 projected/UV 底层，源图轮廓距离场在画幅 3.5% 宽度内由 0.12→1.0，之后再与捕获 mask/depth 相乘 | 无底层时保持不透明源；不越过捕获/深度边界 |
-| `ALG-PROJ-006` Literal Overlay | `2.0.0` | 局部重绘 | 用户 authored coverage 直接 source-over，不再乘质量 feather | mask/source 未就绪不发布半层 |
+| `ALG-PROJ-006` Literal Overlay | `2.0.1` | 局部重绘 | 用户 authored coverage 直接 source-over；单层材质登记直接 mask sampler 以完成 resident 交接 | mask/source 未就绪不发布半层 |
 | `ALG-PROJ-007` GPU 驻留与分块 | `2.1.0` | ProjectedLayerMaterial / SceneRoot / PreviewCompositor | 每个 array stripe 上传前解除 PBO 绑定并在 finally 恢复；只对可见工作区当前对象预热，隐藏对象取消未完成 array 构建；array 失败时允许预算内精确 direct stack，否则渐进合成自动退避重试，总尝试最多 4 次 | 保留上一有效材质或合法 UV bootstrap；晚到发布不得复活隐藏 UV；不降低生产 UV 输出尺寸 |
 
 ### 6.1 当前生产常量
@@ -314,8 +314,8 @@ UI-09 剪刀
 | `ALG-LR-004` 历史增强边界谐调 | `14.0.0-compatible` | 仅读取/重建旧 v6-v14 Generation 和图层；新 `direct-v1` 任务不调用 |
 | `ALG-LR-005` 历史兼容边界谐调 | `5.0.0-compatible` | 仅保留旧 v3-v5 全幅合成与 legacy 切换的读取兼容；新 `direct-v1` 任务不调用 |
 | `ALG-LR-006` 表面画笔重投影 | `2.0.0` | raycast 命中表面，投射到 frozen source UV；最小绝对 face-on 0.08；世界半径 0.004-0.12 包围盒比例；texture radius 1-72 |
-| `ALG-LR-007` 低延迟实时覆盖 | `2.2.0` | 局部重绘只由共享 ordered projected material 显示；renderer preview 仅向该材质栈注入 live source/mask 描述，不再启用或静音第二套 exact overlay mesh。准备阶段等待目标 layerId 驻留并将 `blendMaskTexture` 绑定到正式材质，完成真实渲染帧验证后才开放画笔。pointer-down 只写已就绪 live mask，不解码、不重建材质、不自愈。pointer-up 保留已有 `contentRevision`，只更新累计 CanvasTexture 与图层保存快照。source、capture projector、depth/normal/surface-lock、图层顺序、颜色、blend、1024 live 上限不变 |
-| `ALG-LR-008` 延迟投影持久化 | `2.3.0` | interactive UV bake 固定关闭；生图前 Project Command snapshot 后台执行；唯一内存 `LocalRepaintSession` 以 sessionId、Generation 和目标层标识任务，并按 loading-assets → restoring-mask → building-resident-material → verifying-render-frame → ready/failed/cancelled 推进。旧异步任务因 sessionId 不匹配不得发布 ready/failed；按钮与视口从 Session 读取业务状态，DOM dataset 只保留诊断。高清图/蒙版、视口空闲、历史蒙版和正式材质绑定均有明确失败终态，单次准备总上限 20 秒，正式材质绑定上限 10 秒，不再无限转圈。pointer-up 两帧内发布权威图层行；idle 3000ms 仍仅合并持久化，needsRebake=true |
+| `ALG-LR-007` 低延迟实时覆盖 | `2.2.0`（显示所有权以本次源码校正为准） | 当前源码在应用画笔激活时使用 depth-aware exact overlay，同 ID resident twin 临时静音；退出后仍由正式材质按图层顺序显示。新建顶层 preview 在首笔发布前不加入背景栈；位于 priority 层下方的 preview 才提前加入 ordered stack。pointer-down 只消费已准备的资源，pointer-up 保留已有 `contentRevision` 并发布累计蒙版。本次仅优化准备调度，不改变 source、capture projector、depth/surface-lock、颜色、blend、1024 live 上限或显示所有权 |
+| `ALG-LR-008` 延迟投影持久化 | `2.4.1` | interactive UV bake 固定关闭；生图前 Project Command snapshot 后台执行。蒙版工具/生图开始即并行编译并持有 exact overlay 程序，预读作者蒙版；返图颜色缩放与 falloff 并行。内存 Session 按 Generation/目标复用活动任务。高清读取和 GPU 准备有 20 秒预算；仅背景栈已有行进入 resident 等待，单层直接蒙版登记完整、辅助网格排除，交接失败明确结束会话。Session 驱动按钮，DOM 仅诊断；pointer-up 两帧内发布权威图层行，idle 3000ms 仅合并持久化，needsRebake=true |
 | `ALG-LR-009` Inward Crossfade 栈合成 | `1.0.0` | 连续重绘层向内部交叉淡化，避免普通 alpha stacking 在边缘重复显露接缝 |
 | `ALG-LR-010` Provider 兼容编辑 | `1.0.0-compat` | `LocalRepaintDialog` 的 image/edit/protect/hole masks 独立路径，不得与四输入主路径混改 |
 | `ALG-LR-011` 生图透明显示副本 | `1.0.0` | UI-05 重绘效果图和 UI-10 普通投射图层缩略图优先使用 capture linear-view depth 清除明确无几何覆盖的背景，按精确 alpha bounds 仅裁切一次并保留 6% 留白；几何覆盖区的 RGB/alpha 原样保留。深度不可用时只清除与画布边缘连通的近黑外背景，不做第二次 matte、侵蚀或分位裁边。局部重绘图层不走整图副本，继续使用用户涂绘 mask，只显示笔刷授权区域 |
@@ -363,6 +363,10 @@ UI-05/UI-13 的贴图驻留边界要求所有挂到页面根节点的生成面�
 
 `ALG-LR-011` 只生成最大 1024 的内存 UI 显示副本，不回写 `Layer.imageUrl`、Generation、对象存储或 Project Revision。GPU/CPU/Worker/shader、投影矩阵、UV raster、持久化与 export compositor 均继续消费原始 source/mask/depth，因此无需数据迁移。回滚只需移除 UI-05/UI-10 显示副本调用；已有图层与资产不变。测试必须证明透明显示不替换投影源、黑色材质与几何边缘不被扣除、普通投射层不再出现黑底、局部重绘层仍仅显示用户涂绘区域。
 
+`ALG-LR-008` v2.3.1（UI-10/UI-06 → M08，CHG-20260903-LOCAL-REPAINT-PREWARM-LATENCY）修复按钮 3 的无效 resident 等待与重复预热。源码审计发现历史 v2.2.0/v2.3.0 的“仅共享材质、全流程 20 秒”描述与当前实现不一致：`shouldUseDedicatedLocalRepaintOverlay` 仍在 apply 时返回 true，`getOrderedLocalRepaintPreviewLayer` 仍只接纳 priority 下方的 preview；本次没有重新引入或切换显示架构。新建顶层结果没有可绑定的 resident row，旧循环必定耗尽 10 秒后才创建 exact overlay。新策略与实际背景栈准入条件一致，已发布图层/ordered preview 保留原等待，新建顶层跳过无效等待，但所有路径仍执行原高清资源、作者蒙版、depth 与 exact overlay 编译检查。点击同一 Generation/目标时复用真实活动任务；effect 清理、成功和失败均释放登记，残留 preparing 快照不阻止重试。
+
+GPU 仅改变准备条件与调度；CPU、Worker、shader、投影/UV/export 仍消费相同 source/mask/depth，颜色、几何授权与最终分辨率不变。无持久字段或 Schema 升级，Project Command、Revision CAS、ownership、verified assets 与历史图层不变，无迁移。回退只恢复无条件 resident 等待和点击重启准备，并移除任务登记；不得删除资产。模拟时钟运行实际 viewport 等待代码，验证新建顶层等待为 0、已发布行/ordered preview 等待真实绑定、10 秒边界仍保留；会话测试覆盖复用、重叠阶段、取消、失败及旧清理不影响新任务。真实浏览器端到端耗时/首笔效果待有项目页面时验收，不以模拟结果声明实际 GPU 提速。
+
 ## 9. 内容识别补缝
 
 | ALG ID / 名称 | 版本 | 定义 |
@@ -402,7 +406,7 @@ Bake 设置包含 resolution、frontal/rear distance、distance/cage、cage infl
 | `ALG-GEN-002` 多视图批次 | N 个捕获共享 batch；完成层串行 commit，整批结束一次发布新投影栈 |
 | `ALG-GEN-003` 任务身份归一 | clientGenerationId/serverJobId/taskId 合并，避免恢复时重复 running 行 |
 | `ALG-GEN-004` ModelView 远端单视图 | `1.0.0`；当前视角白模 + 多视图材质参考 + 可选提示词 → `modelview-single-view` → Generation；结果继续使用 `ALG-PROJ-005` 单视图优先投影 |
-| `ALG-GEN-005` 提示词智能润色 | `1.9.0`；UI-05 经同源 `/api/liclick/prompt-polish` 分流。普通单/多视图保持莉刻 `data-analysis` A2A；局部重绘空输入仍先由 `qwen3-vl-plus` 输出一句中文修复要求，显式输入跳过诊断，两者再进入统一 Qwen → Klein 转换模板。服务端用未外扩原始 mask 定位，并从干净 Image 1 自动裁出带上下文的第四图供 Qwen 看清选中部件；完整参考图仍只提供有证据的结构/材质，第四图不改变编辑范围或 ModelView 输入。模板先用 Image 2、第四图和 mask 外邻域共同确定真实结构与材质；仅当三者证明选区为未完成的白灰占位时，要求 Klein 用明确目标材质完整替换 clay/primer/flat placeholder/untextured surface，真实浅色材质不受此规则影响。模板以 100–180 词、2–3 段英文为生成目标；段数、词数、语言和 Markdown 偏差只记脱敏告警，不阻断也不触发格式修正。若首段缺少明确 mask 范围，服务端确定性追加固定保护句。仅最终正文写入 Generation，诊断不持久化、不回填文本框；显式输入一次 Qwen，空输入诊断加转换两次，共用 65 秒 deadline。模板策略进入所有局部重绘指纹，升级后首次重新解析、后续继续复用 |
+| `ALG-GEN-005` 提示词智能润色 | `1.10.0`；UI-05 经同源 `/api/liclick/prompt-polish` 分流。普通单/多视图保持莉刻 `data-analysis` A2A；局部重绘空输入由 `qwen3-vl-plus` 在一次请求中输出诊断和英文正文，诊断与正文分别校验；显式输入跳过诊断，保持统一 Qwen → Klein 转换模板。服务端用未外扩原始 mask 定位，并从干净 Image 1 自动裁出带上下文的第四图供 Qwen 看清选中部件；完整参考图仍只提供有证据的结构/材质，第四图不改变编辑范围或 ModelView 输入。模板先用 Image 2、第四图和 mask 外邻域共同确定真实结构与材质；仅当三者证明选区为未完成的白灰占位时，要求 Klein 用明确目标材质完整替换 clay/primer/flat placeholder/untextured surface，真实浅色材质不受此规则影响。模板以 100–180 词、2–3 段英文为生成目标；段数、词数、语言和 Markdown 偏差只记脱敏告警，不阻断也不触发格式修正。若首段缺少明确 mask 范围，服务端确定性追加固定保护句。仅最终正文写入 Generation，诊断不持久化、不回填文本框；显式输入与空输入均一次 Qwen，保持 65 秒 deadline。模板策略进入所有局部重绘指纹，升级后首次重新解析、后续继续复用 |
 | `ALG-OUT-001` 纹理/模型导出 | BaseColor 与 GLB/GLTF/FBX/OBJ/STL/ZIP；验证 UV 方向和颜色空间 |
 | `ALG-OUT-002` 快照/转台 | 当前视口设置生成静态图或视频，不改变 Layer 作者数据 |
 
@@ -431,14 +435,16 @@ Bake 设置包含 resolution、frontal/rear distance、distance/cage、cage infl
 - 迁移：Project Command、Revision、ownership、Capture/Layer 字段和资产类别均不升级；旧项目直接兼容。要让已有单视图获得新轮廓过渡，需要重新生成或重新创建投影层。
 - 回退：停止生成 `distance-field-v1` Alpha并恢复 `ignoreSourceAlpha=true` 即可；已保存 PNG、mask、depth 均仍为合法资产。不得删除用户历史图层或重写 Revision。
 
-### 11.3 提示词智能润色 `ALG-GEN-005` v1.9.0
+### 11.3 提示词智能润色 `ALG-GEN-005` v1.10.0
 
-- UI 与触发：普通生成仍保留手动智能润色图标。局部生成有用户输入时直接进入 Klein 模板转换；留空（包括纯空白）先执行独立诊断，再转换。诊断限定蒙版内人工接缝、突兀色差、纹理断裂、重影、投影重复/拉伸/错位及已有文字的重复、扭曲、缺笔或错位。真实面板接缝、焊缝、开口、零件边界与正常明暗必须保留，不新增部件、改整体配色或重设几何；文字拼写只采用原图/对应参考中清楚可辨的证据，不猜测品牌。最终英文结果才写入 Generation.prompt 和既有 metadata，诊断句只作服务端中间值，用户文本框保持原文。
-- 一句话诊断：第一阶段不发送 Klein 转换模板，只输出 4–120 字符、以“修复”开头的一句中文要求，例如“修复控制面板下方的接缝和色差”。允许逗号合并确定问题；禁止分析过程、标题、列表和 JSON。无明确缺陷时固定返回“未发现明确异常，保留现有外观。”。诊断使用 max_tokens=512、temperature=0.2；空值、多句、换行、超长、截断或 content_filter 回复直接阻断，不裁剪后继续。第二阶段将该句作为用户要求，沿用四图和 v1.7.0 转换模板，只扩写句中目标，不重新寻找问题；无缺陷句仅转换为保留原貌的要求。
-- Qwen 视觉契约：两阶段均使用 Image 1 干净当前效果图、Image 2 完整选中多视图、第三张未外扩原始作者 mask，以及服务端从干净 Image 1 自动生成的第四张选区上下文裁切；只编码一次并复用。第四图按第三图包围盒定位，四周上下文为 `max(16, round(max(width,height)/32))px`，在 2048 输入上约 64px；它只放大 Image 1 的未修改真实画面，不是新参考视角，不能扩大编辑范围。Qwen 不接收 clay 白灰几何融合图，也不接收远端专用外扩/羽化 mask；原始 mask 与 Image 1 像素对齐，参考图不要求像素对齐。mask 白色只表达原始编辑区域。
+2026-09-03 更新：空提示词的诊断与英文转换合并为一次四图 Qwen 请求，返回 diagnosis/prompt 两个字段。仍先校验一句中文诊断，再校验并提取英文正文；只保存正文，输入框保持为空。保留蒙版范围、材料证据、文字证据、异常结束和超时检查。显式输入仍一次纯文本请求。空输入策略指纹升级 `single-request-diagnosis-to-klein-v3`，旧缓存首次失效，无持久字段迁移。此前两次调用的历史说明由本段取代。回退服务请求和策略常量即可，无需修改 Generation/Revision/资产。详见 CHG-20260903-LOCAL-REPAINT-ANALYSIS-LATENCY。
+
+- UI 与触发：普通生成仍保留手动智能润色图标。局部生成有用户输入时直接进入 Klein 模板转换；留空（包括纯空白）在同一次四图请求中完成诊断与转换。诊断限定蒙版内人工接缝、突兀色差、纹理断裂、重影、投影重复/拉伸/错位及已有文字的重复、扭曲、缺笔或错位。真实面板接缝、焊缝、开口、零件边界与正常明暗必须保留，不新增部件、改整体配色或重设几何；文字拼写只采用原图/对应参考中清楚可辨的证据，不猜测品牌。最终英文结果才写入 Generation.prompt 和既有 metadata，诊断句只作服务端中间值，用户文本框保持原文。
+- 一句话诊断：一次四图请求同时返回 JSON 对象中的 diagnosis/prompt 字符串。diagnosis 为 4–120 字符、以“修复”开头的一句中文要求，允许逗号合并确定问题；无明确缺陷时固定返回“未发现明确异常，保留现有外观。”。自动请求使用 max_tokens=4096、temperature=0.2；空值、多句、换行、超长、截断或 content_filter 回复直接阻断，不裁剪后继续。prompt 只扩写 diagnosis 中的目标，不重新寻找问题；无缺陷句仅转换为保留原貌的要求。英文正文仍执行现有范围补全、长度与格式校验，诊断不落库。
+- Qwen 视觉契约：同一次请求使用 Image 1 干净当前效果图、Image 2 完整选中多视图、第三张未外扩原始作者 mask，以及服务端从干净 Image 1 自动生成的第四张选区上下文裁切；只编码一次并复用。第四图按第三图包围盒定位，四周上下文为 `max(16, round(max(width,height)/32))px`，在 2048 输入上约 64px；它只放大 Image 1 的未修改真实画面，不是新参考视角，不能扩大编辑范围。Qwen 不接收 clay 白灰几何融合图，也不接收远端专用外扩/羽化 mask；原始 mask 与 Image 1 像素对齐，参考图不要求像素对齐。mask 白色只表达原始编辑区域。
 - 编码与安全：Image 1 以 512px tile 组成真实 2K，保留材质、灯光、背景和网格，仅隐藏作者叠加层；Image 1 与第四张裁切进入 Qwen 前为 JPEG quality 95 / 4:4:4，原始 mask 为 quality 100 / 4:4:4，参考图为 quality 85 / 4:2:0，最长边均不超过 2048。浏览器只调用同源 Cookie API，仍只提交 `currentEffectImage/maskImage/referenceImage`；服务端不得在缺图时降级为文件名推断，并负责从已规范化的 Image 1 和 mask 派生第四图。API Key 只在 Node 控制面。
 - 模板与输出：system content 使用经真实 Klein 工作流验证的通用 Qwen → Klein 模板。Qwen 必须先把原始 mask 的像素位置对应到 Image 1，确认真实被选部件，再从 Image 2 的完整/多视图中只取同一部件有证据的结构、配色、材质和功能边界，并转换到 Image 1 的相机、透视、轮廓、遮挡、光照与磨损。目标外观必须由 Image 2 对应部件、第四张干净局部和 Image 1 的 mask 外邻域共同锚定；若这些证据表明选区内纯白、浅灰或均匀光滑区域是未完成材质/几何占位，最终英文需先正面描述真实结构、底色、材质、粗糙度与旧化，再用一句明确约束完整替换 clay/primer/flat placeholder/untextured surface。真实浅色材质和金属高光不得因颜色被误删。修缝必须区分非物理纹理边缝与真实装配间隙、焊缝、开口、硬边和接触阴影；除非用户要求或图像证据明确支持，不得发明 brushed steel、clean metal、new weld bead、chamfer 或无缝铸造结构，也不得向最终 Klein 提示词输出像素坐标或包围盒。
-- 输出与软校验：模板仍要求 100–180 个英文单词、2–3 段完整英文正文；首句先明确实际部件及目标动作/材质，随后限定只修改独立 mask 选区。段数、100–200 词观测范围、英文、Markdown、完整段落及首段 mask 表达只用于脱敏质量告警，不再拒绝非空正文，也不为表现格式发起第二次 Qwen 调用。服务端仍识别 `only ... mask`、`confine/restrict/limit ... within/to the mask` 或 mask 外保持 unchanged/protected/preserved 等等价表达；缺少明确范围时只在首段末尾确定性追加 `Confine all edits to the independent mask region and keep every area outside it unchanged.`，已有等价要求时不重复。只无损归一 2/3 个单行段落、CRLF 和连续编号，不截句、不删除意图。显式输入固定一次 Qwen 调用；空输入固定为一次诊断加一次转换。两阶段共用默认 65 秒 deadline。只有空正文、超过 12000 字符、上游 `finish_reason=length/content_filter`、图片格式、HTTP、认证、网络或超时错误阻断；日志只记录问题代码，不记录诊断、提示词正文、图片或凭据。
+- 输出与软校验：模板仍要求 100–180 个英文单词、2–3 段完整英文正文；首句先明确实际部件及目标动作/材质，随后限定只修改独立 mask 选区。段数、100–200 词观测范围、英文、Markdown、完整段落及首段 mask 表达只用于脱敏质量告警，不再拒绝非空正文，也不为表现格式发起第二次 Qwen 调用。服务端仍识别 `only ... mask`、`confine/restrict/limit ... within/to the mask` 或 mask 外保持 unchanged/protected/preserved 等等价表达；缺少明确范围时只在首段末尾确定性追加 `Confine all edits to the independent mask region and keep every area outside it unchanged.`，已有等价要求时不重复。只无损归一 2/3 个单行段落、CRLF 和连续编号，不截句、不删除意图。显式输入与空输入均固定一次 Qwen 调用；空输入在同一次响应中返回诊断和转换正文，保留默认 65 秒 deadline。只有空正文、超过 12000 字符、上游 `finish_reason=length/content_filter`、图片格式、HTTP、认证、网络或超时错误阻断；日志只记录问题代码，不记录诊断、提示词正文、图片或凭据。
 - 复用、并发与回退：前端用项目/对象/参考 ID、原始提示词、mask revision、冻结相机/对象矩阵和图层 content revision 构造指纹；先查内存六项 LRU，再查已持久化 Generation，命中时不再调用 Qwen。等待 Qwen 期间 mask revision 变化则阻断提交。回退可关闭生成时自动解析并恢复手动入口；既有 Project/Layer/Capture 与历史结果无需迁移或删除。
 - 测试：`test:prompt-polish` 以模拟上游响应覆盖独立诊断模板、一句话验证、空串/纯空白两阶段、无缺陷保留、四图顺序、选区包围盒/裁切、超时复用、诊断异常阻断、显式输入跳过诊断、183/201 词、单段、混合语言和 Markdown 的单次软放行、mask 范围确定性补全/去重、空结果/截断/content_filter/超长硬阻断及日志脱敏；不代替真实模型效果验收。`test:local-repaint-generation-input`、`test:local-repaint-performance-merge`、`test:local-repaint-result-composite` 锁定 Qwen/ModelView 角色分离、Worker 外扩羽化和内部 prompt 复用。
 - v1.4.1 影响与回退：仅调整 M04 控制面润色适配器和测试；GPU/CPU/Worker/shader、投影、导出、分辨率、作者/远端 mask、Project/Layer/Generation/Capture Schema 和 Revision 不变，无数据迁移。回退只恢复润色适配器，不删除历史提示词、图层或资产。
@@ -650,4 +656,7 @@ M15 体积修复：锁定 `terser@5.51.2` 两轮安全压缩，保留日志和�
 | `2.15.5` | 2026-09-03 | `本次烘焙原生文件控件直达修复` | UI-14/M10：A100 实测 label-input 转发仍未稳定触发文件选择；一键烘焙高低模卡片与 Base Color/Roughness/Metallic/Normal 槽位改由透明的真实文件输入覆盖点击区域，用户手势直接命中文件控件，不再经过程序化唤起或 label 转发。专业页 `showPicker()` 回退、拖放、格式/UV 校验、配对、上传、Schema、Revision、ownership 与资产类别不变，无迁移。 |
 | `2.15.6` | 2026-09-03 | `本次烘焙导入事务对齐修复` | UI-14/M10：低模与 Base Color/Roughness/Metallic/Normal 导入对齐高模的完整异步生命周期；文件选择或拖放后等待对象存储上传与 Bake Workspace 保存，成功后低模才进入对齐，失败则回滚临时文件状态并保留明确错误。导入期间禁用对应原生文件控件并显示进行中状态，避免重复提交和“界面已导入但项目未保存”。Schema、Revision、ownership、资产类别与 Bake 算法不变，无迁移。 |
 | `2.15.7` | 2026-09-03 | `本次烘焙低模与纹理即时显示恢复` | UI-14/M10：以已验证版本 `9615caf1` 为基线恢复低模及 Base Color/Roughness/Metallic/Normal 的即时浏览器状态更新；选择文件后立刻显示，上传和项目持久化继续由后台保存队列执行，保存失败只报告错误，不再回滚已读取文件或提前切换阶段。保留 A100 所需的透明真实文件控件，修复“正在导入结束后模型消失”。Schema、Revision、ownership、资产类别与 Bake 算法不变，无迁移。 |
-| `2.15.9` | 2026-09-03 | `本次莉刻账号绑定公开路径修复` | M13、`LICLICK-ACCOUNT-BINDING` v1.1.1：账号绑定的 IDaaS Service URL 合并 `LICLICK_PUBLIC_PATH`，A100 从错误的 `/api/liclick/account-binding/callback` 修正为 `/li3d/api/liclick/account-binding/callback`；无显式 public path 时继续回退公开 URL pathname。令牌、邮箱一致性、独立 Atlas home、Schema、Revision、ownership 与资产不变，无迁移。 |
+| `2.16.0` | 2026-09-03 | `本次局部重绘等待与图层选择修复` | M08 ALG-LR-008 v2.4.1、M06 ALG-PROJ-006 v2.0.1、M04 ALG-GEN-005 v1.10.0：生图期间提前编译并持有 exact overlay，修复无效 resident 等待与绑定死等；自动分析合并为一次四图请求；应用重绘使用独立结果图层并保持用户原选择，UV/投影/无选择均不阻断。真实项目 resident 等待 0ms、覆盖层编译 0.5ms、按钮响应帧 11.3ms；回归与构建通过，无分辨率、Schema 或资产迁移。 |
+| `2.16.1` | 2026-09-03 | `本次莉刻账号绑定公开路径修复` | M13、`LICLICK-ACCOUNT-BINDING` v1.1.1：账号绑定的 IDaaS Service URL 合并 `LICLICK_PUBLIC_PATH`，A100 从错误的 `/api/liclick/account-binding/callback` 修正为 `/li3d/api/liclick/account-binding/callback`；任意具备莉刻权限且邮箱与当前飞书 Session 一致的用户均可绑定自己的独立账号。无显式 public path 时继续回退公开 URL pathname；令牌、独立 Atlas home、Schema、Revision、ownership 与资产不变，无迁移。 |
+
+`ALG-LR-008` v2.4.1：局部重绘仍自动创建独立目标和结果图层；pointer-down 不再依赖当前图层是否选中、可见或为 UV，只检查自身 source/composite/Session/显示资源。默认保持按钮激活、GPU promotion、结果发布前的原选择（含 undefined），防止内部隐藏 draft 触发面板选择普通投影层。普通画笔/橡皮擦限制、GPU/CPU/Worker/shader、作者 mask、投影/UV/export、分辨率、Schema、Revision、ownership 与资产不变。真实 store 三类选择与入口 gate 回归通过；无数据迁移，回退选择保持与 gate 即可。详见 CHG-20260903-LOCAL-REPAINT-SELECTION-INDEPENDENCE。

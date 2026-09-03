@@ -99,7 +99,7 @@ assert.doesNotMatch(
 );
 assert.match(
   viewportCanvas,
-  /activeLayerIdBeforePublish[\s\S]*?setActiveLayer\(activeLayerIdBeforePublish\)/,
+  /activeLayerIdBeforePublish[\s\S]*?restoreLocalRepaintLayerSelection\(activeLayerIdBeforePublish\)/,
   'a delayed publication must preserve the layer selected by a newer task',
 );
 assert.match(
@@ -174,14 +174,71 @@ const server = await createServer({
   server: { middlewareMode: true },
 });
 try {
+  const { ensureLocalRepaintSessionLayer, restoreLocalRepaintLayerSelection } = await server.ssrLoadModule(
+    '/src/engine/localRepaint/sessionLayer.ts',
+  );
+  const { useLayerStore } = await server.ssrLoadModule('/src/stores/layerStore.ts');
+  const uvRow = useLayerStore.getState().addEmptyLayer({ objectId: 'selection-model' });
+  const projectionRow = { ...uvRow, id: 'hidden-projection', type: 'projected', visible: false };
+  for (const selectedId of [uvRow.id, projectionRow.id, undefined]) {
+    useLayerStore.setState({ layers: [uvRow, projectionRow], activeProjectedLayerId: selectedId });
+    const first = ensureLocalRepaintSessionLayer({ objectId: 'selection-model', generationId: 'selection-generation' });
+    assert.equal(useLayerStore.getState().activeProjectedLayerId, selectedId,
+      'creating an internal repaint target must preserve UV, hidden projection, and empty selection');
+    assert.notEqual(first.layer.id, uvRow.id);
+    assert.notEqual(first.layer.id, projectionRow.id);
+    const reused = ensureLocalRepaintSessionLayer({ objectId: 'selection-model', generationId: 'selection-generation' });
+    assert.equal(reused.layer.id, first.layer.id);
+    assert.equal(useLayerStore.getState().activeProjectedLayerId, selectedId,
+      'reusing the same generation must not select its hidden target');
+    useLayerStore.getState().setLayers(useLayerStore.getState().layers);
+    restoreLocalRepaintLayerSelection(selectedId);
+    assert.equal(useLayerStore.getState().activeProjectedLayerId, selectedId,
+      'GPU promotion and result publication must preserve an empty selection too');
+  }
+  const guard = viewportCanvas.match(/if \(([^\n]+)\) \{\s*warnMissingPaintLayer\(\);\s*return;/)?.[1];
+  assert.ok(guard, 'test the actual pointer-down layer guard');
+  const blocksStroke = new Function('isInpaintMode', 'isLocalRepaintApplyMode', 'canUseSurfacePaint', `return ${guard}`);
+  assert.equal(blocksStroke(false, true, false), false, 'repaint bypasses ordinary layer selection requirements');
+  assert.equal(blocksStroke(true, false, false), false, 'mask authoring remains independent');
+  assert.equal(blocksStroke(false, false, false), true, 'ordinary brush/eraser still require an eligible layer');
+  assert.equal(blocksStroke(false, false, true), false);
   const {
     getTransientLocalRepaintLayerId,
     isLocalRepaintLayerResident,
     waitForLocalRepaintResidentHandoff,
   } = await server.ssrLoadModule('/src/engine/viewport/localRepaintResidentHandoff.ts');
-  const { syncProjectedLayerResidentMaskTextureInObject } = await server.ssrLoadModule(
+  const { createProjectedLayerMaterial, syncProjectedLayerResidentMaskTextureInObject } = await server.ssrLoadModule(
     '/src/engine/projection/ProjectedLayerMaterial.ts',
   );
+  const { registerLiveProjectedCanvasTexture } = await server.ssrLoadModule(
+    '/src/engine/projection/liveProjectedCanvasTextureRegistry.ts',
+  );
+  const sourceUrl = registerLiveProjectedCanvasTexture('handoff-source-test', { width: 2, height: 2 });
+  const maskUrl = registerLiveProjectedCanvasTexture('handoff-mask-test', { width: 2, height: 2 });
+  const cameraMatrix = new THREE.Matrix4().toArray();
+  const singleMaterial = await createProjectedLayerMaterial({
+    layerId: 'single-repaint', imageUrl: sourceUrl, maskUrl, objectId: 'model',
+    camera: { position: [0, 0, 2], projectionMatrix: cameraMatrix, viewMatrix: cameraMatrix, matrixWorld: cameraMatrix },
+    opacity: 1, visible: true, depthTest: true, useMask: true,
+  });
+  const singleRoot = new THREE.Group();
+  singleRoot.add(new THREE.Mesh(new THREE.BoxGeometry(), singleMaterial));
+  const replacementMask = new THREE.Texture();
+  assert.equal(syncProjectedLayerResidentMaskTextureInObject(
+    singleRoot, 'single-repaint', maskUrl, replacementMask,
+  ).bound, true, 'the real single-layer factory must permit immediate resident handoff');
+  assert.equal(singleMaterial.uniforms.maskMap.value, replacementMask);
+  assert.equal(syncProjectedLayerResidentMaskTextureInObject(
+    singleRoot, 'single-repaint', 'wrong-mask', replacementMask,
+  ).bound, false, 'mask identity must remain checked');
+  for (const flag of ['liclickViewportHelper', 'liclickSelectionGlow', 'liclickWireframeOverlay']) {
+    const helper = new THREE.Mesh(new THREE.BoxGeometry(), new THREE.MeshBasicMaterial());
+    helper.userData[flag] = true;
+    singleRoot.add(helper);
+    assert.equal(isLocalRepaintLayerResident(singleRoot, 'single-repaint'), true,
+      `${flag} must not keep a ready model pending forever`);
+  }
   assert.equal(getTransientLocalRepaintLayerId('A', []), 'A');
   assert.equal(
     getTransientLocalRepaintLayerId('A', [{ id: 'A', contentRevision: 1 }]),

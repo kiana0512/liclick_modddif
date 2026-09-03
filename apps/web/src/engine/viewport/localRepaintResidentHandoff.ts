@@ -13,7 +13,13 @@ export function isLocalRepaintLayerResident(group: THREE.Object3D, layerId: stri
   let meshCount = 0;
   let ready = true;
   group.traverse((child) => {
-    if (!(child instanceof THREE.Mesh) || child.userData.liclickPaintOverlay) return;
+    if (
+      !(child instanceof THREE.Mesh) ||
+      child.userData.liclickPaintOverlay ||
+      child.userData.liclickViewportHelper ||
+      child.userData.liclickSelectionGlow ||
+      child.userData.liclickWireframeOverlay
+    ) return;
     meshCount += 1;
     const materials = Array.isArray(child.material) ? child.material : [child.material];
     ready &&=

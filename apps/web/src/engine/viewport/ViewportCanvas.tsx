@@ -54,6 +54,8 @@ import {
   publishLiveSurfacePaintPreview,
 } from '@/engine/paint/liveSurfacePaintPreviewRegistry';
 import { serializeCamera } from '@/engine/projection/ProjectionCamera';
+import { prewarmLocalRepaintProgram } from '@/engine/localRepaint/programPrewarm';
+import { restoreLocalRepaintLayerSelection } from '@/engine/localRepaint/sessionLayer';
 import { SceneRoot } from './SceneRoot';
 import { getPreviewLighting } from './previewLighting';
 import { CameraController } from './CameraController';
@@ -75,6 +77,7 @@ import { waitForBrowserPaint, yieldToBrowserTask } from '@/utils/browserScheduli
 import {
   shouldPresentLocalRepaintInOrderedStack,
   shouldUseDedicatedLocalRepaintOverlay,
+  shouldWaitForLocalRepaintResidentMaterial,
 } from '@/engine/localRepaint/orderedPreviewComposition';
 import { registerPaintMaskHistoryActionHandler } from '@/engine/paint/paintMaskHistoryActions';
 import {
@@ -124,6 +127,7 @@ import {
   beginLocalRepaintSession,
   getLocalRepaintSessionSnapshot,
   publishLocalRepaintInteractiveState,
+  trackLocalRepaintPreparation,
   withLocalRepaintSessionTimeout,
 } from '@/engine/localRepaint/localRepaintInteractiveState';
 import { prepareLocalRepaintGenerationInput } from '@/engine/localRepaint/generationInputWorker';
@@ -6918,6 +6922,10 @@ function SurfacePaintOverlay() {
   const localRepaintGenerationPresentationActive = useSceneStore(
     (state) => state.localRepaintGenerationPresentationActive,
   );
+  const generationPreparationMaskUrl = useSceneStore((state) =>
+    state.localRepaintGenerationPresentationActive ? state.paintMaskDataUrl : undefined,
+  );
+  const earlyLocalRepaintProgramRef = useRef<ReturnType<typeof prewarmLocalRepaintProgram>>();
   const setPaintMaskDataUrl = useSceneStore((state) => state.setPaintMaskDataUrl);
   const setPaintMaskCapture = useSceneStore((state) => state.setPaintMaskCapture);
   const setOrbitControlsEnabled = useSceneStore((state) => state.setOrbitControlsEnabled);
@@ -6953,12 +6961,12 @@ function SurfacePaintOverlay() {
     (paintTool === 'none' || isEditingPersistedLocalRepaint);
 
   useEffect(() => {
-    if (!shouldPrewarmPersistedLocalRepaint && paintTool !== 'inpaint-apply') return;
+    if (!shouldPrewarmPersistedLocalRepaint && !localRepaintGenerationPresentationActive && !isInpaintMode && paintTool !== 'inpaint-apply') return;
     // Building the radial-gradient stamp is cheap, but doing it on pointer-down
     // makes the very first accepted sample pay canvas allocation and raster work.
     // Keep the current feather preset resident alongside the GPU edit resources.
     getFeatheredBrushStamp(localRepaintBrushSettings.brushFeather);
-  }, [localRepaintBrushSettings.brushFeather, paintTool, shouldPrewarmPersistedLocalRepaint]);
+  }, [localRepaintBrushSettings.brushFeather, paintTool, shouldPrewarmPersistedLocalRepaint, localRepaintGenerationPresentationActive, isInpaintMode]);
 
   useEffect(() => {
     if (paintTool !== 'eraser') return;
@@ -7818,6 +7826,36 @@ function SurfacePaintOverlay() {
   const getPaintableMeshes = useCallback((model: SurfacePaintTarget) => {
     return getPaintableSurfaceCache(model.group).uvMeshes;
   }, []);
+
+  useEffect(() => {
+    if (!isInpaintMode && !localRepaintGenerationPresentationActive && !shouldPrewarmPersistedLocalRepaint && paintTool !== 'inpaint-apply') return;
+    if (earlyLocalRepaintProgramRef.current) return;
+    const model = getTargetModel();
+    const geometry = model && getPaintableSurfaceCache(model.group).positionedMeshes[0]?.geometry;
+    if (!geometry) return;
+    const warmup = prewarmLocalRepaintProgram(gl, geometry, camera);
+    earlyLocalRepaintProgramRef.current = warmup;
+    void warmup.ready.catch((error) => {
+      if (earlyLocalRepaintProgramRef.current === warmup) earlyLocalRepaintProgramRef.current = undefined;
+      warmup.dispose();
+      console.warn('[Liclick 3D Texture] Early repaint program preparation failed:', error);
+    });
+  }, [camera, getTargetModel, gl, isInpaintMode, localRepaintGenerationPresentationActive, paintTool, shouldPrewarmPersistedLocalRepaint]);
+
+  useEffect(() => () => {
+    earlyLocalRepaintProgramRef.current?.dispose();
+    earlyLocalRepaintProgramRef.current = undefined;
+  }, [gl]);
+
+  useEffect(() => {
+    if (!generationPreparationMaskUrl) return;
+    // Decode/compute alongside prompt analysis and remote generation. The
+    // immutable image and size-keyed falloff caches are consumed again below.
+    void loadImageElement(generationPreparationMaskUrl).then((mask) => {
+      const { width, height } = getLocalRepaintLiveMaskSize(mask.naturalWidth, mask.naturalHeight);
+      return createLocalRepaintFalloffCanvasAsync(mask, width, height);
+    }).catch((error) => console.warn('[Liclick 3D Texture] Early repaint mask preparation failed:', error));
+  }, [generationPreparationMaskUrl]);
 
   const getUvPaintLayer = useCallback(
     (model: SurfacePaintTarget) => {
@@ -9436,6 +9474,7 @@ function SurfacePaintOverlay() {
 
     const sourceDecodeStartedAt = performance.now();
     const previousAssets = localRepaintSourceImageRef.current;
+    const finishAssetPreparation = trackLocalRepaintPreparation(repaintSession.sessionId);
     void withLocalRepaintSessionTimeout(
       Promise.all([
         previousAssets?.url === source.imageUrl
@@ -9459,15 +9498,12 @@ function SurfacePaintOverlay() {
         const sourceWidth = sourceImage.naturalWidth || sourceImage.width;
         const sourceHeight = sourceImage.naturalHeight || sourceImage.height;
         const liveMaskSize = getLocalRepaintLiveMaskSize(sourceWidth, sourceHeight);
-        const falloffCanvas = await createLocalRepaintFalloffCanvasAsync(
-          allowedMaskImage,
-          liveMaskSize.width,
-          liveMaskSize.height,
-        );
-        const liveSource =
+        const [falloffCanvas, liveSource] = await Promise.all([
+          createLocalRepaintFalloffCanvasAsync(allowedMaskImage, liveMaskSize.width, liveMaskSize.height),
           previousAssets?.url === source.imageUrl
             ? previousAssets.liveSource
-            : await createLocalRepaintLiveSource(sourceImage);
+            : createLocalRepaintLiveSource(sourceImage),
+        ]);
         if (cancelled) {
           traceSourceEffect('cancelled-after-falloff');
           return;
@@ -9484,8 +9520,10 @@ function SurfacePaintOverlay() {
               source.objectId ?? selectedObjectId ?? 'unknown-object',
             ) &&
           !(await releasePreviousPreview())
-        )
-          return;
+        ) {
+          if (cancelled) return;
+          throw new Error('上一重绘图层的蒙版尚未完成材质绑定，请重试。');
+        }
         if (cancelled) return;
         reportLocalRepaintPrewarmProgress(0.4, '高清图与透明蒙版已解码');
         // Register an asynchronously resized GPU source for interaction. The
@@ -9563,9 +9601,11 @@ function SurfacePaintOverlay() {
           sceneState.setLocalRepaintPreviewLayer(undefined);
           sceneState.setLocalRepaintProjectionSource(undefined);
         }
-      });
+      })
+      .finally(finishAssetPreparation);
     return () => {
       cancelled = true;
+      finishAssetPreparation();
       traceSourceEffect('cleanup');
     };
   }, [
@@ -10371,6 +10411,8 @@ function SurfacePaintOverlay() {
         currentOverlay.layerId === composite.layerId &&
         currentOverlay.material.userData.liclickDisposedMaterial !== true
       ) {
+        if (currentOverlay.compilePromise) await currentOverlay.compilePromise;
+        if (localRepaintGpuOverlayRef.current !== currentOverlay) return undefined;
         const previewImageUrl = localRepaintSourceImageRef.current?.previewImageUrl;
         const sourceTexture = previewImageUrl
           ? getLiveProjectedTexture(previewImageUrl, THREE.SRGBColorSpace, { flipY: false })
@@ -10431,6 +10473,7 @@ function SurfacePaintOverlay() {
       const persistedPresentationLayer = useLayerStore
         .getState()
         .layers.find((layer) => layer.id === composite.layerId);
+      await earlyLocalRepaintProgramRef.current?.ready.catch(() => undefined);
       const material = await createProjectedLayerMaterial({
         layerId: composite.layerId,
         imageUrl: previewImageUrl,
@@ -10723,6 +10766,7 @@ function SurfacePaintOverlay() {
     });
     let cancelled = false;
     reportLocalRepaintPrewarmProgress(0.08, '读取高清生成结果');
+    const finishGpuPreparation = trackLocalRepaintPreparation(repaintSession.sessionId);
     let timeoutId: number | undefined;
     let frameId: number | undefined;
     const waitForFrame = () =>
@@ -10840,12 +10884,7 @@ function SurfacePaintOverlay() {
                 : layer,
             ),
           );
-          if (
-            activeLayerId &&
-            useLayerStore.getState().layers.some((layer) => layer.id === activeLayerId)
-          ) {
-            useLayerStore.getState().setActiveLayer(activeLayerId);
-          }
+          restoreLocalRepaintLayerSelection(activeLayerId);
           document.body.dataset.localRepaintLiveMaskPromotion = `ready:${residentLayer.id}`;
           await waitForFrame();
           if (cancelled) return;
@@ -10934,11 +10973,21 @@ function SurfacePaintOverlay() {
           await waitForFrame();
         }
         if (cancelled) return;
-        // Prepare both presentation paths before accepting input. The exact
-        // overlay owns live apply strokes; resident binding owns historical
-        // rows and the atomic handoff after painting.
+        // New topmost results are absent from the background stack until the
+        // first stroke publishes a row. Waiting for that nonexistent binding
+        // burned the entire 10s deadline before compiling the exact overlay.
+        // Existing rows and ordered previews still require resident preparation.
+        const requiresResidentMaterial = shouldWaitForLocalRepaintResidentMaterial(
+          useLayerStore.getState().layers,
+          useSceneStore.getState().localRepaintPreviewLayer,
+          composite.layerId,
+        );
+        const residentWaitStartedAt = performance.now();
         const residentDeadline = Math.min(preparationDeadline, performance.now() + 10_000);
-        while (!cancelled && !residentOverrideBound && performance.now() < residentDeadline) {
+        while (
+          requiresResidentMaterial && !cancelled &&
+          !residentOverrideBound && performance.now() < residentDeadline
+        ) {
           ensureLiveLocalRepaintComposite(model, source);
           invalidate();
           await waitForFrame();
@@ -10948,7 +10997,16 @@ function SurfacePaintOverlay() {
             composite,
           );
         }
-        const readyOverlay = await ensureLocalRepaintGpuOverlay(model, source, composite);
+        if (cancelled) return;
+        document.body.dataset.localRepaintResidentWaitMs = (
+          performance.now() - residentWaitStartedAt
+        ).toFixed(1);
+        document.body.dataset.localRepaintResidentWaitRequired = String(requiresResidentMaterial);
+        const readyOverlay = await withLocalRepaintSessionTimeout(
+          ensureLocalRepaintGpuOverlay(model, source, composite),
+          Math.max(1, preparationDeadline - performance.now()),
+          '准备局部重绘实时覆盖层',
+        );
         if (!readyOverlay) {
           throw new Error('局部重绘实时覆盖层未能完成。');
         }
@@ -11006,6 +11064,7 @@ function SurfacePaintOverlay() {
       const currentSource = sceneState.localRepaintProjectionSource;
       document.body.dataset.localRepaintGpuReadyGeneration = source.generationId ?? '';
       document.body.dataset.localRepaintGpuReadyTarget = source.targetLayerId ?? '';
+      document.body.dataset.localRepaintGpuReadyAt = performance.now().toFixed(1);
       publishLocalRepaintInteractiveState({
         sessionId: repaintSession.sessionId,
         generationId: source.generationId ?? '',
@@ -11034,9 +11093,10 @@ function SurfacePaintOverlay() {
     // for requestIdleCallback left shader/material creation until the first
     // brush gesture on busy scenes, so a valid stroke could remain invisible
     // for several frames while the projected material was being prepared.
-    frameId = window.requestAnimationFrame(() => void prepare());
+    frameId = window.requestAnimationFrame(() => void prepare().finally(finishGpuPreparation));
     return () => {
       cancelled = true;
+      finishGpuPreparation();
       if (frameId !== undefined) window.cancelAnimationFrame(frameId);
       if (timeoutId !== undefined) window.clearTimeout(timeoutId);
     };
@@ -11982,12 +12042,7 @@ function SurfacePaintOverlay() {
         const activeLayerIdBeforePublish = layerState.activeProjectedLayerId;
         if (!layerRowAlreadyCurrent) {
           layerState.setLayers(nextLayers);
-          if (
-            activeLayerIdBeforePublish &&
-            nextLayers.some((item) => item.id === activeLayerIdBeforePublish)
-          ) {
-            useLayerStore.getState().setActiveLayer(activeLayerIdBeforePublish);
-          }
+          restoreLocalRepaintLayerSelection(activeLayerIdBeforePublish);
         }
         const layerRowPublishMs = performance.now() - queueStartedAt;
         document.body.dataset.perfLocalRepaintLayerRowPublishMs = layerRowPublishMs.toFixed(1);
@@ -14459,7 +14514,7 @@ function SurfacePaintOverlay() {
       event.preventDefault();
       event.stopImmediatePropagation();
 
-      if (!isInpaintMode && !canUseSurfacePaint) {
+      if (!isInpaintMode && !isLocalRepaintApplyMode && !canUseSurfacePaint) {
         warnMissingPaintLayer();
         return;
       }
