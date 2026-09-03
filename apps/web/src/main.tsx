@@ -13,6 +13,26 @@ import { initializeBrowserComputeCapabilities } from './platform/browserComputeC
 import { initializeReleaseCompatibility } from './services/releaseManifestClient';
 import './styles/globals.css';
 
+const staleChunkReloadKey = 'li3d:stale-chunk-reload-at';
+const staleChunkReloadCooldownMs = 30_000;
+
+/**
+ * A page that stays open across a deployment can still reference the previous
+ * build's hashed lazy chunks. Vite reports that condition before the rejected
+ * import reaches feature-level error handling, so recover once by loading the
+ * current index and its current asset manifest. The cooldown prevents a reload
+ * loop when the server or network is genuinely unavailable.
+ */
+window.addEventListener('vite:preloadError', (event) => {
+  const now = Date.now();
+  const lastReloadAt = Number(window.sessionStorage.getItem(staleChunkReloadKey) ?? 0);
+  if (Number.isFinite(lastReloadAt) && now - lastReloadAt < staleChunkReloadCooldownMs) return;
+
+  event.preventDefault();
+  window.sessionStorage.setItem(staleChunkReloadKey, String(now));
+  window.location.reload();
+});
+
 const queryClient = new QueryClient();
 const performanceLabEnabled = isPerformanceLabEnabled(window.location.search);
 

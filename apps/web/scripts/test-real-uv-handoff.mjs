@@ -31,7 +31,7 @@ assert.doesNotMatch(bakeWorkspace, /pipelineAssetHydrationRef|pendingPipelineLow
   '烘焙页不得从 Pipeline 自动导入 UV 输入模型作为高模');
 assert.match(bakeWorkspace, /if \(!project\) return;[\s\S]*const uvRevision[\s\S]*lowAsset\.objectId \?\?[\s\S]*selectedWorkspaceObjectId/,
   '烘焙页必须允许在高模为空时先恢复 UV 低模');
-assert.match(bakeWorkspace, /fileTargetIdRef\.current \?\?[\s\S]*handoff\?\.objectId \?\?[\s\S]*loaded\.object\.id/,
+assert.match(bakeWorkspace, /objectId = firstNonEmptyId\([\s\S]*fileTargetIdRef\.current[\s\S]*handoff\?\.objectId[\s\S]*loaded\.object\.id/,
   '用户后续导入的高模必须复用 UV 低模的 Bake Set 身份');
 assert.match(bakeHighSnapshot, /if \(pipelineOwnsHighSource\) return \[\];/,
   '历史 UV Pipeline 高模快照也不得在烘焙页自动显示');

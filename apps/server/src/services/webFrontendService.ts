@@ -54,6 +54,15 @@ function sendUnavailable(response: ServerResponse) {
   response.end('LI3D Web 前端尚未构建，请先运行 Web build。');
 }
 
+function sendStaticNotFound(response: ServerResponse) {
+  response.writeHead(404, {
+    'content-type': 'text/plain; charset=utf-8',
+    'cache-control': 'no-store',
+    'x-content-type-options': 'nosniff',
+  });
+  response.end('Not found.');
+}
+
 function resolveStaticFile(url: URL) {
   let relativePath: string;
   try {
@@ -65,6 +74,10 @@ function resolveStaticFile(url: URL) {
   const candidate = path.resolve(webRoot, relativePath || 'index.html');
   if (!isWithinDirectory(webRoot, candidate)) return undefined;
   if (fs.existsSync(candidate) && fs.statSync(candidate).isFile()) return candidate;
+  // Only extensionless application routes may fall back to the SPA shell.
+  // Returning index.html for a missing hashed JS/CSS asset produces a misleading
+  // HTTP 200 and makes dynamic imports fail later with a MIME/module error.
+  if (path.posix.extname(url.pathname) !== '') return undefined;
   const indexPath = path.resolve(webRoot, 'index.html');
   return fs.existsSync(indexPath) && fs.statSync(indexPath).isFile() ? indexPath : undefined;
 }
@@ -86,7 +99,9 @@ export async function serveWebFrontend(
   }
   const filePath = resolveStaticFile(url);
   if (!filePath) {
-    sendUnavailable(response);
+    const indexPath = path.resolve(serverConfig.webDistDir, 'index.html');
+    if (fs.existsSync(indexPath) && fs.statSync(indexPath).isFile()) sendStaticNotFound(response);
+    else sendUnavailable(response);
     return true;
   }
   const stat = fs.statSync(filePath);

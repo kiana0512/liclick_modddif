@@ -87,6 +87,11 @@ try {
   assert.equal(spaRoute.status, 200);
   assert.match(spaRoute.headers.get('content-type') ?? '', /^text\/html/);
 
+  const missingLazyChunk = await fetch(`${baseUrl}/assets/exportFbx-stale-build.js`);
+  assert.equal(missingLazyChunk.status, 404);
+  assert.match(missingLazyChunk.headers.get('content-type') ?? '', /^text\/plain/);
+  assert.doesNotMatch(await missingLazyChunk.text(), /<div id="root"><\/div>/);
+
   const providerStatus = await fetch(`${baseUrl}/api/auth/provider-status`);
   assert.equal(providerStatus.status, 200);
   assert.match(providerStatus.headers.get('content-type') ?? '', /^application\/json/);
@@ -151,7 +156,7 @@ try {
   assert.match(toolboxManual.headers.get('content-type') ?? '', /^text\/html/);
 
   console.log(
-    'Integrated Web smoke passed: SPA, auth boundaries, JSON API boundary, optional toolbox delivery, and no Li3D host install/telemetry surface.',
+    'Integrated Web smoke passed: SPA, static 404 boundary, auth boundaries, JSON API boundary, optional toolbox delivery, and no Li3D host install/telemetry surface.',
   );
 } catch (error) {
   if (output.trim()) console.error(output.trim());
