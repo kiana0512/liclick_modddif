@@ -634,11 +634,27 @@ async function removeManagedAtlasHomeDir(homeDir?: string) {
   await fs.promises.rm(path.resolve(homeDir!), { recursive: true, force: true });
 }
 
+export function buildPersonalLiclickAccountCallbackUrl(
+  publicWorkspaceUrl: string,
+  publicPath: string,
+  loginId: string,
+) {
+  const callbackUrl = new URL(publicWorkspaceUrl);
+  const configuredPath = publicPath || callbackUrl.pathname;
+  const normalizedPublicPath = `/${configuredPath.split('/').filter(Boolean).join('/')}`;
+  callbackUrl.pathname = `${normalizedPublicPath === '/' ? '' : normalizedPublicPath}/api/liclick/account-binding/callback`;
+  callbackUrl.search = '';
+  callbackUrl.hash = '';
+  callbackUrl.searchParams.set('loginId', loginId);
+  return callbackUrl;
+}
+
 function bindingResponse(login: PendingAtlasLogin) {
-  const callbackUrl = new URL(
-    `${serverConfig.publicWorkspaceUrl.replace(/\/$/, '')}/api/liclick/account-binding/callback`,
+  const callbackUrl = buildPersonalLiclickAccountCallbackUrl(
+    serverConfig.publicWorkspaceUrl,
+    serverConfig.publicPath,
+    login.id,
   );
-  callbackUrl.searchParams.set('loginId', login.id);
   const redirectUrl = new URL(serverConfig.idaasJwtSso.url);
   redirectUrl.searchParams.set('redirect_uri', callbackUrl.toString());
   redirectUrl.searchParams.set('state', login.id);

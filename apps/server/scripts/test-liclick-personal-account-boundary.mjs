@@ -7,6 +7,7 @@ import {
   submitLiclickImageEdit,
   submitLiclickImageJob,
 } from '../dist/services/liclickGenerationService.js';
+import { buildPersonalLiclickAccountCallbackUrl } from '../dist/auth/atlasAuthService.js';
 import { getLiclickUserErrorMessage } from '../dist/services/liclickErrorMessage.js';
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -36,6 +37,25 @@ assert.equal(
     ),
   ),
   '服务器莉刻运行时版本不兼容，请联系管理员升级服务。',
+);
+
+assert.equal(
+  buildPersonalLiclickAccountCallbackUrl(
+    'http://10.3.2.59:44770',
+    '/li3d',
+    'binding-test',
+  ).toString(),
+  'http://10.3.2.59:44770/li3d/api/liclick/account-binding/callback?loginId=binding-test',
+  'The account-binding callback must retain the deployed public path.',
+);
+assert.equal(
+  buildPersonalLiclickAccountCallbackUrl(
+    'https://li3d.example.test/root/',
+    '',
+    'binding-fallback',
+  ).toString(),
+  'https://li3d.example.test/root/api/liclick/account-binding/callback?loginId=binding-fallback',
+  'The public workspace URL pathname remains the fallback when no explicit public path is set.',
 );
 
 const [routeSource, atlasSource, webOAuthSource, serverSource, setupSource] = await Promise.all([

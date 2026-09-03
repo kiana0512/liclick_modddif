@@ -1,6 +1,6 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
-> 文档版本：`2.15.7`
+> 文档版本：`2.15.9`
 >
 > 生效日期：`2026-09-02`
 >
@@ -495,7 +495,7 @@ A100 发布同时显式配置 `LICLICK_PERFORMANCE_LAB_ENABLED=true` 与构建�
 
 迁移只新增性能会话/分片表，不回填旧 `sessionStorage` 报告，不改变 Project Command、Revision CAS、对象 ownership 或任何图层资产。回滚可停止挂载 Cloud bridge、关闭性能 API 并保留新增表供审计；IndexedDB 未发送记录可由恢复后的同版本页面继续重试，禁止为回滚删除用户项目或恢复 Windows 本地采集组件。
 
-### 13.2 当前用户莉刻账号绑定 `LICLICK-ACCOUNT-BINDING` v1.1.0
+### 13.2 当前用户莉刻账号绑定 `LICLICK-ACCOUNT-BINDING` v1.1.1
 
 莉刻生图、编辑、轮询与通用提示词润色必须使用当前飞书 Session 用户独占的服务器端账号绑定。浏览器只通过同源、带 Cookie 的 Cloud API 发起绑定和查询状态；OAuth 临时状态、token 与 `atlas_home_dir` 只由 A100 控制面保管，禁止写入浏览器、Windows 本地组件或项目文档。
 
@@ -509,6 +509,8 @@ A100 发布同时显式配置 `LICLICK_PERFORMANCE_LAB_ENABLED=true` 与构建�
 | 浏览器拓扑 | 继续使用 browser zero-install + LI3D Cloud；禁止恢复 localhost/4618、安装器、端点切换或本地凭据托管 |
 
 v1.1.0 将“登录 LI3D”与“关联当前用户莉刻账号”串为同一安全流程。飞书/IDaaS 完成身份校验后，服务端为当前用户启动 Atlas SkillHub 2.9.1 的 loopback-only `authenticate` bridge；浏览器只接收同源关联回调页面，回调中的身份令牌立即转交本机回环监听器，页面随后清除 URL fragment。Atlas 运行时负责加密 token cache 写入，LI3D 禁止自行落明文 token；写入完成后还必须通过 secure cache 读取、有效期检查、`gateway list-tools --service liclick` 可用性检查以及 Atlas email 与飞书 Session email 一致性检查，全部通过才绑定独立 `atlas_home_dir`。运行时缺少 `readCache` 或 `authenticate` 时固定返回 `ATLAS_RUNTIME_INCOMPATIBLE`，不得回退共享账号、默认 home 或手写明文缓存。失败、超时、身份不一致或回调任务不匹配时终止子进程并删除未绑定临时目录；既有合法个人绑定继续复用。该升级不改变 Project/Layer/Capture/Generation Schema、Revision、ownership、图层资产或莉刻任务格式，无数据迁移；回退只能关闭自动关联入口并要求用户重新授权，不得恢复共享凭据。
+
+v1.1.1 修复部署在非根路径时的莉刻 IDaaS Service 回调：账号绑定回调必须以 `LICLICK_PUBLIC_PATH` 为权威路径，并仅在该配置为空时回退 `LICLICK_PUBLIC_WORKSPACE_URL` 自带 pathname。A100 的回调因此固定为 `/li3d/api/liclick/account-binding/callback`，不得退化为根路径 `/api/...`。此补丁只修正 M13 的授权 URL 构造，不改变令牌校验、飞书与莉刻邮箱一致性、独立 Atlas home、Project/Layer/Capture/Generation Schema、Revision、ownership 或资产；无数据迁移。回退只恢复旧 URL 构造，但会重新暴露子路径部署绑定失败，不得改为共享账号回退。
 
 迁移策略为：既有用户若没有独立 `atlas_home_dir`，一律视为未绑定并由本人重新完成莉刻授权；不自动认领 A100 共享凭据，也不迁移历史共享账号任务。该变更不修改 Project Command、Revision CAS、Project/Layer/Capture/Generation Schema、对象 ownership 或已验证资产。发布后应从 A100 运行配置移除共享 `ATLAS_TOKEN_FILE` 并撤销旧共享 token；回滚不得恢复共享回退，只能临时关闭莉刻入口并保留用户绑定数据，待兼容版本恢复。
 
@@ -648,3 +650,4 @@ M15 体积修复：锁定 `terser@5.51.2` 两轮安全压缩，保留日志和�
 | `2.15.5` | 2026-09-03 | `本次烘焙原生文件控件直达修复` | UI-14/M10：A100 实测 label-input 转发仍未稳定触发文件选择；一键烘焙高低模卡片与 Base Color/Roughness/Metallic/Normal 槽位改由透明的真实文件输入覆盖点击区域，用户手势直接命中文件控件，不再经过程序化唤起或 label 转发。专业页 `showPicker()` 回退、拖放、格式/UV 校验、配对、上传、Schema、Revision、ownership 与资产类别不变，无迁移。 |
 | `2.15.6` | 2026-09-03 | `本次烘焙导入事务对齐修复` | UI-14/M10：低模与 Base Color/Roughness/Metallic/Normal 导入对齐高模的完整异步生命周期；文件选择或拖放后等待对象存储上传与 Bake Workspace 保存，成功后低模才进入对齐，失败则回滚临时文件状态并保留明确错误。导入期间禁用对应原生文件控件并显示进行中状态，避免重复提交和“界面已导入但项目未保存”。Schema、Revision、ownership、资产类别与 Bake 算法不变，无迁移。 |
 | `2.15.7` | 2026-09-03 | `本次烘焙低模与纹理即时显示恢复` | UI-14/M10：以已验证版本 `9615caf1` 为基线恢复低模及 Base Color/Roughness/Metallic/Normal 的即时浏览器状态更新；选择文件后立刻显示，上传和项目持久化继续由后台保存队列执行，保存失败只报告错误，不再回滚已读取文件或提前切换阶段。保留 A100 所需的透明真实文件控件，修复“正在导入结束后模型消失”。Schema、Revision、ownership、资产类别与 Bake 算法不变，无迁移。 |
+| `2.15.9` | 2026-09-03 | `本次莉刻账号绑定公开路径修复` | M13、`LICLICK-ACCOUNT-BINDING` v1.1.1：账号绑定的 IDaaS Service URL 合并 `LICLICK_PUBLIC_PATH`，A100 从错误的 `/api/liclick/account-binding/callback` 修正为 `/li3d/api/liclick/account-binding/callback`；无显式 public path 时继续回退公开 URL pathname。令牌、邮箱一致性、独立 Atlas home、Schema、Revision、ownership 与资产不变，无迁移。 |
