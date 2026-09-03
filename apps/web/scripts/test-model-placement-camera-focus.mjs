@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { stdout } from 'node:process';
 import { fileURLToPath } from 'node:url';
@@ -77,9 +78,11 @@ try {
   const { placeImportedModelBesideScene } = await server.ssrLoadModule(
     '/src/engine/scene/placeImportedModelBesideScene.ts',
   );
-  const { getWorkspaceCameraTransition, isStrictModelAppend } = await server.ssrLoadModule(
-    '/src/engine/viewport/cameraFramingPolicy.ts',
-  );
+  const {
+    getWorkspaceCameraTransition,
+    isStrictModelAppend,
+    shouldFocusImportedModelAfterImport,
+  } = await server.ssrLoadModule('/src/engine/viewport/cameraFramingPolicy.ts');
 
   const first = makeLoadedModel('first', 2, -1.5);
   const firstPositionBefore = first.result.group.position.clone();
@@ -111,6 +114,21 @@ try {
   assert.equal(isStrictModelAppend(new Set(['a']), new Set(['a', 'b'])), true);
   assert.equal(isStrictModelAppend(new Set(), new Set(['a'])), false);
   assert.equal(isStrictModelAppend(new Set(['a', 'b']), new Set(['a'])), false);
+
+  assert.equal(shouldFocusImportedModelAfterImport('texture'), true);
+  assert.equal(shouldFocusImportedModelAfterImport('scene'), false);
+  assert.equal(shouldFocusImportedModelAfterImport('normal'), false);
+  assert.equal(shouldFocusImportedModelAfterImport('export'), false);
+
+  const editorSource = await readFile(path.join(root, 'src/routes/EditorPage.tsx'), 'utf8');
+  const publishIndex = editorSource.indexOf('setImportedModel(loaded.result, object);');
+  const automaticFocusIndex = editorSource.indexOf(
+    'focusCameraOrbitOnObjectId(object.id);',
+    publishIndex,
+  );
+  assert(publishIndex >= 0, 'Imported model must be published to SceneStore.');
+  assert(automaticFocusIndex > publishIndex, 'Texture import must focus the newly published model.');
+  assert(automaticFocusIndex - publishIndex < 300, 'Import focus must happen immediately after publish.');
 
   stdout.write('Model placement and camera-focus regression test passed.\n');
 } finally {

@@ -183,6 +183,7 @@ import {
   prewarmPreviewTextures,
   releasePreviewTexture,
 } from '@/engine/viewport/previewTextureCache';
+import { shouldFocusImportedModelAfterImport } from '@/engine/viewport/cameraFramingPolicy';
 import type { ModelLoadResult } from '@/engine/loaders/modelImportTypes';
 import { focusCameraOrbitOnObjectId, setCameraToObjectView } from '@/engine/scene/transformActions';
 import { applySerializedCamera, serializeCamera } from '@/engine/projection/ProjectionCamera';
@@ -3706,6 +3707,9 @@ export function EditorPage({
       onProgress?.({ phase: 'persisting', phaseProgress: 1 }, t('modelImportSavingFile'));
       onProgress?.({ phase: 'registering', phaseProgress: 0.15 }, t('modelImportAddingToScene'));
       setImportedModel(loaded.result, object);
+      if (shouldFocusImportedModelAfterImport(useWorkspaceLayoutStore.getState().mode)) {
+        focusCameraOrbitOnObjectId(object.id);
+      }
       if (importedBaseColorUrl) {
         addUvLayer({
           name: 'Base texture',

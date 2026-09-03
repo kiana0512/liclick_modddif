@@ -1,6 +1,6 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
-> 文档版本：`2.16.7`
+> 文档版本：`2.16.8`
 >
 > 生效日期：`2026-09-03`
 >
@@ -214,6 +214,8 @@ v1.3.3 投影蒙版统一原子交接修复：A100 项目逐个显示投影行�
 `OBJECT-DELETE-HISTORY` v1.0.0 将模型删除定义为 M12 runtime 历史事务，而不是只保存 Object/Layer 元数据快照。事务在内存中保留被删 Three.js 模型实例，撤回时同步恢复对象顺序、选择、变换、显隐、图层、Generation/Capture、参考图、烘焙产物和 Bake Workspace，并清除该对象的本地删除墓碑；重做重新执行完整删除并登记墓碑。若运行时实例已不可用，UI-04 通过原项目 `sourcePath` 进入渐进式模型恢复兜底。撤回保留删除保存后最新的 Revision CAS token、asset manifest 和 lastSavedAt，禁止把服务端并发状态回滚到删除前。事务只驻留当前会话历史，不改变 Project Schema、对象资产格式、GPU/CPU/Worker/shader、投影/UV/export 或 ownership；旧项目无需迁移，回退后已有项目与 Revision 仍可读取。
 
 新增 `test:object-deletion-history` 真实执行 Project/Scene/Layer/Generation store 的删除→撤回→重做→撤回，验证同一 Three.js 实例即时回到视窗、其余模型被自动排列后恢复原变换、对象子资源和活动选择完整恢复、删除墓碑清除/重建，以及异步删除保存产生的新 CAS Revision 不被旧快照覆盖。浏览器交互验收仍需覆盖底部按钮与 Ctrl+Z 两个入口。
+
+`MODEL-IMPORT-CAMERA-FOCUS` v1.0.0：贴图工作区的用户模型导入在 `setImportedModel` 原子发布后，立即复用 F 键的 DCC 聚焦语义，把轨道中心移动到新导入模型包围盒中心，并将相机平移相同位移；保持当前观察方向、相机距离、投影模式、模型排列和所有对象变换不变。场景、法线和导出工作区继续保留原相机构图，项目恢复和后台模型解码不触发自动聚焦。无 Project/Camera Schema、Revision、资产或 ownership 迁移；回退只移除导入发布后的聚焦调用。
 
 Layer 以可选 `eraserAlgorithmVersion=1` 标记首次采用该语义的内容修订；未带字段的旧图层按原 image/mask 读取，首次擦除时惰性升级，不执行批量迁移。项目保存继续使用 Project Command v1、Revision CAS 与现有 verified layer asset 上传，未引入新的命令或资产类别。高分辨率提交失败时保留上一持久版本并显示错误，禁止静默写入低分辨率结果。
 
@@ -678,6 +680,7 @@ M15 / CLOUD-DEPLOYMENT v1.0.0（2026-09-03）：正常合并 release 部署历�
 | `2.16.5` | 2026-09-03 | `本次高频滚轮重复拾取修复` | UI-06/M03、`ALG-VIEW-INPUT-001` v1.0.0：跳过 R3F 原始 wheel 的无用模型拾取，完整滚轮增量继续交给原生相机控制器按帧执行。真实分发回归覆盖 1021→0 拾取、透视/正交缩放、点击/空白选择和监听清理。无画质、算法输出、Schema、Revision 或资产迁移；回退恢复默认 Canvas 事件分发。 |
 | `2.16.6` | 2026-09-03 | `本次局部重绘蒙版持久化边界修复` | UI-06/UI-10、M01/M08/M14、`ALG-LR-008` v2.4.2：局部重绘 live canvas 保存统一读取 canvas/image 注册源并编码上传，按 URL/revision 和资产槽复用 verified asset；注册源已释放且没有已验证映射时本次保存失败重试，禁止把 `liclick-live-projected-canvas:` 写进 Revision。服务端将 live/blob 视为 volatile，优先保留同图层上一 Revision 的 durable mask/source，否则返回 `PROJECT_SAVE_CONFLICT`。GPU/CPU/Worker/shader、coverage、投影/UV/export、分辨率、Schema 与 ownership 不变；旧坏 Revision 保留审计，可从最近 durable Revision 原位恢复，无批量迁移。 |
 | `2.16.7` | 2026-09-03 | `本次模型删除撤回运行时恢复修复` | UI-04、M01/M03/M12、`OBJECT-DELETE-HISTORY` v1.0.0：模型删除改为完整 runtime 历史事务；撤回同步复用被删 Three.js 实例并恢复对象、选择、变换、图层、Generation/Capture、参考图、烘焙与 Bake Workspace，清除删除墓碑，重做再次执行完整删除；实例缺失时按 durable source 渐进恢复。保留最新 Revision CAS/asset manifest/lastSavedAt，不回滚服务端并发状态。Project Schema、对象资产格式、GPU/CPU/Worker/shader、投影/UV/export 与 ownership 不变，无迁移。 |
+| `2.16.8` | 2026-09-03 | `本次贴图导入自动聚焦修复` | UI-04/M02/M03、`MODEL-IMPORT-CAMERA-FOCUS` v1.0.0：贴图工作区导入模型完成并发布到 SceneStore 后，立即复用 F 键的轨道中心聚焦，将相机与 target 同量平移到新模型中心；保持观察方向、距离、投影、模型排列和变换不变。场景/法线/导出、项目恢复、Schema、Revision、资产与 ownership 不变，无迁移。 |
 
 `ALG-LR-008` v2.4.1：局部重绘仍自动创建独立目标和结果图层；pointer-down 不再依赖当前图层是否选中、可见或为 UV，只检查自身 source/composite/Session/显示资源。默认保持按钮激活、GPU promotion、结果发布前的原选择（含 undefined），防止内部隐藏 draft 触发面板选择普通投影层。普通画笔/橡皮擦限制、GPU/CPU/Worker/shader、作者 mask、投影/UV/export、分辨率、Schema、Revision、ownership 与资产不变。真实 store 三类选择与入口 gate 回归通过；无数据迁移，回退选择保持与 gate 即可。详见 CHG-20260903-LOCAL-REPAINT-SELECTION-INDEPENDENCE。
 

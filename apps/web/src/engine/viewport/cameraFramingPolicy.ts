@@ -11,6 +11,10 @@ export function getWorkspaceCameraTransition(
   return currentMode === 'texture' ? 'focus-selected' : 'preserve';
 }
 
+export function shouldFocusImportedModelAfterImport(workspaceMode: WorkspaceMode) {
+  return workspaceMode === 'texture';
+}
+
 export function isStrictModelAppend(
   previousModelIds: ReadonlySet<string>,
   currentModelIds: ReadonlySet<string>,
