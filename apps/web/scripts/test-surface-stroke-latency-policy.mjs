@@ -108,11 +108,25 @@ try {
     /layer\.pendingPaintCommits \+= 1;[\s\S]*?layer\.paintCommitChain = queuedCommit[\s\S]*?\.finally\(\(\) => \{\s*layer\.pendingPaintCommits = Math\.max\(0, layer\.pendingPaintCommits - 1\);/,
     'Projected paint commits must expose an exact pending count for the layer handoff barrier.',
   );
-  assert.match(
-    viewportSource,
-    /if \(paintLayerHandoffPromiseRef\.current\) \{\s*event\.preventDefault\(\);\s*event\.stopImmediatePropagation\(\);\s*return;/,
-    'A new stroke must not dispose or paint through the old layer while its mask handoff is pending.',
-  );
+  const claimStart = viewportSource.indexOf('if (!result) return;\n      setViewportPaintPointer');
+  assert(claimStart >= 0);
+  const claimEnd = viewportSource.indexOf('if (isInpaintMode)', claimStart);
+  const claim = new Function('result', 'canvas', 'event', 'setViewportPaintPointer',
+    'paintLayerHandoffPromiseRef', 'paintHistoryBoundary',
+    `${viewportSource.slice(claimStart, claimEnd)} return 'paint';`);
+  for (const hit of [false, true]) for (const handoff of [false, true]) for (const busy of [false, true]) {
+    const calls = [];
+    const canvas = {};
+    const event = { pointerId: 7, preventDefault: () => calls.push('prevent'), stopImmediatePropagation: () => calls.push('stop') };
+    const outcome = claim(hit, canvas, event, (target, id) => {
+      assert.equal(target, canvas);
+      assert.equal(id, 7);
+      calls.push('claim');
+    }, { current: handoff }, { busy });
+    assert.deepEqual(calls, hit ? ['claim', 'prevent', 'stop'] : []);
+    assert.equal(outcome, hit && !handoff && !busy ? 'paint' : undefined,
+      'Handoff/history barriers must keep the old mask authoritative and block new paint.');
+  }
 
   process.stdout.write('surface stroke latency policy tests passed\n');
 } finally {

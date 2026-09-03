@@ -207,7 +207,9 @@ try {
   );
   const guard = viewportCanvas.match(/if \(([^\n]+)\) \{\s*warnMissingPaintLayer\(\);\s*return;/)?.[1];
   assert.ok(guard, 'test the actual pointer-down layer guard');
-  const blocksStroke = new Function('isInpaintMode', 'isLocalRepaintApplyMode', 'canUseSurfacePaint', `return ${guard}`);
+  const maskStrokeDeclaration = viewportCanvas.match(/const isMaskStroke = isInpaintMode \|\| isLocalRepaintApplyMode;/)?.[0];
+  assert.ok(maskStrokeDeclaration);
+  const blocksStroke = new Function('isInpaintMode', 'isLocalRepaintApplyMode', 'canUseSurfacePaint', `${maskStrokeDeclaration}\nreturn ${guard}`);
   assert.equal(blocksStroke(false, true, false), false, 'repaint bypasses ordinary layer selection requirements');
   assert.equal(blocksStroke(true, false, false), false, 'mask authoring remains independent');
   assert.equal(blocksStroke(false, false, false), true, 'ordinary brush/eraser still require an eligible layer');

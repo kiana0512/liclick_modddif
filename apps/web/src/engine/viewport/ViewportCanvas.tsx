@@ -59,7 +59,7 @@ import { restoreLocalRepaintLayerSelection } from '@/engine/localRepaint/session
 import { SceneRoot } from './SceneRoot';
 import { getPreviewLighting } from './previewLighting';
 import { CameraController } from './CameraController';
-import { createViewportEvents } from './viewportEvents';
+import { createViewportEvents, setViewportPaintPointer } from './viewportEvents';
 import { ViewCube } from './ViewCube';
 import {
   isLocalRepaintOverlayVisible,
@@ -10966,23 +10966,23 @@ function SurfacePaintOverlay() {
         // first painted frame must contain only a tiny mask update, never image
         // decode, texture allocation or shader compilation.
         if (sourceTexture) gl.initTexture(sourceTexture);
+        await waitForFrame();
         await waitForViewportIdle();
         if (cancelled) return;
         reportLocalRepaintPrewarmProgress(0.76, '上传透明 Alpha 蒙版');
         gl.initTexture(composite.maskTexture);
-        gl.initTexture(composite.blendMaskTexture);
-        const preparedComposite = composite;
-        const hasResidentLayer =
-        await waitForFrame();
-          useLayerStore
-            .getState()
-            .layers.some((layer) => layer.id === preparedComposite.layerId && layer.visible) ||
-          useSceneStore.getState().localRepaintPreviewLayer?.id === preparedComposite.layerId;
         // An already-idle viewport resolves immediately; it is not a frame
         // boundary. Do not submit all three uploads in one uninterrupted task.
         await waitForFrame();
         await waitForViewportIdle();
         if (cancelled) return;
+        gl.initTexture(composite.blendMaskTexture);
+        const preparedComposite = composite;
+        const hasResidentLayer =
+          useLayerStore
+            .getState()
+            .layers.some((layer) => layer.id === preparedComposite.layerId && layer.visible) ||
+          useSceneStore.getState().localRepaintPreviewLayer?.id === preparedComposite.layerId;
         let residentOverrideBound = Boolean(
           hasResidentLayer &&
           preparedComposite.hasContent &&
@@ -14490,6 +14490,7 @@ function SurfacePaintOverlay() {
         return false;
       clearPointerCancelRecovery();
       activePointerIdRef.current = event.pointerId;
+      setViewportPaintPointer(canvas, event.pointerId);
       try {
         canvas.setPointerCapture(event.pointerId);
       } catch {
@@ -14545,6 +14546,7 @@ function SurfacePaintOverlay() {
       scheduleHoverCursor(event);
     };
     const handlePointerDown = (event: globalThis.PointerEvent) => {
+      if (!isPaintingRef.current) setViewportPaintPointer(canvas);
       if (event.pointerType === 'touch') return;
       if (isPaintingRef.current) {
         if (tryResumeInterruptedStroke(event)) handlePointerMove(event);
@@ -14577,19 +14579,13 @@ function SurfacePaintOverlay() {
       // background. stopImmediatePropagation is necessary because both input
       // systems have native listeners on this same canvas element.
       if (!result) return;
+      setViewportPaintPointer(canvas, event.pointerId);
+      event.preventDefault();
+      event.stopImmediatePropagation();
       // During a projected-mask handoff the old live multiplier is still the
       // authoritative visual result. Ignore a new stroke for this very short
       // interval instead of disposing it and painting into the wrong layer.
-      if (paintLayerHandoffPromiseRef.current) {
-        event.preventDefault();
-        event.stopImmediatePropagation();
-        return;
-      }
-      if (paintHistoryBoundary.busy) {
-        event.preventDefault();
-        event.stopImmediatePropagation();
-        return;
-      }
+      if (paintLayerHandoffPromiseRef.current || paintHistoryBoundary.busy) return;
       if (isInpaintMode) {
         cancelIdleInpaintArchive();
         const selectionLayer = syncInpaintMaskProjection(result.model);
@@ -14598,17 +14594,10 @@ function SurfacePaintOverlay() {
           // occlusion buffer. The pass is prewarmed, so this normally adds only
           // one synchronous render after a camera change.
           const depthCaptured = scheduleInpaintProjectionDepth(selectionLayer, result.model, true);
-          if (!depthCaptured) {
-            event.preventDefault();
-            event.stopImmediatePropagation();
-            return;
-          }
+          if (!depthCaptured) return;
         }
       }
-      event.preventDefault();
-      event.stopImmediatePropagation();
-
-      if (!isInpaintMode && !isLocalRepaintApplyMode && !canUseSurfacePaint) {
+      if (!isMaskStroke && !canUseSurfacePaint) {
         warnMissingPaintLayer();
         return;
       }
@@ -14626,16 +14615,12 @@ function SurfacePaintOverlay() {
             !isLocalRepaintSourceForLayer(source, activePaintLayer))
         )
           return;
+        const sourceKey = createLocalRepaintSourceKey(source, result.model.objectId);
         const preparedComposite =
-          source &&
-          localRepaintCompositeRef.current?.sourceKey ===
-            createLocalRepaintSourceKey(source, result.model.objectId)
+          localRepaintCompositeRef.current?.sourceKey === sourceKey
             ? localRepaintCompositeRef.current
             : undefined;
-        const composite = source
-          ? (preparedComposite ?? ensureLiveLocalRepaintComposite(result.model, source))
-          : undefined;
-        const sourceKey = createLocalRepaintSourceKey(source, result.model.objectId);
+        const composite = preparedComposite ?? ensureLiveLocalRepaintComposite(result.model, source);
         const residentOverride = localRepaintResidentMaskOverrideRef.current;
         const residentMaskBound = Boolean(
           composite &&
@@ -14664,12 +14649,7 @@ function SurfacePaintOverlay() {
             repaintSession.generationId === (source.generationId ?? '') &&
             repaintSession.targetLayerId === source.targetLayerId,
         );
-        const shouldRetryGpuPreparation = Boolean(
-          isEditingPersistedLocalRepaint &&
-            (!composite ||
-              (composite.restoredMaskUrl && !composite.restoredMaskReady) ||
-              !localRepaintPresentationReady),
-        );
+        const shouldRetryGpuPreparation = Boolean(isEditingPersistedLocalRepaint);
         if (
           !composite ||
           (composite.restoredMaskUrl && !composite.restoredMaskReady) ||
@@ -14792,7 +14772,7 @@ function SurfacePaintOverlay() {
       if (!isPaintingRef.current) gl.domElement.style.cursor = '';
     };
     const handleContextMenu = (event: MouseEvent) => {
-      if (isInpaintMode || isLocalRepaintApplyMode) event.preventDefault();
+      if (isMaskStroke) event.preventDefault();
     };
     canvas.addEventListener('pointermove', handlePointerMove, true);
     canvas.addEventListener('pointerdown', handlePointerDown, true);
@@ -14816,6 +14796,7 @@ function SurfacePaintOverlay() {
       // a real component unmount has no replacement and performs the teardown.
       queueMicrotask(() => {
         if (pointerListenerGenerationRef.current !== listenerGeneration) return;
+        setViewportPaintPointer(canvas);
         if (isPaintingRef.current) flushPendingPaintTargets();
         pendingPaintTargetsRef.current = [];
         strokeCanvasRectRef.current = undefined;

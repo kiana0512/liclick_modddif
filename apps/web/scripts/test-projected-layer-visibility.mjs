@@ -273,11 +273,15 @@ assert.match(
   /if \(nextMode === 'texture'\) setDisplayMode\('flat'\);/,
   'Entering the texture workspace must default to flat view.',
 );
-assert.match(
-  viewportCanvasInteractionSource,
-  /if \(isInpaintMode \|\| isLocalRepaintApplyMode\) event\.preventDefault\(\);/,
-  'Both repaint brushes must suppress the browser context menu while right-button erasing.',
-);
+const maskStrokeDeclaration = viewportCanvasInteractionSource.match(/const isMaskStroke = isInpaintMode \|\| isLocalRepaintApplyMode;/)?.[0];
+const contextMenuBody = viewportCanvasInteractionSource.match(/const handleContextMenu = \(event: MouseEvent\) => \{([\s\S]*?)\n {4}\};/)?.[1];
+assert(maskStrokeDeclaration && contextMenuBody);
+const runContextMenu = new Function('isInpaintMode', 'isLocalRepaintApplyMode', 'event', `${maskStrokeDeclaration}\n${contextMenuBody}`);
+for (const mask of [false, true]) for (const apply of [false, true]) {
+  let prevented = false;
+  runContextMenu(mask, apply, { preventDefault: () => { prevented = true; } });
+  assert.equal(prevented, mask || apply, 'Both repaint brushes suppress the context menu; navigation retains it.');
+}
 assert.match(
   viewportCanvasInteractionSource,
   /const maximumProjectedRadius = Math\.min\([\s\S]*?fallbackUvRadius \* 4[\s\S]*?length > maximumProjectedRadius[\s\S]*?axis\.multiplyScalar\(maximumProjectedRadius \/ length\)/,
