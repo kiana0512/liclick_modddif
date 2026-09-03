@@ -1,6 +1,6 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
-> 文档版本：`2.16.8`
+> 文档版本：`2.16.9`
 >
 > 生效日期：`2026-09-03`
 >
@@ -181,7 +181,7 @@ Layer 的 `type`、`role`、`blendMode`、`visibility policy` 是四个独立维
 
 删除最后一个活动对象图层后，store 自动创建空 UV 保底层。剪刀发布时会隐藏所有实际被消费的源层；若指定空 UV 目标则原位填充，否则在源层位置创建 merged-uv。
 
-### 5.1 当前图层橡皮 `ALG-ERASE-001` v1.3.3
+### 5.1 当前图层橡皮 `ALG-ERASE-001` v1.3.4
 
 橡皮采用 Modddif 式“编辑当前图层覆盖”语义，不对最终合成画面做破坏性擦除。快捷键为贴图工作区 `E`，目标由 `engine/paint/eraserTargetPolicy.ts` 唯一判定，React 和 Zustand 不得复制类型分支。
 
@@ -206,6 +206,8 @@ v1.3.1 首笔投影蒙版交接修复：普通 projected 橡皮激活时以 1×1
 v1.3.2 投影蒙版显隐交接修复：多投影栈的 `DataArrayTexture` 是 live canvas 的像素快照，稳定 URL 不能单独表示内容变更。纹理数组结构键仅在 array 路径纳入 live keep-mask revision，每次持久提交会取消旧的全白/旧蒙版打包并重新上传当前像素。新数组尚未驻留时，旧材质继续保留累计 live multiplier；新材质原子发布后再清除，因此关闭/重开图层预览不再恢复擦除前的效果。direct sampler 路径仍原地更新 CanvasTexture，不增加重建。覆盖公式、历史、补缝、保存资产、GPU/CPU/Worker/UV/export、分辨率与 Schema 均不变，无迁移。
 
 v1.3.3 投影蒙版统一原子交接修复：A100 项目逐个显示投影行时常为 `useTextureArrays=false`，多行同时显示且采样器吃紧时也可能进入 array；两条路径首次擦除都可能需要异步建立持久 keep-mask。旧输入层 `endLiveEraserPreview()` 会在眼睛/工具切换时抢先清除 GPU live multiplier，绕过 SceneRoot 的驻留检查；本地构建快时该时间窗不明显，A100 恢复项目的解码/材质队列较慢时则会显示未擦除的旧材质。现由 SceneRoot 独占清理权：不区分 direct/array，只要已提交材质结构键尚未匹配当前持久蒙版，所有图层均保留累计实时蒙版；替换材质驻留后再原子清除。已有 direct CanvasTexture 驻留时仍原地更新，不增加重建。覆盖、历史、补缝、持久化、分辨率、Schema 与资产均不变，无迁移。
+
+v1.3.4 投影蒙版纹理级原子交接修复：材质结构键相同只表示 sampler 布局相同，不能证明驻留 uniform 已从旧快照切换到本次全分辨率 CanvasTexture。每次普通 projected 橡皮提交及撤回/重做发布后，直接将同一稳定 live URL 对应的正式 keep-mask 纹理提升到当前对象的全部驻留投影材质；只有 `syncProjectedLayerResidentMaskTextureInObject()` 确认所有材质均已绑定后，才清除 512/1024 实时 multiplier。若眼睛、预览或图层切换发生在 pointer-up 提交完成前，则保留对象 root 与实时 multiplier，最后一个提交成功或失败后再完成交接，避免旧材质短暂回弹；刷新、保存资产、覆盖公式、补缝、分辨率、Schema 与 ownership 不变，无迁移。
 
 撤回/重做在同一任务中恢复持久瓦片、将当前及同层重建实例的 live eraser multiplier 重置为白色中性值、上传纹理并 invalidate；保持驻留 shader 结构，重新绑定 image/mask URL 和 contentRevision，随后同步 Project layers。此处中性白值是内部 keep-mask，不是编辑结果中的白模。后台细化仍采用项目原始分辨率和 3000ms idle；`engine/paint/refineStrokeHistory.ts` 从最早瓦片检查点按笔画顺序重放，分别更新每笔的 before/after。已撤回笔画仅更新 redo 检查点，不重新显示；新分支清除不再属于历史的笔画。每四个瓦片让出执行权，完成后无 await 地原子发布全部像素与历史；切换、撤回或新笔画使旧任务失效时不发布半成品。
 
@@ -681,6 +683,7 @@ M15 / CLOUD-DEPLOYMENT v1.0.0（2026-09-03）：正常合并 release 部署历�
 | `2.16.6` | 2026-09-03 | `本次局部重绘蒙版持久化边界修复` | UI-06/UI-10、M01/M08/M14、`ALG-LR-008` v2.4.2：局部重绘 live canvas 保存统一读取 canvas/image 注册源并编码上传，按 URL/revision 和资产槽复用 verified asset；注册源已释放且没有已验证映射时本次保存失败重试，禁止把 `liclick-live-projected-canvas:` 写进 Revision。服务端将 live/blob 视为 volatile，优先保留同图层上一 Revision 的 durable mask/source，否则返回 `PROJECT_SAVE_CONFLICT`。GPU/CPU/Worker/shader、coverage、投影/UV/export、分辨率、Schema 与 ownership 不变；旧坏 Revision 保留审计，可从最近 durable Revision 原位恢复，无批量迁移。 |
 | `2.16.7` | 2026-09-03 | `本次模型删除撤回运行时恢复修复` | UI-04、M01/M03/M12、`OBJECT-DELETE-HISTORY` v1.0.0：模型删除改为完整 runtime 历史事务；撤回同步复用被删 Three.js 实例并恢复对象、选择、变换、图层、Generation/Capture、参考图、烘焙与 Bake Workspace，清除删除墓碑，重做再次执行完整删除；实例缺失时按 durable source 渐进恢复。保留最新 Revision CAS/asset manifest/lastSavedAt，不回滚服务端并发状态。Project Schema、对象资产格式、GPU/CPU/Worker/shader、投影/UV/export 与 ownership 不变，无迁移。 |
 | `2.16.8` | 2026-09-03 | `本次贴图导入自动聚焦修复` | UI-04/M02/M03、`MODEL-IMPORT-CAMERA-FOCUS` v1.0.0：贴图工作区导入模型完成并发布到 SceneStore 后，立即复用 F 键的轨道中心聚焦，将相机与 target 同量平移到新模型中心；保持观察方向、距离、投影、模型排列和变换不变。场景/法线/导出、项目恢复、Schema、Revision、资产与 ownership 不变，无迁移。 |
+| `2.16.9` | 2026-09-03 | `本次投影橡皮纹理级原子交接修复` | UI-06/UI-10、M03/M06/M12、`ALG-ERASE-001` v1.3.4：普通 projected 橡皮提交和历史恢复直接把正式全分辨率 CanvasTexture 提升到所有驻留材质，验证全部绑定后才撤下实时 multiplier；图层、眼睛或预览在提交中切换时保留 root，最后一个 pending commit 完成后再清理。修复擦除后切换图层/预览旧内容回弹、刷新后才恢复的问题；覆盖公式、补缝、持久化、分辨率、Schema、资产与 ownership 不变，无迁移。 |
 
 `ALG-LR-008` v2.4.1：局部重绘仍自动创建独立目标和结果图层；pointer-down 不再依赖当前图层是否选中、可见或为 UV，只检查自身 source/composite/Session/显示资源。默认保持按钮激活、GPU promotion、结果发布前的原选择（含 undefined），防止内部隐藏 draft 触发面板选择普通投影层。普通画笔/橡皮擦限制、GPU/CPU/Worker/shader、作者 mask、投影/UV/export、分辨率、Schema、Revision、ownership 与资产不变。真实 store 三类选择与入口 gate 回归通过；无数据迁移，回退选择保持与 gate 即可。详见 CHG-20260903-LOCAL-REPAINT-SELECTION-INDEPENDENCE。
 

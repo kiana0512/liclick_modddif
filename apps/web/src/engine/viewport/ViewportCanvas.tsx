@@ -6659,16 +6659,44 @@ function beginLiveEraserPreview(layer: UvPaintLayer, root?: THREE.Object3D) {
   return true;
 }
 
+function promoteProjectedEraserMaskToResidentMaterial(
+  layer: UvPaintLayer,
+  root = layer.liveEraserPreviewRoot,
+) {
+  if (
+    layer.target !== 'projected-mask' ||
+    !root ||
+    !layer.isReady ||
+    layer.pendingBaseImage
+  )
+    return false;
+  const result = syncProjectedLayerResidentMaskTextureInObject(
+    root,
+    layer.layerId,
+    layer.assetUrl,
+    layer.paintTexture,
+  );
+  if (result.bound && !layer.liveEraserPreviewActive) {
+    // The full-resolution keep-mask is now the texture sampled by every
+    // resident projected material. Only this verified point may release the
+    // low-resolution multiplier; structure-key equality alone does not prove
+    // that the uniform stopped sampling an older canvas snapshot.
+    syncProjectedLayerLiveEraserPreviewInObject(root, undefined, undefined);
+  }
+  return result.bound;
+}
+
 function endLiveEraserPreview(layer: UvPaintLayer) {
   layer.liveEraserPreviewActive = false;
+  const root = layer.liveEraserPreviewRoot;
+  if (root && layer.pendingPaintCommits === 0) {
+    promoteProjectedEraserMaskToResidentMaterial(layer, root);
+  }
   clearLiveSurfacePaintPreview(layer.layerId, layer.liveResultUrl);
-  if (layer.liveEraserPreviewRoot) {
-    // SceneRoot owns the atomic handoff from this cumulative live multiplier
-    // to the persistent keep-mask. Clearing the resident uniform here races the
-    // direct/array material build on restored cloud projects: an eye toggle can
-    // then expose the unmasked old material until the replacement reaches the
-    // GPU. Dropping the input-side root reference is safe; SceneRoot detaches
-    // the uniform once its committed structure key proves the mask is resident.
+  if (root && layer.pendingPaintCommits === 0) {
+    // A layer/eye change may end input while pointer-up is still queued. Keep
+    // ownership in that case so the commit's finally block can either complete
+    // the verified handoff or restore the previous persistent mask on failure.
     layer.liveEraserPreviewRoot = undefined;
   }
 }
@@ -13042,6 +13070,9 @@ function SurfacePaintOverlay() {
             needsRebake: layer.target === 'projected-mask',
           });
           useProjectStore.getState().setProjectLayers(useLayerStore.getState().layers);
+          if (projectedEraserCommit) {
+            promoteProjectedEraserMaskToResidentMaterial(layer, projectedEraserCommit.model.group);
+          }
           if (!historyStroke.refined && !remaining.includes(historyStroke))
             remaining.push(historyStroke);
           remaining.forEach((stroke) => scheduleProjectedEraserRefinement(layer, stroke));
@@ -13059,6 +13090,9 @@ function SurfacePaintOverlay() {
           needsRebake: layer.target === 'projected-mask',
         });
         useProjectStore.getState().setProjectLayers(useLayerStore.getState().layers);
+        if (projectedEraserCommit) {
+          promoteProjectedEraserMaskToResidentMaterial(layer, projectedEraserCommit.model.group);
+        }
         if (projectedEraserCommit || projectedEraserBatchesRef.current.has(layer.layerId)) {
           scheduleProjectedEraserRefinement(layer, historyStroke);
         }
@@ -13149,6 +13183,9 @@ function SurfacePaintOverlay() {
         })
         .finally(() => {
           layer.pendingPaintCommits = Math.max(0, layer.pendingPaintCommits - 1);
+          if (layer.pendingPaintCommits === 0 && !layer.liveEraserPreviewActive) {
+            endLiveEraserPreview(layer);
+          }
         });
       paintHistoryBoundary.track(layer.paintCommitChain);
       return;

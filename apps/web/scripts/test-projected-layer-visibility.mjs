@@ -288,19 +288,31 @@ assert.match(
   /const eraserFeather = paintToolSettings\.eraserFeather \?\? 50;[\s\S]*?layer\.liveResultContext[\s\S]*?'destination-out',[\s\S]*?'uv',[\s\S]*?eraserFeather/,
   'The projected-layer eraser must apply its feather value to the live keep-mask.',
 );
+const promoteProjectedEraserMaskSource = viewportCanvasInteractionSource.match(
+  /function promoteProjectedEraserMaskToResidentMaterial[\s\S]*?\n}\n\nfunction endLiveEraserPreview/,
+)?.[0];
+assert.ok(
+  promoteProjectedEraserMaskSource,
+  'The projected eraser must expose a verified resident-mask handoff.',
+);
+assert.match(
+  promoteProjectedEraserMaskSource,
+  /syncProjectedLayerResidentMaskTextureInObject\([\s\S]*?if \(result\.bound && !layer\.liveEraserPreviewActive\)[\s\S]*?syncProjectedLayerLiveEraserPreviewInObject\(root, undefined, undefined\)/,
+  'The live multiplier may be cleared only after every resident material samples the committed mask texture.',
+);
 const endLiveEraserPreviewSource = viewportCanvasInteractionSource.match(
   /function endLiveEraserPreview\(layer: UvPaintLayer\)[\s\S]*?\n}\n\nfunction getPaintHistoryTileBounds/,
 )?.[0];
 assert.ok(endLiveEraserPreviewSource, 'The projected-layer eraser preview teardown must exist.');
 assert.match(
   endLiveEraserPreviewSource,
-  /clearLiveSurfacePaintPreview\(layer\.layerId, layer\.liveResultUrl\)[\s\S]*?layer\.liveEraserPreviewRoot = undefined/,
-  'Ending a projected-layer eraser preview must release its input-side registry and root ownership.',
+  /pendingPaintCommits === 0[\s\S]*?promoteProjectedEraserMaskToResidentMaterial[\s\S]*?clearLiveSurfacePaintPreview\(layer\.layerId, layer\.liveResultUrl\)[\s\S]*?pendingPaintCommits === 0[\s\S]*?layer\.liveEraserPreviewRoot = undefined/,
+  'Ending a projected-layer eraser preview must retain root ownership until an in-flight commit can complete its atomic handoff.',
 );
-assert.doesNotMatch(
-  endLiveEraserPreviewSource,
-  /syncProjectedLayerLiveEraserPreviewInObject/,
-  'Input teardown must not clear the resident GPU keep-mask before SceneRoot completes the persistent material handoff.',
+assert.match(
+  viewportCanvasInteractionSource,
+  /updateLayer\(layer\.layerId,[\s\S]*?promoteProjectedEraserMaskToResidentMaterial\(layer, projectedEraserCommit\.model\.group\)[\s\S]*?\.finally\(\(\) => \{[\s\S]*?pendingPaintCommits === 0 && !layer\.liveEraserPreviewActive[\s\S]*?endLiveEraserPreview\(layer\)/,
+  'Pointer-up must promote the full-resolution canvas and finish a deferred teardown after the last queued commit.',
 );
 assert.match(
   viewportCanvasInteractionSource,
