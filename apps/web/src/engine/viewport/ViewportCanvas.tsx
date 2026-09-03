@@ -6219,7 +6219,9 @@ function createLocalRepaintComposite(
   const maskCanvas = document.createElement('canvas');
   maskCanvas.width = width;
   maskCanvas.height = height;
-  const maskContext = maskCanvas.getContext('2d');
+  // Every accepted repaint segment reads this authored mask for CPU crossfade.
+  // Choose the readback-friendly backing at creation, before any canvas use.
+  const maskContext = maskCanvas.getContext('2d', { willReadFrequently: true });
   const blendMaskCanvas = document.createElement('canvas');
   blendMaskCanvas.width = width;
   blendMaskCanvas.height = height;
@@ -10964,10 +10966,16 @@ function SurfacePaintOverlay() {
         gl.initTexture(composite.blendMaskTexture);
         const preparedComposite = composite;
         const hasResidentLayer =
+        await waitForFrame();
           useLayerStore
             .getState()
             .layers.some((layer) => layer.id === preparedComposite.layerId && layer.visible) ||
           useSceneStore.getState().localRepaintPreviewLayer?.id === preparedComposite.layerId;
+        // An already-idle viewport resolves immediately; it is not a frame
+        // boundary. Do not submit all three uploads in one uninterrupted task.
+        await waitForFrame();
+        await waitForViewportIdle();
+        if (cancelled) return;
         let residentOverrideBound = Boolean(
           hasResidentLayer &&
           preparedComposite.hasContent &&

@@ -66,3 +66,43 @@ assert.doesNotMatch(preparation, /window\.requestAnimationFrame/);
 assert.match(preparation, /isPaintingRef\.current/); // Do not bypass unfinished strokes.
 assert.match(preparation, /preparationDeadline/); // Keep bounded failure handling.
 console.log('Local repaint background scheduling passed: hidden-at-start, hidden-after-queue, no-rAF submission, cancellation and exactly-once bootstrap.');
+
+// Run the actual GPU upload sequence; an idle Promise alone does not yield a
+// frame. Keep cancellation between uploads and no-rAF fallback operational.
+const uploads = preparation.slice(preparation.indexOf('if (sourceTexture) gl.initTexture'),
+  preparation.indexOf('const preparedComposite = composite;'));
+assert.equal((uploads.match(/gl.initTexture/g) ?? []).length, 3);
+const runUploads = (waitForFrame, cancelAtFrame = Infinity, sourceTexture = 'source') => {
+  const calls = [];
+  let frame = 0;
+  const run = new Function('gl', 'composite', 'sourceTexture', 'waitForFrame',
+    'waitForViewportIdle', 'reportLocalRepaintPrewarmProgress', 'cancelAtFrame', `return (async () => {
+      let cancelled = false;
+      const nextFrame = waitForFrame;
+      waitForFrame = async () => { if (await nextFrame() === cancelAtFrame) cancelled = true; };
+      ${uploads}
+    })();`);
+  const done = run({ initTexture: (texture) => calls.push({ texture, frame }) },
+    { maskTexture: 'authored', blendMaskTexture: 'blend' }, sourceTexture,
+    async () => { await waitForFrame(); return ++frame; }, async () => {}, () => {}, cancelAtFrame);
+  return { done, calls };
+};
+for (const cancelAt of [Infinity, 1, 2]) {
+  const result = runUploads(async () => {}, cancelAt);
+  await result.done;
+  assert.deepEqual(result.calls, [
+    { texture: 'source', frame: 0 },
+    ...(cancelAt > 1 ? [{ texture: 'authored', frame: 1 }] : []),
+    ...(cancelAt > 2 ? [{ texture: 'blend', frame: 2 }] : []),
+  ], 'each upload must be separated even when the viewport is already idle');
+}
+const onlyMasks = runUploads(async () => {}, Infinity, null);
+await onlyMasks.done;
+assert.deepEqual(onlyMasks.calls, [{ texture: 'authored', frame: 1 }, { texture: 'blend', frame: 2 }]);
+const hiddenUploads = environment('hidden');
+const hiddenResult = runUploads(hiddenUploads.waitForBrowserPaint);
+for (let i = 0; i < 24; i++) { hiddenUploads.tick(); await Promise.resolve(); }
+await hiddenResult.done;
+assert.equal(hiddenResult.calls.length, 3);
+assert.equal(hiddenUploads.frames.size, 0);
+console.log('Local repaint GPU uploads passed: separate yields, cancellation after either yield, absent source, hidden-page completion.');
