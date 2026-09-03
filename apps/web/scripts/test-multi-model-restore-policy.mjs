@@ -122,6 +122,20 @@ try {
     /!initialMaterialPresentationVisibleForGroup[\s\S]*?ModelRestoreLoadingIndicator/,
     'each model must stop showing its own loading indicator independently',
   );
+  const loadingIndicatorBlock = sceneRootSource.slice(
+    sceneRootSource.indexOf('function ModelRestoreLoadingIndicator'),
+    sceneRootSource.indexOf('const ImportedModel = memo'),
+  );
+  assert.match(
+    loadingIndicatorBlock,
+    /spinnerRef\.current\.rotation\.z -= delta \* 2\.8/,
+    'the model loading indicator must keep its steady rotation',
+  );
+  assert.doesNotMatch(
+    loadingIndicatorBlock,
+    /spinnerRef\.current\.scale|Math\.sin\(/,
+    'the model loading indicator must stay at a fixed size without pulse scaling',
+  );
   assert.match(
     editorSource,
     /prewarmPreviewTextures\([\s\S]{0,260}\{ maxSize: 512 \}/,

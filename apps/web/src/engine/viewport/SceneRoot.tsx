@@ -1274,11 +1274,10 @@ function ModelRestoreLoadingIndicator({ object }: { object: THREE.Object3D }) {
     return { center, radius: THREE.MathUtils.clamp(size * 0.055, 0.08, 0.28) };
   }, [object]);
 
-  useFrame(({ camera, clock }, delta) => {
+  useFrame(({ camera }, delta) => {
     if (billboardRef.current) billboardRef.current.quaternion.copy(camera.quaternion);
     if (!spinnerRef.current) return;
     spinnerRef.current.rotation.z -= delta * 2.8;
-    spinnerRef.current.scale.setScalar(1 + Math.sin(clock.elapsedTime * 4) * 0.08);
   });
 
   return (
