@@ -1,6 +1,6 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
-> 文档版本：`2.16.9`
+> 文档版本：`2.16.10`
 >
 > 生效日期：`2026-09-03`
 >
@@ -684,6 +684,7 @@ M15 / CLOUD-DEPLOYMENT v1.0.0（2026-09-03）：正常合并 release 部署历�
 | `2.16.7` | 2026-09-03 | `本次模型删除撤回运行时恢复修复` | UI-04、M01/M03/M12、`OBJECT-DELETE-HISTORY` v1.0.0：模型删除改为完整 runtime 历史事务；撤回同步复用被删 Three.js 实例并恢复对象、选择、变换、图层、Generation/Capture、参考图、烘焙与 Bake Workspace，清除删除墓碑，重做再次执行完整删除；实例缺失时按 durable source 渐进恢复。保留最新 Revision CAS/asset manifest/lastSavedAt，不回滚服务端并发状态。Project Schema、对象资产格式、GPU/CPU/Worker/shader、投影/UV/export 与 ownership 不变，无迁移。 |
 | `2.16.8` | 2026-09-03 | `本次贴图导入自动聚焦修复` | UI-04/M02/M03、`MODEL-IMPORT-CAMERA-FOCUS` v1.0.0：贴图工作区导入模型完成并发布到 SceneStore 后，立即复用 F 键的轨道中心聚焦，将相机与 target 同量平移到新模型中心；保持观察方向、距离、投影、模型排列和变换不变。场景/法线/导出、项目恢复、Schema、Revision、资产与 ownership 不变，无迁移。 |
 | `2.16.9` | 2026-09-03 | `本次投影橡皮纹理级原子交接修复` | UI-06/UI-10、M03/M06/M12、`ALG-ERASE-001` v1.3.4：普通 projected 橡皮提交和历史恢复直接把正式全分辨率 CanvasTexture 提升到所有驻留材质，验证全部绑定后才撤下实时 multiplier；图层、眼睛或预览在提交中切换时保留 root，最后一个 pending commit 完成后再清理。修复擦除后切换图层/预览旧内容回弹、刷新后才恢复的问题；覆盖公式、补缝、持久化、分辨率、Schema、资产与 ownership 不变，无迁移。 |
+| `2.16.10` | 2026-09-03 | `本次场景变换手柄视觉中心修复` | UI-04/M03/M12、`OBJECT-TRANSFORM-PIVOT` v1.0.0：场景移动、旋转、缩放不再把 TransformControls 直接绑定到可能带 FBX/GLTF 原始枢轴偏移的模型根节点，而以当前世界包围盒中心创建独立代理枢轴；拖动期间用代理世界矩阵相对起点的增量驱动完整模型，正确换算父级矩阵，结束后仍走既有 Transform、BoundingBox、Project 保存与历史事务。切换模型、撤回或外部变换会重新对齐代理；不修改模型层级、顶点、导入归一化、场景排列、Schema、Revision、资产或 ownership，无迁移。 |
 
 `ALG-LR-008` v2.4.1：局部重绘仍自动创建独立目标和结果图层；pointer-down 不再依赖当前图层是否选中、可见或为 UV，只检查自身 source/composite/Session/显示资源。默认保持按钮激活、GPU promotion、结果发布前的原选择（含 undefined），防止内部隐藏 draft 触发面板选择普通投影层。普通画笔/橡皮擦限制、GPU/CPU/Worker/shader、作者 mask、投影/UV/export、分辨率、Schema、Revision、ownership 与资产不变。真实 store 三类选择与入口 gate 回归通过；无数据迁移，回退选择保持与 gate 即可。详见 CHG-20260903-LOCAL-REPAINT-SELECTION-INDEPENDENCE。
 
