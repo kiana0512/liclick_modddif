@@ -442,7 +442,12 @@ export function applyTargetOnlyMaterial(
     }
   });
 
+  let restored = false;
   return () => {
+    // Submission restores before async readback/encoding. A later finally must
+    // not replay this old snapshot over a newer selection or material commit.
+    if (restored) return;
+    restored = true;
     snapshots.forEach((snapshot) => {
       snapshot.object.visible = snapshot.visible;
       if (snapshot.object instanceof THREE.Mesh && snapshot.material) {

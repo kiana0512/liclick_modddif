@@ -22,6 +22,7 @@ import { downloadBlob, getExportFilename } from '@/engine/export/exportUtils';
 import { createObjectDeletionTransaction } from '@/engine/history/objectDeletionTransaction';
 import { getBoundingBoxForObject } from '@/engine/scene/boundingBoxUtils';
 import { transformFromObject } from '@/engine/scene/transformActions';
+import { markViewportInteractionActivity } from '@/engine/viewport/viewportInteractionState';
 import { useEditorHistoryStore } from '@/stores/editorHistoryStore';
 import { useT } from '@/stores/i18nStore';
 import {
@@ -186,6 +187,10 @@ export function ObjectsPanel({
       onMutationLocked?.('切换当前模型');
       return;
     }
+    // Object-list clicks are viewport-affecting input too. Mark them before
+    // publishing selection so exact texture uploads and other background work
+    // yield through the same quiet window used by camera pointer/wheel input.
+    markViewportInteractionActivity();
     selectObject(objectId);
     scheduleCurrentProjectActiveObjectPersistence(objectId);
   }

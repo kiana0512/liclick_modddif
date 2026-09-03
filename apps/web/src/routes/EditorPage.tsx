@@ -1969,11 +1969,16 @@ export function EditorPage({
     setProjectReferences(references);
   }, [projectId, references, serverReadyProjectId, setProjectReferences]);
 
+  const layerPanelOwnerRef = useRef(activeLayer?.objectId);
   useEffect(() => {
     if (!activeProjectedLayerId) return;
+    const previousOwner = layerPanelOwnerRef.current;
+    layerPanelOwnerRef.current = activeLayer?.objectId;
+    // Restoring another model's active row is not an explicit panel-open intent.
+    if (previousOwner !== activeLayer?.objectId) return;
     showPanel('layers');
     setPanelCollapsed('layers', false);
-  }, [activeProjectedLayerId, setPanelCollapsed, showPanel]);
+  }, [activeProjectedLayerId, activeLayer?.objectId, setPanelCollapsed, showPanel]);
 
   useEffect(() => {
     function handleManualSaveShortcut(event: KeyboardEvent) {

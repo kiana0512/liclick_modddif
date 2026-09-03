@@ -184,6 +184,14 @@ type SceneStore = {
 
 function resetLocalRepaintForObjectChange(state: SceneStore, nextObjectId: string | undefined) {
   if (state.selectedObjectId === nextObjectId) return {};
+  const hasRuntimeStateToReset = Boolean(
+    state.paintTool !== 'none' ||
+      state.paintMaskDataUrl ||
+      state.paintMaskHasContent ||
+      state.localRepaintProjectionSource ||
+      state.localRepaintPreviewLayer ||
+      state.localRepaintGenerationPresentationActive,
+  );
   return {
     paintTool: 'none' as const,
     paintMaskDataUrl: undefined,
@@ -192,8 +200,17 @@ function resetLocalRepaintForObjectChange(state: SceneStore, nextObjectId: strin
     localRepaintProjectionSource: undefined,
     localRepaintPreviewLayer: undefined,
     localRepaintGenerationPresentationActive: false,
-    paintMaskRevision: state.paintMaskRevision + 1,
-    paintMaskResetRevision: state.paintMaskResetRevision + 1,
+    // The viewport keeps a blank mask render target warm even when no authoring
+    // session exists. Advancing these revisions on ordinary scene selection
+    // made SurfacePaintOverlay clear/upload that large target on every model
+    // click. Only signal the expensive renderer reset when there is authored or
+    // live repaint state that actually belongs to the previous object.
+    ...(hasRuntimeStateToReset
+      ? {
+          paintMaskRevision: state.paintMaskRevision + 1,
+          paintMaskResetRevision: state.paintMaskResetRevision + 1,
+        }
+      : {}),
   };
 }
 

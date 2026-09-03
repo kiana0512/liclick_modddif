@@ -156,9 +156,6 @@ export function CameraController() {
         ? importedModels.find((model) => model.objectId === selectedObjectId)
         : importedModel) ?? importedModels[0];
     const targetModels = isSceneWorkspace ? importedModels : [selectedModel];
-    const targetObjects = targetModels.map((model) => model.group);
-    const boundingBox = getCombinedBoundingBox(targetObjects);
-    if (!boundingBox) return;
     const targetKey = `${camera.uuid}:${workspaceMode}:${targetModels
       .map((model) => model.objectId)
       .join('|')}`;
@@ -178,6 +175,10 @@ export function CameraController() {
       orbitTargetKeyRef.current = targetKey;
       return;
     }
+    // A selection-only change in scene mode preserves framing. Do not walk
+    // every model hierarchy just to discard the bounds at the guards above.
+    const boundingBox = getCombinedBoundingBox(targetModels.map((model) => model.group));
+    if (!boundingBox) return;
     orbitTargetKeyRef.current = targetKey;
     fitCameraToBoundingBox(
       {

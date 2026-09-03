@@ -95,7 +95,7 @@ function useLayerImageSource(url: string, enabled: boolean) {
 
 function useProjectedLayerDisplayPreview(layer: Layer) {
   const [preview, setPreview] = useState<
-    (GeneratedDisplayPreview & { sourceUrl: string; depthUrl?: string }) | undefined
+    (GeneratedDisplayPreview & { sourceUrl: string; depthUrl?: string; revision?: number }) | undefined
   >();
   const enabled =
     layer.type === 'projected' && Boolean(layer.imageUrl) && !isLocalRepaintPreviewLayer(layer);
@@ -104,11 +104,14 @@ function useProjectedLayerDisplayPreview(layer: Layer) {
     let cancelled = false;
     setPreview(undefined);
     if (!enabled) return undefined;
+    const controller = new AbortController();
     const sourceUrl = layer.imageUrl;
     const depthUrl = layer.depthUrl;
-    void createGeneratedDisplayPreview(sourceUrl, depthUrl)
+    void createGeneratedDisplayPreview(sourceUrl, depthUrl, {
+      signal: controller.signal, revision: layer.contentRevision,
+    })
       .then((nextPreview) => {
-        if (!cancelled) setPreview({ ...nextPreview, sourceUrl, depthUrl });
+        if (!cancelled) setPreview({ ...nextPreview, sourceUrl, depthUrl, revision: layer.contentRevision });
       })
       .catch((error) => {
         if (!cancelled)
@@ -116,10 +119,12 @@ function useProjectedLayerDisplayPreview(layer: Layer) {
       });
     return () => {
       cancelled = true;
+      controller.abort();
     };
   }, [enabled, layer.contentRevision, layer.depthUrl, layer.imageUrl]);
 
-  return preview?.sourceUrl === layer.imageUrl && preview.depthUrl === layer.depthUrl
+  return preview?.sourceUrl === layer.imageUrl && preview.depthUrl === layer.depthUrl &&
+    preview.revision === layer.contentRevision
     ? preview
     : undefined;
 }
@@ -189,6 +194,38 @@ function getLocalRepaintPreviewMaskUrl(layer: Layer) {
 }
 
 function LayerThumbnail({ layer }: { layer: Layer }) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [visible, setVisible] = useState(false);
+  useEffect(() => {
+    const element = containerRef.current;
+    if (!element) return undefined;
+    if (typeof IntersectionObserver === 'undefined') {
+      setVisible(true);
+      return undefined;
+    }
+    let disposed = false;
+    const observer = new IntersectionObserver(([entry]) => {
+      if (!disposed) setVisible(Boolean(entry?.isIntersecting &&
+        entry.intersectionRect.width > 0 && entry.intersectionRect.height > 0));
+    });
+    observer.observe(element);
+    return () => {
+      disposed = true;
+      observer.disconnect();
+    };
+  }, []);
+
+  // Dock panels stay mounted across workspaces. Native img loading="lazy"
+  // does not gate our canvas/depth/PNG preview effects: mount those consumers
+  // only for a thumbnail actually inside the visible, unclipped panel.
+  return (
+    <div ref={containerRef} className="h-full w-full" data-layer-thumbnail={layer.id}>
+      {visible && <VisibleLayerThumbnail layer={layer} />}
+    </div>
+  );
+}
+
+function VisibleLayerThumbnail({ layer }: { layer: Layer }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const displayPreview = useProjectedLayerDisplayPreview(layer);
   const isLocalRepaintPreview = isLocalRepaintPreviewLayer(layer);

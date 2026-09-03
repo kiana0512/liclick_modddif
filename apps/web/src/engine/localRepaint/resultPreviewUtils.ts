@@ -1,12 +1,12 @@
 import { blobToDataUrl, imageDataToBlob, resizeImageData, urlToImageData } from './imageUtils';
+import { requestDisplayPreview, type DisplayPreviewRequest } from './displayPreviewQueue';
+import { waitForViewportInteractionIdle } from '@/engine/viewport/viewportInteractionState';
 
 const previewCache = new Map<string, Promise<string>>();
-const captureMaskedPreviewCache = new Map<string, { maskUrl: string; promise: Promise<string> }>();
 const captureMaskedProjectionCache = new Map<
   string,
   { maskUrl: string; promise: Promise<string> }
 >();
-const generatedDisplayPreviewCache = new Map<string, Promise<GeneratedDisplayPreview>>();
 const MAX_PREVIEW_CACHE_ENTRIES = 12;
 const SUBJECT_PADDING_RATIO = 0.02;
 const GENERATED_DISPLAY_PADDING_RATIO = 0.06;
@@ -351,8 +351,11 @@ async function encodeDisplayImage(imageData: ImageData) {
 async function createGeneratedDisplayPreviewUncached(
   sourceUrl: string,
   depthUrl?: string,
+  signal?: AbortSignal,
 ): Promise<GeneratedDisplayPreview> {
   const decoded = await urlToImageData(sourceUrl);
+  await waitForViewportInteractionIdle();
+  signal?.throwIfAborted();
   const scale = Math.min(
     1,
     GENERATED_DISPLAY_MAX_DIMENSION / Math.max(decoded.width, decoded.height, 1),
@@ -368,11 +371,12 @@ async function createGeneratedDisplayPreviewUncached(
   let processed: ReturnType<typeof removeStrictOuterDarkDisplayBackground>;
   if (depthUrl) {
     try {
-      processed = applyPackedDepthDisplayMask(
-        source,
-        await urlToImageData(depthUrl, source.width, source.height),
-      );
+      const depth = await urlToImageData(depthUrl, source.width, source.height);
+      await waitForViewportInteractionIdle();
+      signal?.throwIfAborted();
+      processed = applyPackedDepthDisplayMask(source, depth);
     } catch {
+      signal?.throwIfAborted();
       // Depth is the safest display authority, but old/expired project assets must
       // still render. The fallback only clears an edge-connected, nearly-black
       // outer region and never runs a second matte over the generated subject.
@@ -389,6 +393,8 @@ async function createGeneratedDisplayPreviewUncached(
     processed.changedPixels > 0 || scale < 1
       ? await encodeDisplayImage(transparent)
       : sourceUrl;
+  await waitForViewportInteractionIdle();
+  signal?.throwIfAborted();
   const padding = Math.max(
     4,
     Math.round(Math.max(bounds.width, bounds.height) * GENERATED_DISPLAY_PADDING_RATIO),
@@ -432,22 +438,14 @@ async function createGeneratedDisplayPreviewUncached(
   };
 }
 
-export function createGeneratedDisplayPreview(sourceUrl: string, depthUrl?: string) {
-  const cacheKey = `${depthUrl ?? 'strict-dark'}:${sourceUrl}`;
-  const cached = generatedDisplayPreviewCache.get(cacheKey);
-  if (cached) return cached;
-  const promise = createGeneratedDisplayPreviewUncached(sourceUrl, depthUrl).catch((error) => {
-    if (generatedDisplayPreviewCache.get(cacheKey) === promise)
-      generatedDisplayPreviewCache.delete(cacheKey);
-    throw error;
-  });
-  generatedDisplayPreviewCache.set(cacheKey, promise);
-  while (generatedDisplayPreviewCache.size > MAX_PREVIEW_CACHE_ENTRIES) {
-    const oldestKey = generatedDisplayPreviewCache.keys().next().value as string | undefined;
-    if (!oldestKey) break;
-    generatedDisplayPreviewCache.delete(oldestKey);
-  }
-  return promise;
+export function createGeneratedDisplayPreview(
+  sourceUrl: string, depthUrl?: string, request: DisplayPreviewRequest = {},
+) {
+  return requestDisplayPreview(
+    JSON.stringify(['display', sourceUrl, depthUrl, request.revision]),
+    (signal) => createGeneratedDisplayPreviewUncached(sourceUrl, depthUrl, signal),
+    request.signal,
+  );
 }
 
 function smoothstep(edge0: number, edge1: number, value: number) {
@@ -755,9 +753,13 @@ async function createPreviewUncached(sourceUrl: string, mode: BackgroundRemovalM
   return blobToDataUrl(await imageDataToBlob(output));
 }
 
-async function createCaptureMaskedPreviewUncached(sourceUrl: string, maskUrl: string) {
+async function createCaptureMaskedPreviewUncached(sourceUrl: string, maskUrl: string, signal: AbortSignal) {
   const source = await urlToImageData(sourceUrl);
+  await waitForViewportInteractionIdle();
+  signal.throwIfAborted();
   const mask = await urlToImageData(maskUrl, source.width, source.height);
+  await waitForViewportInteractionIdle();
+  signal.throwIfAborted();
   const masked = applyCapturePreviewMask(source, mask);
 
   const bounds = getAlphaContentBounds(masked);
@@ -801,21 +803,15 @@ async function createCaptureMaskedPreviewUncached(sourceUrl: string, maskUrl: st
   );
 }
 
-export function createCaptureMaskedPreview(sourceUrl: string, maskUrl: string) {
-  const cached = captureMaskedPreviewCache.get(sourceUrl);
-  if (cached?.maskUrl === maskUrl) return cached.promise;
-  const promise = createCaptureMaskedPreviewUncached(sourceUrl, maskUrl).catch((error) => {
-    if (captureMaskedPreviewCache.get(sourceUrl)?.promise === promise)
-      captureMaskedPreviewCache.delete(sourceUrl);
-    throw error;
-  });
-  captureMaskedPreviewCache.set(sourceUrl, { maskUrl, promise });
-  while (captureMaskedPreviewCache.size > MAX_PREVIEW_CACHE_ENTRIES) {
-    const oldestKey = captureMaskedPreviewCache.keys().next().value as string | undefined;
-    if (!oldestKey) break;
-    captureMaskedPreviewCache.delete(oldestKey);
-  }
-  return promise;
+export function createCaptureMaskedPreview(sourceUrl: string, maskUrl: string, request: DisplayPreviewRequest = {}) {
+  return requestDisplayPreview(
+    JSON.stringify(['capture', sourceUrl, maskUrl, request.revision]),
+    async (signal) => {
+      const url = await createCaptureMaskedPreviewUncached(sourceUrl, maskUrl, signal);
+      return { alignedUrl: url, fittedUrl: url };
+    },
+    request.signal,
+  ).then((preview) => preview.fittedUrl);
 }
 
 async function createCaptureMaskedProjectionImageUncached(
