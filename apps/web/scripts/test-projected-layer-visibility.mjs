@@ -665,11 +665,22 @@ assert.match(
   /const shouldPrewarmPersistedLocalRepaint =\s*isEditableLocalRepaintProjectionLayer\(activePaintLayer\) &&\s*\(paintTool === 'none' \|\| isEditingPersistedLocalRepaint\)/,
   'A selected persisted local repaint must restore its editing source before the eraser is pressed.',
 );
-assert.match(
-  viewportCanvasSource,
-  /if \(!shouldPrewarmPersistedLocalRepaint && paintTool !== 'inpaint-apply'\) return;[\s\S]*?getFeatheredBrushStamp\(localRepaintBrushSettings\.brushFeather\)/,
-  'The active local repaint feather stamp must be allocated before the first pointer sample.',
+const featherPrewarmGuard = viewportCanvasSource.match(
+  /useEffect\(\(\) => \{\s*if \(([^\n]+)\) return;\s*(?:\/\/[^\n]*\n\s*)*getFeatheredBrushStamp\(localRepaintBrushSettings\.brushFeather\)/,
 );
+assert.ok(featherPrewarmGuard, 'The feather stamp must be prepared by an effect before pointer input.');
+const shouldPrewarmFeather = new Function(
+  'shouldPrewarmPersistedLocalRepaint',
+  'localRepaintGenerationPresentationActive',
+  'isInpaintMode',
+  'paintTool',
+  `return !(${featherPrewarmGuard[1]});`,
+);
+assert.equal(shouldPrewarmFeather(true, false, false, 'none'), true, 'Restored results prewarm.');
+assert.equal(shouldPrewarmFeather(false, true, false, 'none'), true, 'Generation prewarms in parallel.');
+assert.equal(shouldPrewarmFeather(false, false, true, 'inpaint'), true, 'Mask authoring prewarms.');
+assert.equal(shouldPrewarmFeather(false, false, false, 'inpaint-apply'), true, 'Apply retains prewarming.');
+assert.equal(shouldPrewarmFeather(false, false, false, 'none'), false, 'Unrelated idle tools do not prewarm.');
 assert.match(
   viewportCanvasSource,
   /if \(!shouldPrewarmPersistedLocalRepaint \|\| !activePaintLayer\?\.camera\) return;[\s\S]*?currentPaintTool !== 'none' && currentPaintTool !== 'eraser'/,
