@@ -1,7 +1,39 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import { stdout } from 'node:process';
 import { fileURLToPath } from 'node:url';
+import ts from 'typescript';
 import { createServer } from 'vite';
+const { AbortController } = globalThis;
+
+// Execute the production dispatch expression: both reachable modes must keep
+// their exact source/mask/depth arguments without retaining the dead fallback.
+const panel = await readFile(new URL('../src/components/panels/GeneratePanel.tsx', import.meta.url), 'utf8');
+assert.doesNotMatch(panel, /createSubjectFilledPreview/);
+const panelAst = ts.createSourceFile('panel.tsx', panel, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+let dispatch;
+const visit = (node) => {
+  if (ts.isVariableDeclaration(node) && node.name.getText(panelAst) === 'previewPromise')
+    dispatch = node.initializer.getText(panelAst);
+  ts.forEachChild(node, visit);
+};
+visit(panelAst);
+assert.ok(dispatch);
+const dispatchJs = ts.transpileModule(`const result = ${dispatch};`, {
+  compilerOptions: { target: ts.ScriptTarget.ES2022 },
+}).outputText;
+for (const mode of ['capture-mask', 'generated-display']) {
+  const calls = [];
+  const run = new Function('previewProcessingMode', 'sourceUrl', 'capturePreviewMaskUrl',
+    'previewProcessingDepthUrl', 'previewRequest', 'createCaptureMaskedPreview', 'createGeneratedDisplayPreview',
+    `${dispatchJs}\nreturn result;`);
+  const previewRequest = { signal: new AbortController().signal };
+  const result = await run(mode, 'source', 'mask', 'depth', previewRequest,
+    async (...args) => { calls.push(['mask', ...args]); return 'masked'; },
+    async (...args) => { calls.push(['depth', ...args]); return { fittedUrl: 'fitted' }; });
+  assert.equal(result, mode === 'capture-mask' ? 'masked' : 'fitted');
+  assert.deepEqual(calls, [mode === 'capture-mask' ? ['mask', 'source', 'mask', previewRequest] : ['depth', 'source', 'depth', previewRequest]]);
+}
 
 class TestImageData {
   constructor(dataOrWidth, widthOrHeight, maybeHeight) {

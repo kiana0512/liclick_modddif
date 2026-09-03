@@ -19,7 +19,6 @@ import {
   createCaptureMaskedProjectionImage,
   createCaptureMaskedPreview,
   createGeneratedDisplayPreview,
-  createSubjectFilledPreview,
 } from '@/engine/localRepaint/resultPreviewUtils';
 import { ensureLocalRepaintSessionLayer as ensurePersistentLocalRepaintSessionLayer } from '@/engine/localRepaint/sessionLayer';
 import { generationBelongsToObject } from '@/engine/localRepaint/objectBinding';
@@ -78,6 +77,7 @@ import type { Layer } from '@/types/layer';
 import type { ReferenceImage } from '@/types/project';
 import { getRegisteredObjectUrlBlob, revokeRegisteredObjectUrl } from '@/utils/blobUrlRegistry';
 import { createId } from '@/utils/id';
+import { waitForBrowserPaint } from '@/utils/browserScheduling';
 import { downloadImageAsset } from '@/utils/downloadImage';
 import { generationBelongsToProject, generationIdentityIds } from '@/utils/generationIdentity';
 import {
@@ -1078,21 +1078,23 @@ export function GeneratePanel({
       ? subjectFilledPreview.previewUrl
       : previewRawResultUrl;
 
+  const previewProcessingVisible = workspaceActive && (previewImageOpen ||
+    (generatePanelExpanded && displayedTexturePreviewMode !== 'multi'));
   useEffect(() => {
     const sourceUrl = previewRawResultUrl;
-    if (!sourceUrl || !previewProcessingMode) {
+    if (!previewProcessingVisible || !sourceUrl || !previewProcessingMode) {
       setSubjectFilledPreview(undefined);
       return undefined;
     }
     let cancelled = false;
+    const controller = new AbortController();
+    const previewRequest = { signal: controller.signal };
     const previewPromise =
       previewProcessingMode === 'capture-mask'
-        ? createCaptureMaskedPreview(sourceUrl, capturePreviewMaskUrl!)
-        : previewProcessingMode === 'generated-display'
-          ? createGeneratedDisplayPreview(sourceUrl, previewProcessingDepthUrl).then(
-              (preview) => preview.fittedUrl,
-            )
-          : createSubjectFilledPreview(sourceUrl, 'neutral');
+        ? createCaptureMaskedPreview(sourceUrl, capturePreviewMaskUrl!, previewRequest)
+        : createGeneratedDisplayPreview(sourceUrl, previewProcessingDepthUrl, previewRequest).then(
+            (preview) => preview.fittedUrl,
+          );
     void previewPromise
       .then((previewUrl) => {
         if (!cancelled)
@@ -1115,12 +1117,14 @@ export function GeneratePanel({
       });
     return () => {
       cancelled = true;
+      controller.abort();
     };
   }, [
     capturePreviewMaskUrl,
     previewProcessingDepthUrl,
     previewProcessingMaskUrl,
     previewProcessingMode,
+    previewProcessingVisible,
     previewRawResultUrl,
   ]);
 
@@ -2922,9 +2926,10 @@ export function GeneratePanel({
         message: '正在准备当前蒙版与视角。',
       });
       // Commit the button state and progress text before any GPU capture work.
-      // This guarantees an immediate visual response even on a cold renderer.
-      await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
-      await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+      // A hidden tab has no rAF. Keep submission progressing via the existing
+      // background fallback instead of waiting for the user to return.
+      await waitForBrowserPaint();
+      await waitForBrowserPaint();
       // ModelView receives one square 2K composite: authored BaseColor outside
       // the user's selection and the aligned clay geometry preview inside it.
       // Qwen receives the clean authored view instead, plus the original

@@ -33,6 +33,36 @@ const projectStoreSource = await readFile(
   new URL('../src/stores/projectStore.ts', import.meta.url),
   'utf8',
 );
+const sceneStoreSource = await readFile(
+  new URL('../src/stores/sceneStore.ts', import.meta.url),
+  'utf8',
+);
+
+assert.match(
+  sceneStoreSource,
+  /const hasRuntimeStateToReset = Boolean\([\s\S]*?paintMaskHasContent[\s\S]*?localRepaintProjectionSource[\s\S]*?hasRuntimeStateToReset[\s\S]*?paintMaskResetRevision:/,
+  'blank scene selection must not clear and re-upload the viewport paint mask target',
+);
+assert.match(
+  sceneRootSource,
+  /const ImportedModel = memo\(function ImportedModel[\s\S]*?state\.selectedObjectId === importedModel\.objectId/,
+  'scene models must subscribe to their own selection bit and skip unrelated material-pipeline renders',
+);
+assert.doesNotMatch(
+  sceneRootSource,
+  /function ImportedModel\([\s\S]{0,1000}state\.selectedObjectId\);/,
+  'each imported model must not subscribe to the global selected-object string',
+);
+assert.match(
+  objectsPanelSource,
+  /markViewportInteractionActivity\(\);\s*selectObject\(objectId\);/,
+  'object-list selection should pause background viewport work before publishing selection',
+);
+assert.match(
+  sceneRootSource,
+  /const selectImportedObject = useCallback\([\s\S]*?markViewportInteractionActivity\(\);\s*selectObject\(objectId\);/,
+  'mesh selection should pause background viewport work before publishing selection',
+);
 
 assert.match(
   sceneRootSource,
@@ -237,12 +267,12 @@ assert.doesNotMatch(
 );
 assert.match(
   sceneRootSource,
-  /!workspaceVisible \|\|\s*selectedObjectId !== importedModel\.objectId \|\|\s*typeof gl\.compileAsync/,
+  /!workspaceVisible \|\|\s*!selected \|\|\s*typeof gl\.compileAsync/,
   'projected shader warmup must be reserved for the selected visible model',
 );
 assert.match(
   sceneRootSource,
-  /!workspaceVisible \|\|\s*selectedObjectId !== importedModel\.objectId \|\|\s*!texturedRestoreReady/,
+  /!workspaceVisible \|\|\s*!selected \|\|\s*!texturedRestoreReady/,
   'runtime projection visibility repair must not compete across hidden or unselected models',
 );
 assert.match(
