@@ -12,12 +12,21 @@ export type LocalRepaintSessionLayerResult = {
   boundGeneration: boolean;
 };
 
+/** Repaint resources do not own the user's layer-panel selection (including none). */
+export function restoreLocalRepaintLayerSelection(layerId: string | undefined) {
+  const state = useLayerStore.getState();
+  const selectedId = state.layers.some((layer) => layer.id === layerId) ? layerId : undefined;
+  if (state.activeProjectedLayerId === selectedId) return;
+  if (selectedId) state.setActiveLayer(selectedId);
+  else useLayerStore.setState({ activeProjectedLayerId: undefined });
+}
+
 export function ensureLocalRepaintSessionLayer(input: {
   objectId: string;
   generationId?: string;
   /** Passive preparation must not tear down the repaint currently visible. */
   preserveActiveProjection?: boolean;
-  /** Passive preparation must not steal the selected layer row. */
+  /** Defaults to true: apply uses its own destination, independent of row selection. */
   preserveActiveLayer?: boolean;
 }): LocalRepaintSessionLayerResult {
   const activeLayerIdBeforeEnsure = useLayerStore.getState().activeProjectedLayerId;
@@ -110,7 +119,7 @@ export function ensureLocalRepaintSessionLayer(input: {
       mutated = true;
       boundGeneration = true;
     }
-    useLayerStore.getState().setActiveLayer(layer.id);
+    if (input.preserveActiveLayer === false) useLayerStore.getState().setActiveLayer(layer.id);
   }
 
   const canonicalTargetId = layer.id;
@@ -189,18 +198,16 @@ export function ensureLocalRepaintSessionLayer(input: {
     }
   }
 
+  // Restore before saving, so even an explicitly empty selection remains empty
+  // in the snapshot and the panel never redirects a hidden draft to a projector.
+  if (input.preserveActiveLayer !== false) {
+    restoreLocalRepaintLayerSelection(activeLayerIdBeforeEnsure);
+  }
   if (mutated) {
     useProjectStore.getState().setProjectLayers(useLayerStore.getState().layers);
     if (typeof window !== 'undefined') {
       window.dispatchEvent(new Event(IMMEDIATE_PROJECT_SAVE_EVENT));
     }
-  }
-  if (
-    input.preserveActiveLayer &&
-    activeLayerIdBeforeEnsure &&
-    useLayerStore.getState().layers.some((item) => item.id === activeLayerIdBeforeEnsure)
-  ) {
-    useLayerStore.getState().setActiveLayer(activeLayerIdBeforeEnsure);
   }
   return { layer, created, boundGeneration };
 }

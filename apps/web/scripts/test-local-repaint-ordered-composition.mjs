@@ -121,6 +121,21 @@ try {
 
   const repaintOnTop = { ...persistedRepaint, order: 0 };
   const singleBelow = { ...single, order: 1 };
+  const needsResident = ordered.shouldWaitForLocalRepaintResidentMaterial;
+  assert.equal(needsResident([singleBelow], liveRepaint, liveRepaint.id), false,
+    'a new topmost preview must not spend 10 seconds waiting for an unpublished row');
+  assert.equal(needsResident([single], { ...liveRepaint, order: 1 }, liveRepaint.id), true,
+    'a new preview below a priority layer must still wait for the ordered stack');
+  assert.equal(needsResident([persistedRepaint], undefined, persistedRepaint.id), true,
+    'reopening an existing repaint must retain its resident readiness barrier');
+  assert.equal(needsResident([{ ...single, objectId: "other" }],
+    { ...liveRepaint, order: 1 }, liveRepaint.id), false,
+    'an unrelated model must not add a resident wait');
+  assert.equal(needsResident([{ ...single, visible: false }],
+    { ...liveRepaint, order: 1 }, liveRepaint.id), false,
+    'a hidden priority layer must not add a resident wait');
+  assert.equal(needsResident([single], { ...liveRepaint, order: 1 }, 'other'), false,
+    'a different preview cannot satisfy this preparation target');
   assert.equal(
     ordered.shouldPresentLocalRepaintInOrderedStack([repaintOnTop, singleBelow], {
       ...liveRepaint,
@@ -193,6 +208,37 @@ try {
   );
   assert.match(sceneRoot, /mergeOrderedLocalRepaintPreview/);
   assert.match(sceneRoot, /getOrderedLocalRepaintPreviewLayer/);
+  // Execute the actual viewport wait block with a deterministic frame clock.
+  // This catches accidental reintroduction of the 10s wait, beyond policy tests.
+  const waitStart = viewport.indexOf('const requiresResidentMaterial =');
+  const waitEnd = viewport.indexOf('const readyOverlay =', waitStart);
+  assert.ok(waitStart >= 0 && waitEnd > waitStart);
+  const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+  const runResidentWait = new AsyncFunction('layers', 'preview', 'bindAfterMs', 'policy', `
+    let elapsed = 0, residentOverrideBound = false;
+    const cancelled = false, preparationDeadline = 20000;
+    const model = {}, source = {}, sourceKey = 'test';
+    const composite = { layerId: preview.id };
+    const performance = { now: () => elapsed };
+    const document = { body: { dataset: {} } };
+    const useLayerStore = { getState: () => ({ layers }) };
+    const useSceneStore = { getState: () => ({ localRepaintPreviewLayer: preview }) };
+    const shouldWaitForLocalRepaintResidentMaterial = policy;
+    const ensureLiveLocalRepaintComposite = () => composite;
+    const invalidate = () => {};
+    const waitForFrame = async () => { elapsed += 16; };
+    const bindLocalRepaintResidentMaskOverride = () => elapsed >= bindAfterMs;
+    ${viewport.slice(waitStart, waitEnd)}
+    return { elapsed, residentOverrideBound };
+  `);
+  assert.deepEqual(await runResidentWait([singleBelow], liveRepaint, Infinity, needsResident),
+    { elapsed: 0, residentOverrideBound: false }, 'unpublished foreground must have zero resident wait');
+  assert.deepEqual(await runResidentWait([persistedRepaint], liveRepaint, 48, needsResident),
+    { elapsed: 48, residentOverrideBound: true }, 'saved rows must wait until binding succeeds');
+  assert.deepEqual(await runResidentWait([single], { ...liveRepaint, order: 1 }, 64, needsResident),
+    { elapsed: 64, residentOverrideBound: true }, 'ordered previews must retain the real binding barrier');
+  assert.deepEqual(await runResidentWait([persistedRepaint], liveRepaint, Infinity, needsResident),
+    { elapsed: 10000, residentOverrideBound: false }, 'existing target timeout must remain bounded');
   assert.match(
     sceneRoot,
     /previewProjectionInputs\.slice\(liveRepaintIndex\)/,
@@ -200,8 +246,8 @@ try {
   );
   assert.match(
     viewport,
-    /while \(!cancelled && !residentOverrideBound[\s\S]*?bindLocalRepaintResidentMaskOverride[\s\S]*?ensureLocalRepaintGpuOverlay/,
-    'readiness must prepare the resident handoff and the exact live overlay before input',
+    /while \(\s*requiresResidentMaterial && !cancelled &&\s*!residentOverrideBound[\s\S]*?bindLocalRepaintResidentMaskOverride[\s\S]*?ensureLocalRepaintGpuOverlay/,
+    'readiness must prepare eligible resident targets and always prepare the exact live overlay before input',
   );
   assert.match(
     viewport,

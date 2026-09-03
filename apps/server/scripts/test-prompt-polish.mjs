@@ -425,34 +425,25 @@ try {
   for (const prompt of ['', '  \n\t']) {
     const diagnosis = '修复控制面板下方的接缝和色差，以及标牌文字的重影。';
     const input = { ...localInput, prompt };
-    const { result, calls } = await invokeWithReplies([diagnosis, validLocalPrompt], input);
+    const { result, calls } = await invokeWithReplies([JSON.stringify({ diagnosis, prompt: validLocalPrompt })], input);
     assert.equal(await result, validLocalPrompt);
     assert.equal(input.prompt, prompt, 'Do not replace the user-owned blank input');
-    assert.equal(calls.length, 2, 'Empty input must diagnose first, then convert');
-    assert.doesNotMatch(calls[0].body.messages[0].content, /100至180词/);
-    assert.match(calls[0].body.messages[1].content[0].text, /一句中文修复要求/);
-    assert.ok(calls[1].body.messages[0].content.includes(`用户要求：${diagnosis}`));
-    assert.match(calls[1].body.messages[0].content, /do not diagnose additional problems/);
-    assert.match(
-      calls[1].body.messages[0].content,
-      /Repair existing text only if the diagnosis explicitly requests it/,
-    );
-    assert.match(calls[1].body.messages[0].content, /100至180词，2至3段/);
-    assert.deepEqual(
-      calls[1].body.messages[1].content.slice(1),
-      calls[0].body.messages[1].content.slice(1),
-    );
-    assert.equal(calls[0].signal, calls[1].signal);
+    assert.equal(calls.length, 1, 'Automatic diagnosis and conversion share one visual request');
+    assert.equal(calls[0].body.messages[1].content.filter((part) => part.type === 'image_url').length, 4);
+    assert.match(calls[0].body.messages[0].content, /不得增加其他修复目标/);
+    assert.match(calls[0].body.messages[0].content, /只有 diagnosis 明确要求修复已有文字/);
+    assert.match(calls[0].body.messages[0].content, /100至180词，2至3段/);
+    assert.equal(calls[0].body.temperature, 0.2);
   }
-  const noDefect = await invokeWithReplies(['未发现明确异常，保留现有外观。', validLocalPrompt], {
+  const noDefect = await invokeWithReplies([JSON.stringify({ diagnosis: '未发现明确异常，保留现有外观。', prompt: validLocalPrompt })], {
     ...localInput,
     prompt: '',
   });
   assert.equal(await noDefect.result, validLocalPrompt);
-  assert.match(noDefect.calls[1].body.messages[0].content, /未发现明确异常，保留现有外观。/);
-  assert.match(noDefect.calls[1].body.messages[0].content, /without inventing any repairs/);
+  assert.match(noDefect.calls[0].body.messages[0].content, /未发现明确异常，保留现有外观。/);
+  assert.match(noDefect.calls[0].body.messages[0].content, /无明确缺陷时只描述保留现有外观/);
   const diagnosis = '修复控制面板下方的接缝和色差。';
-  const repaired = await invokeWithReplies([diagnosis, 'Too short.'], {
+  const repaired = await invokeWithReplies([JSON.stringify({ diagnosis, prompt: 'Too short.' })], {
     ...localInput,
     prompt: '',
   });
@@ -460,22 +451,34 @@ try {
     await repaired.result,
     'Too short. Confine all edits to the independent mask region and keep every area outside it unchanged.',
   );
-  assert.equal(repaired.calls.length, 2, 'Noncanonical conversion output is accepted once');
+  assert.equal(repaired.calls.length, 1, 'Noncanonical conversion output is accepted once');
   assert.ok(repaired.calls.every((call) => call.signal === repaired.calls[0].signal));
   for (const invalid of [
     '',
     validLocalPrompt,
     '修复接缝。修复色差。',
-    { content: diagnosis, finish_reason: 'length' },
-    { content: diagnosis, finish_reason: 'content_filter' },
+    JSON.stringify({ diagnosis: '修复接缝。修复色差。', prompt: validLocalPrompt }),
+    JSON.stringify({ diagnosis: 42, prompt: validLocalPrompt }),
+    'null',
   ]) {
     const rejected = await invokeWithReplies([invalid], { ...localInput, prompt: '' });
     await assert.rejects(rejected.result, /PROMPT_POLISH_INVALID_LOCAL_REPAINT_DIAGNOSIS/);
     assert.equal(rejected.calls.length, 1, 'Invalid diagnosis must not enter conversion');
   }
-  const failedConversion = await invokeWithReplies([diagnosis, 500], { ...localInput, prompt: '' });
+  for (const finishReason of ['length', 'content_filter']) {
+    const incompleteAuto = await invokeWithReplies([
+      { content: JSON.stringify({ diagnosis, prompt: validLocalPrompt }), finish_reason: finishReason },
+    ], { ...localInput, prompt: '' });
+    await assert.rejects(incompleteAuto.result, /PROMPT_POLISH_QWEN_INCOMPLETE/);
+    assert.equal(incompleteAuto.calls.length, 1);
+  }
+  for (const prompt of [undefined, 42, '']) {
+    const invalidPrompt = await invokeWithReplies([JSON.stringify({ diagnosis, prompt })], { ...localInput, prompt: '' });
+    await assert.rejects(invalidPrompt.result, /PROMPT_POLISH_EMPTY_RESULT/);
+  }
+  const failedConversion = await invokeWithReplies([500], { ...localInput, prompt: '' });
   await assert.rejects(failedConversion.result, /PROMPT_POLISH_QWEN_HTTP_500/);
-  assert.equal(failedConversion.calls.length, 2);
+  assert.equal(failedConversion.calls.length, 1);
   const emptyConversion = await invokeWithReplies(['']);
   await assert.rejects(emptyConversion.result, /PROMPT_POLISH_EMPTY_RESULT/);
   assert.equal(emptyConversion.calls.length, 1);
@@ -580,7 +583,7 @@ assert.match(
 );
 assert.match(
   visualInputSource,
-  /LOCAL_REPAINT_AUTO_DIAGNOSIS_POLICY = 'one-sentence-diagnosis-to-klein-v2'/,
+  /LOCAL_REPAINT_AUTO_DIAGNOSIS_POLICY = 'single-request-diagnosis-to-klein-v3'/,
 );
 assert.match(
   visualInputSource,

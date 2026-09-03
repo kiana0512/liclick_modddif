@@ -4141,6 +4141,8 @@ export async function createProjectedLayerMaterial(input: ProjectionLayerInput) 
         layerId: input.layerId,
         imageUrl: input.imageUrl,
         projectedMapUniform: 'projectedMap',
+        maskUrl: input.maskUrl,
+        maskMapUniform: 'maskMap',
         opacityUniform: 'layerOpacity',
         strengthUniform: 'layerStrength',
         hueUniform: 'hueShift',

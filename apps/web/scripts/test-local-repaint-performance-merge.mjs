@@ -159,6 +159,46 @@ assert.equal(
   true,
 );
 assert.equal(interactiveStateModule.getLocalRepaintSessionSnapshot().status, 'ready');
+const preparingSession = interactiveStateModule.beginLocalRepaintSession({
+  generationId: 'generation-preparing', targetLayerId: 'target-preparing',
+});
+const isPreparing = () => interactiveStateModule.isLocalRepaintPreparationInFlight(
+  'generation-preparing', 'target-preparing',
+);
+assert.equal(isPreparing(), false, 'an abandoned preparing snapshot must allow a retry');
+const finishDecode = interactiveStateModule.trackLocalRepaintPreparation(preparingSession.sessionId);
+const finishGpu = interactiveStateModule.trackLocalRepaintPreparation(preparingSession.sessionId);
+interactiveStateModule.requestLocalRepaintSessionActivation('generation-preparing', 'target-preparing');
+assert.equal(isPreparing(), true, 'clicking must join active background preparation');
+assert.equal(interactiveStateModule.isLocalRepaintPreparationInFlight('generation-preparing', 'other'), false);
+finishDecode();
+finishDecode();
+assert.equal(isPreparing(), true, 'decode cleanup must not release the overlapping GPU task');
+finishGpu();
+assert.equal(isPreparing(), false, 'cancelled effects must allow an immediate renderer retry');
+const finishRetry = interactiveStateModule.trackLocalRepaintPreparation(preparingSession.sessionId);
+finishGpu();
+assert.equal(isPreparing(), true, 'late cleanup must not remove a replacement task');
+interactiveStateModule.publishLocalRepaintInteractiveState({
+  sessionId: preparingSession.sessionId,
+  generationId: 'generation-preparing', targetLayerId: 'target-preparing', status: 'failed',
+});
+assert.equal(isPreparing(), false, 'failed work must not block retry before cleanup runs');
+finishRetry();
+const finishOld = interactiveStateModule.trackLocalRepaintPreparation(preparingSession.sessionId);
+const nextSession = interactiveStateModule.beginLocalRepaintSession({
+  generationId: 'generation-next', targetLayerId: 'target-next',
+});
+const finishNext = interactiveStateModule.trackLocalRepaintPreparation(nextSession.sessionId);
+finishOld();
+assert.equal(interactiveStateModule.isLocalRepaintPreparationInFlight('generation-next', 'target-next'), true);
+interactiveStateModule.cancelLocalRepaintSession(nextSession.sessionId);
+assert.equal(interactiveStateModule.isLocalRepaintPreparationInFlight('generation-next', 'target-next'), false);
+finishNext();
+assert.match(editor, /if \(!isLocalRepaintPreparationInFlight\(latestLocalRepaintGeneration\.id, preparedTargetId\)\) \{\s*useSceneStore\.getState\(\)\.requestLocalRepaintGpuPrepare\(\)/);
+assert.match(viewport, /while \(\s*requiresResidentMaterial && !cancelled &&/);
+assert.match(viewport, /finally\(finishAssetPreparation\)/);
+assert.match(viewport, /finally\(finishGpuPreparation\)/);
 assert.match(
   viewport,
   /projectedBackgroundMaterialRevision[\s\S]{0,500}backgroundDisplayMode === 'flat'[\s\S]{0,120}backgroundDisplayMode === 'pbr'/,
@@ -431,3 +471,10 @@ assert.match(panel, /createLiclickApiClient/);
 assert.doesNotMatch(`${app}\n${panel}`, /\/api\/comfyui\/status|Atlas CLI/i);
 
 console.log('Zero-install local repaint/product regression test passed.');
+
+assert.match(viewport, /prewarmLocalRepaintProgram\(gl, geometry, camera\)/);
+assert.match(viewport, /localRepaintGenerationPresentationActive \? state\.paintMaskDataUrl/);
+assert.match(viewport, /\[falloffCanvas, liveSource\] = await Promise\.all/);
+assert.match(viewport, /if \(currentOverlay\.compilePromise\) await currentOverlay\.compilePromise/);
+assert.match(viewport, /throw new Error\('上一重绘图层的蒙版尚未完成材质绑定/);
+assert.match(viewport, /withLocalRepaintSessionTimeout\(\s*ensureLocalRepaintGpuOverlay/);
