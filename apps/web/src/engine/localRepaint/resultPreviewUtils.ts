@@ -353,7 +353,8 @@ async function createGeneratedDisplayPreviewUncached(
   depthUrl?: string,
   signal?: AbortSignal,
 ): Promise<GeneratedDisplayPreview> {
-  const decoded = await urlToImageData(sourceUrl);
+  const readOptions = { cooperative: true, signal };
+  const decoded = await urlToImageData(sourceUrl, undefined, undefined, readOptions);
   await waitForViewportInteractionIdle();
   signal?.throwIfAborted();
   const scale = Math.min(
@@ -371,7 +372,7 @@ async function createGeneratedDisplayPreviewUncached(
   let processed: ReturnType<typeof removeStrictOuterDarkDisplayBackground>;
   if (depthUrl) {
     try {
-      const depth = await urlToImageData(depthUrl, source.width, source.height);
+      const depth = await urlToImageData(depthUrl, source.width, source.height, readOptions);
       await waitForViewportInteractionIdle();
       signal?.throwIfAborted();
       processed = applyPackedDepthDisplayMask(source, depth);

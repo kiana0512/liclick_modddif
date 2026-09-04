@@ -91,6 +91,7 @@
     "test:layer-thumbnail-visibility": "node scripts/test-layer-thumbnail-visibility.mjs",
     "test:local-repaint-background-scheduling": "node scripts/test-local-repaint-background-scheduling.mjs",
     "test:display-preview-queue": "node scripts/test-display-preview-queue.mjs",
+    "test:display-image-readback": "node scripts/test-display-image-readback.mjs",
     "test:live-projected-texture-registry": "node --test src/engine/projection/__tests__/liveProjectedCanvasTextureRegistry.test.mjs",
     "test:regression": "corepack pnpm --filter @liclick/contracts build && node scripts/run-regression-suite.mjs",
     "smoke:sites-auth": "node scripts/smoke-sites-auth.mjs",
