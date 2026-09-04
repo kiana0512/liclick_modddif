@@ -115,12 +115,12 @@ assert.match(
 );
 assert.match(
   layerStoreSource,
-  /addProjectedLayerFromGeneration:[\s\S]*?captureMaskUrl = singleViewTexture \? capture\?\.maskUrl : undefined[\s\S]*?projectionUsesSourceAlpha[\s\S]*?maskUrl: captureMaskUrl[\s\S]*?maskSpace: captureMaskUrl \? 'projection' : undefined[\s\S]*?ignoreSourceAlpha: singleViewTexture \? !projectionUsesSourceAlpha : undefined[\s\S]*?projectionVisibilityPolicy: singleViewTexture \? 'surface-locked-v1' : undefined/,
-  'New GPT and remote single-view layers must share the capture silhouette and stable depth-backed visibility contract.',
+  /addProjectedLayerFromGeneration:[\s\S]*?captureMaskUrl = singleViewTexture \? capture\?\.maskUrl : undefined[\s\S]*?maskUrl: captureMaskUrl[\s\S]*?maskSpace: captureMaskUrl \? 'projection' : undefined[\s\S]*?projectionCoverageMode: singleViewTexture[\s\S]*?'capture-mask'[\s\S]*?ignoreSourceAlpha: singleViewTexture \? true : undefined[\s\S]*?projectionVisibilityPolicy: singleViewTexture \? 'standard' : undefined/,
+  'New GPT and remote single-view layers must use the capture silhouette while joining ordinary quality composition.',
 );
 assert.match(
   sceneRootSource,
-  /function resolveProjectionMask\([\s\S]*?single-view-priority-v1[\s\S]*?surface-locked-v1[\s\S]*?capture\?\.maskUrl[\s\S]*?maskUrl: capture\.maskUrl, maskSpace: 'projection'/,
+  /function resolveProjectionMask\([\s\S]*?projectionCoverageMode === 'capture-mask'[\s\S]*?capture\?\.maskUrl[\s\S]*?maskUrl: capture\.maskUrl, maskSpace: 'projection'/,
   'Saved single-view layers must recover their authored capture silhouette without overwriting UV eraser masks.',
 );
 assert.doesNotMatch(
@@ -273,11 +273,15 @@ assert.match(
   /if \(nextMode === 'texture'\) setDisplayMode\('flat'\);/,
   'Entering the texture workspace must default to flat view.',
 );
-assert.match(
-  viewportCanvasInteractionSource,
-  /if \(isInpaintMode \|\| isLocalRepaintApplyMode\) event\.preventDefault\(\);/,
-  'Both repaint brushes must suppress the browser context menu while right-button erasing.',
-);
+const maskStrokeDeclaration = viewportCanvasInteractionSource.match(/const isMaskStroke = isInpaintMode \|\| isLocalRepaintApplyMode;/)?.[0];
+const contextMenuBody = viewportCanvasInteractionSource.match(/const handleContextMenu = \(event: MouseEvent\) => \{([\s\S]*?)\n {4}\};/)?.[1];
+assert(maskStrokeDeclaration && contextMenuBody);
+const runContextMenu = new Function('isInpaintMode', 'isLocalRepaintApplyMode', 'event', `${maskStrokeDeclaration}\n${contextMenuBody}`);
+for (const mask of [false, true]) for (const apply of [false, true]) {
+  let prevented = false;
+  runContextMenu(mask, apply, { preventDefault: () => { prevented = true; } });
+  assert.equal(prevented, mask || apply, 'Both repaint brushes suppress the context menu; navigation retains it.');
+}
 assert.match(
   viewportCanvasInteractionSource,
   /const maximumProjectedRadius = Math\.min\([\s\S]*?fallbackUvRadius \* 4[\s\S]*?length > maximumProjectedRadius[\s\S]*?axis\.multiplyScalar\(maximumProjectedRadius \/ length\)/,
@@ -288,19 +292,31 @@ assert.match(
   /const eraserFeather = paintToolSettings\.eraserFeather \?\? 50;[\s\S]*?layer\.liveResultContext[\s\S]*?'destination-out',[\s\S]*?'uv',[\s\S]*?eraserFeather/,
   'The projected-layer eraser must apply its feather value to the live keep-mask.',
 );
+const promoteProjectedEraserMaskSource = viewportCanvasInteractionSource.match(
+  /function promoteProjectedEraserMaskToResidentMaterial[\s\S]*?\n}\n\nfunction endLiveEraserPreview/,
+)?.[0];
+assert.ok(
+  promoteProjectedEraserMaskSource,
+  'The projected eraser must expose a verified resident-mask handoff.',
+);
+assert.match(
+  promoteProjectedEraserMaskSource,
+  /syncProjectedLayerResidentMaskTextureInObject\([\s\S]*?if \(result\.bound && !layer\.liveEraserPreviewActive\)[\s\S]*?syncProjectedLayerLiveEraserPreviewInObject\(root, undefined, undefined\)/,
+  'The live multiplier may be cleared only after every resident material samples the committed mask texture.',
+);
 const endLiveEraserPreviewSource = viewportCanvasInteractionSource.match(
   /function endLiveEraserPreview\(layer: UvPaintLayer\)[\s\S]*?\n}\n\nfunction getPaintHistoryTileBounds/,
 )?.[0];
 assert.ok(endLiveEraserPreviewSource, 'The projected-layer eraser preview teardown must exist.');
 assert.match(
   endLiveEraserPreviewSource,
-  /clearLiveSurfacePaintPreview\(layer\.layerId, layer\.liveResultUrl\)[\s\S]*?layer\.liveEraserPreviewRoot = undefined/,
-  'Ending a projected-layer eraser preview must release its input-side registry and root ownership.',
+  /pendingPaintCommits === 0[\s\S]*?promoteProjectedEraserMaskToResidentMaterial[\s\S]*?clearLiveSurfacePaintPreview\(layer\.layerId, layer\.liveResultUrl\)[\s\S]*?pendingPaintCommits === 0[\s\S]*?layer\.liveEraserPreviewRoot = undefined/,
+  'Ending a projected-layer eraser preview must retain root ownership until an in-flight commit can complete its atomic handoff.',
 );
-assert.doesNotMatch(
-  endLiveEraserPreviewSource,
-  /syncProjectedLayerLiveEraserPreviewInObject/,
-  'Input teardown must not clear the resident GPU keep-mask before SceneRoot completes the persistent material handoff.',
+assert.match(
+  viewportCanvasInteractionSource,
+  /updateLayer\(layer\.layerId,[\s\S]*?promoteProjectedEraserMaskToResidentMaterial\(layer, projectedEraserCommit\.model\.group\)[\s\S]*?\.finally\(\(\) => \{[\s\S]*?pendingPaintCommits === 0 && !layer\.liveEraserPreviewActive[\s\S]*?endLiveEraserPreview\(layer\)/,
+  'Pointer-up must promote the full-resolution canvas and finish a deferred teardown after the last queued commit.',
 );
 assert.match(
   viewportCanvasInteractionSource,
@@ -549,8 +565,8 @@ assert.match(
 );
 assert.match(
   sceneRootSource,
-  /!hasAuthoritativeVisibleTextureLayer \|\|[\s\S]*?importedModel\.restoreStage === 'bounds'[\s\S]*?liclickRestoreOutlinePrepared === true[\s\S]*?initialMaterialPresentationReadyForGroup/,
-  'A refresh must stay non-empty from saved bounds through prepared outline and final material.',
+  /!importedModel\.restoreStage \|\|[\s\S]*?importedModel\.restoreStage === 'full'[\s\S]*?!hasAuthoritativeVisibleTextureLayer \|\| initialMaterialPresentationReadyForGroup/,
+  'A refresh must keep bounds, outline and proxy stages hidden until the full material is ready.',
 );
 assert.match(
   sceneRootSource,
@@ -568,14 +584,24 @@ assert.match(
   'The editor reveal signal must wait until the first WebGL model frame has actually been presented.',
 );
 assert.match(
-  editorPageSource,
-  /!isEditorProjectViewportReady\(\{[\s\S]*?presentedViewportProjectId,[\s\S]*?objectCount: project\.objects\.length,[\s\S]*?fixed inset-0 z-\[220\]/,
-  'The project loading cover must remain above an initializing viewport until model content is presented.',
+  sceneRootSource,
+  /!initialMaterialPresentationVisibleForGroup[\s\S]*?ModelRestoreLoadingIndicator object=\{importedModel\.group\}/,
+  'Each restoring model must own an independent loading indicator until its material is presented.',
 );
 assert.match(
   sceneRootSource,
-  /model\.restoreStage === 'outline'[\s\S]*?createFlatPreviewMaterial[\s\S]*?revealInitialMaterialPresentation\(\)/,
-  'Cold restore must reveal exact geometry with the canonical flat material instead of leaving an empty viewport.',
+  /function ModelRestoreLoadingIndicator[\s\S]*?useFrame[\s\S]*?rotation\.z -= delta[\s\S]*?torusGeometry/,
+  'The per-model loading indicator must animate in the 3D viewport.',
+);
+const outlineRestoreBlock = sceneRootSource.slice(
+  sceneRootSource.indexOf("if (model.restoreStage === 'outline')"),
+  sceneRootSource.indexOf("if (\n        model.restoreStage === 'proxy'"),
+);
+assert.match(outlineRestoreBlock, /createFlatPreviewMaterial/);
+assert.doesNotMatch(
+  outlineRestoreBlock,
+  /revealInitialMaterialPresentation\(\)/,
+  'Cold restore must not reveal the model while it still has the flat outline material.',
 );
 assert.match(
   sceneRootSource,
@@ -698,8 +724,18 @@ assert.match(
 );
 assert.match(
   viewportCanvasSource,
-  /const presentationOwnerReady = isEditingPersistedLocalRepaint\s*\? residentMaskBound\s*:\s*exactOverlayReady;[\s\S]*?const localRepaintPresentationReady = Boolean\([\s\S]*?presentationOwnerReady/,
-  'A persisted repaint eraser must require the resident live-mask binding instead of a duplicate overlay.',
+  /const exactOverlayOwnsPersistedEraser = Boolean\([\s\S]*?exactOverlayReady && repaintPreviewLayer\?\.id === composite\?\.layerId[\s\S]*?const presentationOwnerReady = isEditingPersistedLocalRepaint\s*\? residentMaskBound \|\| exactOverlayOwnsPersistedEraser\s*:\s*exactOverlayReady/,
+  'A just-published repaint must remain editable through its exact overlay until the resident eraser mask is bound.',
+);
+assert.match(
+  viewportCanvasSource,
+  /const eraserHandoffUsesExactOverlay =\s*erasesPersistedLocalRepaint && previewOwnsOverlay;[\s\S]*?const exactOverlayPresentationRequired =\s*liveFeedbackRequested \|\| eraserHandoffUsesExactOverlay \|\| residentHandoffPending;[\s\S]*?shouldUseDedicatedLocalRepaintOverlay\([\s\S]*?exactOverlayPresentationRequired/,
+  'Switching directly from local repaint to eraser must retain the visible exact overlay during resident material preparation.',
+);
+assert.match(
+  sceneRootSource,
+  /const localRepaintLiveFeedbackRequested =\s*localRepaintPaintTool === 'inpaint-apply' \|\|\s*\(localRepaintPaintTool === 'eraser' && localRepaintPreviewLayer\?\.id === activeLayerId\)/,
+  'SceneRoot must keep the resident repaint row muted until the eraser overlay handoff completes.',
 );
 assert.match(
   viewportCanvasSource,
@@ -768,8 +804,8 @@ assert.match(
 );
 assert.match(
   viewportCanvasSource,
-  /const exactOverlayReady = Boolean\([\s\S]*?overlay\?\.sourceKey === sourceKey[\s\S]*?const presentationOwnerReady = isEditingPersistedLocalRepaint\s*\? residentMaskBound\s*:\s*exactOverlayReady;/,
-  'Pointer-down must consume the prewarmed exact overlay as the apply-mode presentation owner.',
+  /const exactOverlayReady = Boolean\([\s\S]*?overlay\?\.sourceKey === sourceKey[\s\S]*?const exactOverlayOwnsPersistedEraser = Boolean\([\s\S]*?const presentationOwnerReady = isEditingPersistedLocalRepaint\s*\? residentMaskBound \|\| exactOverlayOwnsPersistedEraser\s*:\s*exactOverlayReady;/,
+  'Pointer-down must consume the prewarmed exact overlay for apply mode and the pending persisted-eraser handoff.',
 );
 assert.match(
   viewportCanvasSource,
@@ -850,12 +886,12 @@ assert.match(
 );
 assert.match(
   generatePanelSource,
-  /isLocalRepaintGeneration\(displayedPreviewGeneration\)[\s\S]*?'generated-display'[\s\S]*?createGeneratedDisplayPreview\(sourceUrl, previewProcessingDepthUrl\)[\s\S]*?preview\.fittedUrl/,
+  /isLocalRepaintGeneration\(displayedPreviewGeneration\)[\s\S]*?'generated-display'[\s\S]*?createGeneratedDisplayPreview\(sourceUrl, previewProcessingDepthUrl, previewRequest\)[\s\S]*?preview\.fittedUrl/,
   'Local repaint cards must use one depth-authored transparent and fitted UI display copy.',
 );
 assert.match(
   layersPanelSource,
-  /layer\.type === 'projected'[\s\S]*?createGeneratedDisplayPreview\(sourceUrl, depthUrl\)[\s\S]*?displayPreview\.fittedUrl/,
+  /layer\.type === 'projected'[\s\S]*?createGeneratedDisplayPreview\(sourceUrl, depthUrl, \{[\s\S]*?signal: controller.signal,[\s\S]*?revision: layer.contentRevision,[\s\S]*?displayPreview\.fittedUrl/,
   'Projected layer thumbnails must share the generated transparent display path.',
 );
 assert.match(
@@ -1324,12 +1360,12 @@ try {
   );
   assert.match(
     material.fragmentShader,
-    /float computeOrderedOverlayAlpha\(float coverage, float quality, float overlayMode\)[\s\S]*?float featheredAlpha = clamp\(coverage \* mix\(0\.75, 1\.0, qualityFade\), 0\.0, 1\.0\)[\s\S]*?return mix\(featheredAlpha, priorityAlpha, step\(1\.5, overlayMode\)\)/,
-    'Live overlays must share one ordered-alpha function for feathered and priority projection modes.',
+    /float computeOrderedOverlayAlpha\(float coverage, float quality\)[\s\S]*?return clamp\(coverage \* mix\(0\.75, 1\.0, qualityFade\), 0\.0, 1\.0\)/,
+    'Explicit live overlays must share one feathered ordered-alpha function.',
   );
   assert.match(
     material.fragmentShader,
-    /float overlayAlpha = computeOrderedOverlayAlpha\([\s\S]*?layerOverlayMode/,
+    /float overlayAlpha = computeOrderedOverlayAlpha\(\s*coverage,\s*quality\s*\)/,
     'Projected overlay composition must route through the shared ordered-alpha function.',
   );
   assert.match(

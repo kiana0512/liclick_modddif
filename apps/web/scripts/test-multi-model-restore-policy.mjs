@@ -108,10 +108,33 @@ try {
     /<group onPointerMissed=\{clearViewportSelection\}>/,
     'the scene pointer-miss boundary must use the workspace-aware selection guard',
   );
+  const emptyProxyBlock = sceneRootSource.slice(
+    sceneRootSource.indexOf("model.restoreStage === 'proxy' &&"),
+    sceneRootSource.indexOf('const selected = false;'),
+  );
+  assert.doesNotMatch(
+    emptyProxyBlock,
+    /revealInitialMaterialPresentation\(\)/,
+    'an empty proxy sampler must stay hidden behind its per-model loading indicator',
+  );
   assert.match(
     sceneRootSource,
-    /model\.restoreStage === 'proxy'[\s\S]*?!loadedUvTexture[\s\S]*?revealInitialMaterialPresentation\(\);\s*return;/,
-    'an empty proxy sampler must never replace the last visible neutral/material frame',
+    /!initialMaterialPresentationVisibleForGroup[\s\S]*?ModelRestoreLoadingIndicator/,
+    'each model must stop showing its own loading indicator independently',
+  );
+  const loadingIndicatorBlock = sceneRootSource.slice(
+    sceneRootSource.indexOf('function ModelRestoreLoadingIndicator'),
+    sceneRootSource.indexOf('const ImportedModel = memo'),
+  );
+  assert.match(
+    loadingIndicatorBlock,
+    /spinnerRef\.current\.rotation\.z -= delta \* 2\.8/,
+    'the model loading indicator must keep its steady rotation',
+  );
+  assert.doesNotMatch(
+    loadingIndicatorBlock,
+    /spinnerRef\.current\.scale|Math\.sin\(/,
+    'the model loading indicator must stay at a fixed size without pulse scaling',
   );
   assert.match(
     editorSource,
@@ -135,8 +158,8 @@ try {
   );
   assert.match(
     sceneRootSource,
-    /importedModel\.group\.userData\.liclickRestoreOutlinePrepared === true \|\|[\s\S]{0,100}initialMaterialPresentationReadyForGroup/,
-    'the white proxy must stay visible while the selected full material is being prepared',
+    /importedModel\.restoreStage === 'full' &&[\s\S]{0,120}!hasAuthoritativeVisibleTextureLayer \|\| initialMaterialPresentationReadyForGroup/,
+    'a restored textured model must stay hidden until its own full material is ready',
   );
   assert.match(
     sceneRootSource,

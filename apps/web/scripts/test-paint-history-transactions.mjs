@@ -322,9 +322,10 @@ try {
   ];
   const uploaded = [],
     marked = [];
-  let cancelled = 0;
+  let cancelled = 0, promoted = 0;
   const bindings = {
     projectedEraserBatchesRef: { current: new Map() },
+    projectedEraserCommit: { model: { group: {} } },
     layer,
     layerRef: { current: active },
     historyTiles,
@@ -336,6 +337,9 @@ try {
     scheduleTextureUpdate: (texture) => uploaded.push(texture),
     useLayerStore: layerStore,
     useProjectStore: projectStore,
+    promoteProjectedEraserMaskToResidentMaterial() {
+      promoted += 1;
+    },
     scheduleProjectedEraserRefinement() {},
   };
   const restoreJs = ts.transpileModule(`const restore = ${restoreNode.getText(file)};`, {
@@ -361,6 +365,7 @@ try {
   restore('after');
   assert.equal(base.value * live.value, 0);
   assert.equal(cancelled, 2);
+  assert.equal(promoted, 2, 'Undo and redo both promote the restored full-resolution mask');
 
   // Numeric tile replay tests real staging with three strokes, overlap, a new UV island, and a brush overwrite.
   const tile = (bounds, before, after) => ({ bounds, before: [before], after: [after] });

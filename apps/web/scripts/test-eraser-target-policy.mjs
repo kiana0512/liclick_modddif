@@ -44,6 +44,14 @@ assert.match(
 );
 assert.match(dock, /getEraserTargetPolicy\(activeLayer\)/);
 assert.match(dock, /shortcut="E"/);
+const localRepaintApplyIndex = dock.indexOf('data-local-repaint-apply="true"');
+const textureEraserIconIndex = dock.indexOf('<Eraser className="h-5 w-5"');
+assert.ok(localRepaintApplyIndex >= 0 && textureEraserIconIndex > localRepaintApplyIndex);
+assert.equal(
+  dock.indexOf('<Eraser className="h-5 w-5"', textureEraserIconIndex + 1),
+  -1,
+  'The texture eraser must remain a single button placed to the right of local repaint.',
+);
 assert.match(
   layerStore,
   /duplicateContentAwareLayerAsEditableUv[\s\S]*?isContentAwareEraserUnderlay\(source\)[\s\S]*?role: undefined,[\s\S]*?generationId: undefined/,

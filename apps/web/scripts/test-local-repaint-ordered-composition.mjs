@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { createServer } from 'vite';
+import { createServer, transformWithEsbuild } from 'vite';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const server = await createServer({ root, logLevel: 'silent', server: { middlewareMode: true } });
@@ -43,14 +43,9 @@ try {
   const ordered = await server.ssrLoadModule(
     '/src/engine/localRepaint/orderedPreviewComposition.ts',
   );
-  const priority = await server.ssrLoadModule(
-    '/src/engine/projection/priorityProjectionComposition.ts',
-  );
-
   const single = makeLayer({
     id: 'single',
     order: 0,
-    projectionCompositeMode: 'single-view-priority-v1',
   });
   const persistedRepaint = makeLayer({
     id: 'local-repaint-result',
@@ -68,18 +63,6 @@ try {
     opacity: 1,
   });
 
-  const resolved = ordered.resolveLocalRepaintPreviewPresentation(liveRepaint, [
-    single,
-    persistedRepaint,
-  ]);
-  assert.equal(resolved.order, 1, 'persisted panel order must control the live preview');
-  assert.equal(resolved.opacity, 0.7, 'persisted presentation must control the live preview');
-  assert.equal(resolved.maskUrl, liveRepaint.maskUrl, 'live mutable mask must remain bound');
-  assert.equal(
-    ordered.shouldPresentLocalRepaintInOrderedStack([single, persistedRepaint], liveRepaint),
-    true,
-    'a visible priority single-view above repaint must disable the always-on-top fast path',
-  );
   assert.equal(
     ordered.shouldMuteLocalRepaintResidentLayer(
       [single, persistedRepaint],
@@ -87,7 +70,7 @@ try {
       persistedRepaint.id,
     ),
     false,
-    'ordered-stack ownership must keep the resident repaint binding visible',
+    'idle repaint rows stay resident outside live apply feedback',
   );
   assert.equal(
     ordered.shouldUseDedicatedLocalRepaintOverlay(
@@ -109,23 +92,23 @@ try {
     'the resident twin must be muted while the exact live overlay owns apply feedback',
   );
 
-  const bottomUp = ordered.mergeOrderedLocalRepaintPreview(
-    [single, persistedRepaint],
-    resolved,
-  );
-  assert.deepEqual(
-    bottomUp.map((layer) => layer.id),
-    ['local-repaint-result', 'single'],
-    'ordered renderer inputs must evaluate the lower repaint before the upper single-view',
-  );
-
   const repaintOnTop = { ...persistedRepaint, order: 0 };
   const singleBelow = { ...single, order: 1 };
   const needsResident = ordered.shouldWaitForLocalRepaintResidentMaterial;
+  const merged = makeLayer({ id: 'merged', type: 'uv', role: 'merged-uv', order: 0 });
+  assert.equal(needsResident([merged, persistedRepaint], liveRepaint, liveRepaint.id), false,
+    'a repaint below the merged UV boundary has no resident binding to wait for');
+  for (const upper of [
+    { ...merged, visible: false }, { ...merged, imageUrl: '' },
+    { ...merged, objectId: 'other' }, { ...merged, role: 'paint' }, { ...merged, order: 2 },
+  ]) {
+    assert.equal(needsResident([upper, persistedRepaint], liveRepaint, liveRepaint.id), true,
+      'only the actual visible same-object merged UV boundary can remove the wait');
+  }
   assert.equal(needsResident([singleBelow], liveRepaint, liveRepaint.id), false,
     'a new topmost preview must not spend 10 seconds waiting for an unpublished row');
-  assert.equal(needsResident([single], { ...liveRepaint, order: 1 }, liveRepaint.id), true,
-    'a new preview below a priority layer must still wait for the ordered stack');
+  assert.equal(needsResident([single], { ...liveRepaint, order: 1 }, liveRepaint.id), false,
+    'ordinary single views must not create an ordered resident wait');
   assert.equal(needsResident([persistedRepaint], undefined, persistedRepaint.id), true,
     'reopening an existing repaint must retain its resident readiness barrier');
   assert.equal(needsResident([{ ...single, objectId: "other" }],
@@ -133,17 +116,9 @@ try {
     'an unrelated model must not add a resident wait');
   assert.equal(needsResident([{ ...single, visible: false }],
     { ...liveRepaint, order: 1 }, liveRepaint.id), false,
-    'a hidden priority layer must not add a resident wait');
+    'a hidden ordinary projection must not add a resident wait');
   assert.equal(needsResident([single], { ...liveRepaint, order: 1 }, 'other'), false,
     'a different preview cannot satisfy this preparation target');
-  assert.equal(
-    ordered.shouldPresentLocalRepaintInOrderedStack([repaintOnTop, singleBelow], {
-      ...liveRepaint,
-      order: 0,
-    }),
-    false,
-    'moving repaint above the single-view must restore the clear low-latency foreground path',
-  );
   assert.equal(
     ordered.shouldMuteLocalRepaintResidentLayer(
       [repaintOnTop, singleBelow],
@@ -162,38 +137,6 @@ try {
     false,
     'preview ownership must never mute an unrelated resident layer',
   );
-  assert.equal(
-    ordered.shouldPresentLocalRepaintInOrderedStack(
-      [{ ...single, visible: false }, persistedRepaint],
-      liveRepaint,
-    ),
-    false,
-    'a hidden upper single-view must not suppress the repaint fast path',
-  );
-  assert.equal(
-    ordered.shouldPresentLocalRepaintInOrderedStack(
-      [{ ...single, objectId: 'object-b' }, persistedRepaint],
-      liveRepaint,
-    ),
-    false,
-    'layers from another object must not affect repaint presentation',
-  );
-
-  const over = (source, alpha, destination) => source * alpha + destination * (1 - alpha);
-  const repaintColor = 0.85;
-  const singleColor = 0.2;
-  const coreAlpha = priority.getPriorityProjectionAlpha(0.95, 0.95);
-  const edgeAlpha = priority.getPriorityProjectionAlpha(0.3, 0.08);
-  const singleAboveCore = over(singleColor, coreAlpha, repaintColor);
-  const localAboveCore = over(repaintColor, 1, over(singleColor, coreAlpha, 0));
-  const singleAboveEdge = over(singleColor, edgeAlpha, repaintColor);
-  assert(Math.abs(singleAboveCore - singleColor) < 0.01, 'single-view core must cover repaint');
-  assert.equal(localAboveCore, repaintColor, 'repaint above single-view must remain clear');
-  assert(
-    singleAboveEdge > singleColor && singleAboveEdge < repaintColor,
-    'single-view feather must attenuate and blend the repaint underneath',
-  );
-
   const sceneRoot = readFileSync(
     new URL('../src/engine/viewport/SceneRoot.tsx', import.meta.url),
     'utf8',
@@ -206,8 +149,37 @@ try {
     new URL('../src/engine/projection/ProjectedLayerMaterial.ts', import.meta.url),
     'utf8',
   );
-  assert.match(sceneRoot, /mergeOrderedLocalRepaintPreview/);
-  assert.match(sceneRoot, /getOrderedLocalRepaintPreviewLayer/);
+  // Execute the source-switch handoff predicate, not a reimplementation of it.
+  const releaseBlock = viewport.slice(viewport.indexOf('const releasePreviousPreview = async'));
+  const readyBody = releaseBlock.match(/ready: \(\) => \{([\s\S]*?)\n {8}\},/);
+  assert.ok(readyBody);
+  const canRelease = new Function('storedLayers', 'isLocalRepaintBelowMergedUv', 'resident', `
+    const previousLayerId = 'local-repaint-result', previousRoot = {};
+    const previousOverride = { root: previousRoot, layerId: previousLayerId };
+    const useLayerStore = { getState: () => ({ layers: storedLayers }) };
+    const isLocalRepaintLayerResident = () => resident;
+    const promoteLocalRepaintResidentMaskTexture = () => resident;
+    ${readyBody[1]}
+  `);
+  assert.equal(canRelease([merged, persistedRepaint], ordered.isLocalRepaintBelowMergedUv, false), true);
+  assert.equal(canRelease([persistedRepaint], ordered.isLocalRepaintBelowMergedUv, false), false);
+  assert.equal(canRelease([persistedRepaint], ordered.isLocalRepaintBelowMergedUv, true), true);
+  // Current renderer boundary is authoritative, including equal order and global UV rows.
+  const boundaryStart = sceneRoot.indexOf('function getVisibleMergedUvBoundaryOrder');
+  const boundaryEnd = sceneRoot.indexOf('function useStableValueBySignature', boundaryStart);
+  const boundaryJs = (await transformWithEsbuild(
+    sceneRoot.slice(boundaryStart, boundaryEnd), 'boundary.ts', { loader: 'ts' },
+  )).code;
+  const rendererExcludes = new Function('layers', 'target', `${boundaryJs}
+    return !isProjectedLayerAboveMergedUv(target, getVisibleMergedUvBoundaryOrder(layers, target.objectId));`);
+  for (const uv of [merged, { ...merged, objectId: undefined }, { ...merged, order: 1 },
+    { ...merged, visible: false }, { ...merged, imageUrl: '' }, { ...merged, objectId: 'other' },
+    { ...merged, role: 'paint' }, { ...merged, order: 2 }]) {
+    assert.equal(ordered.isLocalRepaintBelowMergedUv([uv, persistedRepaint], persistedRepaint),
+      rendererExcludes([uv, persistedRepaint], persistedRepaint));
+  }
+  assert.doesNotMatch(sceneRoot, /mergeOrderedLocalRepaintPreview/);
+  assert.doesNotMatch(sceneRoot, /getOrderedLocalRepaintPreviewLayer/);
   // Execute the actual viewport wait block with a deterministic frame clock.
   // This catches accidental reintroduction of the 10s wait, beyond policy tests.
   const waitStart = viewport.indexOf('const requiresResidentMaterial =');
@@ -236,13 +208,15 @@ try {
   assert.deepEqual(await runResidentWait([persistedRepaint], liveRepaint, 48, needsResident),
     { elapsed: 48, residentOverrideBound: true }, 'saved rows must wait until binding succeeds');
   assert.deepEqual(await runResidentWait([single], { ...liveRepaint, order: 1 }, 64, needsResident),
-    { elapsed: 64, residentOverrideBound: true }, 'ordered previews must retain the real binding barrier');
+    { elapsed: 0, residentOverrideBound: false }, 'ordinary single views must not create a binding barrier');
   assert.deepEqual(await runResidentWait([persistedRepaint], liveRepaint, Infinity, needsResident),
     { elapsed: 10000, residentOverrideBound: false }, 'existing target timeout must remain bounded');
-  assert.match(
+  assert.deepEqual(await runResidentWait([merged, persistedRepaint], liveRepaint, Infinity, needsResident),
+    { elapsed: 0, residentOverrideBound: false }, 'merged-away targets must not burn the 10s deadline');
+  assert.doesNotMatch(
     sceneRoot,
     /previewProjectionInputs\.slice\(liveRepaintIndex\)/,
-    'ordered live repaint must retain every upper layer in its foreground suffix',
+    'the retired priority stack must not split ordinary projections around a repaint preview',
   );
   assert.match(
     viewport,

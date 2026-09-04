@@ -8,7 +8,7 @@ import {
   type SyntheticEvent,
 } from 'react';
 import { createPortal } from 'react-dom';
-import { AlertTriangle, Download, Plus } from 'lucide-react';
+import { AlertTriangle, Download, LoaderCircle, Plus } from 'lucide-react';
 import * as THREE from 'three';
 import { BottomToolDock } from '@/components/editor/BottomToolDock';
 import { ExportMenu, type ExportActionId } from '@/components/editor/ExportMenu';
@@ -86,8 +86,8 @@ import {
   setDebugUvBakeVerbose,
 } from '@/engine/bake/uvBakeDebugControls';
 import {
-  getLiveProjectedCanvasState,
   getLiveProjectedTextureBlob,
+  getLiveProjectedTextureSourceState,
   isLiveProjectedCanvasUrl,
 } from '@/engine/projection/liveProjectedCanvasTextureRegistry';
 import {
@@ -114,6 +114,7 @@ import {
   type ModelImportProgressEvent,
 } from '@/engine/loaders/modelImportProgress';
 import { getImportedBaseColorTextureUrl } from '@/engine/loaders/modelLoadUtils';
+import { OBJECT_RUNTIME_RESTORE_REQUEST_EVENT } from '@/engine/history/objectDeletionTransaction';
 import { getReusableProjectModels } from '@/engine/loaders/projectModelRestoreReuse';
 import { placeImportedModelBesideScene } from '@/engine/scene/placeImportedModelBesideScene';
 import { getBoundingBoxForObject } from '@/engine/scene/boundingBoxUtils';
@@ -182,6 +183,7 @@ import {
   prewarmPreviewTextures,
   releasePreviewTexture,
 } from '@/engine/viewport/previewTextureCache';
+import { shouldFocusImportedModelAfterImport } from '@/engine/viewport/cameraFramingPolicy';
 import type { ModelLoadResult } from '@/engine/loaders/modelImportTypes';
 import { focusCameraOrbitOnObjectId, setCameraToObjectView } from '@/engine/scene/transformActions';
 import { applySerializedCamera, serializeCamera } from '@/engine/projection/ProjectionCamera';
@@ -210,10 +212,8 @@ import {
 import { EditorShell } from '@/layouts/EditorShell';
 import { importProjectJson } from '@/services/projectService';
 import {
-  EDITOR_PROJECT_VIEWPORT_PRESENTATION_TIMEOUT_MS,
   isCurrentEditorProjectLoad,
   isEditorProjectServerReady,
-  isEditorProjectViewportReady,
   shouldLoadEditorProjectRoute,
   type EditorProjectLoadToken,
 } from '@/services/editorProjectRouteLoad';
@@ -1068,6 +1068,7 @@ export function EditorPage({
   const routeProjectLoadRevisionRef = useRef(0);
   const restoredModelKeyRef = useRef<string>();
   const modelRestoreRequestRef = useRef(0);
+  const restoreProjectModelRef = useRef<(project: Project) => Promise<void>>(async () => {});
   const hydratedProjectVersionRef = useRef<string>();
   const skipProjectStoreSyncRef = useRef({
     layers: false,
@@ -1137,8 +1138,6 @@ export function EditorPage({
     'idle',
   );
   const [serverReadyProjectId, setServerReadyProjectId] = useState<string>();
-  const [presentedViewportProjectId, setPresentedViewportProjectId] = useState<string>();
-  const [presentationTimedOutProjectId, setPresentationTimedOutProjectId] = useState<string>();
   const [publishingToRetopology, setPublishingToRetopology] = useState(false);
   const publishingToBakeRef = useRef(false);
   const [publishingToBake, setPublishingToBake] = useState(false);
@@ -1201,7 +1200,6 @@ export function EditorPage({
   );
   const project = useProjectStore((state) => state.projects.find((item) => item.id === projectId));
   const projectEditVersion = useProjectStore((state) => state.editVersions[projectId] ?? 0);
-  const routeProjectObjectCount = project?.objects.length ?? 0;
   const replaceCurrentProject = useProjectStore((state) => state.replaceCurrentProject);
   const updateCurrentProject = useProjectStore((state) => state.updateCurrentProject);
   const updateProjectById = useProjectStore((state) => state.updateProjectById);
@@ -1721,8 +1719,6 @@ export function EditorPage({
     reusableProjectionBakeCacheRef.current.clear();
     setRouteProjectStatus('idle');
     setServerReadyProjectId(undefined);
-    setPresentedViewportProjectId(undefined);
-    setPresentationTimedOutProjectId(undefined);
     delete document.body.dataset.atomicModelRevealPainted;
     delete document.body.dataset.atomicModelRevealPaintedObjectId;
     restoredHistoryProjectIdRef.current = undefined;
@@ -1735,67 +1731,6 @@ export function EditorPage({
     setModelImportBusy(modelImportRunningRef.current);
     setModelImportProgress(undefined);
   }, [authenticatedUserId, authStatus, projectId]);
-
-  useEffect(() => {
-    const markPresentedIfCurrentProject = (objectId?: string) => {
-      const currentProject = useProjectStore
-        .getState()
-        .projects.find((item) => item.id === projectId);
-      if (
-        objectId &&
-        currentProject &&
-        !currentProject.objects.some((item) => item.id === objectId)
-      ) {
-        return;
-      }
-      setPresentedViewportProjectId(projectId);
-    };
-    const reconcilePaintedFrame = () => {
-      if (document.body.dataset.atomicModelRevealPainted !== '1') return;
-      markPresentedIfCurrentProject(document.body.dataset.atomicModelRevealPaintedObjectId);
-    };
-    const handleInitialModelFramePresented = (event: Event) => {
-      markPresentedIfCurrentProject((event as CustomEvent<{ objectId?: string }>).detail?.objectId);
-    };
-    window.addEventListener(
-      'liclick:initial-model-frame-presented',
-      handleInitialModelFramePresented,
-    );
-    const observer = new MutationObserver(reconcilePaintedFrame);
-    observer.observe(document.body, {
-      attributes: true,
-      attributeFilter: [
-        'data-atomic-model-reveal-painted',
-        'data-atomic-model-reveal-painted-object-id',
-      ],
-    });
-    reconcilePaintedFrame();
-    return () => {
-      window.removeEventListener(
-        'liclick:initial-model-frame-presented',
-        handleInitialModelFramePresented,
-      );
-      observer.disconnect();
-    };
-  }, [projectId]);
-
-  useEffect(() => {
-    if (
-      serverReadyProjectId !== projectId ||
-      routeProjectObjectCount === 0 ||
-      presentedViewportProjectId === projectId
-    ) {
-      return undefined;
-    }
-    const timer = window.setTimeout(() => {
-      setPresentationTimedOutProjectId(projectId);
-      console.warn(
-        '[Liclick 3D Texture] Model presentation timed out; releasing the project loading cover.',
-        { projectId },
-      );
-    }, EDITOR_PROJECT_VIEWPORT_PRESENTATION_TIMEOUT_MS);
-    return () => window.clearTimeout(timer);
-  }, [presentedViewportProjectId, projectId, routeProjectObjectCount, serverReadyProjectId]);
 
   useEffect(
     () => () => {
@@ -1966,11 +1901,16 @@ export function EditorPage({
     setProjectReferences(references);
   }, [projectId, references, serverReadyProjectId, setProjectReferences]);
 
+  const layerPanelOwnerRef = useRef(activeLayer?.objectId);
   useEffect(() => {
     if (!activeProjectedLayerId) return;
+    const previousOwner = layerPanelOwnerRef.current;
+    layerPanelOwnerRef.current = activeLayer?.objectId;
+    // Restoring another model's active row is not an explicit panel-open intent.
+    if (previousOwner !== activeLayer?.objectId) return;
     showPanel('layers');
     setPanelCollapsed('layers', false);
-  }, [activeProjectedLayerId, setPanelCollapsed, showPanel]);
+  }, [activeProjectedLayerId, activeLayer?.objectId, setPanelCollapsed, showPanel]);
 
   useEffect(() => {
     function handleManualSaveShortcut(event: KeyboardEvent) {
@@ -2938,6 +2878,22 @@ export function EditorPage({
       });
     }
   }
+  restoreProjectModelRef.current = restoreProjectModel;
+
+  useEffect(() => {
+    const restoreMissingObjectRuntime = () => {
+      const currentProject = useProjectStore.getState().getCurrentProject();
+      if (!currentProject || currentProject.id !== projectId) return;
+      // Undo normally republishes the retained Three.js group synchronously.
+      // Reset the dedupe key only for the fallback path where that runtime
+      // instance is no longer available and the durable source must be loaded.
+      restoredModelKeyRef.current = undefined;
+      void restoreProjectModelRef.current(currentProject);
+    };
+    window.addEventListener(OBJECT_RUNTIME_RESTORE_REQUEST_EVENT, restoreMissingObjectRuntime);
+    return () =>
+      window.removeEventListener(OBJECT_RUNTIME_RESTORE_REQUEST_EVENT, restoreMissingObjectRuntime);
+  }, [projectId]);
 
   async function persistAssetUrl(
     projectId: string,
@@ -3063,16 +3019,29 @@ export function EditorPage({
     ) => {
       try {
         if (url && isLiveProjectedCanvasUrl(url)) {
-          const liveState = getLiveProjectedCanvasState(url);
+          const assetSlotKey = [projectForSave.id, category, filename].join('|');
+          const cachedSourceAssetUrl = persistedProjectAssetBySlot.get(assetSlotKey)?.get(url);
+          const liveState = getLiveProjectedTextureSourceState(url);
+          if (!liveState) {
+            if (cachedSourceAssetUrl) return cachedSourceAssetUrl;
+            throw new Error(
+              'The live projected asset was released before it could be persisted.',
+            );
+          }
           const revisionCacheKey = liveState
             ? [projectForSave.id, category, filename, url, liveState.revision].join('|')
             : undefined;
           const cachedAssetUrl = revisionCacheKey
             ? persistedLiveProjectedAssetByRevision.get(revisionCacheKey)
             : undefined;
-          if (cachedAssetUrl) return cachedAssetUrl;
+          if (cachedAssetUrl) {
+            return rememberPersistedProjectAsset(assetSlotKey, url, cachedAssetUrl);
+          }
           const blobPromise = getLiveProjectedTextureBlob(url);
-          if (!blobPromise) return fallback;
+          if (!blobPromise) {
+            if (cachedSourceAssetUrl) return cachedSourceAssetUrl;
+            throw new Error('The live projected asset could not be encoded for persistence.');
+          }
           const result = await saveBlobAsset({
             projectId: projectForSave.id,
             category,
@@ -3089,10 +3058,14 @@ export function EditorPage({
               persistedLiveProjectedAssetByRevision.delete(oldestKey);
             }
           }
-          return result.asset.url;
+          return rememberPersistedProjectAsset(assetSlotKey, url, result.asset.url);
         }
         return await persistAssetUrl(projectForSave.id, url, category, filename);
       } catch (error) {
+        // A runtime registry URL is never a durable project asset. If its
+        // backing texture disappeared before encoding, fail this save instead
+        // of committing a project revision that cannot be reopened.
+        if (url && isLiveProjectedCanvasUrl(url)) throw error;
         console.warn(
           `[Liclick 3D Texture] Skipping unavailable optional asset ${category}/${filename}.`,
           error,
@@ -3671,6 +3644,9 @@ export function EditorPage({
       onProgress?.({ phase: 'persisting', phaseProgress: 1 }, t('modelImportSavingFile'));
       onProgress?.({ phase: 'registering', phaseProgress: 0.15 }, t('modelImportAddingToScene'));
       setImportedModel(loaded.result, object);
+      if (shouldFocusImportedModelAfterImport(useWorkspaceLayoutStore.getState().mode)) {
+        focusCameraOrbitOnObjectId(object.id);
+      }
       if (importedBaseColorUrl) {
         addUvLayer({
           name: 'Base texture',
@@ -7990,6 +7966,9 @@ export function EditorPage({
     return (
       <main className="liclick-surface grid min-h-screen place-items-center px-6 text-white">
         <section className="w-full max-w-md rounded-lg border border-white/12 bg-black/34 p-6 text-center shadow-[0_22px_70px_rgba(0,0,0,0.38)] backdrop-blur-md">
+          {routeProjectStatus !== 'missing' && (
+            <LoaderCircle className="mx-auto mb-4 h-9 w-9 animate-spin text-fuchsia-400" />
+          )}
           <div className="text-lg font-semibold">
             {routeProjectStatus === 'missing' ? t('projectLoadFailed') : t('projectLoading')}
           </div>
@@ -8008,20 +7987,6 @@ export function EditorPage({
 
   return (
     <>
-      {!isEditorProjectViewportReady({
-        routeProjectId: projectId,
-        serverReadyProjectId,
-        presentedViewportProjectId,
-        presentationTimedOutProjectId,
-        objectCount: project.objects.length,
-      }) && (
-        <main className="liclick-surface fixed inset-0 z-[220] grid place-items-center px-6 text-white">
-          <section className="w-full max-w-md rounded-lg border border-white/12 bg-black/34 p-6 text-center shadow-[0_22px_70px_rgba(0,0,0,0.38)] backdrop-blur-md">
-            <div className="text-lg font-semibold">{t('projectLoading')}</div>
-            <p className="mt-2 text-sm leading-6 text-white/54">{t('projectLoadingHelp')}</p>
-          </section>
-        </main>
-      )}
       <input
         ref={modelInputRef}
         type="file"

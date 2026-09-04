@@ -1,13 +1,82 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import * as THREE from 'three';
 import {
   getLiveProjectedCanvasState,
   getLiveProjectedCanvasTexture,
+  getLiveProjectedTexture,
   getLiveProjectedTextureBlob,
   getLiveProjectedTextureSourceState,
+  markLiveProjectedCanvasTextureUpdated,
   registerLiveProjectedCanvasTexture,
   registerLiveProjectedImageTexture,
 } from '../liveProjectedCanvasTextureRegistry.ts';
+
+test('repeated reads of a multi-layer live stack do not dirty unchanged GPU sources', () => {
+  const entries = Array.from({ length: 8 }, (_, layer) => {
+    const imageUrl = registerLiveProjectedImageTexture(`read-image-${layer}`, { width: 1024, height: 1024 }, THREE.SRGBColorSpace);
+    const maskUrls = ['raw', 'blend'].map((kind) =>
+      registerLiveProjectedCanvasTexture(`read-${kind}-${layer}`, { width: 1024, height: 1024 }),
+    );
+    return [imageUrl, ...maskUrls].map((url, index) => {
+      const colorSpace = index === 0 ? THREE.SRGBColorSpace : THREE.NoColorSpace;
+      const texture = getLiveProjectedTexture(url, colorSpace);
+      return { url, colorSpace, texture, version: texture.version, sourceVersion: texture.source.version };
+    });
+  }).flat();
+  for (let pass = 0; pass < 60; pass += 1) {
+    for (const { url, colorSpace, texture } of entries) {
+      assert.equal(getLiveProjectedTexture(url, colorSpace, { flipY: false }), texture);
+      if (texture.isCanvasTexture) assert.equal(getLiveProjectedCanvasTexture(url), texture);
+    }
+  }
+  for (const { texture, version, sourceVersion } of entries) {
+    assert.equal(texture.version, version);
+    assert.equal(texture.source.version, sourceVersion);
+  }
+});
+
+test('content writes, backing replacement and changed sampling still request uploads', async () => {
+  let encodes = 0;
+  const canvas = { width: 64, height: 64, toBlob: (callback) => { encodes += 1; callback(new Blob(['mask'])); } };
+  const url = registerLiveProjectedCanvasTexture('write-contract', canvas);
+  const texture = getLiveProjectedCanvasTexture(url);
+  let version = texture.version;
+  const png = await getLiveProjectedTextureBlob(url);
+  getLiveProjectedCanvasTexture(url);
+  assert.equal(await getLiveProjectedTextureBlob(url), png);
+  assert.equal(encodes, 1);
+  markLiveProjectedCanvasTextureUpdated(url);
+  assert.equal(texture.version, ++version);
+  assert.notEqual(await getLiveProjectedTextureBlob(url), png);
+  assert.equal(encodes, 2);
+  markLiveProjectedCanvasTextureUpdated(url, { upload: false });
+  getLiveProjectedCanvasTexture(url);
+  assert.equal(texture.version, version, 'persistence-only invalidation must not re-upload on read');
+  assert.equal(getLiveProjectedCanvasState(url).revision, 2);
+  await getLiveProjectedTextureBlob(url);
+  assert.equal(encodes, 3);
+  registerLiveProjectedCanvasTexture('write-contract', canvas);
+  assert.equal(texture.version, ++version, 'registration remains an explicit publication');
+  const replacement = { width: 128, height: 128 };
+  registerLiveProjectedCanvasTexture('write-contract', replacement);
+  assert.equal(texture.version, ++version);
+  assert.equal(texture.image, replacement);
+  assert.equal(getLiveProjectedCanvasState(url).revision, 3);
+  getLiveProjectedCanvasTexture(url, THREE.SRGBColorSpace, { flipY: true });
+  assert.equal(texture.version, ++version);
+  getLiveProjectedCanvasTexture(url, THREE.SRGBColorSpace, { flipY: true });
+  assert.equal(texture.version, version);
+  for (const [key, value] of [
+    ['wrapS', THREE.RepeatWrapping], ['wrapT', THREE.RepeatWrapping],
+    ['minFilter', THREE.NearestFilter], ['magFilter', THREE.NearestFilter], ['generateMipmaps', true],
+  ]) {
+    texture[key] = value;
+    getLiveProjectedCanvasTexture(url, THREE.SRGBColorSpace, { flipY: true });
+    assert.equal(texture.version, ++version, `repair ${key} must re-upload`);
+    assert.notEqual(texture[key], value);
+  }
+});
 
 test('keeps resident texture identity when a stable live canvas URL changes backing canvas', () => {
   const firstCanvas = { width: 64, height: 64 };

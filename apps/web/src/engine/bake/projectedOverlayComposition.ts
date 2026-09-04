@@ -1,7 +1,6 @@
 import type { Layer } from '@/types/layer';
-import { getPriorityProjectionAlpha } from '@/engine/projection/priorityProjectionComposition';
 
-export type ProjectedOverlayMode = 'feathered' | 'priority-feathered' | 'literal';
+export type ProjectedOverlayMode = 'feathered' | 'literal';
 
 /**
  * Local repaint projections are replacement patches in the live viewport.
@@ -19,12 +18,9 @@ export function isLocalRepaintProjectedLayer(
 }
 
 export function getProjectedLayerOverlayMode(
-  layer: Pick<Layer, 'type' | 'id' | 'imageUrl' | 'blendMode' | 'projectionCompositeMode'>,
+  layer: Pick<Layer, 'type' | 'id' | 'imageUrl' | 'blendMode'>,
 ): ProjectedOverlayMode | undefined {
   if (isLocalRepaintProjectedLayer(layer)) return 'literal';
-  if (layer.projectionCompositeMode === 'single-view-priority-v1') {
-    return 'priority-feathered';
-  }
   return layer.blendMode === 'overlay' ? 'feathered' : undefined;
 }
 
@@ -34,7 +30,7 @@ export function getProjectedLayerOverlayMode(
  * can therefore be collapsed without crossing a feathered overlay boundary.
  */
 export function getBatchedLiteralOverlaySuffix<
-  T extends Pick<Layer, 'type' | 'id' | 'imageUrl' | 'blendMode' | 'projectionCompositeMode'>,
+  T extends Pick<Layer, 'type' | 'id' | 'imageUrl' | 'blendMode'>,
 >(layers: readonly T[]) {
   const overlays = layers.filter((layer) => getProjectedLayerOverlayMode(layer));
   let suffixStart = overlays.length;
@@ -60,9 +56,6 @@ export function getProjectionOverlayAlpha(
 ) {
   const coverage = Math.max(0, Math.min(1, layerCoverage));
   if (mode === 'literal') return coverage;
-  if (mode === 'priority-feathered') {
-    return getPriorityProjectionAlpha(coverage, quality);
-  }
   const qualitySignal = Math.max(quality, coverage * 0.25);
   const t = Math.max(0, Math.min(1, qualitySignal / 0.15));
   const qualityFade = t * t * (3 - 2 * t);

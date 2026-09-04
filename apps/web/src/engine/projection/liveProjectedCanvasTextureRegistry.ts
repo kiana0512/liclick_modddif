@@ -30,7 +30,20 @@ function configureTexture(
   texture: THREE.Texture,
   colorSpace: THREE.ColorSpace,
   flipY: boolean,
+  publish = false,
 ) {
+  // Resolving a resident binding is not a pixel write. Re-dirtying it here
+  // schedules unchanged source/mask uploads on overlay and stack rebinds.
+  if (
+    !publish &&
+    texture.colorSpace === colorSpace &&
+    texture.flipY === flipY &&
+    texture.wrapS === THREE.ClampToEdgeWrapping &&
+    texture.wrapT === THREE.ClampToEdgeWrapping &&
+    texture.minFilter === THREE.LinearFilter &&
+    texture.magFilter === THREE.LinearFilter &&
+    !texture.generateMipmaps
+  ) return;
   texture.colorSpace = colorSpace;
   texture.flipY = flipY;
   texture.wrapS = THREE.ClampToEdgeWrapping;
@@ -72,14 +85,14 @@ export function registerLiveProjectedCanvasTexture(
       existing.encodedPng = undefined;
     }
     existing.flipY = options.flipY ?? existing.flipY;
-    configureTexture(existing.texture, colorSpace, existing.flipY);
+    configureTexture(existing.texture, colorSpace, existing.flipY, true);
     return url;
   }
   liveImageTextures.get(url)?.texture.dispose();
   liveImageTextures.delete(url);
   const texture = new THREE.CanvasTexture(canvas);
   const flipY = options.flipY ?? false;
-  configureTexture(texture, colorSpace, flipY);
+  configureTexture(texture, colorSpace, flipY, true);
   liveCanvasTextures.set(url, {
     canvas,
     texture,
@@ -103,7 +116,7 @@ export function registerLiveProjectedImageTexture(
   liveCanvasTextures.delete(url);
   const texture = new THREE.Texture(image);
   const flipY = options.flipY ?? false;
-  configureTexture(texture, colorSpace, flipY);
+  configureTexture(texture, colorSpace, flipY, true);
   liveImageTextures.set(url, {
     image,
     texture,

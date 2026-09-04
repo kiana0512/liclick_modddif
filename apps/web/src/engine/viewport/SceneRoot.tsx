@@ -1,5 +1,5 @@
 import { useFrame, useThree } from '@react-three/fiber';
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three';
 import {
   createDisplayModeMaterial,
@@ -71,13 +71,12 @@ import { createId } from '@/utils/id';
 import { Grid } from './Grid';
 import { resolveLocalRepaintPreviewActivation } from './localRepaintPreviewActivation';
 import { mergeAuthoritativeLocalRepaintLayers } from './projectedPreviewLayerAuthority';
-import {
-  getOrderedLocalRepaintPreviewLayer,
-  mergeOrderedLocalRepaintPreview,
-  shouldMuteLocalRepaintResidentLayer,
-} from '@/engine/localRepaint/orderedPreviewComposition';
+import { shouldMuteLocalRepaintResidentLayer } from '@/engine/localRepaint/orderedPreviewComposition';
 import { ObjectTransformControls } from './ObjectTransformControls';
-import { isViewportInteractionBusy as isSharedViewportInteractionBusy } from './viewportInteractionState';
+import {
+  isViewportInteractionBusy as isSharedViewportInteractionBusy,
+  markViewportInteractionActivity,
+} from './viewportInteractionState';
 import { getTransientLocalRepaintLayerId } from './localRepaintResidentHandoff';
 import {
   createWorkerBackedPreviewTexture,
@@ -202,6 +201,7 @@ function shouldUseProjectionCaptureMask(
   // remain active even when generated layers use depth for capture visibility;
   // otherwise ending the live eraser preview restores the erased pixels.
   if (layer.maskSpace === 'uv') return true;
+  if (layer.projectionCoverageMode === 'capture-mask') return true;
   if (localRepaint || layer.projectionVisibilityPolicy === 'surface-locked-v1') return true;
   if (
     depthUrl &&
@@ -216,11 +216,7 @@ function resolveProjectionMask(layer: Layer, capture: Capture | undefined) {
   if (layer.maskUrl) {
     return { maskUrl: layer.maskUrl, maskSpace: layer.maskSpace };
   }
-  if (
-    layer.projectionCompositeMode === 'single-view-priority-v1' &&
-    layer.projectionVisibilityPolicy === 'surface-locked-v1' &&
-    capture?.maskUrl
-  ) {
+  if (layer.projectionCoverageMode === 'capture-mask' && capture?.maskUrl) {
     return { maskUrl: capture.maskUrl, maskSpace: 'projection' as const };
   }
   return { maskUrl: undefined, maskSpace: layer.maskSpace };
@@ -268,7 +264,6 @@ function layerPreviewSignature(layer: Layer, relativeOrder = layer.order) {
     layer.minimumProjectionFacing ?? 0,
     layer.projectionVisibilityPolicy ?? '',
     layer.projectionCoverageMode ?? '',
-    layer.projectionCompositeMode ?? '',
     layer.contentRevision ?? 0,
     layer.needsRebake ? 1 : 0,
     stableNumberListSignature(layer.objectMatrixWorld),
@@ -342,12 +337,7 @@ function isUnderlayProjectionPatch(layer: Layer) {
 
 function getProjectionCompositeRole(layer: Layer): 'normal' | 'overlay' | 'underlay' {
   if (isUnderlayProjectionPatch(layer)) return 'underlay';
-  if (
-    isOverlayProjectionPatch(layer) ||
-    layer.projectionCompositeMode === 'single-view-priority-v1'
-  ) {
-    return 'overlay';
-  }
+  if (isOverlayProjectionPatch(layer)) return 'overlay';
   return 'normal';
 }
 
@@ -467,7 +457,6 @@ function toProjectionLayerDisplayInput(layer: Layer): ProjectionLayerDisplayInpu
     // patches. Preserve that internal mode during every uniform-only refresh.
     blendMode: isOverlayProjectionPatch(layer) ? 'overlay' : layer.blendMode,
     compositeRole: getProjectionCompositeRole(layer),
-    priorityOverlay: layer.projectionCompositeMode === 'single-view-priority-v1',
     visible: layer.visible,
     hue: (layer.adjustments?.hue ?? 0) / 100,
     saturation: (layer.adjustments?.saturation ?? 0) / 100,
@@ -1003,7 +992,7 @@ const selectionBoundsCache = new WeakMap<
   { matrixWorld: THREE.Matrix4; bounds: THREE.Box3 }
 >();
 
-function SelectionBoundsCorners({ object }: { object: THREE.Object3D }) {
+function SelectionBoundsCorners({ object, objectId }: { object: THREE.Object3D; objectId: string }) {
   const lastMatrixWorldRef = useRef(
     new THREE.Matrix4().set(Number.NaN, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1),
   );
@@ -1021,6 +1010,7 @@ function SelectionBoundsCorners({ object }: { object: THREE.Object3D }) {
       toneMapped: false,
     });
     const lines = new THREE.LineSegments(geometry, material);
+    lines.visible = false;
     lines.name = 'Liclick Selection Bounds Corners';
     lines.renderOrder = 82;
     lines.frustumCulled = false;
@@ -1089,7 +1079,6 @@ function SelectionBoundsCorners({ object }: { object: THREE.Object3D }) {
   }, [object]);
 
   useEffect(() => {
-    indicator.update();
     return () => {
       indicator.lines.removeFromParent();
       indicator.geometry.dispose();
@@ -1098,10 +1087,23 @@ function SelectionBoundsCorners({ object }: { object: THREE.Object3D }) {
   }, [indicator]);
 
   useFrame(() => {
+    // React can still be reconciling the previous model when this frame runs.
+    // Presentation must use the current selection, never a captured prop or a
+    // visibility snapshot restored by an earlier offscreen capture.
+    if (
+      useSceneStore.getState().selectedObjectId !== objectId ||
+      useWorkspaceLayoutStore.getState().mode !== 'scene' ||
+      !object.visible
+    ) {
+      indicator.lines.visible = false;
+      return;
+    }
     // Camera motion cannot change the model root. Recurse through children only
-    // when a transform tool actually changed this root matrix.
+    // when this indicator is activated or a transform changed the root matrix.
     object.updateWorldMatrix(true, false);
-    if (!lastMatrixWorldRef.current.equals(object.matrixWorld)) indicator.update();
+    if (!indicator.lines.visible || !lastMatrixWorldRef.current.equals(object.matrixWorld)) {
+      indicator.update();
+    }
   });
 
   return <primitive object={indicator.lines} />;
@@ -1245,7 +1247,56 @@ function TopologyWireframeOverlay({
   return <primitive object={overlay.group} />;
 }
 
-function ImportedModel({
+function ModelRestoreLoadingIndicator({ object }: { object: THREE.Object3D }) {
+  const billboardRef = useRef<THREE.Group>(null);
+  const spinnerRef = useRef<THREE.Group>(null);
+  const frame = useMemo(() => {
+    object.updateWorldMatrix(true, true);
+    const bounds = new THREE.Box3().setFromObject(object);
+    const center = bounds.isEmpty()
+      ? object.getWorldPosition(new THREE.Vector3())
+      : bounds.getCenter(new THREE.Vector3());
+    const size = bounds.isEmpty() ? 1 : bounds.getSize(new THREE.Vector3()).length();
+    return { center, radius: THREE.MathUtils.clamp(size * 0.055, 0.08, 0.28) };
+  }, [object]);
+
+  useFrame(({ camera }, delta) => {
+    if (billboardRef.current) billboardRef.current.quaternion.copy(camera.quaternion);
+    if (!spinnerRef.current) return;
+    spinnerRef.current.rotation.z -= delta * 2.8;
+  });
+
+  return (
+    <group ref={billboardRef} position={frame.center} renderOrder={1000}>
+      <group ref={spinnerRef}>
+        <mesh>
+          <torusGeometry args={[frame.radius, frame.radius * 0.13, 8, 48, Math.PI * 1.55]} />
+          <meshBasicMaterial
+            color="#e24acb"
+            depthTest={false}
+            depthWrite={false}
+            toneMapped={false}
+            transparent
+            opacity={0.95}
+          />
+        </mesh>
+        <mesh>
+          <circleGeometry args={[frame.radius * 0.12, 20]} />
+          <meshBasicMaterial
+            color="#ffffff"
+            depthTest={false}
+            depthWrite={false}
+            toneMapped={false}
+            transparent
+            opacity={0.9}
+          />
+        </mesh>
+      </group>
+    </group>
+  );
+}
+
+const ImportedModel = memo(function ImportedModel({
   importedModel,
   onSelect,
   showSelectionGlow,
@@ -1258,7 +1309,13 @@ function ImportedModel({
 }) {
   const { gl, invalidate, camera } = useThree();
   const displayMode = useSceneStore((state) => state.displayMode);
-  const selectedObjectId = useSceneStore((state) => state.selectedObjectId);
+  // Subscribe to this model's selection bit instead of the global object id.
+  // With nine models mounted in scene view, the string subscription rendered
+  // every complete material pipeline for each click. Only the old and new
+  // selected models need to reconcile selection-owned background preparation.
+  const selected = useSceneStore(
+    (state) => state.selectedObjectId === importedModel.objectId,
+  );
   const objectVisible = useSceneStore(
     (state) =>
       state.objects.find((object) => object.id === importedModel.objectId)?.visible ?? true,
@@ -1270,9 +1327,11 @@ function ImportedModel({
   const pbrLightAzimuth = useSettingsStore((state) => state.pbrLightAzimuth);
   const resolution = useSettingsStore((state) => state.resolution);
   const localRepaintPreviewLayer = useSceneStore((state) => state.localRepaintPreviewLayer);
-  const localRepaintLiveFeedbackRequested = useSceneStore(
-    (state) => state.paintTool === 'inpaint-apply',
-  );
+  const localRepaintPaintTool = useSceneStore((state) => state.paintTool);
+  const activeLayerId = useLayerStore((state) => state.activeProjectedLayerId);
+  const localRepaintLiveFeedbackRequested =
+    localRepaintPaintTool === 'inpaint-apply' ||
+    (localRepaintPaintTool === 'eraser' && localRepaintPreviewLayer?.id === activeLayerId);
   const transientWhitePresentationObjectId = useSceneStore(
     (state) => state.transientWhitePresentationObjectId,
   );
@@ -1362,10 +1421,6 @@ function ImportedModel({
   // mute it by uniform while the overlay is active. Removing/reinserting that
   // row rebuilt every 4K array on each task boundary; a resident zero-opacity
   // binding hands off in one frame and preserves the exact stored pixels.
-  const visibleLocalRepaintPreviewLayer = useMemo(
-    () => getOrderedLocalRepaintPreviewLayer(layers, localRepaintPreviewLayer),
-    [layers, localRepaintPreviewLayer],
-  );
   const rendererOwnedLocalRepaintPreviewLayerId = useMemo(
     () =>
       localRepaintPreviewLayer &&
@@ -1379,7 +1434,6 @@ function ImportedModel({
         : undefined,
     [layers, localRepaintLiveFeedbackRequested, localRepaintPreviewLayer],
   );
-  const activeLayerId = useLayerStore((state) => state.activeProjectedLayerId);
   const project = useProjectStore((state) =>
     state.currentProjectId
       ? state.projects.find((item) => item.id === state.currentProjectId)
@@ -1398,20 +1452,20 @@ function ImportedModel({
   );
   const initialMaterialPresentationReadyForGroup = presentedMaterialGroup === importedModel.group;
   const initialMaterialPresentationVisibleForGroup =
-    // With no authored texture, the white membrane is the final presentation,
-    // not a temporary placeholder. Keep the replacement Group visible in the
-    // same React commit so progressive restore cannot produce a one-frame wipe.
-    !hasAuthoritativeVisibleTextureLayer ||
-    importedModel.restoreStage === 'bounds' ||
-    importedModel.group.userData.liclickRestoreOutlinePrepared === true ||
-    initialMaterialPresentationReadyForGroup;
+    // Imported models remain immediate. Project restoration, however, must not
+    // expose bounds, flat outlines or a 512px proxy before the exact material
+    // is ready. A textureless full-stage model may show its final white material.
+    !importedModel.restoreStage ||
+    (importedModel.restoreStage === 'full' &&
+      (!hasAuthoritativeVisibleTextureLayer || initialMaterialPresentationReadyForGroup));
   const revealInitialMaterialPresentation = useCallback(() => {
+    if (importedModel.restoreStage && importedModel.restoreStage !== 'full') return;
     // Progressive restore replaces the Group while retaining the same object id.
     // Store the exact published Group instead of a boolean: writing `true` again
     // after a replacement is a React no-op and leaves the new white membrane
     // permanently hidden.
     setPresentedMaterialGroup(importedModel.group);
-  }, [importedModel.group]);
+  }, [importedModel.group, importedModel.restoreStage]);
   useEffect(() => {
     document.body.dataset.atomicModelRevealObjectId = importedModel.objectId;
     document.body.dataset.atomicModelRevealStage = importedModel.restoreStage ?? 'imported';
@@ -1476,7 +1530,7 @@ function ImportedModel({
   const acquiredProjectedProgramSignaturesRef = useRef(new Set<string>());
   const projectedPreviewInteractionRef = useRef({ pointerDown: false, lastMovedAt: 0 });
   useEffect(() => {
-    if (!workspaceVisible || selectedObjectId !== importedModel.objectId) return undefined;
+    if (!workspaceVisible || !selected) return undefined;
     let cancelled = false;
     const prepare = async () => {
       await waitForProjectionVisibilityIdle(0);
@@ -1496,7 +1550,7 @@ function ImportedModel({
     return () => {
       cancelled = true;
     };
-  }, [gl, importedModel.objectId, selectedObjectId, workspaceVisible]);
+  }, [gl, importedModel.objectId, selected, workspaceVisible]);
   useEffect(() => {
     // Restore the saved projection stack before rebuilding runtime depth and
     // normal textures. Starting both jobs together changes the material
@@ -1504,16 +1558,13 @@ function ImportedModel({
     // repaint in its disabled preparation state.
     if (
       !workspaceVisible ||
-      selectedObjectId !== importedModel.objectId ||
+      !selected ||
       !texturedRestoreReady ||
       !initialProjectedMaterialReady
     )
       return undefined;
     let cancelled = false;
-    const candidates = [
-      ...layers,
-      ...(visibleLocalRepaintPreviewLayer ? [visibleLocalRepaintPreviewLayer] : []),
-    ].filter((layer) => {
+    const candidates = layers.filter((layer) => {
       if (
         layer.type !== 'projected' ||
         !layer.visible ||
@@ -1622,8 +1673,7 @@ function ImportedModel({
     initialProjectedMaterialReady,
     layers,
     texturedRestoreReady,
-    visibleLocalRepaintPreviewLayer,
-    selectedObjectId,
+    selected,
     workspaceVisible,
   ]);
   const importedObjectId = importedModel?.objectId;
@@ -1664,21 +1714,13 @@ function ImportedModel({
       .map((layer) =>
         applyLiveProjectedMaskBinding(layer, liveSurfacePaintPreview, importedObjectId),
       );
-    if (
-      !visibleLocalRepaintPreviewLayer?.imageUrl ||
-      !visibleLocalRepaintPreviewLayer.camera ||
-      (visibleLocalRepaintPreviewLayer.objectId &&
-        visibleLocalRepaintPreviewLayer.objectId !== importedObjectId)
-    )
-      return storedLayers;
-    return mergeOrderedLocalRepaintPreview(storedLayers, visibleLocalRepaintPreviewLayer);
+    return storedLayers;
   }, [
     importedObjectId,
     layers,
     liveSurfacePaintPreview,
     texturedRestoreReady,
     visibleMergedUvBoundaryOrder,
-    visibleLocalRepaintPreviewLayer,
   ]);
   const visibleProjectedLayerSignature = useMemo(
     () => layerStackPreviewSignature(visibleProjectedLayers),
@@ -1720,14 +1762,7 @@ function ImportedModel({
       .map((layer) =>
         applyLiveProjectedMaskBinding(layer, liveSurfacePaintPreview, importedObjectId),
       );
-    if (
-      !visibleLocalRepaintPreviewLayer?.imageUrl ||
-      !visibleLocalRepaintPreviewLayer.camera ||
-      (visibleLocalRepaintPreviewLayer.objectId &&
-        visibleLocalRepaintPreviewLayer.objectId !== importedObjectId)
-    )
-      return storedLayers;
-    return mergeOrderedLocalRepaintPreview(storedLayers, visibleLocalRepaintPreviewLayer);
+    return storedLayers;
   }, [
     importedObjectId,
     layers,
@@ -1735,7 +1770,6 @@ function ImportedModel({
     transientLocalRepaintPreviewLayerId,
     texturedRestoreReady,
     visibleMergedUvBoundaryOrder,
-    visibleLocalRepaintPreviewLayer,
   ]);
   const previewProjectedLayerSignature = useMemo(
     () => layerStackPreviewSignature(previewProjectedLayers),
@@ -1764,22 +1798,13 @@ function ImportedModel({
       .map((layer) =>
         applyLiveProjectedMaskBinding(layer, liveSurfacePaintPreview, importedObjectId),
       );
-    if (
-      !visibleLocalRepaintPreviewLayer?.imageUrl ||
-      !visibleLocalRepaintPreviewLayer.camera ||
-      (visibleLocalRepaintPreviewLayer.objectId &&
-        visibleLocalRepaintPreviewLayer.objectId !== importedObjectId)
-    ) {
-      return residentLayers;
-    }
-    return mergeOrderedLocalRepaintPreview(residentLayers, visibleLocalRepaintPreviewLayer);
+    return residentLayers;
   }, [
     importedObjectId,
     layers,
     liveSurfacePaintPreview,
     transientLocalRepaintPreviewLayerId,
     visibleMergedUvBoundaryOrder,
-    visibleLocalRepaintPreviewLayer,
   ]);
   const projectedProgramWarmupInputs = useMemo<ProjectionLayerStackInput['layers']>(
     () =>
@@ -1814,7 +1839,6 @@ function ImportedModel({
           strength: layer.strength ?? 1,
           blendMode: isOverlayProjectionPatch(layer) ? 'overlay' : layer.blendMode,
           compositeRole: getProjectionCompositeRole(layer),
-          priorityOverlay: layer.projectionCompositeMode === 'single-view-priority-v1',
           visible:
             layer.visible &&
             layer.id !== rendererOwnedLocalRepaintPreviewLayerId &&
@@ -1884,7 +1908,6 @@ function ImportedModel({
           // as another base projection, including legacy saved repaint layers.
           blendMode: isOverlayProjectionPatch(layer) ? 'overlay' : layer.blendMode,
           compositeRole: getProjectionCompositeRole(layer),
-          priorityOverlay: layer.projectionCompositeMode === 'single-view-priority-v1',
           // Keep the projection visible while the exact runtime visibility pass
           // is preparing. The stored depth (when present) remains a valid fallback.
           visible:
@@ -1957,12 +1980,6 @@ function ImportedModel({
             layer.id !== mutedPreviewLayerId &&
             isProjectedLayerAboveMergedUv(layer, currentMergedUvBoundaryOrder),
         }));
-      if (
-        visibleLocalRepaintPreviewLayer?.type === 'projected' &&
-        !displayLayers.some((layer) => layer.layerId === visibleLocalRepaintPreviewLayer.id)
-      ) {
-        displayLayers.push(toProjectionLayerDisplayInput(visibleLocalRepaintPreviewLayer));
-      }
       const currentDisplayMode = useSceneStore.getState().displayMode;
       const currentSettings = useSettingsStore.getState();
       const previousLayerVisibilityById = new Map(
@@ -2149,7 +2166,7 @@ function ImportedModel({
     return () => {
       unsubscribe();
     };
-  }, [gl, importedModel, invalidate, localRepaintPreviewLayerId, visibleLocalRepaintPreviewLayer]);
+  }, [gl, importedModel, invalidate, localRepaintPreviewLayerId]);
   useEffect(() => {
     // Display-mode buttons are latency-sensitive too. React effects can land a
     // frame or two after the Zustand write under a busy 4K viewport, leaving
@@ -2180,12 +2197,6 @@ function ImportedModel({
             ) &&
             isProjectedLayerAboveMergedUv(layer, currentMergedUvBoundaryOrder),
         }));
-      if (
-        visibleLocalRepaintPreviewLayer?.type === 'projected' &&
-        !displayLayers.some((layer) => layer.layerId === visibleLocalRepaintPreviewLayer.id)
-      ) {
-        displayLayers.push(toProjectionLayerDisplayInput(visibleLocalRepaintPreviewLayer));
-      }
       const settings = useSettingsStore.getState();
       syncProjectedLayerMaterialDisplayStateInObject(
         importedModel.group,
@@ -2204,7 +2215,7 @@ function ImportedModel({
       invalidate();
     });
     return unsubscribe;
-  }, [importedModel, invalidate, visibleLocalRepaintPreviewLayer]);
+  }, [importedModel, invalidate]);
   useLayoutEffect(() => {
     // Changing repaint generations changes only SceneStore renderer ownership;
     // LayerStore itself may be unchanged. Re-publish every resident projected
@@ -2496,25 +2507,11 @@ function ImportedModel({
     (textureArrayCompositionFallbackRequired && !canUseDirectVisibleStackAfterArrayFailure),
   );
   const activeProjectedPreviewInputs = useMemo(() => {
-    // A live repaint is the latency-sensitive foreground patch. Keep it on a
-    // dedicated sampler and out of the packed background texture array even
-    // before its persistent layer row exists. Otherwise the first stop event
-    // changes the active row, repacks 14 background slices and produces a
-    // 200ms+ frame. The direct path also samples the native generated image
-    // instead of the array's memory-budget preview size.
-    if (visibleLocalRepaintPreviewLayer?.visible) {
-      const liveRepaintIndex = previewProjectionInputs.findIndex(
-        (layer) => layer.layerId === visibleLocalRepaintPreviewLayer.id,
-      );
-      if (liveRepaintIndex >= 0) {
-        return previewProjectionInputs.slice(liveRepaintIndex).filter((layer) => layer.visible);
-      }
-    }
     const active = previewProjectionInputs.find(
       (layer) => layer.layerId === activeLayerId && layer.visible,
     );
     return active ? [active] : [];
-  }, [activeLayerId, previewProjectionInputs, visibleLocalRepaintPreviewLayer]);
+  }, [activeLayerId, previewProjectionInputs]);
   const progressiveBackgroundInputs = useMemo(() => {
     if (activeProjectedPreviewInputs.length === 0) return previewProjectionInputs;
     const activeIds = new Set(activeProjectedPreviewInputs.map((layer) => layer.layerId));
@@ -2543,7 +2540,6 @@ function ImportedModel({
             layer.minimumProjectionFacing ?? 0,
             layer.projectionVisibilityPolicy ?? 'standard',
             layer.compositeRole ?? 'normal',
-            layer.priorityOverlay ? 1 : 0,
             layer.hue,
             layer.saturation,
             layer.lightness,
@@ -3239,7 +3235,6 @@ function ImportedModel({
             layer.useNormalCheck ? 1 : 0,
             layer.projectionVisibilityPolicy ?? 'standard',
             layer.compositeRole ?? 'normal',
-            layer.priorityOverlay ? 1 : 0,
           ].join('~'),
         )
         .join('|'),
@@ -3256,7 +3251,6 @@ function ImportedModel({
             layer.useNormalCheck ? 1 : 0,
             layer.projectionVisibilityPolicy ?? 'standard',
             layer.compositeRole ?? 'normal',
-            layer.priorityOverlay ? 1 : 0,
           ].join('~'),
         )
         .join('|'),
@@ -3296,8 +3290,9 @@ function ImportedModel({
   useEffect(() => {
     if (
       !workspaceVisible ||
-      selectedObjectId !== importedModel.objectId ||
+      !selected ||
       typeof gl.compileAsync !== 'function' ||
+      importedModel.restoreStage !== 'outline' ||
       projectedProgramWarmupInputs.length <= 1 ||
       !projectedProgramWarmupSignature
     ) {
@@ -3392,10 +3387,7 @@ function ImportedModel({
         compileMesh.removeFromParent();
         compileGeometry.dispose();
       });
-    sharedWarmups.set(
-      sharedWarmupSignature,
-      sharedWarmupPromise.then(() => undefined),
-    );
+    sharedWarmups.set(sharedWarmupSignature, sharedWarmupPromise);
     void sharedWarmupPromise;
   }, [
     camera,
@@ -3409,7 +3401,7 @@ function ImportedModel({
     progressivePreviewBase?.renderedColorMaskTexture,
     projectedProgramWarmupSignature,
     projectedProgramWarmupStructureSignature,
-    selectedObjectId,
+    selected,
     useProjectedProgramWarmupTextureArrays,
     workspaceVisible,
   ]);
@@ -3429,7 +3421,7 @@ function ImportedModel({
   useEffect(() => {
     if (
       !workspaceVisible ||
-      selectedObjectId !== importedModel.objectId ||
+      !selected ||
       importedModel.restoreStage !== 'outline' ||
       !useProjectedProgramWarmupTextureArrays ||
       projectedProgramWarmupInputs.length <= 1 ||
@@ -3566,7 +3558,7 @@ function ImportedModel({
     previewLighting,
     projectedProgramWarmupInputs,
     projectedProgramWarmupTextureArrayStructureSignature,
-    selectedObjectId,
+    selected,
     textureArrayCompositionFallbackRequired,
     topUvProjectedOverlayInput,
     useProjectedProgramWarmupTextureArrays,
@@ -3692,6 +3684,8 @@ function ImportedModel({
       // into a 400ms+ main-thread driver stall. Preserve exact output and wait
       // for the already-started upload batch to release the renderer first.
       await waitForPreviewTextureUploadsIdle(gl, () => cancelled);
+      // Join any cold-restore anchor before polling this renderer's program.
+      await Promise.all(getProjectedProgramWarmupMap(gl).values());
       await waitForViewportInteractionIdle();
       if (cancelled) return false;
       const compileScene = new THREE.Scene();
@@ -3822,7 +3816,6 @@ function ImportedModel({
       if (model.restoreStage === 'bounds') return;
       if (model.restoreStage === 'outline') {
         if (model.group.userData.liclickRestoreOutlinePrepared === true) {
-          revealInitialMaterialPresentation();
           return;
         }
         const outlineMaterial = createFlatPreviewMaterial(
@@ -3851,12 +3844,9 @@ function ImportedModel({
           processedLayerIds: [],
           missingLayerIds: [],
         };
-        // Never leave the viewport empty while the authoritative colour stack
-        // is decoding. The parsed geometry is already exact at this stage, so
-        // present one canonical flat material and keep it resident until the
-        // complete UV/projected material replaces it. Bounds placeholders and
-        // partial one-camera projections remain gated out.
-        revealInitialMaterialPresentation();
+        // Keep the exact geometry hidden while its authoritative colour stack
+        // is decoding. This model's loading indicator owns presentation until
+        // the full material is resident.
         return;
       }
       if (
@@ -3866,10 +3856,7 @@ function ImportedModel({
         !loadedContentAwareUnderlayTexture &&
         !liveTopUvTexture
       ) {
-        // Keep the prepared neutral material until a complete proxy sampler is
-        // resident. Publishing an empty PBR/UV material here caused the dark
-        // flash seen between the white membrane and the first texture frame.
-        revealInitialMaterialPresentation();
+        // A proxy is an internal warm-up stage, not user-visible project state.
         return;
       }
       const selected = false;
@@ -4640,6 +4627,9 @@ function ImportedModel({
                   preferTextureArrays: useProjectedTextureArrayMaterial,
                 },
               );
+              // Direct stacks also need a linked program before the visible
+              // render loop can acquire them; arrays already wait above.
+              if (sharedProjectedMaterial) await precompileProjectedMaterial(sharedProjectedMaterial);
             }
           } catch (error) {
             if (
@@ -5058,7 +5048,7 @@ function ImportedModel({
       const activation = resolveLocalRepaintPreviewActivation({
         consumedKey: activatedLocalRepaintPreviewKeyRef.current,
         paintTool: sceneState.paintTool,
-        preview: visibleLocalRepaintPreviewLayer,
+        preview: undefined,
         currentPreview: sceneState.localRepaintPreviewLayer,
         currentSource: sceneState.localRepaintProjectionSource,
         processedLayerIds:
@@ -5136,7 +5126,6 @@ function ImportedModel({
     topUvProjectedOverlayInput,
     uvOverlayOpacity,
     visibleMergedUvBoundaryOrder,
-    visibleLocalRepaintPreviewLayer,
     visibleStackHasBakedPreview,
     workspaceVisible,
   ]);
@@ -5158,15 +5147,20 @@ function ImportedModel({
           onSelect(importedModel.objectId);
         }}
       />
+      {!initialMaterialPresentationVisibleForGroup && (
+        <ModelRestoreLoadingIndicator object={importedModel.group} />
+      )}
       {initialMaterialPresentationReadyForGroup && importedModel.restoreStage !== 'bounds' && (
         <TopologyWireframeOverlay object={importedModel.group} visible={displayMode === 'wire'} />
       )}
-      {texturedRestoreReady && showSelectionGlow && selectedObjectId === importedModel.objectId && (
-        <SelectionBoundsCorners object={importedModel.group} />
+      {/* Keep each indicator resident: selecting another model only changes
+          visibility, so the last shared line program is not disposed/relinked. */}
+      {texturedRestoreReady && showSelectionGlow && (
+        <SelectionBoundsCorners object={importedModel.group} objectId={importedModel.objectId} />
       )}
     </>
   );
-}
+});
 
 export function SceneRoot() {
   const importedModels = useSceneStore((state) => state.importedModels);
@@ -5215,6 +5209,7 @@ export function SceneRoot() {
   );
   const selectImportedObject = useCallback(
     (objectId: string) => {
+      markViewportInteractionActivity();
       selectObject(objectId);
       scheduleCurrentProjectActiveObjectPersistence(objectId);
     },
@@ -5225,6 +5220,7 @@ export function SceneRoot() {
     // viewport click made the visibility filter remove every model and looked
     // like a failed load. Scene review still supports deliberate deselection.
     if (workspaceMode === 'texture') return;
+    markViewportInteractionActivity();
     selectObject(undefined);
   }, [selectObject, workspaceMode]);
 

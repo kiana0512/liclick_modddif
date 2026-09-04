@@ -145,13 +145,14 @@ function createObjectStorageSimulator() {
   });
 }
 
-function startMockIdentityProvider(port) {
+function startMockIdentityProvider(port, ssoCallbackUrl) {
   const child = spawn(process.execPath, [path.join(repoRoot, 'scripts/mock-idaas-server.mjs')], {
     cwd: repoRoot,
     env: {
       ...process.env,
       MOCK_IDAAS_PORT: String(port),
       MOCK_IDAAS_REQUIRE_JSON_TOKEN_REQUEST: 'true',
+      MOCK_IDAAS_SSO_CALLBACK_URL: ssoCallbackUrl,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
     windowsHide: true,
@@ -296,21 +297,31 @@ async function completeSimulatedOAuth(publicUrl, identityEndpoint) {
   const cookie = cookiePair(callback.headers.get('set-cookie'), 'liclick_3d_session');
   const bindingSsoUrl = callback.headers.get('location');
   assert.ok(bindingSsoUrl);
+  const bindingSsoRequest = new URL(bindingSsoUrl);
+  assert.ok(bindingSsoRequest.searchParams.get('target_url'));
+  assert.equal(bindingSsoRequest.searchParams.has('redirect_uri'), false);
+  assert.equal(bindingSsoRequest.searchParams.has('state'), false);
   const bindingSso = await fetch(bindingSsoUrl, { redirect: 'manual' });
   assert.equal(bindingSso.status, 302);
   const bindingCallbackWithFragment = bindingSso.headers.get('location');
   assert.ok(bindingCallbackWithFragment);
   const bindingCallbackUrl = new URL(bindingCallbackWithFragment);
-  const idToken = new URLSearchParams(bindingCallbackUrl.hash.slice(1)).get('id_token');
+  const idToken =
+    bindingCallbackUrl.searchParams.get('id_token') ||
+    new URLSearchParams(bindingCallbackUrl.hash.slice(1)).get('id_token');
+  const targetUrl = bindingCallbackUrl.searchParams.get('target_url');
   assert.ok(idToken);
-  bindingCallbackUrl.hash = '';
+  assert.ok(targetUrl);
   const bindingPage = await fetch(bindingCallbackUrl, { headers: { cookie } });
   assert.equal(bindingPage.status, 200);
   assert.match(await bindingPage.text(), /正在关联莉刻账号/);
-  const bindingResult = await jsonRequest(bindingCallbackUrl, {
+  const bindingPostUrl = new URL(bindingCallbackUrl);
+  bindingPostUrl.search = '';
+  bindingPostUrl.hash = '';
+  const bindingResult = await jsonRequest(bindingPostUrl, {
     method: 'POST',
     headers: { cookie, 'content-type': 'application/json' },
-    body: JSON.stringify({ idToken }),
+    body: JSON.stringify({ idToken, targetUrl }),
   });
   assert.equal(bindingResult.response.status, 200);
   assert.equal(bindingResult.payload.status, 'bound');
@@ -331,10 +342,14 @@ assert.ok(objectAddress && typeof objectAddress === 'object');
 const objectStorageEndpoint = `http://127.0.0.1:${objectAddress.port}`;
 const identityPort = await reservePort();
 const identityEndpoint = `http://127.0.0.1:${identityPort}`;
-const identityProvider = startMockIdentityProvider(identityPort);
+const cloudPort = await reservePort();
+const simulatedPublicUrl = `http://127.0.0.1:${cloudPort}${publicPath}`;
+const identityProvider = startMockIdentityProvider(
+  identityPort,
+  `${simulatedPublicUrl}/api/liclick/account-binding/callback`,
+);
 await waitForJson(`${identityEndpoint}/health`, 'Simulated IDaaS');
 const atlasRuntimePath = await createMockAtlasRuntime();
-const cloudPort = await reservePort();
 let cloud = startCloudServer(cloudPort, objectStorageEndpoint, identityEndpoint, atlasRuntimePath);
 
 try {

@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
+import { setImmediate } from 'node:timers';
+import ts from 'typescript';
+import * as THREE from 'three';
 
 const materialSource = await readFile(
   new URL('../src/engine/projection/ProjectedLayerMaterial.ts', import.meta.url),
@@ -32,6 +35,133 @@ const objectsPanelSource = await readFile(
 const projectStoreSource = await readFile(
   new URL('../src/stores/projectStore.ts', import.meta.url),
   'utf8',
+);
+const sceneStoreSource = await readFile(
+  new URL('../src/stores/sceneStore.ts', import.meta.url),
+  'utf8',
+);
+
+// Execute the production cold-warmup gate and promise registration.
+const sceneAst = ts.createSourceFile('SceneRoot.tsx', sceneRootSource, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+const findNodes = (predicate) => {
+  const nodes = [];
+  const visit = (node) => { if (predicate(node)) nodes.push(node); ts.forEachChild(node, visit); };
+  visit(sceneAst);
+  return nodes;
+};
+const [warmupEffect] = findNodes((node) => ts.isCallExpression(node) &&
+  node.expression.getText(sceneAst) === 'useEffect' &&
+  node.arguments[0]?.getText(sceneAst).includes('const sharedWarmupSignature'));
+assert.ok(warmupEffect);
+const gate = warmupEffect.arguments[0].body.statements[0];
+assert.ok(ts.isIfStatement(gate));
+const shouldWarm = new Function('stage', 'visible', 'selected', `
+  const importedModel = { restoreStage: stage }, workspaceVisible = visible;
+  const gl = { compileAsync() {} }, projectedProgramWarmupInputs = [{}, {}];
+  const projectedProgramWarmupSignature = 'test';
+  return !(${gate.expression.getText(sceneAst)});
+`);
+assert.equal(shouldWarm('outline', true, true), true);
+for (const stage of ['bounds', 'proxy', 'full', undefined]) {
+  assert.equal(shouldWarm(stage, true, true), false, 'editing a resident stack must not start speculative compilation');
+}
+assert.equal(shouldWarm('outline', false, true), false);
+assert.equal(shouldWarm('outline', true, false), false);
+const [warmupSet] = findNodes((node) => ts.isCallExpression(node) && node.expression.getText(sceneAst) === 'sharedWarmups.set');
+const registerWarmup = new Function('sharedWarmups', 'sharedWarmupPromise', `
+  const sharedWarmupSignature = 'test'; ${warmupSet.getText(sceneAst)};
+`);
+const warmupMap = new Map(), pendingCompile = Promise.resolve();
+registerWarmup(warmupMap, pendingCompile);
+assert.equal(warmupMap.get('test'), pendingCompile, 'finally must see the same promise identity to release the renderer entry');
+
+// The actual direct build branch must await compilation before publication.
+const directStart = sceneRootSource.indexOf('markProjectedMaterialBuild();', sceneRootSource.indexOf('const latestOrdinaryUvKey'));
+const directEnd = sceneRootSource.indexOf('} catch (error)', directStart);
+assert.ok(directStart > 0 && directEnd > directStart);
+const directBlock = sceneRootSource.slice(directStart, directEnd).replace(/\}\s*$/, '');
+const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+const runDirect = new AsyncFunction('events', 'compile', 'created', `
+  const projectedMaterialInput = {}, gl = { capabilities: { maxTextures: 16 } }, cancelled = false;
+  const isViewportInteractionBusy = () => false, useProjectedTextureArrayMaterial = false;
+  const markProjectedMaterialBuild = () => events.push('build');
+  const createProjectedLayerStackMaterial = async () => created;
+  const precompileProjectedMaterial = compile;
+  let sharedProjectedMaterial;
+  ${directBlock.replace(/\}\s*$/, '')}
+  events.push('publish');
+`);
+let finishCompile;
+const compileBarrier = new Promise((resolve) => { finishCompile = resolve; });
+const compileEvents = [];
+const directRun = runDirect(compileEvents, async () => { compileEvents.push('compile'); await compileBarrier; }, {});
+await new Promise((resolve) => setImmediate(resolve));
+assert.deepEqual(compileEvents, ['build', 'compile']);
+finishCompile();
+await directRun;
+assert.deepEqual(compileEvents, ['build', 'compile', 'publish']);
+const failedEvents = [];
+await assert.rejects(runDirect(failedEvents, async () => { throw new Error('compile failed'); }, {}), /compile failed/);
+assert.deepEqual(failedEvents, ['build'], 'failed compilation must not publish');
+const emptyEvents = [];
+await runDirect(emptyEvents, () => assert.fail('missing material must not compile'), undefined);
+assert.deepEqual(emptyEvents, ['build', 'publish']);
+
+const [precompileDeclaration] = findNodes((node) => ts.isVariableDeclaration(node) &&
+  node.name.getText(sceneAst) === 'precompileProjectedMaterial');
+assert.ok(precompileDeclaration);
+const precompileJs = ts.transpileModule(`const run = ${precompileDeclaration.initializer.getText(sceneAst)};`, {
+  compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
+}).outputText;
+let finishColdWarmup;
+const coldWarmup = new Promise((resolve) => { finishColdWarmup = resolve; });
+const scheduleEvents = [];
+const precompileScope = {
+  THREE, camera: new THREE.PerspectiveCamera(), cancelled: false,
+  gl: { compileAsync: async () => scheduleEvents.push('compile') },
+  waitForPreviewTextureUploadsIdle: async () => scheduleEvents.push('uploads-idle'),
+  getProjectedProgramWarmupMap: () => new Map([['cold', coldWarmup]]),
+  waitForViewportInteractionIdle: async () => scheduleEvents.push('interaction-idle'),
+  performance: { now: () => 0 }, document: { body: { dataset: {} } },
+  markPerformanceEvent: () => {},
+};
+const makePrecompile = (scope) => new Function(...Object.keys(scope), `${precompileJs}\nreturn run;`)(...Object.values(scope));
+const testMaterial = new THREE.ShaderMaterial();
+const precompileRun = makePrecompile(precompileScope)(testMaterial);
+await new Promise((resolve) => setImmediate(resolve));
+assert.deepEqual(scheduleEvents, ['uploads-idle'], 'existing cold compile must be joined, not polled concurrently');
+finishColdWarmup();
+assert.equal(await precompileRun, true);
+assert.deepEqual(scheduleEvents, ['uploads-idle', 'interaction-idle', 'compile']);
+scheduleEvents.length = 0;
+assert.equal(await makePrecompile({ ...precompileScope, cancelled: true })(testMaterial), false);
+assert.deepEqual(scheduleEvents, [], 'superseded material must not start compilation');
+testMaterial.dispose();
+
+assert.match(
+  sceneStoreSource,
+  /const hasRuntimeStateToReset = Boolean\([\s\S]*?paintMaskHasContent[\s\S]*?localRepaintProjectionSource[\s\S]*?hasRuntimeStateToReset[\s\S]*?paintMaskResetRevision:/,
+  'blank scene selection must not clear and re-upload the viewport paint mask target',
+);
+assert.match(
+  sceneRootSource,
+  /const ImportedModel = memo\(function ImportedModel[\s\S]*?state\.selectedObjectId === importedModel\.objectId/,
+  'scene models must subscribe to their own selection bit and skip unrelated material-pipeline renders',
+);
+assert.doesNotMatch(
+  sceneRootSource,
+  /function ImportedModel\([\s\S]{0,1000}state\.selectedObjectId\);/,
+  'each imported model must not subscribe to the global selected-object string',
+);
+assert.match(
+  objectsPanelSource,
+  /markViewportInteractionActivity\(\);\s*selectObject\(objectId\);/,
+  'object-list selection should pause background viewport work before publishing selection',
+);
+assert.match(
+  sceneRootSource,
+  /const selectImportedObject = useCallback\([\s\S]*?markViewportInteractionActivity\(\);\s*selectObject\(objectId\);/,
+  'mesh selection should pause background viewport work before publishing selection',
 );
 
 assert.match(
@@ -105,10 +235,10 @@ assert.match(
   /canUseDirectVisibleStackAfterArrayFailure[\s\S]*?textureArrayCompositionFallbackRequired && directProjectedSamplerBudget\.withinBudget/,
   'an array failure must use the complete direct stack whenever the GPU can carry it',
 );
-assert.match(
+assert.doesNotMatch(
   compositorSource,
-  /const overlayMaterial = createFullscreenMaterial\(overlayFragmentShader,[\s\S]*?priorityOverlay: 0/,
-  'overlay compositor must declare the priorityOverlay uniform before step writes it',
+  /priorityOverlay/,
+  'the retired single-view priority branch must not add uniforms or per-pass writes',
 );
 assert.match(
   viewportSource,
@@ -237,18 +367,18 @@ assert.doesNotMatch(
 );
 assert.match(
   sceneRootSource,
-  /!workspaceVisible \|\|\s*selectedObjectId !== importedModel\.objectId \|\|\s*typeof gl\.compileAsync/,
+  /!workspaceVisible \|\|\s*!selected \|\|\s*typeof gl\.compileAsync/,
   'projected shader warmup must be reserved for the selected visible model',
 );
 assert.match(
   sceneRootSource,
-  /!workspaceVisible \|\|\s*selectedObjectId !== importedModel\.objectId \|\|\s*!texturedRestoreReady/,
+  /!workspaceVisible \|\|\s*!selected \|\|\s*!texturedRestoreReady/,
   'runtime projection visibility repair must not compete across hidden or unselected models',
 );
-assert.match(
+assert.doesNotMatch(
   compositorSource,
-  /const overlayFragmentShader = `[\s\S]*?uniform float priorityOverlay;/,
-  'the priority overlay compositor shader must declare the uniform used by its alpha branch',
+  /uniform float priorityOverlay/,
+  'progressive composition must keep ordinary single views in the quality pass',
 );
 assert.match(
   sceneRootSource,

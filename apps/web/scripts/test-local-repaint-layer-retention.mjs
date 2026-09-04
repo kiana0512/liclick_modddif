@@ -99,8 +99,8 @@ assert.doesNotMatch(
 );
 assert.match(
   viewportCanvas,
-  /activeLayerIdBeforePublish[\s\S]*?restoreLocalRepaintLayerSelection\(activeLayerIdBeforePublish\)/,
-  'a delayed publication must preserve the layer selected by a newer task',
+  /activeLayerIdBeforePublish = existingProjectionLayer[\s\S]*?layerState\.setLayers\(nextLayers\);[\s\S]*?if \(existingProjectionLayer\) \{\s*restoreLocalRepaintLayerSelection\(activeLayerIdBeforePublish\)/,
+  'a newly published repaint must become active while background refreshes preserve the current selection',
 );
 assert.match(
   viewportCanvas,
@@ -194,11 +194,22 @@ try {
     useLayerStore.getState().setLayers(useLayerStore.getState().layers);
     restoreLocalRepaintLayerSelection(selectedId);
     assert.equal(useLayerStore.getState().activeProjectedLayerId, selectedId,
-      'GPU promotion and result publication must preserve an empty selection too');
+      'the selection-restoration helper must preserve an empty selection too');
   }
+  const previousRow = { ...uvRow, id: 'previous-visible-row', visible: true };
+  const newRepaintRow = { ...uvRow, id: 'new-visible-repaint-row', type: 'projected', visible: true };
+  useLayerStore.setState({ layers: [previousRow], activeProjectedLayerId: previousRow.id });
+  useLayerStore.getState().setLayers([newRepaintRow, previousRow]);
+  assert.equal(
+    useLayerStore.getState().activeProjectedLayerId,
+    newRepaintRow.id,
+    'publishing a new repaint first in the visible layer stack must select it',
+  );
   const guard = viewportCanvas.match(/if \(([^\n]+)\) \{\s*warnMissingPaintLayer\(\);\s*return;/)?.[1];
   assert.ok(guard, 'test the actual pointer-down layer guard');
-  const blocksStroke = new Function('isInpaintMode', 'isLocalRepaintApplyMode', 'canUseSurfacePaint', `return ${guard}`);
+  const maskStrokeDeclaration = viewportCanvas.match(/const isMaskStroke = isInpaintMode \|\| isLocalRepaintApplyMode;/)?.[0];
+  assert.ok(maskStrokeDeclaration);
+  const blocksStroke = new Function('isInpaintMode', 'isLocalRepaintApplyMode', 'canUseSurfacePaint', `${maskStrokeDeclaration}\nreturn ${guard}`);
   assert.equal(blocksStroke(false, true, false), false, 'repaint bypasses ordinary layer selection requirements');
   assert.equal(blocksStroke(true, false, false), false, 'mask authoring remains independent');
   assert.equal(blocksStroke(false, false, false), true, 'ordinary brush/eraser still require an eligible layer');

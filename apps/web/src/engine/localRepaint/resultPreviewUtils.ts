@@ -1,12 +1,12 @@
 import { blobToDataUrl, imageDataToBlob, resizeImageData, urlToImageData } from './imageUtils';
+import { requestDisplayPreview, type DisplayPreviewRequest } from './displayPreviewQueue';
+import { waitForViewportInteractionIdle } from '@/engine/viewport/viewportInteractionState';
 
 const previewCache = new Map<string, Promise<string>>();
-const captureMaskedPreviewCache = new Map<string, { maskUrl: string; promise: Promise<string> }>();
 const captureMaskedProjectionCache = new Map<
   string,
   { maskUrl: string; promise: Promise<string> }
 >();
-const generatedDisplayPreviewCache = new Map<string, Promise<GeneratedDisplayPreview>>();
 const MAX_PREVIEW_CACHE_ENTRIES = 12;
 const SUBJECT_PADDING_RATIO = 0.02;
 const GENERATED_DISPLAY_PADDING_RATIO = 0.06;
@@ -351,8 +351,12 @@ async function encodeDisplayImage(imageData: ImageData) {
 async function createGeneratedDisplayPreviewUncached(
   sourceUrl: string,
   depthUrl?: string,
+  signal?: AbortSignal,
 ): Promise<GeneratedDisplayPreview> {
-  const decoded = await urlToImageData(sourceUrl);
+  const readOptions = { cooperative: true, signal };
+  const decoded = await urlToImageData(sourceUrl, undefined, undefined, readOptions);
+  await waitForViewportInteractionIdle();
+  signal?.throwIfAborted();
   const scale = Math.min(
     1,
     GENERATED_DISPLAY_MAX_DIMENSION / Math.max(decoded.width, decoded.height, 1),
@@ -368,11 +372,12 @@ async function createGeneratedDisplayPreviewUncached(
   let processed: ReturnType<typeof removeStrictOuterDarkDisplayBackground>;
   if (depthUrl) {
     try {
-      processed = applyPackedDepthDisplayMask(
-        source,
-        await urlToImageData(depthUrl, source.width, source.height),
-      );
+      const depth = await urlToImageData(depthUrl, source.width, source.height, readOptions);
+      await waitForViewportInteractionIdle();
+      signal?.throwIfAborted();
+      processed = applyPackedDepthDisplayMask(source, depth);
     } catch {
+      signal?.throwIfAborted();
       // Depth is the safest display authority, but old/expired project assets must
       // still render. The fallback only clears an edge-connected, nearly-black
       // outer region and never runs a second matte over the generated subject.
@@ -389,6 +394,8 @@ async function createGeneratedDisplayPreviewUncached(
     processed.changedPixels > 0 || scale < 1
       ? await encodeDisplayImage(transparent)
       : sourceUrl;
+  await waitForViewportInteractionIdle();
+  signal?.throwIfAborted();
   const padding = Math.max(
     4,
     Math.round(Math.max(bounds.width, bounds.height) * GENERATED_DISPLAY_PADDING_RATIO),
@@ -432,22 +439,14 @@ async function createGeneratedDisplayPreviewUncached(
   };
 }
 
-export function createGeneratedDisplayPreview(sourceUrl: string, depthUrl?: string) {
-  const cacheKey = `${depthUrl ?? 'strict-dark'}:${sourceUrl}`;
-  const cached = generatedDisplayPreviewCache.get(cacheKey);
-  if (cached) return cached;
-  const promise = createGeneratedDisplayPreviewUncached(sourceUrl, depthUrl).catch((error) => {
-    if (generatedDisplayPreviewCache.get(cacheKey) === promise)
-      generatedDisplayPreviewCache.delete(cacheKey);
-    throw error;
-  });
-  generatedDisplayPreviewCache.set(cacheKey, promise);
-  while (generatedDisplayPreviewCache.size > MAX_PREVIEW_CACHE_ENTRIES) {
-    const oldestKey = generatedDisplayPreviewCache.keys().next().value as string | undefined;
-    if (!oldestKey) break;
-    generatedDisplayPreviewCache.delete(oldestKey);
-  }
-  return promise;
+export function createGeneratedDisplayPreview(
+  sourceUrl: string, depthUrl?: string, request: DisplayPreviewRequest = {},
+) {
+  return requestDisplayPreview(
+    JSON.stringify(['display', sourceUrl, depthUrl, request.revision]),
+    (signal) => createGeneratedDisplayPreviewUncached(sourceUrl, depthUrl, signal),
+    request.signal,
+  );
 }
 
 function smoothstep(edge0: number, edge1: number, value: number) {
@@ -549,7 +548,6 @@ export function applyCapturePreviewMask(source: ImageData, mask: ImageData) {
 export function applyCaptureProjectionImage(
   source: ImageData,
   mask: ImageData,
-  options: { edgeBlend?: boolean } = {},
 ) {
   const { width, height } = source;
   if (mask.width !== width || mask.height !== height)
@@ -558,17 +556,12 @@ export function applyCaptureProjectionImage(
   const cleaned = applyCapturePreviewMask(source, mask);
   const output = new ImageData(new Uint8ClampedArray(source.data), width, height);
   const coverage = new Uint8Array(width * height);
-  // When a quality-blended texture already exists below the single-view
-  // paintover, keep a small non-zero alpha outside the authoritative geometry
-  // mask. That preserves the bled RGB during PNG encoding while the alpha
-  // inside the silhouette can act as a wide transition weight.
-  const minimumBlendAlpha = Math.round(255 * 0.12);
   for (let index = 0; index < coverage.length; index += 1) {
     const offset = index * 4;
     const maskLuminance =
       mask.data[offset] * 0.299 + mask.data[offset + 1] * 0.587 + mask.data[offset + 2] * 0.114;
     coverage[index] = Math.round(maskLuminance * (mask.data[offset + 3] / 255));
-    output.data[offset + 3] = options.edgeBlend ? minimumBlendAlpha : 255;
+    output.data[offset + 3] = 255;
     if (coverage[index] <= 0) continue;
     output.data[offset] = cleaned.data[offset];
     output.data[offset + 1] = cleaned.data[offset + 1];
@@ -618,57 +611,6 @@ export function applyCaptureProjectionImage(
     [1, 1],
   ] as const;
 
-  if (options.edgeBlend) {
-    // Build an inward distance field from the captured silhouette. The core of
-    // the single view stays fully authoritative; only a resolution-independent
-    // boundary band crossfades into the older multiview/UV result.
-    const maximumBlendDistance = Math.min(
-      128,
-      Math.max(24, Math.round(Math.max(width, height) * 0.035)),
-    );
-    // Reuse the outward-bleed queue and distance buffer. A second pair of
-    // full-frame typed arrays would add about 100 MB at 4K resolution.
-    const boundaryTail = tail;
-    while (head < tail) {
-      const current = queue[head];
-      head += 1;
-      const distance = distances[current];
-      if (distance >= maximumBlendDistance) continue;
-      const x = current % width;
-      const y = Math.floor(current / width);
-      for (const [offsetX, offsetY] of neighborOffsets) {
-        const neighborX = x + offsetX;
-        const neighborY = y + offsetY;
-        if (neighborX < 0 || neighborX >= width || neighborY < 0 || neighborY >= height) continue;
-        const neighbor = neighborY * width + neighborX;
-        if (coverage[neighbor] <= 0 || distances[neighbor] !== 0) continue;
-        distances[neighbor] = distance + 1;
-        queue[tail] = neighbor;
-        tail += 1;
-      }
-    }
-    for (let index = 0; index < coverage.length; index += 1) {
-      if (coverage[index] <= 0) continue;
-      const distance = distances[index];
-      if (distance === 0) {
-        output.data[index * 4 + 3] = 255;
-        continue;
-      }
-      const linear = Math.min(1, Math.max(0, (distance - 1) / maximumBlendDistance));
-      const smooth = linear * linear * (3 - 2 * linear);
-      output.data[index * 4 + 3] = Math.round(
-        minimumBlendAlpha + (255 - minimumBlendAlpha) * smooth,
-      );
-    }
-    // Restore the boundary-only frontier before growing RGB into the masked
-    // background. The first boundaryTail queue entries were never overwritten.
-    for (let index = 0; index < coverage.length; index += 1) {
-      if (coverage[index] > 0 && distances[index] > 1) distances[index] = 0;
-    }
-    head = 0;
-    tail = boundaryTail;
-  }
-
   while (head < tail) {
     const current = queue[head];
     head += 1;
@@ -687,7 +629,7 @@ export function applyCaptureProjectionImage(
       output.data[neighborOffset] = output.data[sourceOffset];
       output.data[neighborOffset + 1] = output.data[sourceOffset + 1];
       output.data[neighborOffset + 2] = output.data[sourceOffset + 2];
-      output.data[neighborOffset + 3] = options.edgeBlend ? minimumBlendAlpha : 255;
+      output.data[neighborOffset + 3] = 255;
       distances[neighbor] = distance + 1;
       queue[tail] = neighbor;
       tail += 1;
@@ -755,9 +697,13 @@ async function createPreviewUncached(sourceUrl: string, mode: BackgroundRemovalM
   return blobToDataUrl(await imageDataToBlob(output));
 }
 
-async function createCaptureMaskedPreviewUncached(sourceUrl: string, maskUrl: string) {
+async function createCaptureMaskedPreviewUncached(sourceUrl: string, maskUrl: string, signal: AbortSignal) {
   const source = await urlToImageData(sourceUrl);
+  await waitForViewportInteractionIdle();
+  signal.throwIfAborted();
   const mask = await urlToImageData(maskUrl, source.width, source.height);
+  await waitForViewportInteractionIdle();
+  signal.throwIfAborted();
   const masked = applyCapturePreviewMask(source, mask);
 
   const bounds = getAlphaContentBounds(masked);
@@ -801,42 +747,34 @@ async function createCaptureMaskedPreviewUncached(sourceUrl: string, maskUrl: st
   );
 }
 
-export function createCaptureMaskedPreview(sourceUrl: string, maskUrl: string) {
-  const cached = captureMaskedPreviewCache.get(sourceUrl);
-  if (cached?.maskUrl === maskUrl) return cached.promise;
-  const promise = createCaptureMaskedPreviewUncached(sourceUrl, maskUrl).catch((error) => {
-    if (captureMaskedPreviewCache.get(sourceUrl)?.promise === promise)
-      captureMaskedPreviewCache.delete(sourceUrl);
-    throw error;
-  });
-  captureMaskedPreviewCache.set(sourceUrl, { maskUrl, promise });
-  while (captureMaskedPreviewCache.size > MAX_PREVIEW_CACHE_ENTRIES) {
-    const oldestKey = captureMaskedPreviewCache.keys().next().value as string | undefined;
-    if (!oldestKey) break;
-    captureMaskedPreviewCache.delete(oldestKey);
-  }
-  return promise;
+export function createCaptureMaskedPreview(sourceUrl: string, maskUrl: string, request: DisplayPreviewRequest = {}) {
+  return requestDisplayPreview(
+    JSON.stringify(['capture', sourceUrl, maskUrl, request.revision]),
+    async (signal) => {
+      const url = await createCaptureMaskedPreviewUncached(sourceUrl, maskUrl, signal);
+      return { alignedUrl: url, fittedUrl: url };
+    },
+    request.signal,
+  ).then((preview) => preview.fittedUrl);
 }
 
 async function createCaptureMaskedProjectionImageUncached(
   sourceUrl: string,
   maskUrl: string,
-  options: { edgeBlend?: boolean },
 ) {
   const source = await urlToImageData(sourceUrl);
   const mask = await urlToImageData(maskUrl, source.width, source.height);
-  return blobToDataUrl(await imageDataToBlob(applyCaptureProjectionImage(source, mask, options)));
+  return blobToDataUrl(await imageDataToBlob(applyCaptureProjectionImage(source, mask)));
 }
 
 export function createCaptureMaskedProjectionImage(
   sourceUrl: string,
   maskUrl: string,
-  options: { edgeBlend?: boolean } = {},
 ) {
-  const cacheKey = `${options.edgeBlend ? 'blend' : 'opaque'}:${sourceUrl}`;
+  const cacheKey = sourceUrl;
   const cached = captureMaskedProjectionCache.get(cacheKey);
   if (cached?.maskUrl === maskUrl) return cached.promise;
-  const promise = createCaptureMaskedProjectionImageUncached(sourceUrl, maskUrl, options).catch((error) => {
+  const promise = createCaptureMaskedProjectionImageUncached(sourceUrl, maskUrl).catch((error) => {
     if (captureMaskedProjectionCache.get(cacheKey)?.promise === promise)
       captureMaskedProjectionCache.delete(cacheKey);
     throw error;

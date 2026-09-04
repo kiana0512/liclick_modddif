@@ -50,8 +50,6 @@ export type ProjectionLayerInput = {
   blendMode?: BlendMode;
   /** Internal preview ordering independent from the user-facing blend mode. */
   compositeRole?: 'normal' | 'overlay' | 'underlay';
-  /** High-confidence core replacement with a soft geometric boundary. */
-  priorityOverlay?: boolean;
   visible: boolean;
   depthTest: boolean;
   useMask?: boolean;
@@ -91,7 +89,6 @@ export type ProjectionLayerDisplayInput = Pick<
   | 'strength'
   | 'blendMode'
   | 'compositeRole'
-  | 'priorityOverlay'
   | 'visible'
   | 'hue'
   | 'saturation'
@@ -141,7 +138,6 @@ export type ProjectionLayerStackInput = Omit<
       | 'strength'
       | 'blendMode'
       | 'compositeRole'
-      | 'priorityOverlay'
       | 'visible'
       | 'hue'
       | 'saturation'

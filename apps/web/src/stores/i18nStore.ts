@@ -462,7 +462,7 @@ export const translations = {
     modelRestoreFailed: 'Model restore failed',
     modelRestoreFailedHelp: 'Could not reload the saved model asset.',
     projectLoading: 'Loading project',
-    projectLoadingHelp: 'Opening this project from the workspace route.',
+    projectLoadingHelp: 'Reading project data. Models and textures will then load independently.',
     projectLoadFailed: 'Project unavailable',
     projectLoadFailedHelp:
       'This project could not be found locally or the workspace server is offline.',
@@ -950,7 +950,7 @@ export const translations = {
     modelRestoreFailed: '模型恢复失败',
     modelRestoreFailedHelp: '无法重新加载已保存的模型资产。',
     projectLoading: '正在加载项目',
-    projectLoadingHelp: '正在根据当前项目地址从工作区打开工程。',
+    projectLoadingHelp: '正在读取项目数据，进入场景后将逐个加载模型与贴图。',
     projectLoadFailed: '项目不可用',
     projectLoadFailedHelp: '本地找不到这个项目，或工作区服务当前不可用。',
     quickMask: '快速蒙版',

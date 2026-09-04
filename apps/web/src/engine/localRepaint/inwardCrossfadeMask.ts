@@ -49,56 +49,59 @@ export function createLocalRepaintInwardCrossfadePixels(input: {
   const pixelCount = width * height;
   const maximumDistance = crossfadeWidth * 3;
   const unreachable = maximumDistance + 12;
-  const distances = new Uint16Array(pixelCount);
-  const inside = new Uint8Array(pixelCount);
+  // A zero border represents the unchanged outside-of-image boundary. It
+  // removes edge branches and the separate inside bitmap from both sweeps.
+  const stride = width + 2;
+  const distances = new Uint16Array(stride * (height + 2));
   const threshold = Math.round(LOCAL_REPAINT_INWARD_CROSSFADE_MASK_THRESHOLD * 255);
-
-  for (let index = 0, offset = 0; index < pixelCount; index += 1, offset += 4) {
-    const authoredCoverage =
-      (Math.max(source[offset] ?? 0, source[offset + 1] ?? 0, source[offset + 2] ?? 0) *
-        (source[offset + 3] ?? 255)) /
-      255;
-    const isInside = authoredCoverage >= threshold;
-    inside[index] = isInside ? 1 : 0;
-    distances[index] = isInside ? unreachable : 0;
-  }
-
-  const relax = (index: number, candidate: number) => {
-    if (candidate < distances[index]) distances[index] = candidate;
-  };
   for (let y = 0; y < height; y += 1) {
     for (let x = 0; x < width; x += 1) {
-      const index = y * width + x;
-      if (!inside[index]) continue;
-      if (x === 0 || y === 0 || x === width - 1 || y === height - 1) relax(index, 3);
-      if (x > 0) relax(index, distances[index - 1] + 3);
-      if (y > 0) relax(index, distances[index - width] + 3);
-      if (x > 0 && y > 0) relax(index, distances[index - width - 1] + 4);
-      if (x + 1 < width && y > 0) relax(index, distances[index - width + 1] + 4);
-    }
-  }
-  for (let y = height - 1; y >= 0; y -= 1) {
-    for (let x = width - 1; x >= 0; x -= 1) {
-      const index = y * width + x;
-      if (!inside[index]) continue;
-      if (x + 1 < width) relax(index, distances[index + 1] + 3);
-      if (y + 1 < height) relax(index, distances[index + width] + 3);
-      if (x + 1 < width && y + 1 < height) relax(index, distances[index + width + 1] + 4);
-      if (x > 0 && y + 1 < height) relax(index, distances[index + width - 1] + 4);
+      const offset = (y * width + x) * 4;
+      const authoredCoverage =
+        (Math.max(source[offset] ?? 0, source[offset + 1] ?? 0, source[offset + 2] ?? 0) *
+          (source[offset + 3] ?? 255)) / 255;
+      if (authoredCoverage < threshold) continue;
+      const index = (y + 1) * stride + x + 1;
+      distances[index] = Math.min(
+        unreachable & 0xffff,
+        distances[index - 1] + 3,
+        distances[index - stride] + 3,
+        distances[index - stride - 1] + 4,
+        distances[index - stride + 1] + 4,
+      );
     }
   }
 
+  // Chamfer distances are integers. Evaluate the unchanged smoothstep once per
+  // distance, not once per pixel, and publish during the final distance sweep.
+  // Build bytes first so packed writes preserve RGBA on either host byte order.
+  const weightBytes = new Uint8ClampedArray((maximumDistance + 1) * 4);
+  for (let distance = 0; distance <= maximumDistance; distance += 1) {
+    const value = Math.round(
+      smoothstep01(Math.max(0, distance - 3) / Math.max(1, maximumDistance - 3)) * 255,
+    );
+    weightBytes.set([value, value, value, 255], distance * 4);
+  }
+  const weights = new Uint32Array(weightBytes.buffer);
   const output = new Uint8ClampedArray(pixelCount * 4);
-  for (let index = 0, offset = 0; index < pixelCount; index += 1, offset += 4) {
-    const inwardDistance = Math.max(0, Math.min(maximumDistance, distances[index]) - 3);
-    const localRepaintWeight = inside[index]
-      ? smoothstep01(inwardDistance / Math.max(1, maximumDistance - 3))
-      : 0;
-    const value = Math.round(localRepaintWeight * 255);
-    output[offset] = value;
-    output[offset + 1] = value;
-    output[offset + 2] = value;
-    output[offset + 3] = 255;
+  const outputWords = new Uint32Array(output.buffer);
+  for (let y = height - 1; y >= 0; y -= 1) {
+    for (let x = width - 1; x >= 0; x -= 1) {
+      const index = (y + 1) * stride + x + 1;
+      let value = weights[0];
+      if (distances[index]) {
+        const distance = Math.min(
+          distances[index],
+          distances[index + 1] + 3,
+          distances[index + stride] + 3,
+          distances[index + stride + 1] + 4,
+          distances[index + stride - 1] + 4,
+        );
+        distances[index] = distance;
+        value = weights[Math.min(maximumDistance, distance)];
+      }
+      outputWords[y * width + x] = value;
+    }
   }
   return output;
 }

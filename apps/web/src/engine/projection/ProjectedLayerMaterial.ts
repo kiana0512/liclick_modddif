@@ -20,15 +20,6 @@ import {
   createClayModelMaterial,
 } from '@/engine/materials/clayModelMaterial';
 import { waitForBrowserPaint } from '@/utils/browserScheduling';
-import {
-  PRIORITY_PROJECTION_BOUNDARY_ALPHA_MIN,
-  PRIORITY_PROJECTION_BOUNDARY_QUALITY_END,
-  PRIORITY_PROJECTION_BOUNDARY_QUALITY_START,
-  PRIORITY_PROJECTION_CORE_COVERAGE_END,
-  PRIORITY_PROJECTION_CORE_COVERAGE_START,
-  PRIORITY_PROJECTION_CORE_QUALITY_END,
-  PRIORITY_PROJECTION_CORE_QUALITY_START,
-} from './priorityProjectionComposition';
 
 const DEFAULT_PREVIEW_COLOR = CLAY_MODEL_COLOR;
 const DEFAULT_WIRE_COLOR = '#e9ebe8';
@@ -129,34 +120,9 @@ const MIN_BLEND_COVERAGE = 0.0001;
 const QUALITY_FLOOR_FROM_COVERAGE = 0.08;
 const DEPTH_EPSILON = 0.0025;
 const ORDERED_OVERLAY_ALPHA_GLSL = `
-  float computeOrderedOverlayAlpha(float coverage, float quality, float overlayMode) {
+  float computeOrderedOverlayAlpha(float coverage, float quality) {
     float qualityFade = smoothstep(0.0, 0.15, max(quality, coverage * 0.25));
-    float featheredAlpha = clamp(coverage * mix(0.75, 1.0, qualityFade), 0.0, 1.0);
-    float boundaryConfidence = smoothstep(
-      ${PRIORITY_PROJECTION_BOUNDARY_QUALITY_START.toFixed(2)},
-      ${PRIORITY_PROJECTION_BOUNDARY_QUALITY_END.toFixed(2)},
-      max(quality, 0.0)
-    );
-    float boundaryAlpha = coverage * mix(
-      ${PRIORITY_PROJECTION_BOUNDARY_ALPHA_MIN.toFixed(2)},
-      1.0,
-      boundaryConfidence
-    );
-    float coreConfidence = smoothstep(
-      ${PRIORITY_PROJECTION_CORE_COVERAGE_START.toFixed(2)},
-      ${PRIORITY_PROJECTION_CORE_COVERAGE_END.toFixed(2)},
-      coverage
-    ) * smoothstep(
-      ${PRIORITY_PROJECTION_CORE_QUALITY_START.toFixed(2)},
-      ${PRIORITY_PROJECTION_CORE_QUALITY_END.toFixed(2)},
-      max(quality, 0.0)
-    );
-    float priorityAlpha = clamp(
-      boundaryAlpha + (1.0 - boundaryAlpha) * coreConfidence,
-      0.0,
-      1.0
-    );
-    return mix(featheredAlpha, priorityAlpha, step(1.5, overlayMode));
+    return clamp(coverage * mix(0.75, 1.0, qualityFade), 0.0, 1.0);
   }
 `;
 // Large turns should still receive projection when the capture depth/normal
@@ -1005,7 +971,6 @@ function buildStackFragmentShader(
     projectionVisibilityPolicy?: ProjectionLayerStackInput['layers'][number]['projectionVisibilityPolicy'];
     blendMode?: ProjectionLayerStackInput['layers'][number]['blendMode'];
     compositeRole?: ProjectionLayerStackInput['layers'][number]['compositeRole'];
-    priorityOverlay?: ProjectionLayerStackInput['layers'][number]['priorityOverlay'];
   }>,
   requestedFeatures: ProjectedLayerSamplerFeatures = {},
 ) {
@@ -1630,8 +1595,7 @@ function buildStackFragmentShader(
             if (isOverlay > 0.5) {
               float overlayAlpha = computeOrderedOverlayAlpha(
                 coverage,
-                quality,
-                compactOverlayModes[layerIndex]
+                quality
               );
               projectedDepthCoverage = max(
                 projectedDepthCoverage,
@@ -1740,8 +1704,7 @@ function buildStackFragmentShader(
             ? `if (layerOverlayMode${index} > 0.5) {
           float overlayAlpha = computeOrderedOverlayAlpha(
             coverage,
-            quality,
-            layerOverlayMode${index}
+            quality
           );
           pendingOverlayColor${index} = texel.rgb;
           pendingOverlayAlpha${index} = overlayAlpha;
@@ -1839,8 +1802,7 @@ function buildStackFragmentShader(
         // UV bake. The shared coverage term still supplies a soft transition.
         float overlayAlpha = computeOrderedOverlayAlpha(
           coverage,
-          quality,
-          layerOverlayMode${index}
+          quality
         );
         projectedDepthCoverage = max(projectedDepthCoverage, overlayAlpha);
         mixedColor = mix(mixedColor, texel.rgb, overlayAlpha);
@@ -2509,7 +2471,6 @@ function getProjectionLayerStructureSignature(
           layer.renderedColor ? 1 : 0,
           layer.minimumProjectionFacing ?? 0,
           layer.projectionVisibilityPolicy ?? 'standard',
-          layer.priorityOverlay ? 1 : 0,
           layer.compositeRole ?? 'normal',
           layer.objectMatrixWorld?.join(',') ?? '',
           getLayerCameraSignature(layer.camera),
@@ -2568,9 +2529,7 @@ function updateLayerDisplayUniforms(
       overlayUniform.value =
         layer.compositeRole !== 'underlay' &&
         (layer.compositeRole === 'overlay' || layer.blendMode === 'overlay')
-          ? layer.priorityOverlay
-            ? 2
-            : 1
+          ? 1
           : 0;
     }
   }
@@ -2588,9 +2547,7 @@ function updateLayerDisplayUniforms(
       'compactOverlayModes',
       layer.compositeRole !== 'underlay' &&
         (layer.compositeRole === 'overlay' || layer.blendMode === 'overlay')
-        ? layer.priorityOverlay
-          ? 2
-          : 1
+        ? 1
         : 0,
     );
   }
@@ -3918,7 +3875,6 @@ export async function createProjectedLayerMaterial(input: ProjectionLayerInput) 
     strength: input.strength,
     blendMode: input.blendMode,
     compositeRole: input.compositeRole,
-    priorityOverlay: input.priorityOverlay,
     visible: input.visible,
     hue: input.hue,
     saturation: input.saturation,
@@ -4230,7 +4186,6 @@ export async function createProjectedLayerStackMaterial(
       strength: layer.strength,
       blendMode: layer.blendMode,
       compositeRole: layer.compositeRole,
-      priorityOverlay: layer.priorityOverlay,
       visible: layer.visible,
       hue: layer.hue,
       saturation: layer.saturation,
@@ -4498,9 +4453,7 @@ export async function createProjectedLayerStackMaterial(
       value:
         layer.compositeRole !== 'underlay' &&
         (layer.compositeRole === 'overlay' || layer.blendMode === 'overlay')
-          ? layer.priorityOverlay
-            ? 2
-            : 1
+          ? 1
           : 0,
     };
     captureObjectMatrices.push(captureObjectMatrixWorld);
@@ -4824,9 +4777,7 @@ export async function createProjectedLayerStackMaterial(
             value: loadedLayers.map((layer) =>
               layer.compositeRole !== 'underlay' &&
               (layer.compositeRole === 'overlay' || layer.blendMode === 'overlay')
-                ? layer.priorityOverlay
-                  ? 2
-                  : 1
+                ? 1
                 : 0,
             ),
           },

@@ -1,7 +1,39 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import { stdout } from 'node:process';
 import { fileURLToPath } from 'node:url';
+import ts from 'typescript';
 import { createServer } from 'vite';
+const { AbortController } = globalThis;
+
+// Execute the production dispatch expression: both reachable modes must keep
+// their exact source/mask/depth arguments without retaining the dead fallback.
+const panel = await readFile(new URL('../src/components/panels/GeneratePanel.tsx', import.meta.url), 'utf8');
+assert.doesNotMatch(panel, /createSubjectFilledPreview/);
+const panelAst = ts.createSourceFile('panel.tsx', panel, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+let dispatch;
+const visit = (node) => {
+  if (ts.isVariableDeclaration(node) && node.name.getText(panelAst) === 'previewPromise')
+    dispatch = node.initializer.getText(panelAst);
+  ts.forEachChild(node, visit);
+};
+visit(panelAst);
+assert.ok(dispatch);
+const dispatchJs = ts.transpileModule(`const result = ${dispatch};`, {
+  compilerOptions: { target: ts.ScriptTarget.ES2022 },
+}).outputText;
+for (const mode of ['capture-mask', 'generated-display']) {
+  const calls = [];
+  const run = new Function('previewProcessingMode', 'sourceUrl', 'capturePreviewMaskUrl',
+    'previewProcessingDepthUrl', 'previewRequest', 'createCaptureMaskedPreview', 'createGeneratedDisplayPreview',
+    `${dispatchJs}\nreturn result;`);
+  const previewRequest = { signal: new AbortController().signal };
+  const result = await run(mode, 'source', 'mask', 'depth', previewRequest,
+    async (...args) => { calls.push(['mask', ...args]); return 'masked'; },
+    async (...args) => { calls.push(['depth', ...args]); return { fittedUrl: 'fitted' }; });
+  assert.equal(result, mode === 'capture-mask' ? 'masked' : 'fitted');
+  assert.deepEqual(calls, [mode === 'capture-mask' ? ['mask', 'source', 'mask', previewRequest] : ['depth', 'source', 'depth', previewRequest]]);
+}
 
 class TestImageData {
   constructor(dataOrWidth, widthOrHeight, maybeHeight) {
@@ -99,24 +131,6 @@ try {
     source.data,
     originalSource,
     'projection processing must not mutate the generation result',
-  );
-
-  const blendedProjection = applyCaptureProjectionImage(source, mask, { edgeBlend: true });
-  const blendedPixel = (x, y) =>
-    Array.from(
-      blendedProjection.data.slice((y * width + x) * 4, (y * width + x) * 4 + 4),
-    );
-  assert(
-    blendedPixel(5, 4)[3] < blendedPixel(12, 4)[3],
-    'single-view alpha must rise smoothly from the silhouette toward the authoritative core',
-  );
-  assert(
-    blendedPixel(3, 4)[3] > 0 && blendedPixel(3, 4)[3] < 255,
-    'the bled RGB band must keep a small encoding-safe alpha outside the geometry mask',
-  );
-  assert(
-    blendedPixel(3, 4)[0] > 170,
-    'distance-field projection must preserve clean bled edge colour',
   );
 
   stdout.write('Generation preview and projection edge decontamination regression test passed.\n');

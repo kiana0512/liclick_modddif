@@ -1,16 +1,76 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
-> 文档版本：`2.16.4`
+> 文档版本：`2.17.2`
 >
-> 生效日期：`2026-09-03`
+> 生效日期：`2026-09-04`
 >
-> 代码盘点基线：`18f2793 + 本次局部重绘修复`
+> 代码盘点基线：`8d3b9f1 + 本次单/多视图统一合成`
 >
 > 基线仓库：`E:\Liclick 3D Texture Modernization`
 >
 > 审计口径：`0a2519d + 607e82f + 2568e40`，不包含错误文档提交 `2bde8c6/e03bab2/d1c5f78`
 
 ## 1. 文档地位与强制边界
+
+变更卡 `CHG-20260903-REPAINT-DISPLAY-READBACK`：UI-05/UI-10 → M08，`ALG-LR-011` v1.1.1（Cooperative display image readback / 返图显示读取让步），production，实施 Codex、体验验收维护者。接续 `e0a0ed71`：上轮返图 LoAF 中 IMG.onload 为 237.1ms，读取入口为 imageUtils 的 HTML Image 加载及后续 Canvas/预览微任务。局部重绘实际走 createGeneratedDisplayPreview，不走 capture-mask；曾试验的捕获蒙版零梯度优化不在此主路径，已撤除，52→36ms 隔离结果不计入本次收益。
+
+仅 generated-display 的原图和 depth 读取开启 cooperative 选项：已加载 Image 在支持时等待 decode，保留同一个原尺寸/原过滤 Canvas 完整 drawImage，然后以最多 262,144 像素（约 1 MiB RGBA）逐条 getImageData，无缩放地复制到完整输出。每条前让出浏览器任务、尊重已有 180ms 交互空闲门控并检查取消；隐藏页沿用既有任务兜底，不新加 rAF 依赖。加载中取消释放监听和 Image 请求；decode 提示拒绝时仍可使用原已加载图片，但加载、Canvas/readback 真正错误保留失败。默认调用者继续原整图读取，无新等待。
+
+输入为相同 URL、目标尺寸、sRGB/默认 Canvas RGBA；输出逐字节保持相同像素和尺寸。后续 1024 显示上限、depth 阈值、裁边/6% 留白与 PNG 编码不变，不降低最终输出分辨率。只调整 M08 CPU 显示读取，GPU/Worker/shader、capture/projector、作者与远端 mask、UV/export、Layer/Generation/Capture/Project Schema、Project Command 幂等性、Revision CAS、ownership 和 verified assets 均无变更。无迁移；回退移除两处 cooperative 参数及对应可选读取实现，不删除工程或结果。
+
+`test:display-image-readback` 执行真实生产读取函数，覆盖单像素/单列/奇数尺寸/末条不足、完整 RGBA（含透明像素下 RGB）与默认路径对照、只绘制一次、每条独立 yield、natural/fallback 尺寸、decode 缺失/拒绝、六处取消和加载/上下文/读取异常。旧 HEAD 实现在让步断言失败，新实现通过。此为确定性 Canvas 读取/调度契约，不替代真实浏览器解码耗时、颜色处理及返图帧稳定性验收。当前补丁在前一批推送之后，暂未推送，不能把前一批 CI 状态当作本卡验证。
+
+本卡本地验证：83 项 Web 回归、Web typecheck、修改文件 lint、完整身份 build:release、Cloud artifact、Cloud/repository boundary 及 diff 检查通过；79 chunks / 3,127,005 bytes，仍低于既有 3,134,000-byte 门禁。浏览器已加载 index-CK3tUtbr，004_flour_bag 的返图显示预览可见，但模型视口持续显示加载提示，随后测试标签显示“页面崩溃”；自动恢复受浏览器控制策略阻止。随后原标签恢复到工程 Saved 界面，模型仍显示加载提示。因此本轮没有有效的新版连续帧对照，不能引用页面留存的旧录制作为收益。恢复阶段已包含在材质结构 key 中，尚无证据支持把卡住归因于驻留材质 fast-path；未据此改动模型显示门控，崩溃原因与多模型恢复仍待进一步复现。
+
+2026-09-03 推送前集成验收：六项性能修复按独立中文提交整理，并重放到远端 master `7febed1`，保留其蒙版持久化、橡皮原子交接、结果选择、模型恢复与历史修复。合并后 82 项 Web 回归、全工作区 typecheck/lint（零错误、16 条 warning）、服务端 project pipeline persistence、完整身份 build:release、Cloud artifact、Cloud/repository boundary 和 diff 检查通过。JS 为 3,126,369 bytes，低于上游既有 3,134,000-byte 门禁，本批不改 CI 或预算。下面“未提交本地补丁”与旧预算描述为各阶段历史测量，不能冒充本次远端 CI 或合并后的浏览器帧验收；返图约 300ms 和首次编译尖峰继续跟进。
+
+`CHG-20260903-CAPTURE-FIRST-YIELD-ISOLATION` 本地复测（index-Bal034pk / EditorPage-BZeSN5VI）：加载新版，恢复 004_flour_bag / 四层可见重绘 / 4K / Front-Right，正常蒙版绘制及“局部生图”提交。新录制最大帧 300.2ms、9 个长任务/最大 313ms，旧录制 834.0ms/8 个长任务/最大 762ms；新窗口最慢归因变为 Response.json.then 313.6ms、IMG.onload 237.1ms，原蒙版捕获期间 R3F render 760.1ms 未再出现。按钮反馈 10.8ms、蒙版阶段 772.5ms、当前图准备 1635.5ms；新蒙版提交时尚需 archive，而旧蒙版已经 accumulated，且录制时长、缓存和网络返回不同，因此不以平均 FPS 或阶段总耗时计算严格收益比例。提交后图片/回调长任务仍在，实时面板另记录约 700.6ms 峰值（不在本次录制窗口内），多层首次编译和完整返图帧稳定性仍未通过。
+
+本地验证：80 项 Web 回归通过；最终 capture 函数/清屏色补充用例再次通过，Web typecheck、修改文件 lint（新文件零错误，Viewport 的 7 条既有 warning）、完整身份 build:release、Cloud artifact、Cloud/project repository boundary、git diff --check 通过。总包体 79 chunks / 3,121,988 bytes，原 3,122,000 门禁余 12 bytes，未调整 CI 或预算。仍为基于 bdc33c18 的未提交本地补丁，未推送或宣称远端 CI 已通过。测试通过原 UI 新增生成/蒙版/复制层，保留测试结果，不删除用户旧资产；对真实生成结果的美术质量与长期恢复需继续验收。
+
+变更卡 `CHG-20260903-CAPTURE-FIRST-YIELD-ISOLATION`：UI-05/UI-06 → M03，新增运行时调度契约 `ALG-CAP-006` v1.0.0；Color/Mask/Depth/Normal 像素算法 `ALG-CAP-002/003/004/005` 版本不变。当前测试工程一次真实局部生图录制覆盖提交及返图，最大帧 834.0ms、8 个长任务/最大 762ms；819.4ms LoAF 位于 button2-mask-capture-gpu-wait，其中 R3F render 760.1ms，另有结果处理 Response.json.then 317.7ms 和 IMG.onload 243.7ms。按钮初始反馈 10.5ms，蒙版全阶段 1575.6ms（含异步 GPU/PNG），效果图准备 1465.3ms；不能把阶段总耗时全部当作主线程阻塞，也不能把阶段标签当 GPU 栈。
+
+源码发现离屏 target 清空后，首次 waitForViewportIdle 在恢复共享 renderer 前执行，R3F 因此可能向捕获 RT 呈现；同一后台捕获还把 scene.background=null 留过了帧边界。本次首次等待前恢复 target/viewport/scissor/clear/autoClear/XR 与背景，每个 tile 的背景仅作用于同步 render，重绑 tile 时重设捕获 clear color/alpha；多 pass 对应路径在首次等待及 clearDepth 后同样归还 renderer。顺序 tile 使用双循环，省掉等价坐标数组，保留行优先次序、边缘尺寸、4ms 预算和 GPU fence。非 tiled、显示变换、异步读回、PNG Worker、失败 finally 均覆盖。
+
+GPU/CPU/Worker/shader 审计：不改采样、分辨率、光照/覆盖公式或 PNG 编码；捕获背景与 clear 值仍取原请求，防止视口清屏色污染后续 tile。投影/UV/重绘/导出继续消费完整同尺寸捕获，Project Command 幂等性、Revision CAS、ownership、verified assets、Schema 不变，无迁移；回退仅恢复调度实现，不删除捕获/生成/用户图层。`test:capture-renderer-isolation` 执行生产函数和状态快照/恢复器，实用 Three RenderTarget 搭配确定性 renderer，验证每个 idle/fence/readback/encode 边界、完整边缘像素、非 tiled/display/multipass 与四类失败释放；对 HEAD/bdc33c18 运行 --baseline 在第一次 idle 明确失败，新实现通过。这证明状态泄漏被修复，不替代浏览器帧尖峰及真 GPU 图像 QA。前一输入路由补丁 79 项 Web 回归已通过；本卡新增测试纳入总回归。
+
+2026-09-03 原生画笔尾部路由实测（本地未提交构建 index-DY9rEUkP / EditorPage-ukebs6tV，基于 bdc33c18）：004_flour_bag / 九模型 / 4K / Front-Right，相同四个屏幕点位；旧版录制四笔最大帧 100.1ms、4 个长任务/最大 117ms，LoAF 四次 104–119.1ms，均含 R3F DIV.onpointerup 48.2–74.9ms 与 DIV.onclick 41.1–52.4ms。新版刷新后保存快照只恢复一层可见重绘，故通过普通菜单重新复制三层，确认四层与 handoff=ready 后录制：最大帧 50.0ms、1 个长任务/最大 70ms，LoAF 78.1ms 的主要脚本为原生 CANVAS.onpointerdown 68ms；该段未再出现 R3F up/click 长任务。录制间隔/热缓存并非严格等时，不比较平均 FPS 作为收益比例，不将短录制宣称为零卡顿。复制/准备阶段仍记录约 750.6ms 最大帧与 compile 807ms，未包含在四笔窗口内；材质首次编译、原生首笔、提交生图和返图卡顿仍未完成验收。副本仍在页面，不据 Saved 文案宣称副本持久化已通过。
+
+同一 M03 输入清理中复用已计算的 sourceKey、isMaskStroke 与外层未就绪条件，删除重复判定以保持原 3,122,000-byte 包体门禁，不改变 layer-ready/深度/历史拒绝规则。原基于源码形状的断言随重构改为执行真实 down guard / context-menu 片段，覆盖命中、无命中、handoff、history busy 和两种 repaint/普通工具；不是删除原断言语义。完整发布构建、Cloud artifact/两项边界及包体通过（79 chunks / 3,121,981 bytes，19 bytes 余量）；回归总结果另列。代码与截图反馈的“割草机器人”并非同一工程，不将本地面粉袋点涂结果作为该工程提交卡顿已修复的证据。
+
+变更卡 `CHG-20260903-NATIVE-PAINT-EVENT-TAIL`：UI-06 → M03，`ALG-VIEW-INPUT-001` v1.1.0，实施 Codex、体验验收维护者。真实四层点涂 LoAF 每笔 DIV.onpointerup 48.7–56.1ms、DIV.onclick 39.2–46.0ms；核对 installed R3F 分发器，画笔原生 down/move 已独占，但抬笔释放捕获后仍进入递归拾取。本次仅在真实表面命中且画笔接管后登记 canvas/pointer ownership；R3F 跳过同指针 up/click/doubleclick/contextmenu 尾部，原生 final sample、commit/history、相机监听与 DOM 观察器继续运行。下一非活动手势的 down 在 touch/disabled/background 判断前清理，活动笔画的其他指针不抢占；Windows Ink 恢复换 ID 时重新登记。effect 替换保留标记，真正卸载清理；原生 pointercancel/lostpointercapture 与已有 R3F capture 分发不改。
+
+此改动不改变涂抹采样、GPU 上传、CPU/Worker 覆盖、shader/深度/颜色、UV 合成、导出或持久化资产，所有对应消费者保持原语义。分辨率、QA、Schema、Project Command 幂等性、Revision CAS、ownership、verified assets 不变，无迁移；回退仅恢复默认手势尾部拾取及移除 ownership 登记，不删除工程。`test:viewport-wheel-events` 运行实际 R3F/Three 分发：60 笔原生接管笔画的 120 次多余拾取变为 0，覆盖原生 up/click 接收、后续选择/空白选择、canvas/指针隔离、捕获/取消、旧 MouseEvent、effect 重建与下一 down 重置，同时保留 1021→0 wheel 与正交/透视增量回归。真实帧时间另记，不以拾取计数代替端到端验收。
+
+前一材质调度补丁本地实测（index-DlqLu8J0 / EditorPage-i-4vzPD9）：四层回贴记录 57.8 FPS、P95 16.8ms、P99 50.0ms、最大帧 700.7ms、14 个长任务/最大 725.0ms。最长 LoAF 脚本仍为 Three.compileAsync isReady 725.2ms，另有 IMG.onload 126.7ms。它只调整了编译发布顺序，未消除多层编译尖峰；不同空闲间隔/缓存下不将平均 FPS 的变化当因果改善。79 项回归、typecheck、修改文件 lint、完整 build:release、artifact/边界及原包体门禁通过（3,121,936 / 3,122,000 bytes）；远端生成提交/返图、长期多层稳定性未验收。
+
+变更卡 `CHG-20260903-PROJECTED-COMPILE-PUBLICATION`：UI-06/UI-10 → M06，`ALG-PROJ-007` v2.1.2，实施 Codex、体验验收维护者。前一四层回贴记录的长任务位于 R3F render 与 Three.compileAsync；源码核对到非 outline 模型的每次结构编辑也会启动 speculative program warmup，直接纹理路径却没有等待正式材质预编译即挂载到可见 mesh。本次只在 outline 恢复阶段保留抢先预热；编辑现有模型时由正式构建独占预编译，direct 与 array 均在链接后发布，编译前仍等待上传和交互空闲，并加入当前 renderer 已启动的 cold warmup Promise，避免同时轮询同一程序。共享 warmup Map 改为保存 finally 所比较的原 Promise，修复包装 Promise 导致条目永不删除的问题；失败仍按原 catch/终态处理，不永久阻断同签名重试。
+
+此为资源调度 Patch，不改变 shader 源码、CPU/GPU/Worker 算法、纹理上传像素、投影/深度/颜色公式、采样器预算、UV/export 或最终分辨率。SceneRoot 的取消、旧材质保留、层显隐/选择与发布前权威状态检查保留；Project/Layer/Generation/Capture Schema、Project Command 幂等性、Revision CAS、ownership 与 verified assets 不变，无迁移。回退仅恢复 warmup 启动条件、Promise 注册与 direct 预编译等待，不删除用户工程。test:projection-performance-safety 执行实际 effect gate、Promise Map 注册、direct 创建分支和 precompile 函数，覆盖 outline/已恢复/隐藏对象、编译完成前禁止发布、失败/无材质、cold warmup 加入与取消；浏览器帧时间另记，不以构建或模拟顺序通过宣称尖峰已消失。
+
+2026-09-03 本地复测（上述三个未提交补丁合并构建 index-CgLCA5pb / EditorPage-BDb2At7B，基于 bdc33c18，不代表生产发布）：经授权刷新原标签，004_flour_bag / 九模型 / 4K；实际准备诊断由此前 10009.4ms/required=true 变为 0.0ms/required=false，六次回贴点涂后 handoff=ready，作者 mask/falloff 均有有效像素。短回贴录制 57.3 FPS、P95 16.8ms、最大帧 200ms；继续通过正常复制菜单把当前可见重绘叠到四层，再点涂四次并退出，录制 48.2 FPS、P95 16.8ms、P99 66.8ms、最大帧 717.2ms、14 个长任务/最大 672ms，未满足帧稳定验收，不得宣称多层卡顿已解决。此为同源结果复制/回贴压力，不是四次独立远端生图；提交/返图完整流程及长期资源稳定性仍未验收。测试副本/笔画留在当前页面，可用正常历史撤销，不删除用户旧层。
+
+本次 LoAF 最慢样本：737.7ms（其中 R3F FrameRequestCallback 664.8ms），另有 Three.WebGLRenderer.compileAsync 的 isReady 轮询 650.1ms，以及预编译等待帧回调 649.2ms。位置分别为 projectPipeline-Dhpfi0zv.js:字符800465 / 619278、bakeHighSnapshot-Bm1_YOW8.js:字符394834；从构建文本核对为渲染循环、编译完成检查及等待回调，尚无更深层 GPU/CPU 调用栈，不能把 renderDuration 或 s6-publish-deferred-export 阶段标签当作具体 GPU/UV 根因。后续独立问题为多层结构发布后的材质编译/首次呈现尖峰。当前 79 项 Web 回归、typecheck、修改文件 lint（零错误、7 条既有警告）、完整身份参数 build:release、Cloud artifact、Cloud/project repository boundary 与原包体门禁通过：79 chunks / 3,121,868 bytes，距 3,122,000 门禁只余 132 bytes；未改预算、CI 配置、输出分辨率或质量门禁。
+
+变更卡 `CHG-20260903-REPAINT-MERGED-BOUNDARY-WAIT`：UI-06/UI-10 → M08，`ALG-LR-008` v2.4.4，独立修复多层重绘来源切换的无效驻留等待。真实九模型/4K 工程中，004_flour_bag 的顶层为 merged UV，下面有三个旧重绘层；通过正常图层菜单复制一层后，DOM 诊断显示 residentWait=10009.4ms、handoff=pending，并报“上一重绘图层的蒙版尚未完成材质绑定”。SceneRoot 按既有规则排除同对象可见且有资源的 merged UV 以下投影层，但预热/来源交接仍要求这些层驻留。新等待策略与该已有显示边界一致：只对已被此边界排除的目标取消无效等待，退出画笔与切换来源同样核对最新层顺序；仍实际显示的层继续检查真实材质/蒙版绑定、取消和 10 秒失败保护，不以超时伪造完成。
+
+本次不是 UV 合成算法改动，不重排、合并、隐藏或删除用户图层，当前笔刷仍需完成 exact overlay、高清资源与显示就绪检查。GPU shader/投影/深度/颜色、CPU/Worker 像素与 UV/export 消费者不改；旧层 authored mask、live revision、持久化/撤销保留，Project Command 幂等性、Revision CAS、ownership、verified assets、Schema 和输出尺寸不变，无迁移。回退只恢复旧等待判定，不删除工程。回归执行真实预热等待片段与来源交接 ready 回调，并与 SceneRoot 的实际 merged UV 边界函数对照，覆盖隐藏/无资源/其他对象/普通 UV/下方 UV/相同 order/global UV；被覆盖层 10000ms 模拟等待变为 0，正常层仍等待实际绑定。浏览器同场景复测结论单独记录，不把测试时钟当实测。
+
+变更卡 `CHG-20260903-LIVE-TEXTURE-READ-UPLOAD`：UI-06/UI-10 → M06，`ALG-PROJ-007` v2.1.1，实施 Codex、真实多层体验验收维护者。独立于前一 M08 计算优化，本次只修改 liveProjectedCanvasTextureRegistry 的驻留纹理读取：旧 configureTexture 在每次 getter 调用时都置 needsUpdate，导致 loadProjectedTexture、覆盖层复用与材质重绑把未变化的 source/mask 再次标为待上传。参数与 backing 不变的读取现保持 Texture.version / Source.version；显式 register（含同一 Canvas 再注册）、换 backing、markUpdated 和 colorSpace/flipY/wrap/filter/mipmap 变化仍发布。upload:false 只递增持久化 revision，不因随后读取恢复多余上传。
+
+此补丁不减少层数、不静音旧层、不缩小纹理。GPU 仅取消无内容变化的上传标记；CPU 像素、Worker packing/falloff、shader coverage/颜色/深度、UV 与 export 对应路径均不改。审计 imageSampler / layerStackCache 仍按 registry revision 读取原像素，texturedExportUtils 仍导出原 Canvas，EditorPage 仍按 revision 编码并上传验证资产；读操作不改变 revision 或 PNG 缓存。Project Command 幂等性、Revision CAS、ownership、Schema、最终输出与资产不变，无数据迁移。回退只恢复 registry 无条件 needsUpdate，不删除图层/蒙版/Generation。新增 test:live-projected-texture-registry 纳入自动发现回归，执行真实 Three.Texture：8 层 × 3 纹理 × 60 轮读取（含两种 Canvas getter）、显式内容发布、同 Canvas 重注册、backing 替换、参数修正、upload:false、PNG 缓存与 baking/persistence source 契约。原实现新增用例失败，修复后通过；此为上传标记证据，不等于实际 GPU 上传次数或真实卡死根因已全部解决。
+
+`CHG-20260903-LOCAL-REPAINT-INTERACTIVE-COST` 本地验证：78 项 Web 回归、Web typecheck、修改文件 lint（零错误，7 条既有 Viewport 警告）、完整发布身份参数 build:release、Cloud artifact、Cloud/repository boundary、原 web bundle budget 均通过。包体 79 chunks / 3,121,369 bytes，小于 3,122,000 门禁；预算未调整。构建标识 index-Csd_rrty / EditorPage-QltrCc7x，只代表基于 bdc33c18 的本地未提交补丁构建，不代表远端 CI 或生产发布。原项目页面显示 Unsaved，未据隔离测试宣称真实生图/回贴已无卡顿。
+
+变更卡 `CHG-20260903-LOCAL-REPAINT-INTERACTIVE-COST`：UI-05/UI-06/UI-10 → M08，实施 Codex、真实工程体验验收维护者。限定问题为返图 GPU 准备与结果回贴的主线程突发工作；不改 Cloud 后台任务架构或 UV 合成。`ALG-LR-007` v2.2.0 的图像语义不变：内侧羽化以零边界扩展的距离缓冲合并覆盖判定/前扫，取消独立 inside 缓冲，以原整数距离的同公式查表合并后扫/RGBA 输出。正交/对角距离 3/4、0.08 覆盖阈值、6–24px 自适应羽化、smoothstep 和 RGBA 取整全部保持；打包输出先构造 RGBA 字节，兼容主机字节序。作者蒙版 Canvas 首次创建声明 willReadFrequently，适配每个笔刷片段的 CPU 读回，具体浏览器端收益须实测，不据此承诺零 GPU 等待。`ALG-LR-008` v2.4.3：返图颜色、作者蒙版、显示蒙版的三次 initTexture 之间显式让出浏览器帧/任务，并再次检查交互和取消；原空闲检查在空闲时立即完成，不能代替分帧。这里不是减少上传数据，也不伪造真实材质呈现完成；20 秒准备预算、10 秒驻留等待、真实呈现屏障与失败终态不变。
+
+上述变更的输入仍为同 Generation/对象的原始图与作者覆盖，输出仍为同分辨率、同像素的派生 mask 和原资源就绪事件。CPU 实现变化，GPU 材质/shader、Worker falloff/生图输入、capture depth/surface-lock、UV 合成及 export 对应消费者审计后保持不变；作者与派生蒙版独立持久化、历史/撤销、Schema、Project Command 幂等性、Revision CAS、ownership、verified assets 和最终分辨率不变，无数据迁移。回退只恢复羽化实现、Canvas 创建提示及上传间等待；不删除工程/图层/蒙版/生成资产。`test:local-repaint-inward-crossfade` 使用冻结的 bdc33c18 实现逐字节对照 96 组尺寸/图形/羽化宽度、120 组阈值/透明度随机图和整图/dirtyRect Canvas 适配，执行真实 composite 创建；`test:local-repaint-background-scheduling` 执行真实三纹理上传片段，验证分段、两处取消、无 source 与隐藏页兜底。隔离 Node CPU 对照中 1024² 全覆盖中位数 19.26→12.81ms，斜向笔画 10.10→7.44ms；不含 Canvas/GPU/浏览器帧时间，不代表提交/返图/回贴端到端已通过。提交生图阶段本次未修改，真实付费生图和同工程连续回贴仍待验收。
+
+上述预览调度的实测（2026-09-03，index-nvUnMjWl / EditorPage-DyV1qQlL）：经维护者明确授权在 Unsaved 状态按最后保存版本刷新，九模型/4K/贴图工作区，生成与图层面板保持展开，按同一对象顺序各 36 次点击、不进行滚轮或画笔操作。原构建 25.5 FPS / P95 133.3ms / 最大 166.7ms；新版第一轮 45.9 FPS / P95 33.4ms / 最大 600.5ms，第二轮 51.4 FPS / P95 33.4ms / 最大 133.3ms。P95 改善但不判定无卡顿通过：第一轮 598.8ms 脚本落在 bakeHighSnapshot-b3C-6i8s.js 字符位置 88054，映射共享 scheduleAfterBrowserPaint 的定时回调，尚不能据此识别具体下游任务；第二轮仍有 urlToImageData IMG.onload 26–30ms 以及无完整脚本归因的 80–107ms render 段。不能按阶段标签断言 GPU，也不能把第二轮热态最大值代替第一轮长尖峰。78 项 Web 回归、typecheck、修改文件 lint（零错误、8 条既有警告）、完整发布参数 build:release、Cloud artifact 及原包体门禁均通过。此次只处理预览调度，Worker 像素/PNG 与剩余长帧继续分阶段定位，不降低 QA 或输出质量。
+
+变更卡 `CHG-20260903-TEXTURE-PREVIEW-QUEUE`：UI-05/UI-09/UI-11 → M08，`ALG-LR-011` v1.1.0（显示预览消费者调度），实施 Codex、体验验收维护者。原九模型贴图页 36 次切换测得 25.5 FPS、P95 133.3ms、最大 166.7ms；LoAF 151.1ms 中多个 IMG.onload 为 46–56.7ms，定位到图像读取及其后续处理，不据阶段标签归因 GPU。折叠对照因模型恢复自动展开图层面板而无效。本次把 display/capture-mask UI 预览合用串行队列，前台沿用 180ms 交互安静窗口、32ms 任务检查；旧消费者卸载用 AbortSignal 释放，最后消费者退出取消排队与后续阶段，其他消费者仍存活的共享任务保留。运行中的浏览器图像解码不会被强制中断，但迟到结果不缓存、不发布，CPU 后续阶段再检查交互与取消。完成缓存按 source/depth 或 source/mask/contentRevision 识别并按 LRU 更新，最多 64 项 / 32 MiB 编码字符串估算（每字符两字节，含 key），不缓存 ImageData，不淘汰仍有消费者的运行任务；失败不污染缓存。模型归属变化不自动展开图层面板，同模型显式换层仍沿用打开行为。多视图无结果卡、折叠/隐藏的生成面板不启动显示预览；独立预览模态打开时仍可处理，不卸载生成任务/表单。1024 显示上限、颜色/深度/mask/裁切/PNG 像素公式与原图、投影、UV、GPU、Worker/shader、持久化和导出均不变；Schema、Project Command 幂等性、Revision CAS、ownership 与资产不变，无迁移。回退只移除 UI 调度队列和面板可见性/归属保护，不删除工程。`test:display-preview-queue` 覆盖 71 次过期切换零处理、共享取消、运行任务晚到与同 key 重获、27 预览缓存、LRU/字节上限、失败重试、后台无需 rAF 和面板归属；实际预览分派、像素、图层可见性/保留、选中框、typecheck/lint/build 另测。此为第一阶段，未宣称已将像素处理/PNG 移至 Worker，真实新构建帧时间仍须同项目、同样展开面板复测。
+
+2026-09-03 CI 包体修复（M08 / `ALG-LR-011`，M15 验证）：流水线 624621 的构建及 Cloud artifact 检查成功，总 JavaScript 为 3,122,032 字节，超过 3,122,000 字节门禁 32 字节。生成预览分派在排除 undefined 后只有 capture-mask / generated-display 两种模式，移除不可达的 subject-filled 旧回退及其导入，让构建裁剪无消费者的旧预览路径；两种可达处理及源图回退保持不变。算法版本、Schema、GPU/CPU/Worker/shader、投影、持久化及导出语义不变，无数据迁移；回退仅恢复该导入和不可达分支。禁止通过提高预算或关闭质量检查解决本次失败；验证须使用 CI 的完整发布身份参数。本地以完整发布参数执行 build:release、check:cloud-artifact、check:web-bundle-budget，通过 79 chunks / 3,119,610 bytes；test:generation-preview-edge-decontamination 执行实际分派表达式和两条像素处理回归通过。此结果不代表远端新流水线已经通过。
 
 本文档是 LI3D Cloud 当前模块边界、算法语义、调用关系、持久化协议和变更流程的唯一维护准则。日期型审计、旧设计稿和历史 ADR 只能提供背景，若与本文档或基线源码冲突，以基线源码和本文档的明确状态为准。
 
@@ -94,7 +154,23 @@ LI3D Cloud 控制面（无状态 Node.js App）
 
 `2568e40` 基线的新选择契约：贴图工作区优先显示用户显式选择的模型；所选 ID 缺失时回退到活动模型；点击空白视口不清空贴图模型选择。超过 20,000 三角面的 Auto UV 错误使用醒目的警告呈现。对应测试为 `test:multi-model-restore-policy`。
 
+场景多模型选择性能补丁属于 UI-04/UI-06 → M03，继续沿用 `ALG-IN-003` 的对象身份、并排放置与选择结果，不改变算法语义或版本。空白蒙版/无局部重绘会话时，切换模型不得递增 paint-mask reset revision 或清空、上传 GPU 蒙版目标；每个常驻 ImportedModel 只订阅自身是否选中，未变化模型不得因全局 selectedObjectId 字符串而重跑完整材质组件；对象列表、模型点击与场景清空选择须先登记为视口交互，使既有精确纹理分条上传和后台任务门控在安静窗口内主动让出帧预算。存在作者蒙版、活动画笔或局部重绘 source/preview 时仍执行原有 fail-closed 清理，禁止把会话带到另一模型。投影、UV、PBR、输出分辨率、Project/Layer/Generation/Capture Schema、Revision、ownership 与资产不变，无迁移；回退可恢复无条件 reset revision、全局选择订阅与取消选择交互登记，不删除工程或资产。对应回归为 `test:projection-performance-safety`，真实九模型项目还须记录连续选择的 P95/P99/最大帧与错误数。
+
+高频视口输入路由属于 UI-06 → M03，登记为 `ALG-VIEW-INPUT-001` v1.0.0：滚轮仅由 `BlenderOrbitControls` 的原生被动监听接收并按显示帧累计执行，R3F 的 `onWheel` 分发为空操作，避免对只有点击处理的模型逐原始滚轮包执行递归射线拾取。不调用 preventDefault/stopPropagation，不丢弃物理滚轮增量；R3F 其余点击、空白未命中、hover、指针捕获及原生画笔路径保持原样。新增真实 R3F 分发回归 `test:viewport-wheel-events`，对照 1021 个滚轮包原来产生 1021 次拾取，修复后为 0；透视/正交缩放结果、点击选择、空白未命中和监听清理均须一致。此改动不改变相机公式、GPU/CPU/Worker/shader、投影/UV/画笔覆盖、持久化与导出；分辨率、Schema、Revision、ownership 和资产不变，无迁移。回退仅移除 Canvas 自定义事件路由并恢复默认 R3F wheel 分发；不得删除项目或资产。真实帧稳定性需在相同项目和高频滚轮输入下前后复测，隔离拾取次数测试不代表已消除所有卡顿。
+
+审计卡 `CHG-20260903-VIEWPORT-WHEEL-PICKING`：英文名 Viewport input routing，状态 production；本次实现 Codex，体验验收由仓库维护者执行。输入为 UI-06 DOM WheelEvent（deltaX/deltaY/deltaMode 与原事件保持不变），输出为既有相机距离/zoom 更新，不产生 Layer 或 Project 输出；无新增阈值、颜色空间或矩阵变换，原相机单位/空间沿用 `BlenderOrbitControls` 与 `ALG-CAP-001`。实现仅为 CPU 事件路由 `viewportEvents.ts`，GPU/Worker/shader 无对应新增实现，持久化字段无变更；测试另含 `test:view-cube-orientation`、`test:projection-performance-safety`、`test:multi-model-restore-policy`、Web typecheck/build。迁移与回退见上段。
+
 ## 4. 工程保存、Ctrl+S 与数据格式
+
+变更卡 `CHG-20260903-MODEL-SELECTION-RESIDENCY`：UI-04/UI-06 → M03，登记 `ALG-VIEW-SELECT-001`（Model selection resource residency）v1.0.0，状态 production，实施 Codex、真实体验验收由维护者执行。输入为当前对象、工作区、工具所有权和既有 180ms 交互安静状态；输出为相同选中框和相机取景，不改变 `ALG-IN-003` 对象选择语义。场景中每个可见模型保留小型选中框 geometry/material，选择只切换 visible，模型/工作区卸载时释放；相机确认需要重新取景后才遍历 bounds。画笔预热在空闲门控之后才分配 Canvas/RenderTarget，GPU 上传、编译、深度捕获之间再次检查交互与当前模型/工具所有权；过期任务不继续占用 GPU。复用既有 idle 超时和安静阈值，不改变颜色空间、矩阵或分辨率；CPU 仅调整生命周期/调度，GPU 深度与画笔渲染内容、Worker/shader、投影/UV、蒙版/历史、持久化和导出输出不变，Project Command、Revision CAS、Schema、ownership 与资产不变。无需数据迁移；回退恢复选中框按选择挂载、预热的原分配时机和相机 bounds 顺序，不删除工程或资产。回归 `test:model-selection-residency` 执行实际组件/效果代码和真实 Three 资源，覆盖 71 次切换的资源身份/释放、忙时零预热分配、最终模型完整预热、工具变更取消和相机 guard；另跑多模型恢复、取景、投影安全、滚轮、typecheck/build。原人工九模型录制为 52.8 FPS、P95 17.0ms、最大 150.1ms、估算错失 369 帧；该录制未提供具体函数调用栈，不能据此把全部尖峰归因于本次修复，发布体验仍须同项目复测。
+
+多模型驻留补丁真实复测未通过：人工 97 次输入/72 个 wheel，36.6 FPS、P95 100.2ms、最大 600.5ms、9 个 long task/最大 598ms。隔离测试通过不能替代此体验失败，该补丁尚未作为完整卡顿修复验收。随后 M03 的现有只读 HUD 增加最近 120 条 LoAF 中最慢 8 条的时间、脚本文件名与字符位置，人工报告窗口过滤；不新增采样器、不改变 Project 或性能上传 Schema，图片 invoker 不显示完整资产 URL，已有 phase 仅为阶段标签、不能用于函数归因。
+
+变更卡 `CHG-20260903-SELECTION-BOUNDS-OWNERSHIP`：UI-04/UI-06 → M03，`ALG-VIEW-SELECT-001` v1.0.1（Model selection resource residency），状态 production，实施 Codex、体验验收维护者。用户反馈切换后旧模型选中框跳动。实际组件回归证实两条失配路径：frame 回调使用旧 React visible prop；`applyTargetOnlyMaterial` 的恢复器在提交后恢复一次，异步 readback/PNG 完成后的 finally 又重放旧 visible/material 快照，可能覆盖新的选择和材质。输入为当前 selectedObjectId、workspace mode、对象可见性/矩阵和原捕获快照；输出为每个呈现帧仅当前可见场景对象的选中框，捕获恢复恰好一次。常驻框在 useFrame 呈现前直接核对权威选择，未选中直接隐藏，不等待 React 重组件提交；静止帧不重建 bounds 或上传 position，保留资源驻留与 geometry bounds 缓存。恢复器新增单次执行保护，包含失败时 finally 的首次恢复；不增加计时阈值、矩阵/颜色公式或持久状态。`ALG-IN-003` 对象选择语义及 `ALG-CAP-002/003/004/005` 捕获像素算法不变；GPU/CPU 图像、Worker/shader、投影/UV/重绘/导出、分辨率、Schema、Project Command/Revision CAS、ownership 和资产均不变，无迁移。回退仅还原呈现前选择检查与恢复器单次保护，不删除工程或资产。扩展 `test:model-selection-residency` 执行真实组件与真实捕获恢复器，先复现旧代码两项失败，再验证 71 次无 React 重渲染切换、取消选择、工作区切换、空闲无 position 更新、旧捕获不复活边框/不覆盖新材质，以及原资源驻留、预热和取景回归。隔离回归不替代原项目人工视觉与帧稳定性验收。
+
+变更卡 `CHG-20260903-HIDDEN-LAYER-THUMBNAILS`：UI-09 → M08，`ALG-LR-011`（Generated display preview / 生图透明显示副本）v1.0.1，状态 production，实施 Codex、体验验收维护者。本次聚焦隐藏缩略图消费者，不修改 UV 合成。真实九模型场景 36 次列表切换复现 19.6 FPS、P95 133.5ms、最大 150.2ms；148.4ms LoAF 中三个 IMG.onload 分别 24.7/41.3/53.0ms，构建字符位置定位 `urlToImageData` 的 canvas drawImage/getImageData 及其 Promise 后续预览工作。WorkspaceDock 保留 CSS hidden 图层面板，而 LayerThumbnail 在切换对象后仍启动整图/深度读取、透明副本与 PNG 编码，12 项预览缓存会反复淘汰。输入仍为 Layer/source/depth，IntersectionObserver 只控制缩略图消费者是否挂载：真实可见且裁剪交集非零才进入原管线；隐藏、折叠、滚出屏幕时不启动新工作，卸载断开观察且拒绝迟到事件，不改变面板表单/任务状态。已启动共享预览不在本次强制取消；缺少 Observer 时保留原可用性。CPU 图像公式、1024 显示上限、精确 alpha bounds/6% 留白、深度门控和颜色空间原样保留；GPU/Worker/shader、正式 Layer/Generation、投影/UV/导出、最终分辨率、Schema、Project Command/Revision CAS、ownership 与资产无变更，无迁移。回退只移除缩略图可见性边界，不删除缓存资产或工程。回归 `test:layer-thumbnail-visibility` 执行真实组件，覆盖 71 次隐藏切换零消费者、可见恢复、零面积、移出屏幕、卸载迟到与旧浏览器回退；另跑预览像素、图层保留、typecheck/build，真实同路径前后测另行验收。
+
+变更卡 `CHG-20260903-LOCAL-REPAINT-BACKGROUND-WAIT`：UI-05/UI-06 → M08，`ALG-LR-008` v2.4.2，状态 production，实施 Codex、体验验收维护者。代码证据：提交蒙版/视角之前等待两次裸 rAF，返图 GPU prepare 启动及内部步骤也等待裸 rAF；隐藏页面暂停 rAF 时任务可能悬挂。仅将这些非呈现证明的等待接入既有 `waitForBrowserPaint/scheduleAfterBrowserPaint`（前台帧后执行，后台 timer 兜底），取消时解除未启动任务，GPU prepare 不再被后台残留导航 busy 阻断，但未结束画笔仍保持互斥。输入/输出与图像公式、蒙版/深度/颜色、GPU/CPU/Worker/shader、投影/UV/export、20 秒准备预算和原真实 resident 帧交接校验不变。未将 timer 当成实际呈现帧，也不尝试绕过浏览器冻结/丢弃策略：完全 frozen/discarded 时页面仍无法保证计算；远端 Job 和回来后的既有 reconciliation 才是任务恢复基础。本次不修改服务端 Job、Schema、Revision CAS、ownership、资产、分辨率或系统浏览器参数，无数据迁移。回退仅还原这些等待点。回归 `test:local-repaint-background-scheduling` 执行真实共享调度器与提交等待代码，覆盖起始隐藏、等待中隐藏、完全不派发 rAF 仍完成、取消与恰好一次；真实付费生图/后台冻结需维护者验收，不把模拟调度测试宣称为全链路通过。
 
 ### 4.1 Ctrl+S 一句话答案
 
@@ -166,7 +242,7 @@ Layer 的 `type`、`role`、`blendMode`、`visibility policy` 是四个独立维
 | --- | --- | --- | --- |
 | 合并 UV 图层 | `uv` | `merged-uv` | 已发布的最终 UV；`uvMergeVersion=4`；PBR 预览光照已固化，显示时 unlit |
 | 投射贴图·方向 | `projected` | 普通生成层 | 捕获相机空间投影；普通层参加 Top-3 质量合成 |
-| 单视图优先贴图 | `projected` | `projectionCompositeMode=single-view-priority-v1` | 在普通多视图后覆盖核心；有可见纹理底层时，编辑器生成距离场 Alpha 让轮廓宽带平滑接回底层 |
+| 单视图投射贴图 | `projected` | 普通生成层；`projectionCoverageMode=capture-mask` | 与多视图进入同一 Top-3 质量合成；capture mask/depth 只限定几何 footprint，不提供顺序优先权 |
 | 局部重绘·局部替换 | `projected` | `local-repaint-overlay` 或稳定 ID | literal overlay；alpha 直接等于用户表面画笔 coverage |
 | 局部重绘草稿 | `projected/patch` | `local-repaint-draft` | 生成结果与蒙版会话，不应直接当成最终 UV |
 | 内容识别修补 | `uv` | `content-aware-underlay` | 只填投影缺口，位于投影结果之下，不能覆盖有效投影 |
@@ -177,7 +253,7 @@ Layer 的 `type`、`role`、`blendMode`、`visibility policy` 是四个独立维
 
 删除最后一个活动对象图层后，store 自动创建空 UV 保底层。剪刀发布时会隐藏所有实际被消费的源层；若指定空 UV 目标则原位填充，否则在源层位置创建 merged-uv。
 
-### 5.1 当前图层橡皮 `ALG-ERASE-001` v1.3.3
+### 5.1 当前图层橡皮 `ALG-ERASE-001` v1.3.4
 
 橡皮采用 Modddif 式“编辑当前图层覆盖”语义，不对最终合成画面做破坏性擦除。快捷键为贴图工作区 `E`，目标由 `engine/paint/eraserTargetPolicy.ts` 唯一判定，React 和 Zustand 不得复制类型分支。
 
@@ -203,9 +279,17 @@ v1.3.2 投影蒙版显隐交接修复：多投影栈的 `DataArrayTexture` 是 l
 
 v1.3.3 投影蒙版统一原子交接修复：A100 项目逐个显示投影行时常为 `useTextureArrays=false`，多行同时显示且采样器吃紧时也可能进入 array；两条路径首次擦除都可能需要异步建立持久 keep-mask。旧输入层 `endLiveEraserPreview()` 会在眼睛/工具切换时抢先清除 GPU live multiplier，绕过 SceneRoot 的驻留检查；本地构建快时该时间窗不明显，A100 恢复项目的解码/材质队列较慢时则会显示未擦除的旧材质。现由 SceneRoot 独占清理权：不区分 direct/array，只要已提交材质结构键尚未匹配当前持久蒙版，所有图层均保留累计实时蒙版；替换材质驻留后再原子清除。已有 direct CanvasTexture 驻留时仍原地更新，不增加重建。覆盖、历史、补缝、持久化、分辨率、Schema 与资产均不变，无迁移。
 
+v1.3.4 投影蒙版纹理级原子交接修复：材质结构键相同只表示 sampler 布局相同，不能证明驻留 uniform 已从旧快照切换到本次全分辨率 CanvasTexture。每次普通 projected 橡皮提交及撤回/重做发布后，直接将同一稳定 live URL 对应的正式 keep-mask 纹理提升到当前对象的全部驻留投影材质；只有 `syncProjectedLayerResidentMaskTextureInObject()` 确认所有材质均已绑定后，才清除 512/1024 实时 multiplier。若眼睛、预览或图层切换发生在 pointer-up 提交完成前，则保留对象 root 与实时 multiplier，最后一个提交成功或失败后再完成交接，避免旧材质短暂回弹；刷新、保存资产、覆盖公式、补缝、分辨率、Schema 与 ownership 不变，无迁移。
+
 撤回/重做在同一任务中恢复持久瓦片、将当前及同层重建实例的 live eraser multiplier 重置为白色中性值、上传纹理并 invalidate；保持驻留 shader 结构，重新绑定 image/mask URL 和 contentRevision，随后同步 Project layers。此处中性白值是内部 keep-mask，不是编辑结果中的白模。后台细化仍采用项目原始分辨率和 3000ms idle；`engine/paint/refineStrokeHistory.ts` 从最早瓦片检查点按笔画顺序重放，分别更新每笔的 before/after。已撤回笔画仅更新 redo 检查点，不重新显示；新分支清除不再属于历史的笔画。每四个瓦片让出执行权，完成后无 await 地原子发布全部像素与历史；切换、撤回或新笔画使旧任务失效时不发布半成品。
 
 审计：GPU live 纹理与持久 UV0/alpha 同步恢复；shader、CPU rasterizer、UV Worker、GPU bake 的覆盖公式与 UV/export 消费契约不变。历史事务仅驻留内存，回退只还原提交边界、即时预览复位和逐笔细化实现，已有图层资产仍兼容。新增 `test:paint-history-transactions` 执行真实历史 store/撤回回调和细化函数，覆盖快速三笔撤回重做、按住画笔时撤回、失败占位、项目重置、同层 runtime 重建、重叠擦除/画笔覆盖、新 UV 岛、redo 归属与中途取消；与历史粒度、输入延迟、目标策略、投影显隐和局部重绘兼容回归一起验证。真实模型连续操作及保存重开仍需交互验收，不以数值回归替代视觉结果。
+
+`OBJECT-DELETE-HISTORY` v1.0.0 将模型删除定义为 M12 runtime 历史事务，而不是只保存 Object/Layer 元数据快照。事务在内存中保留被删 Three.js 模型实例，撤回时同步恢复对象顺序、选择、变换、显隐、图层、Generation/Capture、参考图、烘焙产物和 Bake Workspace，并清除该对象的本地删除墓碑；重做重新执行完整删除并登记墓碑。若运行时实例已不可用，UI-04 通过原项目 `sourcePath` 进入渐进式模型恢复兜底。撤回保留删除保存后最新的 Revision CAS token、asset manifest 和 lastSavedAt，禁止把服务端并发状态回滚到删除前。事务只驻留当前会话历史，不改变 Project Schema、对象资产格式、GPU/CPU/Worker/shader、投影/UV/export 或 ownership；旧项目无需迁移，回退后已有项目与 Revision 仍可读取。
+
+新增 `test:object-deletion-history` 真实执行 Project/Scene/Layer/Generation store 的删除→撤回→重做→撤回，验证同一 Three.js 实例即时回到视窗、其余模型被自动排列后恢复原变换、对象子资源和活动选择完整恢复、删除墓碑清除/重建，以及异步删除保存产生的新 CAS Revision 不被旧快照覆盖。浏览器交互验收仍需覆盖底部按钮与 Ctrl+Z 两个入口。
+
+`MODEL-IMPORT-CAMERA-FOCUS` v1.0.0：贴图工作区的用户模型导入在 `setImportedModel` 原子发布后，立即复用 F 键的 DCC 聚焦语义，把轨道中心移动到新导入模型包围盒中心，并将相机平移相同位移；保持当前观察方向、相机距离、投影模式、模型排列和所有对象变换不变。场景、法线和导出工作区继续保留原相机构图，项目恢复和后台模型解码不触发自动聚焦。无 Project/Camera Schema、Revision、资产或 ownership 迁移；回退只移除导入发布后的聚焦调用。
 
 Layer 以可选 `eraserAlgorithmVersion=1` 标记首次采用该语义的内容修订；未带字段的旧图层按原 image/mask 读取，首次擦除时惰性升级，不执行批量迁移。项目保存继续使用 Project Command v1、Revision CAS 与现有 verified layer asset 上传，未引入新的命令或资产类别。高分辨率提交失败时保留上一持久版本并显示错误，禁止静默写入低分辨率结果。
 
@@ -218,10 +302,10 @@ Layer 以可选 `eraserAlgorithmVersion=1` 标记首次采用该语义的内容�
 | `ALG-PROJ-001` 捕获锁定矩阵重投影 | `2.0.0` | 实时材质、UV bake、画笔 | `clip=Pcap·Vcap·(Mcap·inverse(Mcurrent))·worldCurrent` | 缺矩阵/相机时层不可靠，禁止偷偷用当前相机 |
 | `ALG-PROJ-002` 连续 Coverage 门控 | `3.0.0` | projection shaders | 普通层=`opacity×sourceAlpha×mask×angle×visibility×facing×edgeFade`；surface-locked depth 命中层以捕获 mask/depth 覆盖为权威 | coverage≤0.02 丢弃，不用二值膨胀掩盖 |
 | `ALG-PROJ-003` 深度-法线表面可见性 | `3.0.0` | preview/GPU UV | linear-view depth + 3×3 支持；surface-locked 深度邻域支持在 0→0.05 内转为完整可见性，可靠 depth 命中不再被插值 mesh normal 二次衰减 | 缺 depth 才走角度退化，不伪造可见性 |
-| `ALG-PROJ-004` Top-3 颜色一致性合成 | `2.0.0` | 普通多视图 | 每 texel 保留 score 最高 3 个；线性 RGB 离群降权 | WebGPU parity 不通过使用 CPU exact 输出 |
-| `ALG-PROJ-005` Priority 单视图覆盖 | `2.0.0` | single-view layer | 核心沿用 priority coverage/quality；若同对象已有可见 projected/UV 底层，源图轮廓距离场在画幅 3.5% 宽度内由 0.12→1.0，之后再与捕获 mask/depth 相乘 | 无底层时保持不透明源；不越过捕获/深度边界 |
+| `ALG-PROJ-004` Top-3 颜色一致性合成 | `3.0.0` | 普通单视图与多视图 | 每个普通投影视角均作为候选；每 texel 保留 score 最高 3 个，按 coverage、depth、angle、edge 与线性 RGB 一致度组合，不依赖图层顺序硬覆盖 | WebGPU parity 不通过使用 CPU exact 输出 |
+| `ALG-PROJ-005` 单视图投影适配 | `3.0.0` | single-view layer | 只负责将供应方 RGB 清理为捕获原尺寸的全不透明投影源，并用独立 capture mask/depth 定义 footprint；合成完全委托 `ALG-PROJ-004`，旧 `single-view-priority-v1`/距离场 Alpha 在读取时惰性移除 | 缺 capture mask 时停止安全升级；不恢复 priority source-over |
 | `ALG-PROJ-006` Literal Overlay | `2.0.1` | 局部重绘 | 用户 authored coverage 直接 source-over；单层材质登记直接 mask sampler 以完成 resident 交接 | mask/source 未就绪不发布半层 |
-| `ALG-PROJ-007` GPU 驻留与分块 | `2.1.0` | ProjectedLayerMaterial / SceneRoot / PreviewCompositor | 每个 array stripe 上传前解除 PBO 绑定并在 finally 恢复；只对可见工作区当前对象预热，隐藏对象取消未完成 array 构建；array 失败时允许预算内精确 direct stack，否则渐进合成自动退避重试，总尝试最多 4 次 | 保留上一有效材质或合法 UV bootstrap；晚到发布不得复活隐藏 UV；不降低生产 UV 输出尺寸 |
+| `ALG-PROJ-007` GPU 驻留与分块 | `2.1.2` | ProjectedLayerMaterial / SceneRoot / PreviewCompositor | live 纹理同参数读取不置脏，显式发布/参数变化仍更新；每个 array stripe 上传前解除 PBO 绑定并在 finally 恢复；只对可见工作区当前对象预热，隐藏对象取消未完成 array 构建；array 失败时允许预算内精确 direct stack，否则渐进合成自动退避重试，总尝试最多 4 次 | 保留上一有效材质或合法 UV bootstrap；晚到发布不得复活隐藏 UV；不降低生产 UV 输出尺寸 |
 
 ### 6.1 当前生产常量
 
@@ -242,7 +326,6 @@ Layer 以可选 `eraserAlgorithmVersion=1` 标记首次采用该语义的内容�
 | 胜者差值 | `0.05 → 0.2` | 绝对质量差 |
 | 颜色一致 sigma | `0.22` | 线性 RGB 距离抑制 |
 | surface-lock 深度支持羽化 | `0.00 → 0.05` | 任一可信 3×3 depth 邻域命中即快速恢复完整覆盖 |
-| 单视图轮廓距离场 | `max(24,min(128,maxDim×0.035))` | 有可见底层时，源 Alpha 从 0.12 平滑升至 1.0 |
 | 投影 RGB 外扩 | `max(8,min(48,maxDim×0.015))` | 只保护过滤采样颜色；几何 footprint 仍由独立 capture mask 决定 |
 
 投影参数的 GPU 实时材质、GPU UV 栅格、Worker/CPU exact 和导出路径必须共同审查。当前缺少持久化 `projectionAlgorithmVersion` 是治理债务；改变上述阈值至少升级 Minor，改变矩阵、深度编码或权重模型升级 Major。
@@ -257,7 +340,7 @@ Layer 以可选 `eraserAlgorithmVersion=1` 标记首次采用该语义的内容�
 UI-09 剪刀
  → 冻结当前对象、选中 Layer IDs、分辨率和 PBR 显示设置
  → 普通 projected：GPU UV0 栅格，生成 RGBA/coverage/quality
- → literal/priority overlays：按图层顺序单独栅格
+ → 仅显式 feathered/literal overlays：按图层顺序单独栅格
  → Top-3 exact quality blend（Worker；WebGPU 必须 parity）
  → content-aware UV underlay 从下方补透明缺口
  → gutter / topology gap / enclosed hole / physical seam reconciliation
@@ -275,7 +358,7 @@ UI-09 剪刀
 | `ALG-UV-001` UV0 三角形投影栅格 | `2.0.0` | GPU 默认把 mesh UV 三角形画入 RT，重建世界位置/法线并复用投影门控；CPU 每 texel 4 子样本是诊断回退 |
 | `ALG-UV-002` Runtime 可见性补获 | `2.0.0` | stale/missing depth 按原 capture camera 重新捕获，完整捕获上限 2048，不改变最终 UV 分辨率 |
 | `ALG-UV-003` Top-3 质量合成 | `2.0.0` | 与第 6 节常量一致；输出 authored color、coverage confidence、rendered-color mask |
-| `ALG-UV-004` 有序 Overlay | `3.0.0` | feathered=`coverage×(0.75+0.25×qualityFade)`；priority 使用 `ALG-PROJ-005` v2 距离场 source Alpha；literal=`coverage`；实时与 GPU UV bake 同义 |
+| `ALG-UV-004` 有序 Overlay | `4.0.0` | 仅用户显式 overlay 使用 feathered=`coverage×(0.75+0.25×qualityFade)`；局部重绘 literal=`coverage`。普通单/多视图均先进入 Top-3，不再拥有 priority overlay；实时与 GPU UV bake 同义 |
 | `ALG-UV-005` 拓扑约束后处理 | `2.0.0` | gutter/gap=`clamp(ceil(res/512),2,8)`；hole=`clamp(ceil(res/2048),1,3)`；seam=`clamp(ceil(res/1024),2,4)`，不得跨无关 island |
 | `ALG-UV-006` Under 合成 | `2.0.0` | 投影在前、content-aware 在下；straight alpha：`Aout=Af+Au(1-Af)` |
 | `ALG-UV-007` PBR 预览光照固化 | `4.0.0` | 依据 UV 法线、环境预设、曝光、环境强度、主光强度/方位计算 deterministic preview light；rendered-color 像素权重 1 时保持原色 |
@@ -315,10 +398,10 @@ UI-09 剪刀
 | `ALG-LR-005` 历史兼容边界谐调 | `5.0.0-compatible` | 仅保留旧 v3-v5 全幅合成与 legacy 切换的读取兼容；新 `direct-v1` 任务不调用 |
 | `ALG-LR-006` 表面画笔重投影 | `2.0.0` | raycast 命中表面，投射到 frozen source UV；最小绝对 face-on 0.08；世界半径 0.004-0.12 包围盒比例；texture radius 1-72 |
 | `ALG-LR-007` 低延迟实时覆盖 | `2.2.0`（显示所有权以本次源码校正为准） | 当前源码在应用画笔激活时使用 depth-aware exact overlay，同 ID resident twin 临时静音；退出后仍由正式材质按图层顺序显示。新建顶层 preview 在首笔发布前不加入背景栈；位于 priority 层下方的 preview 才提前加入 ordered stack。pointer-down 只消费已准备的资源，pointer-up 保留已有 `contentRevision` 并发布累计蒙版。本次仅优化准备调度，不改变 source、capture projector、depth/surface-lock、颜色、blend、1024 live 上限或显示所有权 |
-| `ALG-LR-008` 延迟投影持久化 | `2.4.1` | interactive UV bake 固定关闭；生图前 Project Command snapshot 后台执行。蒙版工具/生图开始即并行编译并持有 exact overlay 程序，预读作者蒙版；返图颜色缩放与 falloff 并行。内存 Session 按 Generation/目标复用活动任务。高清读取和 GPU 准备有 20 秒预算；仅背景栈已有行进入 resident 等待，单层直接蒙版登记完整、辅助网格排除，交接失败明确结束会话。Session 驱动按钮，DOM 仅诊断；pointer-up 两帧内发布权威图层行，idle 3000ms 仅合并持久化，needsRebake=true |
+| `ALG-LR-008` 延迟投影持久化 | `2.4.4` | interactive UV bake 固定关闭；生图前 Project Command snapshot 后台执行。蒙版工具/生图开始即并行编译并持有 exact overlay 程序，预读作者蒙版；返图颜色缩放与 falloff 并行。内存 Session 按 Generation/目标复用活动任务。高清读取和 GPU 准备有 20 秒预算；仅背景栈已有行进入 resident 等待，单层直接蒙版登记完整、辅助网格排除，交接失败明确结束会话。Session 驱动按钮，DOM 仅诊断；pointer-up 两帧内发布权威图层行，idle 3000ms 仅合并持久化并设置 needsRebake=true；保存前必须把 live canvas 编码上传成 verified asset，runtime URL 不得进入 Project Revision；提交/GPU 准备调度含隐藏页兜底，不替代真实呈现交接；返图三纹理上传之间显式让帧并检查取消 |
 | `ALG-LR-009` Inward Crossfade 栈合成 | `1.0.0` | 连续重绘层向内部交叉淡化，避免普通 alpha stacking 在边缘重复显露接缝 |
 | `ALG-LR-010` Provider 兼容编辑 | `1.0.0-compat` | `LocalRepaintDialog` 的 image/edit/protect/hole masks 独立路径，不得与四输入主路径混改 |
-| `ALG-LR-011` 生图透明显示副本 | `1.0.0` | UI-05 重绘效果图和 UI-10 普通投射图层缩略图优先使用 capture linear-view depth 清除明确无几何覆盖的背景，按精确 alpha bounds 仅裁切一次并保留 6% 留白；几何覆盖区的 RGB/alpha 原样保留。深度不可用时只清除与画布边缘连通的近黑外背景，不做第二次 matte、侵蚀或分位裁边。局部重绘图层不走整图副本，继续使用用户涂绘 mask，只显示笔刷授权区域 |
+| `ALG-LR-011` 生图透明显示副本 | `1.1.1` | UI-05 重绘效果图和 UI-10 普通投射图层缩略图优先使用 capture linear-view depth 清除明确无几何覆盖的背景，按精确 alpha bounds 仅裁切一次并保留 6% 留白；几何覆盖区的 RGB/alpha 原样保留。深度不可用时只清除与画布边缘连通的近黑外背景，不做第二次 matte、侵蚀或分位裁边。局部重绘图层不走整图副本，继续使用用户涂绘 mask，只显示笔刷授权区域；实际可见消费者串行、交互空闲调度，支持共享取消与 source/depth/mask/revision 有界 LRU；切模型不强制展开图层面板 |
 | `ALG-LR-012` 远端重绘输入融合 | `1.1.0` | 专用 Worker 从原始连续 mask 派生 ModelView 合成核：候选/强核阈值为 24/96，8 邻域保留含强核的连通域，应用 `clamp(0.012×mask短边, 2, 6)px@2K` 闭运算、小于 `max(24px², bbox×0.02%)@2K` 的孤岛过滤和小于 `max(64px², bbox×0.05%)@2K` 的封闭孔填充；`composite=current×(1-a)+clay×a` 使用全不透明核和约 1.5px@2K 窄边羽化。远端 mask 从清理后核再按 `clamp(0.25×核短边, 24, 64)px@2K` 外扩、`clamp(0.2×外扩, 4, 10)px@2K` 羽化。Qwen、Capture、Generation 画笔授权与历史恢复仍使用未外扩、未清理的原始作者 mask |
 
 局部生图远端接收生成阶段的 RGB selection mask，但仍不接收 UV 图集、表面深度或用户最终回贴 coverage。远端 latent mask 不承诺蒙版外像素逐点不变；浏览器继续用同一 `allowedMaskUrl`、capture camera 和 depth guard 限制 3D 写回，用户通过表面画笔决定最终图层 coverage。这些几何授权契约与旧版保持一致。
@@ -397,15 +480,18 @@ Bake 设置包含 resolution、frontal/rear distance、distance/cage、cage infl
 | `ALG-IN-001` 格式路由导入 | GLB/GLTF 正式，FBX/OBJ 兼容；按扩展名/loader 解析为统一 LoadedModel |
 | `ALG-IN-002` 模型归一化 | 通过父 Group 居中、落地、适配相机，不改 mesh 原始顶点 |
 | `ALG-IN-003` 多模型放置 | 按已有场景包围盒并排放置，保留独立 objectId 与 transform |
+| `ALG-VIEW-INPUT-001` 视口输入路由 v1.1.0 | 滚轮交给原生相机控制器按帧累计；画笔接管的手势尾部不重复拾取，普通选择/hover/捕获保持原分发 |
+| `ALG-VIEW-SELECT-001` 多模型选择资源驻留 v1.0.1 | 选择框复用且每帧核对当前对象，不依赖旧 React 选择；捕获恢复恰好一次；仅真实取景计算 bounds；模型/工具所有权与交互门控保护预热资源分配及各 GPU 阶段 |
 | `ALG-CAP-001` 相机序列化 | position/quaternion/target/near/far/fov/zoom/P/V/world/aspect 完整保存 |
 | `ALG-CAP-002` Color 捕获 | 线性 RT + 输出变换；viewport/clay/target-only/flat 明确区分 |
 | `ALG-CAP-003` Mask 捕获 | 目标白色 BasicMaterial、黑背景；灰度×alpha 作为连续 mask |
 | `ALG-CAP-004` Depth 捕获 | `(-viewZ-near)/(far-near)` linear-view，RGB packing，alpha=1 |
 | `ALG-CAP-005` Normal 捕获 | 默认 view normal，编码 `n×0.5+0.5` |
-| `ALG-GEN-001` 单视图生成 | 当前相机 Capture + 材质参考 → Generation；结果先生成原捕获尺寸的边缘去污染投影源，再与 capture mask/depth 一起创建 single-view-priority projected layer |
+| `ALG-CAP-006` 捕获状态隔离 v1.0.0 | 首次及逐 tile/pass 的 await 前归还共享 renderer/背景；每个同步 draw 重绑捕获 target/clear，保留像素与分辨率 |
+| `ALG-GEN-001` 单视图生成 | 当前相机 Capture + 材质参考 → Generation；结果先生成原捕获尺寸的边缘去污染投影源，再与独立 capture mask/depth 一起创建普通质量合成 projected layer |
 | `ALG-GEN-002` 多视图批次 | N 个捕获共享 batch；完成层串行 commit，整批结束一次发布新投影栈 |
 | `ALG-GEN-003` 任务身份归一 | clientGenerationId/serverJobId/taskId 合并，避免恢复时重复 running 行 |
-| `ALG-GEN-004` ModelView 远端单视图 | `1.0.0`；当前视角白模 + 多视图材质参考 + 可选提示词 → `modelview-single-view` → Generation；结果继续使用 `ALG-PROJ-005` 单视图优先投影 |
+| `ALG-GEN-004` ModelView 远端单视图 | `1.1.0`；当前视角白模 + 多视图材质参考 + 可选提示词 → `modelview-single-view` → Generation；结果使用 `ALG-PROJ-005` v3 捕获适配并进入统一质量合成 |
 | `ALG-GEN-005` 提示词智能润色 | `1.10.0`；UI-05 经同源 `/api/liclick/prompt-polish` 分流。普通单/多视图保持莉刻 `data-analysis` A2A；局部重绘空输入由 `qwen3-vl-plus` 在一次请求中输出诊断和英文正文，诊断与正文分别校验；显式输入跳过诊断，保持统一 Qwen → Klein 转换模板。服务端用未外扩原始 mask 定位，并从干净 Image 1 自动裁出带上下文的第四图供 Qwen 看清选中部件；完整参考图仍只提供有证据的结构/材质，第四图不改变编辑范围或 ModelView 输入。模板先用 Image 2、第四图和 mask 外邻域共同确定真实结构与材质；仅当三者证明选区为未完成的白灰占位时，要求 Klein 用明确目标材质完整替换 clay/primer/flat placeholder/untextured surface，真实浅色材质不受此规则影响。模板以 100–180 词、2–3 段英文为生成目标；段数、词数、语言和 Markdown 偏差只记脱敏告警，不阻断也不触发格式修正。若首段缺少明确 mask 范围，服务端确定性追加固定保护句。仅最终正文写入 Generation，诊断不持久化、不回填文本框；显式输入与空输入均一次 Qwen，保持 65 秒 deadline。模板策略进入所有局部重绘指纹，升级后首次重新解析、后续继续复用 |
 | `ALG-OUT-001` 纹理/模型导出 | BaseColor 与 GLB/GLTF/FBX/OBJ/STL/ZIP；验证 UV 方向和颜色空间 |
 | `ALG-OUT-002` 快照/转台 | 当前视口设置生成静态图或视频，不改变 Layer 作者数据 |
@@ -417,10 +503,10 @@ Bake 设置包含 resolution、frontal/rear distance、distance/cage、cage infl
 - GPT2 输入与行为：继续使用现有完整纹理提示词、LiClick/Atlas 任务提交、轮询、取消和投影流程，不改变既有语义。
 - 远端输入：必填当前视角 clay 白模 `image`、已选多视图材质参考 `material_image`；`prompt` 可空且最长 4096 字符；禁止发送 mask、seed、noise_seed、模型名、采样步数或工作流节点参数。
 - 远端身份：每次新生成使用新的 client generation ID，并派生独立 `Idempotency-Key`；网络层重放同一请求必须复用该键。
-- 远端输出：同步 PNG 先写入当前项目 generations 资产，再创建 `workflow=texture-map`、`provider=modelview-single-view` 的 Generation；GPT2 与远端都必须用同一 capture camera/mask/depth 和 `ALG-PROJ-005` v2 创建 `single-view-priority-v1` 图层，供应方差异不得改变投影几何。
+- 远端输出：同步 PNG 先写入当前项目 generations 资产，再创建 `workflow=texture-map`、`provider=modelview-single-view` 的 Generation；GPT2 与远端都必须用同一 capture camera/mask/depth 和 `ALG-PROJ-005` v3 创建普通质量合成图层，供应方差异不得改变投影几何。
 - 工作流：`modelview-single-view`，生产版本 `2026.08.26-c0e6218-single-view-4step-r1`，与局部重绘 `modelview-inpaint` 分开排队和审计。
 - 失败与回退：远端失败只标记本次 Generation 失败并显示真实错误，不自动改走 GPT2；用户可显式切回 GPT2 重新生成。远端为非默认、非持久化界面选择，旧工程无需迁移。
-- 回滚：移除单视图远端 UI 分支和同源路由即可；已有远端 Generation/Layer 继续按普通单视图优先层读取，不需要删除资产或改写 Project Revision。
+- 回滚：移除单视图远端 UI 分支和同源路由即可；已有远端 Generation/Layer 继续按普通单视图质量层读取，不需要删除资产或改写 Project Revision。
 - 测试：`test:single-view-priority` 必须覆盖双提供方分流与投影语义；`smoke:modelview-inpaint` 同时验证两条 ModelView URL、multipart 字段、幂等键、X-Job-ID 和 PNG 持久化。
 
 ### 11.1.1 同源开发工作区资产兼容
@@ -429,11 +515,11 @@ Bake 设置包含 resolution、frontal/rear distance、distance/cage、cage infl
 
 ### 11.2 单视图投影源、迁移与回退
 
-- 面板返回图与投影源分离：面板可使用裁切显示副本；投影源必须保持捕获原尺寸，避免改变 projector UV。capture mask 是几何 footprint 权威，投影 PNG Alpha 只在 `projectionEdgeBlendMode=distance-field-v1` 时表达编辑器生成的轮廓过渡。
-- 生成结果轮廓先依据 capture mask 从主体内部回拉 RGB，再把清理后的 RGB 向 mask 外扩散；外扩像素不会扩大几何覆盖。浏览器编码需要的非零外侧 Alpha 最终仍会乘独立 mask，因此不会投影到背景。
-- 新建单视图检测同对象是否已有可见普通 projected/UV 底层。有底层时持久化 `ignoreSourceAlpha=false` 并使用距离场；无底层时 `ignoreSourceAlpha=true`，保持单层完整覆盖。旧图层缺少显式 false 时继续按旧逻辑读取，不批量改写 Project。
-- 迁移：Project Command、Revision、ownership、Capture/Layer 字段和资产类别均不升级；旧项目直接兼容。要让已有单视图获得新轮廓过渡，需要重新生成或重新创建投影层。
-- 回退：停止生成 `distance-field-v1` Alpha并恢复 `ignoreSourceAlpha=true` 即可；已保存 PNG、mask、depth 均仍为合法资产。不得删除用户历史图层或重写 Revision。
+- 面板返回图与投影源分离：面板可使用裁切显示副本；投影源保持捕获原尺寸，避免改变 projector UV。capture mask/depth 是几何 footprint 权威，供应方 PNG Alpha 不参与单视图覆盖判断。
+- 生成结果轮廓依据 capture mask 从主体内部回拉 RGB，再把清理后的 RGB 向 mask 外扩散；源图保持全不透明，外扩像素不会扩大独立 capture mask 限定的几何覆盖。
+- 所有新建普通单视图和多视图均进入 `ALG-PROJ-004` v3 Top-3 质量合成；普通投影图层顺序只用于面板组织，不作为硬覆盖优先级。局部重绘、显式 Overlay 与 UV 层仍保留作者层级语义。
+- 迁移：读取旧 `single-view-priority-v1` 或历史“投射贴图 · 当前视角”行时，惰性清除 priority 标记、surface-lock 和距离场 source-alpha，改为 `projectionCoverageMode=capture-mask`、`ignoreSourceAlpha=true`、standard visibility；不批量改写历史 Revision 或图片资产。
+- 回退：代码可恢复旧合成分支，但不得删除或改写现有 Generation、Capture、Layer、mask/depth 资产；新版保存的普通质量层可被旧版作为普通 projected layer 读取。
 
 ### 11.3 提示词智能润色 `ALG-GEN-005` v1.10.0
 
@@ -501,7 +587,7 @@ A100 发布同时显式配置 `LICLICK_PERFORMANCE_LAB_ENABLED=true` 与构建�
 
 迁移只新增性能会话/分片表，不回填旧 `sessionStorage` 报告，不改变 Project Command、Revision CAS、对象 ownership 或任何图层资产。回滚可停止挂载 Cloud bridge、关闭性能 API 并保留新增表供审计；IndexedDB 未发送记录可由恢复后的同版本页面继续重试，禁止为回滚删除用户项目或恢复 Windows 本地采集组件。
 
-### 13.2 当前用户莉刻账号绑定 `LICLICK-ACCOUNT-BINDING` v1.2.0
+### 13.2 当前用户莉刻账号绑定 `LICLICK-ACCOUNT-BINDING` v1.3.0
 
 莉刻生图、编辑、轮询与通用提示词润色必须使用当前飞书 Session 用户独占的服务器端账号绑定。浏览器只通过同源、带 Cookie 的 Cloud API 发起绑定和查询状态；OAuth 临时状态、token 与 `atlas_home_dir` 只由 A100 控制面保管，禁止写入浏览器、Windows 本地组件或项目文档。
 
@@ -519,6 +605,10 @@ v1.1.0 将“登录 LI3D”与“关联当前用户莉刻账号”串为同一�
 v1.1.1 修复部署在非根路径时的莉刻 IDaaS Service 回调：账号绑定回调必须以 `LICLICK_PUBLIC_PATH` 为权威路径，并仅在该配置为空时回退 `LICLICK_PUBLIC_WORKSPACE_URL` 自带 pathname。A100 的回调因此固定为 `/li3d/api/liclick/account-binding/callback`，不得退化为根路径 `/api/...`。此补丁只修正 M13 的授权 URL 构造，不改变令牌校验、飞书与莉刻邮箱一致性、独立 Atlas home、Project/Layer/Capture/Generation Schema、Revision、ownership 或资产；无数据迁移。回退只恢复旧 URL 构造，但会重新暴露子路径部署绑定失败，不得改为共享账号回退。
 
 v1.2.0 增加显式、默认关闭的 A100 测试共享账号模式，仅用于 IDaaS 云端个人回调尚未开通期间的受控联调。只有同时配置 `LICLICK_SHARED_TEST_ACCOUNT_ENABLED=true`、固定 owner email 和位于 `LICLICK_WORKSPACE_DIR/atlas-homes` 下的受管 Atlas home 才会生效；所有已通过飞书登录的用户仍保持各自 Li3D Project/Job ownership，但莉刻远端调用、额度、个人工作区和任务资产统一归属该测试 owner。模式开启时禁止从用户菜单解绑或删除共享 Atlas home，跳过“Atlas email 必须等于当前飞书 email”的个人绑定断言，并在账号状态中显式标记 `sharedTestAccount`。关闭开关即可恢复 v1.1.1 的个人绑定 fail-closed 行为；不得把 Token、密钥或具体人员邮箱提交到 Git。
+
+v1.3.0 按 IDaaS JWT SP 发起协议改为固定注册回调。IDaaS 应用只登记由公开部署路径生成的 `/api/liclick/account-binding/callback`；当前生产站点根路径下的精确地址为 `https://li3d.lilithgames.com/api/liclick/account-binding/callback`，历史文档中的 `/li3d/...` 只适用于曾配置 `LICLICK_PUBLIC_PATH=/li3d` 的部署，不得用于当前生产 ingress。发起 URL 不再发送动态 `redirect_uri` 或 OAuth `state`，而以同源 `target_url` 携带十分钟有效的一次性随机绑定 UUID。回调仅接受与公开站点 origin、固定 `/api/liclick/account-binding/complete` 路径、唯一 `loginId` 参数完全匹配的目标，外域、额外参数、fragment 或非 UUID 均拒绝；目标只用于服务端关联，不执行浏览器跳转。GET 回调取得 IDaaS 令牌后立即清除地址栏 query/fragment，再以同源 Cookie 和 JSON POST 完成授权。
+
+该协议不改变“一个飞书用户一个莉刻账号”：完成绑定仍须同时通过当前飞书 Session 归属、Atlas secure cache、有效期、莉刻服务权限以及 Atlas email 与飞书 email 一致性检查，随后只保存到该 `cloud_users.id` 的独立 Atlas home。既有个人绑定和 Project/Job/Asset ownership 原样保留；没有个人绑定的用户重新授权即可，无数据库、Project/Layer/Capture/Generation Schema 或资产迁移。发布前先在 `qa-idaas.lilithgames.com` 创建 JWT 测试应用并登记固定回调，配置 `IDAAS_JWT_SSO_URL` 为其 SP 发起地址，双用户验证隔离后再以同配置结构切换生产应用。回滚只恢复前一镜像并暂停新绑定；不得恢复动态回调、共享默认账号或迁移/删除现有个人凭据。
 
 迁移策略为：既有用户若没有独立 `atlas_home_dir`，一律视为未绑定并由本人重新完成莉刻授权；不自动认领 A100 共享凭据，也不迁移历史共享账号任务。该变更不修改 Project Command、Revision CAS、Project/Layer/Capture/Generation Schema、对象 ownership 或已验证资产。发布后应从 A100 运行配置移除共享 `ATLAS_TOKEN_FILE` 并撤销旧共享 token；回滚不得恢复共享回退，只能临时关闭莉刻入口并保留用户绑定数据，待兼容版本恢复。
 
@@ -666,5 +756,30 @@ M15 / CLOUD-DEPLOYMENT v1.0.0（2026-09-03）：正常合并 release 部署历�
 | `2.16.2` | 2026-09-03 | `本次 A100 测试共享莉刻账号开关` | M13、`LICLICK-ACCOUNT-BINDING` v1.2.0：增加默认关闭且仅由服务器 `app.env` 激活的测试共享账号模式；飞书 Session 与 Li3D 项目/Job ownership 继续隔离，但所有莉刻调用、额度、远端个人工作区和生成资产归属配置 owner。共享 Atlas home 必须位于受管目录，账号状态显式标记共享模式，用户菜单不能解绑或删除 owner 凭据；关闭开关立即恢复个人绑定。Token、密钥和具体人员邮箱不进入 Git，无 Schema、Revision 或资产迁移。 |
 | `2.16.3` | 2026-09-03 | `本次烘焙资产对象标识迁移修复` | UI-14/M10：修复首次在烘焙页导入高模时空字符串通过空值合并并把整个 Bake Set 写入 `bakeSets[""]` 的问题。高模、低模和材质导入统一选择首个非空对象 ID；读取旧工程时把空键、高模快照及所含低模/颜色/粗糙度/金属度/法线引用原位迁移到稳定项目级 Bake ID，下一次正常保存写回规范结构。低模选择立即显示，解析、UV/对齐检查与资产保存继续异步执行；失败保留文件名并显示明确原因。资产文件、ownership、Revision 与烘焙算法不变，无批量数据库迁移。 |
 | `2.16.4` | 2026-09-03 | `master 5f880fd + release cd30512` | M15 / CLOUD-DEPLOYMENT v1.0.0：适配 Cloud 镜像、PostgreSQL 初始化、部署门禁与凭据隔离，master 验证两个镜像，不执行生产发布；业务协议不变，保留存量数据，迁移与回滚见变更单。 |
+| `2.16.5` | 2026-09-03 | `本次高频滚轮重复拾取修复` | UI-06/M03、`ALG-VIEW-INPUT-001` v1.0.0：跳过 R3F 原始 wheel 的无用模型拾取，完整滚轮增量继续交给原生相机控制器按帧执行。真实分发回归覆盖 1021→0 拾取、透视/正交缩放、点击/空白选择和监听清理。无画质、算法输出、Schema、Revision 或资产迁移；回退恢复默认 Canvas 事件分发。 |
+| `2.16.6` | 2026-09-03 | `本次多模型快速选择驻留修复` | UI-04/UI-06/M03、`ALG-VIEW-SELECT-001` v1.0.0：复用选中框，跳过不改变取景的全场景 bounds；空闲后才分配预热资源，分阶段检查模型/工具及交互。无图像算法、画质、Schema 或数据迁移，九模型实际帧稳定性复测未通过，不能认定已消除卡顿。 |
+| `2.16.7` | 2026-09-03 | `本次隐藏缩略图消费者门控` | UI-09/M08、`ALG-LR-011` v1.0.1：以真实 LoAF 定位多模型切换时隐藏图层缩略图的同步像素处理；不可见/零面积时不挂载预览消费者，可见后使用原完整管线。无图像公式、输出质量、Schema 或资产迁移；页面体验待新构建复测。 |
+| `2.16.8` | 2026-09-03 | `本次局部重绘后台任务等待修复` | UI-05/UI-06/M08、`ALG-LR-008` v2.4.2：提交及返图 GPU 准备不再依赖裸 rAF，使用既有后台兜底；保留真实呈现、画笔互斥与任务身份校验。不保证冻结/丢弃页执行，无 Schema、图像质量或资产迁移。 |
+| `2.16.9` | 2026-09-03 | `本次选中边框所有权修复` | UI-04/UI-06/M03、`ALG-VIEW-SELECT-001` v1.0.1：呈现前核对权威选择，捕获恢复只执行一次，避免旧显隐/材质快照回写。保留资源复用、静止帧零 bounds 上传；无捕获像素、画质、Schema 或数据迁移。 |
+| `2.16.10` | 2026-09-03 | `a06f421` | 移除不可达的旧预览分支；完整发布参数构建及包体门禁通过，不提高预算、不改变可达像素处理。 |
+| `2.16.11` | 2026-09-03 | `本次贴图预览任务调度` | M08、`ALG-LR-011` v1.1.0：串行空闲预览、消费者取消、有界 LRU、隐藏结果门控及面板归属保护；78 项 Web 回归通过，完整发布参数包体 3,121,381 字节低于原门禁。无图像公式、输出分辨率或持久化迁移。 |
+| `2.16.12` | 2026-09-03 | `本次局部重绘蒙版持久化边界修复` | UI-06/UI-10、M01/M08/M14、`ALG-LR-008` v2.4.2：局部重绘 live canvas 保存统一读取 canvas/image 注册源并编码上传，按 URL/revision 和资产槽复用 verified asset；注册源已释放且没有已验证映射时本次保存失败重试，禁止把 `liclick-live-projected-canvas:` 写进 Revision。服务端将 live/blob 视为 volatile，优先保留同图层上一 Revision 的 durable mask/source，否则返回 `PROJECT_SAVE_CONFLICT`。GPU/CPU/Worker/shader、coverage、投影/UV/export、分辨率、Schema 与 ownership 不变；旧坏 Revision 保留审计，可从最近 durable Revision 原位恢复，无批量迁移。 |
+| `2.16.13` | 2026-09-03 | `本次模型删除撤回运行时恢复修复` | UI-04、M01/M03/M12、`OBJECT-DELETE-HISTORY` v1.0.0：模型删除改为完整 runtime 历史事务；撤回同步复用被删 Three.js 实例并恢复对象、选择、变换、图层、Generation/Capture、参考图、烘焙与 Bake Workspace，清除删除墓碑，重做再次执行完整删除；实例缺失时按 durable source 渐进恢复。保留最新 Revision CAS/asset manifest/lastSavedAt，不回滚服务端并发状态。Project Schema、对象资产格式、GPU/CPU/Worker/shader、投影/UV/export 与 ownership 不变，无迁移。 |
+| `2.16.14` | 2026-09-03 | `本次贴图导入自动聚焦修复` | UI-04/M02/M03、`MODEL-IMPORT-CAMERA-FOCUS` v1.0.0：贴图工作区导入模型完成并发布到 SceneStore 后，立即复用 F 键的轨道中心聚焦，将相机与 target 同量平移到新模型中心；保持观察方向、距离、投影、模型排列和变换不变。场景/法线/导出、项目恢复、Schema、Revision、资产与 ownership 不变，无迁移。 |
+| `2.16.15` | 2026-09-03 | `本次投影橡皮纹理级原子交接修复` | UI-06/UI-10、M03/M06/M12、`ALG-ERASE-001` v1.3.4：普通 projected 橡皮提交和历史恢复直接把正式全分辨率 CanvasTexture 提升到所有驻留材质，验证全部绑定后才撤下实时 multiplier；图层、眼睛或预览在提交中切换时保留 root，最后一个 pending commit 完成后再清理。修复擦除后切换图层/预览旧内容回弹、刷新后才恢复的问题；覆盖公式、补缝、持久化、分辨率、Schema、资产与 ownership 不变，无迁移。 |
+| `2.16.16` | 2026-09-03 | `本次场景变换手柄视觉中心修复` | UI-04/M03/M12、`OBJECT-TRANSFORM-PIVOT` v1.0.0：场景移动、旋转、缩放不再把 TransformControls 直接绑定到可能带 FBX/GLTF 原始枢轴偏移的模型根节点，而以当前世界包围盒中心创建独立代理枢轴；拖动期间用代理世界矩阵相对起点的增量驱动完整模型，正确换算父级矩阵，结束后仍走既有 Transform、BoundingBox、Project 保存与历史事务。切换模型、撤回或外部变换会重新对齐代理；不修改模型层级、顶点、导入归一化、场景排列、Schema、Revision、资产或 ownership，无迁移。 |
+| `2.16.17` | 2026-09-03 | `本次局部重绘结果图层自动选择修复` | UI-06/UI-10/M08、`LOCAL-REPAINT-RESULT-SELECTION` v1.0.0：新局部重绘结果真正发布到可见图层栈时保持 `setLayers` 对首个可见新结果的选择，使其立即高亮并成为当前编辑层；已发布结果的后台刷新、空白目标准备、GPU 预热仍保留用户当时选择，不提前跳层，也不强制展开图层面板。投影、蒙版、GPU/CPU/Worker/shader、UV/export、Schema、Revision、ownership 与资产不变，无迁移。 |
+| `2.16.18` | 2026-09-03 | `本次项目恢复模型贴图原子显示修复` | UI-04/M02/M03/M12、`PROJECT-TEXTURED-ATOMIC-REVEAL` v1.0.0：刷新或打开项目时，服务端项目数据返回前显示页面加载动画；进入视口后，每个恢复模型在自身位置独立显示旋转动画，bounds、outline 与 512px proxy 保持隐藏，只在该模型 full 阶段且权威 UV/投影材质绑定完成后立即单独显示，不等待其他模型。无贴图模型在 full 阶段显示最终白模；普通手动导入不延迟。合并性能版与本次功能后的生产 JS 实测 3,125,470 bytes，总预算重定标为 3,134,000 bytes，仍保留约 8 KiB 余量且 shell/editor/bake/shared 分包硬门禁不变。模型、材质、投影、UV、Schema、Revision、资产与 ownership 不变，无迁移。 |
+| `2.16.19` | 2026-09-03 | `本次局部重绘交互计算与上传分段` | M08、`ALG-LR-008` v2.4.3：返图三纹理上传间显式让帧并检查取消；`ALG-LR-007` v2.2.0 像素语义不变的内侧羽化双扫描/查表输出，作者蒙版读回提示。216 组逐像素对照和实际上传片段回归通过；浏览器端到端体验待验收，无数据迁移。 |
+| `2.16.20` | 2026-09-03 | `本次实时纹理重复上传修复` | M06、`ALG-PROJ-007` v2.1.1：未变的 live source/mask 读取不再置脏，显式发布、参数变化、backing 替换和持久化 revision 契约保留；新增多层读取及写入回归，不改像素/分辨率/Schema，无迁移。 |
+| `2.16.21` | 2026-09-03 | `本次重绘层无效驻留等待修复` | M08、`ALG-LR-008` v2.4.4：准备/来源切换/退出等待遵循既有 merged UV 显示边界，不再等待不会进入材质的旧重绘行；实际显示图层保留真实绑定屏障，不改 UV 合成或持久化，无迁移。 |
+| `2.16.22` | 2026-09-03 | `本次材质编译与发布调度修复` | M06、`ALG-PROJ-007` v2.1.2：抢先预热限 outline，direct 材质链接完成后发布，正式编译加入已有 cold warmup，修正 Promise Map 清理身份；shader/像素/分辨率/持久化不变，无迁移。 |
+| `2.16.23` | 2026-09-03 | `本次原生画笔尾部重复拾取修复` | M03、`ALG-VIEW-INPUT-001` v1.1.0：按 canvas/pointer 路由画笔已接管的 up/click 尾部，保留原生提交与 R3F 选择/捕获；60 笔 120→0 多余拾取。像素/分辨率/持久化不变，无迁移。 |
+| `2.16.24` | 2026-09-03 | `本次捕获首次等待状态隔离修复` | M03、`ALG-CAP-006` v1.0.0：离屏捕获首次及逐 tile/pass 等待前恢复 renderer/背景，重绑捕获 clear 值；真实函数边界/完整像素/异常清理回归。无输出尺寸、Schema、资产迁移。 |
+| `2.17.0` | 2026-09-04 | `本次单/多视图统一质量合成` | UI-05/UI-06/UI-09、M04/M05/M06/M07，`ALG-PROJ-004/005` v3.0.0、`ALG-UV-004` v4.0.0：普通单视图不再作为 priority source-over，也不再生成距离场 Alpha；单+单、单+多统一进入 Top-3 coverage/depth/angle/颜色一致性合成。旧 priority 行读取时惰性迁移，局部重绘 literal、显式 Overlay、UV 层级保持。删除 priority shader/uniform 与 CPU overlay 分支；Project/Layer 持久字段、Revision、ownership、分辨率和历史资产不批量迁移。 |
+| `2.17.1` | 2026-09-04 | `本次局部返图显示读取分段` | M08、`ALG-LR-011` v1.1.1：显示原图/depth 异步解码与分条读取，完整绘制及 RGBA 不变，条间让任务/交互空闲/取消；默认消费者不变。无分辨率、阈值、Schema 或资产迁移；真实返图帧稳定性待验收。 |
+| `2.17.2` | 2026-09-04 | `本次 IDaaS 个人莉刻账号固定回调及 QA 接入` | M13、`LICLICK-ACCOUNT-BINDING` v1.3.0：JWT 应用使用固定注册 callback，SP 发起改传同源一次性 `target_url`，删除动态 `redirect_uri/state`；回调校验 origin/path/唯一 UUID并立即清除令牌 URL。Cloud 配置启用 QA JWT 应用 `LI3D-QA`（`testplugin_jwt92`）用于三名已授权用户的隔离验收；每个飞书用户仍只绑定自己的独立 Atlas home，共享测试账号默认关闭。无 Schema、ownership 或资产迁移。 |
 
 `ALG-LR-008` v2.4.1：局部重绘仍自动创建独立目标和结果图层；pointer-down 不再依赖当前图层是否选中、可见或为 UV，只检查自身 source/composite/Session/显示资源。默认保持按钮激活、GPU promotion、结果发布前的原选择（含 undefined），防止内部隐藏 draft 触发面板选择普通投影层。普通画笔/橡皮擦限制、GPU/CPU/Worker/shader、作者 mask、投影/UV/export、分辨率、Schema、Revision、ownership 与资产不变。真实 store 三类选择与入口 gate 回归通过；无数据迁移，回退选择保持与 gate 即可。详见 CHG-20260903-LOCAL-REPAINT-SELECTION-INDEPENDENCE。
+
+`ALG-LR-008` v2.4.2 将浏览器运行期 `liclick-live-projected-canvas:` 与项目资产契约彻底分离。前端保存时必须从 live canvas/image 注册表取得同一 revision 的像素、编码 PNG 并上传；成功后按项目/槽位/source URL 保留 verified asset 映射，使 GPU 注册源稍后释放也能安全复用。若 live source 已释放且从未上传，保存队列保留当前内存画面并重试，不创建不可重开的 Revision。服务端二次校验 `maskUrl`、`localRepaintMaskUrl`、`depthUrl`、`localRepaintSourceUrl` 和 projected `imageUrl`，volatile 值只能回退到同层上一 Revision 的 durable URL，否则以 Revision 冲突拒绝。该变更不修改 GPU/CPU/Worker/shader、coverage、depth/surface-lock、投影/UV/export、分辨率、Project/Layer/Generation/Capture Schema、ownership 或对象存储类别。旧的坏 Revision 不改写；迁移只允许通过正常 CAS 新建恢复 Revision，回退代码时不得恢复写入 runtime URL 的行为。详见 CHG-20260903-LOCAL-REPAINT-DURABLE-MASK-PERSISTENCE。

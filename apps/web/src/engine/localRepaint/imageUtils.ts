@@ -1,4 +1,6 @@
 import type { MaskBitmap, Rect } from '@/types/localRepaint';
+import { yieldToBrowserTask } from '@/utils/browserScheduling';
+import { waitForViewportInteractionIdle } from '@/engine/viewport/viewportInteractionState';
 
 export async function blobToDataUrl(blob: Blob) {
   return new Promise<string>((resolve, reject) => {
@@ -18,20 +20,61 @@ export function dataUrlToBlob(dataUrl: string) {
   return new Blob([bytes], { type: mime });
 }
 
-export async function urlToImageData(url: string, width?: number, height?: number) {
+export async function urlToImageData(
+  url: string,
+  width?: number,
+  height?: number,
+  options?: { cooperative?: boolean; signal?: AbortSignal },
+) {
+  const signal = options?.signal;
+  signal?.throwIfAborted();
   const image = await new Promise<HTMLImageElement>((resolve, reject) => {
     const element = new Image();
     element.crossOrigin = 'anonymous';
-    element.onload = () => resolve(element);
-    element.onerror = () => reject(new Error('Could not load image.'));
+    const finish = (error?: unknown) => {
+      element.onload = element.onerror = null;
+      signal?.removeEventListener('abort', abort);
+      if (error !== undefined) reject(error); else resolve(element);
+    };
+    const abort = () => {
+      finish(signal!.reason);
+      element.src = '';
+    };
+    element.onload = () => finish();
+    element.onerror = () => finish(new Error('Could not load image.'));
+    signal?.addEventListener('abort', abort, { once: true });
     element.src = url;
   });
+  const checkpoint = async () => {
+    signal?.throwIfAborted();
+    await yieldToBrowserTask();
+    await waitForViewportInteractionIdle();
+    signal?.throwIfAborted();
+  };
+  if (options?.cooperative) {
+    // Wait for the browser decoder before drawImage can demand a synchronous
+    // decode. A loaded image remains usable if this optional hint is rejected.
+    await image.decode?.().catch(() => undefined);
+    await checkpoint();
+  }
   const canvas = document.createElement('canvas');
   canvas.width = width ?? (image.naturalWidth || image.width);
   canvas.height = height ?? (image.naturalHeight || image.height);
   const context = canvas.getContext('2d', { willReadFrequently: true });
   if (!context) throw new Error('Could not create image canvas.');
   context.drawImage(image, 0, 0, canvas.width, canvas.height);
+  if (options?.cooperative) {
+    // Draw once at exactly the original size/filtering, then copy lossless
+    // readback stripes. Never rescale tiles or change alpha/colour conversion.
+    const output = new ImageData(canvas.width, canvas.height);
+    const rows = Math.max(1, Math.floor(262_144 / canvas.width));
+    for (let y = 0; y < canvas.height; y += rows) {
+      await checkpoint();
+      const stripe = context.getImageData(0, y, canvas.width, Math.min(rows, canvas.height - y));
+      output.data.set(stripe.data, y * canvas.width * 4);
+    }
+    return output;
+  }
   return context.getImageData(0, 0, canvas.width, canvas.height);
 }
 

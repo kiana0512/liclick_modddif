@@ -2,15 +2,6 @@ import * as THREE from 'three';
 import { loadProjectedTextureWithRetry } from './ProjectedLayerMaterial';
 import { buildProjectionMatrixBundle } from './projectionMath';
 import type { ProjectionLayerStackInput } from './projectionTypes';
-import {
-  PRIORITY_PROJECTION_BOUNDARY_ALPHA_MIN,
-  PRIORITY_PROJECTION_BOUNDARY_QUALITY_END,
-  PRIORITY_PROJECTION_BOUNDARY_QUALITY_START,
-  PRIORITY_PROJECTION_CORE_COVERAGE_END,
-  PRIORITY_PROJECTION_CORE_COVERAGE_START,
-  PRIORITY_PROJECTION_CORE_QUALITY_END,
-  PRIORITY_PROJECTION_CORE_QUALITY_START,
-} from './priorityProjectionComposition';
 
 // Smaller tiles preserve the exact output resolution while bounding the cost of
 // each individual GPU pass on slower devices.
@@ -471,7 +462,6 @@ const rankFragmentShader = `
   uniform sampler2D candidateMap;
   uniform sampler2D candidateInfoMap;
   uniform vec2 tileUvScale;
-  uniform float priorityOverlay;
   in vec2 vUv;
   layout(location = 0) out vec4 nextRank0;
   layout(location = 1) out vec4 nextRank1;
@@ -575,7 +565,6 @@ const overlayFragmentShader = `
   uniform sampler2D candidateMap;
   uniform sampler2D candidateInfoMap;
   uniform vec2 tileUvScale;
-  uniform float priorityOverlay;
   in vec2 vUv;
   layout(location = 0) out vec4 composedColor;
   layout(location = 1) out vec4 composedRenderedMask;
@@ -591,32 +580,7 @@ const overlayFragmentShader = `
     vec4 candidate = texture(candidateMap, uv);
     vec2 candidateInfo = texture(candidateInfoMap, uv).rg;
     float qualityFade = smoothstep(0.0, 0.15, max(candidate.a, candidateInfo.x * 0.25));
-    float featheredAlpha = clamp(candidateInfo.x * mix(0.75, 1.0, qualityFade), 0.0, 1.0);
-    float boundaryConfidence = smoothstep(
-      ${PRIORITY_PROJECTION_BOUNDARY_QUALITY_START.toFixed(2)},
-      ${PRIORITY_PROJECTION_BOUNDARY_QUALITY_END.toFixed(2)},
-      max(candidate.a, 0.0)
-    );
-    float boundaryAlpha = candidateInfo.x * mix(
-      ${PRIORITY_PROJECTION_BOUNDARY_ALPHA_MIN.toFixed(2)},
-      1.0,
-      boundaryConfidence
-    );
-    float coreConfidence = smoothstep(
-      ${PRIORITY_PROJECTION_CORE_COVERAGE_START.toFixed(2)},
-      ${PRIORITY_PROJECTION_CORE_COVERAGE_END.toFixed(2)},
-      candidateInfo.x
-    ) * smoothstep(
-      ${PRIORITY_PROJECTION_CORE_QUALITY_START.toFixed(2)},
-      ${PRIORITY_PROJECTION_CORE_QUALITY_END.toFixed(2)},
-      max(candidate.a, 0.0)
-    );
-    float priorityAlpha = clamp(
-      boundaryAlpha + (1.0 - boundaryAlpha) * coreConfidence,
-      0.0,
-      1.0
-    );
-    float alpha = mix(featheredAlpha, priorityAlpha, priorityOverlay);
+    float alpha = clamp(candidateInfo.x * mix(0.75, 1.0, qualityFade), 0.0, 1.0);
     vec3 color = mix(base.rgb, candidate.rgb, alpha);
     composedColor = vec4(liclickLinearToSrgb(clamp(color, 0.0, 1.0)), max(base.a, step(0.0001, alpha)));
     composedRenderedMask = vec4(mix(baseRendered, candidateInfo.y, alpha), 0.0, 0.0, 1.0);
@@ -975,7 +939,6 @@ export class ProjectedLayerPreviewCompositor {
       candidateMap: candidateTarget.textures[0],
       candidateInfoMap: candidateTarget.textures[1],
       tileUvScale: new THREE.Vector2(1, 1),
-      priorityOverlay: 0,
     });
     const composeMaterial = createFullscreenMaterial(composeFragmentShader, {
       rank0Map: rankTargets[0].textures[0],
@@ -990,7 +953,6 @@ export class ProjectedLayerPreviewCompositor {
       candidateMap: candidateTarget.textures[0],
       candidateInfoMap: candidateTarget.textures[1],
       tileUvScale: new THREE.Vector2(1, 1),
-      priorityOverlay: 0,
     });
     this.job = {
       revision,
@@ -1228,7 +1190,6 @@ export class ProjectedLayerPreviewCompositor {
         job.overlayMaterial.uniforms.baseMap.value = tileRead.textures[0];
         job.overlayMaterial.uniforms.baseRenderedMaskMap.value = tileRead.textures[1];
         job.overlayMaterial.uniforms.tileUvScale.value.copy(uvScale);
-        job.overlayMaterial.uniforms.priorityOverlay.value = layer.input.priorityOverlay ? 1 : 0;
         job.fullscreenMesh.material = job.overlayMaterial;
         renderer.setRenderTarget(job.tileTargets[tileWriteIndex]);
         renderer.setViewport(0, 0, tileWidth, tileHeight);
