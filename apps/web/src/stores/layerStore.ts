@@ -70,11 +70,6 @@ type LayerStore = {
 const legacyTransparentImage =
   'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGJ5JrGJQAAAABJRU5ErkJggg==';
 
-// A generated single-view projection already carries capture depth and a
-// silhouette mask. Vertex normals on scanned/dense meshes are not reliable
-// enough to attenuate its accepted pixels a second time.
-export const SINGLE_VIEW_GENERATED_MINIMUM_PROJECTION_FACING = 0;
-
 function createEmptyLayer(
   input: {
     name?: string;
@@ -138,6 +133,9 @@ function normalizeProjectedLayerName(layer: Layer) {
 }
 
 function normalizeLayer(layer: Layer) {
+  const legacyLayer = layer as Layer & { projectionCompositeMode?: string };
+  const { projectionCompositeMode: legacyProjectionCompositeMode, ...layerWithoutLegacyMode } =
+    legacyLayer;
   const imageUrl = typeof layer.imageUrl === 'string' ? layer.imageUrl : '';
   const name = normalizeProjectedLayerName(layer);
   const legacySingleViewPriority =
@@ -145,16 +143,13 @@ function normalizeLayer(layer: Layer) {
     Boolean(layer.generationId) &&
     name === '投射贴图 · 当前视角' &&
     !layer.replacementTargetLayerId;
-  const projectionCompositeMode =
-    layer.projectionCompositeMode ??
-    (legacySingleViewPriority ? 'single-view-priority-v1' : undefined);
   const singleViewGeneratedProjection =
     layer.type === 'projected' &&
     Boolean(layer.generationId) &&
-    projectionCompositeMode === 'single-view-priority-v1' &&
+    (legacyProjectionCompositeMode === 'single-view-priority-v1' || legacySingleViewPriority) &&
     !layer.replacementTargetLayerId;
   return {
-    ...layer,
+    ...layerWithoutLegacyMode,
     name,
     imageUrl: imageUrl === legacyTransparentImage ? '' : imageUrl,
     adjustments: {
@@ -163,19 +158,19 @@ function normalizeLayer(layer: Layer) {
       lightness: layer.adjustments?.lightness ?? 0,
     },
     strength: layer.strength ?? 1,
-    projectionCompositeMode,
-    // Generated single-view PNGs are not guaranteed to carry a useful alpha
-    // channel. Keep their authored capture silhouette and use depth-backed
-    // surface locking so dense folds do not alternate between accepted and
-    // rejected triangles after a tiny camera change.
-    ignoreSourceAlpha:
-      layer.ignoreSourceAlpha ?? (singleViewGeneratedProjection ? true : undefined),
-    minimumProjectionFacing:
-      layer.minimumProjectionFacing ??
-      (singleViewGeneratedProjection ? SINGLE_VIEW_GENERATED_MINIMUM_PROJECTION_FACING : undefined),
-    projectionVisibilityPolicy:
-      layer.projectionVisibilityPolicy ??
-      (singleViewGeneratedProjection ? 'surface-locked-v1' : undefined),
+    // ALG-PROJ-005 v3 retires the old source-over priority branch. Saved
+    // single-view rows are upgraded lazily into the same quality candidate
+    // pool as multiview rows while retaining their authored capture footprint.
+    projectionCoverageMode: singleViewGeneratedProjection
+      ? 'capture-mask'
+      : layer.projectionCoverageMode,
+    ignoreSourceAlpha: singleViewGeneratedProjection ? true : layer.ignoreSourceAlpha,
+    minimumProjectionFacing: singleViewGeneratedProjection
+      ? undefined
+      : layer.minimumProjectionFacing,
+    projectionVisibilityPolicy: singleViewGeneratedProjection
+      ? 'standard'
+      : layer.projectionVisibilityPolicy,
   };
 }
 
@@ -260,8 +255,6 @@ export const useLayerStore = create<LayerStore>((set, get) => ({
       typeof generation.metadata.cameraViewLabel === 'string'
         ? generation.metadata.cameraViewLabel.trim()
         : '';
-    const projectionUsesSourceAlpha =
-      generation.metadata.projectionEdgeBlendMode === 'distance-field-v1';
     const layer: Layer = {
       id: layerId ?? uuid(),
       name: cameraViewLabel
@@ -282,19 +275,15 @@ export const useLayerStore = create<LayerStore>((set, get) => ({
       depthUrl: capture?.depthUrl,
       depthEncoding: capture?.depthEncoding,
       generationId: generation.id,
-      projectionCoverageMode:
-        generation.metadata.alphaMode === 'geometry-mask-separated'
+      projectionCoverageMode: singleViewTexture
+        ? 'capture-mask'
+        : generation.metadata.alphaMode === 'geometry-mask-separated'
           ? 'source-alpha-depth'
           : undefined,
-      projectionCompositeMode: singleViewTexture ? 'single-view-priority-v1' : undefined,
-      // Fresh single-view overlays may carry an editor-authored distance-field
-      // alpha. Legacy/provider PNG alpha remains ignored unless this explicit
-      // contract is present.
-      ignoreSourceAlpha: singleViewTexture ? !projectionUsesSourceAlpha : undefined,
-      minimumProjectionFacing: singleViewTexture
-        ? SINGLE_VIEW_GENERATED_MINIMUM_PROJECTION_FACING
-        : undefined,
-      projectionVisibilityPolicy: singleViewTexture ? 'surface-locked-v1' : undefined,
+      // Provider PNG alpha is not geometry. Single and multiview projections
+      // now differ only in capture coverage, not in their blend operator.
+      ignoreSourceAlpha: singleViewTexture ? true : undefined,
+      projectionVisibilityPolicy: singleViewTexture ? 'standard' : undefined,
       captureId: capture?.id ?? generation.captureId,
       visible: true,
       opacity: 1,

@@ -133,24 +133,6 @@ try {
     'projection processing must not mutate the generation result',
   );
 
-  const blendedProjection = applyCaptureProjectionImage(source, mask, { edgeBlend: true });
-  const blendedPixel = (x, y) =>
-    Array.from(
-      blendedProjection.data.slice((y * width + x) * 4, (y * width + x) * 4 + 4),
-    );
-  assert(
-    blendedPixel(5, 4)[3] < blendedPixel(12, 4)[3],
-    'single-view alpha must rise smoothly from the silhouette toward the authoritative core',
-  );
-  assert(
-    blendedPixel(3, 4)[3] > 0 && blendedPixel(3, 4)[3] < 255,
-    'the bled RGB band must keep a small encoding-safe alpha outside the geometry mask',
-  );
-  assert(
-    blendedPixel(3, 4)[0] > 170,
-    'distance-field projection must preserve clean bled edge colour',
-  );
-
   stdout.write('Generation preview and projection edge decontamination regression test passed.\n');
 } finally {
   await server.close();

@@ -61,10 +61,7 @@ import {
 import { useAuthStore } from '@/stores/authStore';
 import { useGenerationStore } from '@/stores/generationStore';
 import { useT } from '@/stores/i18nStore';
-import {
-  SINGLE_VIEW_GENERATED_MINIMUM_PROJECTION_FACING,
-  useLayerStore,
-} from '@/stores/layerStore';
+import { useLayerStore } from '@/stores/layerStore';
 import { IMMEDIATE_PROJECT_SAVE_EVENT, useProjectStore } from '@/stores/projectStore';
 import { useReferenceStore } from '@/stores/referenceStore';
 import { useSceneStore } from '@/stores/sceneStore';
@@ -4026,30 +4023,7 @@ export function GeneratePanel({
       generation.mode === 'single' &&
       generation.metadata.workflow === 'texture-map' &&
       generation.metadata.multiview !== true;
-    const hasVisibleTextureBase =
-      singleViewTexture &&
-      useLayerStore.getState().layers.some((layer) => {
-        if (
-          !layer.visible ||
-          !layer.imageUrl ||
-          layer.generationId === generation.id ||
-          layer.replacementTargetLayerId
-        )
-          return false;
-        if (
-          layer.type !== 'uv' &&
-          (layer.type !== 'projected' ||
-            layer.projectionCompositeMode === 'single-view-priority-v1')
-        )
-          return false;
-        return (
-          !generationCapture.objectId ||
-          !layer.objectId ||
-          layer.objectId === generationCapture.objectId
-        );
-      });
     let projectedResultUrl = readableResultUrl;
-    let projectionUsesSourceAlpha = false;
     if (singleViewTexture && generationCapture.maskUrl) {
       try {
         // The panel preview is tightly cropped and cannot be projected without
@@ -4060,9 +4034,7 @@ export function GeneratePanel({
         projectedResultUrl = await createCaptureMaskedProjectionImage(
           readableResultUrl,
           generationCapture.maskUrl,
-          { edgeBlend: hasVisibleTextureBase },
         );
-        projectionUsesSourceAlpha = hasVisibleTextureBase;
       } catch (error) {
         console.warn(
           '[Liclick 3D Texture] Could not decontaminate projected image edges; using the original result.',
@@ -4082,7 +4054,6 @@ export function GeneratePanel({
       layerId,
       generationCapture,
       projectedResultUrl,
-      projectionUsesSourceAlpha,
       targetProjectId,
       shouldPersist: true as const,
     };
@@ -4095,7 +4066,6 @@ export function GeneratePanel({
       layerId: string;
       generationCapture: Capture;
       projectedResultUrl: string;
-      projectionUsesSourceAlpha: boolean;
       targetProjectId?: string;
       shouldPersist: true;
     },
@@ -4107,7 +4077,6 @@ export function GeneratePanel({
       generationCapture,
       layerId,
       projectedResultUrl,
-      projectionUsesSourceAlpha,
       targetProjectId,
     } = prepared;
     let persistedGenerationCapture = generationCapture;
@@ -4181,13 +4150,16 @@ export function GeneratePanel({
         maskSpace: maskUrl ? 'projection' : undefined,
         depthUrl,
         camera: persistedGenerationCapture.camera,
-        ignoreSourceAlpha: singleViewTexture
-          ? !projectionUsesSourceAlpha
-          : currentExisting.ignoreSourceAlpha,
+        projectionCoverageMode: singleViewTexture
+          ? 'capture-mask'
+          : currentExisting.projectionCoverageMode,
+        ignoreSourceAlpha: singleViewTexture ? true : currentExisting.ignoreSourceAlpha,
         minimumProjectionFacing: singleViewTexture
-          ? SINGLE_VIEW_GENERATED_MINIMUM_PROJECTION_FACING
+          ? undefined
           : currentExisting.minimumProjectionFacing,
-        projectionVisibilityPolicy: singleViewTexture ? 'surface-locked-v1' : 'standard',
+        projectionVisibilityPolicy: singleViewTexture
+          ? 'standard'
+          : currentExisting.projectionVisibilityPolicy,
         contentRevision: (currentExisting.contentRevision ?? 0) + 1,
         isBaked: false,
         needsRebake: true,
@@ -4201,7 +4173,6 @@ export function GeneratePanel({
           metadata: {
             ...generation.metadata,
             alphaMode: 'geometry-mask-separated',
-            projectionEdgeBlendMode: projectionUsesSourceAlpha ? 'distance-field-v1' : undefined,
           },
         },
         {

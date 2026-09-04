@@ -1,9 +1,11 @@
 # ADR-2026-001：单视图采用核心优先、轮廓距离场接回底层
 
-> 状态：Accepted
+> 状态：Superseded（由 `ADR-2026-002-UNIFIED-SINGLE-MULTIVIEW-COMPOSITION` 取代）
 > 日期：2026-08-27
 > 决策者：用户、Codex
 > 关联 CHG：`CHG-20260827-TEXTURE-EDITOR-OPTIMIZATIONS`
+
+> 说明：本文保留为历史决策记录。自 2026-09-04 起，普通单视图不再使用 ordered priority overlay 或轮廓距离场 Alpha；当前规则见替代 ADR。
 
 ## 背景
 

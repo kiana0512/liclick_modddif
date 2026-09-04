@@ -77,7 +77,6 @@ import { createId } from '@/utils/id';
 import { scheduleAfterBrowserPaint, waitForBrowserPaint, yieldToBrowserTask } from '@/utils/browserScheduling';
 import {
   isLocalRepaintBelowMergedUv,
-  shouldPresentLocalRepaintInOrderedStack,
   shouldUseDedicatedLocalRepaintOverlay,
   shouldWaitForLocalRepaintResidentMaterial,
 } from '@/engine/localRepaint/orderedPreviewComposition';

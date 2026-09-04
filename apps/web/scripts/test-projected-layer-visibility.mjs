@@ -115,12 +115,12 @@ assert.match(
 );
 assert.match(
   layerStoreSource,
-  /addProjectedLayerFromGeneration:[\s\S]*?captureMaskUrl = singleViewTexture \? capture\?\.maskUrl : undefined[\s\S]*?projectionUsesSourceAlpha[\s\S]*?maskUrl: captureMaskUrl[\s\S]*?maskSpace: captureMaskUrl \? 'projection' : undefined[\s\S]*?ignoreSourceAlpha: singleViewTexture \? !projectionUsesSourceAlpha : undefined[\s\S]*?projectionVisibilityPolicy: singleViewTexture \? 'surface-locked-v1' : undefined/,
-  'New GPT and remote single-view layers must share the capture silhouette and stable depth-backed visibility contract.',
+  /addProjectedLayerFromGeneration:[\s\S]*?captureMaskUrl = singleViewTexture \? capture\?\.maskUrl : undefined[\s\S]*?maskUrl: captureMaskUrl[\s\S]*?maskSpace: captureMaskUrl \? 'projection' : undefined[\s\S]*?projectionCoverageMode: singleViewTexture[\s\S]*?'capture-mask'[\s\S]*?ignoreSourceAlpha: singleViewTexture \? true : undefined[\s\S]*?projectionVisibilityPolicy: singleViewTexture \? 'standard' : undefined/,
+  'New GPT and remote single-view layers must use the capture silhouette while joining ordinary quality composition.',
 );
 assert.match(
   sceneRootSource,
-  /function resolveProjectionMask\([\s\S]*?single-view-priority-v1[\s\S]*?surface-locked-v1[\s\S]*?capture\?\.maskUrl[\s\S]*?maskUrl: capture\.maskUrl, maskSpace: 'projection'/,
+  /function resolveProjectionMask\([\s\S]*?projectionCoverageMode === 'capture-mask'[\s\S]*?capture\?\.maskUrl[\s\S]*?maskUrl: capture\.maskUrl, maskSpace: 'projection'/,
   'Saved single-view layers must recover their authored capture silhouette without overwriting UV eraser masks.',
 );
 assert.doesNotMatch(
@@ -1360,12 +1360,12 @@ try {
   );
   assert.match(
     material.fragmentShader,
-    /float computeOrderedOverlayAlpha\(float coverage, float quality, float overlayMode\)[\s\S]*?float featheredAlpha = clamp\(coverage \* mix\(0\.75, 1\.0, qualityFade\), 0\.0, 1\.0\)[\s\S]*?return mix\(featheredAlpha, priorityAlpha, step\(1\.5, overlayMode\)\)/,
-    'Live overlays must share one ordered-alpha function for feathered and priority projection modes.',
+    /float computeOrderedOverlayAlpha\(float coverage, float quality\)[\s\S]*?return clamp\(coverage \* mix\(0\.75, 1\.0, qualityFade\), 0\.0, 1\.0\)/,
+    'Explicit live overlays must share one feathered ordered-alpha function.',
   );
   assert.match(
     material.fragmentShader,
-    /float overlayAlpha = computeOrderedOverlayAlpha\([\s\S]*?layerOverlayMode/,
+    /float overlayAlpha = computeOrderedOverlayAlpha\(\s*coverage,\s*quality\s*\)/,
     'Projected overlay composition must route through the shared ordered-alpha function.',
   );
   assert.match(

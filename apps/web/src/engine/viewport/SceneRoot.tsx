@@ -71,11 +71,7 @@ import { createId } from '@/utils/id';
 import { Grid } from './Grid';
 import { resolveLocalRepaintPreviewActivation } from './localRepaintPreviewActivation';
 import { mergeAuthoritativeLocalRepaintLayers } from './projectedPreviewLayerAuthority';
-import {
-  getOrderedLocalRepaintPreviewLayer,
-  mergeOrderedLocalRepaintPreview,
-  shouldMuteLocalRepaintResidentLayer,
-} from '@/engine/localRepaint/orderedPreviewComposition';
+import { shouldMuteLocalRepaintResidentLayer } from '@/engine/localRepaint/orderedPreviewComposition';
 import { ObjectTransformControls } from './ObjectTransformControls';
 import {
   isViewportInteractionBusy as isSharedViewportInteractionBusy,
@@ -205,6 +201,7 @@ function shouldUseProjectionCaptureMask(
   // remain active even when generated layers use depth for capture visibility;
   // otherwise ending the live eraser preview restores the erased pixels.
   if (layer.maskSpace === 'uv') return true;
+  if (layer.projectionCoverageMode === 'capture-mask') return true;
   if (localRepaint || layer.projectionVisibilityPolicy === 'surface-locked-v1') return true;
   if (
     depthUrl &&
@@ -219,11 +216,7 @@ function resolveProjectionMask(layer: Layer, capture: Capture | undefined) {
   if (layer.maskUrl) {
     return { maskUrl: layer.maskUrl, maskSpace: layer.maskSpace };
   }
-  if (
-    layer.projectionCompositeMode === 'single-view-priority-v1' &&
-    layer.projectionVisibilityPolicy === 'surface-locked-v1' &&
-    capture?.maskUrl
-  ) {
+  if (layer.projectionCoverageMode === 'capture-mask' && capture?.maskUrl) {
     return { maskUrl: capture.maskUrl, maskSpace: 'projection' as const };
   }
   return { maskUrl: undefined, maskSpace: layer.maskSpace };
@@ -271,7 +264,6 @@ function layerPreviewSignature(layer: Layer, relativeOrder = layer.order) {
     layer.minimumProjectionFacing ?? 0,
     layer.projectionVisibilityPolicy ?? '',
     layer.projectionCoverageMode ?? '',
-    layer.projectionCompositeMode ?? '',
     layer.contentRevision ?? 0,
     layer.needsRebake ? 1 : 0,
     stableNumberListSignature(layer.objectMatrixWorld),
@@ -345,12 +337,7 @@ function isUnderlayProjectionPatch(layer: Layer) {
 
 function getProjectionCompositeRole(layer: Layer): 'normal' | 'overlay' | 'underlay' {
   if (isUnderlayProjectionPatch(layer)) return 'underlay';
-  if (
-    isOverlayProjectionPatch(layer) ||
-    layer.projectionCompositeMode === 'single-view-priority-v1'
-  ) {
-    return 'overlay';
-  }
+  if (isOverlayProjectionPatch(layer)) return 'overlay';
   return 'normal';
 }
 
@@ -470,7 +457,6 @@ function toProjectionLayerDisplayInput(layer: Layer): ProjectionLayerDisplayInpu
     // patches. Preserve that internal mode during every uniform-only refresh.
     blendMode: isOverlayProjectionPatch(layer) ? 'overlay' : layer.blendMode,
     compositeRole: getProjectionCompositeRole(layer),
-    priorityOverlay: layer.projectionCompositeMode === 'single-view-priority-v1',
     visible: layer.visible,
     hue: (layer.adjustments?.hue ?? 0) / 100,
     saturation: (layer.adjustments?.saturation ?? 0) / 100,
@@ -1435,10 +1421,6 @@ const ImportedModel = memo(function ImportedModel({
   // mute it by uniform while the overlay is active. Removing/reinserting that
   // row rebuilt every 4K array on each task boundary; a resident zero-opacity
   // binding hands off in one frame and preserves the exact stored pixels.
-  const visibleLocalRepaintPreviewLayer = useMemo(
-    () => getOrderedLocalRepaintPreviewLayer(layers, localRepaintPreviewLayer),
-    [layers, localRepaintPreviewLayer],
-  );
   const rendererOwnedLocalRepaintPreviewLayerId = useMemo(
     () =>
       localRepaintPreviewLayer &&
@@ -1582,10 +1564,7 @@ const ImportedModel = memo(function ImportedModel({
     )
       return undefined;
     let cancelled = false;
-    const candidates = [
-      ...layers,
-      ...(visibleLocalRepaintPreviewLayer ? [visibleLocalRepaintPreviewLayer] : []),
-    ].filter((layer) => {
+    const candidates = layers.filter((layer) => {
       if (
         layer.type !== 'projected' ||
         !layer.visible ||
@@ -1694,7 +1673,6 @@ const ImportedModel = memo(function ImportedModel({
     initialProjectedMaterialReady,
     layers,
     texturedRestoreReady,
-    visibleLocalRepaintPreviewLayer,
     selected,
     workspaceVisible,
   ]);
@@ -1736,21 +1714,13 @@ const ImportedModel = memo(function ImportedModel({
       .map((layer) =>
         applyLiveProjectedMaskBinding(layer, liveSurfacePaintPreview, importedObjectId),
       );
-    if (
-      !visibleLocalRepaintPreviewLayer?.imageUrl ||
-      !visibleLocalRepaintPreviewLayer.camera ||
-      (visibleLocalRepaintPreviewLayer.objectId &&
-        visibleLocalRepaintPreviewLayer.objectId !== importedObjectId)
-    )
-      return storedLayers;
-    return mergeOrderedLocalRepaintPreview(storedLayers, visibleLocalRepaintPreviewLayer);
+    return storedLayers;
   }, [
     importedObjectId,
     layers,
     liveSurfacePaintPreview,
     texturedRestoreReady,
     visibleMergedUvBoundaryOrder,
-    visibleLocalRepaintPreviewLayer,
   ]);
   const visibleProjectedLayerSignature = useMemo(
     () => layerStackPreviewSignature(visibleProjectedLayers),
@@ -1792,14 +1762,7 @@ const ImportedModel = memo(function ImportedModel({
       .map((layer) =>
         applyLiveProjectedMaskBinding(layer, liveSurfacePaintPreview, importedObjectId),
       );
-    if (
-      !visibleLocalRepaintPreviewLayer?.imageUrl ||
-      !visibleLocalRepaintPreviewLayer.camera ||
-      (visibleLocalRepaintPreviewLayer.objectId &&
-        visibleLocalRepaintPreviewLayer.objectId !== importedObjectId)
-    )
-      return storedLayers;
-    return mergeOrderedLocalRepaintPreview(storedLayers, visibleLocalRepaintPreviewLayer);
+    return storedLayers;
   }, [
     importedObjectId,
     layers,
@@ -1807,7 +1770,6 @@ const ImportedModel = memo(function ImportedModel({
     transientLocalRepaintPreviewLayerId,
     texturedRestoreReady,
     visibleMergedUvBoundaryOrder,
-    visibleLocalRepaintPreviewLayer,
   ]);
   const previewProjectedLayerSignature = useMemo(
     () => layerStackPreviewSignature(previewProjectedLayers),
@@ -1836,22 +1798,13 @@ const ImportedModel = memo(function ImportedModel({
       .map((layer) =>
         applyLiveProjectedMaskBinding(layer, liveSurfacePaintPreview, importedObjectId),
       );
-    if (
-      !visibleLocalRepaintPreviewLayer?.imageUrl ||
-      !visibleLocalRepaintPreviewLayer.camera ||
-      (visibleLocalRepaintPreviewLayer.objectId &&
-        visibleLocalRepaintPreviewLayer.objectId !== importedObjectId)
-    ) {
-      return residentLayers;
-    }
-    return mergeOrderedLocalRepaintPreview(residentLayers, visibleLocalRepaintPreviewLayer);
+    return residentLayers;
   }, [
     importedObjectId,
     layers,
     liveSurfacePaintPreview,
     transientLocalRepaintPreviewLayerId,
     visibleMergedUvBoundaryOrder,
-    visibleLocalRepaintPreviewLayer,
   ]);
   const projectedProgramWarmupInputs = useMemo<ProjectionLayerStackInput['layers']>(
     () =>
@@ -1886,7 +1839,6 @@ const ImportedModel = memo(function ImportedModel({
           strength: layer.strength ?? 1,
           blendMode: isOverlayProjectionPatch(layer) ? 'overlay' : layer.blendMode,
           compositeRole: getProjectionCompositeRole(layer),
-          priorityOverlay: layer.projectionCompositeMode === 'single-view-priority-v1',
           visible:
             layer.visible &&
             layer.id !== rendererOwnedLocalRepaintPreviewLayerId &&
@@ -1956,7 +1908,6 @@ const ImportedModel = memo(function ImportedModel({
           // as another base projection, including legacy saved repaint layers.
           blendMode: isOverlayProjectionPatch(layer) ? 'overlay' : layer.blendMode,
           compositeRole: getProjectionCompositeRole(layer),
-          priorityOverlay: layer.projectionCompositeMode === 'single-view-priority-v1',
           // Keep the projection visible while the exact runtime visibility pass
           // is preparing. The stored depth (when present) remains a valid fallback.
           visible:
@@ -2029,12 +1980,6 @@ const ImportedModel = memo(function ImportedModel({
             layer.id !== mutedPreviewLayerId &&
             isProjectedLayerAboveMergedUv(layer, currentMergedUvBoundaryOrder),
         }));
-      if (
-        visibleLocalRepaintPreviewLayer?.type === 'projected' &&
-        !displayLayers.some((layer) => layer.layerId === visibleLocalRepaintPreviewLayer.id)
-      ) {
-        displayLayers.push(toProjectionLayerDisplayInput(visibleLocalRepaintPreviewLayer));
-      }
       const currentDisplayMode = useSceneStore.getState().displayMode;
       const currentSettings = useSettingsStore.getState();
       const previousLayerVisibilityById = new Map(
@@ -2221,7 +2166,7 @@ const ImportedModel = memo(function ImportedModel({
     return () => {
       unsubscribe();
     };
-  }, [gl, importedModel, invalidate, localRepaintPreviewLayerId, visibleLocalRepaintPreviewLayer]);
+  }, [gl, importedModel, invalidate, localRepaintPreviewLayerId]);
   useEffect(() => {
     // Display-mode buttons are latency-sensitive too. React effects can land a
     // frame or two after the Zustand write under a busy 4K viewport, leaving
@@ -2252,12 +2197,6 @@ const ImportedModel = memo(function ImportedModel({
             ) &&
             isProjectedLayerAboveMergedUv(layer, currentMergedUvBoundaryOrder),
         }));
-      if (
-        visibleLocalRepaintPreviewLayer?.type === 'projected' &&
-        !displayLayers.some((layer) => layer.layerId === visibleLocalRepaintPreviewLayer.id)
-      ) {
-        displayLayers.push(toProjectionLayerDisplayInput(visibleLocalRepaintPreviewLayer));
-      }
       const settings = useSettingsStore.getState();
       syncProjectedLayerMaterialDisplayStateInObject(
         importedModel.group,
@@ -2276,7 +2215,7 @@ const ImportedModel = memo(function ImportedModel({
       invalidate();
     });
     return unsubscribe;
-  }, [importedModel, invalidate, visibleLocalRepaintPreviewLayer]);
+  }, [importedModel, invalidate]);
   useLayoutEffect(() => {
     // Changing repaint generations changes only SceneStore renderer ownership;
     // LayerStore itself may be unchanged. Re-publish every resident projected
@@ -2568,25 +2507,11 @@ const ImportedModel = memo(function ImportedModel({
     (textureArrayCompositionFallbackRequired && !canUseDirectVisibleStackAfterArrayFailure),
   );
   const activeProjectedPreviewInputs = useMemo(() => {
-    // A live repaint is the latency-sensitive foreground patch. Keep it on a
-    // dedicated sampler and out of the packed background texture array even
-    // before its persistent layer row exists. Otherwise the first stop event
-    // changes the active row, repacks 14 background slices and produces a
-    // 200ms+ frame. The direct path also samples the native generated image
-    // instead of the array's memory-budget preview size.
-    if (visibleLocalRepaintPreviewLayer?.visible) {
-      const liveRepaintIndex = previewProjectionInputs.findIndex(
-        (layer) => layer.layerId === visibleLocalRepaintPreviewLayer.id,
-      );
-      if (liveRepaintIndex >= 0) {
-        return previewProjectionInputs.slice(liveRepaintIndex).filter((layer) => layer.visible);
-      }
-    }
     const active = previewProjectionInputs.find(
       (layer) => layer.layerId === activeLayerId && layer.visible,
     );
     return active ? [active] : [];
-  }, [activeLayerId, previewProjectionInputs, visibleLocalRepaintPreviewLayer]);
+  }, [activeLayerId, previewProjectionInputs]);
   const progressiveBackgroundInputs = useMemo(() => {
     if (activeProjectedPreviewInputs.length === 0) return previewProjectionInputs;
     const activeIds = new Set(activeProjectedPreviewInputs.map((layer) => layer.layerId));
@@ -2615,7 +2540,6 @@ const ImportedModel = memo(function ImportedModel({
             layer.minimumProjectionFacing ?? 0,
             layer.projectionVisibilityPolicy ?? 'standard',
             layer.compositeRole ?? 'normal',
-            layer.priorityOverlay ? 1 : 0,
             layer.hue,
             layer.saturation,
             layer.lightness,
@@ -3311,7 +3235,6 @@ const ImportedModel = memo(function ImportedModel({
             layer.useNormalCheck ? 1 : 0,
             layer.projectionVisibilityPolicy ?? 'standard',
             layer.compositeRole ?? 'normal',
-            layer.priorityOverlay ? 1 : 0,
           ].join('~'),
         )
         .join('|'),
@@ -3328,7 +3251,6 @@ const ImportedModel = memo(function ImportedModel({
             layer.useNormalCheck ? 1 : 0,
             layer.projectionVisibilityPolicy ?? 'standard',
             layer.compositeRole ?? 'normal',
-            layer.priorityOverlay ? 1 : 0,
           ].join('~'),
         )
         .join('|'),
@@ -5126,7 +5048,7 @@ const ImportedModel = memo(function ImportedModel({
       const activation = resolveLocalRepaintPreviewActivation({
         consumedKey: activatedLocalRepaintPreviewKeyRef.current,
         paintTool: sceneState.paintTool,
-        preview: visibleLocalRepaintPreviewLayer,
+        preview: undefined,
         currentPreview: sceneState.localRepaintPreviewLayer,
         currentSource: sceneState.localRepaintProjectionSource,
         processedLayerIds:
@@ -5204,7 +5126,6 @@ const ImportedModel = memo(function ImportedModel({
     topUvProjectedOverlayInput,
     uvOverlayOpacity,
     visibleMergedUvBoundaryOrder,
-    visibleLocalRepaintPreviewLayer,
     visibleStackHasBakedPreview,
     workspaceVisible,
   ]);

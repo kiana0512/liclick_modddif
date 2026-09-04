@@ -547,7 +547,6 @@ export function applyCapturePreviewMask(source: ImageData, mask: ImageData) {
 export function applyCaptureProjectionImage(
   source: ImageData,
   mask: ImageData,
-  options: { edgeBlend?: boolean } = {},
 ) {
   const { width, height } = source;
   if (mask.width !== width || mask.height !== height)
@@ -556,17 +555,12 @@ export function applyCaptureProjectionImage(
   const cleaned = applyCapturePreviewMask(source, mask);
   const output = new ImageData(new Uint8ClampedArray(source.data), width, height);
   const coverage = new Uint8Array(width * height);
-  // When a quality-blended texture already exists below the single-view
-  // paintover, keep a small non-zero alpha outside the authoritative geometry
-  // mask. That preserves the bled RGB during PNG encoding while the alpha
-  // inside the silhouette can act as a wide transition weight.
-  const minimumBlendAlpha = Math.round(255 * 0.12);
   for (let index = 0; index < coverage.length; index += 1) {
     const offset = index * 4;
     const maskLuminance =
       mask.data[offset] * 0.299 + mask.data[offset + 1] * 0.587 + mask.data[offset + 2] * 0.114;
     coverage[index] = Math.round(maskLuminance * (mask.data[offset + 3] / 255));
-    output.data[offset + 3] = options.edgeBlend ? minimumBlendAlpha : 255;
+    output.data[offset + 3] = 255;
     if (coverage[index] <= 0) continue;
     output.data[offset] = cleaned.data[offset];
     output.data[offset + 1] = cleaned.data[offset + 1];
@@ -616,57 +610,6 @@ export function applyCaptureProjectionImage(
     [1, 1],
   ] as const;
 
-  if (options.edgeBlend) {
-    // Build an inward distance field from the captured silhouette. The core of
-    // the single view stays fully authoritative; only a resolution-independent
-    // boundary band crossfades into the older multiview/UV result.
-    const maximumBlendDistance = Math.min(
-      128,
-      Math.max(24, Math.round(Math.max(width, height) * 0.035)),
-    );
-    // Reuse the outward-bleed queue and distance buffer. A second pair of
-    // full-frame typed arrays would add about 100 MB at 4K resolution.
-    const boundaryTail = tail;
-    while (head < tail) {
-      const current = queue[head];
-      head += 1;
-      const distance = distances[current];
-      if (distance >= maximumBlendDistance) continue;
-      const x = current % width;
-      const y = Math.floor(current / width);
-      for (const [offsetX, offsetY] of neighborOffsets) {
-        const neighborX = x + offsetX;
-        const neighborY = y + offsetY;
-        if (neighborX < 0 || neighborX >= width || neighborY < 0 || neighborY >= height) continue;
-        const neighbor = neighborY * width + neighborX;
-        if (coverage[neighbor] <= 0 || distances[neighbor] !== 0) continue;
-        distances[neighbor] = distance + 1;
-        queue[tail] = neighbor;
-        tail += 1;
-      }
-    }
-    for (let index = 0; index < coverage.length; index += 1) {
-      if (coverage[index] <= 0) continue;
-      const distance = distances[index];
-      if (distance === 0) {
-        output.data[index * 4 + 3] = 255;
-        continue;
-      }
-      const linear = Math.min(1, Math.max(0, (distance - 1) / maximumBlendDistance));
-      const smooth = linear * linear * (3 - 2 * linear);
-      output.data[index * 4 + 3] = Math.round(
-        minimumBlendAlpha + (255 - minimumBlendAlpha) * smooth,
-      );
-    }
-    // Restore the boundary-only frontier before growing RGB into the masked
-    // background. The first boundaryTail queue entries were never overwritten.
-    for (let index = 0; index < coverage.length; index += 1) {
-      if (coverage[index] > 0 && distances[index] > 1) distances[index] = 0;
-    }
-    head = 0;
-    tail = boundaryTail;
-  }
-
   while (head < tail) {
     const current = queue[head];
     head += 1;
@@ -685,7 +628,7 @@ export function applyCaptureProjectionImage(
       output.data[neighborOffset] = output.data[sourceOffset];
       output.data[neighborOffset + 1] = output.data[sourceOffset + 1];
       output.data[neighborOffset + 2] = output.data[sourceOffset + 2];
-      output.data[neighborOffset + 3] = options.edgeBlend ? minimumBlendAlpha : 255;
+      output.data[neighborOffset + 3] = 255;
       distances[neighbor] = distance + 1;
       queue[tail] = neighbor;
       tail += 1;
@@ -817,22 +760,20 @@ export function createCaptureMaskedPreview(sourceUrl: string, maskUrl: string, r
 async function createCaptureMaskedProjectionImageUncached(
   sourceUrl: string,
   maskUrl: string,
-  options: { edgeBlend?: boolean },
 ) {
   const source = await urlToImageData(sourceUrl);
   const mask = await urlToImageData(maskUrl, source.width, source.height);
-  return blobToDataUrl(await imageDataToBlob(applyCaptureProjectionImage(source, mask, options)));
+  return blobToDataUrl(await imageDataToBlob(applyCaptureProjectionImage(source, mask)));
 }
 
 export function createCaptureMaskedProjectionImage(
   sourceUrl: string,
   maskUrl: string,
-  options: { edgeBlend?: boolean } = {},
 ) {
-  const cacheKey = `${options.edgeBlend ? 'blend' : 'opaque'}:${sourceUrl}`;
+  const cacheKey = sourceUrl;
   const cached = captureMaskedProjectionCache.get(cacheKey);
   if (cached?.maskUrl === maskUrl) return cached.promise;
-  const promise = createCaptureMaskedProjectionImageUncached(sourceUrl, maskUrl, options).catch((error) => {
+  const promise = createCaptureMaskedProjectionImageUncached(sourceUrl, maskUrl).catch((error) => {
     if (captureMaskedProjectionCache.get(cacheKey)?.promise === promise)
       captureMaskedProjectionCache.delete(cacheKey);
     throw error;

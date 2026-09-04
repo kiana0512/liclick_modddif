@@ -235,10 +235,10 @@ assert.match(
   /canUseDirectVisibleStackAfterArrayFailure[\s\S]*?textureArrayCompositionFallbackRequired && directProjectedSamplerBudget\.withinBudget/,
   'an array failure must use the complete direct stack whenever the GPU can carry it',
 );
-assert.match(
+assert.doesNotMatch(
   compositorSource,
-  /const overlayMaterial = createFullscreenMaterial\(overlayFragmentShader,[\s\S]*?priorityOverlay: 0/,
-  'overlay compositor must declare the priorityOverlay uniform before step writes it',
+  /priorityOverlay/,
+  'the retired single-view priority branch must not add uniforms or per-pass writes',
 );
 assert.match(
   viewportSource,
@@ -375,10 +375,10 @@ assert.match(
   /!workspaceVisible \|\|\s*!selected \|\|\s*!texturedRestoreReady/,
   'runtime projection visibility repair must not compete across hidden or unselected models',
 );
-assert.match(
+assert.doesNotMatch(
   compositorSource,
-  /const overlayFragmentShader = `[\s\S]*?uniform float priorityOverlay;/,
-  'the priority overlay compositor shader must declare the uniform used by its alpha branch',
+  /uniform float priorityOverlay/,
+  'progressive composition must keep ordinary single views in the quality pass',
 );
 assert.match(
   sceneRootSource,

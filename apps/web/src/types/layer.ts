@@ -11,7 +11,6 @@ export type BlendMode = 'normal' | 'multiply' | 'screen' | 'overlay' | 'soft-lig
 export type LayerMaskSpace = 'projection' | 'uv';
 export type ProjectionVisibilityPolicy = 'standard' | 'surface-locked-v1';
 export type ProjectionCoverageMode = 'capture-mask' | 'source-alpha-depth';
-export type ProjectionCompositeMode = 'single-view-priority-v1';
 export type LocalRepaintStackBlendMode = 'inward-crossfade-v1';
 
 export type LayerAdjustments = {
@@ -59,8 +58,6 @@ export type Layer = {
   projectionVisibilityPolicy?: ProjectionVisibilityPolicy;
   /** Selects whether coverage comes from the capture mask or source alpha plus depth. */
   projectionCoverageMode?: ProjectionCoverageMode;
-  /** Single-view paintovers composite above quality-blended multiview projections. */
-  projectionCompositeMode?: ProjectionCompositeMode;
   visible: boolean;
   opacity: number;
   strength?: number;

@@ -1,10 +1,10 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
-> 文档版本：`2.16.27`
+> 文档版本：`2.17.0`
 >
-> 生效日期：`2026-09-03`
+> 生效日期：`2026-09-04`
 >
-> 代码盘点基线：`5f880fd + 本次局部重绘持久化修复`
+> 代码盘点基线：`8d3b9f1 + 本次单/多视图统一合成`
 >
 > 基线仓库：`E:\Liclick 3D Texture Modernization`
 >
@@ -232,7 +232,7 @@ Layer 的 `type`、`role`、`blendMode`、`visibility policy` 是四个独立维
 | --- | --- | --- | --- |
 | 合并 UV 图层 | `uv` | `merged-uv` | 已发布的最终 UV；`uvMergeVersion=4`；PBR 预览光照已固化，显示时 unlit |
 | 投射贴图·方向 | `projected` | 普通生成层 | 捕获相机空间投影；普通层参加 Top-3 质量合成 |
-| 单视图优先贴图 | `projected` | `projectionCompositeMode=single-view-priority-v1` | 在普通多视图后覆盖核心；有可见纹理底层时，编辑器生成距离场 Alpha 让轮廓宽带平滑接回底层 |
+| 单视图投射贴图 | `projected` | 普通生成层；`projectionCoverageMode=capture-mask` | 与多视图进入同一 Top-3 质量合成；capture mask/depth 只限定几何 footprint，不提供顺序优先权 |
 | 局部重绘·局部替换 | `projected` | `local-repaint-overlay` 或稳定 ID | literal overlay；alpha 直接等于用户表面画笔 coverage |
 | 局部重绘草稿 | `projected/patch` | `local-repaint-draft` | 生成结果与蒙版会话，不应直接当成最终 UV |
 | 内容识别修补 | `uv` | `content-aware-underlay` | 只填投影缺口，位于投影结果之下，不能覆盖有效投影 |
@@ -292,8 +292,8 @@ Layer 以可选 `eraserAlgorithmVersion=1` 标记首次采用该语义的内容�
 | `ALG-PROJ-001` 捕获锁定矩阵重投影 | `2.0.0` | 实时材质、UV bake、画笔 | `clip=Pcap·Vcap·(Mcap·inverse(Mcurrent))·worldCurrent` | 缺矩阵/相机时层不可靠，禁止偷偷用当前相机 |
 | `ALG-PROJ-002` 连续 Coverage 门控 | `3.0.0` | projection shaders | 普通层=`opacity×sourceAlpha×mask×angle×visibility×facing×edgeFade`；surface-locked depth 命中层以捕获 mask/depth 覆盖为权威 | coverage≤0.02 丢弃，不用二值膨胀掩盖 |
 | `ALG-PROJ-003` 深度-法线表面可见性 | `3.0.0` | preview/GPU UV | linear-view depth + 3×3 支持；surface-locked 深度邻域支持在 0→0.05 内转为完整可见性，可靠 depth 命中不再被插值 mesh normal 二次衰减 | 缺 depth 才走角度退化，不伪造可见性 |
-| `ALG-PROJ-004` Top-3 颜色一致性合成 | `2.0.0` | 普通多视图 | 每 texel 保留 score 最高 3 个；线性 RGB 离群降权 | WebGPU parity 不通过使用 CPU exact 输出 |
-| `ALG-PROJ-005` Priority 单视图覆盖 | `2.0.0` | single-view layer | 核心沿用 priority coverage/quality；若同对象已有可见 projected/UV 底层，源图轮廓距离场在画幅 3.5% 宽度内由 0.12→1.0，之后再与捕获 mask/depth 相乘 | 无底层时保持不透明源；不越过捕获/深度边界 |
+| `ALG-PROJ-004` Top-3 颜色一致性合成 | `3.0.0` | 普通单视图与多视图 | 每个普通投影视角均作为候选；每 texel 保留 score 最高 3 个，按 coverage、depth、angle、edge 与线性 RGB 一致度组合，不依赖图层顺序硬覆盖 | WebGPU parity 不通过使用 CPU exact 输出 |
+| `ALG-PROJ-005` 单视图投影适配 | `3.0.0` | single-view layer | 只负责将供应方 RGB 清理为捕获原尺寸的全不透明投影源，并用独立 capture mask/depth 定义 footprint；合成完全委托 `ALG-PROJ-004`，旧 `single-view-priority-v1`/距离场 Alpha 在读取时惰性移除 | 缺 capture mask 时停止安全升级；不恢复 priority source-over |
 | `ALG-PROJ-006` Literal Overlay | `2.0.1` | 局部重绘 | 用户 authored coverage 直接 source-over；单层材质登记直接 mask sampler 以完成 resident 交接 | mask/source 未就绪不发布半层 |
 | `ALG-PROJ-007` GPU 驻留与分块 | `2.1.2` | ProjectedLayerMaterial / SceneRoot / PreviewCompositor | live 纹理同参数读取不置脏，显式发布/参数变化仍更新；每个 array stripe 上传前解除 PBO 绑定并在 finally 恢复；只对可见工作区当前对象预热，隐藏对象取消未完成 array 构建；array 失败时允许预算内精确 direct stack，否则渐进合成自动退避重试，总尝试最多 4 次 | 保留上一有效材质或合法 UV bootstrap；晚到发布不得复活隐藏 UV；不降低生产 UV 输出尺寸 |
 
@@ -316,7 +316,6 @@ Layer 以可选 `eraserAlgorithmVersion=1` 标记首次采用该语义的内容�
 | 胜者差值 | `0.05 → 0.2` | 绝对质量差 |
 | 颜色一致 sigma | `0.22` | 线性 RGB 距离抑制 |
 | surface-lock 深度支持羽化 | `0.00 → 0.05` | 任一可信 3×3 depth 邻域命中即快速恢复完整覆盖 |
-| 单视图轮廓距离场 | `max(24,min(128,maxDim×0.035))` | 有可见底层时，源 Alpha 从 0.12 平滑升至 1.0 |
 | 投影 RGB 外扩 | `max(8,min(48,maxDim×0.015))` | 只保护过滤采样颜色；几何 footprint 仍由独立 capture mask 决定 |
 
 投影参数的 GPU 实时材质、GPU UV 栅格、Worker/CPU exact 和导出路径必须共同审查。当前缺少持久化 `projectionAlgorithmVersion` 是治理债务；改变上述阈值至少升级 Minor，改变矩阵、深度编码或权重模型升级 Major。
@@ -331,7 +330,7 @@ Layer 以可选 `eraserAlgorithmVersion=1` 标记首次采用该语义的内容�
 UI-09 剪刀
  → 冻结当前对象、选中 Layer IDs、分辨率和 PBR 显示设置
  → 普通 projected：GPU UV0 栅格，生成 RGBA/coverage/quality
- → literal/priority overlays：按图层顺序单独栅格
+ → 仅显式 feathered/literal overlays：按图层顺序单独栅格
  → Top-3 exact quality blend（Worker；WebGPU 必须 parity）
  → content-aware UV underlay 从下方补透明缺口
  → gutter / topology gap / enclosed hole / physical seam reconciliation
@@ -349,7 +348,7 @@ UI-09 剪刀
 | `ALG-UV-001` UV0 三角形投影栅格 | `2.0.0` | GPU 默认把 mesh UV 三角形画入 RT，重建世界位置/法线并复用投影门控；CPU 每 texel 4 子样本是诊断回退 |
 | `ALG-UV-002` Runtime 可见性补获 | `2.0.0` | stale/missing depth 按原 capture camera 重新捕获，完整捕获上限 2048，不改变最终 UV 分辨率 |
 | `ALG-UV-003` Top-3 质量合成 | `2.0.0` | 与第 6 节常量一致；输出 authored color、coverage confidence、rendered-color mask |
-| `ALG-UV-004` 有序 Overlay | `3.0.0` | feathered=`coverage×(0.75+0.25×qualityFade)`；priority 使用 `ALG-PROJ-005` v2 距离场 source Alpha；literal=`coverage`；实时与 GPU UV bake 同义 |
+| `ALG-UV-004` 有序 Overlay | `4.0.0` | 仅用户显式 overlay 使用 feathered=`coverage×(0.75+0.25×qualityFade)`；局部重绘 literal=`coverage`。普通单/多视图均先进入 Top-3，不再拥有 priority overlay；实时与 GPU UV bake 同义 |
 | `ALG-UV-005` 拓扑约束后处理 | `2.0.0` | gutter/gap=`clamp(ceil(res/512),2,8)`；hole=`clamp(ceil(res/2048),1,3)`；seam=`clamp(ceil(res/1024),2,4)`，不得跨无关 island |
 | `ALG-UV-006` Under 合成 | `2.0.0` | 投影在前、content-aware 在下；straight alpha：`Aout=Af+Au(1-Af)` |
 | `ALG-UV-007` PBR 预览光照固化 | `4.0.0` | 依据 UV 法线、环境预设、曝光、环境强度、主光强度/方位计算 deterministic preview light；rendered-color 像素权重 1 时保持原色 |
@@ -479,10 +478,10 @@ Bake 设置包含 resolution、frontal/rear distance、distance/cage、cage infl
 | `ALG-CAP-004` Depth 捕获 | `(-viewZ-near)/(far-near)` linear-view，RGB packing，alpha=1 |
 | `ALG-CAP-005` Normal 捕获 | 默认 view normal，编码 `n×0.5+0.5` |
 | `ALG-CAP-006` 捕获状态隔离 v1.0.0 | 首次及逐 tile/pass 的 await 前归还共享 renderer/背景；每个同步 draw 重绑捕获 target/clear，保留像素与分辨率 |
-| `ALG-GEN-001` 单视图生成 | 当前相机 Capture + 材质参考 → Generation；结果先生成原捕获尺寸的边缘去污染投影源，再与 capture mask/depth 一起创建 single-view-priority projected layer |
+| `ALG-GEN-001` 单视图生成 | 当前相机 Capture + 材质参考 → Generation；结果先生成原捕获尺寸的边缘去污染投影源，再与独立 capture mask/depth 一起创建普通质量合成 projected layer |
 | `ALG-GEN-002` 多视图批次 | N 个捕获共享 batch；完成层串行 commit，整批结束一次发布新投影栈 |
 | `ALG-GEN-003` 任务身份归一 | clientGenerationId/serverJobId/taskId 合并，避免恢复时重复 running 行 |
-| `ALG-GEN-004` ModelView 远端单视图 | `1.0.0`；当前视角白模 + 多视图材质参考 + 可选提示词 → `modelview-single-view` → Generation；结果继续使用 `ALG-PROJ-005` 单视图优先投影 |
+| `ALG-GEN-004` ModelView 远端单视图 | `1.1.0`；当前视角白模 + 多视图材质参考 + 可选提示词 → `modelview-single-view` → Generation；结果使用 `ALG-PROJ-005` v3 捕获适配并进入统一质量合成 |
 | `ALG-GEN-005` 提示词智能润色 | `1.10.0`；UI-05 经同源 `/api/liclick/prompt-polish` 分流。普通单/多视图保持莉刻 `data-analysis` A2A；局部重绘空输入由 `qwen3-vl-plus` 在一次请求中输出诊断和英文正文，诊断与正文分别校验；显式输入跳过诊断，保持统一 Qwen → Klein 转换模板。服务端用未外扩原始 mask 定位，并从干净 Image 1 自动裁出带上下文的第四图供 Qwen 看清选中部件；完整参考图仍只提供有证据的结构/材质，第四图不改变编辑范围或 ModelView 输入。模板先用 Image 2、第四图和 mask 外邻域共同确定真实结构与材质；仅当三者证明选区为未完成的白灰占位时，要求 Klein 用明确目标材质完整替换 clay/primer/flat placeholder/untextured surface，真实浅色材质不受此规则影响。模板以 100–180 词、2–3 段英文为生成目标；段数、词数、语言和 Markdown 偏差只记脱敏告警，不阻断也不触发格式修正。若首段缺少明确 mask 范围，服务端确定性追加固定保护句。仅最终正文写入 Generation，诊断不持久化、不回填文本框；显式输入与空输入均一次 Qwen，保持 65 秒 deadline。模板策略进入所有局部重绘指纹，升级后首次重新解析、后续继续复用 |
 | `ALG-OUT-001` 纹理/模型导出 | BaseColor 与 GLB/GLTF/FBX/OBJ/STL/ZIP；验证 UV 方向和颜色空间 |
 | `ALG-OUT-002` 快照/转台 | 当前视口设置生成静态图或视频，不改变 Layer 作者数据 |
@@ -494,10 +493,10 @@ Bake 设置包含 resolution、frontal/rear distance、distance/cage、cage infl
 - GPT2 输入与行为：继续使用现有完整纹理提示词、LiClick/Atlas 任务提交、轮询、取消和投影流程，不改变既有语义。
 - 远端输入：必填当前视角 clay 白模 `image`、已选多视图材质参考 `material_image`；`prompt` 可空且最长 4096 字符；禁止发送 mask、seed、noise_seed、模型名、采样步数或工作流节点参数。
 - 远端身份：每次新生成使用新的 client generation ID，并派生独立 `Idempotency-Key`；网络层重放同一请求必须复用该键。
-- 远端输出：同步 PNG 先写入当前项目 generations 资产，再创建 `workflow=texture-map`、`provider=modelview-single-view` 的 Generation；GPT2 与远端都必须用同一 capture camera/mask/depth 和 `ALG-PROJ-005` v2 创建 `single-view-priority-v1` 图层，供应方差异不得改变投影几何。
+- 远端输出：同步 PNG 先写入当前项目 generations 资产，再创建 `workflow=texture-map`、`provider=modelview-single-view` 的 Generation；GPT2 与远端都必须用同一 capture camera/mask/depth 和 `ALG-PROJ-005` v3 创建普通质量合成图层，供应方差异不得改变投影几何。
 - 工作流：`modelview-single-view`，生产版本 `2026.08.26-c0e6218-single-view-4step-r1`，与局部重绘 `modelview-inpaint` 分开排队和审计。
 - 失败与回退：远端失败只标记本次 Generation 失败并显示真实错误，不自动改走 GPT2；用户可显式切回 GPT2 重新生成。远端为非默认、非持久化界面选择，旧工程无需迁移。
-- 回滚：移除单视图远端 UI 分支和同源路由即可；已有远端 Generation/Layer 继续按普通单视图优先层读取，不需要删除资产或改写 Project Revision。
+- 回滚：移除单视图远端 UI 分支和同源路由即可；已有远端 Generation/Layer 继续按普通单视图质量层读取，不需要删除资产或改写 Project Revision。
 - 测试：`test:single-view-priority` 必须覆盖双提供方分流与投影语义；`smoke:modelview-inpaint` 同时验证两条 ModelView URL、multipart 字段、幂等键、X-Job-ID 和 PNG 持久化。
 
 ### 11.1.1 同源开发工作区资产兼容
@@ -506,11 +505,11 @@ Bake 设置包含 resolution、frontal/rear distance、distance/cage、cage infl
 
 ### 11.2 单视图投影源、迁移与回退
 
-- 面板返回图与投影源分离：面板可使用裁切显示副本；投影源必须保持捕获原尺寸，避免改变 projector UV。capture mask 是几何 footprint 权威，投影 PNG Alpha 只在 `projectionEdgeBlendMode=distance-field-v1` 时表达编辑器生成的轮廓过渡。
-- 生成结果轮廓先依据 capture mask 从主体内部回拉 RGB，再把清理后的 RGB 向 mask 外扩散；外扩像素不会扩大几何覆盖。浏览器编码需要的非零外侧 Alpha 最终仍会乘独立 mask，因此不会投影到背景。
-- 新建单视图检测同对象是否已有可见普通 projected/UV 底层。有底层时持久化 `ignoreSourceAlpha=false` 并使用距离场；无底层时 `ignoreSourceAlpha=true`，保持单层完整覆盖。旧图层缺少显式 false 时继续按旧逻辑读取，不批量改写 Project。
-- 迁移：Project Command、Revision、ownership、Capture/Layer 字段和资产类别均不升级；旧项目直接兼容。要让已有单视图获得新轮廓过渡，需要重新生成或重新创建投影层。
-- 回退：停止生成 `distance-field-v1` Alpha并恢复 `ignoreSourceAlpha=true` 即可；已保存 PNG、mask、depth 均仍为合法资产。不得删除用户历史图层或重写 Revision。
+- 面板返回图与投影源分离：面板可使用裁切显示副本；投影源保持捕获原尺寸，避免改变 projector UV。capture mask/depth 是几何 footprint 权威，供应方 PNG Alpha 不参与单视图覆盖判断。
+- 生成结果轮廓依据 capture mask 从主体内部回拉 RGB，再把清理后的 RGB 向 mask 外扩散；源图保持全不透明，外扩像素不会扩大独立 capture mask 限定的几何覆盖。
+- 所有新建普通单视图和多视图均进入 `ALG-PROJ-004` v3 Top-3 质量合成；普通投影图层顺序只用于面板组织，不作为硬覆盖优先级。局部重绘、显式 Overlay 与 UV 层仍保留作者层级语义。
+- 迁移：读取旧 `single-view-priority-v1` 或历史“投射贴图 · 当前视角”行时，惰性清除 priority 标记、surface-lock 和距离场 source-alpha，改为 `projectionCoverageMode=capture-mask`、`ignoreSourceAlpha=true`、standard visibility；不批量改写历史 Revision 或图片资产。
+- 回退：代码可恢复旧合成分支，但不得删除或改写现有 Generation、Capture、Layer、mask/depth 资产；新版保存的普通质量层可被旧版作为普通 projected layer 读取。
 
 ### 11.3 提示词智能润色 `ALG-GEN-005` v1.10.0
 
@@ -763,6 +762,7 @@ M15 / CLOUD-DEPLOYMENT v1.0.0（2026-09-03）：正常合并 release 部署历�
 | `2.16.22` | 2026-09-03 | `本次材质编译与发布调度修复` | M06、`ALG-PROJ-007` v2.1.2：抢先预热限 outline，direct 材质链接完成后发布，正式编译加入已有 cold warmup，修正 Promise Map 清理身份；shader/像素/分辨率/持久化不变，无迁移。 |
 | `2.16.23` | 2026-09-03 | `本次原生画笔尾部重复拾取修复` | M03、`ALG-VIEW-INPUT-001` v1.1.0：按 canvas/pointer 路由画笔已接管的 up/click 尾部，保留原生提交与 R3F 选择/捕获；60 笔 120→0 多余拾取。像素/分辨率/持久化不变，无迁移。 |
 | `2.16.24` | 2026-09-03 | `本次捕获首次等待状态隔离修复` | M03、`ALG-CAP-006` v1.0.0：离屏捕获首次及逐 tile/pass 等待前恢复 renderer/背景，重绑捕获 clear 值；真实函数边界/完整像素/异常清理回归。无输出尺寸、Schema、资产迁移。 |
+| `2.17.0` | 2026-09-04 | `本次单/多视图统一质量合成` | UI-05/UI-06/UI-09、M04/M05/M06/M07，`ALG-PROJ-004/005` v3.0.0、`ALG-UV-004` v4.0.0：普通单视图不再作为 priority source-over，也不再生成距离场 Alpha；单+单、单+多统一进入 Top-3 coverage/depth/angle/颜色一致性合成。旧 priority 行读取时惰性迁移，局部重绘 literal、显式 Overlay、UV 层级保持。删除 priority shader/uniform 与 CPU overlay 分支；Project/Layer 持久字段、Revision、ownership、分辨率和历史资产不批量迁移。 |
 
 `ALG-LR-008` v2.4.1：局部重绘仍自动创建独立目标和结果图层；pointer-down 不再依赖当前图层是否选中、可见或为 UV，只检查自身 source/composite/Session/显示资源。默认保持按钮激活、GPU promotion、结果发布前的原选择（含 undefined），防止内部隐藏 draft 触发面板选择普通投影层。普通画笔/橡皮擦限制、GPU/CPU/Worker/shader、作者 mask、投影/UV/export、分辨率、Schema、Revision、ownership 与资产不变。真实 store 三类选择与入口 gate 回归通过；无数据迁移，回退选择保持与 gate 即可。详见 CHG-20260903-LOCAL-REPAINT-SELECTION-INDEPENDENCE。
 
