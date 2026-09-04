@@ -3,7 +3,7 @@
 ## 范围
 
 - 主模块：M13 身份、授权与平台边界。
-- 协议：`LICLICK-ACCOUNT-BINDING` v1.2.0 → v1.3.2。
+- 协议：`LICLICK-ACCOUNT-BINDING` v1.2.0 → v1.3.3。
 - 目标：每个飞书用户授权并使用自己的莉刻账号进行生图、编辑、任务查询和后台历史查看；生产模式不使用固定公共账号。
 
 ## 根因
@@ -44,6 +44,12 @@
 - Atlas SkillHub 2.9.1 会因 `KUBERNETES_SERVICE_HOST` 等云环境信号自动切换为 ArkClaw/TIP-only，即使用户独立 Atlas home 中已存在有效 IDaaS Token，后续 `status`、`list-tools` 和业务调用仍会错误要求公共 `VE_TIP_TOKEN`。
 - LI3D 仅在为明确的用户独立 Atlas home 启动 Atlas 子进程时移除 `KUBERNETES_SERVICE_HOST`、`VE_TIP_TOKEN` 及 ArkClaw/workload 自动探测信号，使 Atlas 读取该用户安全缓存。未指定个人 home 的机器级调用继续继承原环境并保持 TIP 行为。
 - 该处理不把用户 Token 放进环境变量，不修改 Pod 主进程环境，也不允许个人任务回退到公共 TIP Token。
+
+## QA/生产 Gateway 配对修复
+
+- QA IDaaS JWT 只能发送到 `https://atlas-ai-gateway-test.lilithgames.com`，生产 IDaaS JWT 只能发送到 `https://atlas-ai-gateway.lilithgames.com`；两套 Token 不可交叉验签。
+- `LI3D-QA` 部署显式设置 `ATLAS_AI_GATEWAY_ENV=test`。切换正式 IDaaS 应用时必须同时切换为 `prod`。
+- 服务启动时拒绝已知的 QA/生产混配，Token 安全缓存也校验其 `gateway_url` 必须等于当前配置，避免再次产生 `invalid_token`。
 
 ## 不变项
 

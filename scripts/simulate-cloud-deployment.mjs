@@ -195,6 +195,7 @@ function startCloudServer(port, objectStorageEndpoint, identityEndpoint, atlasRu
       IDAAS_JWT_SSO_URL: `${identityEndpoint}/sso`,
       IDAAS_ENTERPRISE_ID: 'test',
       IDAAS_SP_SERVICE_URL: `${publicUrl}/api/liclick/account-binding/callback`,
+      ATLAS_AI_GATEWAY_ENV: 'test',
       ATLAS_SKILLHUB_PATH: atlasRuntimePath,
       KUBERNETES_SERVICE_HOST: '10.0.0.1',
       LICLICK_OBJECT_STORAGE_ENDPOINT: objectStorageEndpoint,
