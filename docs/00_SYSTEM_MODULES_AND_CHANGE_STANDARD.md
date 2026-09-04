@@ -1,6 +1,6 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
-> 文档版本：`2.17.0`
+> 文档版本：`2.17.2`
 >
 > 生效日期：`2026-09-04`
 >
@@ -11,6 +11,16 @@
 > 审计口径：`0a2519d + 607e82f + 2568e40`，不包含错误文档提交 `2bde8c6/e03bab2/d1c5f78`
 
 ## 1. 文档地位与强制边界
+
+变更卡 `CHG-20260903-REPAINT-DISPLAY-READBACK`：UI-05/UI-10 → M08，`ALG-LR-011` v1.1.1（Cooperative display image readback / 返图显示读取让步），production，实施 Codex、体验验收维护者。接续 `e0a0ed71`：上轮返图 LoAF 中 IMG.onload 为 237.1ms，读取入口为 imageUtils 的 HTML Image 加载及后续 Canvas/预览微任务。局部重绘实际走 createGeneratedDisplayPreview，不走 capture-mask；曾试验的捕获蒙版零梯度优化不在此主路径，已撤除，52→36ms 隔离结果不计入本次收益。
+
+仅 generated-display 的原图和 depth 读取开启 cooperative 选项：已加载 Image 在支持时等待 decode，保留同一个原尺寸/原过滤 Canvas 完整 drawImage，然后以最多 262,144 像素（约 1 MiB RGBA）逐条 getImageData，无缩放地复制到完整输出。每条前让出浏览器任务、尊重已有 180ms 交互空闲门控并检查取消；隐藏页沿用既有任务兜底，不新加 rAF 依赖。加载中取消释放监听和 Image 请求；decode 提示拒绝时仍可使用原已加载图片，但加载、Canvas/readback 真正错误保留失败。默认调用者继续原整图读取，无新等待。
+
+输入为相同 URL、目标尺寸、sRGB/默认 Canvas RGBA；输出逐字节保持相同像素和尺寸。后续 1024 显示上限、depth 阈值、裁边/6% 留白与 PNG 编码不变，不降低最终输出分辨率。只调整 M08 CPU 显示读取，GPU/Worker/shader、capture/projector、作者与远端 mask、UV/export、Layer/Generation/Capture/Project Schema、Project Command 幂等性、Revision CAS、ownership 和 verified assets 均无变更。无迁移；回退移除两处 cooperative 参数及对应可选读取实现，不删除工程或结果。
+
+`test:display-image-readback` 执行真实生产读取函数，覆盖单像素/单列/奇数尺寸/末条不足、完整 RGBA（含透明像素下 RGB）与默认路径对照、只绘制一次、每条独立 yield、natural/fallback 尺寸、decode 缺失/拒绝、六处取消和加载/上下文/读取异常。旧 HEAD 实现在让步断言失败，新实现通过。此为确定性 Canvas 读取/调度契约，不替代真实浏览器解码耗时、颜色处理及返图帧稳定性验收。当前补丁在前一批推送之后，暂未推送，不能把前一批 CI 状态当作本卡验证。
+
+本卡本地验证：83 项 Web 回归、Web typecheck、修改文件 lint、完整身份 build:release、Cloud artifact、Cloud/repository boundary 及 diff 检查通过；79 chunks / 3,127,005 bytes，仍低于既有 3,134,000-byte 门禁。浏览器已加载 index-CK3tUtbr，004_flour_bag 的返图显示预览可见，但模型视口持续显示加载提示，随后测试标签显示“页面崩溃”；自动恢复受浏览器控制策略阻止。随后原标签恢复到工程 Saved 界面，模型仍显示加载提示。因此本轮没有有效的新版连续帧对照，不能引用页面留存的旧录制作为收益。恢复阶段已包含在材质结构 key 中，尚无证据支持把卡住归因于驻留材质 fast-path；未据此改动模型显示门控，崩溃原因与多模型恢复仍待进一步复现。
 
 2026-09-03 推送前集成验收：六项性能修复按独立中文提交整理，并重放到远端 master `7febed1`，保留其蒙版持久化、橡皮原子交接、结果选择、模型恢复与历史修复。合并后 82 项 Web 回归、全工作区 typecheck/lint（零错误、16 条 warning）、服务端 project pipeline persistence、完整身份 build:release、Cloud artifact、Cloud/repository boundary 和 diff 检查通过。JS 为 3,126,369 bytes，低于上游既有 3,134,000-byte 门禁，本批不改 CI 或预算。下面“未提交本地补丁”与旧预算描述为各阶段历史测量，不能冒充本次远端 CI 或合并后的浏览器帧验收；返图约 300ms 和首次编译尖峰继续跟进。
 
@@ -391,7 +401,7 @@ UI-09 剪刀
 | `ALG-LR-008` 延迟投影持久化 | `2.4.4` | interactive UV bake 固定关闭；生图前 Project Command snapshot 后台执行。蒙版工具/生图开始即并行编译并持有 exact overlay 程序，预读作者蒙版；返图颜色缩放与 falloff 并行。内存 Session 按 Generation/目标复用活动任务。高清读取和 GPU 准备有 20 秒预算；仅背景栈已有行进入 resident 等待，单层直接蒙版登记完整、辅助网格排除，交接失败明确结束会话。Session 驱动按钮，DOM 仅诊断；pointer-up 两帧内发布权威图层行，idle 3000ms 仅合并持久化并设置 needsRebake=true；保存前必须把 live canvas 编码上传成 verified asset，runtime URL 不得进入 Project Revision；提交/GPU 准备调度含隐藏页兜底，不替代真实呈现交接；返图三纹理上传之间显式让帧并检查取消 |
 | `ALG-LR-009` Inward Crossfade 栈合成 | `1.0.0` | 连续重绘层向内部交叉淡化，避免普通 alpha stacking 在边缘重复显露接缝 |
 | `ALG-LR-010` Provider 兼容编辑 | `1.0.0-compat` | `LocalRepaintDialog` 的 image/edit/protect/hole masks 独立路径，不得与四输入主路径混改 |
-| `ALG-LR-011` 生图透明显示副本 | `1.1.0` | UI-05 重绘效果图和 UI-10 普通投射图层缩略图优先使用 capture linear-view depth 清除明确无几何覆盖的背景，按精确 alpha bounds 仅裁切一次并保留 6% 留白；几何覆盖区的 RGB/alpha 原样保留。深度不可用时只清除与画布边缘连通的近黑外背景，不做第二次 matte、侵蚀或分位裁边。局部重绘图层不走整图副本，继续使用用户涂绘 mask，只显示笔刷授权区域；实际可见消费者串行、交互空闲调度，支持共享取消与 source/depth/mask/revision 有界 LRU；切模型不强制展开图层面板 |
+| `ALG-LR-011` 生图透明显示副本 | `1.1.1` | UI-05 重绘效果图和 UI-10 普通投射图层缩略图优先使用 capture linear-view depth 清除明确无几何覆盖的背景，按精确 alpha bounds 仅裁切一次并保留 6% 留白；几何覆盖区的 RGB/alpha 原样保留。深度不可用时只清除与画布边缘连通的近黑外背景，不做第二次 matte、侵蚀或分位裁边。局部重绘图层不走整图副本，继续使用用户涂绘 mask，只显示笔刷授权区域；实际可见消费者串行、交互空闲调度，支持共享取消与 source/depth/mask/revision 有界 LRU；切模型不强制展开图层面板 |
 | `ALG-LR-012` 远端重绘输入融合 | `1.1.0` | 专用 Worker 从原始连续 mask 派生 ModelView 合成核：候选/强核阈值为 24/96，8 邻域保留含强核的连通域，应用 `clamp(0.012×mask短边, 2, 6)px@2K` 闭运算、小于 `max(24px², bbox×0.02%)@2K` 的孤岛过滤和小于 `max(64px², bbox×0.05%)@2K` 的封闭孔填充；`composite=current×(1-a)+clay×a` 使用全不透明核和约 1.5px@2K 窄边羽化。远端 mask 从清理后核再按 `clamp(0.25×核短边, 24, 64)px@2K` 外扩、`clamp(0.2×外扩, 4, 10)px@2K` 羽化。Qwen、Capture、Generation 画笔授权与历史恢复仍使用未外扩、未清理的原始作者 mask |
 
 局部生图远端接收生成阶段的 RGB selection mask，但仍不接收 UV 图集、表面深度或用户最终回贴 coverage。远端 latent mask 不承诺蒙版外像素逐点不变；浏览器继续用同一 `allowedMaskUrl`、capture camera 和 depth guard 限制 3D 写回，用户通过表面画笔决定最终图层 coverage。这些几何授权契约与旧版保持一致。
@@ -577,7 +587,7 @@ A100 发布同时显式配置 `LICLICK_PERFORMANCE_LAB_ENABLED=true` 与构建�
 
 迁移只新增性能会话/分片表，不回填旧 `sessionStorage` 报告，不改变 Project Command、Revision CAS、对象 ownership 或任何图层资产。回滚可停止挂载 Cloud bridge、关闭性能 API 并保留新增表供审计；IndexedDB 未发送记录可由恢复后的同版本页面继续重试，禁止为回滚删除用户项目或恢复 Windows 本地采集组件。
 
-### 13.2 当前用户莉刻账号绑定 `LICLICK-ACCOUNT-BINDING` v1.2.0
+### 13.2 当前用户莉刻账号绑定 `LICLICK-ACCOUNT-BINDING` v1.3.0
 
 莉刻生图、编辑、轮询与通用提示词润色必须使用当前飞书 Session 用户独占的服务器端账号绑定。浏览器只通过同源、带 Cookie 的 Cloud API 发起绑定和查询状态；OAuth 临时状态、token 与 `atlas_home_dir` 只由 A100 控制面保管，禁止写入浏览器、Windows 本地组件或项目文档。
 
@@ -595,6 +605,10 @@ v1.1.0 将“登录 LI3D”与“关联当前用户莉刻账号”串为同一�
 v1.1.1 修复部署在非根路径时的莉刻 IDaaS Service 回调：账号绑定回调必须以 `LICLICK_PUBLIC_PATH` 为权威路径，并仅在该配置为空时回退 `LICLICK_PUBLIC_WORKSPACE_URL` 自带 pathname。A100 的回调因此固定为 `/li3d/api/liclick/account-binding/callback`，不得退化为根路径 `/api/...`。此补丁只修正 M13 的授权 URL 构造，不改变令牌校验、飞书与莉刻邮箱一致性、独立 Atlas home、Project/Layer/Capture/Generation Schema、Revision、ownership 或资产；无数据迁移。回退只恢复旧 URL 构造，但会重新暴露子路径部署绑定失败，不得改为共享账号回退。
 
 v1.2.0 增加显式、默认关闭的 A100 测试共享账号模式，仅用于 IDaaS 云端个人回调尚未开通期间的受控联调。只有同时配置 `LICLICK_SHARED_TEST_ACCOUNT_ENABLED=true`、固定 owner email 和位于 `LICLICK_WORKSPACE_DIR/atlas-homes` 下的受管 Atlas home 才会生效；所有已通过飞书登录的用户仍保持各自 Li3D Project/Job ownership，但莉刻远端调用、额度、个人工作区和任务资产统一归属该测试 owner。模式开启时禁止从用户菜单解绑或删除共享 Atlas home，跳过“Atlas email 必须等于当前飞书 email”的个人绑定断言，并在账号状态中显式标记 `sharedTestAccount`。关闭开关即可恢复 v1.1.1 的个人绑定 fail-closed 行为；不得把 Token、密钥或具体人员邮箱提交到 Git。
+
+v1.3.0 按 IDaaS JWT SP 发起协议改为固定注册回调。IDaaS 应用只登记由公开部署路径生成的 `/api/liclick/account-binding/callback`；当前生产站点根路径下的精确地址为 `https://li3d.lilithgames.com/api/liclick/account-binding/callback`，历史文档中的 `/li3d/...` 只适用于曾配置 `LICLICK_PUBLIC_PATH=/li3d` 的部署，不得用于当前生产 ingress。发起 URL 不再发送动态 `redirect_uri` 或 OAuth `state`，而以同源 `target_url` 携带十分钟有效的一次性随机绑定 UUID。回调仅接受与公开站点 origin、固定 `/api/liclick/account-binding/complete` 路径、唯一 `loginId` 参数完全匹配的目标，外域、额外参数、fragment 或非 UUID 均拒绝；目标只用于服务端关联，不执行浏览器跳转。GET 回调取得 IDaaS 令牌后立即清除地址栏 query/fragment，再以同源 Cookie 和 JSON POST 完成授权。
+
+该协议不改变“一个飞书用户一个莉刻账号”：完成绑定仍须同时通过当前飞书 Session 归属、Atlas secure cache、有效期、莉刻服务权限以及 Atlas email 与飞书 email 一致性检查，随后只保存到该 `cloud_users.id` 的独立 Atlas home。既有个人绑定和 Project/Job/Asset ownership 原样保留；没有个人绑定的用户重新授权即可，无数据库、Project/Layer/Capture/Generation Schema 或资产迁移。发布前先在 `qa-idaas.lilithgames.com` 创建 JWT 测试应用并登记固定回调，配置 `IDAAS_JWT_SSO_URL` 为其 SP 发起地址，双用户验证隔离后再以同配置结构切换生产应用。回滚只恢复前一镜像并暂停新绑定；不得恢复动态回调、共享默认账号或迁移/删除现有个人凭据。
 
 迁移策略为：既有用户若没有独立 `atlas_home_dir`，一律视为未绑定并由本人重新完成莉刻授权；不自动认领 A100 共享凭据，也不迁移历史共享账号任务。该变更不修改 Project Command、Revision CAS、Project/Layer/Capture/Generation Schema、对象 ownership 或已验证资产。发布后应从 A100 运行配置移除共享 `ATLAS_TOKEN_FILE` 并撤销旧共享 token；回滚不得恢复共享回退，只能临时关闭莉刻入口并保留用户绑定数据，待兼容版本恢复。
 
@@ -763,6 +777,8 @@ M15 / CLOUD-DEPLOYMENT v1.0.0（2026-09-03）：正常合并 release 部署历�
 | `2.16.23` | 2026-09-03 | `本次原生画笔尾部重复拾取修复` | M03、`ALG-VIEW-INPUT-001` v1.1.0：按 canvas/pointer 路由画笔已接管的 up/click 尾部，保留原生提交与 R3F 选择/捕获；60 笔 120→0 多余拾取。像素/分辨率/持久化不变，无迁移。 |
 | `2.16.24` | 2026-09-03 | `本次捕获首次等待状态隔离修复` | M03、`ALG-CAP-006` v1.0.0：离屏捕获首次及逐 tile/pass 等待前恢复 renderer/背景，重绑捕获 clear 值；真实函数边界/完整像素/异常清理回归。无输出尺寸、Schema、资产迁移。 |
 | `2.17.0` | 2026-09-04 | `本次单/多视图统一质量合成` | UI-05/UI-06/UI-09、M04/M05/M06/M07，`ALG-PROJ-004/005` v3.0.0、`ALG-UV-004` v4.0.0：普通单视图不再作为 priority source-over，也不再生成距离场 Alpha；单+单、单+多统一进入 Top-3 coverage/depth/angle/颜色一致性合成。旧 priority 行读取时惰性迁移，局部重绘 literal、显式 Overlay、UV 层级保持。删除 priority shader/uniform 与 CPU overlay 分支；Project/Layer 持久字段、Revision、ownership、分辨率和历史资产不批量迁移。 |
+| `2.17.1` | 2026-09-04 | `本次局部返图显示读取分段` | M08、`ALG-LR-011` v1.1.1：显示原图/depth 异步解码与分条读取，完整绘制及 RGBA 不变，条间让任务/交互空闲/取消；默认消费者不变。无分辨率、阈值、Schema 或资产迁移；真实返图帧稳定性待验收。 |
+| `2.17.2` | 2026-09-04 | `本次 IDaaS 个人莉刻账号固定回调及 QA 接入` | M13、`LICLICK-ACCOUNT-BINDING` v1.3.0：JWT 应用使用固定注册 callback，SP 发起改传同源一次性 `target_url`，删除动态 `redirect_uri/state`；回调校验 origin/path/唯一 UUID并立即清除令牌 URL。Cloud 配置启用 QA JWT 应用 `LI3D-QA`（`testplugin_jwt92`）用于三名已授权用户的隔离验收；每个飞书用户仍只绑定自己的独立 Atlas home，共享测试账号默认关闭。无 Schema、ownership 或资产迁移。 |
 
 `ALG-LR-008` v2.4.1：局部重绘仍自动创建独立目标和结果图层；pointer-down 不再依赖当前图层是否选中、可见或为 UV，只检查自身 source/composite/Session/显示资源。默认保持按钮激活、GPU promotion、结果发布前的原选择（含 undefined），防止内部隐藏 draft 触发面板选择普通投影层。普通画笔/橡皮擦限制、GPU/CPU/Worker/shader、作者 mask、投影/UV/export、分辨率、Schema、Revision、ownership 与资产不变。真实 store 三类选择与入口 gate 回归通过；无数据迁移，回退选择保持与 gate 即可。详见 CHG-20260903-LOCAL-REPAINT-SELECTION-INDEPENDENCE。
 

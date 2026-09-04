@@ -106,6 +106,7 @@ async function main() {
   const mock = startProcess(process.execPath, ['scripts/mock-idaas-server.mjs'], {
     MOCK_IDAAS_PORT: String(mockPort),
     MOCK_IDAAS_REQUIRE_JSON_TOKEN_REQUEST: 'true',
+    MOCK_IDAAS_SSO_CALLBACK_URL: `${serverOrigin}/api/liclick/account-binding/callback`,
   });
   const server = startProcess(process.execPath, ['apps/server/dist/index.js'], {
     SERVER_PORT: String(serverPort),
@@ -174,6 +175,14 @@ async function main() {
     if (bindingSsoUrl.includes('localhost:20265')) {
       throw new Error('OAuth callback leaked the Atlas loopback callback to the browser.');
     }
+    const bindingSsoRequest = new URL(bindingSsoUrl);
+    if (
+      !bindingSsoRequest.searchParams.get('target_url') ||
+      bindingSsoRequest.searchParams.has('redirect_uri') ||
+      bindingSsoRequest.searchParams.has('state')
+    ) {
+      throw new Error(`Account binding did not use the JWT target_url flow: ${bindingSsoUrl}`);
+    }
     const sessionCookie = cookiePair(setCookie, 'liclick_3d_session');
 
     const bindingSsoResponse = await fetch(bindingSsoUrl, { redirect: 'manual' });
@@ -182,9 +191,12 @@ async function main() {
       throw new Error(`Mock IDaaS SSO failed: status=${bindingSsoResponse.status}`);
     }
     const bindingCallbackUrl = new URL(bindingCallbackWithFragment);
-    const idToken = new URLSearchParams(bindingCallbackUrl.hash.slice(1)).get('id_token');
-    bindingCallbackUrl.hash = '';
+    const idToken =
+      bindingCallbackUrl.searchParams.get('id_token') ||
+      new URLSearchParams(bindingCallbackUrl.hash.slice(1)).get('id_token');
+    const targetUrl = bindingCallbackUrl.searchParams.get('target_url');
     if (!idToken) throw new Error('Mock IDaaS callback did not provide an id_token.');
+    if (!targetUrl) throw new Error('Mock IDaaS callback did not preserve target_url.');
 
     const bindingPageResponse = await fetch(bindingCallbackUrl, {
       headers: { cookie: sessionCookie },
@@ -193,10 +205,13 @@ async function main() {
     if (!bindingPageResponse.ok || !bindingPageHtml.includes('正在关联莉刻账号')) {
       throw new Error(`Account-binding callback page failed: status=${bindingPageResponse.status}`);
     }
-    const bindingResult = await requestJson(bindingCallbackUrl.toString(), {
+    const bindingPostUrl = new URL(bindingCallbackUrl);
+    bindingPostUrl.search = '';
+    bindingPostUrl.hash = '';
+    const bindingResult = await requestJson(bindingPostUrl.toString(), {
       method: 'POST',
       headers: { 'content-type': 'application/json', cookie: sessionCookie },
-      body: JSON.stringify({ idToken }),
+      body: JSON.stringify({ idToken, targetUrl }),
     });
     if (bindingResult.response.status !== 200 || bindingResult.payload?.status !== 'bound') {
       throw new Error(`Automatic Liclick account binding failed: ${JSON.stringify(bindingResult.payload)}`);

@@ -8,6 +8,7 @@ import {
   getPersonalLiclickAccount,
   getPersonalLiclickAccountCallbackHtml,
   pollPersonalLiclickAccountBinding,
+  resolvePersonalLiclickAccountTargetLoginId,
   resolveLiclickAtlasUser,
   startPersonalLiclickAccountBinding,
   unlinkPersonalLiclickAccount,
@@ -735,18 +736,22 @@ export async function handleLiclickRoute(
     segments[3] === 'callback'
   ) {
     try {
-      const loginId = url.searchParams.get('loginId') ?? '';
-      const html = getPersonalLiclickAccountCallbackHtml(loginId, user);
+      const targetUrl = url.searchParams.get('target_url') ?? '';
+      const html = getPersonalLiclickAccountCallbackHtml(targetUrl, user);
       response.writeHead(200, {
         'content-type': 'text/html; charset=utf-8',
         'cache-control': 'no-store',
         'referrer-policy': 'no-referrer',
-        'content-security-policy': "default-src 'none'; script-src 'unsafe-inline'; connect-src 'self'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'",
+        'content-security-policy':
+          "default-src 'none'; script-src 'unsafe-inline'; connect-src 'self'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'",
         'permissions-policy': 'camera=(), microphone=(), geolocation=()',
       });
       response.end(html);
     } catch (error) {
-      response.writeHead(410, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' });
+      response.writeHead(410, {
+        'content-type': 'text/plain; charset=utf-8',
+        'cache-control': 'no-store',
+      });
       response.end(error instanceof Error ? error.message : '莉刻账号授权请求已失效。');
     }
     return true;
@@ -759,15 +764,24 @@ export async function handleLiclickRoute(
     segments[3] === 'callback'
   ) {
     try {
-      const loginId = url.searchParams.get('loginId') ?? '';
-      const body = await readJsonBody<{ idToken?: string; accessToken?: string }>(request, 128 * 1024);
+      const body = await readJsonBody<{
+        idToken?: string;
+        accessToken?: string;
+        targetUrl?: string;
+      }>(request, 128 * 1024);
       if (
         (!body.idToken && !body.accessToken) ||
         (body.idToken?.length ?? 0) > 48 * 1024 ||
-        (body.accessToken?.length ?? 0) > 48 * 1024
+        (body.accessToken?.length ?? 0) > 48 * 1024 ||
+        (body.targetUrl?.length ?? 0) > 4 * 1024
       ) {
         throw new Error('IDaaS 回调缺少有效身份令牌。');
       }
+      const loginId = resolvePersonalLiclickAccountTargetLoginId(
+        body.targetUrl ?? '',
+        serverConfig.publicWorkspaceUrl,
+        serverConfig.publicPath,
+      );
       const result = await completePersonalLiclickAccountBinding(loginId, user, body);
       if (result.linkedOAuthLoginId) {
         await completeWebOAuthLiclickBinding(result.linkedOAuthLoginId, loginId, user);

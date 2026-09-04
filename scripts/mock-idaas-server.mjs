@@ -6,6 +6,7 @@ const issuer = process.env.MOCK_IDAAS_ISSUER ?? `http://127.0.0.1:${port}`;
 const clientId = process.env.MOCK_IDAAS_CLIENT_ID ?? 'liclick-local-test';
 const clientSecret = process.env.MOCK_IDAAS_CLIENT_SECRET ?? 'local-secret';
 const requireJsonTokenRequest = process.env.MOCK_IDAAS_REQUIRE_JSON_TOKEN_REQUEST === 'true';
+const ssoCallbackUrl = process.env.MOCK_IDAAS_SSO_CALLBACK_URL ?? '';
 
 const codes = new Map();
 const tokens = new Map();
@@ -134,8 +135,13 @@ const server = createServer(async (request, response) => {
   }
 
   if (request.method === 'GET' && url.pathname === '/sso') {
-    const redirectUri = url.searchParams.get('redirect_uri') ?? '';
-    if (!redirectUri) {
+    const targetUrl = url.searchParams.get('target_url') ?? '';
+    if (
+      !ssoCallbackUrl ||
+      !targetUrl ||
+      url.searchParams.has('redirect_uri') ||
+      url.searchParams.has('state')
+    ) {
       sendHtml(response, 400, '<h1>IDaaS mock SSO request invalid</h1>');
       return;
     }
@@ -146,8 +152,9 @@ const server = createServer(async (request, response) => {
       email: 'mock.user@liclick.local',
       name: 'Liclick Mock User',
     };
-    const callback = new URL(redirectUri);
-    callback.hash = new URLSearchParams({ id_token: fakeIdToken(user) }).toString();
+    const callback = new URL(ssoCallbackUrl);
+    callback.searchParams.set('id_token', fakeIdToken(user));
+    callback.searchParams.set('target_url', targetUrl);
     response.writeHead(302, { location: callback.toString(), 'cache-control': 'no-store' });
     response.end();
     return;

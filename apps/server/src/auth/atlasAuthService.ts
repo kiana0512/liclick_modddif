@@ -637,7 +637,6 @@ async function removeManagedAtlasHomeDir(homeDir?: string) {
 export function buildPersonalLiclickAccountCallbackUrl(
   publicWorkspaceUrl: string,
   publicPath: string,
-  loginId: string,
 ) {
   const callbackUrl = new URL(publicWorkspaceUrl);
   const configuredPath = publicPath || callbackUrl.pathname;
@@ -645,22 +644,75 @@ export function buildPersonalLiclickAccountCallbackUrl(
   callbackUrl.pathname = `${normalizedPublicPath === '/' ? '' : normalizedPublicPath}/api/liclick/account-binding/callback`;
   callbackUrl.search = '';
   callbackUrl.hash = '';
-  callbackUrl.searchParams.set('loginId', loginId);
   return callbackUrl;
 }
 
+export function buildPersonalLiclickAccountTargetUrl(
+  publicWorkspaceUrl: string,
+  publicPath: string,
+  loginId: string,
+) {
+  const targetUrl = buildPersonalLiclickAccountCallbackUrl(publicWorkspaceUrl, publicPath);
+  targetUrl.pathname = targetUrl.pathname.replace(/\/callback$/, '/complete');
+  targetUrl.searchParams.set('loginId', loginId);
+  return targetUrl;
+}
+
+export function resolvePersonalLiclickAccountTargetLoginId(
+  targetUrl: string,
+  publicWorkspaceUrl: string,
+  publicPath: string,
+) {
+  let candidate: URL;
+  try {
+    candidate = new URL(targetUrl);
+  } catch {
+    throw new Error('IDaaS 回调缺少有效的账号关联目标。');
+  }
+  const expected = buildPersonalLiclickAccountTargetUrl(
+    publicWorkspaceUrl,
+    publicPath,
+    '00000000-0000-4000-8000-000000000000',
+  );
+  const entries = [...candidate.searchParams.entries()];
+  const loginId = entries.length === 1 && entries[0]?.[0] === 'loginId' ? entries[0][1] : '';
+  if (
+    candidate.origin !== expected.origin ||
+    candidate.pathname !== expected.pathname ||
+    candidate.username ||
+    candidate.password ||
+    candidate.hash ||
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(loginId)
+  ) {
+    throw new Error('IDaaS 回调的账号关联目标无效。');
+  }
+  return loginId;
+}
+
+export function buildPersonalLiclickAccountSsoUrl(
+  idaasSsoUrl: string,
+  enterpriseId: string,
+  targetUrl: URL,
+) {
+  const redirectUrl = new URL(idaasSsoUrl);
+  redirectUrl.searchParams.delete('redirect_uri');
+  redirectUrl.searchParams.delete('state');
+  redirectUrl.searchParams.set('target_url', targetUrl.toString());
+  if (enterpriseId) redirectUrl.searchParams.set('enterpriseId', enterpriseId);
+  return redirectUrl;
+}
+
 function bindingResponse(login: PendingAtlasLogin) {
-  const callbackUrl = buildPersonalLiclickAccountCallbackUrl(
+  const targetUrl = buildPersonalLiclickAccountTargetUrl(
     serverConfig.publicWorkspaceUrl,
     serverConfig.publicPath,
     login.id,
   );
-  const redirectUrl = new URL(serverConfig.idaasJwtSso.url);
-  redirectUrl.searchParams.set('redirect_uri', callbackUrl.toString());
-  redirectUrl.searchParams.set('state', login.id);
-  if (serverConfig.idaasJwtSso.enterpriseId) {
-    redirectUrl.searchParams.set('enterpriseId', serverConfig.idaasJwtSso.enterpriseId);
-  }
+  const redirectUrl = buildPersonalLiclickAccountSsoUrl(
+    serverConfig.idaasJwtSso.url,
+    serverConfig.idaasJwtSso.enterpriseId,
+    targetUrl,
+  );
   return {
     loginId: login.id,
     status: login.email ? ('bound' as const) : ('pending' as const),
@@ -714,10 +766,17 @@ export async function pollPersonalLiclickAccountBinding(loginId: string, user: A
   return bindingResponse(login);
 }
 
-export function getPersonalLiclickAccountCallbackHtml(loginId: string, user: AuthUser) {
+export function getPersonalLiclickAccountCallbackHtml(targetUrl: string, user: AuthUser) {
+  const loginId = resolvePersonalLiclickAccountTargetLoginId(
+    targetUrl,
+    serverConfig.publicWorkspaceUrl,
+    serverConfig.publicPath,
+  );
   const login = pendingAtlasLogins.get(loginId);
-  if (!login || login.userId !== user.id) throw new Error('莉刻账号授权请求不存在或不属于当前用户。');
-  return `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>LI3D 账号关联</title><body style="font-family:Arial,'Microsoft YaHei',sans-serif;background:#090a18;color:#fff;padding:40px"><h2>正在关联莉刻账号</h2><p id="status">正在安全校验当前企业身份，请稍候…</p><script>(async()=>{const status=document.getElementById('status');try{const fragment=new URLSearchParams(location.hash.replace(/^#/,''));const query=new URLSearchParams(location.search);const idToken=fragment.get('id_token')||query.get('id_token');const accessToken=fragment.get('access_token')||query.get('access_token');history.replaceState(null,'',location.pathname+location.search);if(!idToken&&!accessToken)throw new Error('IDaaS 回调缺少身份令牌');const response=await fetch(location.pathname+location.search,{method:'POST',credentials:'include',headers:{'content-type':'application/json'},body:JSON.stringify({idToken,accessToken})});const payload=await response.json().catch(()=>({}));if(!response.ok)throw new Error(payload.error||'账号关联失败');status.textContent='账号关联成功，可以返回 LI3D。';try{window.opener&&window.opener.postMessage({type:'liclick-auth-callback',success:true},'*')}catch{}setTimeout(()=>window.close(),500)}catch(error){status.textContent=error instanceof Error?error.message:'账号关联失败';try{window.opener&&window.opener.postMessage({type:'liclick-auth-callback',success:false},'*')}catch{}}})();</script></body></html>`;
+  if (!login || login.userId !== user.id)
+    throw new Error('莉刻账号授权请求不存在或不属于当前用户。');
+  const serializedTargetUrl = JSON.stringify(targetUrl).replace(/</g, '\\u003c');
+  return `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>LI3D 账号关联</title><body style="font-family:Arial,'Microsoft YaHei',sans-serif;background:#090a18;color:#fff;padding:40px"><h2>正在关联莉刻账号</h2><p id="status">正在安全校验当前企业身份，请稍候…</p><script>(async()=>{const status=document.getElementById('status');try{const fragment=new URLSearchParams(location.hash.replace(/^#/,''));const query=new URLSearchParams(location.search);const idToken=fragment.get('id_token')||query.get('id_token');const accessToken=fragment.get('access_token')||query.get('access_token');const targetUrl=${serializedTargetUrl};const callbackPath=location.pathname;history.replaceState(null,'',callbackPath);if(!idToken&&!accessToken)throw new Error('IDaaS 回调缺少身份令牌');const response=await fetch(callbackPath,{method:'POST',credentials:'include',headers:{'content-type':'application/json'},body:JSON.stringify({idToken,accessToken,targetUrl})});const payload=await response.json().catch(()=>({}));if(!response.ok)throw new Error(payload.error||'账号关联失败');status.textContent='账号关联成功，可以返回 LI3D。';try{window.opener&&window.opener.postMessage({type:'liclick-auth-callback',success:true},'*')}catch{}setTimeout(()=>window.close(),500)}catch(error){status.textContent=error instanceof Error?error.message:'账号关联失败';try{window.opener&&window.opener.postMessage({type:'liclick-auth-callback',success:false},'*')}catch{}}})();</script></body></html>`;
 }
 
 function waitForAtlasLoginExit(login: PendingAtlasLogin, timeoutMs = 20_000) {
