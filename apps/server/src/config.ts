@@ -434,6 +434,38 @@ const idaasJwtSso = {
   enterpriseId: process.env.IDAAS_ENTERPRISE_ID ?? 'lilith',
   serviceUrl: process.env.IDAAS_SP_SERVICE_URL ?? process.env.IDAAS_JWT_SERVICE_URL ?? '',
 };
+const atlasGatewayEnvironment = (process.env.ATLAS_AI_GATEWAY_ENV ?? 'prod')
+  .trim()
+  .toLowerCase();
+if (atlasGatewayEnvironment !== 'prod' && atlasGatewayEnvironment !== 'test') {
+  throw new Error('ATLAS_AI_GATEWAY_ENV must be either prod or test.');
+}
+const atlasGateway = {
+  environment: atlasGatewayEnvironment as 'prod' | 'test',
+  url:
+    process.env.ATLAS_AI_GATEWAY_URL?.trim() ||
+    (atlasGatewayEnvironment === 'test'
+      ? 'https://atlas-ai-gateway-test.lilithgames.com'
+      : 'https://atlas-ai-gateway.lilithgames.com'),
+};
+if (
+  idaasJwtSso.enabled &&
+  new URL(idaasJwtSso.url).hostname.toLowerCase() === 'qa-idaas.lilithgames.com' &&
+  atlasGateway.environment !== 'test'
+) {
+  throw new Error(
+    'QA IDaaS must use ATLAS_AI_GATEWAY_ENV=test; a QA JWT is not valid on the production Atlas gateway.',
+  );
+}
+if (
+  idaasJwtSso.enabled &&
+  new URL(idaasJwtSso.url).hostname.toLowerCase() === 'idaas.lilith.com' &&
+  atlasGateway.environment !== 'prod'
+) {
+  throw new Error(
+    'Production IDaaS must use ATLAS_AI_GATEWAY_ENV=prod; do not send production JWTs to the test Atlas gateway.',
+  );
+}
 const idaasJwtSsoEffectiveServiceUrl =
   idaasJwtSso.serviceUrl ||
   feishuWebOAuth.redirectUrl ||
@@ -670,6 +702,7 @@ export const serverConfig = {
     },
   },
   idaasJwtSso,
+  atlasGateway,
   idaasJwtSsoBlockedReason,
   idaasJwtSsoEnabled,
   sharedLiclickTestAccount: {

@@ -133,6 +133,7 @@ async function main() {
     IDAAS_JWT_SSO_URL: `${mockIssuer}/sso`,
     IDAAS_ENTERPRISE_ID: 'test',
     IDAAS_SP_SERVICE_URL: `${serverOrigin}/api/liclick/account-binding/callback`,
+    ATLAS_AI_GATEWAY_ENV: 'test',
     ATLAS_SKILLHUB_PATH: atlasRuntimePath,
   });
 

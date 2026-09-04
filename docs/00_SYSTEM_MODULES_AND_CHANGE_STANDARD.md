@@ -612,6 +612,8 @@ v1.3.1 修复 v1.3.0 将 Cloud QA 固定回调协议错误套用到本地 4517 �
 
 v1.3.2 修复 Atlas SkillHub 2.9.1 在 K8s 中把个人 IDaaS Token 错误切换为 ArkClaw/TIP-only 的回归。Atlas CLI 会因 `KUBERNETES_SERVICE_HOST`、workload 或 ArkClaw 信号忽略用户独立安全缓存并要求 `VE_TIP_TOKEN`；LI3D 现在只为带明确个人 Atlas home 的 Atlas 子进程移除这些自动探测信号，使回调刚写入的个人 IDaaS Token 用于 `status`、`list-tools` 与后续业务调用。未指定个人 home 的机器级 Atlas 进程继续继承完整 Pod 环境并保持 TIP 行为。用户 Token 不进入环境变量，Pod 主进程环境不变，也不允许个人请求回退到公共 TIP Token。无 Schema、ownership、资产或既有个人 Atlas home 迁移；回滚只能暂停新的个人绑定，不能注入共享 TIP Token 代替个人身份。
 
+v1.3.3 修复 QA IDaaS JWT 被错误提交到生产 Atlas Gateway 导致 `HTTP 401 invalid_token`。Atlas SkillHub 的环境必须成对使用：QA IDaaS 对应 `atlas-ai-gateway-test.lilithgames.com`，生产 IDaaS 对应 `atlas-ai-gateway.lilithgames.com`。Cloud 配置新增显式 `ATLAS_AI_GATEWAY_ENV`，当前 `LI3D-QA` 设置为 `test`；启动时拒绝已知 QA/生产混配，个人 Token 缓存的 `gateway_url` 也必须匹配当前环境。切正式 IDaaS 时须同时改为 `prod`。无 Schema、ownership、资产或既有有效生产个人 home 迁移；此前 QA 失败产生的临时 home 按原失败清理策略移除。
+
 该协议不改变“一个飞书用户一个莉刻账号”：完成绑定仍须同时通过当前飞书 Session 归属、Atlas secure cache、有效期、莉刻服务权限以及 Atlas email 与飞书 email 一致性检查，随后只保存到该 `cloud_users.id` 的独立 Atlas home。既有个人绑定和 Project/Job/Asset ownership 原样保留；没有个人绑定的用户重新授权即可，无数据库、Project/Layer/Capture/Generation Schema 或资产迁移。发布前先在 `qa-idaas.lilithgames.com` 创建 JWT 测试应用并登记固定回调，配置 `IDAAS_JWT_SSO_URL` 为其 SP 发起地址，双用户验证隔离后再以同配置结构切换生产应用。回滚只恢复前一镜像并暂停新绑定；不得恢复动态回调、共享默认账号或迁移/删除现有个人凭据。
 
 迁移策略为：既有用户若没有独立 `atlas_home_dir`，一律视为未绑定并由本人重新完成莉刻授权；不自动认领 A100 共享凭据，也不迁移历史共享账号任务。该变更不修改 Project Command、Revision CAS、Project/Layer/Capture/Generation Schema、对象 ownership 或已验证资产。发布后应从 A100 运行配置移除共享 `ATLAS_TOKEN_FILE` 并撤销旧共享 token；回滚不得恢复共享回退，只能临时关闭莉刻入口并保留用户绑定数据，待兼容版本恢复。
@@ -785,6 +787,7 @@ M15 / CLOUD-DEPLOYMENT v1.0.0（2026-09-03）：正常合并 release 部署历�
 | `2.17.2` | 2026-09-04 | `本次 IDaaS 个人莉刻账号固定回调及 QA 接入` | M13、`LICLICK-ACCOUNT-BINDING` v1.3.0：JWT 应用使用固定注册 callback，SP 发起改传同源一次性 `target_url`，删除动态 `redirect_uri/state`；回调校验 origin/path/唯一 UUID并立即清除令牌 URL。Cloud 配置启用 QA JWT 应用 `LI3D-QA`（`testplugin_jwt92`）用于三名已授权用户的隔离验收；每个飞书用户仍只绑定自己的独立 Atlas home，共享测试账号默认关闭。无 Schema、ownership 或资产迁移。 |
 | `2.17.3` | 2026-09-04 | `本次本地与 Cloud IDaaS 回调模式隔离` | M13、`LICLICK-ACCOUNT-BINDING` v1.3.1：Cloud 仅在显式启用 QA JWT SP 时使用固定 callback/`target_url`；本地 4517 恢复 Atlas SkillHub 原生固定 `localhost:20265/callback` 登录并在子进程完成后绑定个人 Atlas home，修复清除历史 Token 后动态 LI3D Service 地址被拒、无法重建个人绑定的回归。两条路径仍共用 Atlas 安全缓存、工具权限与飞书/莉刻邮箱一致性门禁；无 Schema、ownership 或资产迁移。 |
 | `2.17.4` | 2026-09-04 | `本次 K8s 个人 IDaaS Token 模式隔离` | M13、`LICLICK-ACCOUNT-BINDING` v1.3.2：仅为明确用户 Atlas home 的子进程移除 Atlas 2.9.1 的 K8s/ArkClaw/TIP 自动探测信号，确保固定 HTTPS 回调写入的个人 IDaaS Token 被用于权限校验与业务调用；机器级调用仍保留 TIP 语义。用户 Token 不进入环境变量，不回退公共账号；无 Schema、ownership、资产或个人 home 迁移。 |
+| `2.17.5` | 2026-09-04 | `本次 QA IDaaS 与 Atlas Gateway 环境配对` | M13、`LICLICK-ACCOUNT-BINDING` v1.3.3：当前 `LI3D-QA` 显式使用 test Atlas Gateway，正式 IDaaS 使用 prod Gateway；启动与缓存校验均拒绝跨环境 Token，修复 QA JWT 被生产 Gateway 以 `invalid_token` 拒绝。无 Schema、ownership 或资产迁移。 |
 
 `ALG-LR-008` v2.4.1：局部重绘仍自动创建独立目标和结果图层；pointer-down 不再依赖当前图层是否选中、可见或为 UV，只检查自身 source/composite/Session/显示资源。默认保持按钮激活、GPU promotion、结果发布前的原选择（含 undefined），防止内部隐藏 draft 触发面板选择普通投影层。普通画笔/橡皮擦限制、GPU/CPU/Worker/shader、作者 mask、投影/UV/export、分辨率、Schema、Revision、ownership 与资产不变。真实 store 三类选择与入口 gate 回归通过；无数据迁移，回退选择保持与 gate 即可。详见 CHG-20260903-LOCAL-REPAINT-SELECTION-INDEPENDENCE。
 

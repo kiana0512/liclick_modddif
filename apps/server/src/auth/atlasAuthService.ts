@@ -74,7 +74,6 @@ type AtlasClaims = {
 const pendingAtlasLogins = new Map<string, PendingAtlasLogin>();
 const pendingLoginTtlMs = 10 * 60 * 1000;
 const minimumCompatibleAtlasSkillhubVersion = '2.9.1';
-const atlasGatewayUrl = 'https://atlas-ai-gateway.lilithgames.com';
 const atlasLocalCallbackPort = 20265;
 const atlasCloudAuthSignalFragments = ['ARKCLAW', 'WORKLOAD', 'TIP_TOKEN'];
 
@@ -240,6 +239,9 @@ export function runAtlas(
     const commandArgs = [...args];
     if (commandArgs[0] === 'gateway' && !commandArgs.includes('--token-file')) {
       commandArgs.push('--token-file', atlasTokenFile(homeDir));
+    }
+    if (commandArgs[0] === 'gateway' && !commandArgs.includes('--gateway-env')) {
+      commandArgs.push('--gateway-env', serverConfig.atlasGateway.environment);
     }
     const child = spawn(atlasNodePath(), [script, ...commandArgs], {
       cwd: process.cwd(),
@@ -436,11 +438,12 @@ async function startSecureAtlasLoginProcess(
     : atlasLocalCallbackPort;
   const helperOptions = {
     moduleUrl: pathToFileURL(atlasSecureTokenModulePath()).href,
-    gatewayBaseUrl: atlasGatewayUrl,
+    gatewayBaseUrl: serverConfig.atlasGateway.url,
+    gatewayEnv: serverConfig.atlasGateway.environment,
     callbackPort,
     tokenFile: atlasTokenFile(homeDir),
   };
-  const helperSource = `const options=JSON.parse(Buffer.from(process.env.LI3D_ATLAS_BINDING_OPTIONS,'base64url').toString('utf8'));const runtime=await import(options.moduleUrl);await runtime.authenticate({gatewayBaseUrl:options.gatewayBaseUrl,gatewayEnv:'prod',callbackPort:options.callbackPort,timeoutSeconds:600,tokenFile:options.tokenFile,localOnly:true});`;
+  const helperSource = `const options=JSON.parse(Buffer.from(process.env.LI3D_ATLAS_BINDING_OPTIONS,'base64url').toString('utf8'));const runtime=await import(options.moduleUrl);await runtime.authenticate({gatewayBaseUrl:options.gatewayBaseUrl,gatewayEnv:options.gatewayEnv,callbackPort:options.callbackPort,timeoutSeconds:600,tokenFile:options.tokenFile,localOnly:true});`;
   const child = spawn(atlasNodePath(), ['--input-type=module', '--eval', helperSource], {
     cwd: process.cwd(),
     env: atlasEnv(homeDir, {
@@ -539,6 +542,13 @@ function assertValidAtlasToken(cache: AtlasTokenCache, tokenFile: string) {
   if (!cache.access_token)
     throw new Error(`Atlas token cache is missing access_token: ${tokenFile}`);
   if (!cache.gateway_url) throw new Error(`Atlas token cache is missing gateway_url: ${tokenFile}`);
+  if (
+    cache.gateway_url.replace(/\/+$/, '') !== serverConfig.atlasGateway.url.replace(/\/+$/, '')
+  ) {
+    throw new Error(
+      `Atlas 登录凭证属于其他环境，请重新绑定当前 ${serverConfig.atlasGateway.environment} 环境的莉刻账号。`,
+    );
+  }
   if (!cache.expires_at) throw new Error(`Atlas token cache is missing expires_at: ${tokenFile}`);
   const expiresAt = new Date(cache.expires_at);
   if (Number.isNaN(expiresAt.getTime()) || expiresAt <= new Date()) {
