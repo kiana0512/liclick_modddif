@@ -129,7 +129,10 @@ async function main() {
     FEISHU_OAUTH_TOKEN_REQUEST_FORMAT: 'json',
     FEISHU_OAUTH_ALLOW_LOOPBACK_PROVIDER: 'true',
     FEISHU_OAUTH_EXTRA_AUTHORIZE_PARAMS: 'mock_auto=1',
+    IDAAS_JWT_SSO_ENABLED: 'true',
     IDAAS_JWT_SSO_URL: `${mockIssuer}/sso`,
+    IDAAS_ENTERPRISE_ID: 'test',
+    IDAAS_SP_SERVICE_URL: `${serverOrigin}/api/liclick/account-binding/callback`,
     ATLAS_SKILLHUB_PATH: atlasRuntimePath,
   });
 

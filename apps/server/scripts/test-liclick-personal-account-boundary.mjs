@@ -9,6 +9,8 @@ import {
   submitLiclickImageJob,
 } from '../dist/services/liclickGenerationService.js';
 import {
+  buildAtlasProcessEnv,
+  buildLocalAtlasRuntimeSsoUrl,
   buildPersonalLiclickAccountCallbackUrl,
   buildPersonalLiclickAccountSsoUrl,
   buildPersonalLiclickAccountTargetUrl,
@@ -143,6 +145,42 @@ assert.equal(ssoUrl.searchParams.get('enterpriseId'), 'qa-enterprise');
 assert.equal(ssoUrl.searchParams.has('redirect_uri'), false);
 assert.equal(ssoUrl.searchParams.has('state'), false);
 
+const localSsoUrl = buildLocalAtlasRuntimeSsoUrl(
+  'https://idaas.lilith.com/enduser/sp/sso/lilithplugin_jwt62?target_url=old',
+  'lilith',
+  18888,
+);
+assert.equal(localSsoUrl.searchParams.get('redirect_uri'), 'http://localhost:18888/callback');
+assert.equal(localSsoUrl.searchParams.has('state'), false);
+assert.equal(localSsoUrl.searchParams.get('enterpriseId'), 'lilith');
+assert.equal(localSsoUrl.searchParams.has('target_url'), false);
+
+const personalAtlasEnv = buildAtlasProcessEnv(
+  {
+    KUBERNETES_SERVICE_HOST: '10.0.0.1',
+    VE_TIP_TOKEN: 'shared-tip-token',
+    VE_WORKLOAD_ID: 'workload-1',
+    ARKCLAW_WORKLOAD_NAME: 'li3d',
+    UNRELATED_VALUE: 'preserved',
+  },
+  '/isolated/user-atlas-home',
+  { LI3D_ATLAS_BINDING_OPTIONS: 'binding-options' },
+);
+assert.equal(personalAtlasEnv.KUBERNETES_SERVICE_HOST, undefined);
+assert.equal(personalAtlasEnv.VE_TIP_TOKEN, undefined);
+assert.equal(personalAtlasEnv.VE_WORKLOAD_ID, undefined);
+assert.equal(personalAtlasEnv.ARKCLAW_WORKLOAD_NAME, undefined);
+assert.equal(personalAtlasEnv.UNRELATED_VALUE, 'preserved');
+assert.equal(personalAtlasEnv.LI3D_ATLAS_BINDING_OPTIONS, 'binding-options');
+assert.equal(personalAtlasEnv.HOME, '/isolated/user-atlas-home');
+
+const machineAtlasEnv = buildAtlasProcessEnv({
+  KUBERNETES_SERVICE_HOST: '10.0.0.1',
+  VE_TIP_TOKEN: 'shared-tip-token',
+});
+assert.equal(machineAtlasEnv.KUBERNETES_SERVICE_HOST, '10.0.0.1');
+assert.equal(machineAtlasEnv.VE_TIP_TOKEN, 'shared-tip-token');
+
 const originalUser = {
   id: 'feishu-test-user',
   displayName: 'Test User',
@@ -185,7 +223,7 @@ const [routeSource, atlasSource, configSource, webOAuthSource, serverSource, set
 assert.match(routeSource, /code:\s*'LICLICK_PERSONAL_ACCOUNT_REQUIRED'/);
 assert.match(routeSource, /startPersonalLiclickAccountBinding\(user\)/);
 assert.match(routeSource, /pollPersonalLiclickAccountBinding\(segments\[3\], user\)/);
-assert.match(routeSource, /getPersonalLiclickAccountCallbackHtml\(targetUrl, user\)/);
+assert.match(routeSource, /getPersonalLiclickAccountCallbackHtml\(/);
 assert.match(routeSource, /completePersonalLiclickAccountBinding\(loginId, user, body\)/);
 assert.match(routeSource, /url\.searchParams\.get\('target_url'\)/);
 assert.doesNotMatch(routeSource, /url\.searchParams\.get\('loginId'\)/);
@@ -204,8 +242,16 @@ assert.match(atlasSource, /runtime\.authenticate/);
 assert.match(atlasSource, /gateway', 'list-tools', '--service', 'liclick'/);
 assert.doesNotMatch(atlasSource, /writeFile\(tokenFile/);
 assert.match(atlasSource, /searchParams\.set\('target_url'/);
-assert.doesNotMatch(atlasSource, /searchParams\.set\('redirect_uri'/);
+assert.match(atlasSource, /searchParams\.set\('redirect_uri'/);
 assert.doesNotMatch(atlasSource, /searchParams\.set\('state'/);
+assert.match(atlasSource, /serverConfig\.idaasJwtSso\.enabled/);
+assert.match(atlasSource, /http:\/\/localhost:\$\{callbackPort\}\/callback/);
+assert.match(atlasSource, /atlasLocalCallbackPort\s*=\s*20265/);
+assert.match(
+  atlasSource,
+  /serverConfig\.idaasJwtSso\.enabled\s*\?\s*await reserveLoopbackPort\(\)\s*:\s*atlasLocalCallbackPort/,
+);
+assert.match(atlasSource, /finalizePersonalLiclickAccountBinding\(login, user\)/);
 assert.match(configSource, /LICLICK_SHARED_TEST_ACCOUNT_ENABLED/);
 assert.match(configSource, /LICLICK_SHARED_TEST_ACCOUNT_EMAIL/);
 assert.match(configSource, /LICLICK_SHARED_TEST_ATLAS_HOME/);
