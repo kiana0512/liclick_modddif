@@ -53,7 +53,7 @@ async function createMockAtlasRuntime() {
   );
   await fs.writeFile(
     path.join(dist, 'index.js'),
-    `const args=process.argv.slice(2);if(args.includes('list-tools')){process.stdout.write('  mock_generate_image()\\n');process.exit(0)}process.exit(0);`,
+    `const args=process.argv.slice(2);const cloudSignal=Object.entries(process.env).some(([key,value])=>value&&(key==='KUBERNETES_SERVICE_HOST'||['ARKCLAW','WORKLOAD','TIP_TOKEN'].some(fragment=>key.toUpperCase().includes(fragment))));if(cloudSignal){process.stderr.write('mock Atlas selected TIP-only because a cloud signal leaked into a personal-home process\\n');process.exit(41)}if(args.includes('list-tools')){process.stdout.write('  mock_generate_image()\\n');process.exit(0)}process.exit(0);`,
   );
   await fs.writeFile(
     path.join(dist, 'secure-runtime.js'),
@@ -191,8 +191,12 @@ function startCloudServer(port, objectStorageEndpoint, identityEndpoint, atlasRu
       FEISHU_OAUTH_SCOPE: '',
       FEISHU_OAUTH_TOKEN_REQUEST_FORMAT: 'json',
       FEISHU_OAUTH_ALLOW_LOOPBACK_PROVIDER: 'true',
+      IDAAS_JWT_SSO_ENABLED: 'true',
       IDAAS_JWT_SSO_URL: `${identityEndpoint}/sso`,
+      IDAAS_ENTERPRISE_ID: 'test',
+      IDAAS_SP_SERVICE_URL: `${publicUrl}/api/liclick/account-binding/callback`,
       ATLAS_SKILLHUB_PATH: atlasRuntimePath,
+      KUBERNETES_SERVICE_HOST: '10.0.0.1',
       LICLICK_OBJECT_STORAGE_ENDPOINT: objectStorageEndpoint,
       LICLICK_OBJECT_STORAGE_REGION: 'simulated-region-1',
       LICLICK_OBJECT_STORAGE_BUCKET: 'liclick-simulated',
