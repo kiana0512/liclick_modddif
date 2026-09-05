@@ -89,6 +89,25 @@ const modelviewSingleViewApiKey =
 const modelviewSingleViewTimeoutMs = Number(
   process.env.LICLICK_MODELVIEW_SINGLE_VIEW_TIMEOUT_MS ?? 2_600_000,
 );
+const modelviewSingleViewInpaintUrl =
+  process.env.LICLICK_MODELVIEW_SINGLE_VIEW_INPAINT_URL?.trim() ||
+  'https://10.3.34.11/api/v1/services/modelview-single-view-inpaint';
+const explicitModelviewSingleViewInpaintCaPath =
+  process.env.LICLICK_MODELVIEW_SINGLE_VIEW_INPAINT_CA_PATH?.trim() ||
+  explicitModelviewSingleViewCaPath;
+const modelviewSingleViewInpaintCaManaged =
+  !explicitModelviewSingleViewInpaintCaPath ||
+  path.resolve(explicitModelviewSingleViewInpaintCaPath) ===
+    path.resolve(managedGpuControlLanCaPath);
+const modelviewSingleViewInpaintCaPath = path.resolve(
+  explicitModelviewSingleViewInpaintCaPath || managedGpuControlLanCaPath,
+);
+const modelviewSingleViewInpaintApiKey =
+  process.env.LICLICK_MODELVIEW_SINGLE_VIEW_INPAINT_API_KEY?.trim() ||
+  modelviewSingleViewApiKey;
+const modelviewSingleViewInpaintTimeoutMs = Number(
+  process.env.LICLICK_MODELVIEW_SINGLE_VIEW_INPAINT_TIMEOUT_MS ?? 1_900_000,
+);
 const qwen3VlPlusBaseUrl = serverHttpUrl(
   process.env.QWEN3_VL_PLUS_API_BASE_URL?.trim() || 'https://llm-proxy.lilith.com/v1',
   'QWEN3_VL_PLUS_API_BASE_URL',
@@ -729,6 +748,11 @@ export const serverConfig = {
   modelviewSingleViewCaManaged,
   modelviewSingleViewApiKey,
   modelviewSingleViewTimeoutMs,
+  modelviewSingleViewInpaintUrl,
+  modelviewSingleViewInpaintCaPath,
+  modelviewSingleViewInpaintCaManaged,
+  modelviewSingleViewInpaintApiKey,
+  modelviewSingleViewInpaintTimeoutMs,
   qwen3VlPlusBaseUrl,
   qwen3VlPlusApiKey,
   qwen3VlPlusModel,

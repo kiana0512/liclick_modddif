@@ -28,7 +28,7 @@ export type ModelviewInpaintInput = ModelviewGenerationInput & {
 
 export type ModelviewSingleViewInput = ModelviewGenerationInput;
 
-type ModelviewServiceKind = 'inpaint' | 'single-view';
+type ModelviewServiceKind = 'inpaint' | 'single-view' | 'single-view-inpaint';
 
 type ModelviewServiceDefinition = {
   kind: ModelviewServiceKind;
@@ -62,6 +62,22 @@ export class ModelviewInpaintError extends Error {
 }
 
 function serviceDefinition(kind: ModelviewServiceKind): ModelviewServiceDefinition {
+  if (kind === 'single-view-inpaint') {
+    return {
+      kind,
+      label: 'ModelView 单视图贴图补全',
+      url: serverConfig.modelviewSingleViewInpaintUrl,
+      caPath: serverConfig.modelviewSingleViewInpaintCaPath,
+      apiKey: serverConfig.modelviewSingleViewInpaintApiKey,
+      timeoutMs: serverConfig.modelviewSingleViewInpaintTimeoutMs,
+      jobPrefix: 'modelview-single-view-inpaint',
+      idempotencySuffix: 'single-view-inpaint:4input-rseed-steps2-r1',
+      filenameSuffix: 'modelview-single-view-inpaint',
+      source: 'modelview-single-view-inpaint',
+      workflow: '2026.08.31-e39ed5f-single-view-inpaint-4input-rseed-steps2-r1',
+      finalNode: 'SaveImage #29',
+    };
+  }
   if (kind === 'single-view') {
     return {
       kind,
@@ -381,6 +397,10 @@ export function checkModelviewSingleViewServiceStatus() {
   return checkModelviewServiceStatus('single-view');
 }
 
+export function checkModelviewSingleViewInpaintServiceStatus() {
+  return checkModelviewServiceStatus('single-view-inpaint');
+}
+
 async function generateModelviewImage(
   input: ModelviewInpaintInput | ModelviewSingleViewInput,
   userId: string,
@@ -388,17 +408,22 @@ async function generateModelviewImage(
   options: { signal?: AbortSignal },
 ) {
   const service = serviceDefinition(kind);
-  const operationLabel = kind === 'inpaint' ? '局部重绘' : '单视图生成';
+  const operationLabel =
+    kind === 'inpaint'
+      ? '局部重绘'
+      : kind === 'single-view-inpaint'
+        ? '单视图贴图补全'
+        : '单视图生成';
   const projectId = input.projectId;
   if (!projectId) throw new ModelviewInpaintError(`${operationLabel}需要当前项目 ID。`, 400);
-  const imageLabel = kind === 'inpaint' ? '当前效果图' : '白模主图';
+  const imageLabel = kind === 'single-view' ? '白模主图' : '当前效果图';
   if (!input.image?.dataUrl) {
     throw new ModelviewInpaintError(`${operationLabel}${imageLabel}不能为空。`, 422);
   }
   if (!input.materialImage?.dataUrl) {
     throw new ModelviewInpaintError(`${operationLabel}多视图材质参考图不能为空。`, 422);
   }
-  const inpaintInput = kind === 'inpaint' ? (input as ModelviewInpaintInput) : undefined;
+  const inpaintInput = kind === 'single-view' ? undefined : (input as ModelviewInpaintInput);
   if (inpaintInput && !inpaintInput.mask?.dataUrl) {
     throw new ModelviewInpaintError(`${operationLabel}蒙版不能为空。`, 422);
   }
@@ -427,7 +452,7 @@ async function generateModelviewImage(
         field: 'image',
         filename: safeFilename(
           input.image.path,
-          kind === 'inpaint' ? 'current-effect.png' : 'white-model.png',
+          kind === 'single-view' ? 'white-model.png' : 'current-effect.png',
         ),
         mime: image.mime,
         image: image.buffer,
@@ -542,4 +567,12 @@ export function generateModelviewSingleView(
   options: { signal?: AbortSignal } = {},
 ) {
   return generateModelviewImage(input, userId, 'single-view', options);
+}
+
+export function generateModelviewSingleViewInpaint(
+  input: ModelviewInpaintInput,
+  userId: string,
+  options: { signal?: AbortSignal } = {},
+) {
+  return generateModelviewImage(input, userId, 'single-view-inpaint', options);
 }

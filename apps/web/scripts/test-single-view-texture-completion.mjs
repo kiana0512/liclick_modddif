@@ -15,8 +15,8 @@ const [panel, textureMapPrompts, workerClient, worker] = await Promise.all([
 
 assert.match(
   panel,
-  /!isMultiviewRequest\s*&&\s*!usesRemoteSingleView\s*&&\s*hasVisibleTextureLayerCandidate\(objectId\)/,
-  'existing-texture completion must be limited to GPT single-view generation',
+  /!isMultiviewRequest\s*&&\s*hasVisibleTextureLayerCandidate\(objectId\)/,
+  'existing-texture inspection must be shared by GPT and remote single-view generation',
 );
 assert.match(
   panel,
@@ -41,7 +41,22 @@ assert.doesNotMatch(
 assert.match(
   panel,
   /texturePrompt = texturePromptBuilders!\.buildTextureMapCompletionPrompt\(prompt\)/,
-  'partial coverage must select the white-model completion prompt',
+  'GPT partial coverage must select the white-model completion prompt',
+);
+assert.match(
+  panel,
+  /usesRemoteSingleViewInpaint = true[\s\S]*?generateSingleViewInpaint\([\s\S]*?mask:\s*\{[\s\S]*?completion-mask\.png[\s\S]*?completionMaskDataUrl/,
+  'remote partial coverage must route the fused image and RGB gap mask to single-view inpaint',
+);
+assert.match(
+  panel,
+  /if \(singleViewCompletion\.uncoveredPixelCount === 0\)[\s\S]*?当前视角已经全部有贴图/,
+  'fully covered remote views must not overwrite existing texture',
+);
+assert.match(
+  panel,
+  /return modelviewClient\.generateSingleView\([\s\S]*?white-model\.png/,
+  'remote all-clay views must retain the original two-image generation path',
 );
 assert.match(
   panel,
@@ -80,12 +95,14 @@ assert.match(
 assert.match(worker, /inferProjectionGapMask\(currentPixels, targetMask, 1\)/);
 assert.match(worker, /minimumVisiblePixels = Math\.max\(64, Math\.round\(objectPixelCount \* 0\.0005\)\)/);
 assert.match(worker, /compositePixels\[offset\] = clayPixels\.data\[offset\]/);
-assert.doesNotMatch(worker, /completionMaskBlob|maskToImageData/);
+assert.match(worker, /completionMaskPixels\[offset\] = maskValue/);
+assert.match(worker, /completionMaskPixels\[offset \+ 3\] = 255/);
+assert.match(worker, /completionMaskBlob/);
 assert.doesNotMatch(worker, /white|gray|grey.*threshold/i, 'coverage must not use a white/grey color heuristic');
 
 assert.match(workerClient, /new Worker\([\s\S]*?singleViewTextureCompletion\.worker\.ts/);
 assert.match(workerClient, /createRegisteredObjectUrl\(event\.data\.compositeBlob\)/);
-assert.doesNotMatch(workerClient, /completionMaskBlob|completionMaskUrl/);
+assert.match(workerClient, /completionMaskUrl:[\s\S]*?createRegisteredObjectUrl\(event\.data\.completionMaskBlob\)/);
 assert.match(
   await fs.readFile(path.join(root, 'src/engine/capture/captureCurrentView.ts'), 'utf8'),
   /forceEmptyProjectionHatch[\s\S]*?showEmptyProjectionHatch/,

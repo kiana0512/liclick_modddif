@@ -11,6 +11,7 @@ type WorkerResponse =
   | {
       id: number;
       compositeBlob?: Blob;
+      completionMaskBlob?: Blob;
       hasVisibleTexture: boolean;
       objectPixelCount: number;
       texturedPixelCount: number;
@@ -75,27 +76,56 @@ self.onmessage = async (event: MessageEvent<WorkerRequest>) => {
     const hasVisibleTexture = texturedPixelCount >= minimumVisiblePixels;
 
     let compositeBlob: Blob | undefined;
+    let completionMaskBlob: Blob | undefined;
     if (hasVisibleTexture) {
       const compositePixels = new Uint8ClampedArray(currentPixels.data);
+      const completionMaskPixels =
+        uncoveredPixelCount > 0 ? new Uint8ClampedArray(width * height * 4) : undefined;
       for (let index = 0; index < gapMask.data.length; index += 1) {
-        if ((gapMask.data[index] ?? 0) === 0) continue;
         const offset = index * 4;
-        compositePixels[offset] = clayPixels.data[offset] ?? 0;
-        compositePixels[offset + 1] = clayPixels.data[offset + 1] ?? 0;
-        compositePixels[offset + 2] = clayPixels.data[offset + 2] ?? 0;
-        compositePixels[offset + 3] = clayPixels.data[offset + 3] ?? 255;
+        const maskValue = gapMask.data[index] ?? 0;
+        if (completionMaskPixels) {
+          completionMaskPixels[offset] = maskValue;
+          completionMaskPixels[offset + 1] = maskValue;
+          completionMaskPixels[offset + 2] = maskValue;
+          completionMaskPixels[offset + 3] = 255;
+        }
+        if (maskValue > 0) {
+          compositePixels[offset] = clayPixels.data[offset] ?? 0;
+          compositePixels[offset + 1] = clayPixels.data[offset + 1] ?? 0;
+          compositePixels[offset + 2] = clayPixels.data[offset + 2] ?? 0;
+          compositePixels[offset + 3] = clayPixels.data[offset + 3] ?? 255;
+        }
       }
 
       const compositeCanvas = new OffscreenCanvas(width, height);
       const compositeContext = compositeCanvas.getContext('2d');
       if (!compositeContext) throw new Error('Could not encode the single-view completion input.');
       compositeContext.putImageData(new ImageData(compositePixels, width, height), 0, 0);
-      compositeBlob = await compositeCanvas.convertToBlob({ type: 'image/png' });
+      if (completionMaskPixels) {
+        const completionMaskCanvas = new OffscreenCanvas(width, height);
+        const completionMaskContext = completionMaskCanvas.getContext('2d');
+        if (!completionMaskContext) {
+          throw new Error('Could not encode the single-view completion mask.');
+        }
+        completionMaskContext.putImageData(
+          new ImageData(completionMaskPixels, width, height),
+          0,
+          0,
+        );
+        [compositeBlob, completionMaskBlob] = await Promise.all([
+          compositeCanvas.convertToBlob({ type: 'image/png' }),
+          completionMaskCanvas.convertToBlob({ type: 'image/png' }),
+        ]);
+      } else {
+        compositeBlob = await compositeCanvas.convertToBlob({ type: 'image/png' });
+      }
     }
 
     const response: WorkerResponse = {
       id,
       compositeBlob,
+      completionMaskBlob,
       hasVisibleTexture,
       objectPixelCount,
       texturedPixelCount,

@@ -2094,7 +2094,8 @@ export function GeneratePanel({
       if (
         generation.metadata.provider === 'modelview-seedvr2' ||
         generation.metadata.provider === 'modelview-int8' ||
-        generation.metadata.provider === 'modelview-single-view'
+        generation.metadata.provider === 'modelview-single-view' ||
+        generation.metadata.provider === 'modelview-single-view-inpaint'
       )
         return;
       // The retired local ComfyUI provider has no server-side job in the
@@ -2342,7 +2343,6 @@ export function GeneratePanel({
     const objectMatrixWorld = getImportedModelMatrixWorld(objectId);
     const shouldInspectExistingSingleViewTexture =
       !isMultiviewRequest &&
-      !usesRemoteSingleView &&
       hasVisibleTextureLayerCandidate(objectId);
     const singleViewCameraSnapshot = shouldInspectExistingSingleViewTexture
       ? snapshotCurrentCaptureCamera(1)
@@ -2376,6 +2376,7 @@ export function GeneratePanel({
       throw new Error(isMultiviewRequest ? '无法捕获多视图模型方向。' : '无法捕获当前单视图。');
     }
     let singleViewCompletion: PreparedSingleViewTextureCompletion | undefined;
+    let usesRemoteSingleViewInpaint = false;
     if (currentSingleViewEffectUrl) {
       const currentViewCapture = capturedViews[0]?.capture;
       if (currentViewCapture?.maskUrl) {
@@ -2404,7 +2405,17 @@ export function GeneratePanel({
                   }
                 : view,
             );
-            texturePrompt = texturePromptBuilders!.buildTextureMapCompletionPrompt(prompt);
+            if (usesRemoteSingleView) {
+              if (singleViewCompletion.uncoveredPixelCount === 0) {
+                throw new Error('当前视角已经全部有贴图，没有需要远端补全的白模区域。');
+              }
+              if (!singleViewCompletion.completionMaskUrl) {
+                throw new Error('无法生成远端单视图补全蒙版，请重试。');
+              }
+              usesRemoteSingleViewInpaint = true;
+            } else {
+              texturePrompt = texturePromptBuilders!.buildTextureMapCompletionPrompt(prompt);
+            }
           }
         } catch (error) {
           throw new Error(
@@ -2473,7 +2484,11 @@ export function GeneratePanel({
         captureId: capture.id,
         status: 'running',
         metadata: {
-          provider: usesRemoteSingleView ? 'modelview-single-view' : 'liclick-atlas',
+          provider: usesRemoteSingleView
+            ? usesRemoteSingleViewInpaint
+              ? 'modelview-single-view-inpaint'
+              : 'modelview-single-view'
+            : 'liclick-atlas',
           workflow: 'texture-map',
           textureBatchId,
           clientGenerationId: generationId,
@@ -2540,11 +2555,46 @@ export function GeneratePanel({
     const results = await Promise.allSettled(
       pendingGenerations.map(async ({ capture, generationId, modelViewReference }) => {
         if (usesRemoteSingleView && modelviewClient) {
-          const [whiteModelDataUrl, materialDataUrl] = await Promise.all([
+          const [singleViewDataUrl, materialDataUrl, completionMaskDataUrl] = await Promise.all([
             urlToDataUrl(capture.colorUrl),
             urlToDataUrl(materialReference.url),
+            usesRemoteSingleViewInpaint && singleViewCompletion?.completionMaskUrl
+              ? urlToDataUrl(singleViewCompletion.completionMaskUrl)
+              : Promise.resolve(undefined),
           ]);
           throwIfTexturePipelineCancelled(signal);
+          if (usesRemoteSingleViewInpaint) {
+            if (!completionMaskDataUrl) {
+              throw new Error('远端单视图补全蒙版不可用，请重试。');
+            }
+            return modelviewClient.generateSingleViewInpaint(
+              {
+                clientGenerationId: generationId,
+                projectId: currentProject?.id,
+                prompt: texturePrompt || undefined,
+                captureId: capture.id,
+                objectId: object?.id,
+                image: {
+                  path: `${capture.id}-current-effect.png`,
+                  dataUrl: singleViewDataUrl,
+                },
+                materialImage: {
+                  path: `${materialReference.id}-multiview-material.png`,
+                  dataUrl: materialDataUrl,
+                },
+                mask: {
+                  path: `${capture.id}-completion-mask.png`,
+                  dataUrl: completionMaskDataUrl,
+                },
+                materialReferenceId: materialReference.id,
+                materialReferenceGroupId: referenceGroupId(materialReference),
+                materialReferenceName: materialReference.name,
+                materialReferenceRole: materialReference.referenceRole,
+                modelViewReferenceId: modelViewReference.id,
+              },
+              { signal },
+            );
+          }
           return modelviewClient.generateSingleView(
             {
               clientGenerationId: generationId,
@@ -2554,7 +2604,7 @@ export function GeneratePanel({
               objectId: object?.id,
               image: {
                 path: `${capture.id}-white-model.png`,
-                dataUrl: whiteModelDataUrl,
+                dataUrl: singleViewDataUrl,
               },
               materialImage: {
                 path: `${materialReference.id}-multiview-material.png`,
@@ -4908,7 +4958,10 @@ export function GeneratePanel({
                 {cancelConfirmGeneration.metadata.provider === 'comfyui-local'
                   ? ' 同时会向本地 ComfyUI 发送中断请求。'
                   : cancelConfirmGeneration.metadata.provider === 'modelview-seedvr2' ||
-                      cancelConfirmGeneration.metadata.provider === 'modelview-int8'
+                      cancelConfirmGeneration.metadata.provider === 'modelview-int8' ||
+                      cancelConfirmGeneration.metadata.provider === 'modelview-single-view' ||
+                      cancelConfirmGeneration.metadata.provider ===
+                        'modelview-single-view-inpaint'
                     ? ' ModelView 接口没有取消端点，本地会断开当前等待。'
                     : ' 同时会向生图后端发送取消请求。'}
               </p>
