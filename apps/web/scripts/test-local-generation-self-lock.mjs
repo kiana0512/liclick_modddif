@@ -16,13 +16,23 @@ const progressStatusSource = generatePanel.slice(
 
 assert.match(
   generatePanel,
-  /参考图一只用于确定画布尺寸、相机、透视、物体位置、比例、外轮廓、内部孔洞、真实部件边界和遮挡关系/,
-  'The texture prompt must limit the clay target to spatial registration evidence.',
+  /参考图一是不可修改的像素级构图与几何定位模板[\s\S]*?输出轮廓必须逐像素与图一重合/,
+  'The texture prompt must treat the source silhouette as immutable pixel-level registration.',
 );
 assert.match(
   generatePanel,
-  /忽略图一内部由低模拓扑、三角面、硬法线、白膜渲染、Flat Shading或面数不足产生的折线、色块和明暗边界/,
+  /不得向内侵蚀、内切、收缩、挖空或让背景侵入物体，也不得向外扩张、外延、描边、增加体积或覆盖到原轮廓之外/,
+  'The texture prompt must forbid both inward silhouette erosion and outward growth.',
+);
+assert.match(
+  generatePanel,
+  /忽略图一物体轮廓内部由低模拓扑、三角面、硬法线、白膜渲染、Flat Shading或面数不足产生的折线、色块和明暗边界/,
   'The texture prompt must reject low-poly shading artifacts as material evidence.',
+);
+assert.match(
+  generatePanel,
+  /所有“顺滑”只允许发生在图一原始轮廓内部[\s\S]*?即使原轮廓本身呈多边形，也必须原样保留/,
+  'Material smoothing must not be interpreted as permission to reshape the target silhouette.',
 );
 assert.match(
   generatePanel,
