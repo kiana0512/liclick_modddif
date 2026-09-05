@@ -3,6 +3,8 @@ import { createRegisteredObjectUrl, getRegisteredObjectUrlBlob } from '@/utils/b
 export type PreparedSingleViewTextureCompletion = {
   imageUrl?: string;
   completionMaskUrl?: string;
+  dilationRadius: number;
+  featherRadius: number;
   hasVisibleTexture: boolean;
   objectPixelCount: number;
   texturedPixelCount: number;
@@ -50,6 +52,8 @@ function getWorker() {
       completionMaskUrl: event.data.completionMaskBlob
         ? createRegisteredObjectUrl(event.data.completionMaskBlob)
         : undefined,
+      dilationRadius: event.data.dilationRadius,
+      featherRadius: event.data.featherRadius,
       hasVisibleTexture: event.data.hasVisibleTexture,
       objectPixelCount: event.data.objectPixelCount,
       texturedPixelCount: event.data.texturedPixelCount,

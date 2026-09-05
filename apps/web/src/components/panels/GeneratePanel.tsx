@@ -2515,6 +2515,8 @@ export function GeneratePanel({
           singleViewVisibleTextureRatio: singleViewCompletion?.visibleTextureRatio,
           singleViewUncoveredRatio: singleViewCompletion?.uncoveredRatio,
           singleViewGuideProcessMs: singleViewCompletion?.processMs,
+          singleViewMaskExpansionRadius: singleViewCompletion?.dilationRadius,
+          singleViewMaskFeatherRadius: singleViewCompletion?.featherRadius,
         },
       };
       return {

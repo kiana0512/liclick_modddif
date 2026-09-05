@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import ts from 'typescript';
 
 const root = path.resolve(import.meta.dirname, '..');
-const [panel, textureMapPrompts, workerClient, worker] = await Promise.all([
+const [panel, textureMapPrompts, workerClient, worker, localRepaintWorker] = await Promise.all([
   fs.readFile(path.join(root, 'src/components/panels/GeneratePanel.tsx'), 'utf8'),
   fs.readFile(path.join(root, 'src/engine/generation/textureMapPrompts.ts'), 'utf8'),
   fs.readFile(
@@ -11,6 +12,7 @@ const [panel, textureMapPrompts, workerClient, worker] = await Promise.all([
     'utf8',
   ),
   fs.readFile(path.join(root, 'src/workers/singleViewTextureCompletion.worker.ts'), 'utf8'),
+  fs.readFile(path.join(root, 'src/workers/localRepaintGenerationInput.worker.ts'), 'utf8'),
 ]);
 
 assert.match(
@@ -95,10 +97,63 @@ assert.match(
 assert.match(worker, /inferProjectionGapMask\(currentPixels, targetMask, 1\)/);
 assert.match(worker, /minimumVisiblePixels = Math\.max\(64, Math\.round\(objectPixelCount \* 0\.0005\)\)/);
 assert.match(worker, /compositePixels\[offset\] = clayPixels\.data\[offset\]/);
-assert.match(worker, /completionMaskPixels\[offset\] = maskValue/);
-assert.match(worker, /completionMaskPixels\[offset \+ 3\] = 255/);
+for (const policy of [
+  /Math\.round\(24 \* scale\)/,
+  /Math\.round\(64 \* scale\)/,
+  /Math\.round\(minimumDimension \* 0\.25\)/,
+  /Math\.round\(dilationRadius \* 0\.2\)/,
+]) {
+  assert.match(worker, policy, 'remote completion must match local repaint mask expansion policy');
+  assert.match(localRepaintWorker, policy, 'local repaint expansion policy must remain aligned');
+}
+assert.match(worker, /const dilated = dilateMask\(coreMask/);
+assert.match(worker, /const submittedMask = boxBlur\([\s\S]*?dilated/);
+assert.match(worker, /if \(coreMask\[index\] > 0\) submittedMask\[index\] = 255/);
+assert.match(worker, /pixels\[offset\] = value[\s\S]*?pixels\[offset \+ 3\] = 255/);
 assert.match(worker, /completionMaskBlob/);
 assert.doesNotMatch(worker, /white|gray|grey.*threshold/i, 'coverage must not use a white/grey color heuristic');
+
+const expansionCoreSource = `${worker.slice(
+  worker.indexOf('type MaskBounds'),
+  worker.indexOf('self.onmessage'),
+)}\nexport { getMaskBounds, dilateMask, boxBlur };`;
+const expansionCoreCompiled = ts.transpileModule(expansionCoreSource, {
+  compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+}).outputText;
+const expansionModule = { exports: {} };
+new Function('exports', 'module', expansionCoreCompiled)(
+  expansionModule.exports,
+  expansionModule,
+);
+const { getMaskBounds, dilateMask, boxBlur } = expansionModule.exports;
+const testWidth = 9;
+const testHeight = 9;
+const testCoreMask = new Uint8Array(testWidth * testHeight);
+testCoreMask[4 * testWidth + 4] = 255;
+const testCoreBounds = getMaskBounds(testCoreMask, testWidth, testHeight);
+const testDilatedMask = dilateMask(
+  testCoreMask,
+  testWidth,
+  testHeight,
+  2,
+  testCoreBounds,
+);
+assert.equal(testDilatedMask[2 * testWidth + 2], 255, 'the submitted mask must grow outward');
+assert.equal(testDilatedMask[1 * testWidth + 1], 0, 'mask expansion must stay bounded');
+const testFeatheredMask = boxBlur(
+  testDilatedMask,
+  testWidth,
+  testHeight,
+  1,
+  { minX: 2, minY: 2, maxX: 6, maxY: 6 },
+);
+assert(
+  testFeatheredMask[4 * testWidth + 1] > 0 &&
+    testFeatheredMask[4 * testWidth + 1] < 255,
+  'the expanded mask must include a non-binary feather band',
+);
+testFeatheredMask[4 * testWidth + 4] = 255;
+assert.equal(testFeatheredMask[4 * testWidth + 4], 255, 'the original gap must remain fully editable');
 
 assert.match(workerClient, /new Worker\([\s\S]*?singleViewTextureCompletion\.worker\.ts/);
 assert.match(workerClient, /createRegisteredObjectUrl\(event\.data\.compositeBlob\)/);
