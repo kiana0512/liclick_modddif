@@ -2,7 +2,6 @@ import { createRegisteredObjectUrl, getRegisteredObjectUrlBlob } from '@/utils/b
 
 export type PreparedSingleViewTextureCompletion = {
   imageUrl?: string;
-  completionMaskUrl?: string;
   hasVisibleTexture: boolean;
   objectPixelCount: number;
   texturedPixelCount: number;
@@ -16,8 +15,7 @@ type WorkerResponse =
   | ({
       id: number;
       compositeBlob?: Blob;
-      completionMaskBlob?: Blob;
-    } & Omit<PreparedSingleViewTextureCompletion, 'imageUrl' | 'completionMaskUrl'>)
+    } & Omit<PreparedSingleViewTextureCompletion, 'imageUrl'>)
   | { id: number; error: string };
 
 type PendingRequest = {
@@ -46,9 +44,6 @@ function getWorker() {
     pending.resolve({
       imageUrl: event.data.compositeBlob
         ? createRegisteredObjectUrl(event.data.compositeBlob)
-        : undefined,
-      completionMaskUrl: event.data.completionMaskBlob
-        ? createRegisteredObjectUrl(event.data.completionMaskBlob)
         : undefined,
       hasVisibleTexture: event.data.hasVisibleTexture,
       objectPixelCount: event.data.objectPixelCount,
@@ -116,4 +111,3 @@ export async function prepareSingleViewTextureCompletion(input: {
     }
   });
 }
-

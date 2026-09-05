@@ -2421,8 +2421,7 @@ export function GeneratePanel({
           });
           if (
             singleViewCompletion.hasVisibleTexture &&
-            singleViewCompletion.imageUrl &&
-            singleViewCompletion.completionMaskUrl
+            singleViewCompletion.imageUrl
           ) {
             capturedViews = capturedViews.map((view, index) =>
               index === 0
@@ -2430,8 +2429,10 @@ export function GeneratePanel({
                     ...view,
                     capture: {
                       ...view.capture,
+                      // The fused image guides Atlas, but the original full-object
+                      // silhouette must remain the projection mask. Replacing it
+                      // with the local gap mask crops the returned result to a strip.
                       colorUrl: singleViewCompletion!.imageUrl!,
-                      maskUrl: singleViewCompletion!.completionMaskUrl!,
                     },
                   }
                 : view,

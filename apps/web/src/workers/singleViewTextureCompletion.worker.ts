@@ -11,7 +11,6 @@ type WorkerResponse =
   | {
       id: number;
       compositeBlob?: Blob;
-      completionMaskBlob?: Blob;
       hasVisibleTexture: boolean;
       objectPixelCount: number;
       texturedPixelCount: number;
@@ -46,19 +45,6 @@ function readObjectMask(bitmap: ImageBitmap, width: number, height: number) {
   return { width, height, data };
 }
 
-function maskToImageData(mask: Uint8ClampedArray, width: number, height: number) {
-  const pixels = new Uint8ClampedArray(width * height * 4);
-  for (let index = 0; index < mask.length; index += 1) {
-    const value = mask[index] ?? 0;
-    const offset = index * 4;
-    pixels[offset] = value;
-    pixels[offset + 1] = value;
-    pixels[offset + 2] = value;
-    pixels[offset + 3] = 255;
-  }
-  return new ImageData(pixels, width, height);
-}
-
 self.onmessage = async (event: MessageEvent<WorkerRequest>) => {
   const { id, currentEffect, clayPreview, objectMask } = event.data;
   const startedAt = performance.now();
@@ -89,7 +75,6 @@ self.onmessage = async (event: MessageEvent<WorkerRequest>) => {
     const hasVisibleTexture = texturedPixelCount >= minimumVisiblePixels;
 
     let compositeBlob: Blob | undefined;
-    let completionMaskBlob: Blob | undefined;
     if (hasVisibleTexture) {
       const compositePixels = new Uint8ClampedArray(currentPixels.data);
       for (let index = 0; index < gapMask.data.length; index += 1) {
@@ -105,20 +90,12 @@ self.onmessage = async (event: MessageEvent<WorkerRequest>) => {
       const compositeContext = compositeCanvas.getContext('2d');
       if (!compositeContext) throw new Error('Could not encode the single-view completion input.');
       compositeContext.putImageData(new ImageData(compositePixels, width, height), 0, 0);
-      const maskCanvas = new OffscreenCanvas(width, height);
-      const maskContext = maskCanvas.getContext('2d');
-      if (!maskContext) throw new Error('Could not encode the single-view completion mask.');
-      maskContext.putImageData(maskToImageData(gapMask.data, width, height), 0, 0);
-      [compositeBlob, completionMaskBlob] = await Promise.all([
-        compositeCanvas.convertToBlob({ type: 'image/png' }),
-        maskCanvas.convertToBlob({ type: 'image/png' }),
-      ]);
+      compositeBlob = await compositeCanvas.convertToBlob({ type: 'image/png' });
     }
 
     const response: WorkerResponse = {
       id,
       compositeBlob,
-      completionMaskBlob,
       hasVisibleTexture,
       objectPixelCount,
       texturedPixelCount,
@@ -140,4 +117,3 @@ self.onmessage = async (event: MessageEvent<WorkerRequest>) => {
     objectMask.close();
   }
 };
-

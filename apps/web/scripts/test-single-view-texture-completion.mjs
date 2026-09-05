@@ -29,9 +29,13 @@ assert.match(
 );
 assert.match(
   panel,
-  /colorUrl: singleViewCompletion!\.imageUrl![\s\S]*?maskUrl: singleViewCompletion!\.completionMaskUrl!/
-,
-  'the generated guide and its local paintback mask must stay paired',
+  /capture:\s*\{[\s\S]*?\.\.\.view\.capture,[\s\S]*?colorUrl: singleViewCompletion!\.imageUrl![\s\S]*?\}/,
+  'the generated guide must replace only the Atlas input image',
+);
+assert.doesNotMatch(
+  panel,
+  /maskUrl: singleViewCompletion!\.completionMaskUrl!/,
+  'the local gap mask must not crop the full Atlas result or its projection',
 );
 assert.match(
   panel,
@@ -49,12 +53,12 @@ assert.match(panel, /输出应接近用于3D投影的Base Color \/ Albedo/);
 assert.match(worker, /inferProjectionGapMask\(currentPixels, targetMask, 1\)/);
 assert.match(worker, /minimumVisiblePixels = Math\.max\(64, Math\.round\(objectPixelCount \* 0\.0005\)\)/);
 assert.match(worker, /compositePixels\[offset\] = clayPixels\.data\[offset\]/);
-assert.match(worker, /maskToImageData\(gapMask\.data, width, height\)/);
+assert.doesNotMatch(worker, /completionMaskBlob|maskToImageData/);
 assert.doesNotMatch(worker, /white|gray|grey.*threshold/i, 'coverage must not use a white/grey color heuristic');
 
 assert.match(workerClient, /new Worker\([\s\S]*?singleViewTextureCompletion\.worker\.ts/);
 assert.match(workerClient, /createRegisteredObjectUrl\(event\.data\.compositeBlob\)/);
-assert.match(workerClient, /createRegisteredObjectUrl\(event\.data\.completionMaskBlob\)/);
+assert.doesNotMatch(workerClient, /completionMaskBlob|completionMaskUrl/);
 assert.match(
   await fs.readFile(path.join(root, 'src/engine/capture/captureCurrentView.ts'), 'utf8'),
   /forceEmptyProjectionHatch[\s\S]*?showEmptyProjectionHatch/,
