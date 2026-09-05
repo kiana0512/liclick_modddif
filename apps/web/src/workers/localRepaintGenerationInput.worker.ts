@@ -22,13 +22,8 @@ type GenerationInputWorkerResponse =
       id: number;
       compositeBlob?: Blob;
       submittedMaskBlob?: Blob;
-      dilationRadius: number;
-      featherRadius: number;
       hasVisibleTexture: boolean;
       uncoveredPixelCount: number;
-      visibleTextureRatio: number;
-      uncoveredRatio: number;
-      processMs: number;
     }
   | { id: number; error: string };
 
@@ -532,8 +527,6 @@ self.onmessage = async (event: MessageEvent<GenerationInputWorkerRequest>) => {
     let objectPixelCount = 0;
     let uncoveredPixelCount = 0;
     let texturedPixelCount = 0;
-    let visibleTextureRatio = 0;
-    let uncoveredRatio = 0;
     if (isSingleViewCompletion) {
       const targetMask = readObjectMask(inputMask, width, height);
       const gapMask = inferProjectionGapMask(currentPixels, targetMask, 1);
@@ -544,20 +537,13 @@ self.onmessage = async (event: MessageEvent<GenerationInputWorkerRequest>) => {
       }
       if (objectPixelCount === 0) throw new Error('Object mask is empty.');
       texturedPixelCount = Math.max(0, objectPixelCount - uncoveredPixelCount);
-      visibleTextureRatio = texturedPixelCount / objectPixelCount;
-      uncoveredRatio = uncoveredPixelCount / objectPixelCount;
       const hasVisibleTexture =
         texturedPixelCount >= Math.max(64, Math.round(objectPixelCount * 0.0005));
       if (!hasVisibleTexture || uncoveredPixelCount === 0) {
         self.postMessage({
           id,
-          dilationRadius: 0,
-          featherRadius: 0,
           hasVisibleTexture,
           uncoveredPixelCount,
-          visibleTextureRatio,
-          uncoveredRatio,
-          processMs: performance.now() - startedAt,
         } satisfies GenerationInputWorkerResponse);
         return;
       }
@@ -669,13 +655,8 @@ self.onmessage = async (event: MessageEvent<GenerationInputWorkerRequest>) => {
           id,
           compositeBlob,
           submittedMaskBlob,
-          dilationRadius,
-          featherRadius,
           hasVisibleTexture: true,
           uncoveredPixelCount,
-          visibleTextureRatio,
-          uncoveredRatio,
-          processMs: performance.now() - startedAt,
         }
       : {
           id,

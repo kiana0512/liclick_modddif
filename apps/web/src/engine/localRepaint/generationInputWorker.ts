@@ -12,13 +12,8 @@ export type PreparedLocalRepaintGenerationInput = {
 export type PreparedSingleViewTextureCompletion = {
   imageUrl?: string;
   completionMaskUrl?: string;
-  dilationRadius: number;
-  featherRadius: number;
   hasVisibleTexture: boolean;
   uncoveredPixelCount: number;
-  visibleTextureRatio: number;
-  uncoveredRatio: number;
-  processMs: number;
 };
 
 type LocalRepaintWorkerResult = {
@@ -149,12 +144,7 @@ export async function prepareSingleViewTextureCompletion(input: {
     completionMaskUrl: result.submittedMaskBlob
       ? createRegisteredObjectUrl(result.submittedMaskBlob)
       : undefined,
-    dilationRadius: result.dilationRadius,
-    featherRadius: result.featherRadius,
     hasVisibleTexture: result.hasVisibleTexture,
     uncoveredPixelCount: result.uncoveredPixelCount,
-    visibleTextureRatio: result.visibleTextureRatio,
-    uncoveredRatio: result.uncoveredRatio,
-    processMs: result.processMs,
   };
 }

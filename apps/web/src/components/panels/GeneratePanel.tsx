@@ -2511,11 +2511,6 @@ export function GeneratePanel({
             singleViewCompletion?.hasVisibleTexture === true
               ? 'existing-texture-completion'
               : 'initial-clay',
-          singleViewVisibleTextureRatio: singleViewCompletion?.visibleTextureRatio,
-          singleViewUncoveredRatio: singleViewCompletion?.uncoveredRatio,
-          singleViewGuideProcessMs: singleViewCompletion?.processMs,
-          singleViewMaskExpansionRadius: singleViewCompletion?.dilationRadius,
-          singleViewMaskFeatherRadius: singleViewCompletion?.featherRadius,
         },
       };
       return {
