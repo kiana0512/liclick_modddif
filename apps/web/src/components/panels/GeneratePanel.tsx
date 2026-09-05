@@ -24,6 +24,10 @@ import { ensureLocalRepaintSessionLayer as ensurePersistentLocalRepaintSessionLa
 import { generationBelongsToObject } from '@/engine/localRepaint/objectBinding';
 import { prepareLocalRepaintGenerationInput } from '@/engine/localRepaint/generationInputWorker';
 import {
+  prepareSingleViewTextureCompletion,
+  type PreparedSingleViewTextureCompletion,
+} from '@/engine/generation/singleViewTextureCompletionWorker';
+import {
   getObjectViewPresetDirection,
   type ObjectViewPreset,
 } from '@/engine/scene/transformActions';
@@ -68,7 +72,11 @@ import { useSceneStore } from '@/stores/sceneStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useToastStore } from '@/stores/toastStore';
 import type { Capture } from '@/types/capture';
-import type { CaptureNormalPreview, CaptureResolution } from '@/engine/capture/captureTypes';
+import type {
+  CaptureNormalPreview,
+  CaptureResolution,
+  SerializedCameraInput,
+} from '@/engine/capture/captureTypes';
 import type { Generation } from '@/types/generation';
 import type { Layer } from '@/types/layer';
 import type { ReferenceImage } from '@/types/project';
@@ -420,6 +428,41 @@ function buildTextureMapPrompt(userPrompt: string) {
   return trimmedPrompt
     ? `${textureMapDefaultPrompt}\n\n用户补充材质要求：${trimmedPrompt}`
     : textureMapDefaultPrompt;
+}
+
+const textureMapCompletionPrompt = `任务：参考图二的材质与外观，只补全参考图一中尚未贴图的白色或浅灰色白模区域，生成一张完整、连续且适合3D投影的材质效果图。
+
+参考图一是唯一的目标画布和空间定位依据。严格保持图一的画布尺寸、相机、透视、物体位置、比例、外轮廓、内部孔洞、真实部件边界、遮挡关系和裁切范围不变。不得平移、缩放、旋转、变形、补全轮廓、删减部件或改变相机。
+
+将图一中连续出现的白色、浅灰色、无纹理白模、Clay、Primer或未完成占位表面识别为唯一允许修改的区域。必须完整替换这些区域，不得残留白膜、灰块、透明缺口、硬边、光晕或明显的补丁边界。图一中已经具有颜色、纹理和材质的区域属于锁定内容，必须逐像素保留，不得重新生成、覆盖、调色、锐化、模糊或改变其细节。
+
+参考图二只用于判断同一物体对应部件的材质、Base Color、颜色分布、纹理尺度、纹理方向、磨损、污渍、划痕、缝线、拼接、图案、文字和表面装饰。根据物体结构和当前视角，将图二中正确部件的材质迁移到图一对应的白模区域。不得采用图二的构图、背景、多视图排版、物体数量、相机、光照方向或额外几何，不得跨部件搬移材质和细节。
+
+新生成区域必须与图一相邻的已有材质自然连接。边界两侧的颜色、纹理密度、纹理方向、磨损程度、清晰度和材质尺度应连续一致，不得出现接缝、重复纹理、色差、亮度突变或材质错位。
+
+忽略白模区域中由低模拓扑、三角面、硬法线、Flat Shading或白膜光照产生的折线、块状明暗和多边形色块，不要将其复制为材质细节。属于同一连续曲面的区域应跨越多边形边界自然、顺滑地延续材质，同时保留真实硬边、开孔、接缝、折叠、面板分界和零件连接；不得改变真实几何位置或外轮廓。
+
+输出应接近用于3D投影的Base Color / Albedo。新生成区域采用均匀、柔和、中性的漫射照明，只匹配边界处必要的基础亮度，不增加方向性阴影、环境遮蔽、接触阴影、强高光、镜面反射、边缘光或大范围明暗渐变。不要把参考图二中的棚拍亮斑和阴影复制到图一。
+
+图一物体外部、背景和透明区域必须原样保留。只输出一张与图一严格配准的完整图，不输出对比图、多视图、过程图、说明文字、边框、Logo或水印。`;
+
+function buildTextureMapCompletionPrompt(userPrompt: string) {
+  const trimmedPrompt = userPrompt.trim();
+  return trimmedPrompt
+    ? `${textureMapCompletionPrompt}\n\n用户补充材质要求：${trimmedPrompt}`
+    : textureMapCompletionPrompt;
+}
+
+function hasVisibleTextureLayerCandidate(objectId: string) {
+  return useLayerStore.getState().layers.some(
+    (layer) =>
+      (!layer.objectId || layer.objectId === objectId) &&
+      layer.type !== 'normal' &&
+      layer.visible &&
+      layer.opacity > 0 &&
+      (layer.strength ?? 1) > 0 &&
+      Boolean(layer.imageUrl),
+  );
 }
 
 const multiviewDefaultPrompt = `以输入图片中的主要物体为唯一参考，生成一张用于3D建模的六视图展示图。
@@ -1366,7 +1409,11 @@ export function GeneratePanel({
   const captureTextureMapCameraView = useCallback(
     async (
       view?: CameraViewItem,
-      options: { setAsLastCapture?: boolean; resolution?: CaptureResolution } = {},
+      options: {
+        setAsLastCapture?: boolean;
+        resolution?: CaptureResolution;
+        cameraSnapshot?: SerializedCameraInput;
+      } = {},
     ) => {
       if (!captureObjectId) throw new Error(t('importModelFirst'));
       const capture = await captureCurrentView({
@@ -1374,6 +1421,7 @@ export function GeneratePanel({
         resolution: options.resolution ?? resolutionToSize[resolution],
         framing: 'fit-object',
         colorMode: 'clay-target',
+        cameraSnapshot: options.cameraSnapshot,
         // Leave a stable edge-safe frame for GPT/control-image upload. The
         // capture camera still keeps the preview direction and roll.
         fillRatio: 0.88,
@@ -2217,7 +2265,11 @@ export function GeneratePanel({
     return true;
   }
 
-  async function getTextureMapMultiviewCaptures(views: CameraViewItem[], signal?: AbortSignal) {
+  async function getTextureMapMultiviewCaptures(
+    views: CameraViewItem[],
+    signal?: AbortSignal,
+    options: { cameraSnapshot?: SerializedCameraInput } = {},
+  ) {
     if (!captureObjectId) throw new Error(t('importModelFirst'));
     return withStableClayTargetPresentation(captureObjectId, async () => {
       const captures: Partial<Record<string, Capture>> = {};
@@ -2228,7 +2280,10 @@ export function GeneratePanel({
         if (captures[view.id]) continue;
         setCapturingCameraViews((current) => new Set([...current, view.id]));
         try {
-          const capture = await captureTextureMapCameraView(view, { setAsLastCapture: false });
+          const capture = await captureTextureMapCameraView(view, {
+            setAsLastCapture: false,
+            cameraSnapshot: options.cameraSnapshot,
+          });
           throwIfTexturePipelineCancelled(signal);
           captures[view.id] = capture;
           updateTexturePipelineProgress(
@@ -2316,13 +2371,82 @@ export function GeneratePanel({
     throwIfTexturePipelineCancelled(signal);
     const objectId = captureObjectId;
     const object = objects.find((item) => item.id === objectId);
-    const texturePrompt = usesRemoteSingleView ? prompt.trim() : buildTextureMapPrompt(prompt);
+    let texturePrompt = usesRemoteSingleView ? prompt.trim() : buildTextureMapPrompt(prompt);
     const objectMatrixWorld = getImportedModelMatrixWorld(objectId);
-    updateTexturePipelineProgress(20, '准备多视角快照');
-    const capturedViews = await getTextureMapMultiviewCaptures(requestedViews, signal);
+    const shouldInspectExistingSingleViewTexture =
+      !isMultiviewRequest &&
+      !usesRemoteSingleView &&
+      hasVisibleTextureLayerCandidate(objectId);
+    const singleViewCameraSnapshot = shouldInspectExistingSingleViewTexture
+      ? snapshotCurrentCaptureCamera(1)
+      : undefined;
+    let currentSingleViewEffectUrl: string | undefined;
+    if (shouldInspectExistingSingleViewTexture) {
+      const currentView = requestedViews[0];
+      updateTexturePipelineProgress(20, '准备当前贴图效果');
+      const currentEffect = await captureCurrentColorPreview({
+        objectId,
+        resolution: resolutionToSize[resolution],
+        framing: 'fit-object',
+        colorMode: 'flat-target-coverage',
+        fillRatio: 0.88,
+        cameraSnapshot: singleViewCameraSnapshot,
+        viewDirection: currentView?.viewDirection,
+        viewUp: currentView?.viewUp,
+      });
+      currentSingleViewEffectUrl = currentEffect.colorUrl;
+      throwIfTexturePipelineCancelled(signal);
+    }
+    updateTexturePipelineProgress(
+      24,
+      isMultiviewRequest ? '准备多视角快照' : '准备当前单视图',
+    );
+    let capturedViews = await getTextureMapMultiviewCaptures(requestedViews, signal, {
+      cameraSnapshot: singleViewCameraSnapshot,
+    });
     throwIfTexturePipelineCancelled(signal);
     if (capturedViews.length === 0) {
       throw new Error(isMultiviewRequest ? '无法捕获多视图模型方向。' : '无法捕获当前单视图。');
+    }
+    let singleViewCompletion: PreparedSingleViewTextureCompletion | undefined;
+    if (currentSingleViewEffectUrl) {
+      const currentViewCapture = capturedViews[0]?.capture;
+      if (currentViewCapture?.maskUrl) {
+        updateTexturePipelineProgress(38, '合成单视图补全引导图');
+        try {
+          singleViewCompletion = await prepareSingleViewTextureCompletion({
+            currentEffectUrl: currentSingleViewEffectUrl,
+            clayPreviewUrl: currentViewCapture.colorUrl,
+            objectMaskUrl: currentViewCapture.maskUrl,
+          });
+          if (
+            singleViewCompletion.hasVisibleTexture &&
+            singleViewCompletion.imageUrl &&
+            singleViewCompletion.completionMaskUrl
+          ) {
+            capturedViews = capturedViews.map((view, index) =>
+              index === 0
+                ? {
+                    ...view,
+                    capture: {
+                      ...view.capture,
+                      colorUrl: singleViewCompletion!.imageUrl!,
+                      maskUrl: singleViewCompletion!.completionMaskUrl!,
+                    },
+                  }
+                : view,
+            );
+            texturePrompt = buildTextureMapCompletionPrompt(prompt);
+          }
+        } catch (error) {
+          throw new Error(
+            getUserFacingGenerationError(
+              error,
+              '已有贴图的单视图补全引导图准备失败，请重试。',
+            ),
+          );
+        }
+      }
     }
     if (!currentProject) throw new Error('当前工程尚未加载完成。');
     // Persist the entire camera batch before any remote job starts. Adding the
@@ -2401,6 +2525,13 @@ export function GeneratePanel({
           serverSubmitted: false,
           startedAt: new Date().toISOString(),
           alphaMode: 'pending-guided-foreground-matte',
+          singleViewInputMode:
+            singleViewCompletion?.hasVisibleTexture === true
+              ? 'existing-texture-completion'
+              : 'initial-clay',
+          singleViewVisibleTextureRatio: singleViewCompletion?.visibleTextureRatio,
+          singleViewUncoveredRatio: singleViewCompletion?.uncoveredRatio,
+          singleViewGuideProcessMs: singleViewCompletion?.processMs,
         },
       };
       return {

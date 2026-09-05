@@ -39,6 +39,7 @@
     "test:reference-single-click-preview": "node scripts/test-reference-single-click-preview.mjs",
     "test:retained-viewport-activity": "node scripts/test-retained-viewport-activity.mjs",
     "test:single-view-priority": "node scripts/test-single-view-priority.mjs",
+    "test:single-view-texture-completion": "node scripts/test-single-view-texture-completion.mjs",
     "test:texture-load-recovery": "node scripts/test-texture-load-recovery.mjs",
     "test:uv-merge-layer-preview": "node scripts/test-uv-merge-layer-preview.mjs",
     "test:bake-entry-project": "node scripts/test-bake-entry-project.mjs",

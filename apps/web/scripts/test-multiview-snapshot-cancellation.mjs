@@ -23,7 +23,7 @@ assert.match(
 );
 assert.match(
   panel,
-  /async function getTextureMapMultiviewCaptures\(views: CameraViewItem\[\], signal\?: AbortSignal\)[\s\S]*throwIfTexturePipelineCancelled\(signal\)[\s\S]*await captureTextureMapCameraView[\s\S]*throwIfTexturePipelineCancelled\(signal\)/,
+  /async function getTextureMapMultiviewCaptures\([\s\S]*?views: CameraViewItem\[\],[\s\S]*?signal\?: AbortSignal,[\s\S]*?\)[\s\S]*throwIfTexturePipelineCancelled\(signal\)[\s\S]*await captureTextureMapCameraView[\s\S]*throwIfTexturePipelineCancelled\(signal\)/,
   'snapshot capture must observe cancellation before and after each GPU capture',
 );
 assert.match(

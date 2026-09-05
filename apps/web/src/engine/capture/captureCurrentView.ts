@@ -433,6 +433,7 @@ function createFlatTargetCaptureMaterial(sourceMaterial: THREE.Material) {
 async function captureFlatTarget(
   passRequest: CapturePassRequest,
   encodedSize?: { width: number; height: number },
+  options: { forceEmptyProjectionHatch?: boolean } = {},
 ) {
   const temporaryMaterials = new Set<THREE.Material>();
   const mutatedShaderMaterials = new Set<THREE.ShaderMaterial>();
@@ -451,12 +452,16 @@ async function captureFlatTarget(
         if (!mutatedShaderMaterials.has(source)) {
           mutatedShaderMaterials.add(source);
           const previousValues = new Map<string, unknown>();
-          for (const [name, value] of [
+          const uniformOverrides: Array<readonly [string, number]> = [
             ['previewLightingEnabled', 0],
             ['previewExposure', 1],
             ['normalPreviewEnabled', 0],
             ['wirePreviewEnabled', 0],
-          ] as const) {
+          ];
+          if (options.forceEmptyProjectionHatch) {
+            uniformOverrides.push(['showEmptyProjectionHatch', 1]);
+          }
+          for (const [name, value] of uniformOverrides) {
             const uniform = source.uniforms[name];
             if (!uniform) continue;
             previousValues.set(name, uniform.value);
@@ -548,10 +553,11 @@ export async function captureCurrentColorPreview(
           { ...passRequest, width: interactiveWidth, height: interactiveHeight },
           { width, height },
         )
-      : request.colorMode === 'flat-target'
+      : request.colorMode === 'flat-target' || request.colorMode === 'flat-target-coverage'
         ? await captureFlatTarget(
             { ...passRequest, width: interactiveWidth, height: interactiveHeight },
             { width, height },
+            { forceEmptyProjectionHatch: request.colorMode === 'flat-target-coverage' },
           )
         : request.colorMode === 'viewport-clean'
           ? await captureCleanViewportPreview(
