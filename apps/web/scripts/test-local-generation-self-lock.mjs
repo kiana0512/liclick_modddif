@@ -14,6 +14,27 @@ const progressStatusSource = generatePanel.slice(
   generatePanel.indexOf('const textureMapDefaultPrompt'),
 );
 
+assert.match(
+  generatePanel,
+  /参考图一只用于确定画布尺寸、相机、透视、物体位置、比例、外轮廓、内部孔洞、真实部件边界和遮挡关系/,
+  'The texture prompt must limit the clay target to spatial registration evidence.',
+);
+assert.match(
+  generatePanel,
+  /忽略图一内部由低模拓扑、三角面、硬法线、白膜渲染、Flat Shading或面数不足产生的折线、色块和明暗边界/,
+  'The texture prompt must reject low-poly shading artifacts as material evidence.',
+);
+assert.match(
+  generatePanel,
+  /输出应接近用于3D投影的Base Color \/ Albedo[\s\S]*?尽量消除方向性光照、投影、环境遮蔽、接触阴影、强高光、镜面反射、边缘光和大范围明暗渐变/,
+  'The texture prompt must request projection-ready material with subdued lighting.',
+);
+assert.match(
+  generatePanel,
+  /`\$\{textureMapDefaultPrompt\}\\n\\n用户补充材质要求：\$\{trimmedPrompt\}`/,
+  'User material requirements must remain appended after the shared main template.',
+);
+
 assert.doesNotMatch(
   editorPage,
   /textureGenerationLocked=\{localImageGenerationRunning\}/,
