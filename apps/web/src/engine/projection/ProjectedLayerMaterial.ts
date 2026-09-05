@@ -2613,7 +2613,9 @@ export function syncProjectedLayerMaterialDisplayState(
       }
     }
     if (candidate.uniforms.showEmptyProjectionHatch) {
-      candidate.uniforms.showEmptyProjectionHatch.value = layers.some((layer) => layer.visible)
+      candidate.uniforms.showEmptyProjectionHatch.value = layers.some(
+        (layer) => layer.visible && layer.showEmptyProjectionHatch !== false,
+      )
         ? 1
         : 0;
     }
@@ -3012,7 +3014,9 @@ function updateSharedPreviewUniforms(
   if (material.uniforms.baseColor)
     material.uniforms.baseColor.value.set(input.baseColor ?? DEFAULT_PREVIEW_COLOR);
   if (material.uniforms.showEmptyProjectionHatch)
-    material.uniforms.showEmptyProjectionHatch.value = input.layers.some((layer) => layer.visible)
+    material.uniforms.showEmptyProjectionHatch.value = input.layers.some(
+      (layer) => layer.visible && layer.showEmptyProjectionHatch !== false,
+    )
       ? 1
       : 0;
   if (material.uniforms.normalPreviewEnabled)
@@ -4039,7 +4043,9 @@ export async function createProjectedLayerMaterial(input: ProjectionLayerInput) 
       uvOverlaySaturationShift: { value: input.uvOverlaySaturation ?? 0 },
       uvOverlayLightnessShift: { value: input.uvOverlayLightness ?? 0 },
       baseColor: { value: new THREE.Color(input.baseColor ?? DEFAULT_PREVIEW_COLOR) },
-      showEmptyProjectionHatch: { value: input.visible ? 1 : 0 },
+      showEmptyProjectionHatch: {
+        value: input.visible && input.showEmptyProjectionHatch !== false ? 1 : 0,
+      },
       normalPreviewEnabled: { value: input.normalPreview ? 1 : 0 },
       wirePreviewEnabled: { value: input.wirePreview ? 1 : 0 },
       useBaseMap: { value: input.baseTexture ? 1 : 0 },
@@ -4211,7 +4217,13 @@ export async function createProjectedLayerStackMaterial(
     edgeFeather: { value: input.edgeFeather ?? 0.004 },
     depthBias: { value: input.depthBias ?? 0.025 },
     baseColor: { value: new THREE.Color(input.baseColor ?? DEFAULT_PREVIEW_COLOR) },
-    showEmptyProjectionHatch: { value: input.layers.some((layer) => layer.visible) ? 1 : 0 },
+    showEmptyProjectionHatch: {
+      value: input.layers.some(
+        (layer) => layer.visible && layer.showEmptyProjectionHatch !== false,
+      )
+        ? 1
+        : 0,
+    },
     normalPreviewEnabled: { value: input.normalPreview ? 1 : 0 },
     wirePreviewEnabled: { value: input.wirePreview ? 1 : 0 },
     baseMap: { value: input.baseTexture ?? neutralTexture },

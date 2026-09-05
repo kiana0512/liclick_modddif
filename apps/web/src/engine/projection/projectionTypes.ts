@@ -60,6 +60,8 @@ export type ProjectionLayerInput = {
   renderedColor?: boolean;
   /** Render only accepted projection pixels and keep all other fragments transparent. */
   transparentProjectionOnly?: boolean;
+  /** Show the diagnostic hatch where no projected layer covers the surface. */
+  showEmptyProjectionHatch?: boolean;
   /** Reject projected fragments below this absolute geometric face-on cosine. */
   minimumProjectionFacing?: number;
   projectionVisibilityPolicy?: ProjectionVisibilityPolicy;
@@ -90,6 +92,7 @@ export type ProjectionLayerDisplayInput = Pick<
   | 'blendMode'
   | 'compositeRole'
   | 'visible'
+  | 'showEmptyProjectionHatch'
   | 'hue'
   | 'saturation'
   | 'lightness'
@@ -119,6 +122,7 @@ export type ProjectionLayerStackInput = Omit<
   | 'ignoreSourceAlpha'
   | 'renderedColor'
   | 'transparentProjectionOnly'
+  | 'showEmptyProjectionHatch'
   | 'minimumProjectionFacing'
   | 'projectionVisibilityPolicy'
 > & {
@@ -139,6 +143,7 @@ export type ProjectionLayerStackInput = Omit<
       | 'blendMode'
       | 'compositeRole'
       | 'visible'
+      | 'showEmptyProjectionHatch'
       | 'hue'
       | 'saturation'
       | 'lightness'
