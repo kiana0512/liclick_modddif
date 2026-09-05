@@ -5,44 +5,50 @@ import { stdout } from 'node:process';
 import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const [editorPage, generatePanel] = await Promise.all([
+const [editorPage, generatePanel, textureMapPrompts] = await Promise.all([
   readFile(path.join(root, 'src/routes/EditorPage.tsx'), 'utf8'),
   readFile(path.join(root, 'src/components/panels/GeneratePanel.tsx'), 'utf8'),
+  readFile(path.join(root, 'src/engine/generation/textureMapPrompts.ts'), 'utf8'),
 ]);
 const progressStatusSource = generatePanel.slice(
   generatePanel.indexOf('function GenerationProgressStatus'),
-  generatePanel.indexOf('const textureMapDefaultPrompt'),
+  generatePanel.indexOf('function hasVisibleTextureLayerCandidate'),
 );
 
 assert.match(
-  generatePanel,
+  textureMapPrompts,
   /参考图一是不可修改的像素级构图与几何定位模板[\s\S]*?输出轮廓必须逐像素与图一重合/,
   'The texture prompt must treat the source silhouette as immutable pixel-level registration.',
 );
 assert.match(
-  generatePanel,
+  textureMapPrompts,
   /不得向内侵蚀、内切、收缩、挖空或让背景侵入物体，也不得向外扩张、外延、描边、增加体积或覆盖到原轮廓之外/,
   'The texture prompt must forbid both inward silhouette erosion and outward growth.',
 );
 assert.match(
-  generatePanel,
+  textureMapPrompts,
   /忽略图一物体轮廓内部由低模拓扑、三角面、硬法线、白膜渲染、Flat Shading或面数不足产生的折线、色块和明暗边界/,
   'The texture prompt must reject low-poly shading artifacts as material evidence.',
 );
 assert.match(
-  generatePanel,
+  textureMapPrompts,
   /所有“顺滑”只允许发生在图一原始轮廓内部[\s\S]*?即使原轮廓本身呈多边形，也必须原样保留/,
   'Material smoothing must not be interpreted as permission to reshape the target silhouette.',
 );
 assert.match(
-  generatePanel,
+  textureMapPrompts,
   /输出应接近用于3D投影的Base Color \/ Albedo[\s\S]*?尽量消除方向性光照、投影、环境遮蔽、接触阴影、强高光、镜面反射、边缘光和大范围明暗渐变/,
   'The texture prompt must request projection-ready material with subdued lighting.',
 );
 assert.match(
-  generatePanel,
+  textureMapPrompts,
   /`\$\{textureMapDefaultPrompt\}\\n\\n用户补充材质要求：\$\{trimmedPrompt\}`/,
   'User material requirements must remain appended after the shared main template.',
+);
+assert.match(
+  generatePanel,
+  /await import\('@\/engine\/generation\/textureMapPrompts'\)/,
+  'Texture prompts must be loaded only when local generation is submitted.',
 );
 
 assert.doesNotMatch(
