@@ -22,12 +22,12 @@ import {
 } from '@/engine/localRepaint/resultPreviewUtils';
 import { ensureLocalRepaintSessionLayer as ensurePersistentLocalRepaintSessionLayer } from '@/engine/localRepaint/sessionLayer';
 import { generationBelongsToObject } from '@/engine/localRepaint/objectBinding';
-import { prepareLocalRepaintGenerationInput } from '@/engine/localRepaint/generationInputWorker';
 import { SINGLE_VIEW_MINIMUM_PROJECTION_FACING } from '@/engine/projection/projectionTypes';
 import {
+  prepareLocalRepaintGenerationInput,
   prepareSingleViewTextureCompletion,
   type PreparedSingleViewTextureCompletion,
-} from '@/engine/generation/singleViewTextureCompletionWorker';
+} from '@/engine/localRepaint/generationInputWorker';
 import {
   getObjectViewPresetDirection,
   type ObjectViewPreset,
@@ -2387,10 +2387,12 @@ export function GeneratePanel({
             clayPreviewUrl: currentViewCapture.colorUrl,
             objectMaskUrl: currentViewCapture.maskUrl,
           });
-          if (
-            singleViewCompletion.hasVisibleTexture &&
-            singleViewCompletion.imageUrl
-          ) {
+          if (singleViewCompletion.hasVisibleTexture) {
+            if (usesRemoteSingleView && singleViewCompletion.uncoveredPixelCount === 0) {
+              throw new Error('当前视角已经全部有贴图，没有需要远端补全的白模区域。');
+            }
+            const completionGuideUrl =
+              singleViewCompletion.imageUrl ?? currentSingleViewEffectUrl;
             capturedViews = capturedViews.map((view, index) =>
               index === 0
                 ? {
@@ -2400,15 +2402,12 @@ export function GeneratePanel({
                       // The fused image guides Atlas, but the original full-object
                       // silhouette must remain the projection mask. Replacing it
                       // with the local gap mask crops the returned result to a strip.
-                      colorUrl: singleViewCompletion!.imageUrl!,
+                      colorUrl: completionGuideUrl,
                     },
                   }
                 : view,
             );
             if (usesRemoteSingleView) {
-              if (singleViewCompletion.uncoveredPixelCount === 0) {
-                throw new Error('当前视角已经全部有贴图，没有需要远端补全的白模区域。');
-              }
               if (!singleViewCompletion.completionMaskUrl) {
                 throw new Error('无法生成远端单视图补全蒙版，请重试。');
               }

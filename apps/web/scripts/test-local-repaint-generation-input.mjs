@@ -18,7 +18,9 @@ const workerSource = fs.readFileSync(workerPath, 'utf8');
 const panelSource = fs.readFileSync(panelPath, 'utf8');
 const editorPageSource = fs.readFileSync(editorPagePath, 'utf8');
 const pngCoreSource = fs.readFileSync(pngCorePath, 'utf8');
-const privateCoreSource = `${workerSource.slice(0, workerSource.indexOf('self.onmessage'))}
+const privateCoreSource = `${workerSource
+  .slice(0, workerSource.indexOf('self.onmessage'))
+  .replace(/^import[^\n]+\n/gm, '')}
 export { dilateMask, erodeMask, boxBlur, buildCompositeCoreMask, fillSmallMaskHoles, getMaskBounds };`;
 const compiled = ts.transpileModule(privateCoreSource, {
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
@@ -323,7 +325,7 @@ assert.match(
 );
 assert.match(
   workerSource,
-  /const \{ core: compositeCore, bounds: coreBounds \} = buildCompositeCoreMask/,
+  /\(\{ core: compositeCore, bounds: coreBounds \} = buildCompositeCoreMask/,
 );
 assert.match(workerSource, /const dilated = dilateMask\(compositeCore/);
 assert.match(workerSource, /if \(compositeCore\[index\] > 0\) submittedMask\[index\] = 255/);

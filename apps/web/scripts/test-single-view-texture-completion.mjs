@@ -4,14 +4,13 @@ import path from 'node:path';
 import ts from 'typescript';
 
 const root = path.resolve(import.meta.dirname, '..');
-const [panel, textureMapPrompts, workerClient, worker, localRepaintWorker] = await Promise.all([
+const [panel, textureMapPrompts, workerClient, worker] = await Promise.all([
   fs.readFile(path.join(root, 'src/components/panels/GeneratePanel.tsx'), 'utf8'),
   fs.readFile(path.join(root, 'src/engine/generation/textureMapPrompts.ts'), 'utf8'),
   fs.readFile(
-    path.join(root, 'src/engine/generation/singleViewTextureCompletionWorker.ts'),
+    path.join(root, 'src/engine/localRepaint/generationInputWorker.ts'),
     'utf8',
   ),
-  fs.readFile(path.join(root, 'src/workers/singleViewTextureCompletion.worker.ts'), 'utf8'),
   fs.readFile(path.join(root, 'src/workers/localRepaintGenerationInput.worker.ts'), 'utf8'),
 ]);
 
@@ -32,7 +31,7 @@ assert.match(
 );
 assert.match(
   panel,
-  /capture:\s*\{[\s\S]*?\.\.\.view\.capture,[\s\S]*?colorUrl: singleViewCompletion!\.imageUrl![\s\S]*?\}/,
+  /capture:\s*\{[\s\S]*?\.\.\.view\.capture,[\s\S]*?colorUrl: completionGuideUrl[\s\S]*?\}/,
   'the generated guide must replace only the Atlas input image',
 );
 assert.doesNotMatch(
@@ -52,7 +51,7 @@ assert.match(
 );
 assert.match(
   panel,
-  /if \(singleViewCompletion\.uncoveredPixelCount === 0\)[\s\S]*?当前视角已经全部有贴图/,
+  /if \(usesRemoteSingleView && singleViewCompletion\.uncoveredPixelCount === 0\)[\s\S]*?当前视角已经全部有贴图/,
   'fully covered remote views must not overwrite existing texture',
 );
 assert.match(
@@ -95,8 +94,8 @@ assert.match(
 );
 
 assert.match(worker, /inferProjectionGapMask\(currentPixels, targetMask, 1\)/);
-assert.match(worker, /minimumVisiblePixels = Math\.max\(64, Math\.round\(objectPixelCount \* 0\.0005\)\)/);
-assert.match(worker, /compositePixels\[offset\] = clayPixels\.data\[offset\]/);
+assert.match(worker, /texturedPixelCount >= Math\.max\(64, Math\.round\(objectPixelCount \* 0\.0005\)\)/);
+assert.match(worker, /compositeEdgeRadius = isSingleViewCompletion \? 0/);
 for (const policy of [
   /Math\.round\(24 \* scale\)/,
   /Math\.round\(64 \* scale\)/,
@@ -104,13 +103,12 @@ for (const policy of [
   /Math\.round\(dilationRadius \* 0\.2\)/,
 ]) {
   assert.match(worker, policy, 'remote completion must match local repaint mask expansion policy');
-  assert.match(localRepaintWorker, policy, 'local repaint expansion policy must remain aligned');
 }
-assert.match(worker, /const dilated = dilateMask\(coreMask/);
+assert.match(worker, /const dilated = dilateMask\(compositeCore/);
 assert.match(worker, /const submittedMask = boxBlur\([\s\S]*?dilated/);
-assert.match(worker, /if \(coreMask\[index\] > 0\) submittedMask\[index\] = 255/);
+assert.match(worker, /if \(compositeCore\[index\] > 0\) submittedMask\[index\] = 255/);
 assert.match(worker, /pixels\[offset\] = value[\s\S]*?pixels\[offset \+ 3\] = 255/);
-assert.match(worker, /completionMaskBlob/);
+assert.match(worker, /submittedMaskBlob/);
 assert.doesNotMatch(worker, /white|gray|grey.*threshold/i, 'coverage must not use a white/grey color heuristic');
 
 const expansionCoreSource = `${worker.slice(
@@ -155,9 +153,10 @@ assert(
 testFeatheredMask[4 * testWidth + 4] = 255;
 assert.equal(testFeatheredMask[4 * testWidth + 4], 255, 'the original gap must remain fully editable');
 
-assert.match(workerClient, /new Worker\([\s\S]*?singleViewTextureCompletion\.worker\.ts/);
-assert.match(workerClient, /createRegisteredObjectUrl\(event\.data\.compositeBlob\)/);
-assert.match(workerClient, /completionMaskUrl:[\s\S]*?createRegisteredObjectUrl\(event\.data\.completionMaskBlob\)/);
+assert.match(workerClient, /new Worker\([\s\S]*?localRepaintGenerationInput\.worker\.ts/);
+assert.match(workerClient, /mode: 'single'/);
+assert.match(workerClient, /createRegisteredObjectUrl\(result\.compositeBlob\)/);
+assert.match(workerClient, /completionMaskUrl:[\s\S]*?createRegisteredObjectUrl\(result\.submittedMaskBlob\)/);
 assert.match(
   await fs.readFile(path.join(root, 'src/engine/capture/captureCurrentView.ts'), 'utf8'),
   /forceEmptyProjectionHatch[\s\S]*?showEmptyProjectionHatch/,
