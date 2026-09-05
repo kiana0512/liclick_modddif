@@ -61,6 +61,22 @@ assert.match(
 );
 assert.match(textureMapPrompts, /输出应接近用于3D投影的Base Color \/ Albedo/);
 
+assert.match(
+  panel,
+  /async function handleGeneratePairedMultiview[\s\S]*?setTexturePipelineProgress\(\{ active: true, progress: 4, label: '准备多视图参考' \}\)[\s\S]*?generatePairedMultiviewReference\(singleReference, updateTexturePipelineProgress\)[\s\S]*?setTexturePipelineProgress\(undefined\)/,
+  'standalone single-view reference completion must drive and clear the shared CTA progress',
+);
+assert.match(
+  panel,
+  /onProgress\?\.\(16, '提交多视图参考'\)[\s\S]*?onProgress\?\.\(32, '生成多视图参考'\)[\s\S]*?onProgress\?\.\(88, '保存多视图参考'\)[\s\S]*?onProgress\?\.\(100, '多视图参考已就绪'\)/,
+  'paired multiview generation must publish monotonic submission, generation and persistence phases',
+);
+assert.match(
+  panel,
+  /backgroundSize: `\$\{textureActionProgress\.progress\}% 100%, 100% 100%`[\s\S]*?`\$\{textureActionProgress\.label\} · \$\{Math\.round\(textureActionProgress\.progress\)\}%`/,
+  'the bottom texture CTA must render the shared progress fill and percentage',
+);
+
 assert.match(worker, /inferProjectionGapMask\(currentPixels, targetMask, 1\)/);
 assert.match(worker, /minimumVisiblePixels = Math\.max\(64, Math\.round\(objectPixelCount \* 0\.0005\)\)/);
 assert.match(worker, /compositePixels\[offset\] = clayPixels\.data\[offset\]/);

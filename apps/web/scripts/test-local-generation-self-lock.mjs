@@ -73,7 +73,7 @@ assert.match(
 );
 assert.match(
   generatePanel,
-  /const generateActionRunning =\s*previewIsGenerating \|\| \(tab === 'repaint' && submissionActive\);[\s\S]*?generateActionRunning \? \([\s\S]*?LoaderCircle[\s\S]*?: generateActionRunning[\s\S]*?t\('generating'\)/,
+  /const textureActionProgress =[\s\S]*?isTextureMapTab && texturePipelineProgress\?\.active[\s\S]*?const generateActionRunning =[\s\S]*?Boolean\(textureActionProgress\)[\s\S]*?generateActionRunning \? \([\s\S]*?LoaderCircle[\s\S]*?: generateActionRunning[\s\S]*?t\('generating'\)/,
   'The panel CTA must show the same running state as the dock before the Generation row exists.',
 );
 assert.match(

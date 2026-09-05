@@ -998,7 +998,10 @@ export function GeneratePanel({
   // A toolbar repaint request owns the synchronous submit lock before its
   // Generation row exists. Reflect that preparation window in the panel CTA
   // so the dock spinner and the left panel never disagree about task state.
-  const generateActionRunning = previewIsGenerating || (tab === 'repaint' && submissionActive);
+  const textureActionProgress =
+    isTextureMapTab && texturePipelineProgress?.active ? texturePipelineProgress : undefined;
+  const generateActionRunning =
+    previewIsGenerating || Boolean(textureActionProgress) || (tab === 'repaint' && submissionActive);
   const displayedPreviewGeneration =
     isTextureMapTab && texturePreviewMode === 'repaint'
       ? latestLocalRepaintGeneration
@@ -3538,12 +3541,17 @@ export function GeneratePanel({
   }
   persistPairedMultiviewReferenceRef.current = persistPairedMultiviewReference;
 
-  async function generatePairedMultiviewReference(singleReference: ReferenceImage) {
+  async function generatePairedMultiviewReference(
+    singleReference: ReferenceImage,
+    onProgress?: (progress: number, label: string) => void,
+  ) {
     const groupId = referenceGroupId(singleReference);
     let pendingGeneration: Generation | undefined;
     setReferenceGroupGenerationState({ groupId, status: 'generating' });
     try {
+      onProgress?.(8, '检查多视图参考');
       await requirePersonalLiclickAccount();
+      onProgress?.(16, '提交多视图参考');
       const submittedPrompt = buildMultiviewPrompt(liclickPrompt);
       const generationId = createId('reference-multiview');
       pendingGeneration = {
@@ -3604,6 +3612,7 @@ export function GeneratePanel({
           serverJobId: submitted.metadata.serverJobId ?? submitted.id,
         },
       };
+      onProgress?.(32, '生成多视图参考');
       if (isCancelledGeneration(pendingGeneration) || isCancelledGeneration(alignedGeneration)) {
         generationIdentityIds(alignedGeneration).forEach((id) =>
           cancelledGenerationIdsRef.current.add(id),
@@ -3630,6 +3639,7 @@ export function GeneratePanel({
       }
       syncGeneration(alignedGeneration);
       const completedGeneration = await waitForLiclickGeneration(alignedGeneration);
+      onProgress?.(88, '保存多视图参考');
       pairedGenerationPersistenceRef.current.add(completedGeneration.id);
       syncGeneration(completedGeneration);
       const multiviewReference = await persistPairedMultiviewReference(
@@ -3637,6 +3647,7 @@ export function GeneratePanel({
         completedGeneration,
       );
       await saveGenerationStateBestEffort();
+      onProgress?.(100, '多视图参考已就绪');
       setReferenceGroupGenerationState(undefined);
       finish();
       return multiviewReference;
@@ -3663,9 +3674,11 @@ export function GeneratePanel({
     }
     submitLocksRef.current.add('single');
     setSubmissionActive(true);
+    setTexturePipelineProgress({ active: true, progress: 4, label: '准备多视图参考' });
     setGenerateNotice({ tone: 'info', message: '正在根据单视图生成并保存配对多视图。' });
     try {
-      await generatePairedMultiviewReference(singleReference);
+      await generatePairedMultiviewReference(singleReference, updateTexturePipelineProgress);
+      await waitForBrowserPaint();
       setGenerateNotice(undefined);
       pushToast({
         tone: 'success',
@@ -3683,6 +3696,7 @@ export function GeneratePanel({
     } finally {
       submitLocksRef.current.delete('single');
       setSubmissionActive(submitLocksRef.current.size > 0);
+      setTexturePipelineProgress(undefined);
     }
   }
 
@@ -4373,7 +4387,7 @@ export function GeneratePanel({
     >
       <Button
         className={`relative h-12 w-full overflow-hidden text-base ${
-          texturePipelineProgress?.active && tab === 'multiview' ? 'disabled:opacity-100' : ''
+          textureActionProgress ? 'disabled:opacity-100' : ''
         }`}
         variant="primary"
         disabled={
@@ -4398,22 +4412,22 @@ export function GeneratePanel({
           )
         }
         style={
-          texturePipelineProgress?.active && tab === 'multiview'
+          textureActionProgress
             ? {
                 backgroundColor: '#25182f',
                 backgroundImage:
                   'linear-gradient(90deg, rgba(242,76,193,0.96), rgba(132,81,255,0.98)), linear-gradient(90deg, #25182f, #322044)',
                 backgroundPosition: 'left top, left top',
                 backgroundRepeat: 'no-repeat',
-                backgroundSize: `${texturePipelineProgress.progress}% 100%, 100% 100%`,
+                backgroundSize: `${textureActionProgress.progress}% 100%, 100% 100%`,
                 transition: 'background-size 500ms ease, filter 200ms ease',
               }
             : undefined
         }
       >
         <span className="relative z-10">
-          {texturePipelineProgress?.active && tab === 'multiview'
-            ? `${texturePipelineProgress.label} · ${Math.round(texturePipelineProgress.progress)}%`
+          {textureActionProgress
+            ? `${textureActionProgress.label} · ${Math.round(textureActionProgress.progress)}%`
             : generateActionRunning
               ? t('generating')
               : tab === 'multiview'
