@@ -2,6 +2,11 @@ import type * as THREE from 'three';
 import type { SerializedCamera } from '@/types/capture';
 import type { BlendMode, LayerMaskSpace, ProjectionVisibilityPolicy } from '@/types/layer';
 
+// Reject only extreme grazing faces for single-view projection. This keeps the
+// authored front/rounded surfaces while preventing edge-on side triangles from
+// appearing as isolated projected islands inside the empty-coverage hatch.
+export const SINGLE_VIEW_MINIMUM_PROJECTION_FACING = 0.18;
+
 export type ProjectionLayerInput = {
   layerId: string;
   imageUrl: string;
@@ -60,8 +65,6 @@ export type ProjectionLayerInput = {
   renderedColor?: boolean;
   /** Render only accepted projection pixels and keep all other fragments transparent. */
   transparentProjectionOnly?: boolean;
-  /** Show the diagnostic hatch where no projected layer covers the surface. */
-  showEmptyProjectionHatch?: boolean;
   /** Reject projected fragments below this absolute geometric face-on cosine. */
   minimumProjectionFacing?: number;
   projectionVisibilityPolicy?: ProjectionVisibilityPolicy;
@@ -92,7 +95,6 @@ export type ProjectionLayerDisplayInput = Pick<
   | 'blendMode'
   | 'compositeRole'
   | 'visible'
-  | 'showEmptyProjectionHatch'
   | 'hue'
   | 'saturation'
   | 'lightness'
@@ -122,7 +124,6 @@ export type ProjectionLayerStackInput = Omit<
   | 'ignoreSourceAlpha'
   | 'renderedColor'
   | 'transparentProjectionOnly'
-  | 'showEmptyProjectionHatch'
   | 'minimumProjectionFacing'
   | 'projectionVisibilityPolicy'
 > & {
@@ -143,7 +144,6 @@ export type ProjectionLayerStackInput = Omit<
       | 'blendMode'
       | 'compositeRole'
       | 'visible'
-      | 'showEmptyProjectionHatch'
       | 'hue'
       | 'saturation'
       | 'lightness'

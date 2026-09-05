@@ -341,21 +341,6 @@ function getProjectionCompositeRole(layer: Layer): 'normal' | 'overlay' | 'under
   return 'normal';
 }
 
-function shouldShowEmptyProjectionHatch(layer: Layer) {
-  // A generated single-view layer owns only the faces accepted by its capture
-  // depth/angle checks. Grazing and occluded faces must fall through to the
-  // material stack below instead of exposing the renderer's diagnostic hatch.
-  // Coverage captures can still force the hatch offscreen when they need it to
-  // distinguish an untextured white-model gap.
-  const singleViewGeneratedProjection =
-    layer.type === 'projected' &&
-    Boolean(layer.generationId) &&
-    layer.projectionCoverageMode === 'capture-mask' &&
-    !layer.replacementTargetLayerId &&
-    !isRenderedLocalRepaintLayer(layer);
-  return !singleViewGeneratedProjection;
-}
-
 function layerStackPreviewSignature(layers: Layer[]) {
   return layers.map(layerPreviewSignature).join('|');
 }
@@ -473,7 +458,6 @@ function toProjectionLayerDisplayInput(layer: Layer): ProjectionLayerDisplayInpu
     blendMode: isOverlayProjectionPatch(layer) ? 'overlay' : layer.blendMode,
     compositeRole: getProjectionCompositeRole(layer),
     visible: layer.visible,
-    showEmptyProjectionHatch: shouldShowEmptyProjectionHatch(layer),
     hue: (layer.adjustments?.hue ?? 0) / 100,
     saturation: (layer.adjustments?.saturation ?? 0) / 100,
     lightness: (layer.adjustments?.lightness ?? 0) / 100,
@@ -1855,7 +1839,6 @@ const ImportedModel = memo(function ImportedModel({
           strength: layer.strength ?? 1,
           blendMode: isOverlayProjectionPatch(layer) ? 'overlay' : layer.blendMode,
           compositeRole: getProjectionCompositeRole(layer),
-          showEmptyProjectionHatch: shouldShowEmptyProjectionHatch(layer),
           visible:
             layer.visible &&
             layer.id !== rendererOwnedLocalRepaintPreviewLayerId &&
@@ -1925,7 +1908,6 @@ const ImportedModel = memo(function ImportedModel({
           // as another base projection, including legacy saved repaint layers.
           blendMode: isOverlayProjectionPatch(layer) ? 'overlay' : layer.blendMode,
           compositeRole: getProjectionCompositeRole(layer),
-          showEmptyProjectionHatch: shouldShowEmptyProjectionHatch(layer),
           // Keep the projection visible while the exact runtime visibility pass
           // is preparing. The stored depth (when present) remains a valid fallback.
           visible:

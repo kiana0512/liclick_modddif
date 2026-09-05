@@ -23,6 +23,7 @@ import {
 import { ensureLocalRepaintSessionLayer as ensurePersistentLocalRepaintSessionLayer } from '@/engine/localRepaint/sessionLayer';
 import { generationBelongsToObject } from '@/engine/localRepaint/objectBinding';
 import { prepareLocalRepaintGenerationInput } from '@/engine/localRepaint/generationInputWorker';
+import { SINGLE_VIEW_MINIMUM_PROJECTION_FACING } from '@/engine/projection/projectionTypes';
 import {
   prepareSingleViewTextureCompletion,
   type PreparedSingleViewTextureCompletion,
@@ -4291,7 +4292,7 @@ export function GeneratePanel({
           : currentExisting.projectionCoverageMode,
         ignoreSourceAlpha: singleViewTexture ? true : currentExisting.ignoreSourceAlpha,
         minimumProjectionFacing: singleViewTexture
-          ? undefined
+          ? SINGLE_VIEW_MINIMUM_PROJECTION_FACING
           : currentExisting.minimumProjectionFacing,
         projectionVisibilityPolicy: singleViewTexture
           ? 'standard'

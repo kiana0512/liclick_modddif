@@ -124,9 +124,9 @@ assert.match(
   'Saved single-view layers must recover their authored capture silhouette without overwriting UV eraser masks.',
 );
 assert.match(
-  sceneRootSource,
-  /function shouldShowEmptyProjectionHatch\([\s\S]*?projectionCoverageMode === 'capture-mask'[\s\S]*?return !singleViewGeneratedProjection/,
-  'Generated single-view projection gaps must fall through to lower materials instead of showing the diagnostic hatch.',
+  layerStoreSource,
+  /minimumProjectionFacing: singleViewTexture[\s\S]*?SINGLE_VIEW_MINIMUM_PROJECTION_FACING/,
+  'Generated single-view layers must reject extreme grazing faces instead of projecting isolated triangle islands.',
 );
 assert.doesNotMatch(
   maskedProjectedImageWorkerSource,
@@ -1602,18 +1602,6 @@ try {
   assert.equal(material.uniforms.showEmptyProjectionHatch.value, 1);
   assert.equal(material.uuid, materialId);
 
-  const singleViewFallbackLayers = layers.map((layer) => ({
-    ...layer,
-    showEmptyProjectionHatch: false,
-  }));
-  projection.syncProjectedLayerMaterialDisplayState(material, singleViewFallbackLayers);
-  assert.equal(
-    material.uniforms.showEmptyProjectionHatch.value,
-    0,
-    'Visible single-view layers must leave rejected faces on the lower material without a hatch.',
-  );
-  projection.syncProjectedLayerMaterialDisplayState(material, layers);
-  assert.equal(material.uniforms.showEmptyProjectionHatch.value, 1);
   assert.equal(
     projection.updateProjectedLayerStackMaterial(material, {
       layers,
