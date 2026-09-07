@@ -1,6 +1,6 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
-> 文档版本：`2.18.11`
+> 文档版本：`2.18.12`
 >
 > 生效日期：`2026-09-07`
 >
@@ -11,6 +11,10 @@
 > 审计口径：`0a2519d + 607e82f + 2568e40`，不包含错误文档提交 `2bde8c6/e03bab2/d1c5f78`
 
 ## 1. 文档地位与强制边界
+
+变更卡 `CHG-20260907-FILE-RESPONSE-ABORT-CLOSE`：主模块 M14，协作 M01/M10/M13；文件响应生命周期契约 `FILE-RESPONSE-LIFETIME` v1.0.0。用户删除 11-20 工程时 Windows rename 到回收站报 EPERM。源码发现 workspace、烘焙单张产物、Web 静态文件响应直接 ReadStream.pipe(response)，取消下载后可能将源流留在背压暂停状态，继续持有文件描述符。改为共用 Node pipeline，由响应提前关闭/读取失败联动销毁源流；完整响应和背压不变，不将网络中断升级为未处理异常。真实 HTTP 测试用 16 MiB 文件中途取消，旧 pipe 实现在句柄关闭断言失败，新实现通过；同测验证完整字节、源读取失败及保留数据的目录移入回收站。该证据证明文件句柄泄漏，不据此认定所有 EPERM 都来自相同原因；旧进程句柄需重启释放。调用前的认证、owner、路径包含/realpath、安全响应头、HEAD 与烘焙状态门禁保持，删除仍走原回收站 rename，不以强制删除代替。GPU/CPU/Worker/shader、投影/UV/重绘/export 内容、分辨率、QA、Schema、Command 幂等性、Revision CAS 与 verified assets 不变，无迁移；回退仅恢复三个响应入口的 pipe，但会重新引入中断资源泄漏。
+
+文件响应修复验证：后端完整 13 项回归通过，修改文件 lint、Cloud/repository 边界及 diff 检查通过。重启本地 4517 加载修复并释放旧进程句柄后，通过正常页面菜单与确认框删除 11-20 成功；列表仅剩其余三个项目，原目录不存在，回收站保留 `11-20-0c9af007-1788770255481`。未强制删除工程数据；本次实测证实恢复删除，但不能区分旧进程具体哪个文件句柄造成原 EPERM。
 
 推送竞态处理：首次推送被远端新增 `c0c15cb` 拒绝后，已将四个本地提交重放到该提交上，未强推。完整保留上游 `previousRoot?.visible === false` 运行时修正；重叠测试使用真实 handoff helper，覆盖原上游同/跨对象断言，并保留隐藏、未指定 visible 与 legacy 无归属用例。此前 86 项 Web/12 项 Server 全回归通过；重放后重新执行 ordered-composition 与 layer-retention 两项相关回归均通过，最终构建另行核对。
 
@@ -884,6 +888,7 @@ M15 / CLOUD-DEPLOYMENT v1.0.0（2026-09-03）：正常合并 release 部署历�
 | `2.18.9` | 2026-09-07 | `ZIP CRC 索引读取` | M11、`PERF-EXPORT-ZIP-001` v1.0.1：16 MiB 隔离 CRC 中位 80.55→26.25ms，400 组与完整 ZIP 精确对照通过；无字节/Schema/分辨率或数据迁移。 |
 | `2.18.10` | 2026-09-07 | `后端流式 ZIP CRC 优化` | M11/M10、`PERF-EXPORT-ZIP-001` v1.0.2：64 KiB 分块累计校验中位 46.90→25.60ms；真实流背压及归档字节对照通过，无算法语义/Schema 或数据迁移。 |
 | `2.18.11` | 2026-09-07 | `master 集成与交接测试夹具补全` | M15：保留 4fe9a58 运行时修复，补齐可见根节点/对象身份测试；旧断言与隐藏/跨对象/legacy 用例并存，不更改业务算法或数据。 |
+| `2.18.12` | 2026-09-07 | `中断下载释放文件句柄` | M14/M01、`FILE-RESPONSE-LIFETIME` v1.0.0：共享 pipeline 关闭被取消的模型/图片响应源流，防止 Windows 文件占用阻碍回收站移动；无算法或数据迁移。 |
 
 `ALG-LR-008` v2.4.1：局部重绘仍自动创建独立目标和结果图层；pointer-down 不再依赖当前图层是否选中、可见或为 UV，只检查自身 source/composite/Session/显示资源。默认保持按钮激活、GPU promotion、结果发布前的原选择（含 undefined），防止内部隐藏 draft 触发面板选择普通投影层。普通画笔/橡皮擦限制、GPU/CPU/Worker/shader、作者 mask、投影/UV/export、分辨率、Schema、Revision、ownership 与资产不变。真实 store 三类选择与入口 gate 回归通过；无数据迁移，回退选择保持与 gate 即可。详见 CHG-20260903-LOCAL-REPAINT-SELECTION-INDEPENDENCE。
 
