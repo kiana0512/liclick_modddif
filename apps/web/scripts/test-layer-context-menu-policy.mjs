@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
+import ts from 'typescript';
 
 const source = await readFile(
   new URL('../src/components/panels/LayersPanel.tsx', import.meta.url),
@@ -24,11 +25,32 @@ assert.match(
   /function getLocalRepaintPreviewMaskUrl[\s\S]{0,220}return layer\.localRepaintMaskUrl \|\| layer\.maskUrl;/,
   'local repaint thumbnails must prefer the authored brush mask over the blend mask',
 );
-assert.match(
-  source,
-  /if \(isLocalRepaintPreview && !previewMaskUrl\) return null;/,
-  'legacy local repaint thumbnails without a mask must not expose the full returned image',
+// Exercise the real render branches instead of matching one spelling of the
+// fail-closed guard. Simplifying that guard must preserve authored coverage.
+const tree = ts.createSourceFile('LayersPanel.tsx', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+const thumbnail = tree.statements.find(n => ts.isFunctionDeclaration(n) && n.name?.text === 'VisibleLayerThumbnail');
+const maskSource = tree.statements.find(n => ts.isFunctionDeclaration(n) && n.name?.text === 'getLocalRepaintPreviewMaskUrl');
+const renderThumbnail = new Function('React','useRef','useEffect','useProjectedLayerDisplayPreview',
+  'isLocalRepaintPreviewLayer','getLiveProjectedTextureSourceState','getLiveProjectedCanvasState','useLayerImageSource',
+  ts.transpileModule(maskSource.getText(tree) + '\n' + thumbnail.getText(tree), {
+    compilerOptions:{target:ts.ScriptTarget.ES2022,jsx:ts.JsxEmit.React},
+  }).outputText + '\nreturn VisibleLayerThumbnail;')(
+  {createElement:(type,props)=>({type,props})}, () => ({current:null}), () => {}, () => undefined,
+  layer => Boolean(layer.generationId?.startsWith('local-repaint-')), () => undefined,
+  url => url === 'live:mask' ? {canvas:{}} : undefined, () => undefined,
 );
+const localLayer = {type:'projected',imageUrl:'returned-image',generationId:'local-repaint-test'};
+assert.equal(renderThumbnail({layer:localLayer}),null,'Legacy local repaint without a mask must fail closed');
+assert.equal(renderThumbnail({layer:{...localLayer,generationId:undefined}}),null,'Pending ordinary thumbnails must not decode the full original');
+for(const mask of [{localRepaintMaskUrl:'brush-mask',maskUrl:'blend-mask'},{maskUrl:'legacy-mask'}]) {
+  const rendered = renderThumbnail({layer:{...localLayer,...mask}});
+  assert.equal(rendered.type,'img');
+  assert.equal(rendered.props.src,'returned-image');
+  assert.equal(rendered.props.style.maskImage,`url("${mask.localRepaintMaskUrl ?? mask.maskUrl}")`);
+  assert.equal(rendered.props.style.WebkitMaskImage,rendered.props.style.maskImage);
+}
+assert.equal(renderThumbnail({layer:{...localLayer,localRepaintMaskUrl:'live:mask'}}).type,'canvas',
+  'Live authored coverage keeps its canvas composition path');
 assert.match(
   source,
   /该旧局部重绘图层缺少涂绘蒙版，无法显示区域预览。/,

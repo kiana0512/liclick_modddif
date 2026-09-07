@@ -105,3 +105,48 @@ assert.match(panel, /generatePanelExpanded && displayedTexturePreviewMode !== 'm
 assert.match(panel, /cancelled = true;\s*controller.abort\(\);/);
 assert.match(read('engine/localRepaint/resultPreviewUtils.ts'), /\['display', sourceUrl, depthUrl, request.revision\]/);
 console.log('Display preview scheduling, cancellation, LRU/byte budget and panel ownership passed.');
+
+// Run the real panel hook: thumbnail and zoom consumers stay separate, and
+// neither a source/revision change nor a late cancelled job can show old pixels.
+const layerSource = read('components/panels/LayersPanel.tsx');
+const hookTree = ts.createSourceFile('panel.tsx', layerSource, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+const hook = hookTree.statements.find(n => ts.isFunctionDeclaration(n) && n.name?.text === 'useProjectedLayerDisplayPreview').getText(hookTree);
+let previewState, dependencies, pendingEffect, cleanup;
+const requests = [];
+const request = kind => (...args) => new Promise((resolve, reject) => requests.push({kind,args,resolve,reject}));
+const render = new Function('useState','useEffect','createLayerThumbnail','createGeneratedDisplayPreview','isLocalRepaintPreviewLayer','getLiveProjectedTextureSourceState',
+  ts.transpileModule(hook,{compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText + '\nreturn useProjectedLayerDisplayPreview;')(
+  () => [previewState, value => {previewState=value;}],
+  (callback, deps) => {if (!dependencies || deps.some((v,i) => v !== dependencies[i])) {pendingEffect=callback; dependencies=deps;}},
+  request('thumbnail'),request('full'), layer => Boolean(layer.localRepaintMaskUrl), url => url.startsWith('live:') ? {} : undefined,
+);
+const effects = () => {if(pendingEffect){cleanup?.(); cleanup=pendingEffect(); pendingEffect=undefined;}};
+const layer = {type:'projected',imageUrl:'image',depthUrl:'depth',contentRevision:1};
+assert.equal(render(layer,true),undefined); effects();
+assert.equal(requests[0].kind,'thumbnail');
+assert.equal(requests[0].args[3],true);
+requests[0].resolve(value('small')); await tick();
+assert.equal(render(layer,true).fittedUrl,'small');
+const revised = {...layer,contentRevision:2};
+assert.equal(render(revised,true),undefined,'A new revision never paints the previous thumbnail'); effects();
+assert.equal(render({...revised,imageUrl:'replacement'},true),undefined); effects();
+assert(requests[1].args[2].signal.aborted);
+requests[1].resolve(value('stale')); await tick();
+assert.equal(render({...revised,imageUrl:'replacement'},true),undefined);
+requests[2].resolve(value('current')); await tick();
+assert.equal(render({...revised,imageUrl:'replacement'},true).fittedUrl,'current');
+assert.equal(render(layer,false),undefined); effects();
+assert.equal(requests.at(-1).kind,'full','Zoom keeps the original complete display pipeline');
+requests.at(-1).resolve(value('full')); await tick();
+assert.equal(render(layer,false).fittedUrl,'full');
+for (const excluded of [{...layer,localRepaintMaskUrl:'author-mask'}, {...layer,type:'uv',imageUrl:'live:canvas'}]) {
+  const count=requests.length; assert.equal(render(excluded,true),undefined); effects();
+  assert.equal(requests.length,count,'Authored/live masks retain the existing canvas path');
+}
+render({...layer,type:'uv'},true); effects();
+assert.equal(requests.at(-1).args[3],false,'UV thumbnails skip generated-image masking');
+requests.at(-1).reject(new Error('decode failure')); await tick();
+assert.equal(render({...layer,type:'uv'},true).fittedUrl,'image','Failure retains the original image fallback');
+cleanup?.();
+assert.match(layerSource,/if \(!isLocalRepaintPreview\) return null;/,'Pending thumbnails must not start a full-resolution img decode');
+console.log('Layer thumbnail ownership passed: revision/type/mode identity, cancellation, live masks, zoom and error fallback.');

@@ -38,6 +38,7 @@ import {
 import { isFlattenableUvMergeSource } from '@/engine/layers/mergeUvComposition';
 import {
   createGeneratedDisplayPreview,
+  createLayerThumbnail,
   type GeneratedDisplayPreview,
 } from '@/engine/localRepaint/resultPreviewUtils';
 import {
@@ -93,40 +94,40 @@ function useLayerImageSource(url: string, enabled: boolean) {
   return image;
 }
 
-function useProjectedLayerDisplayPreview(layer: Layer) {
+function useProjectedLayerDisplayPreview(layer: Layer, thumbnail = false) {
+  const { type, imageUrl: sourceUrl, depthUrl, contentRevision: revision } = layer;
+  const key = JSON.stringify([type, sourceUrl, depthUrl, revision, thumbnail]);
   const [preview, setPreview] = useState<
-    (GeneratedDisplayPreview & { sourceUrl: string; depthUrl?: string; revision?: number }) | undefined
+    (GeneratedDisplayPreview & { key: string }) | undefined
   >();
   const enabled =
-    layer.type === 'projected' && Boolean(layer.imageUrl) && !isLocalRepaintPreviewLayer(layer);
+    (thumbnail || type === 'projected') && sourceUrl && !isLocalRepaintPreviewLayer(layer) &&
+    !(thumbnail && getLiveProjectedTextureSourceState(sourceUrl));
 
   useEffect(() => {
     let cancelled = false;
-    setPreview(undefined);
+    // The source/revision key already excludes stale results during loading.
     if (!enabled) return undefined;
     const controller = new AbortController();
-    const sourceUrl = layer.imageUrl;
-    const depthUrl = layer.depthUrl;
-    void createGeneratedDisplayPreview(sourceUrl, depthUrl, {
-      signal: controller.signal, revision: layer.contentRevision,
-    })
+    void (thumbnail ? createLayerThumbnail : createGeneratedDisplayPreview)(sourceUrl, depthUrl, {
+      signal: controller.signal, revision,
+    }, type === 'projected')
       .then((nextPreview) => {
-        if (!cancelled) setPreview({ ...nextPreview, sourceUrl, depthUrl, revision: layer.contentRevision });
+        if (!cancelled) setPreview({ ...nextPreview, key });
       })
       .catch((error) => {
-        if (!cancelled)
-          console.warn('[Liclick 3D Texture] Could not prepare projected display preview.', error);
+        if (!cancelled) {
+          if (thumbnail) setPreview({ alignedUrl: sourceUrl, fittedUrl: sourceUrl, key });
+          console.warn('Display preview failed:', error);
+        }
       });
     return () => {
       cancelled = true;
       controller.abort();
     };
-  }, [enabled, layer.contentRevision, layer.depthUrl, layer.imageUrl]);
+  }, [enabled, key, revision, depthUrl, sourceUrl, type, thumbnail]);
 
-  return preview?.sourceUrl === layer.imageUrl && preview.depthUrl === layer.depthUrl &&
-    preview.revision === layer.contentRevision
-    ? preview
-    : undefined;
+  return enabled && preview?.key === key ? preview : undefined;
 }
 
 function useInteractionDeferredLayers() {
@@ -227,7 +228,7 @@ function LayerThumbnail({ layer }: { layer: Layer }) {
 
 function VisibleLayerThumbnail({ layer }: { layer: Layer }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const displayPreview = useProjectedLayerDisplayPreview(layer);
+  const displayPreview = useProjectedLayerDisplayPreview(layer, true);
   const isLocalRepaintPreview = isLocalRepaintPreviewLayer(layer);
   const previewMaskUrl = getLocalRepaintPreviewMaskUrl(layer);
   const liveSourceState = getLiveProjectedTextureSourceState(layer.imageUrl);
@@ -269,26 +270,23 @@ function VisibleLayerThumbnail({ layer }: { layer: Layer }) {
         alt=""
         loading="lazy"
         decoding="async"
-        className="h-full w-full object-contain"
+        className={`h-full w-full ${layer.type === 'projected' ? 'object-contain' : 'object-cover'}`}
         draggable={false}
       />
     );
 
   if (liveSource || liveMaskCanvas)
     return <canvas ref={canvasRef} width={48} height={48} className="h-full w-full object-cover" />;
-  if (!layer.imageUrl) return null;
-  if (isLocalRepaintPreview && !previewMaskUrl) return null;
-  const localRepaintMaskStyle =
-    isLocalRepaintPreview && previewMaskUrl
-      ? {
-          WebkitMaskImage: `url("${previewMaskUrl}")`,
-          maskImage: `url("${previewMaskUrl}")`,
-          WebkitMaskSize: '100% 100%',
-          maskSize: '100% 100%',
-          WebkitMaskRepeat: 'no-repeat',
-          maskRepeat: 'no-repeat',
-        }
-      : undefined;
+  if (!isLocalRepaintPreview) return null;
+  if (!layer.imageUrl || !previewMaskUrl) return null;
+  const localRepaintMaskStyle = {
+    WebkitMaskImage: `url("${previewMaskUrl}")`,
+    maskImage: `url("${previewMaskUrl}")`,
+    WebkitMaskSize: '100% 100%',
+    maskSize: '100% 100%',
+    WebkitMaskRepeat: 'no-repeat',
+    maskRepeat: 'no-repeat',
+  };
   return (
     <img
       src={layer.imageUrl}

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import ts from 'typescript';
+import { applyPackedDepthDisplayMask as referenceDepth, removeStrictOuterDarkDisplayBackground as referenceDark } from './fixtures/display-mask-reference.mjs';
 const { AbortController, queueMicrotask } = globalThis;
 
 const path = 'apps/web/src/engine/localRepaint/imageUtils.ts';
@@ -21,7 +22,7 @@ class Pixels {
   }
 }
 function harness(settings = {}) {
-  const events = [], images = [];
+  const events = [], images = [], canvases = [];
   let yields = 0, draws = 0;
   class MockImage {
     naturalWidth = settings.width ?? 513;
@@ -65,6 +66,7 @@ function harness(settings = {}) {
         },
       };
     } };
+    canvases.push(canvas);
     return canvas;
   } };
   const exports = {};
@@ -73,8 +75,10 @@ function harness(settings = {}) {
     async () => { yields++; events.push('yield'); settings.onYield?.(yields); },
     async () => { events.push('idle'); settings.onIdle?.(); },
   );
-  return { run: exports.urlToImageData, events, images, reads, draws: () => draws };
+  return { run: exports.urlToImageData, events, images, canvases, reads, draws: () => draws };
 }
+const released = (subject) => assert(subject.canvases.every(c => c.width * c.height === 0),
+  'Scratch canvas backing stores must be released without waiting for garbage collection');
 for (const size of [[1, 1], [1, 600], [513, 1027], [2048, 513]]) {
   const original = harness(), staged = harness();
   const expected = await original.run('source', ...size);
@@ -92,10 +96,18 @@ for (const size of [[1, 1], [1, 600], [513, 1027], [2048, 513]]) {
     previousYield = read.yield;
   }
   assert.equal(nextRow, size[1]);
+  released(original); released(staged);
 }
 for (const settings of [{}, { width: 0, height: 0 }, { noDecode: true }, { decodeError: true }]) {
   const original = harness(settings), staged = harness(settings);
   assert.deepEqual(await staged.run('source', undefined, undefined, { cooperative: true }), await original.run('source'));
+}
+for (const [width, height, expectedWidth, expectedHeight] of [[4096,2048,128,64], [300,1200,32,128], [31,17,31,17], [1,4096,1,128]]) {
+  const thumbnail = harness({width,height});
+  const result = await thumbnail.run('source', undefined, undefined, {cooperative:true, maxSize:128});
+  assert.deepEqual([result.width,result.height], [expectedWidth,expectedHeight]);
+  assert.equal(thumbnail.draws(), 1);
+  assert(thumbnail.reads.every((read) => read.width * read.height <= 128 * 128), 'Thumbnail path never reads back the full 4K image');
 }
 for (const phase of ['initial', 'load', 'before-draw', 'after-draw', 'next-stripe', 'idle']) {
   const controller = new AbortController();
@@ -109,6 +121,7 @@ for (const phase of ['initial', 'load', 'before-draw', 'after-draw', 'next-strip
   const result = subject.run('source', undefined, undefined, { cooperative: true, signal: controller.signal });
   if (phase === 'load') controller.abort();
   await assert.rejects(result, { name: 'AbortError' });
+  released(subject);
   assert.equal(subject.reads.length, phase === 'next-stripe' ? 1 : 0);
   if (phase === 'load') {
     assert.equal(subject.images[0].url, '');
@@ -116,12 +129,69 @@ for (const phase of ['initial', 'load', 'before-draw', 'after-draw', 'next-strip
   }
 }
 for (const [settings, message] of [[{ loadError: true }, /load image/], [{ noContext: true }, /image canvas/], [{ readError: true }, /readback failed/]]) {
-  await assert.rejects(harness(settings).run('source', undefined, undefined, { cooperative: true }), message);
+  const subject = harness(settings);
+  await assert.rejects(subject.run('source', undefined, undefined, { cooperative: true }), message);
+  released(subject);
 }
+// Execute the real resize helper, including failure at every canvas boundary.
+// Returned ImageData must survive releasing both native scratch bitmaps.
+const resizeNode = tree.statements.find(n => ts.isFunctionDeclaration(n) && n.name?.text === 'resizeImageData');
+for (const failure of [undefined, 'source-context', 'put', 'output-context', 'draw', 'read']) {
+  const canvases = [], events = [];
+  const expected = new Pixels(3, 5); expected.data.fill(73);
+  const resizeExports = {};
+  const document = {createElement() {
+    const index = canvases.length;
+    const canvas = {width:0,height:0,getContext(kind, options) {
+      assert.equal(kind,'2d');
+      assert.deepEqual(options, index ? {willReadFrequently:true} : undefined);
+      if (failure === (index ? 'output-context' : 'source-context')) return null;
+      return {
+        putImageData(input, x, y) {assert.deepEqual([input.width,input.height,x,y],[4096,4096,0,0]); if(failure==='put')throw Error('put'); events.push('put');},
+        drawImage(input, ...args) {assert.deepEqual([input.width,input.height,...args],[4096,4096,0,0,3,5]); if(failure==='draw')throw Error('draw'); events.push('draw');},
+        getImageData(...args) {assert.deepEqual(args,[0,0,3,5]); if(failure==='read')throw Error('read'); events.push('read'); return expected;},
+      };
+    }};
+    canvases.push(canvas); return canvas;
+  }};
+  new Function('exports','document',ts.transpileModule(resizeNode.getText(tree),{
+    compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022},
+  }).outputText)(resizeExports,document);
+  const input = {width:4096,height:4096};
+  assert.equal(resizeExports.resizeImageData(input,4096,4096), input, 'No-op resize keeps identity and allocates no canvas');
+  assert.equal(canvases.length,0);
+  if(failure) assert.throws(()=>resizeExports.resizeImageData(input,3,5));
+  else {
+    assert.equal(resizeExports.resizeImageData(input,3,5),expected);
+    assert.deepEqual(events,['put','draw','read']);
+    assert(expected.data.every(byte=>byte===73),'Canvas cleanup must not alter returned RGBA');
+  }
+  released({canvases});
+}
+console.log('Scratch canvas release passed: complete, cancelled, failed readback, unchanged resize operations and independent output.');
 const preview = fs.readFileSync(new URL('apps/web/src/engine/localRepaint/resultPreviewUtils.ts', root), 'utf8');
 const previewTree = ts.createSourceFile('preview.ts', preview, ts.ScriptTarget.Latest, true);
 const previewFunction = (name) => previewTree.statements.find((node) => ts.isFunctionDeclaration(node) && node.name?.text === name).getText(previewTree);
 const bind = (code, name, scope = {}) => new Function(...Object.keys(scope), `${ts.transpileModule(code, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText}\nreturn ${name};`)(...Object.values(scope));
+for (const projected of [false,true]) for (const abortAfterRead of [false,true]) {
+  const controller = new AbortController(), events = [];
+  const run = bind(previewFunction('createLayerThumbnail').replace('export ', ''), 'createLayerThumbnail', {
+    requestLayerThumbnail: (key, work, signal) => { assert.deepEqual(JSON.parse(key), ['source','depth',7,projected]); return work(signal); },
+    createGeneratedDisplayPreview: async (url, depth, request) => {
+      assert.deepEqual([url,depth,request.revision], ['source','depth',7]); events.push('exact-preview'); return {fittedUrl:'exact-fitted'};
+    },
+    urlToImageData: async (url, width, height, options) => {
+      assert.equal(url, projected ? 'exact-fitted' : 'source');
+      assert.deepEqual([width,height,options.maxSize,options.cooperative], [undefined,undefined,128,true]);
+      events.push('thumbnail'); if (abortAfterRead) controller.abort(); return 'pixels';
+    },
+    encodeDisplayImage: async (pixels) => { assert.equal(pixels,'pixels'); events.push('encode'); return 'small-png'; },
+  });
+  const result = run('source','depth',{revision:7,signal:controller.signal},projected);
+  if (abortAfterRead) { await assert.rejects(result,{name:'AbortError'}); assert.equal(events.at(-1),'thumbnail'); }
+  else assert.deepEqual(await result,{alignedUrl:'small-png',fittedUrl:'small-png'});
+  assert.equal(events.includes('exact-preview'),projected,'Only projected thumbnails consume the original exact mask/crop pipeline');
+}
 const bounds = bind(previewFunction('getExactAlphaContentBounds'), 'getExactAlphaContentBounds');
 const referenceBounds = (image) => {
   let left = image.width, top = image.height, right = -1, bottom = -1;
@@ -175,3 +245,50 @@ assert.match(preview, /const readOptions = \{ cooperative: true, signal \};/);
 assert.match(preview, /urlToImageData\(sourceUrl, undefined, undefined, readOptions\)/);
 assert.match(preview, /urlToImageData\(depthUrl, source.width, source.height, readOptions\)/);
 console.log('Display image readback passed: decode before draw, exact RGBA stripe assembly, unchanged default path, cancellation and failures.');
+
+// Execute both production masks against the frozen pixel implementation,
+// including RGB under zero alpha and non-aligned input data views.
+class MaskPixels {
+  constructor(data, width, height) {
+    Object.assign(this, { data, width, height });
+  }
+}
+globalThis.ImageData = MaskPixels;
+const depthMask = bind(previewFunction('applyPackedDepthDisplayMask').replace('export ', ''), 'applyPackedDepthDisplayMask', { ImageData: MaskPixels });
+const darkMask = bind(`${previewFunction('getTone')}\n${previewFunction('removeStrictOuterDarkDisplayBackground').replace('export ', '')}`, 'removeStrictOuterDarkDisplayBackground', { ImageData: MaskPixels });
+const thresholds = [0, 1, 8, 9, 11, 16, 17, 20, 24, 25, 32, 33, 253, 254, 255];
+for (let fixture = 0; fixture < 600; fixture++) {
+  const width = 1 + fixture % 43, height = 1 + fixture % 29;
+  const image = new MaskPixels(new Uint8ClampedArray(new ArrayBuffer(width * height * 4 + 3), 3), width, height);
+  const depth = new MaskPixels(new Uint8ClampedArray(width * height * 4), width, height);
+  for (let i = 0; i < image.data.length; i++) {
+    seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+    image.data[i] = thresholds[seed % thresholds.length];
+    depth.data[i] = 253 + seed % 3;
+  }
+  if (fixture % 3 === 0) image.data.fill(fixture % 256);
+  const unchanged = image.data.slice();
+  for (const [actual, expected] of [[depthMask(image, depth), referenceDepth(image, depth)], [darkMask(image), referenceDark(image)]]) {
+    assert.deepEqual(actual.imageData.data, expected.imageData.data);
+    assert.equal(actual.changedPixels, expected.changedPixels);
+    assert.deepEqual([actual.imageData.width, actual.imageData.height], [width, height]);
+    assert.notEqual(actual.imageData.data.buffer, image.data.buffer);
+  }
+  assert.deepEqual(image.data, unchanged, 'Neither mask may mutate the input');
+}
+assert.throws(() => depthMask(new MaskPixels(new Uint8ClampedArray(4), 1, 1), {width:2,height:1}), /dimensions must match/);
+if (process.argv.includes('--benchmark')) {
+  const input = new MaskPixels(new Uint8ClampedArray(1024 * 1024 * 4).fill(255), 1024, 1024);
+  const depth = new MaskPixels(input.data.slice(), 1024, 1024);
+  const median = (fn) => {
+    const samples = [];
+    for (let i = 0; i < 25; i++) { const start = performance.now(); fn(); if (i >= 5) samples.push(performance.now() - start); }
+    return samples.sort((a,b) => a-b)[10].toFixed(2);
+  };
+  console.log(`Depth mask 1024: ${median(() => referenceDepth(input, depth))} -> ${median(() => depthMask(input, depth))} ms`);
+  input.data.fill(0);
+  console.log(`Transparent flood 1024: ${median(() => referenceDark(input))} -> ${median(() => darkMask(input))} ms`);
+  for (let i = 3; i < input.data.length; i += 4) input.data[i] = 255;
+  console.log(`Opaque dark flood 1024: ${median(() => referenceDark(input))} -> ${median(() => darkMask(input))} ms`);
+}
+console.log('Display masks passed: 600 byte-exact fixtures, threshold edges, source ownership and dimension errors.');

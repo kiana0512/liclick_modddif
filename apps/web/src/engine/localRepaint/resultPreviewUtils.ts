@@ -1,5 +1,5 @@
 import { blobToDataUrl, imageDataToBlob, resizeImageData, urlToImageData } from './imageUtils';
-import { requestDisplayPreview, type DisplayPreviewRequest } from './displayPreviewQueue';
+import { createDisplayPreviewQueue, requestDisplayPreview, type DisplayPreviewRequest } from './displayPreviewQueue';
 import { waitForViewportInteractionIdle } from '@/engine/viewport/viewportInteractionState';
 import { waitForBrowserPaint } from '@/utils/browserScheduling';
 
@@ -56,6 +56,7 @@ export function applyPackedDepthDisplayMask(source: ImageData, packedDepth: Imag
     throw new Error('Generated display source and depth dimensions must match.');
   }
   const output = new ImageData(new Uint8ClampedArray(source.data), source.width, source.height);
+  const pixels = new Uint32Array(output.data.buffer);
   let changedPixels = 0;
   for (let offset = 0; offset < output.data.length; offset += 4) {
     const clearPixel =
@@ -63,17 +64,9 @@ export function applyPackedDepthDisplayMask(source: ImageData, packedDepth: Imag
       packedDepth.data[offset + 1] >= 254 &&
       packedDepth.data[offset + 2] >= 254;
     if (!clearPixel) continue;
-    if (
-      output.data[offset] !== 0 ||
-      output.data[offset + 1] !== 0 ||
-      output.data[offset + 2] !== 0 ||
-      output.data[offset + 3] !== 0
-    )
-      changedPixels += 1;
-    output.data[offset] = 0;
-    output.data[offset + 1] = 0;
-    output.data[offset + 2] = 0;
-    output.data[offset + 3] = 0;
+    if (pixels[offset / 4] !== 0) changedPixels += 1;
+    // Zero is identical in either byte order; keep the depth RGB test above.
+    pixels[offset / 4] = 0;
   }
   return { imageData: output, changedPixels };
 }
@@ -91,11 +84,15 @@ export function removeStrictOuterDarkDisplayBackground(source: ImageData) {
   let head = 0;
   let tail = 0;
   const accepts = (index: number, seed: boolean) => {
-    const tone = getTone(data, index * 4);
-    if (tone.alpha <= (seed ? 8 : 16)) return true;
+    const offset = index * 4;
+    if (data[offset + 3] <= (seed ? 8 : 16)) return true;
+    const red = data[offset], green = data[offset + 1], blue = data[offset + 2];
+    const max = Math.max(red, green, blue);
+    const chroma = max - Math.min(red, green, blue);
+    const luma = red * 0.2126 + green * 0.7152 + blue * 0.0722;
     return seed
-      ? tone.luma <= 11 && tone.max <= 24 && tone.chroma <= 20
-      : tone.luma <= 17 && tone.max <= 32 && tone.chroma <= 24;
+      ? luma <= 11 && max <= 24 && chroma <= 20
+      : luma <= 17 && max <= 32 && chroma <= 24;
   };
   const enqueue = (index: number, seed: boolean) => {
     if (visited[index] || !accepts(index, seed)) return;
@@ -350,8 +347,8 @@ function getExactAlphaContentBounds(imageData: ImageData) {
   return { x: left, y: top, width: right - left + 1, height: bottom - top + 1 };
 }
 
-async function encodeDisplayImage(imageData: ImageData) {
-  return blobToDataUrl(await imageDataToBlob(imageData));
+function encodeDisplayImage(imageData: ImageData) {
+  return imageDataToBlob(imageData).then(blobToDataUrl);
 }
 
 async function createGeneratedDisplayPreviewUncached(
@@ -460,6 +457,23 @@ export function createGeneratedDisplayPreview(
     (signal) => createGeneratedDisplayPreviewUncached(sourceUrl, depthUrl, signal),
     request.signal,
   );
+}
+
+// Only 48px layer rows consume this bounded cache. Zoom previews and all
+// production assets retain their original dimensions and processing path.
+const requestLayerThumbnail = createDisplayPreviewQueue(4 * 1024 * 1024, 128);
+export function createLayerThumbnail(
+  sourceUrl: string, depthUrl?: string, request: DisplayPreviewRequest = {}, projected = true,
+) {
+  return requestLayerThumbnail(JSON.stringify([sourceUrl, depthUrl, request.revision, projected]), async (signal) => {
+    const url = projected
+      ? (await createGeneratedDisplayPreview(sourceUrl, depthUrl, { ...request, signal })).fittedUrl
+      : sourceUrl;
+    const pixels = await urlToImageData(url, undefined, undefined, { cooperative: true, signal, maxSize: 128 });
+    signal.throwIfAborted();
+    const thumbnail = await encodeDisplayImage(pixels);
+    return { alignedUrl: thumbnail, fittedUrl: thumbnail };
+  }, request.signal);
 }
 
 function smoothstep(edge0: number, edge1: number, value: number) {
@@ -707,7 +721,7 @@ async function createPreviewUncached(sourceUrl: string, mode: BackgroundRemovalM
     cropHeight,
   );
   const output = outputContext.getImageData(0, 0, cropWidth, cropHeight);
-  return blobToDataUrl(await imageDataToBlob(output));
+  return encodeDisplayImage(output);
 }
 
 async function createCaptureMaskedPreviewUncached(sourceUrl: string, maskUrl: string, signal: AbortSignal) {
@@ -755,9 +769,7 @@ async function createCaptureMaskedPreviewUncached(sourceUrl: string, maskUrl: st
     cropWidth,
     cropHeight,
   );
-  return blobToDataUrl(
-    await imageDataToBlob(outputContext.getImageData(0, 0, cropWidth, cropHeight)),
-  );
+  return encodeDisplayImage(outputContext.getImageData(0, 0, cropWidth, cropHeight));
 }
 
 export function createCaptureMaskedPreview(sourceUrl: string, maskUrl: string, request: DisplayPreviewRequest = {}) {
@@ -777,7 +789,7 @@ async function createCaptureMaskedProjectionImageUncached(
 ) {
   const source = await urlToImageData(sourceUrl);
   const mask = await urlToImageData(maskUrl, source.width, source.height);
-  return blobToDataUrl(await imageDataToBlob(applyCaptureProjectionImage(source, mask)));
+  return encodeDisplayImage(applyCaptureProjectionImage(source, mask));
 }
 
 export function createCaptureMaskedProjectionImage(

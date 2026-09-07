@@ -896,12 +896,12 @@ assert.match(
 );
 assert.match(
   layersPanelSource,
-  /layer\.type === 'projected'[\s\S]*?createGeneratedDisplayPreview\(sourceUrl, depthUrl, \{[\s\S]*?signal: controller.signal,[\s\S]*?revision: layer.contentRevision,[\s\S]*?displayPreview\.fittedUrl/,
+  /thumbnail \? createLayerThumbnail : createGeneratedDisplayPreview\)\(sourceUrl, depthUrl, \{[\s\S]*?signal: controller.signal, revision,[\s\S]*?displayPreview\.fittedUrl/,
   'Projected layer thumbnails must share the generated transparent display path.',
 );
 assert.match(
   layersPanelSource,
-  /Boolean\(layer\.imageUrl\)\s*&&\s*!isLocalRepaintPreviewLayer\(layer\)/,
+  /sourceUrl\s*&&\s*!isLocalRepaintPreviewLayer\(layer\)/,
   'Local repaint thumbnails must keep their paint mask instead of showing the full generated subject.',
 );
 assert.doesNotMatch(

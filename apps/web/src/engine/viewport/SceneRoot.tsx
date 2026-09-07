@@ -1172,6 +1172,7 @@ function TopologyWireframeOverlay({
   overlay.group.visible = visible;
 
   useFrame(() => {
+    if (!overlay.group.visible) return;
     overlay.group.matrix.compose(object.position, object.quaternion, object.scale);
     overlay.group.matrixWorldNeedsUpdate = true;
   });
@@ -5135,31 +5136,34 @@ const ImportedModel = memo(function ImportedModel({
 
   if (!importedModel) return null;
 
-  // Keep this component and its decoded texture/material state alive when the
-  // workspace hides the model. Returning only its scene primitive prevents a
-  // scene/texture switch from rebuilding the complete material pipeline.
-  if (!objectVisible || !workspaceVisible) return null;
-
   return (
     <>
-      <primitive
-        object={importedModel.group}
-        visible={initialMaterialPresentationVisibleForGroup}
-        onClick={(event: { stopPropagation: () => void }) => {
-          event.stopPropagation();
-          onSelect(importedModel.objectId);
-        }}
-      />
-      {!initialMaterialPresentationVisibleForGroup && (
-        <ModelRestoreLoadingIndicator object={importedModel.group} />
-      )}
+      {/* Retain warmed wireframe resources across model/workspace selection.
+          Only geometry replacement or real unmount releases this helper. */}
       {initialMaterialPresentationReadyForGroup && importedModel.restoreStage !== 'bounds' && (
-        <TopologyWireframeOverlay object={importedModel.group} visible={displayMode === 'wire'} />
+        <TopologyWireframeOverlay
+          object={importedModel.group}
+          visible={objectVisible && workspaceVisible && displayMode === 'wire'}
+        />
       )}
-      {/* Keep each indicator resident: selecting another model only changes
-          visibility, so the last shared line program is not disposed/relinked. */}
-      {texturedRestoreReady && showSelectionGlow && (
-        <SelectionBoundsCorners object={importedModel.group} objectId={importedModel.objectId} />
+      {objectVisible && workspaceVisible && (
+        <>
+          <primitive
+            object={importedModel.group}
+            visible={initialMaterialPresentationVisibleForGroup}
+            onClick={(event: { stopPropagation: () => void }) => {
+              event.stopPropagation();
+              onSelect(importedModel.objectId);
+            }}
+          />
+          {!initialMaterialPresentationVisibleForGroup && (
+            <ModelRestoreLoadingIndicator object={importedModel.group} />
+          )}
+          {/* Scene selection keeps each visible object's indicator resident. */}
+          {texturedRestoreReady && showSelectionGlow && (
+            <SelectionBoundsCorners object={importedModel.group} objectId={importedModel.objectId} />
+          )}
+        </>
       )}
     </>
   );

@@ -76,6 +76,7 @@ import type { SerializedCamera } from '@/types/capture';
 import { createId } from '@/utils/id';
 import { scheduleAfterBrowserPaint, waitForBrowserPaint, yieldToBrowserTask } from '@/utils/browserScheduling';
 import { cloneShaderWarmupMesh } from './cloneShaderWarmupMesh';
+import { queueSelectionPrewarm } from './queueSelectionPrewarm';
 import {
   isLocalRepaintBelowMergedUv,
   shouldUseDedicatedLocalRepaintOverlay,
@@ -8918,7 +8919,7 @@ function SurfacePaintOverlay() {
         hideInpaintMaskPresentation(layer);
       }
     };
-    const prepare = async () => {
+    const prepare = () => queueSelectionPrewarm(gl, canContinuePrewarm, async () => {
       if (!(await waitForQuietFrame())) return;
       layer = getUvPaintLayer(model);
       const resourceKey = `${model.objectId}:${layer.layerId}:${layer.projectionTexture.uuid}`;
@@ -8990,7 +8991,7 @@ function SurfacePaintOverlay() {
           meshCount: meshes.length,
         });
       }
-    };
+    });
     if ('requestIdleCallback' in window) {
       idleId = window.requestIdleCallback(() => void prepare(), { timeout: 2_000 });
     } else {
