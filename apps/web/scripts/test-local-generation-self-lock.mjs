@@ -5,10 +5,11 @@ import { stdout } from 'node:process';
 import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const [editorPage, generatePanel, textureMapPrompts] = await Promise.all([
+const [editorPage, generatePanel, textureMapPrompts, liclickGenerationService] = await Promise.all([
   readFile(path.join(root, 'src/routes/EditorPage.tsx'), 'utf8'),
   readFile(path.join(root, 'src/components/panels/GeneratePanel.tsx'), 'utf8'),
   readFile(path.join(root, 'src/engine/generation/textureMapPrompts.ts'), 'utf8'),
+  readFile(path.join(root, '../server/src/services/liclickGenerationService.ts'), 'utf8'),
 ]);
 const progressStatusSource = generatePanel.slice(
   generatePanel.indexOf('function GenerationProgressStatus'),
@@ -17,28 +18,33 @@ const progressStatusSource = generatePanel.slice(
 
 assert.match(
   textureMapPrompts,
-  /参考图一是唯一的目标画布和空间定位依据[\s\S]*?外轮廓、内部孔洞、真实部件边界、遮挡关系和裁切范围不变/,
+  /图一是唯一的画布、相机、透视、物体位置、比例、外轮廓、孔洞、真实部件边界、遮挡关系和裁切依据/,
   'The texture prompt must treat the source silhouette as immutable pixel-level registration.',
 );
 assert.match(
   textureMapPrompts,
-  /必须完整替换这些区域，不得残留白膜、灰块、透明缺口、硬边、光晕或明显的补丁边界/,
+  /完整替换全部白模像素，不得残留白色、灰色、透明缺口、硬边或白边/,
   'The texture prompt must completely replace every unfinished white-model region.',
 );
 assert.match(
   textureMapPrompts,
-  /忽略白模区域中由低模拓扑、三角面、硬法线、Flat Shading或白膜光照产生的折线、块状明暗和多边形色块/,
+  /忽略白模内部的三角面灰度、Flat Shading、硬法线明暗和多边形色块/,
   'The texture prompt must reject low-poly shading artifacts as material evidence.',
 );
 assert.match(
   textureMapPrompts,
-  /属于同一连续曲面的区域应跨越多边形边界自然、顺滑地延续材质[\s\S]*?不得改变真实几何位置或外轮廓/,
+  /新皮革纹理应自然跨越这些三角面，不形成棱角色块/,
   'Material smoothing must not be interpreted as permission to reshape the target silhouette.',
 );
 assert.match(
   textureMapPrompts,
-  /输出应接近用于3D投影的Base Color \/ Albedo[\s\S]*?不增加方向性阴影、环境遮蔽、接触阴影、强高光、镜面反射、边缘光或大范围明暗渐变/,
-  'The texture prompt must request projection-ready material with subdued lighting.',
+  /Base Color \/ Albedo和柔和无方向光照的要求，只适用于新生成的白模区域[\s\S]*?已有材质中的原始颜色、阴影、高光和反射必须保持不变/,
+  'Lighting constraints must apply only to newly generated white-model pixels.',
+);
+assert.match(
+  textureMapPrompts,
+  /除这些区域之外，图一的所有像素必须原样复制[\s\S]*?这些区域必须直接沿用图一原始像素，不得由模型重新生成/,
+  'Existing material pixels must be absolutely locked.',
 );
 assert.match(
   textureMapPrompts,
@@ -49,6 +55,11 @@ assert.doesNotMatch(
   textureMapPrompts,
   /以参考图一为目标视角，将参考图二的材质外观迁移到图一对应的可见表面/,
   'The retired whole-surface prompt must not remain as a fallback.',
+);
+assert.match(
+  liclickGenerationService,
+  /hasScopedLightingConstraint = basePrompt\.includes\('【光影约束的适用范围】'\)[\s\S]*?basePrompt\.includes\(materialConstraint\) \|\| hasScopedLightingConstraint/,
+  'The server must not append the legacy whole-image lighting constraint to the scoped shared template.',
 );
 assert.match(
   generatePanel,

@@ -64,18 +64,26 @@ assert.match(
   /referenceIds: \[modelViewReference\.id, materialReference\.id\][\s\S]*?referenceImages: \[modelViewReference, materialReference\]/,
   'Atlas must still receive exactly the guide and material reference',
 );
-assert.match(textureMapPrompts, /图一中已经具有颜色、纹理和材质的区域属于锁定内容/);
+assert.match(textureMapPrompts, /【最高优先级：已有材质区域绝对锁定】/);
 assert.match(
   textureMapPrompts,
-  /只补全参考图一中尚未贴图的白色或浅灰色白模区域[\s\S]*?必须完整替换这些区域/,
+  /只补全图一中的白色、浅灰色、Clay、Primer或未贴图白模区域[\s\S]*?完整替换全部白模像素/,
   'completion must fill every unfinished white-model region',
 );
 assert.match(
   textureMapPrompts,
-  /属于同一连续曲面的区域应跨越多边形边界自然、顺滑地延续材质[\s\S]*?不得改变真实几何位置或外轮廓/,
+  /所有生成变化必须限制在原始白模轮廓内部[\s\S]*?不得平移、缩放、旋转、变形、补全、平滑轮廓或重新生成物体/,
   'low-poly smoothing must remain an interior material operation and never reshape the silhouette',
 );
-assert.match(textureMapPrompts, /输出应接近用于3D投影的Base Color \/ Albedo/);
+assert.match(
+  textureMapPrompts,
+  /Base Color \/ Albedo和柔和无方向光照的要求，只适用于新生成的白模区域/,
+);
+assert.match(
+  textureMapPrompts,
+  /最终图等同于图一原图，仅白模区域被自然材质替换。除白模区域外，任何像素都不得发生变化/,
+  'single-view and multiview GPT2 generation must preserve every pixel outside white-model regions',
+);
 assert.doesNotMatch(
   textureMapPrompts,
   /以参考图一为目标视角，将参考图二的材质外观迁移到图一对应的可见表面/,
