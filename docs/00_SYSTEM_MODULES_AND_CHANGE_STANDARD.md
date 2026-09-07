@@ -1,8 +1,8 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
-> 文档版本：`2.17.2`
+> 文档版本：`2.17.8`
 >
-> 生效日期：`2026-09-04`
+> 生效日期：`2026-09-07`
 >
 > 代码盘点基线：`8d3b9f1 + 本次单/多视图统一合成`
 >
@@ -11,6 +11,22 @@
 > 审计口径：`0a2519d + 607e82f + 2568e40`，不包含错误文档提交 `2bde8c6/e03bab2/d1c5f78`
 
 ## 1. 文档地位与强制边界
+
+变更卡 `CHG-20260907-DISPLAY-PREVIEW-STAGES`：UI-05/UI-11 → 主模块 M08，`ALG-LR-011` v1.1.2。接续上一轮剩余 Scheduler.yield 长任务，临时调用栈确认消费者是 createGeneratedDisplayPreviewUncached / urlToImageData，不是多视图法线捕获；draw/readback 单段未超过 8ms，但后续 resize 为 13–23ms、depth mask 为 5–8ms、bounds 为 2–5ms，空闲检查立即 resolve 时会继续连成同一任务。generated-display 现于读取后、缩放后、depth 读取后、遮罩后及对齐编码后跨过浏览器呈现边界，再检查原交互门控和 AbortSignal。旧消费者切换后不继续后续像素阶段；隐藏页沿用 waitForBrowserPaint 的现有 timer 兜底。capture-mask、原图读取、正式投影与导出路径不改。
+
+精确 Alpha bounds 扫描只查每行首/末非零像素，行内部不会扩大同一行边界；Alpha=1 仍算内容，透明行、内部孔洞和全透明返回保持原值。400 组对照逐项等于原全像素扫描，1024×1024 全不透明图隔离测量约 1.2→0.003ms（20 次均值，非端到端收益）。缩放仍使用原 Canvas 操作，深度/暗背景判定、1024 显示上限、6% padding、RGBA、裁切与 PNG 编码不变；GPU、CPU/Worker 投影和重绘、shader、UV/export、最终分辨率与 QA 均不变。无 Project/Layer/Generation/Capture Schema、Command 幂等性、Revision CAS、ownership 或 verified assets 变更，无迁移；回退只恢复 bounds 全扫描及这些阶段的原空闲检查，不删除工程或结果。
+
+验收：display-image-readback 执行实际生产函数，覆盖每个有/无 depth 呈现边界取消、原像素读取及 400 组精确边界对照；display-preview-queue、generation-preview-edge-decontamination、local-repaint-result-composite、local-repaint-background-scheduling 通过，typecheck/build 与原包体门禁通过（80 chunks / 3,133,468 bytes）。4517 同一“测试合集”，4K、实际 DOM 确认 1280×720、36 次九模型切换；定位版本 39.2/39.9 FPS、P95 83.4ms、峰值 134ms，新版两轮 44.3/44.2 FPS、P95 50.0/66.7ms。第一轮峰值 651ms，LoAF 667.7ms 明确归因 Three.compileAsync 的 currentProgram.isReady 定时轮询；第二轮峰值 117ms。临时日志全部移除；不能宣称冷编译尖峰或整体流畅度已达标，后续需单独审计编译轮询与上传的竞争。未运行收费生图/生产导出。
+
+变更卡 `CHG-20260907-SELECTION-PREWARM-METADATA`：UI-04/UI-06 → 主模块 M03，`ALG-VIEW-SELECT-001` v1.0.2。九模型真实项目“测试合集”连续选择时，LoAF 指向选择蒙版预热的 post-paint continuation；逐段诊断确认 `sourceMesh.clone(false)` 单次同步耗时 389.8ms。模型加载器把原材质存入 mesh.userData，Three Object3D.copy 对 userData 执行 JSON 序列化，连带访问原材质及纹理的 toJSON。新增 cloneShaderWarmupMesh，以只覆盖 userData 的继承源调用原 Three 子类 clone(false)，跳过应用元数据复制；原网格、原材质及 userData 不修改，几何、蒙皮、形变、实例属性和矩阵沿用 Three 原复制契约。预热仍执行相同 overlay/depth 程序编译、GPU 深度捕获、所有权检查和空闲门控。
+
+变更卡 `CHG-20260907-PREVIEW-CACHE-LEASE`：UI-06 → 主模块 M06，`ALG-PROJ-007` v2.1.3。真实恢复中复现 Worker “Decoded preview texture is no longer resident”。原 bulk prewarm 已固定缓存，但普通预览 hook 的解码/上传没有固定，同组其他请求可在超过 24 项时提前释放它。普通消费者现在从解码前到上传/重试终态持有引用计数租约；effect 取消不提前回收仍在上传的共享资源，解码后已取消则不启动无用上传。bulk prewarm 复用相同幂等释放函数；所有持有者结束后恢复原 24 项 LRU 上限。旧请求失败只清理仍属于该 Promise 的缓存，避免删除新请求的 resident entry。
+
+两项变更只调整 CPU 元数据复制和预览资源生命周期。GPU/CPU/Worker 的投影、UV、重绘、coverage、depth/normal 门控、颜色空间、shader、最终分辨率、持久化和 export 算法均不改；不降低 QA。Project/Layer/Generation/Capture Schema、Project Command 幂等性、Revision CAS、ownership、verified assets 不变，无数据迁移。回退可分别恢复预热 clone(false)，或普通 hook 的原无租约路径及 bulk 原固定实现；无需删除、重写工程/蒙版/图层/结果资产。
+
+验证：扩展 `test:model-selection-residency`，执行真实 Three Mesh/SkinnedMesh/InstancedMesh 的复制，使用会抛异常的原材质 toJSON 证明不会读取元数据，并核对几何/材质身份、矩阵、morph、skin、instance、源层级与完整预热。扩展 `test:texture-load-recovery`，执行生产 hook/cache，覆盖 26 个超容量并发 4K 解码/上传、乱序解码、上传中取消、解码前取消、双持有者幂等释放、bulk 整组上传和最终 24 项回收。投影性能安全、多模型恢复、重绘性能/显示契约、导出纹理方向、投影显隐、滚轮回归及 web typecheck/build、cloud/repository/artifact/bundle 边界检查通过。
+
+体验审计（Windows/RTX 4070 Ti SUPER，4517，真实“测试合集”，4K，固定 1280×720 浏览器视口，9 模型循环 4 次，共 36 次选择）：修复前多个热缓存录制峰值 701–901ms；临时定位单独确认 clone 389.8ms，全部诊断代码随后移除。修复后两次录制峰值 234/200ms，未复现缓存错误；但 P95 为 133.4/133.3ms，平均 23.6/25.4 FPS，仍未通过流畅度目标。旧录制负载/恢复阶段与新录制不完全相同，因此只报告尖峰观察，不宣称总体帧率提升。剩余最慢帧的脚本归因为 Scheduler.yield continuation（48–74ms）及浏览器呈现间隔，具体消费者尚需下一轮定位，不把旧全局 phase 标签当作 GPU 根因。未执行真实收费生图或生产导出作业，算法保持证据来自源码边界与回归，不能替代这些端到端验收。
 
 变更卡 `CHG-20260903-REPAINT-DISPLAY-READBACK`：UI-05/UI-10 → M08，`ALG-LR-011` v1.1.1（Cooperative display image readback / 返图显示读取让步），production，实施 Codex、体验验收维护者。接续 `e0a0ed71`：上轮返图 LoAF 中 IMG.onload 为 237.1ms，读取入口为 imageUtils 的 HTML Image 加载及后续 Canvas/预览微任务。局部重绘实际走 createGeneratedDisplayPreview，不走 capture-mask；曾试验的捕获蒙版零梯度优化不在此主路径，已撤除，52→36ms 隔离结果不计入本次收益。
 
@@ -305,7 +321,7 @@ Layer 以可选 `eraserAlgorithmVersion=1` 标记首次采用该语义的内容�
 | `ALG-PROJ-004` Top-3 颜色一致性合成 | `3.0.0` | 普通单视图与多视图 | 每个普通投影视角均作为候选；每 texel 保留 score 最高 3 个，按 coverage、depth、angle、edge 与线性 RGB 一致度组合，不依赖图层顺序硬覆盖 | WebGPU parity 不通过使用 CPU exact 输出 |
 | `ALG-PROJ-005` 单视图投影适配 | `3.0.0` | single-view layer | 只负责将供应方 RGB 清理为捕获原尺寸的全不透明投影源，并用独立 capture mask/depth 定义 footprint；合成完全委托 `ALG-PROJ-004`，旧 `single-view-priority-v1`/距离场 Alpha 在读取时惰性移除 | 缺 capture mask 时停止安全升级；不恢复 priority source-over |
 | `ALG-PROJ-006` Literal Overlay | `2.0.1` | 局部重绘 | 用户 authored coverage 直接 source-over；单层材质登记直接 mask sampler 以完成 resident 交接 | mask/source 未就绪不发布半层 |
-| `ALG-PROJ-007` GPU 驻留与分块 | `2.1.2` | ProjectedLayerMaterial / SceneRoot / PreviewCompositor | live 纹理同参数读取不置脏，显式发布/参数变化仍更新；每个 array stripe 上传前解除 PBO 绑定并在 finally 恢复；只对可见工作区当前对象预热，隐藏对象取消未完成 array 构建；array 失败时允许预算内精确 direct stack，否则渐进合成自动退避重试，总尝试最多 4 次 | 保留上一有效材质或合法 UV bootstrap；晚到发布不得复活隐藏 UV；不降低生产 UV 输出尺寸 |
+| `ALG-PROJ-007` GPU 驻留与分块 | `2.1.3` | ProjectedLayerMaterial / SceneRoot / PreviewCompositor | 普通预览与 bulk 在解码/上传期间固定缓存；live 纹理同参数读取不置脏，显式发布/参数变化仍更新；每个 array stripe 上传前解除 PBO 绑定并在 finally 恢复；只对可见工作区当前对象预热，隐藏对象取消未完成 array 构建；array 失败时允许预算内精确 direct stack，否则渐进合成自动退避重试，总尝试最多 4 次 | 保留上一有效材质或合法 UV bootstrap；晚到发布不得复活隐藏 UV；不降低生产 UV 输出尺寸 |
 
 ### 6.1 当前生产常量
 
@@ -401,7 +417,7 @@ UI-09 剪刀
 | `ALG-LR-008` 延迟投影持久化 | `2.4.4` | interactive UV bake 固定关闭；生图前 Project Command snapshot 后台执行。蒙版工具/生图开始即并行编译并持有 exact overlay 程序，预读作者蒙版；返图颜色缩放与 falloff 并行。内存 Session 按 Generation/目标复用活动任务。高清读取和 GPU 准备有 20 秒预算；仅背景栈已有行进入 resident 等待，单层直接蒙版登记完整、辅助网格排除，交接失败明确结束会话。Session 驱动按钮，DOM 仅诊断；pointer-up 两帧内发布权威图层行，idle 3000ms 仅合并持久化并设置 needsRebake=true；保存前必须把 live canvas 编码上传成 verified asset，runtime URL 不得进入 Project Revision；提交/GPU 准备调度含隐藏页兜底，不替代真实呈现交接；返图三纹理上传之间显式让帧并检查取消 |
 | `ALG-LR-009` Inward Crossfade 栈合成 | `1.0.0` | 连续重绘层向内部交叉淡化，避免普通 alpha stacking 在边缘重复显露接缝 |
 | `ALG-LR-010` Provider 兼容编辑 | `1.0.0-compat` | `LocalRepaintDialog` 的 image/edit/protect/hole masks 独立路径，不得与四输入主路径混改 |
-| `ALG-LR-011` 生图透明显示副本 | `1.1.1` | UI-05 重绘效果图和 UI-10 普通投射图层缩略图优先使用 capture linear-view depth 清除明确无几何覆盖的背景，按精确 alpha bounds 仅裁切一次并保留 6% 留白；几何覆盖区的 RGB/alpha 原样保留。深度不可用时只清除与画布边缘连通的近黑外背景，不做第二次 matte、侵蚀或分位裁边。局部重绘图层不走整图副本，继续使用用户涂绘 mask，只显示笔刷授权区域；实际可见消费者串行、交互空闲调度，支持共享取消与 source/depth/mask/revision 有界 LRU；切模型不强制展开图层面板 |
+| `ALG-LR-011` 生图透明显示副本 | `1.1.2` | UI-05 重绘效果图和 UI-10 普通投射图层缩略图优先使用 capture linear-view depth 清除明确无几何覆盖的背景，按逐行首末非零像素计算相同精确 alpha bounds，仅裁切一次并保留 6% 留白；几何覆盖区的 RGB/alpha 原样保留。深度不可用时只清除与画布边缘连通的近黑外背景，不做第二次 matte、侵蚀或分位裁边。局部重绘图层不走整图副本，继续使用用户涂绘 mask，只显示笔刷授权区域；实际可见消费者串行、交互空闲调度，像素阶段跨呈现边界检查取消，支持共享取消与 source/depth/mask/revision 有界 LRU；切模型不强制展开图层面板 |
 | `ALG-LR-012` 远端重绘输入融合 | `1.1.0` | 专用 Worker 从原始连续 mask 派生 ModelView 合成核：候选/强核阈值为 24/96，8 邻域保留含强核的连通域，应用 `clamp(0.012×mask短边, 2, 6)px@2K` 闭运算、小于 `max(24px², bbox×0.02%)@2K` 的孤岛过滤和小于 `max(64px², bbox×0.05%)@2K` 的封闭孔填充；`composite=current×(1-a)+clay×a` 使用全不透明核和约 1.5px@2K 窄边羽化。远端 mask 从清理后核再按 `clamp(0.25×核短边, 24, 64)px@2K` 外扩、`clamp(0.2×外扩, 4, 10)px@2K` 羽化。Qwen、Capture、Generation 画笔授权与历史恢复仍使用未外扩、未清理的原始作者 mask |
 
 局部生图远端接收生成阶段的 RGB selection mask，但仍不接收 UV 图集、表面深度或用户最终回贴 coverage。远端 latent mask 不承诺蒙版外像素逐点不变；浏览器继续用同一 `allowedMaskUrl`、capture camera 和 depth guard 限制 3D 写回，用户通过表面画笔决定最终图层 coverage。这些几何授权契约与旧版保持一致。
@@ -481,7 +497,7 @@ Bake 设置包含 resolution、frontal/rear distance、distance/cage、cage infl
 | `ALG-IN-002` 模型归一化 | 通过父 Group 居中、落地、适配相机，不改 mesh 原始顶点 |
 | `ALG-IN-003` 多模型放置 | 按已有场景包围盒并排放置，保留独立 objectId 与 transform |
 | `ALG-VIEW-INPUT-001` 视口输入路由 v1.1.0 | 滚轮交给原生相机控制器按帧累计；画笔接管的手势尾部不重复拾取，普通选择/hover/捕获保持原分发 |
-| `ALG-VIEW-SELECT-001` 多模型选择资源驻留 v1.0.1 | 选择框复用且每帧核对当前对象，不依赖旧 React 选择；捕获恢复恰好一次；仅真实取景计算 bounds；模型/工具所有权与交互门控保护预热资源分配及各 GPU 阶段 |
+| `ALG-VIEW-SELECT-001` 多模型选择资源驻留 v1.0.2 | 选择框复用且每帧核对当前对象，不依赖旧 React 选择；捕获恢复恰好一次；仅真实取景计算 bounds；预热复制跳过应用元数据，保留 Three 子类/几何/材质状态；模型/工具所有权与交互门控保护预热资源分配及各 GPU 阶段 |
 | `ALG-CAP-001` 相机序列化 | position/quaternion/target/near/far/fov/zoom/P/V/world/aspect 完整保存 |
 | `ALG-CAP-002` Color 捕获 | 线性 RT + 输出变换；viewport/clay/target-only/flat 明确区分 |
 | `ALG-CAP-003` Mask 捕获 | 目标白色 BasicMaterial、黑背景；灰度×alpha 作为连续 mask |
@@ -788,6 +804,9 @@ M15 / CLOUD-DEPLOYMENT v1.0.0（2026-09-03）：正常合并 release 部署历�
 | `2.17.3` | 2026-09-04 | `本次本地与 Cloud IDaaS 回调模式隔离` | M13、`LICLICK-ACCOUNT-BINDING` v1.3.1：Cloud 仅在显式启用 QA JWT SP 时使用固定 callback/`target_url`；本地 4517 恢复 Atlas SkillHub 原生固定 `localhost:20265/callback` 登录并在子进程完成后绑定个人 Atlas home，修复清除历史 Token 后动态 LI3D Service 地址被拒、无法重建个人绑定的回归。两条路径仍共用 Atlas 安全缓存、工具权限与飞书/莉刻邮箱一致性门禁；无 Schema、ownership 或资产迁移。 |
 | `2.17.4` | 2026-09-04 | `本次 K8s 个人 IDaaS Token 模式隔离` | M13、`LICLICK-ACCOUNT-BINDING` v1.3.2：仅为明确用户 Atlas home 的子进程移除 Atlas 2.9.1 的 K8s/ArkClaw/TIP 自动探测信号，确保固定 HTTPS 回调写入的个人 IDaaS Token 被用于权限校验与业务调用；机器级调用仍保留 TIP 语义。用户 Token 不进入环境变量，不回退公共账号；无 Schema、ownership、资产或个人 home 迁移。 |
 | `2.17.5` | 2026-09-04 | `本次 QA IDaaS 与 Atlas Gateway 环境配对` | M13、`LICLICK-ACCOUNT-BINDING` v1.3.3：当前 `LI3D-QA` 显式使用 test Atlas Gateway，正式 IDaaS 使用 prod Gateway；启动与缓存校验均拒绝跨环境 Token，修复 QA JWT 被生产 Gateway 以 `invalid_token` 拒绝。无 Schema、ownership 或资产迁移。 |
+| `2.17.6` | 2026-09-07 | `本次选择预热元数据复制优化` | M03、`ALG-VIEW-SELECT-001` v1.0.2：编译网格跳过 userData 及原材质序列化，保留 Three 子类复制契约；真实复制热点 389.8ms，整体帧稳定性尚未达标。无像素、Schema 或数据迁移。 |
+| `2.17.7` | 2026-09-07 | `本次预览缓存并发持有修复` | M06、`ALG-PROJ-007` v2.1.3：普通 hook 与 bulk 共用解码到上传完成的引用计数保护，取消不发布过期纹理，结束后恢复 24 项上限。并发 26 张 4K 回归通过；无像素、Schema 或数据迁移。 |
+| `2.17.8` | 2026-09-07 | `本次显示预览阶段让帧与精确边界优化` | M08、`ALG-LR-011` v1.1.2：重处理阶段跨呈现边界并检查取消；逐行首末非零 Alpha 给出相同裁切范围。400 组边界及预览回归通过；九模型热缓存 P95 约 83→67ms，首次编译仍有 651ms 峰值。无像素/分辨率/Schema 或数据迁移。 |
 
 `ALG-LR-008` v2.4.1：局部重绘仍自动创建独立目标和结果图层；pointer-down 不再依赖当前图层是否选中、可见或为 UV，只检查自身 source/composite/Session/显示资源。默认保持按钮激活、GPU promotion、结果发布前的原选择（含 undefined），防止内部隐藏 draft 触发面板选择普通投影层。普通画笔/橡皮擦限制、GPU/CPU/Worker/shader、作者 mask、投影/UV/export、分辨率、Schema、Revision、ownership 与资产不变。真实 store 三类选择与入口 gate 回归通过；无数据迁移，回退选择保持与 gate 即可。详见 CHG-20260903-LOCAL-REPAINT-SELECTION-INDEPENDENCE。
 

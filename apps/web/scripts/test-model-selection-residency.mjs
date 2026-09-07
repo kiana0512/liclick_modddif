@@ -153,6 +153,44 @@ assert.match(scene, /texturedRestoreReady && showSelectionGlow && \(\s*<Selectio
 // Run the actual prewarm effect with controllable idle/frame boundaries.
 const viewport = read('ViewportCanvas.tsx');
 const prewarmEffect = effect(viewport, 'selection-mask-overlay-prewarm');
+const cloneShaderWarmupMesh = compile(`${read('cloneShaderWarmupMesh.ts').replace('export function', 'function')}\nconst run = cloneShaderWarmupMesh;`, { exports: {} });
+const warmupGeometry = new THREE.BoxGeometry();
+warmupGeometry.morphAttributes.position = [warmupGeometry.attributes.position.clone()];
+const warmupMaterial = new THREE.MeshBasicMaterial();
+const warmupSources = [
+  new THREE.Mesh(warmupGeometry, warmupMaterial),
+  new THREE.SkinnedMesh(warmupGeometry, warmupMaterial),
+  new THREE.InstancedMesh(warmupGeometry, warmupMaterial, 2),
+];
+warmupSources[1].bind(new THREE.Skeleton([new THREE.Bone()]));
+warmupSources[2].setColorAt(0, new THREE.Color('red'));
+for (const source of warmupSources) {
+  source.position.set(1, 2, 3);
+  source.updateMatrixWorld();
+  source.add(new THREE.Object3D());
+  const parent = new THREE.Group();
+  parent.add(source);
+  const metadata = { originalMaterial: { toJSON() { throw new Error('Must not serialize original texture assets'); } } };
+  source.userData = metadata;
+  const shell = cloneShaderWarmupMesh(source);
+  assert.equal(shell.constructor, source.constructor);
+  assert.equal(shell.geometry, source.geometry);
+  assert.equal(shell.material, source.material);
+  assert.deepEqual(shell.matrixWorld.elements, source.matrixWorld.elements);
+  assert.deepEqual(shell.morphTargetInfluences, source.morphTargetInfluences);
+  assert.deepEqual(shell.morphTargetDictionary, source.morphTargetDictionary);
+  assert.equal(shell.skeleton, source.skeleton);
+  assert.deepEqual(shell.instanceMatrix?.array, source.instanceMatrix?.array);
+  assert.deepEqual(shell.instanceColor?.array, source.instanceColor?.array);
+  assert.deepEqual(shell.userData, {});
+  assert.notEqual(shell.uuid, source.uuid);
+  assert.equal(shell.children.length, 0);
+  assert.equal(source.userData, metadata, 'Live metadata retains identity');
+  assert.equal(source.parent, parent, 'Live hierarchy remains attached');
+  assert.equal(source.children.length, 1);
+}
+warmupGeometry.dispose();
+warmupMaterial.dispose();
 let currentModel = models[0];
 let busy = true;
 let tool = 'none';
@@ -164,7 +202,7 @@ let idleCallback;
 const frames = [];
 const layerRef = { current: undefined };
 const prewarmScope = {
-  THREE, canUseSurfacePaint: true, paintTool: 'none', shouldShowColorPaintOverlays: true,
+  THREE, cloneShaderWarmupMesh, canUseSurfacePaint: true, paintTool: 'none', shouldShowColorPaintOverlays: true,
   getTargetModel: () => currentModel,
   getUvPaintLayer: (model) => {
     allocations++;
@@ -179,7 +217,7 @@ const prewarmScope = {
     cancelIdleCallback: () => { idleCallback = undefined; },
   },
   syncInpaintMaskProjection() {}, hideInpaintMaskPresentation() {},
-  getPaintableSurfaceCache: () => ({ positionedMeshes: [] }), ensureOverlayForMesh() {},
+  getPaintableSurfaceCache: () => ({ positionedMeshes: [currentModel.group.children[0]] }), ensureOverlayForMesh() {},
   gl: { initTexture: () => uploads++, compileAsync: async () => { compiles++; } },
   camera: new THREE.Camera(), inpaintDepthMaterial: new THREE.MeshBasicMaterial(),
   captureInpaintProjectionDepth: () => { depths++; }, markPerformanceEvent() {},

@@ -75,6 +75,7 @@ import type { Layer } from '@/types/layer';
 import type { SerializedCamera } from '@/types/capture';
 import { createId } from '@/utils/id';
 import { scheduleAfterBrowserPaint, waitForBrowserPaint, yieldToBrowserTask } from '@/utils/browserScheduling';
+import { cloneShaderWarmupMesh } from './cloneShaderWarmupMesh';
 import {
   isLocalRepaintBelowMergedUv,
   shouldUseDedicatedLocalRepaintOverlay,
@@ -8945,7 +8946,7 @@ function SurfacePaintOverlay() {
       ) => {
         const compileScene = new THREE.Scene();
         sourceMeshes.forEach((sourceMesh) => {
-          const compileMesh = sourceMesh.clone(false) as THREE.Mesh;
+          const compileMesh = cloneShaderWarmupMesh(sourceMesh);
           compileMesh.material = overrideMaterial ?? sourceMesh.material;
           compileMesh.visible = true;
           compileMesh.frustumCulled = false;

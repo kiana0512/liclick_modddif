@@ -119,6 +119,58 @@ for (const [settings, message] of [[{ loadError: true }, /load image/], [{ noCon
   await assert.rejects(harness(settings).run('source', undefined, undefined, { cooperative: true }), message);
 }
 const preview = fs.readFileSync(new URL('apps/web/src/engine/localRepaint/resultPreviewUtils.ts', root), 'utf8');
+const previewTree = ts.createSourceFile('preview.ts', preview, ts.ScriptTarget.Latest, true);
+const previewFunction = (name) => previewTree.statements.find((node) => ts.isFunctionDeclaration(node) && node.name?.text === name).getText(previewTree);
+const bind = (code, name, scope = {}) => new Function(...Object.keys(scope), `${ts.transpileModule(code, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText}\nreturn ${name};`)(...Object.values(scope));
+const bounds = bind(previewFunction('getExactAlphaContentBounds'), 'getExactAlphaContentBounds');
+const referenceBounds = (image) => {
+  let left = image.width, top = image.height, right = -1, bottom = -1;
+  for (let y = 0; y < image.height; y++) for (let x = 0; x < image.width; x++) {
+    if (image.data[(y * image.width + x) * 4 + 3] === 0) continue;
+    left = Math.min(left, x); top = Math.min(top, y);
+    right = Math.max(right, x); bottom = Math.max(bottom, y);
+  }
+  return right < left ? undefined : { x: left, y: top, width: right - left + 1, height: bottom - top + 1 };
+};
+let seed = 12345;
+for (let fixture = 0; fixture < 400; fixture++) {
+  const image = new Pixels(1 + fixture % 71, 1 + fixture % 43);
+  for (let i = 3; i < image.data.length; i += 4) {
+    seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+    image.data[i] = fixture % 4 === 0 ? 0 : fixture % 4 === 1 ? 255 : seed % 7 === 0 ? 1 : 0;
+  }
+  assert.deepEqual(bounds(image), referenceBounds(image), 'Exact alpha bounds preserve transparency, gaps, edges and alpha=1');
+}
+const opaque = new Pixels(1024, 1024); opaque.data.fill(255);
+const measure = (fn) => { const start = performance.now(); for (let i = 0; i < 20; i++) fn(opaque); return (performance.now() - start) / 20; };
+const oldBoundsMs = measure(referenceBounds), newBoundsMs = measure(bounds);
+for (const withDepth of [false, true]) for (let cancelAt = 0; cancelAt <= (withDepth ? 5 : 4); cancelAt++) {
+  const controller = new AbortController(), events = [];
+  let frames = 0;
+  const run = bind(previewFunction('createGeneratedDisplayPreviewUncached'), 'createGeneratedDisplayPreviewUncached', {
+    GENERATED_DISPLAY_MAX_DIMENSION: 1024, GENERATED_DISPLAY_PADDING_RATIO: 0.06,
+    urlToImageData: async (url, _w, _h, options) => { options.signal.throwIfAborted(); events.push(url); return new Pixels(2048, 2048); },
+    waitForBrowserPaint: async () => { events.push('frame'); if (++frames === cancelAt) controller.abort(); },
+    waitForViewportInteractionIdle: async () => {},
+    resizeImageData: () => { events.push('resize'); return opaque; },
+    applyPackedDepthDisplayMask: (imageData) => { events.push('mask'); return { imageData, changedPixels: 1 }; },
+    removeStrictOuterDarkDisplayBackground: (imageData) => { events.push('mask'); return { imageData, changedPixels: 1 }; },
+    getExactAlphaContentBounds: (image) => { events.push('bounds'); return bounds(image); },
+    encodeDisplayImage: async () => { events.push('encode'); return 'encoded-exact-image'; },
+  });
+  const result = run('source', withDepth ? 'depth' : undefined, controller.signal);
+  if (cancelAt) {
+    await assert.rejects(result, { name: 'AbortError' });
+    assert.equal(frames, cancelAt, 'Cancellation stops before the next processing stage');
+    assert.equal(events.at(-1), 'frame', 'No pixel work after cancellation at a frame boundary');
+  } else {
+    assert.deepEqual(await result, { alignedUrl: 'encoded-exact-image', fittedUrl: 'encoded-exact-image' });
+    assert.deepEqual(events, withDepth
+      ? ['source', 'frame', 'resize', 'frame', 'depth', 'frame', 'mask', 'frame', 'bounds', 'encode', 'frame']
+      : ['source', 'frame', 'resize', 'frame', 'mask', 'frame', 'bounds', 'encode', 'frame']);
+  }
+}
+console.log(`Display stages passed: all cancellation boundaries; 400 exact-bound fixtures. Opaque 1024 bounds: ${oldBoundsMs.toFixed(3)} -> ${newBoundsMs.toFixed(3)} ms.`);
 assert.match(preview, /const readOptions = \{ cooperative: true, signal \};/);
 assert.match(preview, /urlToImageData\(sourceUrl, undefined, undefined, readOptions\)/);
 assert.match(preview, /urlToImageData\(depthUrl, source.width, source.height, readOptions\)/);

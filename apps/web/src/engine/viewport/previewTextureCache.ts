@@ -299,6 +299,21 @@ export function registerPreviewTextureRenderer(renderer: THREE.WebGLRenderer | u
   registeredPreviewRenderer = renderer;
 }
 
+/** Hold a cache entry from before decode until its consumer finishes upload. */
+export function retainPreviewTexture(imageUrl: string, options?: PreviewTextureLoadOptions) {
+  const cacheKey = getPreviewTextureCacheKey(imageUrl, options);
+  pinnedPreviewTextureCacheKeys.set(cacheKey, (pinnedPreviewTextureCacheKeys.get(cacheKey) ?? 0) + 1);
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    const remaining = (pinnedPreviewTextureCacheKeys.get(cacheKey) ?? 1) - 1;
+    if (remaining === 0) pinnedPreviewTextureCacheKeys.delete(cacheKey);
+    else pinnedPreviewTextureCacheKeys.set(cacheKey, remaining);
+    trimBakedTextureCache();
+  };
+}
+
 function trimBakedTextureCache() {
   while (bakedTextureCache.size > MAX_PREVIEW_TEXTURE_CACHE_SIZE) {
     const oldestKey = [...bakedTextureCache.keys()].find(
@@ -416,8 +431,8 @@ export function loadPreviewTexture(imageUrl: string, options?: PreviewTextureLoa
   })().catch((error) => {
     if (bakedTextureCache.get(cacheKey) === texturePromise) {
       bakedTextureCache.delete(cacheKey);
+      residentPreviewTextureCache.delete(cacheKey);
     }
-    residentPreviewTextureCache.delete(cacheKey);
     throw error;
   });
   bakedTextureCache.set(cacheKey, texturePromise);
@@ -430,13 +445,7 @@ export async function prewarmPreviewTextures(
   options?: { allowWhileInteracting?: boolean; maxSize?: number },
 ) {
   const uniqueUrls = [...new Set(imageUrls.filter(Boolean))];
-  const cacheKeys = uniqueUrls.map((url) => getPreviewTextureCacheKey(url, options));
-  for (const cacheKey of cacheKeys) {
-    pinnedPreviewTextureCacheKeys.set(
-      cacheKey,
-      (pinnedPreviewTextureCacheKeys.get(cacheKey) ?? 0) + 1,
-    );
-  }
+  const releases = uniqueUrls.map((url) => retainPreviewTexture(url, options));
   const startedAt = performance.now();
   try {
     const results = await Promise.allSettled(
@@ -455,12 +464,7 @@ export async function prewarmPreviewTextures(
     );
     return results;
   } finally {
-    for (const cacheKey of cacheKeys) {
-      const remaining = Math.max(0, (pinnedPreviewTextureCacheKeys.get(cacheKey) ?? 1) - 1);
-      if (remaining === 0) pinnedPreviewTextureCacheKeys.delete(cacheKey);
-      else pinnedPreviewTextureCacheKeys.set(cacheKey, remaining);
-    }
-    trimBakedTextureCache();
+    releases.forEach((release) => release());
   }
 }
 

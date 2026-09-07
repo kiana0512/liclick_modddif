@@ -82,6 +82,7 @@ import {
   createWorkerBackedPreviewTexture,
   getReadyResidentPreviewTexture,
   loadPreviewTexture,
+  retainPreviewTexture,
   prewarmPreviewTextures,
   uploadPreviewTextureInStripes,
   waitForPreviewTextureUploadsIdle,
@@ -538,11 +539,13 @@ function useLoadedPreviewTextureState(
     // Keep the last valid GPU texture visible while the replacement decodes.
     // Clearing here produced the one-frame black/white flash during repaint,
     // image replacement and UV composition hand-offs.
+    const releaseTexture = retainPreviewTexture(imageUrl, { maxSize: options?.maxSize });
     void (async () => {
       let lastError: unknown;
       for (let attempt = 0; attempt < 3 && !cancelled; attempt += 1) {
         try {
           const texture = await loadPreviewTexture(imageUrl, { maxSize: options?.maxSize });
+          if (cancelled) return;
           if (options?.colorSpace) texture.colorSpace = options.colorSpace;
           await uploadPreviewTextureInStripes(gl, texture);
           if (!cancelled) setLoadedState({ key: requestKey, texture });
@@ -562,7 +565,7 @@ function useLoadedPreviewTextureState(
           lastError,
         );
       }
-    })();
+    })().finally(releaseTexture);
     return () => {
       cancelled = true;
     };
