@@ -9464,7 +9464,7 @@ function SurfacePaintOverlay() {
           return (
             !layer ||
             !layer.visible ||
-            !previousRoot?.visible ||
+            previousRoot?.visible === false ||
             !isLocalRepaintHandoffForObject(previousObjectId, nextObjectId) ||
             isLocalRepaintBelowMergedUv(layers, layer) ||
             !previousRoot ||
