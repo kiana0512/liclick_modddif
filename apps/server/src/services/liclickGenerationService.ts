@@ -474,8 +474,10 @@ function buildSubmissionPrompt(input: GenerateImageInput, model: string) {
   const materialConstraint =
     '贴图生成约束：输出应强调材质贴图本身的颜色、粗糙度、纹理颗粒和细节，避免明显光照、阴影、投影、强高光、镜面反光、环境光渐变或烘焙光影。';
   if (!basePrompt) return materialConstraint;
-  const hasScopedLightingConstraint = basePrompt.includes('【光影约束的适用范围】');
-  return basePrompt.includes(materialConstraint) || hasScopedLightingConstraint
+  const hasPurposeBuiltTextureConstraint =
+    basePrompt.includes('【光影约束的适用范围】') ||
+    basePrompt.includes('【绝对第一优先级：轮廓配准】');
+  return basePrompt.includes(materialConstraint) || hasPurposeBuiltTextureConstraint
     ? basePrompt
     : `${basePrompt}\n\n${materialConstraint}`;
 }
