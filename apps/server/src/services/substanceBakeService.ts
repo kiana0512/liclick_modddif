@@ -843,7 +843,7 @@ async function downloadArtifacts(job: InternalJob, payload: RemoteJobPayload) {
     const roughnessResult = await generateRemoteRoughness(
       {
         fileName: path.basename(bakedBaseColorPath),
-        data: fs.readFileSync(bakedBaseColorPath),
+        data: await fs.promises.readFile(bakedBaseColorPath),
       },
       `baked_roughness_${job.id}`,
     );
@@ -853,7 +853,7 @@ async function downloadArtifacts(job: InternalJob, payload: RemoteJobPayload) {
       );
     }
     const finalRoughnessPath = job.outputPaths.roughness;
-    fs.writeFileSync(finalRoughnessPath, roughnessResult.data);
+    await fs.promises.writeFile(finalRoughnessPath, roughnessResult.data);
     const roughnessDimensions = pngSize(finalRoughnessPath);
     if (
       roughnessDimensions.width !== job.settings.resolution ||
