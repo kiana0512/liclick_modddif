@@ -67,6 +67,7 @@ import {
   syncLocalRepaintGpuOverlayLighting,
 } from './localRepaintGpuOverlaySync';
 import {
+  isLocalRepaintHandoffForObject,
   isLocalRepaintLayerResident,
   waitForLocalRepaintResidentHandoff,
 } from './localRepaintResidentHandoff';
@@ -9441,6 +9442,7 @@ function SurfacePaintOverlay() {
     let cancelled = false;
     const previousOverlay = localRepaintGpuOverlayRef.current;
     const previousOverride = localRepaintResidentMaskOverrideRef.current;
+    const nextObjectId = source?.objectId ?? selectedObjectId;
     const releasePreviousPreview = async () => {
       if (!previousOverlay && !previousOverride) return true;
       const previousLayerId = previousOverride?.layerId ?? previousOverlay?.layerId;
@@ -9454,9 +9456,16 @@ function SurfacePaintOverlay() {
         ready: () => {
           const layers = useLayerStore.getState().layers;
           const layer = layers.find((item) => item.id === previousLayerId);
+          const previousObjectId =
+            layer?.objectId ??
+            (typeof previousRoot?.userData.liclickObjectId === 'string'
+              ? previousRoot.userData.liclickObjectId
+              : undefined);
           return (
             !layer ||
             !layer.visible ||
+            !previousRoot?.visible ||
+            !isLocalRepaintHandoffForObject(previousObjectId, nextObjectId) ||
             isLocalRepaintBelowMergedUv(layers, layer) ||
             !previousRoot ||
             (isLocalRepaintLayerResident(previousRoot, previousLayerId) &&
