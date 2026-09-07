@@ -173,6 +173,51 @@ const preview = fs.readFileSync(new URL('apps/web/src/engine/localRepaint/result
 const previewTree = ts.createSourceFile('preview.ts', preview, ts.ScriptTarget.Latest, true);
 const previewFunction = (name) => previewTree.statements.find((node) => ts.isFunctionDeclaration(node) && node.name?.text === name).getText(previewTree);
 const bind = (code, name, scope = {}) => new Function(...Object.keys(scope), `${ts.transpileModule(code, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText}\nreturn ${name};`)(...Object.values(scope));
+const paddedDisplayBounds = bind(previewFunction('paddedDisplayBounds'),'paddedDisplayBounds');
+for(let i=0;i<400;i++) {
+  const source={width:1+i%67,height:1+i%43}, bounds={x:i%source.width,y:i%source.height,width:1+i%13,height:1+i%17}, padding=i%9;
+  const x=Math.max(0,bounds.x-padding), y=Math.max(0,bounds.y-padding);
+  assert.deepEqual(paddedDisplayBounds(source,bounds,padding),[x,y,Math.max(1,Math.min(source.width,bounds.x+bounds.width+padding)-x),Math.max(1,Math.min(source.height,bounds.y+bounds.height+padding)-y)]);
+}
+// Cropping stays a single unscaled canvas draw. Verify both context failures,
+// transparent RGBA ownership and cleanup without depending on GC.
+for (const failure of [undefined, 'source-context', 'output-context', 'draw', 'read']) {
+  const canvases = [], events = [], input = new Pixels(31, 23), output = new Pixels(7, 9);
+  for (let i=0;i<output.data.length;i++) output.data[i]=(i*37)%256;
+  const expected=output.data.slice();
+  const crop=bind(previewFunction('cropDisplayImage'),'cropDisplayImage',{document:{createElement() {
+    const index=canvases.length;
+    const canvas={width:0,height:0,getContext(kind,options) {
+      assert.equal(kind,'2d'); assert.deepEqual(options,index?{willReadFrequently:true}:undefined);
+      if(failure===(index?'output-context':'source-context'))return null;
+      return {
+        putImageData(image,x,y) {assert.equal(image,input); assert.deepEqual([x,y],[0,0]); events.push('put');},
+        drawImage(source,...args) {assert.equal(source,canvases[0]); assert.deepEqual([source.width,source.height,...args],[31,23,3,5,7,9,0,0,7,9]); if(failure==='draw')throw Error('draw'); events.push('draw');},
+        getImageData(...args) {assert.deepEqual(args,[0,0,7,9]); if(failure==='read')throw Error('read'); events.push('read'); return output;},
+      };
+    }};
+    canvases.push(canvas); return canvas;
+  }}});
+  if(failure==='draw'||failure==='read')assert.throws(()=>crop(input,3,5,7,9),new RegExp(failure));
+  else if(failure)assert.equal(crop(input,3,5,7,9),undefined);
+  else {assert.equal(crop(input,3,5,7,9),output); assert.deepEqual(events,['put','draw','read']);}
+  released({canvases}); assert.deepEqual(output.data,expected);
+}
+for(const kind of ['generated','capture'])for(const missingContext of [false,true]) {
+  const source=new Pixels(31,23), calls=[];
+  const scope={paddedDisplayBounds,GENERATED_DISPLAY_MAX_DIMENSION:1024,GENERATED_DISPLAY_PADDING_RATIO:0.06,SUBJECT_PADDING_RATIO:0.06,
+    urlToImageData:async()=>source,waitForBrowserPaint:async()=>{},waitForViewportInteractionIdle:async()=>{},
+    removeStrictOuterDarkDisplayBackground:()=>({imageData:source,changedPixels:0}),applyCapturePreviewMask:()=>source,
+    getExactAlphaContentBounds:()=>({x:8,y:7,width:7,height:9}),getAlphaContentBounds:()=>({x:8,y:7,width:7,height:9}),
+    cropDisplayImage:(image,...rect)=>{assert.equal(image,source);calls.push(rect);return missingContext?undefined:source;},
+    encodeDisplayImage:async(image)=>{assert.equal(image,source);return 'cropped';},
+  };
+  const name=kind==='generated'?'createGeneratedDisplayPreviewUncached':'createCaptureMaskedPreviewUncached';
+  const result=await bind(previewFunction(name),name,scope)('original',kind==='capture'?'mask':undefined,new AbortController().signal);
+  assert.deepEqual(calls,[kind==='generated'?[4,3,15,17]:[6,5,11,13]],'Keep each path’s original padding');
+  assert.deepEqual(result,kind==='generated'?{alignedUrl:'original',fittedUrl:missingContext?'original':'cropped'}:missingContext?'original':'cropped');
+}
+console.log('Shared preview crop passed: exact draw/read rectangles, RGBA ownership, cleanup, distinct padding and original fallbacks.');
 for (const projected of [false,true]) for (const abortAfterRead of [false,true]) {
   const controller = new AbortController(), events = [];
   const run = bind(previewFunction('createLayerThumbnail').replace('export ', ''), 'createLayerThumbnail', {
@@ -218,6 +263,7 @@ for (const withDepth of [false, true]) for (let cancelAt = 0; cancelAt <= (withD
   const controller = new AbortController(), events = [];
   let frames = 0;
   const run = bind(previewFunction('createGeneratedDisplayPreviewUncached'), 'createGeneratedDisplayPreviewUncached', {
+    paddedDisplayBounds,
     GENERATED_DISPLAY_MAX_DIMENSION: 1024, GENERATED_DISPLAY_PADDING_RATIO: 0.06,
     urlToImageData: async (url, _w, _h, options) => { options.signal.throwIfAborted(); events.push(url); return new Pixels(2048, 2048); },
     waitForBrowserPaint: async () => { events.push('frame'); if (++frames === cancelAt) controller.abort(); },

@@ -347,6 +347,37 @@ function getExactAlphaContentBounds(imageData: ImageData) {
   return { x: left, y: top, width: right - left + 1, height: bottom - top + 1 };
 }
 
+function paddedDisplayBounds(source: ImageData, bounds: { x: number; y: number; width: number; height: number }, padding: number) {
+  const x = Math.max(0, bounds.x - padding);
+  const y = Math.max(0, bounds.y - padding);
+  return [x, y,
+    Math.max(1, Math.min(source.width, bounds.x + bounds.width + padding) - x),
+    Math.max(1, Math.min(source.height, bounds.y + bounds.height + padding) - y),
+  ] as const;
+}
+
+// Both display paths use the same unscaled canvas crop. Keep their distinct
+// bounds, padding and missing-context fallback decisions in their callers.
+function cropDisplayImage(image: ImageData, x: number, y: number, width: number, height: number) {
+  const source = document.createElement('canvas');
+  const output = document.createElement('canvas');
+  try {
+    source.width = image.width;
+    source.height = image.height;
+    const sourceContext = source.getContext('2d');
+    if (!sourceContext) return undefined;
+    sourceContext.putImageData(image, 0, 0);
+    output.width = width;
+    output.height = height;
+    const context = output.getContext('2d', { willReadFrequently: true });
+    if (!context) return undefined;
+    context.drawImage(source, x, y, width, height, 0, 0, width, height);
+    return context.getImageData(0, 0, width, height);
+  } finally {
+    source.width = output.width = 0;
+  }
+}
+
 function encodeDisplayImage(imageData: ImageData) {
   return imageDataToBlob(imageData).then(blobToDataUrl);
 }
@@ -410,43 +441,12 @@ async function createGeneratedDisplayPreviewUncached(
     4,
     Math.round(Math.max(bounds.width, bounds.height) * GENERATED_DISPLAY_PADDING_RATIO),
   );
-  const cropX = Math.max(0, bounds.x - padding);
-  const cropY = Math.max(0, bounds.y - padding);
-  const cropRight = Math.min(source.width, bounds.x + bounds.width + padding);
-  const cropBottom = Math.min(source.height, bounds.y + bounds.height + padding);
-  const cropWidth = Math.max(1, cropRight - cropX);
-  const cropHeight = Math.max(1, cropBottom - cropY);
+  const [cropX, cropY, cropWidth, cropHeight] = paddedDisplayBounds(source, bounds, padding);
   if (cropWidth === source.width && cropHeight === source.height)
     return { alignedUrl, fittedUrl: alignedUrl };
 
-  const sourceCanvas = document.createElement('canvas');
-  sourceCanvas.width = source.width;
-  sourceCanvas.height = source.height;
-  const sourceContext = sourceCanvas.getContext('2d');
-  if (!sourceContext) return { alignedUrl, fittedUrl: alignedUrl };
-  sourceContext.putImageData(transparent, 0, 0);
-  const fittedCanvas = document.createElement('canvas');
-  fittedCanvas.width = cropWidth;
-  fittedCanvas.height = cropHeight;
-  const fittedContext = fittedCanvas.getContext('2d', { willReadFrequently: true });
-  if (!fittedContext) return { alignedUrl, fittedUrl: alignedUrl };
-  fittedContext.drawImage(
-    sourceCanvas,
-    cropX,
-    cropY,
-    cropWidth,
-    cropHeight,
-    0,
-    0,
-    cropWidth,
-    cropHeight,
-  );
-  return {
-    alignedUrl,
-    fittedUrl: await encodeDisplayImage(
-      fittedContext.getImageData(0, 0, cropWidth, cropHeight),
-    ),
-  };
+  const fitted = cropDisplayImage(transparent, cropX, cropY, cropWidth, cropHeight);
+  return { alignedUrl, fittedUrl: fitted ? await encodeDisplayImage(fitted) : alignedUrl };
 }
 
 export function createGeneratedDisplayPreview(
@@ -676,12 +676,7 @@ async function createPreviewUncached(sourceUrl: string, mode: BackgroundRemovalM
     2,
     Math.round(Math.max(bounds.width, bounds.height) * SUBJECT_PADDING_RATIO),
   );
-  const cropX = Math.max(0, bounds.x - padding);
-  const cropY = Math.max(0, bounds.y - padding);
-  const cropRight = Math.min(source.width, bounds.x + bounds.width + padding);
-  const cropBottom = Math.min(source.height, bounds.y + bounds.height + padding);
-  const cropWidth = Math.max(1, cropRight - cropX);
-  const cropHeight = Math.max(1, cropBottom - cropY);
+  const [cropX, cropY, cropWidth, cropHeight] = paddedDisplayBounds(source, bounds, padding);
 
   // Avoid a needless PNG re-encode when the returned image is already opaque and tightly framed.
   if (
@@ -739,37 +734,10 @@ async function createCaptureMaskedPreviewUncached(sourceUrl: string, maskUrl: st
     2,
     Math.round(Math.max(bounds.width, bounds.height) * SUBJECT_PADDING_RATIO),
   );
-  const cropX = Math.max(0, bounds.x - padding);
-  const cropY = Math.max(0, bounds.y - padding);
-  const cropRight = Math.min(source.width, bounds.x + bounds.width + padding);
-  const cropBottom = Math.min(source.height, bounds.y + bounds.height + padding);
-  const cropWidth = Math.max(1, cropRight - cropX);
-  const cropHeight = Math.max(1, cropBottom - cropY);
+  const [cropX, cropY, cropWidth, cropHeight] = paddedDisplayBounds(source, bounds, padding);
 
-  const sourceCanvas = document.createElement('canvas');
-  sourceCanvas.width = source.width;
-  sourceCanvas.height = source.height;
-  const sourceContext = sourceCanvas.getContext('2d');
-  if (!sourceContext) return sourceUrl;
-  sourceContext.putImageData(masked, 0, 0);
-
-  const outputCanvas = document.createElement('canvas');
-  outputCanvas.width = cropWidth;
-  outputCanvas.height = cropHeight;
-  const outputContext = outputCanvas.getContext('2d', { willReadFrequently: true });
-  if (!outputContext) return sourceUrl;
-  outputContext.drawImage(
-    sourceCanvas,
-    cropX,
-    cropY,
-    cropWidth,
-    cropHeight,
-    0,
-    0,
-    cropWidth,
-    cropHeight,
-  );
-  return encodeDisplayImage(outputContext.getImageData(0, 0, cropWidth, cropHeight));
+  const fitted = cropDisplayImage(masked, cropX, cropY, cropWidth, cropHeight);
+  return fitted ? encodeDisplayImage(fitted) : sourceUrl;
 }
 
 export function createCaptureMaskedPreview(sourceUrl: string, maskUrl: string, request: DisplayPreviewRequest = {}) {

@@ -1,6 +1,6 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
-> 文档版本：`2.18.1`
+> 文档版本：`2.18.2`
 >
 > 生效日期：`2026-09-07`
 >
@@ -11,6 +11,10 @@
 > 审计口径：`0a2519d + 607e82f + 2568e40`，不包含错误文档提交 `2bde8c6/e03bab2/d1c5f78`
 
 ## 1. 文档地位与强制边界
+
+变更卡 `CHG-20260907-MASTER-RELEASE-BUDGET`：M08 / `ALG-LR-011` v1.2.1，M15 发布验证。推送前使用 master 完整发布身份参数验证，3,134,284 bytes 超过原门禁 284 字节；此前 3,133,993 bytes 是普通开发构建，不能代替 CI 发布构建。生成显示与 capture-mask 显示共用一次无缩放 canvas crop，调用方仍分别计算原 alpha bounds / 6% padding，并在缺少 context 时保留各自 alignedUrl/sourceUrl 回退。PNG 编码和非零透明 RGB、画布颜色/过滤参数、draw/read 矩形不变；临时画布在完成和异常时释放。没有改动 subject-filled 路径的 high-quality smoothing，也没有提高包体门禁。真实 helper 与两条实际调用函数回归覆盖裁切坐标、各自留白、缺少 context、读/绘制失败、返回 ImageData 独立性。算法语义及版本、GPU/CPU/Worker/shader、投影/UV/export、正式资产、分辨率、Schema、Command 幂等性/Revision CAS/ownership 均不变，无数据迁移；回退仅内联两份原裁切段。master 按现有 CI 执行 verify/build/container:verify，生产部署仍仅由 release 的既有规则决定；本次不修改 release。
+
+发布验证结果：完整 Cloud build:release / check:cloud-artifact 通过，正式发布参数下 80 chunks / 3,133,956 bytes，低于原 3,134,000 门禁；84 项 Web 回归通过，追加 400 组边界公式对照及真实裁切/调用方回归通过，目标文件 lint 与 diff 检查通过。
 
 变更卡 `CHG-20260907-DISPLAY-SCRATCH-RELEASE`：主模块 M08，`ALG-LR-011` v1.2.1。继续处理图层显示副本的临时内存：`urlToImageData` 的 scratch canvas 在读回完成、取消或异常时通过 finally 清空 bitmap；`resizeImageData` 在最后读回后释放输入及输出画布，包括 context/put/draw/read 失败。一个 4096² RGBA scratch bitmap 对应约 64 MiB 像素存储；此前释放时间依赖浏览器 GC，本次不再保留该画布的非零尺寸到 GC。此为资源生命周期优化，不宣称进程 RSS 必然即时下降，也不把没有脚本归因的 LoAF 直接认定为 GC。ImageData 返回值独立持有像素；源图、完整一次绘制、原尺寸/过滤/颜色空间、分条读取、遮罩、裁切和 PNG 路径不变。图层作者 mask 分支仅移除前置 guard 后不可达的条件，异步 PNG 调用保持原错误传播。共享 imageUtils 消费者审计包含局部重绘、CPU projection/UV 辅助调用：不释放调用方画布、ImageData、纹理或 live registry 对象；GPU、Worker、shader、正式服务、持久化、export 与输出分辨率不变。Schema、Project Command 幂等性、Revision CAS、ownership、verified assets 无变更，无迁移。回退只移除两个 finally 释放段及等价条件整理，已有项目无需恢复操作。回归执行真实 helper，覆盖成功/中途取消/加载及读回失败、resize 各 context/put/draw/read 异常、无尺寸变化零分配、返回像素独立性；沿用 600 组遮罩和 400 组边界精确输出对照。真实交互需在页面 visible、同构建/同面板/同缓存条件下比较；后台 1 秒节流的录制不得计入结果。
 
@@ -846,6 +850,8 @@ M15 / CLOUD-DEPLOYMENT v1.0.0（2026-09-03）：正常合并 release 部署历�
 | `2.17.11` | 2026-09-07 | `本次线框辅助层驻留` | M03、`ALG-VIEW-SELECT-001` v1.0.4：模型隐藏保留已预热线框，只切显隐；71 次切换保持一次编译/真实几何预热，真实卸载释放。捕获/导出继续排除辅助层，无像素/Schema 或迁移。 |
 | `2.18.0` | 2026-09-07 | `本次图层小缩略图缓存` | M08、`ALG-LR-011` v1.2.0：明确为 48px 图层小图派生 128px 有界缓存，复用原投射遮罩/裁切；原图、放大预览、UV/export、蒙版及 Schema 不变，无迁移。 |
 | `2.18.1` | 2026-09-07 | `本次显示临时画布及时释放` | M08、`ALG-LR-011` v1.2.1：完整读回/缩放后以及取消/异常时释放 scratch bitmap，保留输出 RGBA 与图像处理顺序；共享 PNG helper 消除重复编码入口。无分辨率、算法语义、Schema 或数据迁移。 |
+| `2.18.2` | 2026-09-07 | `本次 master 正式发布包体复查` | M08/M15、`ALG-LR-011` v1.2.1 不变：共用原裁切和边界公式，保留各路径留白/回退；正式 Cloud 发布包体 3,133,956 bytes 通过原门禁，无算法、Schema 或数据迁移。 |
+
 
 `ALG-LR-008` v2.4.1：局部重绘仍自动创建独立目标和结果图层；pointer-down 不再依赖当前图层是否选中、可见或为 UV，只检查自身 source/composite/Session/显示资源。默认保持按钮激活、GPU promotion、结果发布前的原选择（含 undefined），防止内部隐藏 draft 触发面板选择普通投影层。普通画笔/橡皮擦限制、GPU/CPU/Worker/shader、作者 mask、投影/UV/export、分辨率、Schema、Revision、ownership 与资产不变。真实 store 三类选择与入口 gate 回归通过；无数据迁移，回退选择保持与 gate 即可。详见 CHG-20260903-LOCAL-REPAINT-SELECTION-INDEPENDENCE。
 
