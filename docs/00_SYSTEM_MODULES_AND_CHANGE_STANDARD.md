@@ -1,6 +1,6 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
-> 文档版本：`2.18.3`
+> 文档版本：`2.18.6`
 >
 > 生效日期：`2026-09-07`
 >
@@ -11,6 +11,14 @@
 > 审计口径：`0a2519d + 607e82f + 2568e40`，不包含错误文档提交 `2bde8c6/e03bab2/d1c5f78`
 
 ## 1. 文档地位与强制边界
+
+变更卡 `CHG-20260907-BAKE-ROUGHNESS-ASYNC-IO`：主模块 M10，I/O 调度契约 `PERF-BAKE-IO-001` v1.0.0。合入 master `5c672ca`（含上游输入 bitmap 修复与提示词更新）后，粗糙度自动生成阶段改用 fs.promises.readFile/writeFile 读取 BaseColor 和写入原始 PNG，等待整次读取后才远程提交、等待写入后才执行既有 PNG 头与分辨率检查并发布。24 字节头校验、小型任务记录和远端取消语义未变，不宣称完全无同步 I/O。回归执行编译后的真实阶段，覆盖成功、读失败、远程失败、非 PNG、写失败、尺寸不匹配；验证异步读取让出事件循环、原 Buffer 身份、发布顺序及失败不发布。GPU/CPU/Worker/shader、生产烘焙公式、mask、投影/UV/export、分辨率、QA、Schema、Command 幂等性、Revision CAS、ownership 和 verified assets 不变，无迁移；回退只恢复这两处同步读写。上游 generationInputWorker 原修复完整保留，本地只补充 local/single 两入口参数与三图顺序回归，不重复更改其算法。
+
+变更卡 `CHG-20260907-PROJECT-LIST-PROJECTION`：主模块 M14，协作 M01；查询契约 `PERF-PROJECT-LIST-001` v1.0.0，图像算法版本不变。PostgreSQL 项目列表由读取完整 document_json 改为同一 JSON 中七项摘要字段的 jsonb_build_object，保留 slug、用户/软删除过滤、排序、缩略图 URL 与旧字段默认值。现有部分索引足够，不新增 Schema 或摘要持久列。PGlite 实际 SQL 测试中含 2 MiB 捕获元数据的工程集合由 2,099,910 bytes 降到 921 bytes，公共摘要逐项与旧查询对照一致，完整加载、旧工程默认值与账号隔离通过；后端完整 11 项回归通过。此数字仅为夹具的数据库响应大小，不代表线上延迟或数据库 CPU 降幅。GPU/CPU/Worker/shader、投影/UV/重绘/export、分辨率、QA、Command 幂等性、Revision CAS、ownership、verified assets 和 Schema 不变，无数据迁移。回退只恢复列表原 SELECT 和类型，无需恢复工程数据。全仓扫描范围、M01–M15 覆盖、已证实/待测热点及验证限制见 [2026-09-07 全仓性能审计](PERFORMANCE_REPOSITORY_AUDIT_2026-09-07.zh-CN.md)。
+
+变更卡 `CHG-20260907-REPAINT-IMAGE-DECODE`：主模块 M08，`ALG-LR-008` v2.4.5，入口在 M03 ViewportCanvas 的共享 image loader。前次 LoAF 指向 `loadImageElement` 的 IMG.onload 后续工作，读取代码确认此加载器在 onload 即发布 HTMLImageElement，Canvas drawImage/GPU initTexture 消费前没有显式解码等待；这只能证明存在同步解码风险，不能把整个长帧都归因于解码。本次让同一个缓存 Promise 等待原图 decode 后再发布，阻止并发消费者绕过解码阶段；不创建缩小版、替代图或新 Canvas。缺少 decode 或可选 decode 拒绝时仍返回已经加载的原图；网络加载失败保持拒绝并清除失败缓存。六项 LRU、URL 身份、失败重试、调用方取消与 20 秒准备预算不变。对照测试在修改前确认 onload 即发布，修改后覆盖解码未完成不发布、重复消费者共享、4K 原图对象及尺寸、旧浏览器/解码拒绝回退、加载错误重试与六项 LRU。审计消费路径包含作者蒙版提前准备、UV 绘制底图恢复、返图原图/allowed mask、保存蒙版恢复与 UV commit 旧图加载；原有 session/revision/取消检查保持不变，live Canvas 分支保持直接复用。GPU/CPU/Worker/shader 算法、颜色/Alpha/深度/投影矩阵、UV 合成/导出与输出分辨率不变；Project Command 幂等性、Revision CAS、ownership、verified assets 和 Schema 均不变，无迁移。回退只恢复 onload 直接 resolve，不更改缓存资产或工程。真实浏览器收益须按相同可见面板和缓存状态实测，不承诺单次更改消除所有长帧。
+
+本次 decode 验证：84 项 Web 回归通过，新增解码屏障测试在旧实现失败、修改后通过；typecheck/build、目标 lint（0 errors、现存 6 warnings）、Cloud/Project repository 边界与 diff 检查通过。使用 master 正式发布身份参数的 Web 构建为 80 chunks / 3,133,997 bytes，原包体门禁通过。测试合集九模型/4K/1280×720/双侧面板展开，36 次同序切换：修改前首次 57.0 FPS/P95 16.8ms/峰值 67ms/丢帧 33，复测 59.0/16.8/50/10；修改后首次 58.5/16.8/50/16，复测 58.6/16.8/50/14。样本不足以证明稳定 FPS 提升，明确收益是共享消费者不再在 decode 未结束时开始绘制/上传。新构建剩余 LoAF 见 React Scheduler MessagePort 49.3ms，仍有 50ms 帧峰值；不宣称零掉帧，未执行付费生成或生产导出。
 
 变更卡 `CHG-20260907-MASTER-RELEASE-BUDGET`：M08 / `ALG-LR-011` v1.2.1，M15 发布验证。推送前使用 master 完整发布身份参数验证，3,134,284 bytes 超过原门禁 284 字节；此前 3,133,993 bytes 是普通开发构建，不能代替 CI 发布构建。生成显示与 capture-mask 显示共用一次无缩放 canvas crop，调用方仍分别计算原 alpha bounds / 6% padding，并在缺少 context 时保留各自 alignedUrl/sourceUrl 回退。PNG 编码和非零透明 RGB、画布颜色/过滤参数、draw/read 矩形不变；临时画布在完成和异常时释放。没有改动 subject-filled 路径的 high-quality smoothing，也没有提高包体门禁。真实 helper 与两条实际调用函数回归覆盖裁切坐标、各自留白、缺少 context、读/绘制失败、返回 ImageData 独立性。算法语义及版本、GPU/CPU/Worker/shader、投影/UV/export、正式资产、分辨率、Schema、Command 幂等性/Revision CAS/ownership 均不变，无数据迁移；回退仅内联两份原裁切段。master 按现有 CI 执行 verify/build/container:verify，生产部署仍仅由 release 的既有规则决定；本次不修改 release。
 
@@ -452,7 +460,7 @@ UI-09 剪刀
 | `ALG-LR-005` 历史兼容边界谐调 | `5.0.0-compatible` | 仅保留旧 v3-v5 全幅合成与 legacy 切换的读取兼容；新 `direct-v1` 任务不调用 |
 | `ALG-LR-006` 表面画笔重投影 | `2.0.0` | raycast 命中表面，投射到 frozen source UV；最小绝对 face-on 0.08；世界半径 0.004-0.12 包围盒比例；texture radius 1-72 |
 | `ALG-LR-007` 低延迟实时覆盖 | `2.2.0`（显示所有权以本次源码校正为准） | 当前源码在应用画笔激活时使用 depth-aware exact overlay，同 ID resident twin 临时静音；退出后仍由正式材质按图层顺序显示。新建顶层 preview 在首笔发布前不加入背景栈；位于 priority 层下方的 preview 才提前加入 ordered stack。pointer-down 只消费已准备的资源，pointer-up 保留已有 `contentRevision` 并发布累计蒙版。本次仅优化准备调度，不改变 source、capture projector、depth/surface-lock、颜色、blend、1024 live 上限或显示所有权 |
-| `ALG-LR-008` 延迟投影持久化 | `2.4.4` | interactive UV bake 固定关闭；生图前 Project Command snapshot 后台执行。蒙版工具/生图开始即并行编译并持有 exact overlay 程序，预读作者蒙版；返图颜色缩放与 falloff 并行。内存 Session 按 Generation/目标复用活动任务。高清读取和 GPU 准备有 20 秒预算；仅背景栈已有行进入 resident 等待，单层直接蒙版登记完整、辅助网格排除，交接失败明确结束会话。Session 驱动按钮，DOM 仅诊断；pointer-up 两帧内发布权威图层行，idle 3000ms 仅合并持久化并设置 needsRebake=true；保存前必须把 live canvas 编码上传成 verified asset，runtime URL 不得进入 Project Revision；提交/GPU 准备调度含隐藏页兜底，不替代真实呈现交接；返图三纹理上传之间显式让帧并检查取消 |
+| `ALG-LR-008` 延迟投影持久化 | `2.4.5` | interactive UV bake 固定关闭；生图前 Project Command snapshot 后台执行。蒙版工具/生图开始即并行编译并持有 exact overlay 程序，预读作者蒙版；返图颜色缩放与 falloff 并行。内存 Session 按 Generation/目标复用活动任务。高清读取和 GPU 准备有 20 秒预算；仅背景栈已有行进入 resident 等待，单层直接蒙版登记完整、辅助网格排除，交接失败明确结束会话。Session 驱动按钮，DOM 仅诊断；pointer-up 两帧内发布权威图层行，idle 3000ms 仅合并持久化并设置 needsRebake=true；保存前必须把 live canvas 编码上传成 verified asset，runtime URL 不得进入 Project Revision；提交/GPU 准备调度含隐藏页兜底，不替代真实呈现交接；返图三纹理上传之间显式让帧并检查取消 |
 | `ALG-LR-009` Inward Crossfade 栈合成 | `1.0.0` | 连续重绘层向内部交叉淡化，避免普通 alpha stacking 在边缘重复显露接缝 |
 | `ALG-LR-010` Provider 兼容编辑 | `1.0.0-compat` | `LocalRepaintDialog` 的 image/edit/protect/hole masks 独立路径，不得与四输入主路径混改 |
 | `ALG-LR-011` 生图透明显示副本 | `1.2.1` | UI-05 重绘效果图和 UI-10 普通投射图层缩略图优先使用 capture linear-view depth 清除明确无几何覆盖的背景，按逐行首末非零像素计算相同精确 alpha bounds，仅裁切一次并保留 6% 留白；几何覆盖区的 RGB/alpha 原样保留。深度不可用时只清除与画布边缘连通的近黑外背景，不做第二次 matte、侵蚀或分位裁边。局部重绘图层不走整图副本，继续使用用户涂绘 mask，只显示笔刷授权区域；实际可见消费者串行、交互空闲调度，像素阶段跨呈现边界检查取消，支持共享取消与 source/depth/mask/revision 有界 LRU；切模型不强制展开图层面板 |
@@ -852,6 +860,9 @@ M15 / CLOUD-DEPLOYMENT v1.0.0（2026-09-03）：正常合并 release 部署历�
 | `2.18.1` | 2026-09-07 | `本次显示临时画布及时释放` | M08、`ALG-LR-011` v1.2.1：完整读回/缩放后以及取消/异常时释放 scratch bitmap，保留输出 RGBA 与图像处理顺序；共享 PNG helper 消除重复编码入口。无分辨率、算法语义、Schema 或数据迁移。 |
 | `2.18.2` | 2026-09-07 | `本次 master 正式发布包体复查` | M08/M15、`ALG-LR-011` v1.2.1 不变：共用原裁切和边界公式，保留各路径留白/回退；正式 Cloud 发布包体 3,133,956 bytes 通过原门禁，无算法、Schema 或数据迁移。 |
 | `2.18.3` | 2026-09-07 | `本次单/多视图主提示词统一` | UI-05/M04、`ALG-GEN-001/002` v1.1.0：删除旧的全表面迁移提示词，单视图初始白模、已有贴图补全及多视图统一使用白模区域补全模板；用户补充要求仍追加在统一模板末尾。生成输入图片、蒙版、供应方、轮询、投影、分辨率、Schema、Revision、ownership 与资产不变，无迁移；回退仅恢复旧模板分流。 |
+| `2.18.4` | 2026-09-07 | `本次重绘共享图片显式解码` | M08、`ALG-LR-008` v2.4.5：加载器等待原图 decode 后发布共享 Promise，保留失败兼容、六项 LRU、调用方取消及原始像素/尺寸。无算法语义、Schema 或数据迁移。 |
+| `2.18.5` | 2026-09-07 | `本次全仓性能审计与列表查询裁剪` | M14/M01、`PERF-PROJECT-LIST-001` v1.0.0：数据库仅返回原 JSON 摘要字段，保留隔离/排序/默认值；11 项后端回归通过。443 个代码文件静态筛查，其他候选热点列入审计清单。无图像算法、Schema 或数据迁移。 |
+| `2.18.6` | 2026-09-07 | `同步 master 后继续烘焙 I/O 优化` | M10、`PERF-BAKE-IO-001` v1.0.0：粗糙度阶段整图读写异步化，保留校验与发布顺序。保留上游提示词/解码修复；无算法语义、Schema 或数据迁移。 |
 
 `ALG-LR-008` v2.4.1：局部重绘仍自动创建独立目标和结果图层；pointer-down 不再依赖当前图层是否选中、可见或为 UV，只检查自身 source/composite/Session/显示资源。默认保持按钮激活、GPU promotion、结果发布前的原选择（含 undefined），防止内部隐藏 draft 触发面板选择普通投影层。普通画笔/橡皮擦限制、GPU/CPU/Worker/shader、作者 mask、投影/UV/export、分辨率、Schema、Revision、ownership 与资产不变。真实 store 三类选择与入口 gate 回归通过；无数据迁移，回退选择保持与 gate 即可。详见 CHG-20260903-LOCAL-REPAINT-SELECTION-INDEPENDENCE。
 

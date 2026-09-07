@@ -6052,7 +6052,12 @@ function loadImageElement(url: string) {
   const pending = new Promise<HTMLImageElement>((resolve, reject) => {
     const image = new Image();
     image.crossOrigin = 'anonymous';
-    image.onload = () => resolve(image);
+    image.onload = async () => {
+      // Loading bytes does not guarantee decoded pixels. Keep every shared
+      // consumer behind the decoder so drawImage/initTexture need not force it.
+      await image.decode?.().catch(() => undefined);
+      resolve(image);
+    };
     image.onerror = () => reject(new Error('Could not load local repaint mask.'));
     image.src = url;
   });

@@ -168,4 +168,46 @@ assert.match(
   'coverage capture must force the renderer-owned hatch independently from viewport UI state',
 );
 
-console.log('Single-view texture completion regression checks passed.');
+// Execute the actual client preparation, including native bitmap arity.
+// Array.map supplies (value, index, array); Web APIs must not receive those extras.
+const preparationSource = workerClient.slice(
+  workerClient.indexOf('async function prepareWorkerInput'),
+  workerClient.indexOf('export async function prepareLocalRepaintGenerationInput'),
+);
+const preparationJs = ts.transpileModule(preparationSource, {
+  compilerOptions: { target: ts.ScriptTarget.ES2022 },
+}).outputText;
+for (const mode of ['local', 'single']) {
+  const blobs = new Map(['effect', 'clay', 'mask'].map((name) => [name, new Blob([name])]));
+  const pending = new Map();
+  const bitmaps = [];
+  const posts = [];
+  const prepare = new Function(
+    'Worker', 'OffscreenCanvas', 'createImageBitmap', 'readImageBlob',
+    'pendingRequests', 'getWorker',
+    `let nextRequestId = 1; ${preparationJs}; return prepareWorkerInput;`,
+  )(
+    class {}, class {},
+    async (...args) => {
+      assert.equal(args.length, 1, 'createImageBitmap receives only its source, never map index/array');
+      assert.ok([...blobs.values()].includes(args[0]));
+      const bitmap = { source: args[0], width: 2048, height: 2048, close() {} };
+      bitmaps.push(bitmap);
+      return bitmap;
+    },
+    async (url) => blobs.get(url), pending,
+    () => ({ postMessage(payload, { transfer }) {
+      posts.push(payload);
+      assert.deepEqual(transfer, [payload.currentEffect, payload.clayPreview, payload.inputMask]);
+      assert.equal(payload.currentEffect.source, blobs.get('effect'));
+      assert.equal(payload.clayPreview.source, blobs.get('clay'));
+      assert.equal(payload.inputMask.source, blobs.get('mask'));
+      pending.get(payload.id).resolve({ id: payload.id, mode: payload.mode });
+    } }),
+  );
+  assert.deepEqual(await prepare({ mode, currentEffectUrl: 'effect', clayPreviewUrl: 'clay', maskUrl: 'mask' }), { id: 1, mode });
+  assert.equal(bitmaps.length, 3);
+  assert.equal(posts.length, 1, 'One complete, ordered input triplet reaches the Worker');
+}
+
+console.log('Single-view texture completion and local repaint bitmap dispatch regression checks passed.');
