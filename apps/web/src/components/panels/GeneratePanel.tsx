@@ -593,6 +593,9 @@ type GeneratePanelProps = {
   onRequestLocalImageGeneration?: () => void;
   onLocalImageGenerationSettled?: (result: LocalImageGenerationSettledResult) => void;
   cancelActiveGenerationRequestKey?: number;
+  contentAwareRepairActive?: boolean;
+  contentAwareRepairCancelling?: boolean;
+  onCancelContentAwareRepair?: () => void;
   interactionLocked?: boolean;
   onInteractionLocked?: () => void;
   onTaskRunningChange?: (state: GeneratePanelTaskState) => void;
@@ -613,6 +616,9 @@ export function GeneratePanel({
   onRequestLocalImageGeneration,
   onLocalImageGenerationSettled,
   cancelActiveGenerationRequestKey = 0,
+  contentAwareRepairActive = false,
+  contentAwareRepairCancelling = false,
+  onCancelContentAwareRepair,
   interactionLocked = false,
   onInteractionLocked,
   onTaskRunningChange,
@@ -658,6 +664,7 @@ export function GeneratePanel({
   }>();
   const handledLocalImageGenerationRequestKeyRef = useRef(0);
   const handledCancelActiveGenerationRequestKeyRef = useRef(0);
+  const localRepaintPreparationAbortControllerRef = useRef<AbortController>();
   const lastCompletedLocalRepaintGenerationIdRef = useRef<string>();
   const handleLocalRepaintGenerateRef = useRef<() => Promise<boolean>>(async () => false);
 
@@ -721,6 +728,10 @@ export function GeneratePanel({
   );
   const [cancelConfirmGeneration, setCancelConfirmGeneration] = useState<Generation | undefined>();
   const [cancelTextureSnapshotConfirmOpen, setCancelTextureSnapshotConfirmOpen] = useState(false);
+  const [cancelLocalRepaintPreparationConfirmOpen, setCancelLocalRepaintPreparationConfirmOpen] =
+    useState(false);
+  const [cancelContentAwareRepairConfirmOpen, setCancelContentAwareRepairConfirmOpen] =
+    useState(false);
   const [texturePipelineCancelling, setTexturePipelineCancelling] = useState(false);
   const currentProject = useProjectStore((state) =>
     state.projects.find((project) => project.id === state.currentProjectId),
@@ -1011,8 +1022,15 @@ export function GeneratePanel({
   const displayedPreviewIsGenerating = isRunningGeneration(displayedPreviewGeneration);
   const displayedPreviewFailed = displayedPreviewGeneration?.status === 'failed';
   const displayedPreviewCancelled = displayedPreviewGeneration?.metadata.cancelled === true;
+  const localRepaintPreparationCancellable = Boolean(
+    submissionActive &&
+    localRepaintPreparationAbortControllerRef.current &&
+    !localRepaintPreparationAbortControllerRef.current.signal.aborted,
+  );
   const canCancelGeneration = Boolean(
     activeWorkflowGeneration ||
+    localRepaintPreparationCancellable ||
+    (contentAwareRepairActive && onCancelContentAwareRepair) ||
     (snapshotPreparing &&
       texturePipelineAbortControllerRef.current &&
       !texturePipelineAbortControllerRef.current.signal.aborted),
@@ -1033,8 +1051,25 @@ export function GeneratePanel({
     if (snapshotPreparing && texturePipelineAbortControllerRef.current) {
       handledCancelActiveGenerationRequestKeyRef.current = cancelActiveGenerationRequestKey;
       setCancelTextureSnapshotConfirmOpen(true);
+      return;
     }
-  }, [activeWorkflowGeneration, cancelActiveGenerationRequestKey, snapshotPreparing]);
+    if (localRepaintPreparationCancellable) {
+      handledCancelActiveGenerationRequestKeyRef.current = cancelActiveGenerationRequestKey;
+      setCancelLocalRepaintPreparationConfirmOpen(true);
+      return;
+    }
+    if (contentAwareRepairActive && onCancelContentAwareRepair) {
+      handledCancelActiveGenerationRequestKeyRef.current = cancelActiveGenerationRequestKey;
+      setCancelContentAwareRepairConfirmOpen(true);
+    }
+  }, [
+    activeWorkflowGeneration,
+    cancelActiveGenerationRequestKey,
+    contentAwareRepairActive,
+    localRepaintPreparationCancellable,
+    onCancelContentAwareRepair,
+    snapshotPreparing,
+  ]);
   const previewRawResultUrl = displayedPreviewGeneration?.resultUrl;
   const previewCapture = displayedPreviewGeneration?.captureId
     ? lastCapture?.id === displayedPreviewGeneration.captureId
@@ -2016,8 +2051,17 @@ export function GeneratePanel({
       return;
     }
     const generationToCancel = activeWorkflowGeneration;
-    if (!generationToCancel) return;
-    setCancelConfirmGeneration(generationToCancel);
+    if (generationToCancel) {
+      setCancelConfirmGeneration(generationToCancel);
+      return;
+    }
+    if (localRepaintPreparationCancellable) {
+      setCancelLocalRepaintPreparationConfirmOpen(true);
+      return;
+    }
+    if (contentAwareRepairActive && onCancelContentAwareRepair) {
+      setCancelContentAwareRepairConfirmOpen(true);
+    }
   }
 
   function confirmCancelTextureSnapshot() {
@@ -2030,6 +2074,19 @@ export function GeneratePanel({
     );
     setGenerateNotice({ tone: 'info', message: '正在终止多视图快照，不会提交后续生图任务。' });
     controller.abort('user-cancelled-multiview-snapshot');
+  }
+
+  function confirmCancelLocalRepaintPreparation() {
+    const controller = localRepaintPreparationAbortControllerRef.current;
+    setCancelLocalRepaintPreparationConfirmOpen(false);
+    if (!controller || controller.signal.aborted) return;
+    setGenerateNotice({ tone: 'info', message: '正在终止局部生图准备。' });
+    controller.abort('user-cancelled-local-repaint-preparation');
+  }
+
+  function confirmCancelContentAwareRepair() {
+    setCancelContentAwareRepairConfirmOpen(false);
+    onCancelContentAwareRepair?.();
   }
 
   function confirmCancelCurrentGeneration() {
@@ -3016,6 +3073,8 @@ export function GeneratePanel({
         });
         return false;
       }
+      requestAbortController = new AbortController();
+      localRepaintPreparationAbortControllerRef.current = requestAbortController;
       submitLocksRef.current.add('repaint');
       setSubmissionActive(true);
       setLocalRepaintPreparation((current) => ({
@@ -3243,17 +3302,30 @@ export function GeneratePanel({
           maskUrl: currentPaintMaskDataUrl,
           paintMaskRevision: currentPaintMaskRevision,
         });
-        const optimizedPrompt = await createLiclickApiClient().polishPrompt({
-          prompt: rawUserPrompt,
-          context: 'local-repaint',
-          modelName: 'FLUX.2 Klein',
-          objectName: objects.find((object) => object.id === objectId)?.name,
-          referenceNames: [visualInputs.referenceImage.name || materialReference.name],
-          hasMask: true,
-          currentEffectImage: visualInputs.currentEffectImage,
-          maskImage: visualInputs.maskImage,
-          referenceImage: visualInputs.referenceImage,
-        });
+        const preparationSignal = requestAbortController.signal;
+        if (preparationSignal.aborted) {
+          throw new DOMException('用户已终止局部生图准备。', 'AbortError');
+        }
+        const optimizedPrompt = await Promise.race([
+          createLiclickApiClient().polishPrompt({
+            prompt: rawUserPrompt,
+            context: 'local-repaint',
+            modelName: 'FLUX.2 Klein',
+            objectName: objects.find((object) => object.id === objectId)?.name,
+            referenceNames: [visualInputs.referenceImage.name || materialReference.name],
+            hasMask: true,
+            currentEffectImage: visualInputs.currentEffectImage,
+            maskImage: visualInputs.maskImage,
+            referenceImage: visualInputs.referenceImage,
+          }),
+          new Promise<never>((_, reject) => {
+            preparationSignal.addEventListener(
+              'abort',
+              () => reject(new DOMException('用户已终止局部生图准备。', 'AbortError')),
+              { once: true },
+            );
+          }),
+        ]);
         if (useSceneStore.getState().paintMaskRevision !== currentPaintMaskRevision) {
           throw new Error('蒙版在分析期间发生变化，请重新生成。');
         }
@@ -3267,6 +3339,9 @@ export function GeneratePanel({
           if (oldestKey) promptCache.delete(oldestKey);
         }
         promptCache.set(promptFingerprint, resolvedPrompt);
+      }
+      if (requestAbortController.signal.aborted) {
+        throw new DOMException('用户已终止局部生图准备。', 'AbortError');
       }
       const effectivePrompt = resolvedPrompt.prompt;
       pendingGeneration = {
@@ -3314,7 +3389,9 @@ export function GeneratePanel({
         tone: 'info',
         message: '正在提交当前效果图、材质参考图、蒙版和提示词。',
       });
-      requestAbortController = new AbortController();
+      if (localRepaintPreparationAbortControllerRef.current === requestAbortController) {
+        localRepaintPreparationAbortControllerRef.current = undefined;
+      }
       generationAbortControllersRef.current.set(generationId, requestAbortController);
       const [currentEffectDataUrl, materialReferenceDataUrl, maskDataUrl] = await Promise.all([
         urlToDataUrl(capture.colorUrl),
@@ -3488,6 +3565,10 @@ export function GeneratePanel({
       return true;
     } catch (error) {
       if (pendingGeneration && isCancelledGeneration(pendingGeneration)) return false;
+      if (requestAbortController?.signal.aborted) {
+        setGenerateNotice(undefined);
+        return false;
+      }
       const rawMessage = error instanceof Error ? error.message : String(error);
       console.error('[ModelView INT8 Material Repaint] generation failed:', error);
       const timedOutGeneration = pendingGeneration
@@ -3526,6 +3607,9 @@ export function GeneratePanel({
         generationAbortControllersRef.current.get(pendingGeneration.id) === requestAbortController
       ) {
         generationAbortControllersRef.current.delete(pendingGeneration.id);
+      }
+      if (localRepaintPreparationAbortControllerRef.current === requestAbortController) {
+        localRepaintPreparationAbortControllerRef.current = undefined;
       }
       submitLocksRef.current.delete('repaint');
       setSubmissionActive(submitLocksRef.current.size > 0);
@@ -4490,7 +4574,11 @@ export function GeneratePanel({
           variant="danger"
           onClick={cancelCurrentGeneration}
           title={
-            snapshotPreparing
+            contentAwareRepairActive
+              ? '终止内容识别填补'
+              : localRepaintPreparationCancellable
+                ? '终止局部生图准备'
+                : snapshotPreparing
               ? '终止多视图快照'
               : isTextureMapTab
                 ? '终止纹理贴图生成'
@@ -4499,7 +4587,11 @@ export function GeneratePanel({
                   : '终止莉刻生图'
           }
           aria-label={
-            snapshotPreparing
+            contentAwareRepairActive
+              ? '终止内容识别填补'
+              : localRepaintPreparationCancellable
+                ? '终止局部生图准备'
+                : snapshotPreparing
               ? '终止多视图快照'
               : isTextureMapTab
                 ? '终止纹理贴图生成'
@@ -4874,7 +4966,10 @@ export function GeneratePanel({
         )}
       {workspaceActive &&
         portalRoot &&
-        (cancelConfirmGeneration || cancelTextureSnapshotConfirmOpen) &&
+        (cancelConfirmGeneration ||
+          cancelTextureSnapshotConfirmOpen ||
+          cancelLocalRepaintPreparationConfirmOpen ||
+          cancelContentAwareRepairConfirmOpen) &&
         createPortal(
           <div
             data-task-preview-allowed="true"
@@ -4892,6 +4987,8 @@ export function GeneratePanel({
                   onClick={() => {
                     setCancelConfirmGeneration(undefined);
                     setCancelTextureSnapshotConfirmOpen(false);
+                    setCancelLocalRepaintPreparationConfirmOpen(false);
+                    setCancelContentAwareRepairConfirmOpen(false);
                   }}
                   aria-label={t('close')}
                   title={t('close')}
@@ -4903,6 +5000,10 @@ export function GeneratePanel({
                 当前任务会立即从莉刻 3D Texture 面板中停止等待，生成结果不会写回预览、图层或项目。
                 {cancelTextureSnapshotConfirmOpen
                   ? ' 当前快照准备会停止，且不会继续向远端提交纹理生图任务。'
+                  : cancelLocalRepaintPreparationConfirmOpen
+                    ? ' 当前局部生图准备和提示词优化会停止，且不会提交远端生图任务。'
+                    : cancelContentAwareRepairConfirmOpen
+                      ? ' 当前内容识别填补会停止，未完整发布的填补结果将被丢弃。'
                   : cancelConfirmGeneration?.metadata.provider === 'comfyui-local'
                     ? ' 同时会向本地 ComfyUI 发送中断请求。'
                     : cancelConfirmGeneration?.metadata.provider === 'modelview-seedvr2' ||
@@ -4920,6 +5021,8 @@ export function GeneratePanel({
                   onClick={() => {
                     setCancelConfirmGeneration(undefined);
                     setCancelTextureSnapshotConfirmOpen(false);
+                    setCancelLocalRepaintPreparationConfirmOpen(false);
+                    setCancelContentAwareRepairConfirmOpen(false);
                   }}
                 >
                   继续等待
@@ -4927,11 +5030,18 @@ export function GeneratePanel({
                 <Button
                   variant="danger"
                   className="h-10"
-                  disabled={cancelTextureSnapshotConfirmOpen && texturePipelineCancelling}
+                  disabled={
+                    (cancelTextureSnapshotConfirmOpen && texturePipelineCancelling) ||
+                    (cancelContentAwareRepairConfirmOpen && contentAwareRepairCancelling)
+                  }
                   onClick={
                     cancelTextureSnapshotConfirmOpen
                       ? confirmCancelTextureSnapshot
-                      : confirmCancelCurrentGeneration
+                      : cancelLocalRepaintPreparationConfirmOpen
+                        ? confirmCancelLocalRepaintPreparation
+                        : cancelContentAwareRepairConfirmOpen
+                          ? confirmCancelContentAwareRepair
+                          : confirmCancelCurrentGeneration
                   }
                   icon={<Square className="h-4 w-4 fill-current" />}
                 >

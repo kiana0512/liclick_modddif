@@ -7329,11 +7329,9 @@ export function EditorPage({
       const benchmarkOnly = options?.benchmarkOnly === true;
       const silentForeground = options?.silentForeground === true;
       const taskToken = Symbol('content-aware-repair');
-      if (!silentForeground) {
-        contentAwareRepairTaskTokenRef.current = taskToken;
-        setContentAwareRepairTaskActive(true);
-        setContentAwareRepairCancelling(false);
-      }
+      contentAwareRepairTaskTokenRef.current = taskToken;
+      setContentAwareRepairTaskActive(true);
+      setContentAwareRepairCancelling(false);
       return scheduleEngineHeavyTask(engineSession, {
         key: 'full-resolution-texture',
         label: 'content-aware-repair',
@@ -7359,7 +7357,7 @@ export function EditorPage({
           throw error;
         })
         .finally(() => {
-          if (silentForeground || contentAwareRepairTaskTokenRef.current !== taskToken) return;
+          if (contentAwareRepairTaskTokenRef.current !== taskToken) return;
           contentAwareRepairTaskTokenRef.current = undefined;
           setContentAwareRepairTaskActive(false);
           setContentAwareRepairCancelling(false);
@@ -7781,6 +7779,9 @@ export function EditorPage({
             onRequestLocalImageGeneration={handleLocalImageGenerationFromToolbar}
             onLocalImageGenerationSettled={handleLocalImageGenerationSettled}
             cancelActiveGenerationRequestKey={cancelActiveGenerationRequestKey}
+            contentAwareRepairActive={contentAwareRepairTaskActive}
+            contentAwareRepairCancelling={contentAwareRepairCancelling}
+            onCancelContentAwareRepair={interruptContentAwareRepair}
             // GeneratePanel owns its own local/multiview generation state. Do
             // not feed the toolbar-to-panel local request bridge back as an
             // external lock: the panel must be allowed to consume that exact

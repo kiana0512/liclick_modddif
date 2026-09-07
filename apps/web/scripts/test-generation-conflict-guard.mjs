@@ -61,8 +61,8 @@ for (const action of ['导入参考图', '切换参考图', '复制参考图', '
 assert.match(generatePanel, /cancelActiveGenerationRequestKey\?: number/);
 assert.match(
   generatePanel,
-  /\(cancelConfirmGeneration \|\| cancelTextureSnapshotConfirmOpen\)[\s\S]*?终止莉刻生图[\s\S]*?丢弃本次等待结果？[\s\S]*?终止并丢弃/,
-  'Submitted generations and snapshot preparation must share one cancellation dialog.',
+  /\(cancelConfirmGeneration \|\|[\s\S]*?cancelTextureSnapshotConfirmOpen \|\|[\s\S]*?cancelLocalRepaintPreparationConfirmOpen \|\|[\s\S]*?cancelContentAwareRepairConfirmOpen\)[\s\S]*?终止莉刻生图[\s\S]*?丢弃本次等待结果？[\s\S]*?终止并丢弃/,
+  'Submitted generations and every preparation stage must share one cancellation dialog.',
 );
 assert.doesNotMatch(generatePanel, /停止本次快照任务？|>终止快照</);
 assert.match(
