@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { serverConfig } from '../config.js';
+import { streamFileResponse } from './fileResponseService.js';
 
 const retiredHostExtensionPaths = new Set([
   '/downloads/LIclick-3D-Texture-Local-Component-Setup.exe',
@@ -111,6 +112,6 @@ export async function serveWebFrontend(
     'content-length': String(stat.size),
   });
   if (request.method === 'HEAD') response.end();
-  else fs.createReadStream(filePath).pipe(response);
+  else streamFileResponse(filePath, response);
   return true;
 }

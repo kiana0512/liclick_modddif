@@ -1,6 +1,6 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
-> 文档版本：`2.18.6`
+> 文档版本：`2.18.12`
 >
 > 生效日期：`2026-09-07`
 >
@@ -11,6 +11,26 @@
 > 审计口径：`0a2519d + 607e82f + 2568e40`，不包含错误文档提交 `2bde8c6/e03bab2/d1c5f78`
 
 ## 1. 文档地位与强制边界
+
+变更卡 `CHG-20260907-FILE-RESPONSE-ABORT-CLOSE`：主模块 M14，协作 M01/M10/M13；文件响应生命周期契约 `FILE-RESPONSE-LIFETIME` v1.0.0。用户删除 11-20 工程时 Windows rename 到回收站报 EPERM。源码发现 workspace、烘焙单张产物、Web 静态文件响应直接 ReadStream.pipe(response)，取消下载后可能将源流留在背压暂停状态，继续持有文件描述符。改为共用 Node pipeline，由响应提前关闭/读取失败联动销毁源流；完整响应和背压不变，不将网络中断升级为未处理异常。真实 HTTP 测试用 16 MiB 文件中途取消，旧 pipe 实现在句柄关闭断言失败，新实现通过；同测验证完整字节、源读取失败及保留数据的目录移入回收站。该证据证明文件句柄泄漏，不据此认定所有 EPERM 都来自相同原因；旧进程句柄需重启释放。调用前的认证、owner、路径包含/realpath、安全响应头、HEAD 与烘焙状态门禁保持，删除仍走原回收站 rename，不以强制删除代替。GPU/CPU/Worker/shader、投影/UV/重绘/export 内容、分辨率、QA、Schema、Command 幂等性、Revision CAS 与 verified assets 不变，无迁移；回退仅恢复三个响应入口的 pipe，但会重新引入中断资源泄漏。
+
+文件响应修复验证：后端完整 13 项回归通过，修改文件 lint、Cloud/repository 边界及 diff 检查通过。重启本地 4517 加载修复并释放旧进程句柄后，通过正常页面菜单与确认框删除 11-20 成功；列表仅剩其余三个项目，原目录不存在，回收站保留 `11-20-0c9af007-1788770255481`。未强制删除工程数据；本次实测证实恢复删除，但不能区分旧进程具体哪个文件句柄造成原 EPERM。
+
+推送竞态处理：首次推送被远端新增 `c0c15cb` 拒绝后，已将四个本地提交重放到该提交上，未强推。完整保留上游 `previousRoot?.visible === false` 运行时修正；重叠测试使用真实 handoff helper，覆盖原上游同/跨对象断言，并保留隐藏、未指定 visible 与 legacy 无归属用例。此前 86 项 Web/12 项 Server 全回归通过；重放后重新执行 ordered-composition 与 layer-retention 两项相关回归均通过，最终构建另行核对。
+
+2026-09-07 本批推送前集成：快进合入 master `4fe9a58` 的跨对象预览交接修复，完整保留运行时代码。其新增 previousRoot.visible/对象身份门禁暴露了 ordered-composition 旧测试使用空对象模拟根节点的问题；测试改为可见根节点及真实 isLocalRepaintHandoffForObject，保留原同对象 resident/merged-UV 断言，新增隐藏、跨对象和 legacy 无归属用例，不放宽运行时门禁。M15 测试契约更新，不改变算法/Schema，无迁移。后端 12 项回归、完整 Cloud build:release、artifact/包体门禁通过：80 chunks / 3,131,704 bytes；全仓 lint 为 0 errors / 15 条既有 warnings，部署策略 5 项测试通过。历史段落中的“未推送”表示各阶段记录，本批提交/流水线状态须以最终回复与 GitLab 为准，release 保持不动。
+
+变更卡 `CHG-20260907-SERVER-ARCHIVE-CRC`：主模块 M11，协作 M10/M13，`PERF-EXPORT-ZIP-001` v1.0.2。后端烘焙归档 updateCrc32 同样改为 Buffer 索引读取，保留跨流分块的 CRC 状态和所有 ZIP 结构。Node 24 / 16 MiB 按 64 KiB 分块、三次预热及七轮交替测量，中位 46.90→25.60ms；这是累计 CRC CPU 时间，不是单次事件循环阻塞或下载总耗时。实际生产模块经 TypeScript 编译后与冻结旧实现对照，以真实文件 ReadStream 和 highWaterMark=1 的慢 Writable 验证完整 ZIP 字节、背压、尺寸变化拒绝、ZIP32 上限及 400 组不同分块边界；原任务 ownership/成功状态门禁、流式发送、归档文件内容及 HTTP 路由未改。GPU/CPU 图像算法、Worker/shader、投影/UV/重绘、输出分辨率、QA、Schema、Command/Revision/ownership 与 verified assets 不变，无迁移；回退只恢复 updateCrc32 的 for-of。未移除客户端断开、流式文件 I/O 或任务扫描等其他潜在开销。
+
+CRC 索引读取集成验证：86 项 Web 回归通过，正式身份构建 80 chunks / 3,131,527 bytes，通过原 3,134,000-byte 门禁；修改文件 lint、Cloud/repository 边界和 diff 检查通过。本轮仅新增 CRC 读取优化，未进行新的浏览器帧率或付费生成测试，未提交/推送；此前 ZIP 内存与模型订阅本地补丁完整保留。
+
+变更卡 `CHG-20260907-ZIP-CRC-INDEXED-READ`：主模块 M11，资源/计算契约 `PERF-EXPORT-ZIP-001` v1.0.1。createZipBlob 的 CRC32 改为 Uint8Array 索引读取，省去逐字节迭代器开销；CRC 查表、初值、多项式、移位/XOR 顺序、终值及字节访问范围不变。仍同步完成同一数据视图校验，不引入异步期间调用方修改数据的竞态。Node 24 / 16 MiB、三轮预热后七轮交替测量：旧中位 80.55ms，新中位 26.25ms；只是该机器隔离 CPU 测量，不等同于浏览器导出总时长或 FPS 提升。标准 CRC 向量、400 组偏移/长度/随机/全零/全 255 夹具同时对照冻结旧实现与独立 bitwise oracle，完整 ZIP 字节对照保留。OBJ/MTL/纹理与 Comfy 控制图仍经相同 ZIP 入口，现有 manifest/QA 验证不变；不修改 GPU/CPU 图像算法、Worker/shader、投影/UV/重绘/export 像素、分辨率、Schema、Command/Revision/ownership 或 verified assets，无迁移。回退仅恢复 CRC for-of；同步 CRC 仍可能超过一帧，未承诺零掉帧。
+
+2026-09-07 后续性能集成验证：已将前一批优化推送 master `2dc1c02`，release 仍为 `2c49d52`；GitLab 页面需要双重验证，维护者要求先继续性能，因此不宣称该 CI 已通过。推送后的 ZIP/模型订阅补丁仍在本地：86 项 Web 回归、typecheck、修改文件 lint（0 errors、SceneRoot 一条既有 warning）、Cloud/repository 边界与 diff 检查通过；正式身份构建 80 chunks / 3,131,497 bytes，原 3,134,000-byte 门禁通过。4517 九模型工程恢复、杯子/桶切换与贴图显示正常，已恢复桶并显示 Saved，浏览器 error 为空；初次切换窗口仍见 83ms 峰值，没有严格前后 FPS 对照，不宣称零掉帧或所有热点已消除。未执行付费生成或生产导出。
+
+变更卡 `CHG-20260907-VIEWPORT-PROJECT-SUBSCRIPTION`：主模块 M03，订阅契约 `PERF-VIEW-PROJECT-001` v1.0.0。ImportedModel 对当前 project 的实际消费仅为 id/captures/bakedTextures；原整个对象订阅使改名、选中对象及保存元数据更新也使每个模型订阅失效。改用已安装 Zustand useShallow，仅比较上述三项身份；当前工程缺失继续返回 undefined，工程切换、捕获和烘焙贴图替换仍即时通知。findExactLayerStackTexture 仅将 TypeScript 入参缩窄为其实际读取的 bakedTextures，无运行时代码变化。回归执行 SceneRoot 实际 selector 和已安装 useShallow，九模型×100 次无关更新从预期 900 次失效降为 0；捕获/贴图/工程切换/移除/恢复逐项通知通过。这是订阅失效计数，不是浏览器总 render 数或 FPS 提升比例；其他 store/props 仍能触发组件渲染。GPU/CPU/Worker/shader、投影/UV/重绘/导出、缓存匹配公式、像素、分辨率、QA、Schema、Command 幂等性、Revision CAS、ownership 与资产不变，无迁移。回退恢复整个 project 订阅和原类型即可。
+
+变更卡 `CHG-20260907-ZIP-COPY-REMOVAL`：主模块 M11，资源契约 `PERF-EXPORT-ZIP-001` v1.0.0。OBJ 材质打包与 Comfy 控制图导出共用 createZipBlob，原实现为所有 chunk 分配同尺寸 ArrayBuffer 并复制，再构造 Blob；现在直接把 ArrayBuffer-backed Uint8Array 视图交给 Blob，由构造器按 byteOffset/byteLength 拍下不可变快照，移除 JavaScript 层整包重复复制。CRC、ZIP 顺序/头/目录/时间/编码/偏移、输入文件内容、PNG/材质/蒙版及分辨率均不变；不修改 GPU/CPU/Worker/shader、投影/UV/重绘、生产服务、Schema、Command/Revision/ownership 或 verified assets，无迁移。固定时间戳下对冻结旧实现逐字节对照，覆盖空包、Unicode/反斜杠文件名、Blob、ArrayBuffer、偏移 TypedArray/DataView、空文件和 16 MiB 文件；构造后修改输入不改变输出。测试夹具显式 ArrayBuffer 复制由 16,777,979 bytes 降到 0，不代表 Blob 零拷贝或 RSS 同幅下降。CRC 同步循环仍在，不宣称导出零掉帧。回退只恢复原 chunks.map 复制。此补丁在 master `2dc1c02` 推送之后，本地验证与该提交 CI 状态需分开报告。
 
 变更卡 `CHG-20260907-BAKE-ROUGHNESS-ASYNC-IO`：主模块 M10，I/O 调度契约 `PERF-BAKE-IO-001` v1.0.0。合入 master `5c672ca`（含上游输入 bitmap 修复与提示词更新）后，粗糙度自动生成阶段改用 fs.promises.readFile/writeFile 读取 BaseColor 和写入原始 PNG，等待整次读取后才远程提交、等待写入后才执行既有 PNG 头与分辨率检查并发布。24 字节头校验、小型任务记录和远端取消语义未变，不宣称完全无同步 I/O。回归执行编译后的真实阶段，覆盖成功、读失败、远程失败、非 PNG、写失败、尺寸不匹配；验证异步读取让出事件循环、原 Buffer 身份、发布顺序及失败不发布。GPU/CPU/Worker/shader、生产烘焙公式、mask、投影/UV/export、分辨率、QA、Schema、Command 幂等性、Revision CAS、ownership 和 verified assets 不变，无迁移；回退只恢复这两处同步读写。上游 generationInputWorker 原修复完整保留，本地只补充 local/single 两入口参数与三图顺序回归，不重复更改其算法。
 
@@ -863,6 +883,12 @@ M15 / CLOUD-DEPLOYMENT v1.0.0（2026-09-03）：正常合并 release 部署历�
 | `2.18.4` | 2026-09-07 | `本次重绘共享图片显式解码` | M08、`ALG-LR-008` v2.4.5：加载器等待原图 decode 后发布共享 Promise，保留失败兼容、六项 LRU、调用方取消及原始像素/尺寸。无算法语义、Schema 或数据迁移。 |
 | `2.18.5` | 2026-09-07 | `本次全仓性能审计与列表查询裁剪` | M14/M01、`PERF-PROJECT-LIST-001` v1.0.0：数据库仅返回原 JSON 摘要字段，保留隔离/排序/默认值；11 项后端回归通过。443 个代码文件静态筛查，其他候选热点列入审计清单。无图像算法、Schema 或数据迁移。 |
 | `2.18.6` | 2026-09-07 | `同步 master 后继续烘焙 I/O 优化` | M10、`PERF-BAKE-IO-001` v1.0.0：粗糙度阶段整图读写异步化，保留校验与发布顺序。保留上游提示词/解码修复；无算法语义、Schema 或数据迁移。 |
+| `2.18.7` | 2026-09-07 | `ZIP 导出重复整包复制移除` | M11、`PERF-EXPORT-ZIP-001` v1.0.0：直接由 Blob 快照 ArrayBuffer-backed 视图，完整 ZIP 字节对照与输入隔离通过，无格式、像素、Schema 或数据迁移。 |
+| `2.18.8` | 2026-09-07 | `模型工程订阅缩窄` | M03、`PERF-VIEW-PROJECT-001` v1.0.0：只订阅 id/captures/bakedTextures，阻止无关工程字段使所有模型订阅失效；缓存算法和完整图像结果不变，无迁移。 |
+| `2.18.9` | 2026-09-07 | `ZIP CRC 索引读取` | M11、`PERF-EXPORT-ZIP-001` v1.0.1：16 MiB 隔离 CRC 中位 80.55→26.25ms，400 组与完整 ZIP 精确对照通过；无字节/Schema/分辨率或数据迁移。 |
+| `2.18.10` | 2026-09-07 | `后端流式 ZIP CRC 优化` | M11/M10、`PERF-EXPORT-ZIP-001` v1.0.2：64 KiB 分块累计校验中位 46.90→25.60ms；真实流背压及归档字节对照通过，无算法语义/Schema 或数据迁移。 |
+| `2.18.11` | 2026-09-07 | `master 集成与交接测试夹具补全` | M15：保留 4fe9a58 运行时修复，补齐可见根节点/对象身份测试；旧断言与隐藏/跨对象/legacy 用例并存，不更改业务算法或数据。 |
+| `2.18.12` | 2026-09-07 | `中断下载释放文件句柄` | M14/M01、`FILE-RESPONSE-LIFETIME` v1.0.0：共享 pipeline 关闭被取消的模型/图片响应源流，防止 Windows 文件占用阻碍回收站移动；无算法或数据迁移。 |
 
 `ALG-LR-008` v2.4.1：局部重绘仍自动创建独立目标和结果图层；pointer-down 不再依赖当前图层是否选中、可见或为 UV，只检查自身 source/composite/Session/显示资源。默认保持按钮激活、GPU promotion、结果发布前的原选择（含 undefined），防止内部隐藏 draft 触发面板选择普通投影层。普通画笔/橡皮擦限制、GPU/CPU/Worker/shader、作者 mask、投影/UV/export、分辨率、Schema、Revision、ownership 与资产不变。真实 store 三类选择与入口 gate 回归通过；无数据迁移，回退选择保持与 gate 即可。详见 CHG-20260903-LOCAL-REPAINT-SELECTION-INDEPENDENCE。
 
