@@ -82,13 +82,43 @@ assert.match(
 );
 assert.match(
   bakeWorkspaceSource,
-  /function handleColorImport[\s\S]*?setColorFiles[\s\S]*?void persistImportedFiles\('color', assigned\)/,
+  /function handleColorImport[\s\S]*?setColorFiles[\s\S]*?void persistImportedFiles\('color', assigned, \{ selectedObjectId: targetObjectId \}\)/,
   'Base Color import must display immediately while persistence continues.',
 );
 assert.match(
   bakeWorkspaceSource,
   /function handleMaterialChannelImport[\s\S]*?setRoughnessFiles[\s\S]*?setMetallicFiles[\s\S]*?setNormalFiles[\s\S]*?void persistImportedFiles\(kind, assigned/,
   'Material-channel imports must display immediately while persistence continues.',
+);
+assert.match(
+  bakeWorkspaceSource,
+  /function resolveImportTargetId[\s\S]*?`bake-target-\$\{projectId\}`[\s\S]*?fileTargetIdRef\.current = targetObjectId[\s\S]*?setSelectedObjectId\(targetObjectId\)/,
+  'Bake assets imported before a high-poly model must share a stable pending Bake Set id.',
+);
+assert.match(
+  bakeWorkspaceSource,
+  /function assignImportedFiles[\s\S]*?highObjects\.length > 0[\s\S]*?assignFilesToObjects[\s\S]*?\{ \[targetObjectId\]: files\[0\] \}/,
+  'Low-poly and material files must remain assignable before a high-poly model exists.',
+);
+assert.doesNotMatch(
+  bakeWorkspaceSource,
+  /请先导入高模，再(?:为它添加对应的低模|添加对应的颜色贴图|添加对应的材质贴图)/,
+  'Import handlers must not enforce a high-poly-first ordering.',
+);
+assert.match(
+  bakeWorkspaceSource,
+  /async function handleLowImport[\s\S]*?resolveImportTargetId\(\)[\s\S]*?assignImportedFiles\(modelFiles, targetObjectId\)/,
+  'Low-poly import must use the order-independent Bake Set assignment.',
+);
+assert.match(
+  bakeWorkspaceSource,
+  /function handleColorImport[\s\S]*?resolveImportTargetId\(\)[\s\S]*?assignImportedFiles\(imageFiles, targetObjectId\)/,
+  'Base Color import must use the order-independent Bake Set assignment.',
+);
+assert.match(
+  bakeWorkspaceSource,
+  /function handleMaterialChannelImport[\s\S]*?resolveImportTargetId\(\)[\s\S]*?assignImportedFiles\(imageFiles, targetObjectId\)/,
+  'Material-channel imports must use the order-independent Bake Set assignment.',
 );
 assert.match(
   bakeWorkspaceSource,
@@ -118,7 +148,7 @@ try {
   const { resolveBakeEntryProject, selectMostRecentProject } = await server.ssrLoadModule(
     '/src/features/workflow/resolveBakeEntryProject.ts',
   );
-  const { normalizeBakeWorkspaceObjectIds } = await server.ssrLoadModule(
+  const { normalizeBakeWorkspaceObjectIds, replaceBakeHighSnapshot } = await server.ssrLoadModule(
     '/src/services/bakeHighSnapshot.ts',
   );
 
@@ -153,6 +183,50 @@ try {
     undefined,
     'Legacy empty Bake Set keys must be removed after normalization.',
   );
+
+  const pendingObjectId = 'bake-target-order-independent';
+  const pendingBakeProject = {
+    id: 'order-independent',
+    bakeWorkspace: {
+      version: 1,
+      activeStage: 'assets',
+      selectedObjectId: pendingObjectId,
+      bakeSets: {
+        [pendingObjectId]: {
+          objectId: pendingObjectId,
+          low: { name: 'low-first.glb', url: '/low-first.glb' },
+          color: { name: 'color-first.png', url: '/color-first.png' },
+        },
+      },
+    },
+  };
+  const mergedHighProject = replaceBakeHighSnapshot(pendingBakeProject, {
+    objectId: pendingObjectId,
+    asset: { name: 'high-last.glb', url: '/high-last.glb' },
+    highObject: {
+      id: 'temporary-loaded-id',
+      name: 'high-last.glb',
+      type: 'mesh',
+      format: 'glb',
+      visible: true,
+      selected: true,
+      materialSlots: [],
+      uvSets: [],
+      transform: {
+        position: [0, 0, 0],
+        rotation: [0, 0, 0],
+        scale: [1, 1, 1],
+      },
+    },
+  });
+  assert.equal(mergedHighProject.bakeWorkspace.bakeSets[pendingObjectId].high.name, 'high-last.glb');
+  assert.equal(mergedHighProject.bakeWorkspace.bakeSets[pendingObjectId].low.name, 'low-first.glb');
+  assert.equal(
+    mergedHighProject.bakeWorkspace.bakeSets[pendingObjectId].color.name,
+    'color-first.png',
+    'Importing the high-poly model last must retain low-poly and texture assets imported first.',
+  );
+  assert.equal(mergedHighProject.bakeWorkspace.activeStage, 'alignment');
 
   const cachedProject = { id: 'cached-project' };
   let listCalls = 0;
