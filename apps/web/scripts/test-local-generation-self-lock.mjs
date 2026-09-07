@@ -17,33 +17,38 @@ const progressStatusSource = generatePanel.slice(
 
 assert.match(
   textureMapPrompts,
-  /参考图一是不可修改的像素级构图与几何定位模板[\s\S]*?输出轮廓必须逐像素与图一重合/,
+  /参考图一是唯一的目标画布和空间定位依据[\s\S]*?外轮廓、内部孔洞、真实部件边界、遮挡关系和裁切范围不变/,
   'The texture prompt must treat the source silhouette as immutable pixel-level registration.',
 );
 assert.match(
   textureMapPrompts,
-  /不得向内侵蚀、内切、收缩、挖空或让背景侵入物体，也不得向外扩张、外延、描边、增加体积或覆盖到原轮廓之外/,
-  'The texture prompt must forbid both inward silhouette erosion and outward growth.',
+  /必须完整替换这些区域，不得残留白膜、灰块、透明缺口、硬边、光晕或明显的补丁边界/,
+  'The texture prompt must completely replace every unfinished white-model region.',
 );
 assert.match(
   textureMapPrompts,
-  /忽略图一物体轮廓内部由低模拓扑、三角面、硬法线、白膜渲染、Flat Shading或面数不足产生的折线、色块和明暗边界/,
+  /忽略白模区域中由低模拓扑、三角面、硬法线、Flat Shading或白膜光照产生的折线、块状明暗和多边形色块/,
   'The texture prompt must reject low-poly shading artifacts as material evidence.',
 );
 assert.match(
   textureMapPrompts,
-  /所有“顺滑”只允许发生在图一原始轮廓内部[\s\S]*?即使原轮廓本身呈多边形，也必须原样保留/,
+  /属于同一连续曲面的区域应跨越多边形边界自然、顺滑地延续材质[\s\S]*?不得改变真实几何位置或外轮廓/,
   'Material smoothing must not be interpreted as permission to reshape the target silhouette.',
 );
 assert.match(
   textureMapPrompts,
-  /输出应接近用于3D投影的Base Color \/ Albedo[\s\S]*?尽量消除方向性光照、投影、环境遮蔽、接触阴影、强高光、镜面反射、边缘光和大范围明暗渐变/,
+  /输出应接近用于3D投影的Base Color \/ Albedo[\s\S]*?不增加方向性阴影、环境遮蔽、接触阴影、强高光、镜面反射、边缘光或大范围明暗渐变/,
   'The texture prompt must request projection-ready material with subdued lighting.',
 );
 assert.match(
   textureMapPrompts,
-  /`\$\{textureMapDefaultPrompt\}\\n\\n用户补充材质要求：\$\{trimmedPrompt\}`/,
+  /`\$\{textureMapPrompt\}\\n\\n用户补充材质要求：\$\{trimmedPrompt\}`/,
   'User material requirements must remain appended after the shared main template.',
+);
+assert.doesNotMatch(
+  textureMapPrompts,
+  /以参考图一为目标视角，将参考图二的材质外观迁移到图一对应的可见表面/,
+  'The retired whole-surface prompt must not remain as a fallback.',
 );
 assert.match(
   generatePanel,

@@ -67,15 +67,20 @@ assert.match(
 assert.match(textureMapPrompts, /图一中已经具有颜色、纹理和材质的区域属于锁定内容/);
 assert.match(
   textureMapPrompts,
-  /原始像素边界就是不可跨越的硬蒙版[\s\S]*?不得少填、内切、侵蚀、缩小、挖空或产生透明缺口[\s\S]*?不得越界、外扩/,
-  'completion must fill only the original white-model mask without shrinking or expanding it',
+  /只补全参考图一中尚未贴图的白色或浅灰色白模区域[\s\S]*?必须完整替换这些区域/,
+  'completion must fill every unfinished white-model region',
 );
 assert.match(
   textureMapPrompts,
-  /所有“顺滑”只允许发生在白模硬蒙版内部[\s\S]*?不得移动、圆整、修正或重新绘制白模边界、物体外轮廓及真实部件边界/,
+  /属于同一连续曲面的区域应跨越多边形边界自然、顺滑地延续材质[\s\S]*?不得改变真实几何位置或外轮廓/,
   'low-poly smoothing must remain an interior material operation and never reshape the silhouette',
 );
 assert.match(textureMapPrompts, /输出应接近用于3D投影的Base Color \/ Albedo/);
+assert.doesNotMatch(
+  textureMapPrompts,
+  /以参考图一为目标视角，将参考图二的材质外观迁移到图一对应的可见表面/,
+  'the old whole-surface fallback prompt must not remain',
+);
 
 assert.match(
   panel,
