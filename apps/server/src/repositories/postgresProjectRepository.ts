@@ -445,9 +445,22 @@ export function createPostgresProjectRepository(database: ProjectSqlDatabase): P
     async list(userId): Promise<ProjectSummary[]> {
       const result = await database.query<{
         slug: string;
-        document_json: WorkspaceProject;
+        document_json: Pick<
+          WorkspaceProject,
+          'id' | 'name' | 'folderId' | 'createdAt' | 'updatedAt' | 'thumbnail' | 'revision'
+        >;
       }>(
-        `SELECT slug, document_json
+        // Listing must not transfer/parse every capture, layer and generation.
+        // Keep values sourced from the same JSON document as the full loader.
+        `SELECT slug, jsonb_build_object(
+                  'id', document_json->'id',
+                  'name', document_json->'name',
+                  'folderId', document_json->'folderId',
+                  'createdAt', document_json->'createdAt',
+                  'updatedAt', document_json->'updatedAt',
+                  'thumbnail', document_json->'thumbnail',
+                  'revision', document_json->'revision'
+                ) AS document_json
            FROM project_documents
           WHERE user_id = $1 AND deleted_at IS NULL
           ORDER BY updated_at DESC`,
