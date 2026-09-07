@@ -88,7 +88,9 @@ async function prepareWorkerInput(input: {
     readImageBlob(input.clayPreviewUrl),
     readImageBlob(input.maskUrl),
   ]);
-  const [currentEffect, clayPreview, inputMask] = await Promise.all(blobs.map(createImageBitmap));
+  const [currentEffect, clayPreview, inputMask] = await Promise.all(
+    blobs.map((blob) => createImageBitmap(blob)),
+  );
   const id = nextRequestId++;
   return new Promise<WorkerResult>((resolve, reject) => {
     pendingRequests.set(id, { resolve, reject });

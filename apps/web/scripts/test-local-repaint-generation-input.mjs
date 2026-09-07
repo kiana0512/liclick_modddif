@@ -11,10 +11,15 @@ const workerPath = path.resolve(
   scriptDirectory,
   '../src/workers/localRepaintGenerationInput.worker.ts',
 );
+const generationInputWorkerPath = path.resolve(
+  scriptDirectory,
+  '../src/engine/localRepaint/generationInputWorker.ts',
+);
 const panelPath = path.resolve(scriptDirectory, '../src/components/panels/GeneratePanel.tsx');
 const editorPagePath = path.resolve(scriptDirectory, '../src/routes/EditorPage.tsx');
 const pngCorePath = path.resolve(scriptDirectory, '../src/utils/encodeRgbaPngCore.ts');
 const workerSource = fs.readFileSync(workerPath, 'utf8');
+const generationInputWorkerSource = fs.readFileSync(generationInputWorkerPath, 'utf8');
 const panelSource = fs.readFileSync(panelPath, 'utf8');
 const editorPageSource = fs.readFileSync(editorPagePath, 'utf8');
 const pngCoreSource = fs.readFileSync(pngCorePath, 'utf8');
@@ -310,6 +315,16 @@ assert.match(
   editorPageSource,
   /function getLocalRepaintAuthoringMaskUrl\([\s\S]*?metadata\.authoredMaskUrl[\s\S]*?metadata\.maskUrl/,
   'Brush restore must prefer the authored mask and retain legacy mask fallback.',
+);
+assert.match(
+  generationInputWorkerSource,
+  /blobs\.map\(\(blob\) => createImageBitmap\(blob\)\)/,
+  'Each Blob must be passed to createImageBitmap without Array.map index/array arguments.',
+);
+assert.doesNotMatch(
+  generationInputWorkerSource,
+  /blobs\.map\(createImageBitmap\)/,
+  'Passing createImageBitmap directly to Array.map breaks its overloaded argument resolution.',
 );
 assert.match(workerSource, /Math\.round\(24 \* scale\)/);
 assert.match(workerSource, /Math\.round\(64 \* scale\)/);
