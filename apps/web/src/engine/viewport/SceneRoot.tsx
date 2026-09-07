@@ -1,6 +1,7 @@
 import { useFrame, useThree } from '@react-three/fiber';
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three';
+import { useShallow } from 'zustand/react/shallow';
 import {
   createDisplayModeMaterial,
   createFlatPreviewMaterial,
@@ -1438,10 +1439,15 @@ const ImportedModel = memo(function ImportedModel({
         : undefined,
     [layers, localRepaintLiveFeedbackRequested, localRepaintPreviewLayer],
   );
-  const project = useProjectStore((state) =>
-    state.currentProjectId
-      ? state.projects.find((item) => item.id === state.currentProjectId)
-      : undefined,
+  const project = useProjectStore(
+    useShallow((state) => {
+      const current = state.currentProjectId
+        ? state.projects.find((item) => item.id === state.currentProjectId)
+        : undefined;
+      return current
+        ? { id: current.id, captures: current.captures, bakedTextures: current.bakedTextures }
+        : undefined;
+    }),
   );
   const captureById = useMemo(
     () => new Map(project?.captures.map((capture) => [capture.id, capture] as const) ?? []),

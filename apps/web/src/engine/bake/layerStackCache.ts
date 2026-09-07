@@ -84,7 +84,7 @@ function getStableLayerAssetKey(url: string | undefined) {
 }
 
 export function findExactLayerStackTexture(
-  project: Project | undefined,
+  project: Pick<Project, 'bakedTextures'> | undefined,
   visibleLayers: Layer[],
   expectedResolution?: number,
   objectId?: string,
