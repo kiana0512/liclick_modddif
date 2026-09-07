@@ -4874,7 +4874,7 @@ export function GeneratePanel({
         )}
       {workspaceActive &&
         portalRoot &&
-        cancelTextureSnapshotConfirmOpen &&
+        (cancelConfirmGeneration || cancelTextureSnapshotConfirmOpen) &&
         createPortal(
           <div
             data-task-preview-allowed="true"
@@ -4883,66 +4883,16 @@ export function GeneratePanel({
             <div className="w-full max-w-[420px] rounded-lg border border-white/16 bg-[#151520] p-4 text-white shadow-2xl">
               <div className="mb-3 flex items-start justify-between gap-3">
                 <div>
-                  <div className="text-sm font-semibold text-liclick-pink">终止多视图快照</div>
-                  <div className="mt-1 text-lg font-bold">停止本次快照任务？</div>
-                </div>
-                <button
-                  type="button"
-                  className="grid h-8 w-8 place-items-center rounded-md text-white/70 transition hover:bg-white/10 hover:text-white"
-                  onClick={() => setCancelTextureSnapshotConfirmOpen(false)}
-                  aria-label={t('close')}
-                  title={t('close')}
-                >
-                  <X className="h-4 w-4" />
-                </button>
-              </div>
-              <p className="text-sm leading-6 text-white/72">
-                当前快照会在正在处理的这一张结束后停止，已完成的临时快照将被丢弃，且不会继续向远端提交纹理生图任务。
-              </p>
-              <div className="mt-4 grid grid-cols-2 gap-2">
-                <Button
-                  variant="secondary"
-                  className="h-10"
-                  onClick={() => setCancelTextureSnapshotConfirmOpen(false)}
-                >
-                  继续等待
-                </Button>
-                <Button
-                  variant="danger"
-                  className="h-10"
-                  disabled={texturePipelineCancelling}
-                  onClick={confirmCancelTextureSnapshot}
-                  icon={<Square className="h-4 w-4 fill-current" />}
-                >
-                  终止快照
-                </Button>
-              </div>
-            </div>
-          </div>,
-          portalRoot,
-        )}
-      {workspaceActive &&
-        portalRoot &&
-        cancelConfirmGeneration &&
-        createPortal(
-          <div
-            data-task-preview-allowed="true"
-            className="fixed inset-0 z-[140] grid place-items-center bg-black/62 px-4 backdrop-blur-sm"
-          >
-            <div className="w-full max-w-[420px] rounded-lg border border-white/16 bg-[#151520] p-4 text-white shadow-2xl">
-              <div className="mb-3 flex items-start justify-between gap-3">
-                <div>
-                  <div className="text-sm font-semibold text-liclick-pink">
-                    {isTextureMapGeneration(cancelConfirmGeneration)
-                      ? '终止纹理贴图生成'
-                      : '终止莉刻生图'}
-                  </div>
+                  <div className="text-sm font-semibold text-liclick-pink">终止莉刻生图</div>
                   <div className="mt-1 text-lg font-bold">丢弃本次等待结果？</div>
                 </div>
                 <button
                   type="button"
                   className="grid h-8 w-8 place-items-center rounded-md text-white/70 transition hover:bg-white/10 hover:text-white"
-                  onClick={() => setCancelConfirmGeneration(undefined)}
+                  onClick={() => {
+                    setCancelConfirmGeneration(undefined);
+                    setCancelTextureSnapshotConfirmOpen(false);
+                  }}
                   aria-label={t('close')}
                   title={t('close')}
                 >
@@ -4951,28 +4901,38 @@ export function GeneratePanel({
               </div>
               <p className="text-sm leading-6 text-white/72">
                 当前任务会立即从莉刻 3D Texture 面板中停止等待，生成结果不会写回预览、图层或项目。
-                {cancelConfirmGeneration.metadata.provider === 'comfyui-local'
-                  ? ' 同时会向本地 ComfyUI 发送中断请求。'
-                  : cancelConfirmGeneration.metadata.provider === 'modelview-seedvr2' ||
-                      cancelConfirmGeneration.metadata.provider === 'modelview-int8' ||
-                      cancelConfirmGeneration.metadata.provider === 'modelview-single-view' ||
-                      cancelConfirmGeneration.metadata.provider ===
-                        'modelview-single-view-inpaint'
-                    ? ' ModelView 接口没有取消端点，本地会断开当前等待。'
-                    : ' 同时会向生图后端发送取消请求。'}
+                {cancelTextureSnapshotConfirmOpen
+                  ? ' 当前快照准备会停止，且不会继续向远端提交纹理生图任务。'
+                  : cancelConfirmGeneration?.metadata.provider === 'comfyui-local'
+                    ? ' 同时会向本地 ComfyUI 发送中断请求。'
+                    : cancelConfirmGeneration?.metadata.provider === 'modelview-seedvr2' ||
+                        cancelConfirmGeneration?.metadata.provider === 'modelview-int8' ||
+                        cancelConfirmGeneration?.metadata.provider === 'modelview-single-view' ||
+                        cancelConfirmGeneration?.metadata.provider ===
+                          'modelview-single-view-inpaint'
+                      ? ' ModelView 接口没有取消端点，本地会断开当前等待。'
+                      : ' 同时会向生图后端发送取消请求。'}
               </p>
               <div className="mt-4 grid grid-cols-2 gap-2">
                 <Button
                   variant="secondary"
                   className="h-10"
-                  onClick={() => setCancelConfirmGeneration(undefined)}
+                  onClick={() => {
+                    setCancelConfirmGeneration(undefined);
+                    setCancelTextureSnapshotConfirmOpen(false);
+                  }}
                 >
                   继续等待
                 </Button>
                 <Button
                   variant="danger"
                   className="h-10"
-                  onClick={confirmCancelCurrentGeneration}
+                  disabled={cancelTextureSnapshotConfirmOpen && texturePipelineCancelling}
+                  onClick={
+                    cancelTextureSnapshotConfirmOpen
+                      ? confirmCancelTextureSnapshot
+                      : confirmCancelCurrentGeneration
+                  }
                   icon={<Square className="h-4 w-4 fill-current" />}
                 >
                   终止并丢弃

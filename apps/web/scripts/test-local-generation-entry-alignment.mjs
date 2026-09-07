@@ -32,7 +32,7 @@ assert.match(
 );
 assert.equal(
   [...generatePanel.matchAll(/workspaceActive &&\s*portalRoot &&/g)].length,
-  4,
+  3,
   'all generation-panel portals must stay hidden while the retained editor is inactive',
 );
 assert.match(

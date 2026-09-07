@@ -34,11 +34,15 @@ assert.match(
   'Model mutation must remain blocked for local repaint as well as ordinary generation.',
 );
 assert.match(editor, /window\.addEventListener\('beforeunload', warnBeforeUnload\)/);
-assert.match(editor, /生图任务进行中/);
-assert.match(editor, /任务完成前无法执行“\{generationConflictDialog\.action\}”/);
-assert.match(editor, /max-w-\[360px\]/);
+assert.doesNotMatch(editor, /生图任务进行中/);
+assert.doesNotMatch(editor, /generationConflictDialog/);
+assert.doesNotMatch(editor, /max-w-\[360px\]/);
 assert.doesNotMatch(editor, /activeConflictObjectName|activeConflictReferenceName/);
-assert.match(editor, /setCancelActiveGenerationRequestKey\(\(key\) => key \+ 1\)/);
+assert.match(
+  editor,
+  /const showGenerationConflict = useCallback\([\s\S]*?setCancelActiveGenerationRequestKey\(\(key\) => key \+ 1\)/,
+  'A blocked editor action must open the shared generation cancellation dialog directly.',
+);
 assert.match(editor, /showGenerationConflict\('返回项目列表'\)/);
 assert.match(editor, /showGenerationConflict\('进入 UV 工作区'\)/);
 assert.match(editor, /showGenerationConflict\('进入烘焙工作区'\)/);
@@ -55,6 +59,12 @@ for (const action of ['导入参考图', '切换参考图', '复制参考图', '
 }
 
 assert.match(generatePanel, /cancelActiveGenerationRequestKey\?: number/);
+assert.match(
+  generatePanel,
+  /\(cancelConfirmGeneration \|\| cancelTextureSnapshotConfirmOpen\)[\s\S]*?终止莉刻生图[\s\S]*?丢弃本次等待结果？[\s\S]*?终止并丢弃/,
+  'Submitted generations and snapshot preparation must share one cancellation dialog.',
+);
+assert.doesNotMatch(generatePanel, /停止本次快照任务？|>终止快照</);
 assert.match(
   generatePanel,
   /const result = await updateLatestProject\([\s\S]*?\.\.\.latest,[\s\S]*?objects,[\s\S]*?layers,[\s\S]*?references,[\s\S]*?generations,[\s\S]*?captures,[\s\S]*?settings: project\.settings,[\s\S]*?\},[\s\S]*?5,[\s\S]*?\);/,

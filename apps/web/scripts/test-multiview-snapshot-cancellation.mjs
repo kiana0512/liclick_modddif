@@ -41,5 +41,11 @@ assert.match(
   /不会继续向远端提交纹理生图任务/,
   'the confirmation dialog must explain that cancellation prevents remote submission',
 );
+assert.match(
+  panel,
+  /\(cancelConfirmGeneration \|\| cancelTextureSnapshotConfirmOpen\)[\s\S]*?终止莉刻生图[\s\S]*?丢弃本次等待结果？[\s\S]*?终止并丢弃/,
+  'snapshot cancellation must use the same confirmation surface as every submitted generation',
+);
+assert.doesNotMatch(panel, /停止本次快照任务？|>终止快照</);
 
 console.log('Multiview snapshot cancellation regression checks passed.');

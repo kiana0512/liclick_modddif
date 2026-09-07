@@ -8,7 +8,7 @@ import {
   type SyntheticEvent,
 } from 'react';
 import { createPortal } from 'react-dom';
-import { AlertTriangle, Download, LoaderCircle, Plus } from 'lucide-react';
+import { Download, LoaderCircle, Plus } from 'lucide-react';
 import * as THREE from 'three';
 import { BottomToolDock } from '@/components/editor/BottomToolDock';
 import { ExportMenu, type ExportActionId } from '@/components/editor/ExportMenu';
@@ -299,10 +299,6 @@ type ProjectSaveRequest = {
 
 type WorkspaceServerSaveResult = Awaited<ReturnType<typeof saveWorkspaceProject>> & {
   savedLatestSnapshot: boolean;
-};
-
-type GenerationConflictDialogState = {
-  action: string;
 };
 
 declare global {
@@ -1168,8 +1164,6 @@ export function EditorPage({
     useState<LocalRepaintInteractiveStateDetail>();
   const [localImageGenerationSuccessKey, setLocalImageGenerationSuccessKey] = useState(0);
   const [cancelActiveGenerationRequestKey, setCancelActiveGenerationRequestKey] = useState(0);
-  const [generationConflictDialog, setGenerationConflictDialog] =
-    useState<GenerationConflictDialogState>();
   const [generatePanelTaskState, setGeneratePanelTaskState] = useState<GeneratePanelTaskState>({
     running: false,
     snapshotPreparing: false,
@@ -1577,8 +1571,8 @@ export function EditorPage({
     !contentAwareRepairRunning &&
     !projectGenerationRunning &&
     !snapshotPreparationLocked;
-  const showGenerationConflict = useCallback((action = '当前操作') => {
-    setGenerationConflictDialog({ action });
+  const showGenerationConflict = useCallback((_action = '当前操作') => {
+    setCancelActiveGenerationRequestKey((key) => key + 1);
   }, []);
   const notifyEditorTaskRunning = useCallback(
     (action = '当前操作') => {
@@ -8193,62 +8187,6 @@ export function EditorPage({
           onLaunch={() => void handlePhotoshopLaunch()}
         />
       ) : null}
-      {generationConflictDialog
-        ? createPortal(
-            <div
-              className="fixed inset-0 z-[150] grid place-items-center bg-black/48 px-4"
-              onPointerDown={() => setGenerationConflictDialog(undefined)}
-            >
-              <section
-                role="alertdialog"
-                aria-modal="true"
-                aria-labelledby="generation-conflict-title"
-                aria-describedby="generation-conflict-description"
-                className="w-full max-w-[360px] rounded-xl border border-white/12 bg-[#18181f] p-4 text-white shadow-[0_20px_56px_rgba(0,0,0,0.56)]"
-                onPointerDown={(event) => event.stopPropagation()}
-              >
-                <div className="flex items-start gap-3">
-                  <div className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-amber-400/10 text-amber-200">
-                    <AlertTriangle className="h-4 w-4" />
-                  </div>
-                  <div className="min-w-0">
-                    <h2 id="generation-conflict-title" className="text-sm font-semibold">
-                      生图任务进行中
-                    </h2>
-                    <p
-                      id="generation-conflict-description"
-                      className="mt-1 text-xs leading-5 text-white/55"
-                    >
-                      任务完成前无法执行“{generationConflictDialog.action}”。
-                    </p>
-                  </div>
-                </div>
-                <div className="mt-4 flex justify-end gap-2">
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    className="h-8 px-3 text-xs"
-                    onClick={() => setGenerationConflictDialog(undefined)}
-                  >
-                    继续等待
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="danger"
-                    className="h-8 px-3 text-xs"
-                    onClick={() => {
-                      setGenerationConflictDialog(undefined);
-                      setCancelActiveGenerationRequestKey((key) => key + 1);
-                    }}
-                  >
-                    终止任务
-                  </Button>
-                </div>
-              </section>
-            </div>,
-            document.body,
-          )
-        : null}
       {modelImportProgress
         ? createPortal(<AutoBakeProgressBar progress={modelImportProgress} />, document.body)
         : manualBakeProgress
