@@ -156,6 +156,22 @@ export function getObjectViewPresetDirection(preset: ObjectViewPreset) {
 }
 
 export function setCameraToObjectView(objectId: string | undefined, preset: ObjectViewPreset) {
+  const direction = getObjectViewPresetDirection(preset);
+  const up: [number, number, number] =
+    preset === 'top' ? [0, 0, -1] : preset === 'bottom' ? [0, 0, 1] : [0, 1, 0];
+  setCameraToObjectDirection(objectId, [direction.x, direction.y, direction.z], up);
+}
+
+/**
+ * Points the live viewport at an object using the same framing as the preset
+ * camera actions. Multi-view generation uses this for both preset and authored
+ * custom views so the visible viewport follows the exact capture sequence.
+ */
+export function setCameraToObjectDirection(
+  objectId: string | undefined,
+  directionInput: [number, number, number],
+  upInput: [number, number, number] = [0, 1, 0],
+) {
   const sceneState = useSceneStore.getState();
   const runtime = sceneState.viewport;
   if (!runtime) return;
@@ -169,13 +185,13 @@ export function setCameraToObjectView(objectId: string | undefined, preset: Obje
   const center = new THREE.Vector3().fromArray(boundingBox.center);
   const size = new THREE.Vector3().fromArray(boundingBox.size);
   const radius = Math.max(size.x, size.y, size.z, 1);
-  const direction = getObjectViewPresetDirection(preset);
+  const direction = new THREE.Vector3().fromArray(directionInput);
+  if (direction.lengthSq() < 0.0001) direction.set(0, 0, 1);
+  direction.normalize();
   const distance = radius * 2.4;
 
   runtime.camera.position.copy(center).add(direction.multiplyScalar(distance));
-  runtime.camera.up.set(0, 1, 0);
-  if (preset === 'top') runtime.camera.up.set(0, 0, -1);
-  if (preset === 'bottom') runtime.camera.up.set(0, 0, 1);
+  runtime.camera.up.fromArray(upInput).normalize();
   runtime.camera.lookAt(center);
 
   if (runtime.camera instanceof THREE.PerspectiveCamera) {

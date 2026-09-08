@@ -15,6 +15,7 @@ import {
   withStableClayTargetPresentation,
 } from '@/engine/capture/captureCurrentView';
 import { requestContentAwareRepair } from '@/engine/contentAware';
+import { orderCameraViewsForSequentialGeneration } from '@/engine/generation/remoteMultiviewSequence';
 import {
   createCaptureMaskedProjectionImage,
   createCaptureMaskedPreview,
@@ -30,8 +31,10 @@ import {
 } from '@/engine/localRepaint/generationInputWorker';
 import {
   getObjectViewPresetDirection,
+  setCameraToObjectDirection,
   type ObjectViewPreset,
 } from '@/engine/scene/transformActions';
+import { serializeCamera } from '@/engine/projection/ProjectionCamera';
 import { ReferenceGroupPicker } from '@/components/panels/ReferenceGroupPicker';
 import {
   referenceGroupId,
@@ -1031,7 +1034,7 @@ export function GeneratePanel({
     activeWorkflowGeneration ||
     localRepaintPreparationCancellable ||
     (contentAwareRepairActive && onCancelContentAwareRepair) ||
-    (snapshotPreparing &&
+    (texturePipelineProgress?.active === true &&
       texturePipelineAbortControllerRef.current &&
       !texturePipelineAbortControllerRef.current.signal.aborted),
   );
@@ -1861,8 +1864,8 @@ export function GeneratePanel({
         prompt: snapshot.value,
         context: isLocalRepaintTab ? 'local-repaint' : 'general',
         modelName:
-          textureViewMode === 'single' && singleViewProvider === 'remote'
-            ? '远端单视图模型'
+          singleViewProvider === 'remote'
+            ? '远端纹理模型'
             : imageModel,
         objectName: objects.find((object) => object.id === captureObjectId)?.name,
         referenceNames: promptReference
@@ -2101,6 +2104,12 @@ export function GeneratePanel({
         ? generationToCancel.metadata.textureBatchId
         : undefined;
     if (textureBatchId) cancelledTextureBatchIdsRef.current.add(textureBatchId);
+    if (isTextureMap) {
+      const pipelineController = texturePipelineAbortControllerRef.current;
+      if (pipelineController && !pipelineController.signal.aborted) {
+        pipelineController.abort('user-cancelled-texture-generation');
+      }
+    }
 
     const liveGenerations = useGenerationStore.getState().generations;
     const generationsToCancel =
@@ -2370,6 +2379,357 @@ export function GeneratePanel({
     throw new Error('等待多视角纹理贴图生成超时。');
   }
 
+  function waitForProjectedMaterialResident(objectId: string, signal?: AbortSignal) {
+    let settled = false;
+    let timeoutId: number | undefined;
+    let settle: ((ready: boolean) => void) | undefined;
+    const cleanup = () => {
+      window.removeEventListener('liclick:projected-material-resident', handleResident);
+      signal?.removeEventListener('abort', handleAbort);
+      if (timeoutId !== undefined) window.clearTimeout(timeoutId);
+    };
+    const finishWait = (ready: boolean) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      settle?.(ready);
+    };
+    const handleResident = (event: Event) => {
+      const residentObjectId = (event as CustomEvent<{ objectId?: string }>).detail?.objectId;
+      if (residentObjectId && residentObjectId !== objectId) return;
+      finishWait(true);
+    };
+    const handleAbort = () => finishWait(false);
+    const promise = new Promise<boolean>((resolve) => {
+      settle = resolve;
+      window.addEventListener('liclick:projected-material-resident', handleResident);
+      signal?.addEventListener('abort', handleAbort, { once: true });
+      timeoutId = window.setTimeout(() => finishWait(false), 60_000);
+      if (signal?.aborted) finishWait(false);
+    });
+    return { promise, cancel: () => finishWait(false) };
+  }
+
+  async function handleRemoteSequentialMultiviewGenerate(
+    materialReference: ReferenceImage,
+    requestedViews: CameraViewItem[],
+    signal?: AbortSignal,
+  ) {
+    if (!captureObjectId) throw new Error(t('importModelFirst'));
+    if (!currentProject) throw new Error('当前工程尚未加载完成。');
+    const objectId = captureObjectId;
+    const objectMatrixWorld = getImportedModelMatrixWorld(objectId);
+    const orderedViews = orderCameraViewsForSequentialGeneration(
+      requestedViews,
+      activeCameraViewId,
+    );
+    const viewCount = orderedViews.length;
+    const remoteFailureMessage = '多视图失败，请重试。';
+    const viewport = useSceneStore.getState().viewport;
+    if (!viewport) throw new Error(t('viewportUnavailable'));
+    const viewportTarget = viewport.controls?.target.clone();
+    const cameraWithAspect = viewport.camera as unknown as { aspect?: number };
+    const viewportAspect =
+      typeof cameraWithAspect.aspect === 'number' ? cameraWithAspect.aspect : 1;
+    const originalCamera = serializeCamera(
+      viewport.camera,
+      viewportAspect,
+      viewportTarget ?? viewport.camera.position.clone().set(0, 0, 0),
+    );
+    const originalActiveViewId = activeCameraViewId;
+    const textureBatchId = createId('remote-multiview-batch');
+    const textureBatchWasCancelled = () => cancelledTextureBatchIdsRef.current.has(textureBatchId);
+    const texturePrompt = prompt.trim();
+    const modelviewClient = createModelviewApiClient();
+    let projectedGenerationCount = 0;
+    let skippedViewCount = 0;
+
+    try {
+      updateTexturePipelineProgress(20, '准备多视图');
+      const baseCapturedViews = await getTextureMapMultiviewCaptures(orderedViews, signal);
+      if (baseCapturedViews.length !== viewCount) throw new Error(remoteFailureMessage);
+      const currentCaptures =
+        useProjectStore.getState().projects.find((project) => project.id === currentProject.id)
+          ?.captures ?? currentProject.captures;
+      const capturedIds = new Set(baseCapturedViews.map(({ capture }) => capture.id));
+      let persistedCaptures = await persistCaptureAssets(
+        [
+          ...baseCapturedViews.map(({ capture }) => capture),
+          ...currentCaptures.filter((capture) => !capturedIds.has(capture.id)),
+        ],
+        currentProject.id,
+      );
+      updateProjectById(currentProject.id, { captures: persistedCaptures });
+      await saveCriticalProjectState({ captures: persistedCaptures });
+      throwIfTexturePipelineCancelled(signal);
+
+      const persistedById = new Map(persistedCaptures.map((capture) => [capture.id, capture]));
+      const capturedByViewId = new Map(
+        baseCapturedViews.map((view) => [
+          view.viewId,
+          { ...view, capture: persistedById.get(view.capture.id) ?? view.capture },
+        ]),
+      );
+      const materialDataUrl = await urlToDataUrl(materialReference.url);
+
+      for (let index = 0; index < viewCount; index += 1) {
+        throwIfTexturePipelineCancelled(signal);
+        if (textureBatchWasCancelled()) throw new Error('用户已终止纹理贴图生成任务。');
+        const view = orderedViews[index];
+        const capturedView = view ? capturedByViewId.get(view.id) : undefined;
+        if (!view || !capturedView) throw new Error(remoteFailureMessage);
+        const stepLabel = `${index + 1}/${viewCount}`;
+
+        setActiveCameraViewId(view.id);
+        setCameraToObjectDirection(objectId, view.viewDirection, view.viewUp);
+        updateTexturePipelineProgress(
+          40 + (index / viewCount) * 50,
+          `远端多视图 ${stepLabel} · 切换${view.label}`,
+        );
+        await waitForBrowserPaint();
+        await waitForBrowserPaint();
+        throwIfTexturePipelineCancelled(signal);
+
+        let generationCapture = capturedView.capture;
+        let completion: PreparedSingleViewTextureCompletion | undefined;
+        let usesInpaint = false;
+        if (hasVisibleTextureLayerCandidate(objectId)) {
+          const currentEffect = await captureCurrentColorPreview({
+            objectId,
+            resolution: resolutionToSize[resolution],
+            framing: 'fit-object',
+            colorMode: 'flat-target-coverage',
+            fillRatio: 0.88,
+            viewDirection: view.viewDirection,
+            viewUp: view.viewUp,
+          });
+          throwIfTexturePipelineCancelled(signal);
+          completion = await prepareSingleViewTextureCompletion({
+            currentEffectUrl: currentEffect.colorUrl,
+            clayPreviewUrl: capturedView.capture.colorUrl,
+            objectMaskUrl: capturedView.capture.maskUrl,
+          });
+          if (completion.hasVisibleTexture && completion.uncoveredPixelCount === 0) {
+            skippedViewCount += 1;
+            updateTexturePipelineProgress(
+              40 + ((index + 1) / viewCount) * 50,
+              `远端多视图 ${stepLabel} · 已跳过`,
+            );
+            continue;
+          }
+          if (completion.hasVisibleTexture) {
+            if (!completion.imageUrl || !completion.completionMaskUrl) {
+              throw new Error(remoteFailureMessage);
+            }
+            usesInpaint = true;
+            generationCapture = { ...capturedView.capture, colorUrl: completion.imageUrl };
+            persistedCaptures = await persistCaptureAssets(
+              [
+                generationCapture,
+                ...persistedCaptures.filter((capture) => capture.id !== generationCapture.id),
+              ],
+              currentProject.id,
+            );
+            updateProjectById(currentProject.id, { captures: persistedCaptures });
+            generationCapture =
+              persistedCaptures.find((capture) => capture.id === generationCapture.id) ??
+              generationCapture;
+            await saveCriticalProjectState({ captures: persistedCaptures });
+          }
+        }
+
+        const generationId = createId(`remote-multiview-${view.id}`);
+        const modelViewReferenceId = `${generationCapture.id}-model-view-${view.id}`;
+        const commonMetadata: Generation['metadata'] = {
+          provider: usesInpaint ? 'modelview-single-view-inpaint' : 'modelview-single-view',
+          workflow: 'texture-map',
+          textureBatchId,
+          clientGenerationId: generationId,
+          projectId: currentProject.id,
+          objectId,
+          objectMatrixWorld,
+          materialReferenceId: materialReference.id,
+          modelViewReferenceId,
+          multiview: false,
+          singleViewProvider: 'remote',
+          autoProjectExpected: true,
+          cameraView: capturedView.cameraView,
+          cameraViewId: view.id,
+          cameraViewLabel: view.label,
+          resolution,
+          serverSubmitted: false,
+          startedAt: new Date().toISOString(),
+          alphaMode: 'pending-guided-foreground-matte',
+        };
+        const pendingGeneration: Generation = {
+          id: generationId,
+          mode: 'single',
+          prompt: texturePrompt,
+          referenceIds: [modelViewReferenceId, materialReference.id],
+          captureId: generationCapture.id,
+          status: 'running',
+          metadata: commonMetadata,
+        };
+        start(pendingGeneration);
+        addProjectGeneration(pendingGeneration);
+        await saveGenerationStateBestEffort();
+        updateTexturePipelineProgress(
+          42 + (index / viewCount) * 50,
+          `远端多视图 ${stepLabel} · 生成${view.label}`,
+        );
+
+        try {
+          const imageDataUrl = await urlToDataUrl(generationCapture.colorUrl);
+          const completionMaskDataUrl =
+            usesInpaint && completion?.completionMaskUrl
+              ? await urlToDataUrl(completion.completionMaskUrl)
+              : undefined;
+          throwIfTexturePipelineCancelled(signal);
+          const remoteGeneration = usesInpaint
+            ? await modelviewClient.generateSingleViewInpaint(
+                {
+                  clientGenerationId: generationId,
+                  projectId: currentProject.id,
+                  prompt: texturePrompt || undefined,
+                  captureId: generationCapture.id,
+                  objectId,
+                  image: {
+                    path: `${generationCapture.id}-current-effect.png`,
+                    dataUrl: imageDataUrl,
+                  },
+                  materialImage: {
+                    path: `${materialReference.id}-multiview-material.png`,
+                    dataUrl: materialDataUrl,
+                  },
+                  mask: {
+                    path: `${generationCapture.id}-completion-mask.png`,
+                    dataUrl: completionMaskDataUrl!,
+                  },
+                  materialReferenceId: materialReference.id,
+                  materialReferenceGroupId: referenceGroupId(materialReference),
+                  materialReferenceName: materialReference.name,
+                  materialReferenceRole: materialReference.referenceRole,
+                  modelViewReferenceId,
+                },
+                { signal },
+              )
+            : await modelviewClient.generateSingleView(
+                {
+                  clientGenerationId: generationId,
+                  projectId: currentProject.id,
+                  prompt: texturePrompt || undefined,
+                  captureId: generationCapture.id,
+                  objectId,
+                  image: {
+                    path: `${generationCapture.id}-white-model.png`,
+                    dataUrl: imageDataUrl,
+                  },
+                  materialImage: {
+                    path: `${materialReference.id}-multiview-material.png`,
+                    dataUrl: materialDataUrl,
+                  },
+                  materialReferenceId: materialReference.id,
+                  materialReferenceGroupId: referenceGroupId(materialReference),
+                  materialReferenceName: materialReference.name,
+                  materialReferenceRole: materialReference.referenceRole,
+                  modelViewReferenceId,
+                },
+                { signal },
+              );
+          if (!remoteGeneration.resultUrl || remoteGeneration.status !== 'succeeded') {
+            throw new Error(remoteFailureMessage);
+          }
+          const completed: Generation = {
+            ...remoteGeneration,
+            mode: 'single',
+            metadata: {
+              ...mergeGenerationMetadataPreservingStartedAt(
+                commonMetadata,
+                remoteGeneration.metadata,
+              ),
+              serverSubmitted: true,
+              completedAt: new Date().toISOString(),
+            },
+          };
+          syncGeneration(completed);
+          updateTexturePipelineProgress(
+            44 + (index / viewCount) * 50,
+            `远端多视图 ${stepLabel} · 回贴${view.label}`,
+          );
+          const residentWait = waitForProjectedMaterialResident(objectId, signal);
+          let projectedLayer: Layer | undefined;
+          try {
+            projectedLayer = await addGenerationAsProjectedLayer(completed, {
+              automatic: true,
+              capture: generationCapture,
+            });
+            if (!projectedLayer) throw new Error(remoteFailureMessage);
+            const resident = await residentWait.promise;
+            throwIfTexturePipelineCancelled(signal);
+            if (!resident) throw new Error(remoteFailureMessage);
+          } finally {
+            residentWait.cancel();
+          }
+          syncGeneration({
+            ...completed,
+            metadata: {
+              ...completed.metadata,
+              projectedLayerId: projectedLayer.id,
+              projectionCommittedAt: new Date().toISOString(),
+            },
+          });
+          projectedGenerationCount += 1;
+          await saveGenerationStateBestEffort();
+          updateTexturePipelineProgress(
+            40 + ((index + 1) / viewCount) * 50,
+            `远端多视图 ${stepLabel} · 完成`,
+          );
+        } catch (error) {
+          if (!isGenerationCancellation(error) && !textureBatchWasCancelled()) {
+            syncGeneration(
+              createFailedGeneration(
+                pendingGeneration,
+                error instanceof Error ? error.message : remoteFailureMessage,
+              ),
+            );
+            await saveGenerationStateBestEffort();
+          }
+          throw error;
+        }
+      }
+
+      if (projectedGenerationCount > 0) {
+        updateTexturePipelineProgress(92, '内容识别补缝');
+        try {
+          await requestContentAwareRepair({
+            source: 'multiview-texture',
+            projectId: currentProject.id,
+            objectId,
+            batchId: textureBatchId,
+            silentForeground: true,
+          });
+          updateTexturePipelineProgress(100, '远端多视图完成');
+        } catch (error) {
+          updateTexturePipelineProgress(100, '纹理完成，补缝未完成');
+          console.warn('[Li3D] Remote multiview repair failed:', error);
+        }
+      } else {
+        updateTexturePipelineProgress(100, '当前视角均已有完整贴图');
+      }
+      setGenerateNotice(undefined);
+      pushToast({
+        tone: 'success',
+        title: '远端多视图生成完成',
+        description: `生成并投影 ${projectedGenerationCount}/${viewCount} 个视角${
+          skippedViewCount > 0 ? `，跳过 ${skippedViewCount} 个已完整覆盖视角` : ''
+        }。`,
+      });
+    } finally {
+      useSceneStore.getState().requestCameraRestore(originalCamera);
+      setActiveCameraViewId(originalActiveViewId);
+    }
+  }
+
   async function handleTextureMapMultiviewGenerate(
     materialReference: ReferenceImage,
     requestedViews: CameraViewItem[] = cameraViews,
@@ -2380,15 +2740,20 @@ export function GeneratePanel({
     if (!captureObjectId) throw new Error(t('importModelFirst'));
     if (requestedViews.length === 0) throw new Error('请先添加至少一个模型视角。');
     const isMultiviewRequest = requestedViewMode === 'multi';
-    const usesRemoteSingleView = !isMultiviewRequest && singleViewProvider === 'remote';
-    if (usesRemoteSingleView) {
+    const usesRemoteTextureGeneration = singleViewProvider === 'remote';
+    const usesRemoteSingleView = !isMultiviewRequest && usesRemoteTextureGeneration;
+    if (usesRemoteTextureGeneration) {
       if (!(await requireFeishuLogin())) {
-        throw new Error('未完成飞书登录，无法使用远端单视图生成服务。');
+        throw new Error('未完成飞书登录，无法使用远端纹理生成服务。');
       }
     } else {
       await requirePersonalLiclickAccount();
     }
     throwIfTexturePipelineCancelled(signal);
+    if (isMultiviewRequest && usesRemoteTextureGeneration) {
+      await handleRemoteSequentialMultiviewGenerate(materialReference, requestedViews, signal);
+      return;
+    }
     const objectId = captureObjectId;
     const object = objects.find((item) => item.id === objectId);
     const texturePromptBuilders = usesRemoteSingleView
@@ -4637,7 +5002,7 @@ export function GeneratePanel({
             />
           </div>
         )}
-        {isTextureMapTab && displayedTexturePreviewMode === 'single' && (
+        {isTextureMapTab && displayedTexturePreviewMode !== 'repaint' && (
           <div
             data-single-view-provider={singleViewProvider}
             className="mb-2 rounded-md border border-white/10 bg-black/20 p-1.5"
@@ -4849,7 +5214,7 @@ export function GeneratePanel({
                 <span className="text-sm font-semibold text-white/88">
                   {isLocalRepaintTab
                     ? '补充提示词（可选）'
-                    : textureViewMode === 'single' && singleViewProvider === 'remote'
+                    : singleViewProvider === 'remote'
                       ? '纹理提示词（可选）'
                       : '纹理提示词'}
                 </span>
@@ -4882,9 +5247,7 @@ export function GeneratePanel({
                 aria-readonly={workflowConfigurationLocked}
                 maxLength={
                   isLocalRepaintTab ||
-                  (isTextureMapTab &&
-                    textureViewMode === 'single' &&
-                    singleViewProvider === 'remote')
+                  (isTextureMapTab && singleViewProvider === 'remote')
                     ? 4096
                     : undefined
                 }

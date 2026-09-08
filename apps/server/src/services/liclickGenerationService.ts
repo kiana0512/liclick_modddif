@@ -476,7 +476,7 @@ function buildSubmissionPrompt(input: GenerateImageInput, model: string) {
   if (!basePrompt) return materialConstraint;
   const hasPurposeBuiltTextureConstraint =
     basePrompt.includes('【光影约束的适用范围】') ||
-    basePrompt.includes('【绝对第一优先级：轮廓配准】');
+    basePrompt.includes('只在图一上进行材质补全，不重新生成物体。');
   return basePrompt.includes(materialConstraint) || hasPurposeBuiltTextureConstraint
     ? basePrompt
     : `${basePrompt}\n\n${materialConstraint}`;

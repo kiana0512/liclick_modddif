@@ -3,11 +3,11 @@
 - 主模块：M13 身份、账号绑定；关联 M15 部署验证。
 - 协议：LICLICK-ACCOUNT-BINDING v1.3.3 → v1.3.4（配置 Patch）→ v1.3.5（固定回调选择修复）。
 - 负责人：Codex 实施，维护者与 IDaaS/Atlas 运维验收。
-- 状态：v1.3.4 已部署但真实绑定失败；v1.3.5 本地修复、尚未发布，真实端到端未通过。
+- 状态：v1.3.5 已由 release 9ed1ff4b 发布，CI #627144 全部通过，线上 health 确认对应版本且 ready=true。维护者发布后反馈功能正常，现同步修复到 master。
 
 ## 2026-09-08 发布后复测与修正
 
-维护者随后明确选择紧急发布后实测，授权直接将此补丁推送 release 并触发 deploy。本次仅带入回调修复及对应测试/说明，未合入此后 master 的无关新增提交。以上“未发布”表示修复准备阶段；发布结果以本次 GitLab pipeline、rollout 和线上 health 为准，真实绑定/生图尚不能视为通过。
+最终发布与验收记录：维护者明确授权紧急直接推送 release 后实测；9ed1ff4b 的九个 CI 任务及前后端 rollout 全部成功。维护者随后反馈“功能一起正常”，并要求将最新修复同步 master。这是维护者的真实使用反馈，不扩展为自动验证了三用户隔离、所有生图类型或生产重启恢复。下文未发布/未验收描述为当时阶段记录。
 
 master d61751b 的 CI #627108 通过后，release 2bc8042c / CI #627117 的九个任务全部通过，两服务 rollout 成功，线上 health 为 release-2bc8042c、ready=true。维护者真实授权却返回 `https://atlas-ai-gateway.lilithgames.com/` 的 404，查询参数含身份令牌及正确的 LI3D target_url（不记录令牌）。因此应用/Gateway 配对已更新不等于授权回调适配完成。
 

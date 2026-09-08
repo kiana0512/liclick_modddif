@@ -64,25 +64,30 @@ assert.match(
   /referenceIds: \[modelViewReference\.id, materialReference\.id\][\s\S]*?referenceImages: \[modelViewReference, materialReference\]/,
   'Atlas must still receive exactly the guide and material reference',
 );
-assert.match(textureMapPrompts, /【绝对第一优先级：轮廓配准】/);
+assert.match(textureMapPrompts, /只在图一上进行材质补全，不重新生成物体/);
 assert.match(
   textureMapPrompts,
-  /只修改图一中的白色、浅灰色、Clay、Primer或无纹理区域/,
+  /只修改图一中的白色、浅灰色、Clay、Primer或未贴图区域/,
   'completion must fill every unfinished white-model region',
 );
 assert.match(
   textureMapPrompts,
-  /所有生成内容必须严格限制在图一原始白模轮廓内部，不得向外溢出，也不得向内收缩/,
+  /最终外轮廓、内部孔洞、真实部件边界、视图数量和排版必须与图一严格一致/,
   'low-poly smoothing must remain an interior material operation and never reshape the silhouette',
 );
 assert.match(
   textureMapPrompts,
-  /如果轮廓一致与材质自然度、参考图相似度或细节表现发生冲突，必须牺牲材质和细节，优先保证图一轮廓完全不变/,
+  /轮廓对齐高于所有其他要求/,
 );
 assert.match(
   textureMapPrompts,
-  /图一中已经具有材质的区域必须保留原始颜色、纹理、光影和细节，不得重绘、调色、重新照明、锐化或模糊/,
+  /图一中已有材质的区域、背景和透明区域必须保持原始颜色、纹理和光影不变/,
   'single-view and multiview GPT2 generation must preserve every pixel outside white-model regions',
+);
+assert.match(
+  textureMapPrompts,
+  /准确参考图二特有的Base Color、颜色变化、纹理颗粒、尺度、方向、粗糙度和磨损；不要只生成普通的同类材质/,
+  'the material completion must preserve the reference-specific appearance rather than a generic category material',
 );
 assert.doesNotMatch(
   textureMapPrompts,
