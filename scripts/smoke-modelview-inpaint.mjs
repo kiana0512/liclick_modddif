@@ -74,6 +74,19 @@ async function stopChild(child) {
 const [workspacePort, modelviewPort] = await Promise.all([reservePort(), reservePort()]);
 const workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), 'liclick-modelview-smoke-'));
 const workspaceBaseUrl = `http://127.0.0.1:${workspacePort}`;
+const { createModelviewIdempotencyKey } = await import('../apps/server/dist/services/modelviewIdempotency.js');
+const suffixes = ['single-view:4step-r1', 'single-view-inpaint:4input-rseed-steps2-r1', 'inpaint:4input-rseed-r1'];
+for (const suffix of suffixes) {
+  for (const length of [1, 128 - suffix.length - 1, 128 - suffix.length, 104, 160, 500]) {
+    const id = 'x'.repeat(length);
+    const key = createModelviewIdempotencyKey(id, suffix);
+    assert(key.length <= 128);
+    assert.equal(key, createModelviewIdempotencyKey(id, suffix));
+    if ((id + ':' + suffix).length <= 128) assert.equal(key, id + ':' + suffix);
+    assert.notEqual(createModelviewIdempotencyKey(id + 'a', suffix), createModelviewIdempotencyKey(id + 'b', suffix));
+  }
+}
+assert.notEqual(createModelviewIdempotencyKey('x'.repeat(200) + 'a', suffixes[1]), createModelviewIdempotencyKey('x'.repeat(200) + 'b', suffixes[1]));
 const observedRequests = [];
 const modelviewMock = http.createServer(async (request, response) => {
   try {
@@ -100,6 +113,11 @@ const modelviewMock = http.createServer(async (request, response) => {
           ? /:single-view-inpaint:4input-rseed-steps2-r1$/
           : /:inpaint:4input-rseed-r1$/,
     );
+    if (String(request.headers['idempotency-key']).length > 128) {
+      response.writeHead(422, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({ detail: [{ loc: ['header', 'idempotency-key'], msg: 'String should have at most 128 characters' }] }));
+      return;
+    }
     const bodyText = body.toString('latin1');
     assert.match(
       bodyText,
@@ -337,7 +355,7 @@ try {
       },
       body: JSON.stringify({
         ...inpaintPayload,
-        clientGenerationId: 'single-view-inpaint-generation-1',
+        clientGenerationId: `texture-map-single-camera-view-${'a'.repeat(36)}-${'b'.repeat(36)}`,
         prompt: '只补全白模区域',
       }),
     },
