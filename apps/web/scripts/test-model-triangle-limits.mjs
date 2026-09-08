@@ -11,11 +11,20 @@ try {
     assertModelTriangleLimit,
     AUTO_UV_MODEL_TRIANGLE_LIMIT,
     countModelTriangles,
+    modelTriangleLimitMessage,
     TEXTURE_MODEL_TRIANGLE_LIMIT,
   } = await server.ssrLoadModule('/src/engine/loaders/modelTriangleLimit.ts');
 
   assert.equal(TEXTURE_MODEL_TRIANGLE_LIMIT, 2_000_000);
-  assert.equal(AUTO_UV_MODEL_TRIANGLE_LIMIT, 20_000);
+  assert.equal(AUTO_UV_MODEL_TRIANGLE_LIMIT, 70_000);
+  assert.equal(
+    modelTriangleLimitMessage(AUTO_UV_MODEL_TRIANGLE_LIMIT, 70_001),
+    '不支持 7 万面以上的模型。当前模型约 70,001 面。',
+  );
+  assert.equal(
+    modelTriangleLimitMessage(TEXTURE_MODEL_TRIANGLE_LIMIT, 2_000_001),
+    '不支持 200 万面以上的模型。当前模型约 2,000,001 面。',
+  );
 
   const rootObject = new THREE.Group();
   const indexed = new THREE.BufferGeometry();

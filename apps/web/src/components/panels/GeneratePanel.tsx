@@ -438,6 +438,7 @@ const multiviewDefaultPrompt = `以输入图片中的主要物体为唯一参考
 正交视图减少透视畸变，所有物体保持相同比例、状态和方向，完整居中且不裁切。使用纯黑背景和统一的柔和棚拍光照。
 
 不要出现结构变化、零件错位、重复视角、背景元素、文字、边框、Logo或水印。`;
+const multiviewGenerationFailureFallback = '多视图生成失败，请稍后重试。';
 
 function buildMultiviewPrompt(userPrompt: string) {
   const trimmedPrompt = userPrompt.trim();
@@ -4013,7 +4014,8 @@ export function GeneratePanel({
       referenceSource: 'generated',
       generationId: generation.id,
     };
-    const latestReferences = useReferenceStore.getState().references;
+    const referenceStore = useReferenceStore.getState();
+    const latestReferences = referenceStore.references;
     const nextReferences = [
       multiviewReference,
       ...latestReferences.filter(
@@ -4021,15 +4023,13 @@ export function GeneratePanel({
           !(isMultiviewReference(reference) && referenceGroupId(reference) === groupId),
       ),
     ];
-    useReferenceStore.getState().setReferences(nextReferences);
+    referenceStore.setReferences(nextReferences);
     // A single-view reference is only the input to this job. Once its paired
-    // multi-view result exists, make that result the active reference and move
-    // the panel to multi-view in the same render so the user never sees the
-    // completed result land under the wrong tab.
-    useReferenceStore.getState().setSelectedReferences([multiviewReference.id]);
-    setTexturePreviewMode('multi');
-    setTextureViewMode('multi');
-    setTab('multiview');
+    // multi-view result exists, make that result the active material reference
+    // without changing the user's current generation tab. The paired image is
+    // pipeline state, not a navigation request: single-view generation must
+    // remain on single view after the background reference step completes.
+    referenceStore.setSelectedReferences([multiviewReference.id]);
     setProjectReferences(nextReferences);
     await saveCriticalProjectState({ references: nextReferences });
     return multiviewReference;
@@ -4153,7 +4153,7 @@ export function GeneratePanel({
         finish();
         throw error;
       }
-      const message = getUserFacingGenerationError(error, '多视图生成失败，请稍后重试。');
+      const message = getUserFacingGenerationError(error, multiviewGenerationFailureFallback);
       if (pendingGeneration) syncGeneration(createFailedGeneration(pendingGeneration, message));
       setReferenceGroupGenerationState({ groupId, status: 'failed', error: message });
       await saveGenerationStateBestEffort();
@@ -4170,7 +4170,7 @@ export function GeneratePanel({
     submitLocksRef.current.add('single');
     setSubmissionActive(true);
     setTexturePipelineProgress({ active: true, progress: 4, label: '准备多视图参考' });
-    setGenerateNotice({ tone: 'info', message: '正在根据单视图生成并保存配对多视图。' });
+    setGenerateNotice({ tone: 'info', message: '正在保存多视图参考。' });
     try {
       await generatePairedMultiviewReference(singleReference, updateTexturePipelineProgress);
       await waitForBrowserPaint();
@@ -4178,14 +4178,14 @@ export function GeneratePanel({
       pushToast({
         tone: 'success',
         title: '多视图已补全',
-        description: '结果已写回当前参考图，可直接生成纹理贴图。',
+        description: '多视图参考已保存，可直接生成纹理贴图。',
       });
     } catch (error) {
       if (isGenerationCancellation(error)) {
         setGenerateNotice(undefined);
         return;
       }
-      const message = getUserFacingGenerationError(error, '多视图生成失败，请稍后重试。');
+      const message = getUserFacingGenerationError(error, multiviewGenerationFailureFallback);
       setGenerateNotice({ tone: 'error', message });
       pushToast({ tone: 'error', title: '多视图生成失败', description: message });
     } finally {

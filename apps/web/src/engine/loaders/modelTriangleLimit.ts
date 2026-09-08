@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 
 export const TEXTURE_MODEL_TRIANGLE_LIMIT = 2_000_000;
-export const AUTO_UV_MODEL_TRIANGLE_LIMIT = 20_000;
+export const AUTO_UV_MODEL_TRIANGLE_LIMIT = 70_000;
 
 export function countModelTriangles(root: THREE.Object3D) {
   let triangles = 0;
@@ -16,7 +16,7 @@ export function countModelTriangles(root: THREE.Object3D) {
 }
 
 export function modelTriangleLimitMessage(limit: number, actual: number) {
-  const limitLabel = limit === AUTO_UV_MODEL_TRIANGLE_LIMIT ? '2 万' : '200 万';
+  const limitLabel = limit === AUTO_UV_MODEL_TRIANGLE_LIMIT ? '7 万' : '200 万';
   return `不支持 ${limitLabel}面以上的模型。当前模型约 ${actual.toLocaleString('zh-CN')} 面。`;
 }
 
@@ -53,4 +53,3 @@ export function disposeRejectedModel(root: THREE.Object3D) {
     });
   });
 }
-
