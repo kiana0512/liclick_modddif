@@ -542,9 +542,7 @@ function assertValidAtlasToken(cache: AtlasTokenCache, tokenFile: string) {
   if (!cache.access_token)
     throw new Error(`Atlas token cache is missing access_token: ${tokenFile}`);
   if (!cache.gateway_url) throw new Error(`Atlas token cache is missing gateway_url: ${tokenFile}`);
-  if (
-    cache.gateway_url.replace(/\/+$/, '') !== serverConfig.atlasGateway.url.replace(/\/+$/, '')
-  ) {
+  if (cache.gateway_url.replace(/\/+$/, '') !== serverConfig.atlasGateway.url.replace(/\/+$/, '')) {
     throw new Error(
       `Atlas 登录凭证属于其他环境，请重新绑定当前 ${serverConfig.atlasGateway.environment} 环境的莉刻账号。`,
     );
@@ -729,7 +727,14 @@ export function buildPersonalLiclickAccountSsoUrl(
   targetUrl: URL,
 ) {
   const redirectUrl = new URL(idaasSsoUrl);
-  redirectUrl.searchParams.delete('redirect_uri');
+  // Select the registered LI3D callback explicitly. The official application
+  // otherwise returns tokens to its default Gateway root; target_url only
+  // carries our binding correlation and does not select that callback.
+  const callbackUrl = new URL(targetUrl);
+  callbackUrl.pathname = callbackUrl.pathname.replace(/\/complete$/, '/callback');
+  callbackUrl.search = '';
+  callbackUrl.hash = '';
+  redirectUrl.searchParams.set('redirect_uri', callbackUrl.toString());
   redirectUrl.searchParams.delete('state');
   redirectUrl.searchParams.set('target_url', targetUrl.toString());
   if (enterpriseId) redirectUrl.searchParams.set('enterpriseId', enterpriseId);
@@ -773,7 +778,7 @@ function bindingResponse(login: PendingAtlasLogin) {
     expiresAt: login.expiresAt,
     message: login.email
       ? '当前飞书用户的莉刻账号已自动关联。'
-      : login.error ?? '正在使用当前企业身份安全关联莉刻账号。',
+      : (login.error ?? '正在使用当前企业身份安全关联莉刻账号。'),
   };
 }
 
@@ -885,9 +890,11 @@ export async function completePersonalLiclickAccountBinding(
 ) {
   prunePendingAtlasLogins();
   const login = pendingAtlasLogins.get(loginId);
-  if (!login || login.userId !== user.id) throw new Error('莉刻账号授权请求不存在或不属于当前用户。');
+  if (!login || login.userId !== user.id)
+    throw new Error('莉刻账号授权请求不存在或不属于当前用户。');
   if (!user.email) throw new Error('当前飞书账号没有邮箱，无法校验莉刻账号归属。');
-  if (login.email) return { ...bindingResponse(login), linkedOAuthLoginId: login.linkedOAuthLoginId };
+  if (login.email)
+    return { ...bindingResponse(login), linkedOAuthLoginId: login.linkedOAuthLoginId };
   const idToken = tokens.idToken?.trim();
   const accessToken = tokens.accessToken?.trim();
   if (!idToken && !accessToken) throw new Error('IDaaS 回调缺少有效身份令牌。');

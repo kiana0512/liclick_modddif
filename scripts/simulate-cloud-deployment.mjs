@@ -1,4 +1,4 @@
-/* global console, process */
+/* global Buffer, URL, URLSearchParams, console, fetch, process, setTimeout */
 
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
@@ -11,7 +11,7 @@ import path from 'node:path';
 
 const repoRoot = path.resolve(import.meta.dirname, '..');
 const workspace = path.join(os.tmpdir(), `li3d-cloud-simulation-${process.pid}-${randomUUID()}`);
-const publicPath = '/li3d';
+const publicPath = process.argv.includes('--root-public-path') ? '' : '/li3d';
 const simulatedWebOrigin = 'https://web.simulated.liclick.invalid';
 const objects = new Map();
 let failNextPut = true;
@@ -153,6 +153,7 @@ function startMockIdentityProvider(port, ssoCallbackUrl) {
       MOCK_IDAAS_PORT: String(port),
       MOCK_IDAAS_REQUIRE_JSON_TOKEN_REQUEST: 'true',
       MOCK_IDAAS_SSO_CALLBACK_URL: ssoCallbackUrl,
+      MOCK_IDAAS_REQUIRE_EXPLICIT_SSO_CALLBACK: 'true',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
     windowsHide: true,
@@ -213,7 +214,8 @@ function startCloudServer(port, objectStorageEndpoint, identityEndpoint, atlasRu
 }
 
 async function stopCloudServer(child) {
-  if (child.exitCode !== null) return { code: child.exitCode, signal: child.signalCode, elapsedMs: 0 };
+  if (child.exitCode !== null)
+    return { code: child.exitCode, signal: child.signalCode, elapsedMs: 0 };
   const startedAt = Date.now();
   child.kill('SIGTERM');
   const result = await Promise.race([
@@ -304,7 +306,10 @@ async function completeSimulatedOAuth(publicUrl, identityEndpoint) {
   assert.ok(bindingSsoUrl);
   const bindingSsoRequest = new URL(bindingSsoUrl);
   assert.ok(bindingSsoRequest.searchParams.get('target_url'));
-  assert.equal(bindingSsoRequest.searchParams.has('redirect_uri'), false);
+  assert.equal(
+    bindingSsoRequest.searchParams.get('redirect_uri'),
+    `${publicUrl}/api/liclick/account-binding/callback`,
+  );
   assert.equal(bindingSsoRequest.searchParams.has('state'), false);
   const bindingSso = await fetch(bindingSsoUrl, { redirect: 'manual' });
   assert.equal(bindingSso.status, 302);
@@ -330,6 +335,27 @@ async function completeSimulatedOAuth(publicUrl, identityEndpoint) {
   });
   assert.equal(bindingResult.response.status, 200);
   assert.equal(bindingResult.payload.status, 'bound');
+  const bindingId = new URL(targetUrl).searchParams.get('loginId');
+  const polledBinding = await jsonRequest(`${publicUrl}/api/liclick/account-binding/${bindingId}`, {
+    headers: { cookie },
+  });
+  assert.equal(polledBinding.response.status, 200);
+  assert.equal(polledBinding.payload.status, 'bound');
+  assert.equal(polledBinding.payload.email, 'mock.user@liclick.local');
+  const account = await jsonRequest(`${publicUrl}/api/liclick/account`, { headers: { cookie } });
+  assert.equal(account.payload.bound, true);
+  assert.equal(account.payload.email, 'mock.user@liclick.local');
+  const unauthenticatedCallback = await fetch(bindingCallbackUrl, { redirect: 'manual' });
+  assert.equal(unauthenticatedCallback.status, 401);
+  const invalidTarget = await jsonRequest(bindingPostUrl, {
+    method: 'POST',
+    headers: { cookie, 'content-type': 'application/json' },
+    body: JSON.stringify({
+      idToken,
+      targetUrl: targetUrl.replace(new URL(targetUrl).origin, 'https://foreign.invalid'),
+    }),
+  });
+  assert.equal(invalidTarget.response.status, 409);
 
   const me = await jsonRequest(`${publicUrl}/api/auth/me`, { headers: { cookie } });
   assert.equal(me.response.status, 200);
@@ -472,11 +498,14 @@ try {
   });
   assert.equal(renamed.response.status, 200);
   assert.equal(renamed.payload.project.revision.number, 2);
-  const replayedRename = await jsonRequest(`${cloud.publicUrl}/api/projects/${projectId}/commands`, {
-    method: 'POST',
-    headers: authenticatedHeaders,
-    body: JSON.stringify(renameCommand),
-  });
+  const replayedRename = await jsonRequest(
+    `${cloud.publicUrl}/api/projects/${projectId}/commands`,
+    {
+      method: 'POST',
+      headers: authenticatedHeaders,
+      body: JSON.stringify(renameCommand),
+    },
+  );
   assert.equal(replayedRename.payload.command.replayed, true);
   assert.equal(replayedRename.payload.project.revision.number, 2);
 
@@ -488,6 +517,12 @@ try {
   }
   cloud = startCloudServer(cloudPort, objectStorageEndpoint, identityEndpoint, atlasRuntimePath);
   await waitForHealth(cloud.publicUrl);
+  const recoveredAccount = await jsonRequest(`${cloud.publicUrl}/api/liclick/account`, {
+    headers: { cookie },
+  });
+  assert.equal(recoveredAccount.response.status, 200);
+  assert.equal(recoveredAccount.payload.bound, true);
+  assert.equal(recoveredAccount.payload.email, 'mock.user@liclick.local');
   const recovered = await jsonRequest(`${cloud.publicUrl}/api/projects/${projectId}`, {
     headers: { cookie, origin: simulatedWebOrigin },
   });
@@ -500,7 +535,9 @@ try {
   });
   assert.equal(recoveredContent.status, 307);
 
-  console.log('Cloud deployment simulation passed: build, readiness, OAuth/PKCE cookie session, proxy path, direct upload, retry, idempotency, graceful shutdown and restart recovery.');
+  console.log(
+    'Cloud deployment simulation passed: build, readiness, OAuth/PKCE cookie session, proxy path, direct upload, retry, idempotency, graceful shutdown and restart recovery.',
+  );
   if (process.argv.includes('--serve')) {
     console.log(`SIMULATED_CLOUD_URL=${cloud.publicUrl}/`);
     console.log('The simulated deployment will stay available until this process is stopped.');

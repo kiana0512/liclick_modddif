@@ -143,23 +143,43 @@ const ssoUrl = buildPersonalLiclickAccountSsoUrl(
 );
 assert.equal(ssoUrl.searchParams.get('target_url'), bindingTargetUrl.toString());
 assert.equal(ssoUrl.searchParams.get('enterpriseId'), 'qa-enterprise');
-assert.equal(ssoUrl.searchParams.has('redirect_uri'), false);
+assert.equal(
+  ssoUrl.searchParams.get('redirect_uri'),
+  'https://li3d.example.test/root/api/liclick/account-binding/callback',
+);
 assert.equal(ssoUrl.searchParams.has('state'), false);
 
-const productionCallback = buildPersonalLiclickAccountCallbackUrl('https://li3d.lilithgames.com', '');
-assert.equal(productionCallback.href, 'https://li3d.lilithgames.com/api/liclick/account-binding/callback');
-const productionTarget = buildPersonalLiclickAccountTargetUrl('https://li3d.lilithgames.com', '', bindingId);
+const productionCallback = buildPersonalLiclickAccountCallbackUrl(
+  'https://li3d.lilithgames.com',
+  '',
+);
+assert.equal(
+  productionCallback.href,
+  'https://li3d.lilithgames.com/api/liclick/account-binding/callback',
+);
+const productionTarget = buildPersonalLiclickAccountTargetUrl(
+  'https://li3d.lilithgames.com',
+  '',
+  bindingId,
+);
 const productionSso = buildPersonalLiclickAccountSsoUrl(
-  'https://idaas.lilith.com/enduser/sp/sso/lilithplugin_jwt62', 'lilith', productionTarget,
+  'https://idaas.lilith.com/enduser/sp/sso/lilithplugin_jwt62',
+  'lilith',
+  productionTarget,
 );
 assert.equal(productionSso.origin, 'https://idaas.lilith.com');
 assert.equal(productionSso.pathname, '/enduser/sp/sso/lilithplugin_jwt62');
 assert.equal(productionSso.searchParams.get('enterpriseId'), 'lilith');
-assert.equal(productionSso.searchParams.has('redirect_uri'), false);
+assert.equal(productionSso.searchParams.get('redirect_uri'), productionCallback.href);
 assert.equal(productionSso.searchParams.has('state'), false);
-assert.equal(resolvePersonalLiclickAccountTargetLoginId(
-  productionSso.searchParams.get('target_url'), 'https://li3d.lilithgames.com', '',
-), bindingId);
+assert.equal(
+  resolvePersonalLiclickAccountTargetLoginId(
+    productionSso.searchParams.get('target_url'),
+    'https://li3d.lilithgames.com',
+    '',
+  ),
+  bindingId,
+);
 
 const localSsoUrl = buildLocalAtlasRuntimeSsoUrl(
   'https://idaas.lilith.com/enduser/sp/sso/lilithplugin_jwt62?target_url=old',
@@ -227,14 +247,15 @@ assert.strictEqual(
   'Production mode must preserve the personal-account user unchanged.',
 );
 
-const [routeSource, atlasSource, configSource, webOAuthSource, serverSource, setupSource] = await Promise.all([
-  readFile(path.join(packageRoot, 'src/routes/liclick.ts'), 'utf8'),
-  readFile(path.join(packageRoot, 'src/auth/atlasAuthService.ts'), 'utf8'),
-  readFile(path.join(packageRoot, 'src/config.ts'), 'utf8'),
-  readFile(path.join(packageRoot, 'src/auth/webOAuthService.ts'), 'utf8'),
-  readFile(path.join(packageRoot, 'src/index.ts'), 'utf8'),
-  readFile(path.resolve(packageRoot, '../../scripts/setup-linux-a100.sh'), 'utf8'),
-]);
+const [routeSource, atlasSource, configSource, webOAuthSource, serverSource, setupSource] =
+  await Promise.all([
+    readFile(path.join(packageRoot, 'src/routes/liclick.ts'), 'utf8'),
+    readFile(path.join(packageRoot, 'src/auth/atlasAuthService.ts'), 'utf8'),
+    readFile(path.join(packageRoot, 'src/config.ts'), 'utf8'),
+    readFile(path.join(packageRoot, 'src/auth/webOAuthService.ts'), 'utf8'),
+    readFile(path.join(packageRoot, 'src/index.ts'), 'utf8'),
+    readFile(path.resolve(packageRoot, '../../scripts/setup-linux-a100.sh'), 'utf8'),
+  ]);
 
 assert.match(routeSource, /code:\s*'LICLICK_PERSONAL_ACCOUNT_REQUIRED'/);
 assert.match(routeSource, /startPersonalLiclickAccountBinding\(user\)/);
