@@ -13,21 +13,36 @@ const transpiledSequence = ts.transpileModule(sequenceSource, {
 }).outputText;
 const sequenceModule = { exports: {} };
 new Function('module', 'exports', transpiledSequence)(sequenceModule, sequenceModule.exports);
-const { orderCameraViewsForSequentialGeneration } = sequenceModule.exports;
+const { insertCameraViewByPreviewOrder, usesGptTextureGeneration } = sequenceModule.exports;
 
-const ordered = orderCameraViewsForSequentialGeneration(
+const ordered = insertCameraViewByPreviewOrder(
   [
     { id: 'front', viewDirection: [0, 0, 1] },
-    { id: 'back', viewDirection: [0, 0, -1] },
-    { id: 'right', viewDirection: [1, 0, 0] },
-    { id: 'front-right', viewDirection: [1, 0, 1] },
+    { id: 'left', viewDirection: [-1, 0, 0] },
+    { id: 'top', viewDirection: [0, 1, 0] },
+    { id: 'bottom', viewDirection: [0, -1, 0] },
   ],
-  'front-right',
+  { id: 'front-left', viewDirection: [-1, 0, 1] },
 );
 assert.deepEqual(
   ordered.map((view) => view.id),
-  ['front-right', 'front', 'right', 'back'],
-  'the active view must lead a deterministic nearest-angle traversal',
+  ['front', 'front-left', 'left', 'top', 'bottom'],
+  'new ordinary views must be inserted by adjacency before the GPT pole tail',
+);
+assert.equal(usesGptTextureGeneration({ id: 'top', viewDirection: [0, 1, 0] }), true);
+assert.equal(
+  usesGptTextureGeneration({ id: 'top-oblique', viewDirection: [0, 0.89, 0.46] }),
+  false,
+);
+assert.equal(usesGptTextureGeneration({ id: 'bottom', viewDirection: [0, -1, 0] }), true);
+const orderedWithCustomTop = insertCameraViewByPreviewOrder(ordered, {
+  id: 'custom-top',
+  viewDirection: [0.1, 0.99, 0],
+});
+assert.deepEqual(
+  orderedWithCustomTop.map((view) => view.id),
+  ['front', 'front-left', 'left', 'top', 'custom-top', 'bottom'],
+  'custom pole views must use the GPT top/bottom tail instead of interrupting remote views',
 );
 
 const start = panel.indexOf('async function handleRemoteSequentialMultiviewGenerate');
@@ -35,7 +50,10 @@ const end = panel.indexOf('async function handleTextureMapMultiviewGenerate', st
 assert(start >= 0 && end > start, 'the remote multiview sequential orchestrator must exist');
 const flow = panel.slice(start, end);
 const persistPairedStart = panel.indexOf('async function persistPairedMultiviewReference');
-const persistPairedEnd = panel.indexOf('async function generatePairedMultiviewReference', persistPairedStart);
+const persistPairedEnd = panel.indexOf(
+  'async function generatePairedMultiviewReference',
+  persistPairedStart,
+);
 assert(
   persistPairedStart >= 0 && persistPairedEnd > persistPairedStart,
   'paired multiview reference persistence must exist',
@@ -54,8 +72,13 @@ assert.match(
 );
 assert.match(
   flow,
-  /orderCameraViewsForSequentialGeneration[\s\S]*?for \(let index = 0; index < viewCount; index \+= 1\)/,
-  'remote views must use the overlap-friendly order and one serial loop',
+  /const orderedViews = \[\.\.\.requestedViews\][\s\S]*?for \(let index = 0; index < viewCount; index \+= 1\)/,
+  'remote generation must consume the exact preview order in one serial loop',
+);
+assert.doesNotMatch(
+  flow,
+  /preferredFirstViewId|activeCameraViewId\s*\)/,
+  'the active thumbnail must not reorder the submitted preview sequence',
 );
 assert.match(
   flow,
@@ -71,6 +94,26 @@ assert.match(
   flow,
   /generateSingleViewInpaint\([\s\S]*?completion-mask\.png[\s\S]*?: await modelviewClient\.generateSingleView\(/,
   'partial views must use expanded-mask inpaint while all-clay views use ordinary generation',
+);
+assert.match(
+  flow,
+  /usesGptTextureGeneration\(view\)[\s\S]*?submitGptTextureView\([\s\S]*?waitForLiclickGeneration\(alignedGeneration\)/,
+  'top and bottom views must switch to GPT2 while staying inside the serial projection chain',
+);
+assert.match(
+  panel,
+  /requestedViews\.some\(usesGptTextureGeneration\)[\s\S]*?requirePersonalLiclickAccount\(\)/,
+  'mixed remote multiview must validate the GPT2 account before submitting the batch',
+);
+assert.match(
+  panel,
+  /'front',[\s\S]*?'front-left',[\s\S]*?'left',[\s\S]*?'back-left',[\s\S]*?'back',[\s\S]*?'back-right',[\s\S]*?'right',[\s\S]*?'front-right',[\s\S]*?'top',[\s\S]*?'bottom'/,
+  'preset 1 must keep adjacent orbit views first and poles last',
+);
+assert.match(
+  panel,
+  /'front',[\s\S]*?'left',[\s\S]*?'back',[\s\S]*?'right',[\s\S]*?'right-top',[\s\S]*?'front-top',[\s\S]*?'left-top',[\s\S]*?'back-top',[\s\S]*?'back-bottom',[\s\S]*?'left-bottom',[\s\S]*?'front-bottom',[\s\S]*?'right-bottom',[\s\S]*?'top',[\s\S]*?'bottom'/,
+  'preset 2 must use the approved preview and execution order',
 );
 assert.match(
   flow,

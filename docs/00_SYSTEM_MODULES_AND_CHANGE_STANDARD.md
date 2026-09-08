@@ -1,10 +1,10 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
-> 文档版本：`2.18.22`
+> 文档版本：`2.18.24`
 >
 > 生效日期：`2026-09-08`
 >
-> 代码盘点基线：`8d3b9f1 + 本次单/多视图统一合成`
+> 代码盘点基线：`e79bbca + 本次单投影驻留恢复发布`
 >
 > 基线仓库：`E:\Liclick 3D Texture Modernization`
 >
@@ -15,12 +15,13 @@
 2026-09-08 master/release 集成（M15）：合入 master a112655，包括 b374a9f/a0093a3 橡皮材质驻留交接、a7fa3b9 GPT2 提示词和 a112655 远端多视图逐视角生成；完整保留 release f3870f3 的 Ceph 流式 SHA-256 校验、内网 RGW 配置和生产部署基础设施。仅维护文档产生合并冲突，业务代码保持各分支已提交实现。算法版本沿用各变更卡，无新增 Schema 或数据迁移；回退整批镜像时保留 Ceph 修复与生产配置，已有工程/资产不删除。集成本地验证：88 项 Web/14 项 Server 回归、全仓 typecheck、lint（0 errors，15 条既有 warnings）、6 项部署策略、contracts/边界检查与完整 Cloud 构建通过；80 chunks / 3,133,800 bytes，通过原包体门禁，OAuth/资产/重启部署模拟通过。Ceph 前一批 f3870f3 的 CI #627368（含 deploy）已全部成功；本次新增功能的生产部署和真实项目验收以新流水线与维护者实测为准。
 
 变更卡 `CHG-20260908-CEPH-SHA256-READBACK`：M14，协作 M02/M15，`ALG-ASSET-VERIFY-001` v1.1.0。基于 release de1507c 保留效率组内网 RGW/公开浏览器地址分离。缺少附加 checksum 时流式读回验证实际 SHA-256；每进程最多 4 项执行、16 项等待，60 秒预算含排队/HEAD/GET，同用户同资产完成请求合并；前端完成接口等待上限 75 秒，校验完立即返回。完整性失败仍保持 pending，不放宽 verified、ownership、Revision CAS 或 Command 幂等性。线协议 v1/Schema 不变，无迁移；回退会恢复旧 Ceph 拒绝，但保留资产数据。真实 Ceph 与生产体验待验收，详见对应变更卡。
+变更卡 `CHG-20260908-SINGLE-PROJECTION-RESTORE-REVEAL`：UI-04/UI-06，主模块 M03，协作 M05/M06/M12/M15；`PROJECT-TEXTURED-ATOMIC-REVEAL` v1.0.1。刷新或重新进入只有一个可见投影贴图的项目时，完整模型可能复用同一 Group 上已驻留且结构键一致的投影材质；旧快速路径直接返回，没有把该 Group 发布给模型级原子显示门禁，导致贴图实际已就绪但模型仍被加载动画隐藏，直到用户切换图层眼睛触发后续材质流程。现在驻留材质快速返回前同步发布当前 Group，保持零重复 4K 上传，同时结束对应模型加载态。Cloud Web 总 JavaScript 实测 3,134,406 bytes，总量门禁按约 8 KiB 余量重定标为 3,142,400 bytes，应用壳、编辑器、烘焙与共享 3D 管线独立硬门禁不变。多层/UV/白模恢复、图层显隐、投影公式、GPU 纹理内容、CPU/Worker/shader、UV/export、分辨率、Project/Layer Schema、Command/Revision、ownership 与资产不变，无迁移；回退移除该发布调用会重新引入单投影恢复假死，不删除历史结果。
 
 变更卡 `CHG-20260908-AUTO-UV-IMPORT-TRIANGLE-LIMIT-70K`：UI-14，主模块 M10。UV 导入模型的前置三角面保护由 20,000 放宽至 70,000，错误提示同步按真实阈值显示“7 万面”；贴图工作区 200 万面限制及本地 UV 内核 200 万面安全上限保持不变。加载、解析、UV 算法、导出、Schema、Revision、ownership 与资产不变，无迁移。
 
 变更卡 `CHG-20260908-PAIRED-MULTIVIEW-TAB-PRESERVATION`：UI-05，主模块 M04。单视图纹理生成在后台补全并保存配对多视图参考图时，只更新参考图分组与当前材质参考，不再强制切换生成页签、预览模式或视图模式；用户从单视图发起后始终停留在单视图，显式页签操作保持唯一导航入口。参考图资产、后续生图输入、投影、提示词、Schema、Revision、ownership 与服务端接口不变，无迁移。
 
-变更卡 `CHG-20260908-REMOTE-MULTIVIEW-SEQUENTIAL`：UI-05/UI-06/UI-12，主模块 M04，协作 M03/M05/M06/M09/M12/M15；`ALG-GEN-006` v1.0.0。多视图增加与单视图一致的远端入口，以当前视角为起点、按相邻方向重叠最大的顺序逐视角生成。静态 clay/mask/depth 预捕获，每次即时捕获已投影的当前材质；完整覆盖跳过，部分覆盖复用现有外扩补全蒙版，全白模复用普通 ModelView 单视图。每张返图立即建立 projected layer，等待正式材质驻留后才转下一视角，末尾只执行一次内容识别填补。统一终止可 abort 当前 HTTP 并阻止后续视角，保留已完成图层；重试会跳过已完整覆盖视角。不改分辨率、质量门禁、提示词、投影公式、GPU/CPU/Worker/shader、UV/export、Schema、Command/Revision、ownership 和资产，无迁移；回退移除远端多视图编排入口，不删除已生成成果。
+变更卡 `CHG-20260908-REMOTE-MULTIVIEW-SEQUENTIAL`：UI-05/UI-06/UI-12，主模块 M04，协作 M03/M05/M06/M09/M12/M15；`ALG-GEN-006` v1.1.0。多视图预览数组成为远端串行执行的唯一顺序，取消当前活动视角二次重排；预设 1、预设 2 和自定义基础预设按维护者指定顺序排列且顶/底最后。用户新增普通视角按邻近方向插到极向分组前，归一化方向 `y>=0.9`/`y<=-0.9` 的顶部/底部视角自动进入 GPT2 分组。普通视角仍走 ModelView，GPT2 视角复用现有单视图请求/轮询/取消，所有视角均在返图投影并正式驻留后才继续；完整覆盖仍跳过，末尾仍只执行一次内容识别填补。批次开始前同时校验两种服务账号。不改分辨率、质量门禁、提示词模板、投影公式、GPU/CPU/Worker/shader、UV/export、Schema、Command/Revision、ownership 和资产，无迁移；回退恢复 v1.0.0 排序与全 ModelView 路由，不删除已生成成果。
 
 变更卡 `CHG-20260908-GPT2-TEXTURE-COMPLETION-PROMPT-V2`：UI-05，主模块 M04；`ALG-GEN-001/002` v1.2.0。GPT2 单视图初始白模、已有贴图补全及多视图继续共用唯一提示词构建器，主模板替换为用户指定的精简版本。Image 1 是画布、相机、几何、轮廓、孔洞、真实部件边界、视图数量和排版的唯一依据；仅白色、浅灰色、Clay、Primer 或未贴图区域可修改。Image 2 只提供其特有的 Base Color、颜色变化、纹理颗粒、尺度、方向、粗糙度和磨损，不提供形状、构图或光照；白模内部低模三角面灰度、Flat Shading 和硬法线明暗不得作为材质。用户补充要求仍追加在主模板末尾。服务端 purpose-built 标记同步更新，避免再次拼入旧通用光照约束。生成输入图、LiClick/Atlas 供应方、任务轮询/取消、投影、GPU/CPU/Worker/shader、分辨率、Project/Layer/Generation/Capture Schema、Command/Revision、ownership 与资产不变，无迁移；回退恢复旧模板和识别标记即可。
 
@@ -591,7 +592,7 @@ Bake 设置包含 resolution、frontal/rear distance、distance/cage、cage infl
 | `ALG-GEN-003` 任务身份归一 | clientGenerationId/serverJobId/taskId 合并，避免恢复时重复 running 行 |
 | `ALG-GEN-004` ModelView 远端单视图 | `1.1.0`；当前视角白模 + 多视图材质参考 + 可选提示词 → `modelview-single-view` → Generation；结果使用 `ALG-PROJ-005` v3 捕获适配并进入统一质量合成 |
 | `ALG-GEN-005` 提示词智能润色 | `1.10.0`；UI-05 经同源 `/api/liclick/prompt-polish` 分流。普通单/多视图保持莉刻 `data-analysis` A2A；局部重绘空输入由 `qwen3-vl-plus` 在一次请求中输出诊断和英文正文，诊断与正文分别校验；显式输入跳过诊断，保持统一 Qwen → Klein 转换模板。服务端用未外扩原始 mask 定位，并从干净 Image 1 自动裁出带上下文的第四图供 Qwen 看清选中部件；完整参考图仍只提供有证据的结构/材质，第四图不改变编辑范围或 ModelView 输入。模板先用 Image 2、第四图和 mask 外邻域共同确定真实结构与材质；仅当三者证明选区为未完成的白灰占位时，要求 Klein 用明确目标材质完整替换 clay/primer/flat placeholder/untextured surface，真实浅色材质不受此规则影响。模板以 100–180 词、2–3 段英文为生成目标；段数、词数、语言和 Markdown 偏差只记脱敏告警，不阻断也不触发格式修正。若首段缺少明确 mask 范围，服务端确定性追加固定保护句。仅最终正文写入 Generation，诊断不持久化、不回填文本框；显式输入与空输入均一次 Qwen，保持 65 秒 deadline。模板策略进入所有局部重绘指纹，升级后首次重新解析、后续继续复用 |
-| `ALG-GEN-006` ModelView 远端多视图串行生成 | `1.0.0`；当前视角优先的最近方向遍历；静态 Capture 预捕获，当前材质逐视角即时捕获；完全覆盖跳过、部分覆盖用现有外扩补全蒙版、全白模用普通远端单视图；每张返图投影驻留后才继续，末尾一次内容填补 |
+| `ALG-GEN-006` 混合远端多视图串行生成 | `1.1.0`；预览数组即执行顺序，普通视角 ModelView、极向顶/底视角 GPT2；静态 Capture 预捕获，当前材质逐视角即时捕获；完全覆盖跳过、部分覆盖用现有外扩补全蒙版；每张返图投影驻留后才继续，末尾一次内容填补 |
 | `ALG-OUT-001` 纹理/模型导出 | BaseColor 与 GLB/GLTF/FBX/OBJ/STL/ZIP；验证 UV 方向和颜色空间 |
 | `ALG-OUT-002` 快照/转台 | 当前视口设置生成静态图或视频，不改变 Layer 作者数据 |
 
@@ -606,7 +607,7 @@ Bake 设置包含 resolution、frontal/rear distance、distance/cage、cage infl
 - 工作流：`modelview-single-view`，生产版本 `2026.08.26-c0e6218-single-view-4step-r1`，与局部重绘 `modelview-inpaint` 分开排队和审计。
 - 失败与回退：远端失败只标记本次 Generation 失败并显示真实错误，不自动改走 GPT2；用户可显式切回 GPT2 重新生成。远端为非默认、非持久化界面选择，旧工程无需迁移。
 - 回滚：移除单视图远端 UI 分支和同源路由即可；已有远端 Generation/Layer 继续按普通单视图质量层读取，不需要删除资产或改写 Project Revision。
-- 远端多视图：不使用 GPT2 batch 并发，按 `ALG-GEN-006` 逐视角提交同一 ModelView 单视图/补全端点，上一结果投影驻留是下一请求的前置条件。
+- 远端多视图：不使用 batch 并发，按 `ALG-GEN-006` 逐视角提交；普通视角使用 ModelView 单视图/补全端点，极向顶/底视角使用 GPT2 单视图端点，上一结果投影驻留是下一请求的前置条件。
 - 测试：`test:single-view-priority` 必须覆盖双提供方分流与投影语义；`smoke:modelview-inpaint` 同时验证两条 ModelView URL、multipart 字段、幂等键、X-Job-ID 和 PNG 持久化。
 
 ### 11.1.1 同源开发工作区资产兼容
@@ -920,6 +921,7 @@ M15 / CLOUD-DEPLOYMENT v1.0.0（2026-09-03）：正常合并 release 部署历�
 | `2.18.20` | 2026-09-08 | `ModelView 远端多视图逐视角生成与回贴` | UI-05/UI-06/UI-12、M03/M04/M05/M06/M09/M12/M15，`ALG-GEN-006` v1.0.0：多视图可选远端，按最近相机方向串行执行；每张返图先投影并等待材质驻留，后一视角再捕获当前效果。完全覆盖跳过，部分覆盖复用外扩蒙版，中断停止当前及后续请求。不改提示词、投影公式、分辨率、Schema、Revision、ownership 或资产，无迁移。 |
 | `2.18.21` | 2026-09-08 | `后台多视图参考生成保持当前页签` | UI-05/M04：自动补全配对多视图参考图后只更新参考图状态，不再强制切换生成页签、预览模式或视图模式；单视图任务完成后仍停留在单视图。生成资产与后续管线不变，无 Schema 或数据迁移。 |
 | `2.18.22` | 2026-09-08 | `UV 导入模型上限放宽至 7 万面` | UI-14/M10：Auto UV 导入前置限制由 20,000 调整为 70,000，并同步阈值提示；贴图工作区和本地 UV 内核的 200 万安全上限不变，无 Schema 或数据迁移。 |
+| `2.18.23` | 2026-09-08 | `远端多视图顺序与顶底 GPT2 混合生成` | UI-05/UI-06/UI-12、M03/M04/M05/M06/M09/M12/M15，`ALG-GEN-006` v1.1.0：预览与执行共用维护者指定顺序，新增视角按普通/顶部/底部分组插入；顶底及接近极向的自定义视角使用 GPT2，其余使用 ModelView，继续逐张回贴驻留后再生成下一张。无分辨率、提示词模板、投影公式、Schema、Revision、ownership 或资产迁移。 |
 
 `ALG-LR-008` v2.4.1：局部重绘仍自动创建独立目标和结果图层；pointer-down 不再依赖当前图层是否选中、可见或为 UV，只检查自身 source/composite/Session/显示资源。默认保持按钮激活、GPU promotion、结果发布前的原选择（含 undefined），防止内部隐藏 draft 触发面板选择普通投影层。普通画笔/橡皮擦限制、GPU/CPU/Worker/shader、作者 mask、投影/UV/export、分辨率、Schema、Revision、ownership 与资产不变。真实 store 三类选择与入口 gate 回归通过；无数据迁移，回退选择保持与 gate 即可。详见 CHG-20260903-LOCAL-REPAINT-SELECTION-INDEPENDENCE。
 
@@ -938,3 +940,5 @@ M13/M15，`IDENTITY-TELEMETRY` v1.1.0，日聚合 schema v3：来源由后端确
 2026-09-08 性能日志详细归因补充：ALG-PERF-SESSION-001 v1.0.3 / collector 2.1.1。span 耗时在事件广播前确定；管理员详情关联最慢 12 帧与同期任务，相关性和建议不冒充根因，缺失数据不补造。Schema 2 与生产图像算法、工程持久化不变。详见 CHG-20260908-PERFORMANCE-LAB-PRODUCTION。
 
 性能详细采集最终 collector 2.2.0：构建与支持能力、脚本位置、单调时钟、Observer drain、渲染器每秒快照、有效 GPU 查询、数值参数及模块覆盖明细；普通登录不启用录制，不改生产渲染输出。性能参数无法等同系统级采样，缺失与上限随报告明确说明。
+
+2026-09-08 `CHG-20260908-REPAINT-TOOL-HANDOFF-PROFILE`：UI-06/UI-10 → M08，`ALG-LR-007` v2.2.1。真实 perf_224920a6 记录切换时 overlay 提前隐藏、正式材质约 4.75 秒后才发布。保留有内容的 preview owner 至真实 resident mask 绑定与呈现屏障完成，缓存复用/可见性入口同义，空预览和 eye-off 仍遵守原规则。GPU/CPU/Worker/shader 像素、UV/export、分辨率、Schema、Command/Revision/ownership/资产不变，无迁移；回滚只恢复这些判断。旧生产回调时序回归失败、新实现通过；M06 / ALG-PROJ-007 v2.1.4 同时令带深度/法线的 live+array 混合栈使用既有 compact 循环，保留简单 live 栈原 GLSL、采样预算与所有像素公式；7 组真实 WebGL 三状态像素对照一致，9 层 GLSL 约 82 KB 降至 31 KB。首次编译仍可能阻塞，不承诺用户原项目整体帧率已达标。详见对应变更卡。

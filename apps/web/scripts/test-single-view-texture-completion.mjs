@@ -59,11 +59,28 @@ assert.match(
   /return modelviewClient\.generateSingleView\([\s\S]*?white-model\.png/,
   'remote all-clay views must retain the original two-image generation path',
 );
-assert.match(
-  panel,
-  /referenceIds: \[modelViewReference\.id, materialReference\.id\][\s\S]*?referenceImages: \[modelViewReference, materialReference\]/,
-  'Atlas must still receive exactly the guide and material reference',
-);
+const panelAst = ts.createSourceFile('GeneratePanel.tsx', panel, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+let submitView;
+function findSubmitView(node) {
+  if (ts.isFunctionDeclaration(node) && node.name?.text === 'submitGptTextureView') submitView = node;
+  ts.forEachChild(node, findSubmitView);
+}
+findSubmitView(panelAst);
+assert.ok(submitView, 'The shared GPT submission helper must exist.');
+const submitJs = ts.transpileModule(submitView.getText(panelAst), {
+  compilerOptions: { target: ts.ScriptTarget.ES2022 },
+}).outputText;
+const submitScope = { createLiclickApiClient: () => ({ generateTextureSingleView: (request) => request }),
+  currentProject: { id: 'project' }, objects: [], resolution: 2048, imageSize: '2K', imageModel: 'GPT2',
+  aspectRatio: '1:1', resolveRequestImageSize: (value) => value, resolveRequestAspectRatio: () => '1:1' };
+const submit = new Function(...Object.keys(submitScope), `${submitJs}; return submitGptTextureView;`)(...Object.values(submitScope));
+const guide = { id: 'guide' }, material = { id: 'material' }, capture = { objectId: 'object' };
+const request = submit('generation', 'completion prompt', guide, material, capture);
+assert.deepEqual(request.referenceIds, ['guide', 'material']);
+assert.deepEqual(request.referenceImages, [guide, material], 'Atlas receives exactly the guide then material reference.');
+assert.equal(request.capture, capture);
+assert.equal(request.count, 1);
+assert.match(panel, /return submitGptTextureView\(\s*generationId,\s*texturePrompt,\s*modelViewReference,\s*materialReference,\s*capture/);
 assert.match(textureMapPrompts, /只在图一上进行材质补全，不重新生成物体/);
 assert.match(
   textureMapPrompts,

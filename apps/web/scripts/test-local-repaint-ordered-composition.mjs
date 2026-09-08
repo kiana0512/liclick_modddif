@@ -250,6 +250,74 @@ try {
     residentActivityStart,
   );
   const residentActivity = viewport.slice(residentActivityStart, residentActivityEnd);
+  // Replay the production callback across the real report's first-row build gap:
+  // apply -> button 1 -> material arrives -> presented handoff -> idle.
+  const activityJs = await transformWithEsbuild(residentActivity, 'activity.ts', { loader: 'ts' });
+  const sceneState = { paintTool: 'inpaint-apply', displayMode: 'flat', localRepaintPreviewLayer: liveRepaint,
+    setLocalRepaintPreviewLayer(value) { this.localRepaintPreviewLayer = value; } };
+  const layerState = { layers: [single, persistedRepaint] };
+  const overlay = { layerId: persistedRepaint.id, sourceKey: 'source', visible: true };
+  const composite = { layerId: persistedRepaint.id, sourceKey: 'source', hasContent: true, restoredMaskReady: true };
+  const pendingPresentation = { current: undefined };
+  let bound = false;
+  let handoffs = 0;
+  const scope = {
+    useCallback: (fn) => fn, localRepaintGpuOverlayRef: { current: overlay },
+    localRepaintCompositeRef: { current: composite },
+    localRepaintResidentPresentationLayerRef: pendingPresentation,
+    useSceneStore: { getState: () => sceneState }, useLayerStore: { getState: () => layerState },
+    isLocalRepaintLayerEraserActive: () => false,
+    shouldUseDedicatedLocalRepaintOverlay: ordered.shouldUseDedicatedLocalRepaintOverlay,
+    getTargetModel: () => ({}), bindLocalRepaintResidentMaskOverride: () => bound,
+    isLocalRepaintOverlayVisible: (mode, visible) => mode === 'flat' && visible,
+    readLocalRepaintGpuOverlayLayerVisibility: () => true,
+    setLocalRepaintGpuOverlayVisibility: (item, visible) => { item.visible = visible; return true; },
+    invalidate() {}, document: { body: { dataset: {} } },
+    scheduleLocalRepaintResidentPresentation: (id) => { pendingPresentation.current = id; handoffs++; },
+  };
+  const syncActivity = new Function(...Object.keys(scope), `${activityJs.code}; return syncLocalRepaintGpuOverlayActivity;`)(...Object.values(scope));
+  syncActivity();
+  assert.equal(overlay.visible, true);
+  for (const tool of ['none', 'inpaint-add', 'inpaint-subtract', 'none']) {
+    sceneState.paintTool = tool;
+    syncActivity();
+    assert.equal(overlay.visible, true, `${tool}: switching tools must retain the only owner until the resident mask binds`);
+    assert.equal(handoffs, 0, 'an unfinished material cannot complete the handoff');
+  }
+  bound = true;
+  syncActivity();
+  assert.equal(handoffs, 1);
+  assert.equal(overlay.visible, true, 'retain the exact overlay during the presentation barrier');
+  assert.equal(sceneState.localRepaintPreviewLayer, undefined);
+  pendingPresentation.current = undefined;
+  syncActivity();
+  assert.equal(overlay.visible, false, 'the resident row takes over after presentation');
+  sceneState.paintTool = 'inpaint-apply';
+  sceneState.localRepaintPreviewLayer = liveRepaint;
+  persistedRepaint.visible = false;
+  syncActivity();
+  assert.equal(overlay.visible, false, 'eye-off still hides the repaint during handoff');
+  persistedRepaint.visible = true;
+  composite.hasContent = false;
+  syncActivity();
+  assert.equal(overlay.visible, false, 'an empty restored preview must not replace saved content');
+  const ownershipExpression = viewport.match(/const overlayCanOwnPresentation =([\s\S]*?);/)[1];
+  const owns = new Function('existingLayer', 'sceneState', 'currentPreviewLayer', 'projectedLayer', 'composite',
+    `return (${ownershipExpression});`);
+  assert.equal(owns(persistedRepaint, { paintTool: 'none' }, liveRepaint, persistedRepaint, { hasContent: true }), true,
+    'reusing the prepared composite must not clear a pending first-row owner');
+  assert.equal(owns(persistedRepaint, { paintTool: 'none' }, liveRepaint, persistedRepaint, { hasContent: false }), false);
+  assert.equal(owns(persistedRepaint, { paintTool: 'none' }, { id: 'other' }, persistedRepaint, { hasContent: true }), false);
+  const gpuPreparation = viewport.slice(viewport.indexOf('const ensureLocalRepaintGpuOverlay = useCallback'),
+    viewport.indexOf('const ensureLocalRepaintGpuOverlay = useCallback') + 18000);
+  const visibilityGates = [...gpuPreparation.matchAll(/shouldUseDedicatedLocalRepaintOverlay\([\s\S]*?sceneState\.paintTool === 'inpaint-apply'[^\n]*/g)];
+  assert.equal(visibilityGates.length, 3, 'cover reuse, resident program rebinding and the visibility listener');
+  for (const gate of visibilityGates) {
+    const expression = gate[0].split('\n').at(-1).trim().replace(/,$/, '');
+    const evaluate = new Function('sceneState', 'previewOwnsOverlay', `return ${expression};`);
+    assert.equal(evaluate({ paintTool: 'inpaint-add' }, true), true);
+    assert.equal(evaluate({ paintTool: 'none' }, false), false);
+  }
   const residentBindingActivity = residentActivity.slice(
     residentActivity.indexOf('const residentOverrideBound = Boolean('),
     residentActivity.indexOf('let changed = false;'),
