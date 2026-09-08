@@ -247,6 +247,11 @@ const httpUsers = {
     updatedAt: startedAt,
   },
 };
+const { canReadAllPerformanceSessions } = await import('../dist/auth/performanceLabAccess.js');
+assert.equal(canReadAllPerformanceSessions(httpUsers.maintainer, [users[1].email]), true);
+for (const changes of [{ role: 'user' }, { authSource: 'dev-mock' }, { status: 'disabled' }, { email: users[0].email }]) {
+  assert.equal(canReadAllPerformanceSessions({ ...httpUsers.maintainer, ...changes }, [users[1].email]), false);
+}
 const route = createPerformanceLabRoute({
   repository,
   maintainerEmails: [users[1].email],
@@ -357,6 +362,33 @@ const adminDetail = await requestJson(`/api/performance-lab/admin/sessions/${htt
 assert.equal(adminDetail.status, 200);
 assert.equal(adminDetail.body.session.user.displayName, '飞书用户甲（新名称）');
 assert.equal(adminDetail.body.session.chunks[0].payload.frames[0][1], 33.3);
+// Traverse beyond the 200-row page, including identical timestamps and new inserts.
+for (let index = 0; index < 205; index++) {
+  await repository.createPerformanceLabSession({
+    userId: users[index % 2].id, sessionId: `perf_${randomUUID()}`,
+    schemaVersion: 2, collectorVersion: '2.0.0', startedAt, clientContext: context,
+  });
+}
+const firstPage = await requestJson('/api/performance-lab/admin/sessions?limit=200', {
+  headers: { 'x-test-user': 'maintainer' },
+});
+assert.equal(firstPage.body.sessions.length, 200);
+assert.ok(firstPage.body.nextCursor);
+const insertedId = `perf_${randomUUID()}`;
+await repository.createPerformanceLabSession({
+  userId: users[0].id, sessionId: insertedId, schemaVersion: 2,
+  collectorVersion: '2.0.0', startedAt: new Date().toISOString(), clientContext: context,
+});
+const secondPage = await requestJson(`/api/performance-lab/admin/sessions?limit=200&before=${firstPage.body.nextCursor}`, {
+  headers: { 'x-test-user': 'maintainer' },
+});
+assert.equal(secondPage.status, 200);
+assert.equal(secondPage.body.nextCursor, undefined);
+const pageIds = [...firstPage.body.sessions, ...secondPage.body.sessions].map(s => s.sessionId);
+assert.equal(pageIds.length, 209);
+assert.equal(new Set(pageIds).size, 209);
+assert.ok(!pageIds.includes(insertedId));
+assert.equal((await requestJson(`/api/performance-lab/admin/sessions?before=${firstPage.body.nextCursor}`)).status, 403);
 await new Promise((resolve, reject) =>
   server.close((error) => (error ? reject(error) : resolve())),
 );

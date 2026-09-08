@@ -28,7 +28,7 @@ ENV LICLICK_RELEASE_ID=${RELEASE_ID} VITE_LICLICK_RELEASE_ID=${RELEASE_ID} \
     LICLICK_BUILD_TIME=${BUILD_TIME} VITE_LICLICK_BUILD_TIME=${BUILD_TIME} \
     LICLICK_RUNTIME_MODE=cloud VITE_LICLICK_RUNTIME_MODE=cloud
 # The zprod ingress is at the domain root. No credentials are build arguments.
-ENV VITE_PUBLIC_PATH=""
+ENV VITE_PUBLIC_PATH="" VITE_LICLICK_PERFORMANCE_LAB_ENABLED=true
 RUN pnpm run build:release && pnpm run check:cloud-artifact && pnpm run check:web-bundle-budget
 RUN pnpm deploy --filter=@liclick/server --prod /out/server
 

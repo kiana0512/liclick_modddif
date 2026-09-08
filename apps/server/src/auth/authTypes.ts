@@ -45,4 +45,4 @@ export type AuthDatabase = {
   sessions: UserSession[];
 };
 
-export type PublicAuthUser = Pick<AuthUser, 'id' | 'displayName' | 'email' | 'avatarUrl' | 'role' | 'authSource'>;
+export type PublicAuthUser = Pick<AuthUser, 'id' | 'displayName' | 'email' | 'avatarUrl' | 'role' | 'authSource'> & { performanceLabAdmin: boolean };

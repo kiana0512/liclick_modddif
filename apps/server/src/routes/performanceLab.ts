@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { requireAuth } from '../auth/authMiddleware.js';
 import type { AuthUser } from '../auth/authTypes.js';
+import { canReadAllPerformanceSessions } from '../auth/performanceLabAccess.js';
 import { serverConfig } from '../config.js';
 import { projectRepository as defaultProjectRepository } from '../repositories/projectRepository.js';
 import {
@@ -17,7 +18,6 @@ const completeBodyLimitBytes = 8 * 1024 * 1024;
 const sessionIdPattern =
   /^perf_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const sha256Pattern = /^[0-9a-f]{64}$/;
-const maintainerRoles = new Set(['admin', 'maintainer', 'owner', 'superadmin']);
 
 type PerformanceLabRepository = NonNullable<typeof postgresControlRepository>;
 type ProjectLoader = Pick<typeof defaultProjectRepository, 'load'>;
@@ -51,8 +51,7 @@ function sha256Json(value: unknown) {
 }
 
 function isMaintainer(user: AuthUser, maintainerEmails: ReadonlySet<string>) {
-  const email = user.email?.trim().toLowerCase();
-  return Boolean(email && maintainerEmails.has(email) && maintainerRoles.has(user.role.toLowerCase()));
+  return canReadAllPerformanceSessions(user, [...maintainerEmails]);
 }
 
 function requireMaintainer(
@@ -259,6 +258,8 @@ async function listAdminSessions(
   maintainerEmails: ReadonlySet<string>,
 ) {
   if (!requireMaintainer(response, user, maintainerEmails)) return;
+  const beforeSessionId = url.searchParams.get('before') ?? undefined;
+  if (beforeSessionId) assertSessionId(beforeSessionId);
   const requestedLimit = Number(url.searchParams.get('limit') ?? 200);
   const limit = Number.isSafeInteger(requestedLimit)
     ? Math.max(1, Math.min(200, requestedLimit))
@@ -266,10 +267,12 @@ async function listAdminSessions(
   const sessions = await repository.listPerformanceLabSessions({
     requesterUserId: user.id,
     includeAllUsers: true,
-    limit,
+    limit: limit + 1,
+    beforeSessionId,
   });
   sendJson(response, 200, {
-    sessions: sessions.map(({ clientContext: _context, report: _report, ...session }) => session),
+    sessions: sessions.slice(0, limit).map(({ clientContext: _context, report: _report, ...session }) => session),
+    nextCursor: sessions.length > limit ? sessions[limit - 1].sessionId : undefined,
   });
 }
 

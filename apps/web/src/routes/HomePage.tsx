@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 import { UserMenu } from '@/components/auth/UserMenu';
 import { BrandMark } from '@/components/common/BrandMark';
+import { useAuthStore } from '@/stores/authStore';
 import { trackHomeModuleEntry, type HomeTelemetryModule } from '@/services/telemetryClient';
 
 type ModuleCardProps = {
@@ -398,6 +399,7 @@ export function HomePage({
   onOpenUv: () => void;
   onLogout: () => void;
 }) {
+  const performanceLabAdmin = useAuthStore((state) => state.user?.performanceLabAdmin === true);
   return (
     <main className="li3d-home-surface relative min-h-screen overflow-hidden text-white">
       <div className="pointer-events-none absolute left-[8%] top-36 h-72 w-72 rounded-full bg-fuchsia-500/[0.075] blur-[90px]" />
@@ -430,7 +432,7 @@ export function HomePage({
             </span>
             <span className="hidden h-3 w-px bg-white/12 sm:block" />
             <span className="hidden items-center gap-2 sm:inline-flex">
-              <Boxes className="h-3.5 w-3.5" />4 个工作模块
+              <Boxes className="h-3.5 w-3.5" />{performanceLabAdmin ? '5 个工作模块' : '4 个工作模块'}
             </span>
           </div>
         </div>
@@ -495,6 +497,19 @@ export function HomePage({
             onClick={onOpenToolbox}
             layout="compact"
           />
+          {performanceLabAdmin && (
+            <a href={`${import.meta.env.BASE_URL}performance-lab-admin`}
+              className="group flex flex-col justify-between rounded-2xl border border-cyan-300/20 bg-gradient-to-br from-cyan-950/50 to-[#0b0b16] p-7 transition hover:border-cyan-300/50">
+              <div className="flex items-center justify-between text-xs text-cyan-200/70">
+                <span>PERFORMANCE LAB</span><span>管理员专用</span>
+              </div>
+              <div><h2 className="mt-6 text-2xl font-semibold">日志监测</h2>
+                <p className="mt-3 text-sm leading-6 text-white/55">查看用户性能录制，定位设备卡顿与耗时热点。</p></div>
+              <div className="mt-6 flex items-center justify-between text-xs text-cyan-100/70">
+                <span>设备信息 · 操作时间线 · 完整报告</span><ArrowRight className="h-5 w-5" />
+              </div>
+            </a>
+          )}
         </div>
       </section>
     </main>

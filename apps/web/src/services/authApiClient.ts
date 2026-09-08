@@ -12,6 +12,7 @@ export type AuthUser = {
   email?: string;
   avatarUrl?: string;
   role: string;
+  performanceLabAdmin?: boolean;
   authSource: AuthMode;
 };
 

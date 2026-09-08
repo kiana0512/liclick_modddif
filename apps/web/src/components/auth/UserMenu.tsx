@@ -285,6 +285,12 @@ export function UserMenu({ onLogout }: UserMenuProps) {
               <Unlink className="h-4 w-4" />解除当前用户的莉刻账号
             </button>
           )}
+          {user.performanceLabAdmin && (
+            <a href={`${import.meta.env.BASE_URL}performance-lab-admin`}
+              className="mt-1 block rounded px-3 py-2 text-sm text-white/76 hover:bg-white/10">
+              日志监测
+            </a>
+          )}
           <button type="button" onClick={() => void handleLogout()} className="mt-1 flex w-full items-center gap-2 rounded px-3 py-2 text-left text-sm text-white/76 transition hover:bg-white/10 hover:text-white">
             <LogOut className="h-4 w-4" />{t('logout')}
           </button>

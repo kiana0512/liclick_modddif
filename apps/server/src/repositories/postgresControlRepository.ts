@@ -548,15 +548,20 @@ export function createPostgresControlRepository(database: ProjectSqlDatabase) {
       requesterUserId: string;
       includeAllUsers: boolean;
       limit: number;
+      beforeSessionId?: string;
     }) {
       const result = await database.query<PerformanceLabSessionRow>(
         `SELECT ${performanceLabSessionColumns}
            FROM performance_lab_sessions s
            JOIN cloud_users u ON u.user_id = s.user_id
           WHERE ($1::boolean = TRUE OR s.user_id = $2)
-          ORDER BY s.started_at DESC
+            AND ($4::text IS NULL OR (s.started_at, s.session_id) < (
+              SELECT cursor.started_at, cursor.session_id FROM performance_lab_sessions cursor
+              WHERE cursor.session_id = $4 AND ($1::boolean = TRUE OR cursor.user_id = $2)
+            ))
+          ORDER BY s.started_at DESC, s.session_id DESC
           LIMIT $3`,
-        [input.includeAllUsers, input.requesterUserId, input.limit],
+        [input.includeAllUsers, input.requesterUserId, input.limit, input.beforeSessionId ?? null],
       );
       return result.rows.map(performanceLabSessionFromRow);
     },

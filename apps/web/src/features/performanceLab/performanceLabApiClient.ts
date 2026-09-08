@@ -70,9 +70,9 @@ export function getPerformanceLabSession(sessionId: string) {
   );
 }
 
-export function listPerformanceLabAdminSessions(limit = 200) {
-  return requestJson<{ sessions: PerformanceLabSessionListItem[] }>(
-    `/api/performance-lab/admin/sessions?limit=${Math.max(1, Math.min(200, limit))}`,
+export function listPerformanceLabAdminSessions(limit = 200, before?: string) {
+  return requestJson<{ sessions: PerformanceLabSessionListItem[]; nextCursor?: string }>(
+    `/api/performance-lab/admin/sessions?limit=${Math.max(1, Math.min(200, limit))}${before ? `&before=${encodeURIComponent(before)}` : ''}`,
   );
 }
 

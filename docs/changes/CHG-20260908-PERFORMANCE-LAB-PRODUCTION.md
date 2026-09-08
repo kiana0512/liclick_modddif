@@ -1,0 +1,18 @@
+# 正式站性能录制与管理员日志监测
+
+主模块 M13，协作 M15/UI-01；ALG-PERF-SESSION-001 v1.0.2。报告 Schema 2 保持兼容。
+
+## 问题与行为
+效率组新服务器未启用前端上传、后端录制和管理员名单。实际管理员页面返回 Performance Lab is not enabled in this deployment；HUD 按钮存在不代表云端保存成功。
+
+正式镜像和 CI 构建启用录制桥，服务端 zprod 开启持久化。仍仅在 perfLab=1 下按需加载，用户主动开始/结束才采集。普通登录保留四个模块，不后台录制。
+负责人确认三位性能管理员：kianaren@lilith.com、haoze.yu@lilith.com、alonshi@lilith.com。可信飞书登录邮箱白名单与维护角色共同校验，服务端返回 performanceLabAdmin 能力；首页和账号菜单显示日志监测，普通用户不显示，直接请求 API 仍拒绝。旧登录若尚无维护角色，需重新飞书登录按既有 upsert 规则生效。
+
+管理员只读新服务器记录，可查看设备能力、帧耗时、长任务、业务时间线、网络资源、原始分块和完整 JSON。管理员列表采用 started_at/session_id 稳定游标，每页不超过 200 条；加载更早记录不会被新录制挤动。无记录和读取失败分别显示。
+
+## 验证与边界
+HTTP + PostgreSQL 测试覆盖用户 start/chunk/complete、另一管理员读取完整分块、普通用户及非白名单管理员 403、209 条含同时间戳记录分页、中途插入与无重复/遗漏。前端录制 Worker/完整会话回归、类型检查、构建与线上浏览器实测分别核验，不将模拟身份测试称为真实飞书登录。
+只收集新服务器今后主动产生的录制，不迁移 A100 历史数据。诊断不改变 Project Command、Revision CAS、ownership 或 verified assets；GPU/CPU/Worker/shader 的生产算法、UV/投影/导出、画质及 QA 不变。
+
+## 迁移与回滚
+无数据库结构迁移，分页 API 为兼容扩展。回滚关闭前后端录制开关并恢复代码，不删除现有录制；移除邮箱配置立即取消跨用户读取能力。生产实测结果将在完成后记录。
