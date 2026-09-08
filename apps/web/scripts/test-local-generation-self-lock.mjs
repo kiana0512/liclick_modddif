@@ -18,32 +18,32 @@ const progressStatusSource = generatePanel.slice(
 
 assert.match(
   textureMapPrompts,
-  /最终物体的外轮廓、剪影像素边界、位置、尺寸、比例、朝向、相机和透视，必须与图一的白模完全一致/,
+  /图一是唯一的画布、相机、位置、比例和几何依据/,
   'The texture prompt must treat the source silhouette as immutable pixel-level registration.',
 );
 assert.match(
   textureMapPrompts,
-  /只修改图一中的白色、浅灰色、Clay、Primer或无纹理区域/,
+  /只修改图一中的白色、浅灰色、Clay、Primer或未贴图区域/,
   'The texture prompt must completely replace every unfinished white-model region.',
 );
 assert.match(
   textureMapPrompts,
-  /白模内部的三角面灰度、多边形色块、硬法线明暗和Flat Shading不是材质/,
+  /不要保留白模内部的三角面灰度、Flat Shading或硬法线明暗/,
   'The texture prompt must reject low-poly shading artifacts as material evidence.',
 );
 assert.match(
   textureMapPrompts,
-  /“内部平滑”只表示材质连续，绝不表示可以平滑或改变外轮廓/,
+  /材质必须自然跨越低模面，连续、平滑、无多边形色块、接缝、白边、光晕或重复纹理/,
   'Material smoothing must not be interpreted as permission to reshape the target silhouette.',
 );
 assert.match(
   textureMapPrompts,
-  /图二只提供材质外观[\s\S]*?图二不提供几何、轮廓、位置、比例、相机、构图或光照/,
+  /图二只提供材质外观，不提供形状和构图[\s\S]*?忽略图二的几何、轮廓、相机、背景、光照、多视图排版和额外部件/,
   'The material reference must not influence geometry or composition.',
 );
 assert.match(
   textureMapPrompts,
-  /图一中已经具有材质的区域必须保留原始颜色、纹理、光影和细节，不得重绘、调色、重新照明、锐化或模糊/,
+  /图一中已有材质的区域、背景和透明区域必须保持原始颜色、纹理和光影不变/,
   'Existing material pixels must be absolutely locked.',
 );
 assert.match(
@@ -58,7 +58,7 @@ assert.doesNotMatch(
 );
 assert.match(
   liclickGenerationService,
-  /hasPurposeBuiltTextureConstraint =[\s\S]*?basePrompt\.includes\('【绝对第一优先级：轮廓配准】'\)[\s\S]*?basePrompt\.includes\(materialConstraint\) \|\| hasPurposeBuiltTextureConstraint/,
+  /hasPurposeBuiltTextureConstraint =[\s\S]*?basePrompt\.includes\('只在图一上进行材质补全，不重新生成物体。'\)[\s\S]*?basePrompt\.includes\(materialConstraint\) \|\| hasPurposeBuiltTextureConstraint/,
   'The server must not append the legacy whole-image lighting constraint to the scoped shared template.',
 );
 assert.match(

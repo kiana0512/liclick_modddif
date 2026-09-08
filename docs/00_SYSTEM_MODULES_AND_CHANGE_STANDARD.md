@@ -1,6 +1,6 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
-> 文档版本：`2.18.18`
+> 文档版本：`2.18.19`
 >
 > 生效日期：`2026-09-08`
 >
@@ -11,6 +11,8 @@
 > 审计口径：`0a2519d + 607e82f + 2568e40`，不包含错误文档提交 `2bde8c6/e03bab2/d1c5f78`
 
 ## 1. 文档地位与强制边界
+
+变更卡 `CHG-20260908-GPT2-TEXTURE-COMPLETION-PROMPT-V2`：UI-05，主模块 M04；`ALG-GEN-001/002` v1.2.0。GPT2 单视图初始白模、已有贴图补全及多视图继续共用唯一提示词构建器，主模板替换为用户指定的精简版本。Image 1 是画布、相机、几何、轮廓、孔洞、真实部件边界、视图数量和排版的唯一依据；仅白色、浅灰色、Clay、Primer 或未贴图区域可修改。Image 2 只提供其特有的 Base Color、颜色变化、纹理颗粒、尺度、方向、粗糙度和磨损，不提供形状、构图或光照；白模内部低模三角面灰度、Flat Shading 和硬法线明暗不得作为材质。用户补充要求仍追加在主模板末尾。服务端 purpose-built 标记同步更新，避免再次拼入旧通用光照约束。生成输入图、LiClick/Atlas 供应方、任务轮询/取消、投影、GPU/CPU/Worker/shader、分辨率、Project/Layer/Generation/Capture Schema、Command/Revision、ownership 与资产不变，无迁移；回退恢复旧模板和识别标记即可。
 
 变更卡 `CHG-20260908-PROJECTED-ERASER-UI-REBUILD-HANDOFF`：UI-05/UI-06/UI-09/UI-10，主模块 M08，协作 M04/M05/M06/M12；`ALG-ERASE-001` v1.3.6。普通 projected 橡皮的 512/1024 实时 keep-mask 已同时绑定当前材质与共享注册表。v1.3.5 只等待全分辨率提交完成，但多投影纹理数组不能在旧材质中原位替换 authored mask URL；提交已进入 LayerStore、SceneRoot 新材质尚未发布的窗口内，退出工具、启动单视图、选择图层或切换 Flat/PBR 仍会提前清除共享实时权威，重新显示旧蒙版。现在交接分为两段：先等待像素提交，再保持实时 multiplier，直至 `liclick:projected-material-resident` 后验证新材质的 direct mask uniform 已绑定当前 `layer.assetUrl`。切换投影层还会等待该驻留握手后才复用唯一实时采样器；隐藏层可直接释放，重新显示时从已提交蒙版恢复。提交失败仍恢复旧持久蒙版后清理。擦除覆盖、作者 mask、GPU shader、CPU/Worker 补缝、UV/export、最终分辨率、Project/Layer Schema、Command 幂等性、Revision CAS、ownership 与资产不变，无迁移；回退移除驻留握手会重新引入材质重建窗口内的回弹。
 
@@ -574,8 +576,8 @@ Bake 设置包含 resolution、frontal/rear distance、distance/cage、cage infl
 | `ALG-CAP-004` Depth 捕获 | `(-viewZ-near)/(far-near)` linear-view，RGB packing，alpha=1 |
 | `ALG-CAP-005` Normal 捕获 | 默认 view normal，编码 `n×0.5+0.5` |
 | `ALG-CAP-006` 捕获状态隔离 v1.0.0 | 首次及逐 tile/pass 的 await 前归还共享 renderer/背景；每个同步 draw 重绑捕获 target/clear，保留像素与分辨率 |
-| `ALG-GEN-001` 单视图生成 | 当前相机 Capture + 材质参考 → Generation；结果先生成原捕获尺寸的边缘去污染投影源，再与独立 capture mask/depth 一起创建普通质量合成 projected layer |
-| `ALG-GEN-002` 多视图批次 | N 个捕获共享 batch；完成层串行 commit，整批结束一次发布新投影栈 |
+| `ALG-GEN-001` 单视图生成 | `1.2.0`；当前相机 Capture + 材质参考 → Generation；GPT2 初始白模与已有贴图补全共用图一几何锁定/图二材质参考模板；结果先生成原捕获尺寸的边缘去污染投影源，再与独立 capture mask/depth 一起创建普通质量合成 projected layer |
+| `ALG-GEN-002` 多视图批次 | `1.2.0`；N 个捕获共享 batch；GPT2 与单视图共用同一材质补全模板；完成层串行 commit，整批结束一次发布新投影栈 |
 | `ALG-GEN-003` 任务身份归一 | clientGenerationId/serverJobId/taskId 合并，避免恢复时重复 running 行 |
 | `ALG-GEN-004` ModelView 远端单视图 | `1.1.0`；当前视角白模 + 多视图材质参考 + 可选提示词 → `modelview-single-view` → Generation；结果使用 `ALG-PROJ-005` v3 捕获适配并进入统一质量合成 |
 | `ALG-GEN-005` 提示词智能润色 | `1.10.0`；UI-05 经同源 `/api/liclick/prompt-polish` 分流。普通单/多视图保持莉刻 `data-analysis` A2A；局部重绘空输入由 `qwen3-vl-plus` 在一次请求中输出诊断和英文正文，诊断与正文分别校验；显式输入跳过诊断，保持统一 Qwen → Klein 转换模板。服务端用未外扩原始 mask 定位，并从干净 Image 1 自动裁出带上下文的第四图供 Qwen 看清选中部件；完整参考图仍只提供有证据的结构/材质，第四图不改变编辑范围或 ModelView 输入。模板先用 Image 2、第四图和 mask 外邻域共同确定真实结构与材质；仅当三者证明选区为未完成的白灰占位时，要求 Klein 用明确目标材质完整替换 clay/primer/flat placeholder/untextured surface，真实浅色材质不受此规则影响。模板以 100–180 词、2–3 段英文为生成目标；段数、词数、语言和 Markdown 偏差只记脱敏告警，不阻断也不触发格式修正。若首段缺少明确 mask 范围，服务端确定性追加固定保护句。仅最终正文写入 Generation，诊断不持久化、不回填文本框；显式输入与空输入均一次 Qwen，保持 65 秒 deadline。模板策略进入所有局部重绘指纹，升级后首次重新解析、后续继续复用 |
@@ -586,7 +588,7 @@ Bake 设置包含 resolution、frontal/rear distance、distance/cage、cage infl
 
 - UI：`UI-05` 的单视图页显示 `GPT2 / 远端` 切换；默认保持 `GPT2`，多视图和局部重绘不受此选择影响。
 - 模块：`M04` 生成编排；远端适配由同源 `/api/modelview/single-view` 进入 Node 控制面，浏览器不得直接持有 API Key 或跳过局域网 TLS 校验。
-- GPT2 输入与行为：继续使用现有完整纹理提示词、LiClick/Atlas 任务提交、轮询、取消和投影流程，不改变既有语义。
+- GPT2 输入与行为：单视图初始白模、已有贴图补全及多视图统一使用 `textureMapPrompts.ts` 的材质补全模板；图一锁定全部几何、视图与排版，图二只提供白模内部的特有材质外观。继续使用 LiClick/Atlas 任务提交、轮询、取消和投影流程。
 - 远端输入：必填当前视角 clay 白模 `image`、已选多视图材质参考 `material_image`；`prompt` 可空且最长 4096 字符；禁止发送 mask、seed、noise_seed、模型名、采样步数或工作流节点参数。
 - 远端身份：每次新生成使用新的 client generation ID，并派生独立 `Idempotency-Key`；网络层重放同一请求必须复用该键。
 - 远端输出：同步 PNG 先写入当前项目 generations 资产，再创建 `workflow=texture-map`、`provider=modelview-single-view` 的 Generation；GPT2 与远端都必须用同一 capture camera/mask/depth 和 `ALG-PROJ-005` v3 创建普通质量合成图层，供应方差异不得改变投影几何。
@@ -902,6 +904,7 @@ M15 / CLOUD-DEPLOYMENT v1.0.0（2026-09-03）：正常合并 release 部署历�
 | `2.18.13` | 2026-09-08 | `官方生产 IDaaS 应用接入配置` | M13、`LICLICK-ACCOUNT-BINDING` v1.3.4：官方 lilithplugin_jwt62/lilith 与 prod Gateway 配对，保持根路径固定回调、target_url 和个人账号隔离；增加部署配置及生产 URL 回归。实际发布、正式授权和多用户生图待验收，无 Schema 或数据迁移。 |
 | `2.18.17` | 2026-09-08 | `本次投影橡皮跨界面重建交接修复` | UI-05/UI-06/UI-09/UI-10、M04/M05/M06/M08/M12，`ALG-ERASE-001` v1.3.5：全分辨率 projected keep-mask 提交未完成时同时保留对象 root 与共享实时蒙版权威，使单视图准备、切层和预览开关产生的新材质继续绑定已擦结果；正式蒙版验证驻留后再清理。覆盖公式、分辨率、Schema、Revision、ownership 与资产不变，无迁移。 |
 | `2.18.18` | 2026-09-08 | `本次投影橡皮材质驻留交接修复` | UI-05/UI-06/UI-09/UI-10、M04/M05/M06/M08/M12，`ALG-ERASE-001` v1.3.6：在像素提交后继续保留实时 keep-mask，直到新 projected 材质确认绑定当前 mask URL；切换图层复用实时采样器前等待两段交接，修复单视图、选择图层及预览切换后的旧蒙版回弹。覆盖公式、分辨率、Schema、Revision、ownership 与资产不变，无迁移。 |
+| `2.18.19` | 2026-09-08 | `本次 GPT2 单/多视图材质补全模板精简` | UI-05/M04、`ALG-GEN-001/002` v1.2.0：单视图初始白模、已有贴图补全与多视图统一使用新模板；图一锁定几何、轮廓、视图和排版，图二只控制白模内部的特有材质，并排除低模分面明暗。服务端同步识别新模板，不再追加旧光照约束。输入图、供应方、投影、分辨率、Schema、Revision、ownership 与资产不变，无迁移。 |
 
 `ALG-LR-008` v2.4.1：局部重绘仍自动创建独立目标和结果图层；pointer-down 不再依赖当前图层是否选中、可见或为 UV，只检查自身 source/composite/Session/显示资源。默认保持按钮激活、GPU promotion、结果发布前的原选择（含 undefined），防止内部隐藏 draft 触发面板选择普通投影层。普通画笔/橡皮擦限制、GPU/CPU/Worker/shader、作者 mask、投影/UV/export、分辨率、Schema、Revision、ownership 与资产不变。真实 store 三类选择与入口 gate 回归通过；无数据迁移，回退选择保持与 gate 即可。详见 CHG-20260903-LOCAL-REPAINT-SELECTION-INDEPENDENCE。
 
