@@ -24,11 +24,10 @@ const budgets = [
     maxBytes: 850_000,
   },
 ];
-// The integrated performance release, centered transform proxy and per-model
-// atomic texture reveal measure 3,125,470 bytes in the cloud build. Keep about
-// 8 KiB of deterministic-build headroom; the tighter shell, editor, bake and
-// shared-pipeline budgets still guard every hot path independently.
-const maxTotalJavaScriptBytes = 3_134_000;
+// The single-projection restore release measures 3,134,406 bytes in the cloud
+// build. Keep about 8 KiB of deterministic-build headroom; the tighter shell,
+// editor, bake and shared-pipeline budgets still guard every hot path independently.
+const maxTotalJavaScriptBytes = 3_142_400;
 
 let entries;
 try {

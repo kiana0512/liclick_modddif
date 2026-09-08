@@ -1,16 +1,18 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
-> 文档版本：`2.18.23`
+> 文档版本：`2.18.24`
 >
 > 生效日期：`2026-09-08`
 >
-> 代码盘点基线：`8d3b9f1 + 本次单/多视图统一合成`
+> 代码盘点基线：`e79bbca + 本次单投影驻留恢复发布`
 >
 > 基线仓库：`E:\Liclick 3D Texture Modernization`
 >
 > 审计口径：`0a2519d + 607e82f + 2568e40`，不包含错误文档提交 `2bde8c6/e03bab2/d1c5f78`
 
 ## 1. 文档地位与强制边界
+
+变更卡 `CHG-20260908-SINGLE-PROJECTION-RESTORE-REVEAL`：UI-04/UI-06，主模块 M03，协作 M05/M06/M12/M15；`PROJECT-TEXTURED-ATOMIC-REVEAL` v1.0.1。刷新或重新进入只有一个可见投影贴图的项目时，完整模型可能复用同一 Group 上已驻留且结构键一致的投影材质；旧快速路径直接返回，没有把该 Group 发布给模型级原子显示门禁，导致贴图实际已就绪但模型仍被加载动画隐藏，直到用户切换图层眼睛触发后续材质流程。现在驻留材质快速返回前同步发布当前 Group，保持零重复 4K 上传，同时结束对应模型加载态。Cloud Web 总 JavaScript 实测 3,134,406 bytes，总量门禁按约 8 KiB 余量重定标为 3,142,400 bytes，应用壳、编辑器、烘焙与共享 3D 管线独立硬门禁不变。多层/UV/白模恢复、图层显隐、投影公式、GPU 纹理内容、CPU/Worker/shader、UV/export、分辨率、Project/Layer Schema、Command/Revision、ownership 与资产不变，无迁移；回退移除该发布调用会重新引入单投影恢复假死，不删除历史结果。
 
 变更卡 `CHG-20260908-AUTO-UV-IMPORT-TRIANGLE-LIMIT-70K`：UI-14，主模块 M10。UV 导入模型的前置三角面保护由 20,000 放宽至 70,000，错误提示同步按真实阈值显示“7 万面”；贴图工作区 200 万面限制及本地 UV 内核 200 万面安全上限保持不变。加载、解析、UV 算法、导出、Schema、Revision、ownership 与资产不变，无迁移。
 

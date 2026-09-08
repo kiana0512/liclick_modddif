@@ -585,6 +585,11 @@ assert.match(
 );
 assert.match(
   sceneRootSource,
+  /if \(\s*!showWhiteMembrane &&\s*hasResidentProjectedMaterial &&\s*committedProjectedMaterialStructureRef\.current === projectedMaterialStructureKey\s*\) \{[\s\S]*?revealInitialMaterialPresentation\(\);[\s\S]*?return;/,
+  'A restored single projected layer must publish its resident Group before the material fast path returns.',
+);
+assert.match(
+  sceneRootSource,
   /requestAnimationFrame[\s\S]*?requestAnimationFrame[\s\S]*?liclick:initial-model-frame-presented/,
   'The editor reveal signal must wait until the first WebGL model frame has actually been presented.',
 );

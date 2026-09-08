@@ -3618,6 +3618,9 @@ const ImportedModel = memo(function ImportedModel({
       // applied synchronously by the resident-uniform effects/subscription.
       // Do not let those presentation-only changes enter the async material
       // builder and race a second 4K texture-array upload.
+      // A restored Group can already own this resident material while its
+      // atomic reveal gate still points at the previously mounted Group.
+      revealInitialMaterialPresentation();
       return;
     }
     let cancelled = false;
