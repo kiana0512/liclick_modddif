@@ -898,3 +898,8 @@ M15 / CLOUD-DEPLOYMENT v1.0.0（2026-09-03）：正常合并 release 部署历�
 `ALG-LR-008` v2.4.1：局部重绘仍自动创建独立目标和结果图层；pointer-down 不再依赖当前图层是否选中、可见或为 UV，只检查自身 source/composite/Session/显示资源。默认保持按钮激活、GPU promotion、结果发布前的原选择（含 undefined），防止内部隐藏 draft 触发面板选择普通投影层。普通画笔/橡皮擦限制、GPU/CPU/Worker/shader、作者 mask、投影/UV/export、分辨率、Schema、Revision、ownership 与资产不变。真实 store 三类选择与入口 gate 回归通过；无数据迁移，回退选择保持与 gate 即可。详见 CHG-20260903-LOCAL-REPAINT-SELECTION-INDEPENDENCE。
 
 `ALG-LR-008` v2.4.2 将浏览器运行期 `liclick-live-projected-canvas:` 与项目资产契约彻底分离。前端保存时必须从 live canvas/image 注册表取得同一 revision 的像素、编码 PNG 并上传；成功后按项目/槽位/source URL 保留 verified asset 映射，使 GPU 注册源稍后释放也能安全复用。若 live source 已释放且从未上传，保存队列保留当前内存画面并重试，不创建不可重开的 Revision。服务端二次校验 `maskUrl`、`localRepaintMaskUrl`、`depthUrl`、`localRepaintSourceUrl` 和 projected `imageUrl`，volatile 值只能回退到同层上一 Revision 的 durable URL，否则以 Revision 冲突拒绝。该变更不修改 GPU/CPU/Worker/shader、coverage、depth/surface-lock、投影/UV/export、分辨率、Project/Layer/Generation/Capture Schema、ownership 或对象存储类别。旧的坏 Revision 不改写；迁移只允许通过正常 CAS 新建恢复 Revision，回退代码时不得恢复写入 runtime URL 的行为。详见 CHG-20260903-LOCAL-REPAINT-DURABLE-MASK-PERSISTENCE。
+
+
+## 2026-09-08 双入口统计补充
+
+M13/M15，`IDENTITY-TELEMETRY` v1.1.0，日聚合 schema v3：来源由后端确定并加入唯一键；A100/正式站共表分行，OAuth 创建会话后幂等记录登录。旧事件原子标记来源，不补造历史登录；回滚先停同步。详见 [双入口统计变更卡](changes/CHG-20260908-DUAL-SOURCE-TELEMETRY.md)。

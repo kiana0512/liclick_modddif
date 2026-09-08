@@ -29,7 +29,8 @@
     "db:cloud:migrate": "node scripts/migrate-cloud-projects.mjs",
     "db:push": "node scripts/prisma.mjs db push",
     "db:studio": "node scripts/prisma.mjs studio",
-    "db:seed": "node dist/db/seed.js"
+    "db:seed": "node dist/db/seed.js",
+    "test:dual-source-telemetry": "node scripts/clean-dist.mjs && tsc -p tsconfig.json && node scripts/test-dual-source-telemetry.mjs"
   },
   "dependencies": {
     "@liclick/contracts": "workspace:*",

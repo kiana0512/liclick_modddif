@@ -111,6 +111,8 @@ async function main() {
 
   assert.deepEqual(new Set(Object.keys(fields)), new Set([
     '聚合键',
+    '来源',
+    '登录次数',
     '日期时间',
     '日期键',
     '工具版本',

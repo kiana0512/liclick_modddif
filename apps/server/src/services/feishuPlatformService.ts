@@ -306,6 +306,8 @@ export async function enrichFeishuUserByEmail(
 
 export const FEISHU_TELEMETRY_FIELD_NAMES = {
   aggregateKey: '聚合键',
+  source: '来源',
+  loginCount: '登录次数',
   dateTime: '日期时间',
   dateKey: '日期键',
   version: '工具版本',
@@ -329,6 +331,7 @@ export const FEISHU_TELEMETRY_FIELD_NAMES = {
 } as const;
 
 export type TelemetryAggregateForBitable = {
+  source?: string;
   aggregate_key: string;
   date_key: string;
   user_key: string;
@@ -403,6 +406,8 @@ export function prepareTelemetryAggregateForBitable(aggregate: TelemetryAggregat
 
   const fields: BitableFields = {
     [FEISHU_TELEMETRY_FIELD_NAMES.aggregateKey]: aggregateKey,
+    [FEISHU_TELEMETRY_FIELD_NAMES.source]: aggregate.source ?? serverConfig.telemetrySource,
+    [FEISHU_TELEMETRY_FIELD_NAMES.loginCount]: countFor(counts, 'auth', 'login'),
     [FEISHU_TELEMETRY_FIELD_NAMES.dateTime]: lastEventTimestamp,
     [FEISHU_TELEMETRY_FIELD_NAMES.dateKey]: dateKey,
     [FEISHU_TELEMETRY_FIELD_NAMES.version]: version,
