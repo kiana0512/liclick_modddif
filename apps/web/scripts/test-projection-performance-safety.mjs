@@ -113,12 +113,27 @@ assert.ok(precompileDeclaration);
 const precompileJs = ts.transpileModule(`const run = ${precompileDeclaration.initializer.getText(sceneAst)};`, {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
 }).outputText;
+const targetCompilerSource = await readFile(
+  new URL('../src/engine/projection/compileForRenderTarget.ts', import.meta.url), 'utf8',
+);
+const targetCompilerJs = ts.transpileModule(targetCompilerSource, {
+  compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
+}).outputText;
+const targetCompilerExports = {};
+new Function('exports', targetCompilerJs)(targetCompilerExports);
 let finishColdWarmup;
 const coldWarmup = new Promise((resolve) => { finishColdWarmup = resolve; });
 const scheduleEvents = [];
 const precompileScope = {
   THREE, camera: new THREE.PerspectiveCamera(), cancelled: false,
-  gl: { compileAsync: async () => scheduleEvents.push('compile') },
+  gl: {
+    compileAsync: async () => scheduleEvents.push('compile'),
+    getRenderTarget: () => null,
+    getActiveCubeFace: () => 0,
+    getActiveMipmapLevel: () => 0,
+    setRenderTarget() {},
+  },
+  compileForRenderTarget: targetCompilerExports.compileForRenderTarget,
   waitForPreviewTextureUploadsIdle: async () => scheduleEvents.push('uploads-idle'),
   getProjectedProgramWarmupMap: () => new Map([['cold', coldWarmup]]),
   waitForViewportInteractionIdle: async () => scheduleEvents.push('interaction-idle'),
@@ -317,7 +332,7 @@ assert.match(
 );
 assert.match(
   sceneRootSource,
-  /await waitForPreviewTextureUploadsIdle\(gl, \(\) => cancelled\)[\s\S]*?gl\.compileAsync/,
+  /await waitForPreviewTextureUploadsIdle\(gl, \(\) => cancelled\)[\s\S]*?compileForRenderTarget\(gl, compileScene, camera, target\)/,
   'projected material compilation must not overlap active 4K preview uploads',
 );
 assert.match(

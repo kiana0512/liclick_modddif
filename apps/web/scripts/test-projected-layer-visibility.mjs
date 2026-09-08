@@ -664,6 +664,11 @@ const uvSamplerWarmupSource = sceneRootSource.match(
 assert(uvSamplerWarmupSource, 'Expected the projected UV sampler warmup implementation.');
 assert.match(
   uvSamplerWarmupSource,
+  /await precompileProjectedMaterial\(material, warmTarget\);\s*if \(cancelled\) return;/,
+  'Await the offscreen program and recheck cancellation before exercising UV samplers.',
+);
+assert.match(
+  uvSamplerWarmupSource,
   /await waitForViewportInteractionIdle\(\);[\s\S]*?const frameTarget = gl\.getRenderTarget\(\);[\s\S]*?gl\.setRenderTarget\(warmTarget\);[\s\S]*?gl\.render\(warmScene, warmCamera\);[\s\S]*?gl\.setRenderTarget\(frameTarget\);/,
   'Every fullscreen sampler warmup draw must bind and restore its offscreen target after the last await.',
 );
@@ -981,6 +986,61 @@ try {
     };
   }
   const projection = await server.ssrLoadModule('/src/engine/projection/ProjectedLayerMaterial.ts');
+  const { compileForRenderTarget } = await server.ssrLoadModule(
+    '/src/engine/projection/compileForRenderTarget.ts',
+  );
+  const originalTarget = { name: 'visible-cube-face' };
+  const offscreenTarget = { name: 'uv-warmup' };
+  let boundTarget = originalTarget;
+  let boundFace = 3;
+  let boundMip = 2;
+  let finishCompile;
+  const rendererFixture = {
+    getRenderTarget: () => boundTarget,
+    getActiveCubeFace: () => boundFace,
+    getActiveMipmapLevel: () => boundMip,
+    setRenderTarget(target, face = 0, mip = 0) {
+      boundTarget = target;
+      boundFace = face;
+      boundMip = mip;
+    },
+    compileAsync() {
+      assert.equal(boundTarget, offscreenTarget, 'Select the offscreen shader variant.');
+      return new Promise((resolve) => {
+        finishCompile = resolve;
+      });
+    },
+  };
+  const compilation = compileForRenderTarget(rendererFixture, {}, {}, offscreenTarget);
+  assert.deepEqual(
+    [boundTarget, boundFace, boundMip],
+    [originalTarget, 3, 2],
+    'Restore the exact visible framebuffer before asynchronous compilation settles.',
+  );
+  finishCompile();
+  await compilation;
+  rendererFixture.compileAsync = () => {
+    throw new Error('compile failed');
+  };
+  assert.throws(
+    () => compileForRenderTarget(rendererFixture, {}, {}, offscreenTarget),
+    /compile failed/,
+  );
+  assert.deepEqual(
+    [boundTarget, boundFace, boundMip],
+    [originalTarget, 3, 2],
+    'A synchronous driver failure must also restore the framebuffer.',
+  );
+  rendererFixture.compileAsync = () => Promise.reject(new Error('link failed'));
+  await assert.rejects(
+    compileForRenderTarget(rendererFixture, {}, {}, offscreenTarget),
+    /link failed/,
+  );
+  assert.deepEqual(
+    [boundTarget, boundFace, boundMip],
+    [originalTarget, 3, 2],
+    'An asynchronous link failure must propagate without leaking renderer state.',
+  );
   const maskedProjection = await server.ssrLoadModule(
     '/src/engine/projection/createMaskedProjectedImage.ts',
   );
