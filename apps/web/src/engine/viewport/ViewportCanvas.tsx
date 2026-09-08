@@ -492,6 +492,7 @@ function percentile(samples: number[], ratio: number) {
 
 function ViewportPerformanceProbe({ enabled }: { enabled: boolean }) {
   const { gl } = useThree();
+  const lastTelemetryPublish = useRef(0);
 
   useFrame(() => {
     if (!enabled) return;
@@ -504,6 +505,10 @@ function ViewportPerformanceProbe({ enabled }: { enabled: boolean }) {
     viewportTelemetry.height = gl.domElement.height;
     viewportTelemetry.dpr = gl.getPixelRatio();
     viewportTelemetry.contextLost = gl.getContext().isContextLost();
+    if (performance.now() - lastTelemetryPublish.current >= 1000) {
+      lastTelemetryPublish.current = performance.now();
+      markPerformanceEvent('system', 'renderer-snapshot', { ...viewportTelemetry });
+    }
   });
 
   useEffect(() => {
@@ -548,6 +553,7 @@ function ViewportPerformanceProbe({ enabled }: { enabled: boolean }) {
         context.deleteQuery(query);
         if (!Number.isFinite(elapsedNanoseconds)) continue;
         const durationMs = elapsedNanoseconds / 1_000_000;
+        markPerformanceEvent('system', 'gpu-render-query-result', { durationMs, backend: 'webgl2' });
         gpuFrameTimeSamples.push(durationMs);
         gpuFramePhaseTimeSamples.push({ durationMs, phase: queryPhases.get(query) });
         if (gpuFrameTimeSamples.length > 240) gpuFrameTimeSamples.shift();

@@ -934,3 +934,7 @@ M13/M15，`IDENTITY-TELEMETRY` v1.1.0，日聚合 schema v3：来源由后端确
 2026-09-08 `CHG-20260908-MODELVIEW-IDEMPOTENCY-LENGTH`：UI-05/M04（协作 M13/M15），`MODELVIEW-IDEMPOTENCY` v1.1.0。真实单视图任务 ID 拼普通后缀为 125 字符，补全后缀为 147，超过远端 128 限制导致第二张 422。保留全部旧合法键，仅对超长键使用完整原始 ID 的 SHA-256 + 原 workflow 后缀；同任务重试稳定，不截断尾部 UUID。三入口共用并加入 Server HTTP 回归，旧代码失败/修复通过。输入图片、mask、prompt、GPU/CPU/Worker/shader、投影/UV/export、分辨率、Schema、Command/Revision、ownership 与资产不变，无迁移；回退仅恢复旧键构造，会重新引入 422，不删除历史成果。详见对应变更卡。
 
 2026-09-08 CHG-20260908-PERFORMANCE-LAB-PRODUCTION：M13/M15/UI-01，ALG-PERF-SESSION-001 v1.0.2。效率组正式站启用主动性能录制与三位管理员只读日志监测；服务端能力控制首页入口，白名单+飞书身份+维护角色控制跨用户读取，稳定游标分页超过 200 条记录。报告 Schema 2 不变，只处理新站新录制，不迁移 A100 历史；无生产算法、Project/Revision/ownership/资产语义变化。回滚关闭录制开关并恢复代码，保留全部记录。详见对应变更卡。
+
+2026-09-08 性能日志详细归因补充：ALG-PERF-SESSION-001 v1.0.3 / collector 2.1.1。span 耗时在事件广播前确定；管理员详情关联最慢 12 帧与同期任务，相关性和建议不冒充根因，缺失数据不补造。Schema 2 与生产图像算法、工程持久化不变。详见 CHG-20260908-PERFORMANCE-LAB-PRODUCTION。
+
+性能详细采集最终 collector 2.2.0：构建与支持能力、脚本位置、单调时钟、Observer drain、渲染器每秒快照、有效 GPU 查询、数值参数及模块覆盖明细；普通登录不启用录制，不改生产渲染输出。性能参数无法等同系统级采样，缺失与上限随报告明确说明。
