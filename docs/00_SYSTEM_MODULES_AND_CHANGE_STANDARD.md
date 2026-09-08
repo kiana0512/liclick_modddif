@@ -1,6 +1,6 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
-> 文档版本：`2.18.17`
+> 文档版本：`2.18.18`
 >
 > 生效日期：`2026-09-08`
 >
@@ -671,7 +671,11 @@ A100 发布同时显式配置 `LICLICK_PERFORMANCE_LAB_ENABLED=true` 与构建�
 
 迁移只新增性能会话/分片表，不回填旧 `sessionStorage` 报告，不改变 Project Command、Revision CAS、对象 ownership 或任何图层资产。回滚可停止挂载 Cloud bridge、关闭性能 API 并保留新增表供审计；IndexedDB 未发送记录可由恢复后的同版本页面继续重试，禁止为回滚删除用户项目或恢复 Windows 本地采集组件。
 
-### 13.2 当前用户莉刻账号绑定 `LICLICK-ACCOUNT-BINDING` v1.3.4
+### 13.2 当前用户莉刻账号绑定 `LICLICK-ACCOUNT-BINDING` v1.3.5
+
+最终状态：release 9ed1ff4b / CI #627144 已成功部署，线上 health 返回对应版本且 ready=true；维护者反馈功能正常后授权同步 master。以下“本地、未发布、真实预检受阻”等文字保留为修复准备阶段记录，不代表最终发布状态；维护者反馈不等于三用户隔离等全部专项已验收。master 同步保留其已合入的投影橡皮跨界面交接修复。
+
+2026-09-08 回调适配修正（本地，未发布）：v1.3.4 的 release `2bc8042c` / CI #627117 已部署且健康检查通过，但真实授权返回生产 Gateway 根路径并 404，未完成个人绑定。官方 Atlas SDK 显式传 `redirect_uri`；Cloud 构造器却删除该参数，`target_url` 无法替代回调选择。v1.3.5 显式发送由公开部署路径生成的固定 `/api/liclick/account-binding/callback`（无查询参数、fragment 或尾斜杠），保留 `target_url` 的一次性任务关联，不恢复 localhost 浏览器回调或 OAuth state。模拟 IDaaS 增加显式回调登记匹配门禁，旧实现回归失败；新增根路径、账号查询/轮询、未登录及外域回调拒绝、重启后个人绑定恢复检查。模拟不证明真实 IDaaS 登记或生产工具/生图成功；真实预检被工具浏览器 ERR_BLOCKED_BY_CLIENT 拦截，真实完整链路未验收前不得宣称可用或再次发布。M13/M15，无图像算法、Schema、ownership、资产迁移；回退此补丁会恢复 Gateway 首页误跳转，保留生产配置及用户数据。详见 CHG-20260908-IDAAS-OFFICIAL-PRODUCTION-APP。
 
 2026-09-08（CHG-20260908-IDAAS-OFFICIAL-PRODUCTION-APP）：维护者确认改用官方既有生产应用，部署配置从 QA `testplugin_jwt92/test` 切到 `https://idaas.lilith.com/enduser/sp/sso/lilithplugin_jwt62`、`enterpriseId=lilith`、`ATLAS_AI_GATEWAY_ENV=prod` 和显式生产 Gateway URL。当前根路径回调固定为 `https://li3d.lilithgames.com/api/liclick/account-binding/callback`；当日无会话探测该路径返回后端 401 JSON，而 `/li3d/api/...` 返回 SPA HTML，后者不能登记为当前站点回调。继续使用同源 `target_url` 绑定任务，不恢复 OAuth `state` 或浏览器 localhost 回调。每人通过自己的 IDaaS 身份取得令牌，服务器独立 Atlas home、邮箱一致性、工具权限与任务 ownership 保持。以下 QA 段落是历史，后续生产部署以本段为准。上线前旧版 `release-2c49d521` 真实点击仍报 `401 invalid_token`；运维口头完成配置不代替正式应用回调、工具和生图验收。本次为配置契约 Patch，无业务算法、GPU/CPU/Worker/shader、投影/UV/export、分辨率、Schema、Project Command、Revision CAS 或 verified assets 变化，无数据迁移。QA 缓存不复制到生产；受影响用户本人重新授权，保留其他绑定和历史。回退兼容镜像时保留官方生产配对配置；不得把切回未被信任的 QA 应用当作恢复成功，失败时暂停新绑定并保留数据。详见对应变更卡。
 

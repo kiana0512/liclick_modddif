@@ -1,9 +1,19 @@
 # 官方生产 IDaaS 应用接入与验收
 
 - 主模块：M13 身份、账号绑定；关联 M15 部署验证。
-- 协议：LICLICK-ACCOUNT-BINDING v1.3.3 → v1.3.4（配置 Patch）。
+- 协议：LICLICK-ACCOUNT-BINDING v1.3.3 → v1.3.4（配置 Patch）→ v1.3.5（固定回调选择修复）。
 - 负责人：Codex 实施，维护者与 IDaaS/Atlas 运维验收。
-- 状态：本地修改，尚未发布；不声明生产绑定成功。
+- 状态：v1.3.5 已由 release 9ed1ff4b 发布，CI #627144 全部通过，线上 health 确认对应版本且 ready=true。维护者发布后反馈功能正常，现同步修复到 master。
+
+## 2026-09-08 发布后复测与修正
+
+最终发布与验收记录：维护者明确授权紧急直接推送 release 后实测；9ed1ff4b 的九个 CI 任务及前后端 rollout 全部成功。维护者随后反馈“功能一起正常”，并要求将最新修复同步 master。这是维护者的真实使用反馈，不扩展为自动验证了三用户隔离、所有生图类型或生产重启恢复。下文未发布/未验收描述为当时阶段记录。
+
+master d61751b 的 CI #627108 通过后，release 2bc8042c / CI #627117 的九个任务全部通过，两服务 rollout 成功，线上 health 为 release-2bc8042c、ready=true。维护者真实授权却返回 `https://atlas-ai-gateway.lilithgames.com/` 的 404，查询参数含身份令牌及正确的 LI3D target_url（不记录令牌）。因此应用/Gateway 配对已更新不等于授权回调适配完成。
+
+已安装官方 Atlas SDK 的 buildIdaasSsoUrl 显式设置 redirect_uri。LI3D v1.3.4 的 Cloud 构造器删除它；原 mock 也拒绝它，导致错误假设被测试重复确认。修复明确选择固定的 LI3D callback，同时保留 target_url 关联任务。没有改变全局官方应用默认回调，也没有更换应用、共享凭据或引入浏览器 localhost。
+
+修复前个人绑定回归及完整部署模拟均在缺少 redirect_uri 处失败；修复后个人边界回归、默认子路径部署模拟和生产根路径模拟通过。模拟包括平台 Cookie、固定回调、Atlas bridge、工具权限调用、本人绑定/轮询、拒绝无会话和外域回调、资产上传与重启后绑定恢复。模拟 Atlas/IDaaS 不等同于生产权限验签和真实生图。真实预检在工具浏览器被 ERR_BLOCKED_BY_CLIENT 拦截，未确认生产 SP 接受此 HTTPS redirect_uri。尚未执行真实任务提交/结果返回及多用户隔离验收；未重新推送或部署修复。
 
 ## 证据与决定
 

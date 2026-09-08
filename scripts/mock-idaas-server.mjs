@@ -1,3 +1,4 @@
+/* global Buffer, URL, URLSearchParams, console, crypto, process */
 import { createServer } from 'node:http';
 import { createHash } from 'node:crypto';
 
@@ -57,7 +58,10 @@ function validateClient(request, body) {
     const decoded = Buffer.from(auth.slice('Basic '.length), 'base64').toString('utf8');
     return decoded === `${clientId}:${clientSecret}`;
   }
-  return body.get('client_id') === clientId && (!body.get('client_secret') || body.get('client_secret') === clientSecret);
+  return (
+    body.get('client_id') === clientId &&
+    (!body.get('client_secret') || body.get('client_secret') === clientSecret)
+  );
 }
 
 async function readBody(request) {
@@ -93,9 +97,16 @@ const server = createServer(async (request, response) => {
         openId: 'mock-open-001',
         email: 'mock.user@liclick.local',
         name: 'Liclick Mock User',
-        picture: 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%2296%22 height=%2296%22%3E%3Crect width=%2296%22 height=%2296%22 rx=%2248%22 fill=%22%23ef4bd2%22/%3E%3Ctext x=%2248%22 y=%2256%22 text-anchor=%22middle%22 font-size=%2238%22 font-family=%22Arial%22 fill=%22white%22%3EL%3C/text%3E%3C/svg%3E',
+        picture:
+          'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%2296%22 height=%2296%22%3E%3Crect width=%2296%22 height=%2296%22 rx=%2248%22 fill=%22%23ef4bd2%22/%3E%3Ctext x=%2248%22 y=%2256%22 text-anchor=%22middle%22 font-size=%2238%22 font-family=%22Arial%22 fill=%22white%22%3EL%3C/text%3E%3C/svg%3E',
       };
-      codes.set(code, { user, redirectUri, codeChallenge, codeChallengeMethod, createdAt: Date.now() });
+      codes.set(code, {
+        user,
+        redirectUri,
+        codeChallenge,
+        codeChallengeMethod,
+        createdAt: Date.now(),
+      });
       const callback = new URL(redirectUri);
       callback.searchParams.set('code', code);
       callback.searchParams.set('state', state);
@@ -139,7 +150,9 @@ const server = createServer(async (request, response) => {
     if (
       !ssoCallbackUrl ||
       !targetUrl ||
-      url.searchParams.has('redirect_uri') ||
+      (process.env.MOCK_IDAAS_REQUIRE_EXPLICIT_SSO_CALLBACK === 'true'
+        ? url.searchParams.get('redirect_uri') !== ssoCallbackUrl
+        : url.searchParams.has('redirect_uri')) ||
       url.searchParams.has('state')
     ) {
       sendHtml(response, 400, '<h1>IDaaS mock SSO request invalid</h1>');
@@ -174,7 +187,13 @@ const server = createServer(async (request, response) => {
       email: 'mock.user@liclick.local',
       name: 'Liclick Mock User',
     };
-    codes.set(code, { user, redirectUri, codeChallenge, codeChallengeMethod, createdAt: Date.now() });
+    codes.set(code, {
+      user,
+      redirectUri,
+      codeChallenge,
+      codeChallengeMethod,
+      createdAt: Date.now(),
+    });
     const callback = new URL(redirectUri);
     callback.searchParams.set('code', code);
     callback.searchParams.set('state', state);
@@ -190,7 +209,9 @@ const server = createServer(async (request, response) => {
     }
     const rawBody = await readBody(request);
     const body = request.headers['content-type']?.includes('application/json')
-      ? new URLSearchParams(Object.entries(JSON.parse(rawBody)).map(([key, value]) => [key, String(value)]))
+      ? new URLSearchParams(
+          Object.entries(JSON.parse(rawBody)).map(([key, value]) => [key, String(value)]),
+        )
       : new URLSearchParams(rawBody);
     if (!validateClient(request, body)) {
       sendJson(response, 401, { error: 'invalid_client' });
