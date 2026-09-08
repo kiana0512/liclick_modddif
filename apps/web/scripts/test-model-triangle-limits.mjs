@@ -39,7 +39,7 @@ try {
   assert.equal(assertModelTriangleLimit(rootObject, 5), 5);
   assert.throws(
     () => assertModelTriangleLimit(rootObject, 4),
-    /不支持 4 面以上的模型。当前模型约 5 面。/,
+    /不支持 200 万面以上的模型。当前模型约 5 面。/,
   );
   console.log('Model triangle limit tests passed.');
 } finally {

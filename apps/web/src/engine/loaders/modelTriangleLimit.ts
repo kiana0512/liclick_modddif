@@ -16,9 +16,8 @@ export function countModelTriangles(root: THREE.Object3D) {
 }
 
 export function modelTriangleLimitMessage(limit: number, actual: number) {
-  const limitLabel =
-    limit % 10_000 === 0 ? `${limit / 10_000} 万面` : `${limit.toLocaleString('zh-CN')} 面`;
-  return `不支持 ${limitLabel}以上的模型。当前模型约 ${actual.toLocaleString('zh-CN')} 面。`;
+  const limitLabel = limit === AUTO_UV_MODEL_TRIANGLE_LIMIT ? '7 万' : '200 万';
+  return `不支持 ${limitLabel}面以上的模型。当前模型约 ${actual.toLocaleString('zh-CN')} 面。`;
 }
 
 export function assertModelTriangleLimit(
