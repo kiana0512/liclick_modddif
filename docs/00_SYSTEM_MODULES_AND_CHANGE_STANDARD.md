@@ -1,6 +1,6 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
-> 文档版本：`2.18.14`
+> 文档版本：`2.18.19`
 >
 > 生效日期：`2026-09-08`
 >
@@ -11,6 +11,8 @@
 > 审计口径：`0a2519d + 607e82f + 2568e40`，不包含错误文档提交 `2bde8c6/e03bab2/d1c5f78`
 
 ## 1. 文档地位与强制边界
+
+变更卡 `CHG-20260908-CEPH-SHA256-READBACK`：M14，协作 M02/M15，`ALG-ASSET-VERIFY-001` v1.1.0。基于 release de1507c 保留效率组内网 RGW/公开浏览器地址分离。缺少附加 checksum 时流式读回验证实际 SHA-256；每进程最多 4 项执行、16 项等待，60 秒预算含排队/HEAD/GET，同用户同资产完成请求合并；前端完成接口等待上限 75 秒，校验完立即返回。完整性失败仍保持 pending，不放宽 verified、ownership、Revision CAS 或 Command 幂等性。线协议 v1/Schema 不变，无迁移；回退会恢复旧 Ceph 拒绝，但保留资产数据。真实 Ceph 与生产体验待验收，详见对应变更卡。
 
 变更卡 `CHG-20260907-FILE-RESPONSE-ABORT-CLOSE`：主模块 M14，协作 M01/M10/M13；文件响应生命周期契约 `FILE-RESPONSE-LIFETIME` v1.0.0。用户删除 11-20 工程时 Windows rename 到回收站报 EPERM。源码发现 workspace、烘焙单张产物、Web 静态文件响应直接 ReadStream.pipe(response)，取消下载后可能将源流留在背压暂停状态，继续持有文件描述符。改为共用 Node pipeline，由响应提前关闭/读取失败联动销毁源流；完整响应和背压不变，不将网络中断升级为未处理异常。真实 HTTP 测试用 16 MiB 文件中途取消，旧 pipe 实现在句柄关闭断言失败，新实现通过；同测验证完整字节、源读取失败及保留数据的目录移入回收站。该证据证明文件句柄泄漏，不据此认定所有 EPERM 都来自相同原因；旧进程句柄需重启释放。调用前的认证、owner、路径包含/realpath、安全响应头、HEAD 与烘焙状态门禁保持，删除仍走原回收站 rename，不以强制删除代替。GPU/CPU/Worker/shader、投影/UV/重绘/export 内容、分辨率、QA、Schema、Command 幂等性、Revision CAS 与 verified assets 不变，无迁移；回退仅恢复三个响应入口的 pipe，但会重新引入中断资源泄漏。
 
@@ -300,7 +302,7 @@ Cloud 权威实现使用 PostgreSQL JSONB 当前快照和不可变 Revision 表�
 
 ### 4.4 对象存储协议
 
-`ASSET_TRANSFER_PROTOCOL_VERSION=1`，单资产最大 `160 MiB`。类别固定为 models、references、captures、generations、layers、baked。浏览器计算 SHA-256，请求绑定 user/project/category/filename/MIME/size/hash 的上传意图，使用短期签名 PUT 上传；完成接口通过 HEAD 校验长度、MIME 和 checksum 后把资产从 pending 置为 verified。对象 key 为 `users/<sha256(userId)>/projects/<projectId>/<assetId>/<safe-name>`。下载先校验 ownership，再返回短时签名 GET；访问对象存储时 `credentials: omit`。
+`ASSET_TRANSFER_PROTOCOL_VERSION=1`，单资产最大 `160 MiB`。类别固定为 models、references、captures、generations、layers、baked。浏览器计算 SHA-256，请求绑定 user/project/category/filename/MIME/size/hash 的上传意图，使用短期签名 PUT 上传；完成接口执行 `ALG-ASSET-VERIFY-001` v1.1.0：HEAD 校验长度、MIME；有 SHA-256 checksum 时直接比对，缺失时通过配置的内网 endpoint 流式 GET 计算实际 SHA-256，全部匹配才把资产从 pending 置为 verified。明确 checksum 不匹配不得读回放行，metadata/ETag 不替代 SHA-256。对象 key 为 `users/<sha256(userId)>/projects/<projectId>/<assetId>/<safe-name>`。下载先校验 ownership，再返回短时签名 GET；访问对象存储时 `credentials: omit`。
 
 ### 4.5 浏览器保存调度 `SAVE-SCHEDULER` v1.1.0
 

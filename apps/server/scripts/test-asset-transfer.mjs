@@ -1,4 +1,4 @@
-/* global console, process */
+/* global console, process, URL, Buffer, fetch, setTimeout, performance */
 
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
@@ -9,8 +9,11 @@ import path from 'node:path';
 
 const workspace = path.join(os.tmpdir(), `li3d-asset-transfer-${process.pid}-${randomUUID()}`);
 const objects = new Map();
+let mode = 'native';
+let reads = 0;
+let heads = 0;
 
-const objectStorage = createServer(async (request, response) => {
+const handler = async (request, response) => {
   const url = new URL(request.url ?? '/', `http://${request.headers.host}`);
   assert.equal(url.searchParams.get('X-Amz-Algorithm'), 'AWS4-HMAC-SHA256');
   assert.match(url.searchParams.get('X-Amz-Signature') ?? '', /^[a-f0-9]{64}$/);
@@ -41,23 +44,39 @@ const objectStorage = createServer(async (request, response) => {
   const headers = {
     'content-type': object.contentType,
     'content-length': String(object.body.length),
-    'x-amz-checksum-sha256': object.checksum,
+    ...(mode === 'native' ? { 'x-amz-checksum-sha256': object.checksum } : {}),
+    etag: '"opaque-object-version"',
     'access-control-allow-origin': '*',
   };
   if (request.method === 'HEAD') {
+    heads++;
+    assert.equal(request.headers.host, `127.0.0.1:${internalStorage.address().port}`);
     assert.equal(request.headers['x-amz-checksum-mode'], 'ENABLED');
     response.writeHead(200, headers);
     response.end();
     return;
   }
   if (request.method === 'GET') {
+    reads++;
+    if (mode !== 'native') assert.equal(request.headers['if-match'], '"opaque-object-version"');
+    if (mode === 'unavailable') { response.writeHead(503); response.end(); return; }
+    if (mode === 'changed') { response.writeHead(412); response.end(); return; }
+    if (mode === 'timeout') { return; }
+    if (mode === 'wrong-mime') headers['content-type'] = 'text/plain';
     response.writeHead(200, headers);
-    response.end(object.body);
+    if (mode === 'truncated') { response.flushHeaders(); response.write(object.body.subarray(0, 1)); setTimeout(() => response.destroy(), 10); return; }
+    // Deliver independently scheduled chunks through actual HTTP, not a mocked fetch.
+    const bytes = mode === 'corrupt' ? Buffer.alloc(object.body.length, 42) : object.body;
+    response.write(bytes.subarray(0, 3));
+    setTimeout(() => response.end(bytes.subarray(3)), 10);
     return;
   }
   response.writeHead(405);
   response.end();
-});
+};
+const objectStorage = createServer(handler);
+const internalStorage = createServer(handler);
+await new Promise((resolve) => internalStorage.listen(0, '127.0.0.1', resolve));
 
 await new Promise((resolve) => objectStorage.listen(0, '127.0.0.1', resolve));
 const address = objectStorage.address();
@@ -68,6 +87,7 @@ try {
   process.env.LICLICK_PUBLIC_WORKSPACE_URL = 'https://cloud.example.test';
   process.env.LICLICK_RUNTIME_MODE = 'cloud';
   process.env.LICLICK_OBJECT_STORAGE_ENDPOINT = `http://127.0.0.1:${address.port}`;
+  process.env.LICLICK_OBJECT_STORAGE_INTERNAL_ENDPOINT = `http://127.0.0.1:${internalStorage.address().port}`;
   process.env.LICLICK_OBJECT_STORAGE_REGION = 'test-region-1';
   process.env.LICLICK_OBJECT_STORAGE_BUCKET = 'liclick-test';
   process.env.LICLICK_OBJECT_STORAGE_ACCESS_KEY_ID = 'test-access-key';
@@ -130,8 +150,72 @@ try {
     undefined,
   );
 
-  console.log('direct asset transfer tests passed');
+  assert.equal(heads, 1);
+  assert.equal(reads, 1); // Only the explicit download; native verification uses no GET.
+  const makeIntent = async () => {
+    const next = await createAssetUploadIntent(userId, created.project.id, {
+      protocolVersion: 1, category: 'layers', filename: 'ceph.png', mimeType: 'image/png',
+      sizeBytes: body.length, sha256,
+    });
+    assert.equal((await fetch(next.upload.url, { method: 'PUT', headers: next.upload.headers, body })).status, 200);
+    return next;
+  };
+  const complete = (next, who = userId, hash = sha256) => completeAssetUploadIntent(
+    who, created.project.id, next.intentId, { protocolVersion: 1, assetId: next.assetId, sha256: hash },
+  );
+  mode = 'ceph';
+  const ceph = await makeIntent();
+  const readBefore = reads;
+  await Promise.all(Array.from({ length: 8 }, () => complete(ceph)));
+  assert.equal(reads, readBefore + 1, 'Concurrent completion must share readback');
+  assert.equal((await complete(ceph)).replayed, true);
+  assert.equal(reads, readBefore + 1, 'Verified replay must not re-read');
+  await assert.rejects(complete(ceph, 'other-user'), { code: 'ASSET_INTENT_NOT_FOUND' });
+  await assert.rejects(complete(ceph, userId, '0'.repeat(64)), { code: 'ASSET_CHECKSUM_MISMATCH' });
+  for (const [failure, code] of [
+    ['corrupt', 'ASSET_CHECKSUM_MISMATCH'], ['wrong-mime', 'ASSET_METADATA_MISMATCH'],
+    ['unavailable', 'ASSET_OBJECT_NOT_READY'], ['changed', 'ASSET_OBJECT_NOT_READY'],
+    ['truncated', 'ASSET_VERIFICATION_UNAVAILABLE'],
+  ]) {
+    const next = await makeIntent(); mode = failure;
+    await assert.rejects(complete(next), { code });
+    assert.equal(await createAssetDownloadUrl(userId, created.project.id, next.assetId), undefined);
+    mode = 'ceph';
+    await complete(next); // A failed verification remains retryable, not verified/cached.
+  }
+  mode = 'native';
+  const badNative = await makeIntent();
+  objects.get(new URL(badNative.upload.url).pathname).checksum = 'wrong';
+  const beforeMismatch = reads;
+  await assert.rejects(complete(badNative), { code: 'ASSET_CHECKSUM_MISMATCH' });
+  assert.equal(reads, beforeMismatch, 'Explicit checksum mismatch must not fall back');
+
+  const { createObjectIntegrityVerifier } = await import('../dist/services/objectIntegrityService.js');
+  const verify = createObjectIntegrityVerifier({ concurrency: 1, maxQueued: 1, timeoutMs: 150 });
+  const probe = { sizeBytes: body.length, mimeType: 'image/png', sha256,
+    url: () => badNative.upload.url.replace(String(address.port), String(internalStorage.address().port)) };
+  mode = 'timeout';
+  const timeout1 = assert.rejects(verify(probe), { code: 'ASSET_VERIFICATION_TIMEOUT' });
+  const timeout2 = assert.rejects(verify(probe), { code: 'ASSET_VERIFICATION_TIMEOUT' });
+  await assert.rejects(verify(probe), { code: 'ASSET_VERIFICATION_BUSY' });
+  await Promise.all([timeout1, timeout2]);
+  mode = 'ceph';
+  await verify(probe); // Timed-out streams and queued callers release their permits.
+  await assert.rejects(verify({ ...probe, sizeBytes: 161 * 1024 * 1024 }), { code: 'ASSET_METADATA_MISMATCH' });
+  const largeBody = Buffer.alloc(16 * 1024 * 1024, 137);
+  const largeHash = createHash('sha256').update(largeBody).digest('hex');
+  const large = await createAssetUploadIntent(userId, created.project.id, {
+    protocolVersion: 1, category: 'models', filename: 'model.glb', mimeType: 'model/gltf-binary',
+    sizeBytes: largeBody.length, sha256: largeHash,
+  });
+  await fetch(large.upload.url, { method: 'PUT', headers: large.upload.headers, body: largeBody });
+  const started = performance.now();
+  await complete(large, userId, largeHash);
+  console.log('16 MiB HTTP readback verified in', Math.round(performance.now() - started), 'ms (local fixture, not Ceph latency)');
+  console.log('direct asset transfer and Ceph readback tests passed');
 } finally {
+  internalStorage.closeAllConnections();
+  await new Promise((resolve) => internalStorage.close(resolve));
   objectStorage.closeAllConnections();
   await new Promise((resolve) => objectStorage.close(resolve));
   await fs.rm(workspace, { recursive: true, force: true });
