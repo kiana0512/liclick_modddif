@@ -83,6 +83,16 @@ test('the CI production overlay uses the official personal Atlas application and
   assert.match(read('deploy/docker/nginx/default.conf.template'), /location \^~ \/api\/\s*\{\s*proxy_pass/);
 });
 
+test('production enables opt-in recordings in both frontend builds and server config', () => {
+  const ci = parse('.gitlab-ci.yml');
+  const env = parseEnv(read(`${ci.variables.KUSTOMIZE_OVERLAY}/server-config.zprod.env`));
+  assert.equal(env.LICLICK_PERFORMANCE_LAB_ENABLED, 'true');
+  assert.deepEqual(env.LICLICK_PERFORMANCE_LAB_MAINTAINER_EMAILS.split(',').sort(),
+    ['kianaren@lilith.com', 'haoze.yu@lilith.com', 'alonshi@lilith.com'].sort());
+  assert.equal(ci.build.variables.VITE_LICLICK_PERFORMANCE_LAB_ENABLED, 'true');
+  assert.match(read('deploy/Dockerfile'), /ENV VITE_PUBLIC_PATH="" VITE_LICLICK_PERFORMANCE_LAB_ENABLED=true/);
+});
+
 test('secret preparation preserves existing keys and blocks missing or multiline values', () => {
   const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'li3d-deploy-env-'));
   const relative = 'deploy/k8s/base/secrets/server.env';

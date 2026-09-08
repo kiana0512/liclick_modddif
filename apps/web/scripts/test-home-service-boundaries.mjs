@@ -53,3 +53,24 @@ assert.deepEqual(
 );
 
 console.log('首页四个可用功能入口、隐藏自动拓扑与真实计算服务边界回归通过。');
+
+// Render the actual homepage with server-provided capability snapshots.
+const { createServer } = await import('vite');
+const { createElement } = await import('react');
+const { renderToStaticMarkup } = await import('react-dom/server');
+const vite = await createServer({ root: path.resolve(import.meta.dirname, '..'), appType: 'custom', logLevel: 'silent', server: { middlewareMode: true } });
+try {
+  const { HomePage } = await vite.ssrLoadModule('/src/routes/HomePage.tsx');
+  const { useAuthStore } = await vite.ssrLoadModule('/src/stores/authStore.ts');
+  const initial = useAuthStore.getInitialState();
+  const user = { id: 'test', displayName: '测试账号', role: 'maintainer', authSource: 'feishu-oauth' };
+  const props = Object.fromEntries(['onOpenTexture', 'onOpenBake', 'onOpenToolbox', 'onOpenUv', 'onLogout'].map(key => [key, () => {}]));
+  for (const allowed of [false, true, false]) {
+    initial.user = { ...user, performanceLabAdmin: allowed };
+    const html = renderToStaticMarkup(createElement(HomePage, props));
+    assert.equal(html.includes('日志监测'), allowed);
+    assert.equal(html.includes('performance-lab-admin'), allowed);
+    assert.ok(html.includes(allowed ? '5 个工作模块' : '4 个工作模块'));
+  }
+  initial.user = undefined;
+} finally { await vite.close(); }

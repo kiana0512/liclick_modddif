@@ -97,6 +97,7 @@ build:
     VITE_LICLICK_BUILD_TIME: '$CI_JOB_STARTED_AT'
     LICLICK_RUNTIME_MODE: 'cloud'
     VITE_LICLICK_RUNTIME_MODE: 'cloud'
+    VITE_LICLICK_PERFORMANCE_LAB_ENABLED: 'true'
   script:
     - corepack pnpm run build:release
     - corepack pnpm run check:cloud-artifact

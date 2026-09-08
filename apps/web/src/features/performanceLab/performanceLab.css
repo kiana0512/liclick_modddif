@@ -1,0 +1,24 @@
+.perf-dialog { position:fixed; inset:0; z-index:90; padding:24px; display:grid; place-items:center; background:#070710ed; color:#eef1fa; }
+.perf-panel { width:min(1440px,100%); height:92vh; display:flex; flex-direction:column; overflow:hidden; border:1px solid #ffffff24; border-radius:16px; background:#0c0e19; box-shadow:0 24px 80px #0008; }
+.perf-header { display:flex; justify-content:space-between; align-items:center; gap:20px; padding:20px; border-bottom:1px solid #ffffff15; }
+.perf-header h2 { font-size:20px; font-weight:600; }
+.perf-panel p { color:#a3adbf; font-size:12px; line-height:1.8; }
+.perf-panel button { cursor:pointer; }
+.perf-panel button:disabled { opacity:.45; cursor:wait; }
+.perf-columns { display:grid; grid-template-columns:minmax(280px, .8fr) minmax(0,1.7fr); flex:1; min-height:0; }
+.perf-list,.perf-detail { padding:20px; overflow:auto; min-width:0; }
+.perf-list { border-right:1px solid #ffffff15; }
+.perf-list article { margin-bottom:20px; }
+.perf-list article>header { padding:8px 0; }
+.perf-session { display:block; width:100%; margin:8px 0; padding:12px; text-align:left; border:1px solid #ffffff15; border-radius:8px; font-size:13px; background:#ffffff04; }
+.perf-session:hover,.perf-session[aria-pressed=true] { border-color:#ad76ee; background:#a66eff14; }
+.perf-more { width:100%; padding:12px; border:1px solid #ffffff30; border-radius:8px; }
+.perf-detail>.perf-header { padding:0 0 16px; margin-bottom:12px; }
+.perf-detail h3 { font-size:18px; }
+.perf-stats { display:grid; grid-template-columns:repeat(4,1fr); gap:10px; margin:20px 0; }
+.perf-stats>div { padding:12px; border:1px solid #ffffff18; border-radius:8px; }
+.perf-detail details { margin:12px 0; border:1px solid #ffffff18; border-radius:8px; overflow:hidden; }
+.perf-detail summary { padding:12px; cursor:pointer; font-size:13px; color:#d2c2ed; }
+.perf-detail pre { max-height:460px; overflow:auto; padding:16px; background:#0005; font-size:11px; line-height:1.7; color:#b6d3cc; }
+.perf-error { padding:12px 20px; background:#501e30; }
+@media(max-width:760px) { .perf-dialog { padding:8px; } .perf-columns { grid-template-columns:1fr; overflow:auto; } .perf-list { max-height:34vh; } .perf-detail { overflow:visible; } .perf-header { padding:12px; } }

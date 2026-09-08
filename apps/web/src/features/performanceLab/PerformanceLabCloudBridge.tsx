@@ -1,3 +1,4 @@
+import './performanceLab.css';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Download, RefreshCw, Server, X } from 'lucide-react';
@@ -115,21 +116,46 @@ export function PerformanceRecordsDialog({
   const [selected, setSelected] = useState<PerformanceLabSessionDetail>();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
+  const [nextCursor, setNextCursor] = useState<string>();
+  const listRequestRef = useRef(0);
 
   const refresh = useCallback(async () => {
+    const requestId = ++listRequestRef.current;
     setLoading(true);
     setError(undefined);
     try {
       const result = adminOnly
         ? await listPerformanceLabAdminSessions(200)
         : await listPerformanceLabSessions(200);
+      if (requestId !== listRequestRef.current) return;
       setSessions(result.sessions);
+      setNextCursor('nextCursor' in result ? result.nextCursor as string | undefined : undefined);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
+      if (requestId === listRequestRef.current) setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
-      setLoading(false);
+      if (requestId === listRequestRef.current) setLoading(false);
     }
   }, [adminOnly]);
+
+  const loadMore = async () => {
+    if (!adminOnly || !nextCursor || loading) return;
+    const requestId = ++listRequestRef.current;
+    setLoading(true);
+    setError(undefined);
+    try {
+      const result = await listPerformanceLabAdminSessions(200, nextCursor);
+      if (requestId !== listRequestRef.current) return;
+      setSessions((previous) => {
+        const existing = new Set(previous.map((session) => session.sessionId));
+        return [...previous, ...result.sessions.filter((session) => !existing.has(session.sessionId))];
+      });
+      setNextCursor(result.nextCursor);
+    } catch (cause) {
+      if (requestId === listRequestRef.current) setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      if (requestId === listRequestRef.current) setLoading(false);
+    }
+  };
 
   useEffect(() => {
     void refresh();
@@ -150,173 +176,60 @@ export function PerformanceRecordsDialog({
   }, [adminOnly]);
 
   return createPortal(
-    <div className="fixed inset-0 z-[90] flex items-center justify-center bg-black/72 p-5 backdrop-blur-sm">
-      <section className="flex h-[min(86vh,860px)] w-[min(96vw,1380px)] flex-col overflow-hidden rounded-xl border border-white/15 bg-[#0b0b12] text-white shadow-2xl">
-        <header className="flex items-center justify-between border-b border-white/10 px-4 py-3">
-          <div>
-            <h2 className="text-sm font-semibold">
-              {adminOnly ? 'Performance Lab 管理员分析台' : '服务器性能记录'}
-            </h2>
-            <p className="mt-0.5 text-[11px] text-white/45">
-              按可信飞书身份与录制时间分类；指标均来自用户浏览器和用户电脑。
-            </p>
-          </div>
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() => void refresh()}
-              className="rounded border border-white/12 p-2 text-white/65 hover:bg-white/8"
-              aria-label="刷新性能记录"
-            >
-              <RefreshCw size={15} />
-            </button>
-            <button
-              type="button"
-              onClick={onClose}
-              className="rounded border border-white/12 p-2 text-white/65 hover:bg-white/8"
-              aria-label="关闭性能记录"
-            >
-              <X size={15} />
-            </button>
+    <div className="perf-dialog">
+      <section className="perf-panel">
+        <header className="perf-header">
+          <div><h2>{adminOnly ? '日志监测 · 性能录制' : '服务器性能记录'}</h2>
+            <p>新服务器 · 用户浏览器实测 · 已加载 {sessions.length} 条</p></div>
+          <div className="flex gap-3">
+            <button disabled={loading} onClick={() => void refresh()} aria-label="刷新性能记录"><RefreshCw size={18} /></button>
+            <button onClick={onClose} aria-label="关闭性能记录"><X size={18} /></button>
           </div>
         </header>
-        {error ? (
-          <div className="border-b border-rose-400/20 bg-rose-950/45 px-4 py-2 text-xs text-rose-200">
-            {error}
-          </div>
-        ) : null}
-        <div className="grid min-h-0 flex-1 grid-cols-[minmax(360px,0.9fr)_minmax(0,1.6fr)]">
-          <div className="overflow-auto border-r border-white/10 p-3">
-            {loading ? <p className="p-3 text-xs text-white/45">正在读取服务器记录…</p> : null}
-            {!loading && groups.length === 0 ? (
-              <p className="p-3 text-xs text-white/45">服务器暂时没有性能录制。</p>
-            ) : null}
-            <div className="space-y-3">
-              {groups.map((group) => (
-                <article
-                  key={group.user.id}
-                  className="overflow-hidden rounded-lg border border-white/10 bg-white/[0.035]"
-                >
-                  <div className="flex items-center gap-2 border-b border-white/8 px-3 py-2">
-                    {group.user.avatarUrl ? (
-                      <img
-                        src={group.user.avatarUrl}
-                        alt=""
-                        className="h-8 w-8 rounded-full bg-white/8 object-cover"
-                        referrerPolicy="no-referrer"
-                      />
-                    ) : (
-                      <div className="flex h-8 w-8 items-center justify-center rounded-full bg-liclick-pink/25 text-xs font-semibold">
-                        {group.user.displayName.slice(0, 1)}
-                      </div>
-                    )}
-                    <div className="min-w-0">
-                      <div className="truncate text-xs font-semibold">{group.user.displayName}</div>
-                      <div className="truncate text-[10px] text-white/38">
-                        {group.user.email ?? group.user.id}
-                      </div>
-                    </div>
-                    <span className="ml-auto rounded bg-white/8 px-1.5 py-0.5 text-[10px] text-white/55">
-                      {group.sessions.length} 次
-                    </span>
-                  </div>
-                  <div className="divide-y divide-white/7">
-                    {group.sessions.map((session) => (
-                      <button
-                        key={session.sessionId}
-                        type="button"
-                        onClick={() => void openSession(session.sessionId)}
-                        className="grid w-full grid-cols-[1fr_auto] gap-2 px-3 py-2 text-left hover:bg-white/[0.055]"
-                      >
-                        <span className="min-w-0">
-                          <span className="block truncate font-mono text-[11px] text-white/78">
-                            {session.sessionId.slice(-12)}
-                          </span>
-                          <span className="mt-0.5 block text-[10px] text-white/38">
-                            {new Date(session.startedAt).toLocaleString()} · {session.chunkCount} 块
-                            · {session.sampleCount} 样本
-                          </span>
-                        </span>
-                        <span
-                          className={
-                            session.status === 'completed' ? 'text-emerald-300' : 'text-amber-300'
-                          }
-                        >
-                          {session.status === 'completed' ? '已完成' : '中断/进行中'}
-                        </span>
-                      </button>
-                    ))}
-                  </div>
-                </article>
-              ))}
-            </div>
-          </div>
-          <div className="min-w-0 overflow-auto p-4">
-            {!selected ? (
-              <div className="flex h-full items-center justify-center text-sm text-white/35">
-                选择一次录制查看客户端帧、ANGLE/D3D、长任务和资源瀑布。
-              </div>
-            ) : (
-              <div className="space-y-4">
-                <div className="flex items-center justify-between gap-4">
-                  <div>
-                    <h3 className="font-mono text-sm text-white/90">{selected.sessionId}</h3>
-                    <p className="mt-1 text-[11px] text-white/45">
-                      {selected.user.displayName} · {new Date(selected.startedAt).toLocaleString()}{' '}
-                      · {selected.durationMs?.toFixed(0) ?? '—'} ms
-                    </p>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => downloadJson(`${selected.sessionId}.json`, selected)}
-                    className="flex items-center gap-1.5 rounded border border-cyan-400/35 bg-cyan-400/10 px-3 py-2 text-xs text-cyan-100 hover:bg-cyan-400/15"
-                  >
-                    <Download size={14} /> 导出完整 JSON
-                  </button>
-                </div>
-                <div className="grid grid-cols-4 gap-2">
-                  {[
-                    ['状态', selected.status],
-                    ['数据块', String(selected.chunkCount)],
-                    ['样本', String(selected.sampleCount)],
-                    ['数据量', `${(selected.totalBytes / 1024).toFixed(1)} KB`],
-                  ].map(([label, value]) => (
-                    <div
-                      key={label}
-                      className="rounded border border-white/10 bg-white/[0.035] p-2.5"
-                    >
-                      <div className="text-[10px] text-white/38">{label}</div>
-                      <div className="mt-1 font-mono text-xs text-white/82">{value}</div>
-                    </div>
-                  ))}
-                </div>
-                <div>
-                  <h4 className="mb-2 text-xs font-semibold text-white/72">汇总</h4>
-                  <pre className="max-h-64 overflow-auto rounded border border-white/10 bg-black/40 p-3 text-[10px] leading-5 text-emerald-200/85">
-                    {JSON.stringify(selected.summary ?? {}, null, 2)}
-                  </pre>
-                </div>
-                <div>
-                  <h4 className="mb-2 text-xs font-semibold text-white/72">
-                    客户端能力与 ANGLE/D3D
-                  </h4>
-                  <pre className="max-h-80 overflow-auto rounded border border-white/10 bg-black/40 p-3 text-[10px] leading-5 text-cyan-100/80">
-                    {JSON.stringify(selected.clientContext, null, 2)}
-                  </pre>
-                </div>
-                <div>
-                  <h4 className="mb-2 text-xs font-semibold text-white/72">原始分块</h4>
-                  <pre className="max-h-[460px] overflow-auto rounded border border-white/10 bg-black/40 p-3 text-[10px] leading-5 text-white/65">
-                    {JSON.stringify(selected.chunks, null, 2)}
-                  </pre>
-                </div>
-              </div>
-            )}
+        {error ? <p role="alert" className="perf-error">{error}</p> : null}
+        <div className="perf-columns">
+          <aside className="perf-list">
+            {loading ? <p>正在读取服务器记录…</p> : null}
+            {!loading && !error && !groups.length ? <p>服务器暂时没有性能录制。</p> : null}
+            {groups.map((group) => <article key={group.user.id}>
+              <header className="flex items-center gap-2">
+                {group.user.avatarUrl ? <img src={group.user.avatarUrl} alt="" className="h-8 w-8 rounded-full" referrerPolicy="no-referrer" /> : null}
+                <div><strong>{group.user.displayName}</strong><p>{group.user.email ?? group.user.id}</p></div>
+              </header>
+              {group.sessions.map((session) => <button key={session.sessionId}
+                onClick={() => void openSession(session.sessionId)}
+                aria-pressed={selected?.sessionId === session.sessionId} className="perf-session">
+                <span>{new Date(session.startedAt).toLocaleString()}</span>
+                <p>{session.sessionId.slice(-12)} · {session.status === 'completed' ? '已完成' : '进行中 / 中断'}</p>
+                <p>{session.chunkCount} 块 · {session.sampleCount} 样本</p>
+              </button>)}
+            </article>)}
+            {adminOnly && nextCursor ? <button disabled={loading} onClick={() => void loadMore()} className="perf-more">加载更早的记录</button> : null}
+          </aside>
+          <div className="perf-detail">
+            {!selected ? <p>选择一次录制查看设备能力、帧耗时、长任务与操作时间线。</p> : <>
+              <header className="perf-header">
+                <div><h3>{selected.user.displayName}</h3><p>{new Date(selected.startedAt).toLocaleString()} · {selected.durationMs?.toFixed(0) ?? '—'} ms</p></div>
+                <button onClick={() => downloadJson(selected.sessionId + '.json', selected)} className="flex items-center gap-2"><Download size={15} />导出完整 JSON</button>
+              </header>
+              <p className="break-all">{selected.sessionId}</p>
+              <div className="perf-stats">{[
+                ['状态', selected.status], ['数据块', selected.chunkCount],
+                ['样本', selected.sampleCount], ['数据量', (selected.totalBytes / 1024).toFixed(1) + ' KB'],
+              ].map(([label, value]) => <div key={label}><p>{label}</p><strong>{value}</strong></div>)}</div>
+              {[
+                ['性能汇总', selected.summary ?? {}],
+                ['设备能力 · ANGLE / D3D', selected.clientContext],
+                ['操作分析报告', selected.report ?? {}],
+                ['原始时间线与分块', selected.chunks],
+              ].map(([label, value]) => <details key={String(label)} open={label === '性能汇总'}>
+                <summary>{String(label)}</summary><pre>{JSON.stringify(value, null, 2)}</pre>
+              </details>)}
+            </>}
           </div>
         </div>
       </section>
-    </div>,
-    document.body,
+    </div>, document.body,
   );
 }
 
