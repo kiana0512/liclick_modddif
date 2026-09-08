@@ -1,16 +1,18 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
-> 文档版本：`2.18.26`
+> 文档版本：`2.18.27`
 >
 > 生效日期：`2026-09-08`
 >
-> 代码盘点基线：`e307f71 + 本次局部重绘热源交接修复`
+> 代码盘点基线：`919b1de + 本次局部重绘当前相机深度修复`
 >
 > 基线仓库：`E:\Liclick 3D Texture Modernization`
 >
 > 审计口径：`0a2519d + 607e82f + 2568e40`，不包含错误文档提交 `2bde8c6/e03bab2/d1c5f78`
 
 ## 1. 文档地位与强制边界
+
+变更卡 `CHG-20260908-REPAINT-RASTER-OCCLUSION`：UI-06/UI-10 → M06，`ALG-PROJ-006` v2.1.0。真实 WebGL 隔离复现证实，局部重绘 accepted fragment 的 -0.000080 深度前推与常驻投影的 -0.000006 不一致，会让内部表面盖过当前相机下的外壳。单独清零 overlay 又会被仍前推的常驻层挡住。单层、direct stack、texture-array stack 和实时 overlay 现在共用当前相机深度 helper：有材质片元保持几何深度，仅空诊断片元保留原 +0.000006 后移；overlay 关闭额外 polygonOffset，沿用 LessEqualDepth、末尾绘制及不写深度。捕获可见性阈值、mask/source-over、UV/CPU/Worker/export、Schema/Revision/ownership/资产不变，无迁移。隔离 3,240 状态旧规则失败 1,362、新规则 0（含不同细分的重合诊断面、显隐及 mask 更新）；不据此宣称用户原项目或所有 GPU 已验收。详见 [变更卡](changes/CHG-20260908-REPAINT-RASTER-OCCLUSION.md)。
 
 变更卡 `CHG-20260908-LOCAL-REPAINT-DIRECT-ERASER`：UI-06/UI-10，主模块 M08，协作 M05/M06；`ALG-LR-007` v2.2.2。新生成的局部重绘已经持有实时 composite、GPU overlay/常驻蒙版和新发布的重绘行，但生成链路中的运行时 source 尚未携带冷恢复使用的 `projectionLayerId`。直接切换橡皮擦时，持久行预热过去会把同一来源误判为冷恢复并重新发布，source key 改变后首个 pointer-down 被精确驻留门禁拒绝。现在仅当 source 的 generation/capture/target 校验通过，且实时 composite 的 `layerId` 与 `sourceKey` 同时证明其拥有当前行时保留热源；重载、无 composite 或切换历史重绘行仍发布带精确 `projectionLayerId` 的恢复源。GPU/CPU/Worker/shader、作者蒙版像素、投影/UV/export、分辨率、Project/Layer/Generation/Capture Schema、Command/Revision、ownership 与资产不变，无迁移；回退热源所有权判断会重新引入首次擦除需切换工具的问题。
 
@@ -402,7 +404,7 @@ Layer 以可选 `eraserAlgorithmVersion=1` 标记首次采用该语义的内容�
 | `ALG-PROJ-003` 深度-法线表面可见性 | `3.0.0` | preview/GPU UV | linear-view depth + 3×3 支持；surface-locked 深度邻域支持在 0→0.05 内转为完整可见性，可靠 depth 命中不再被插值 mesh normal 二次衰减 | 缺 depth 才走角度退化，不伪造可见性 |
 | `ALG-PROJ-004` Top-3 颜色一致性合成 | `3.0.0` | 普通单视图与多视图 | 每个普通投影视角均作为候选；每 texel 保留 score 最高 3 个，按 coverage、depth、angle、edge 与线性 RGB 一致度组合，不依赖图层顺序硬覆盖 | WebGPU parity 不通过使用 CPU exact 输出 |
 | `ALG-PROJ-005` 单视图投影适配 | `3.0.0` | single-view layer | 只负责将供应方 RGB 清理为捕获原尺寸的全不透明投影源，并用独立 capture mask/depth 定义 footprint；合成完全委托 `ALG-PROJ-004`，旧 `single-view-priority-v1`/距离场 Alpha 在读取时惰性移除 | 缺 capture mask 时停止安全升级；不恢复 priority source-over |
-| `ALG-PROJ-006` Literal Overlay | `2.0.1` | 局部重绘 | 用户 authored coverage 直接 source-over；单层材质登记直接 mask sampler 以完成 resident 交接 | mask/source 未就绪不发布半层 |
+| `ALG-PROJ-006` Literal Overlay | `2.1.0` | 局部重绘 | authored coverage 直接 source-over；单层直接 mask sampler 支持 resident 交接；实时与常驻有材质片元共用真实相机几何深度，不以前推偏移覆盖外壳 | mask/source 未就绪不发布半层；空诊断面保留原后移规则 |
 | `ALG-PROJ-007` GPU 驻留与分块 | `2.1.3` | ProjectedLayerMaterial / SceneRoot / PreviewCompositor | 普通预览与 bulk 在解码/上传期间固定缓存；live 纹理同参数读取不置脏，显式发布/参数变化仍更新；每个 array stripe 上传前解除 PBO 绑定并在 finally 恢复；只对可见工作区当前对象预热，隐藏对象取消未完成 array 构建；array 失败时允许预算内精确 direct stack，否则渐进合成自动退避重试，总尝试最多 4 次 | 保留上一有效材质或合法 UV bootstrap；晚到发布不得复活隐藏 UV；不降低生产 UV 输出尺寸 |
 
 ### 6.1 当前生产常量

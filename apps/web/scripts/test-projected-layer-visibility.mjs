@@ -1501,8 +1501,8 @@ try {
   assert.equal(liveRepaintOverlay.transparent, true);
   assert.equal(liveRepaintOverlay.depthWrite, false);
   assert.equal(liveRepaintOverlay.depthFunc, THREE.LessEqualDepth);
-  assert.equal(liveRepaintOverlay.polygonOffsetFactor, -1);
-  assert.equal(liveRepaintOverlay.polygonOffsetUnits, -1);
+  assert.equal(liveRepaintOverlay.polygonOffsetFactor, 0);
+  assert.equal(liveRepaintOverlay.polygonOffsetUnits, 0);
   assert.equal(liveRepaintOverlay.uniforms.transparentProjectionOnly.value, 1);
   assert.equal(
     repaintOverlaySync.syncLocalRepaintGpuOverlayLighting(
@@ -1550,9 +1550,17 @@ try {
   );
   assert.match(
     liveRepaintOverlay.fragmentShader,
-    /float acceptedDepthOffset = -0\.000080;[\s\S]*mix\(0\.000006, acceptedDepthOffset, projectedDepthPriority\)/,
-    'The final repaint pass must have deterministic depth priority above the projected background.',
+    /gl_FragDepthEXT = projectedRasterDepth\(gl_FragCoord.z, projectedDepthPriority\)/,
+    'Live repaint must share the resident surface depth instead of pushing inner faces through the shell.',
   );
+  assert.equal(liveRepaintOverlay.polygonOffset, false);
+  const rasterDepth = await server.ssrLoadModule('/src/engine/projection/projectionRasterDepth.ts');
+  for (const material of [liveRepaintOverlay, hybrid, simpleHybrid, liveDepth]) {
+    assert.ok(material.fragmentShader.includes(rasterDepth.PROJECTED_RASTER_DEPTH_GLSL));
+    assert.doesNotMatch(material.fragmentShader, /-0\.000080|-0\.000006/);
+  }
+  assert.match(rasterDepth.PROJECTED_RASTER_DEPTH_GLSL, /geometricDepth \+ \(1\.0 - accepted\) \* 0\.000006/,
+    'Accepted pixels keep geometric depth; only the existing empty diagnostic retreat remains.');
   projection.syncProjectedLayerMaterialDisplayState(liveRepaintOverlay, []);
   assert.equal(
     liveRepaintOverlay.uniforms.layerOpacity.value,

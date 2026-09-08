@@ -20,6 +20,7 @@ import {
   createClayModelMaterial,
 } from '@/engine/materials/clayModelMaterial';
 import { waitForBrowserPaint } from '@/utils/browserScheduling';
+import { PROJECTED_RASTER_DEPTH_GLSL } from './projectionRasterDepth';
 
 const DEFAULT_PREVIEW_COLOR = CLAY_MODEL_COLOR;
 const DEFAULT_WIRE_COLOR = '#e9ebe8';
@@ -352,6 +353,7 @@ function createWhiteMembranePreviewMaterial(_previewLightingInput?: ProjectionPr
 }
 
 const fragmentShader = `
+  ${PROJECTED_RASTER_DEPTH_GLSL}
   uniform sampler2D projectedMap;
   uniform sampler2D baseMap;
   uniform sampler2D uvOverlayMap;
@@ -869,16 +871,9 @@ const fragmentShader = `
         ${COVERAGE_THRESHOLD.toFixed(2)},
         literalReplacementAlpha
       );
-      // Keep the accepted repaint at the same decisive foreground depth as a
-      // standard projection. The previous surface-locked offset was only
-      // 0.000010 and coplanar fragments alternated with the base mesh at
-      // grazing view angles, producing regular zebra stripes.
-      float acceptedDepthOffset = -0.000080;
-      gl_FragDepthEXT = clamp(
-        gl_FragCoord.z + mix(0.000006, acceptedDepthOffset, projectedDepthPriority),
-        0.0,
-        1.0
-      );
+      // Match the resident surface exactly. A larger foreground offset makes
+      // an inner repaint pass the current camera's outer-shell depth test.
+      gl_FragDepthEXT = projectedRasterDepth(gl_FragCoord.z, projectedDepthPriority);
       gl_FragColor = vec4(
         clamp(projectedDisplayColor, 0.0, 1.0),
         literalReplacementAlpha
@@ -927,22 +922,14 @@ const fragmentShader = `
     );
     mixedColor = mix(mixedColor, topUvOverlayDisplayColor, topUvOverlayAlpha);
 
-    // Different meshes in imported assets can contain coincident or nearly
-    // coincident faces.  Without a deterministic per-fragment priority, an
-    // accepted projection and the diagnostic empty-preview hatch compete in
-    // the depth buffer and turn into dense zebra/Moire stripes.  Keep the
-    // offset tiny so real occlusion is unchanged, while making projected
-    // fragments consistently win over an overlapping diagnostic fragment.
+    // Keep empty diagnostics behind coincident authored colour, but never
+    // pull authored fragments ahead of their actual geometric surface.
     float projectedDepthCoverage = max(
       max(projectionAlpha, baseTextureAlpha),
       max(uvOverlayTexel.a * useUvOverlayMap * uvOverlayOpacity, topUvOverlayAlpha)
     );
     float projectedDepthPriority = step(${COVERAGE_THRESHOLD.toFixed(2)}, projectedDepthCoverage);
-    gl_FragDepthEXT = clamp(
-      gl_FragCoord.z + mix(0.000006, -0.000006, projectedDepthPriority),
-      0.0,
-      1.0
-    );
+    gl_FragDepthEXT = projectedRasterDepth(gl_FragCoord.z, projectedDepthPriority);
 
     gl_FragColor = vec4(clamp(mixedColor, 0.0, 1.0), 1.0);
     #include <tonemapping_fragment>
@@ -2151,6 +2138,7 @@ function buildStackFragmentShader(
   }
 
   ${compactBlendHelpers}
+  ${PROJECTED_RASTER_DEPTH_GLSL}
 
   void main() {
     vec3 normal = normalize(vWorldNormal);
@@ -2169,8 +2157,8 @@ function buildStackFragmentShader(
     if (wirePreviewEnabled > 0.5) {
       ${
         features.useTextureArrays
-          ? 'gl_FragDepth = clamp(gl_FragCoord.z + 0.000006, 0.0, 1.0);'
-          : 'gl_FragDepthEXT = clamp(gl_FragCoord.z + 0.000006, 0.0, 1.0);'
+          ? 'gl_FragDepth = projectedRasterDepth(gl_FragCoord.z, 0.0);'
+          : 'gl_FragDepthEXT = projectedRasterDepth(gl_FragCoord.z, 0.0);'
       }
       gl_FragColor = vec4(
         clamp(baseColor * computeWhiteMembraneLight(normal), 0.0, 1.0),
@@ -2334,8 +2322,8 @@ function buildStackFragmentShader(
     float projectedDepthPriority = step(${COVERAGE_THRESHOLD.toFixed(2)}, projectedDepthCoverage);
     ${
       features.useTextureArrays
-        ? 'gl_FragDepth = clamp(gl_FragCoord.z + mix(0.000006, -0.000006, projectedDepthPriority), 0.0, 1.0);'
-        : 'gl_FragDepthEXT = clamp(gl_FragCoord.z + mix(0.000006, -0.000006, projectedDepthPriority), 0.0, 1.0);'
+        ? 'gl_FragDepth = projectedRasterDepth(gl_FragCoord.z, projectedDepthPriority);'
+        : 'gl_FragDepthEXT = projectedRasterDepth(gl_FragCoord.z, projectedDepthPriority);'
     }
     gl_FragColor = vec4(clamp(mixedColor, 0.0, 1.0), 1.0);
     #include <tonemapping_fragment>
@@ -4065,9 +4053,9 @@ export async function createProjectedLayerMaterial(input: ProjectionLayerInput) 
     toneMapped: true,
     transparent: Boolean(input.transparentProjectionOnly),
     depthWrite: !input.transparentProjectionOnly,
-    polygonOffset: Boolean(input.transparentProjectionOnly),
-    polygonOffsetFactor: input.transparentProjectionOnly ? -1 : 0,
-    polygonOffsetUnits: input.transparentProjectionOnly ? -1 : 0,
+    // Explicit gl_FragDepth already resolves coplanar ties. Slope-scaled
+    // polygon offset must not turn grazing inner faces into foreground pixels.
+    polygonOffset: false,
     depthFunc: THREE.LessEqualDepth,
   });
   material.userData[GENERATED_MATERIAL_FLAG] = true;
