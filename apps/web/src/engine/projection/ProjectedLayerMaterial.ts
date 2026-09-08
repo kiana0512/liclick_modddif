@@ -997,18 +997,18 @@ function buildStackFragmentShader(
     features.useTextureArrays && !isLiveProjectedCanvasUrl(layers[index].depthUrl);
   const layerUsesNormalArray = (index: number) =>
     features.useTextureArrays && !isLiveProjectedCanvasUrl(layers[index].normalUrl);
+  const compactLiveSamplers = layers.some((_layer, index) => layerUsesDepth(index) || layerUsesNormal(index));
   const useCompactArrayLoop = Boolean(
     features.useTextureArrays &&
     layers.every(
       (layer, index) =>
-        layerUsesProjectedArray(index) &&
-        layer.projectedArraySlice !== undefined &&
+        ((compactLiveSamplers && !layerUsesProjectedArray(index)) || layer.projectedArraySlice !== undefined) &&
         (!layerUsesMask(index) ||
-          (layerUsesMaskArray(index) && layer.maskArraySlice !== undefined)) &&
+          (compactLiveSamplers && !layerUsesMaskArray(index)) || layer.maskArraySlice !== undefined) &&
         (!layerUsesDepth(index) ||
-          (layerUsesDepthArray(index) && layer.depthArraySlice !== undefined)) &&
+          (compactLiveSamplers && !layerUsesDepthArray(index)) || layer.depthArraySlice !== undefined) &&
         (!layerUsesNormal(index) ||
-          (layerUsesNormalArray(index) && layer.normalArraySlice !== undefined)),
+          (compactLiveSamplers && !layerUsesNormalArray(index)) || layer.normalArraySlice !== undefined),
     ),
   );
   const arraySliceIndex = (index: number, predicate: (candidateIndex: number) => boolean) =>
@@ -1072,6 +1072,27 @@ function buildStackFragmentShader(
   const compactHasMaskArray = layers.some((_layer, index) => layerUsesMask(index));
   const compactHasDepthArray = layers.some((_layer, index) => layerUsesDepth(index));
   const compactHasNormalArray = layers.some((_layer, index) => layerUsesNormal(index));
+  // Live repaint samplers must not expand every historical layer's projection
+  // and nine-tap visibility math into a new, expensive shader variant.
+  const compactChannels = [
+    ['projected', 'Projected', (_index: number) => true, layerUsesProjectedArray],
+    ['mask', 'Mask', layerUsesMask, layerUsesMaskArray],
+    ['depth', 'Depth', layerUsesDepth, layerUsesDepthArray],
+    ['normal', 'Normal', layerUsesNormal, layerUsesNormalArray],
+  ] as const;
+  const compactSamplerDeclarations = compactChannels.map(([name, , uses, array]) =>
+    layers.map((_layer, index) => uses(index) && !array(index)
+      ? `uniform sampler2D ${name}Map${index};` : '').join('\n'),
+  ).join('\n');
+  const compactSamplerFunctions = compactChannels.map(([name, capital, uses, array]) => {
+    if (!layers.some((_layer, index) => uses(index))) return '';
+    const direct = layers.map((_layer, index) => uses(index) && !array(index)
+      ? `if (layerIndex == ${index}) texel = texture2D(${name}Map${index}, sampleUv); else ` : '').join('\n');
+    const fallback = layers.some((_layer, index) => uses(index) && array(index))
+      ? `texture(${name}Maps, vec3(sampleUv * compact${capital}MapUvScales[layerIndex], compact${capital}ArraySlices[layerIndex]))`
+      : 'vec4(0.0)';
+    return `vec4 sampleCompact${capital}(int layerIndex, vec2 sampleUv) { vec4 texel = vec4(0.0); ${direct} texel = ${fallback}; return texel; }`;
+  }).join('\n');
   const visibilityFunctionDefinitions = useCompactArrayLoop
     ? `
   float computeCompactVisibility(
@@ -1086,26 +1107,14 @@ function buildStackFragmentShader(
     ${
       compactHasDepthArray
         ? `if (compactUseDepths[layerIndex] > 0.5) {
-      depthTexel = texture(
-        depthMaps,
-        vec3(
-          sampleUv * compactDepthMapUvScales[layerIndex],
-          compactDepthArraySlices[layerIndex]
-        )
-      );
+      depthTexel = sampleCompactDepth(layerIndex, sampleUv);
     }`
         : ''
     }
     ${
       compactHasNormalArray
         ? `if (compactUseNormals[layerIndex] > 0.5) {
-      normalTexel = texture(
-        normalMaps,
-        vec3(
-          sampleUv * compactNormalMapUvScales[layerIndex],
-          compactNormalArraySlices[layerIndex]
-        )
-      );
+      normalTexel = sampleCompactNormal(layerIndex, sampleUv);
     }`
         : ''
     }
@@ -1328,13 +1337,7 @@ function buildStackFragmentShader(
               vec2(vUv.x, 1.0 - vUv.y),
               compactMaskUsesUv[layerIndex]
             );
-            maskTexel = texture(
-              maskMaps,
-              vec3(
-                maskUv * compactMaskMapUvScales[layerIndex],
-                compactMaskArraySlices[layerIndex]
-              )
-            );
+            maskTexel = sampleCompactMask(layerIndex, maskUv);
           }`
               : ''
           }
@@ -1474,13 +1477,7 @@ function buildStackFragmentShader(
             }
           }
           float depthWeight = mix(0.7, 1.0, visibilityCoverage);
-          vec4 texel = texture(
-            projectedMaps,
-            vec3(
-              uv * compactProjectedMapUvScales[layerIndex],
-              compactProjectedArraySlices[layerIndex]
-            )
-          );
+          vec4 texel = sampleCompactProjected(layerIndex, uv);
           texel.rgb = applyHsvAdjustments(
             texel.rgb,
             compactHueShifts[layerIndex],
@@ -1878,7 +1875,7 @@ function buildStackFragmentShader(
   ${layers.some((_layer, index) => layerUsesProjectedArray(index)) ? 'uniform highp sampler2DArray projectedMaps;' : ''}
   ${layers.some((_layer, index) => layerUsesMask(index) && layerUsesMaskArray(index)) ? 'uniform highp sampler2DArray maskMaps;' : ''}
   ${layers.some((_layer, index) => layerUsesDepth(index) && layerUsesDepthArray(index)) ? 'uniform highp sampler2DArray depthMaps;' : ''}
-  ${layers.some((_layer, index) => layerUsesNormal(index) && layerUsesNormalArray(index)) ? 'uniform highp sampler2DArray normalMaps;' : ''}
+  ${layers.some((_layer, index) => layerUsesNormal(index) && layerUsesNormalArray(index)) ? 'uniform highp sampler2DArray normalMaps;' : ''}${useCompactArrayLoop ? '\n' + compactSamplerDeclarations + compactSamplerFunctions : ''}
   uniform float enableBackfaceCulling;
   uniform float edgeFeather;
   uniform float depthBias;
@@ -4473,14 +4470,15 @@ export async function createProjectedLayerStackMaterial(
     });
   }
   if (loadedLayers.length === 0) return undefined;
+  const compactLiveSamplers = loadedLayers.some((layer) => layer.useDepthCheck || layer.useNormalCheck);
   const useCompactArrayShader = Boolean(
     useTextureArrays &&
     loadedLayers.every(
       (layer) =>
-        layer.projectedArraySlice !== undefined &&
-        (!layer.useMask || layer.maskArraySlice !== undefined) &&
-        (!layer.useDepthCheck || layer.depthArraySlice !== undefined) &&
-        (!layer.useNormalCheck || layer.normalArraySlice !== undefined),
+        ((compactLiveSamplers && isLiveProjectedCanvasUrl(layer.imageUrl)) || layer.projectedArraySlice !== undefined) &&
+        (!layer.useMask || (compactLiveSamplers && isLiveProjectedCanvasUrl(layer.maskUrl)) || layer.maskArraySlice !== undefined) &&
+        (!layer.useDepthCheck || (compactLiveSamplers && isLiveProjectedCanvasUrl(layer.depthUrl)) || layer.depthArraySlice !== undefined) &&
+        (!layer.useNormalCheck || (compactLiveSamplers && isLiveProjectedCanvasUrl(layer.normalUrl)) || layer.normalArraySlice !== undefined),
     ),
   );
   const loadedLiveEraserLayerIndex = input.liveEraserLayerId

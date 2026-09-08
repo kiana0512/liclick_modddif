@@ -732,11 +732,16 @@ assert.match(
   /const exactOverlayOwnsPersistedEraser = Boolean\([\s\S]*?exactOverlayReady && repaintPreviewLayer\?\.id === composite\?\.layerId[\s\S]*?const presentationOwnerReady = isEditingPersistedLocalRepaint\s*\? residentMaskBound \|\| exactOverlayOwnsPersistedEraser\s*:\s*exactOverlayReady/,
   'A just-published repaint must remain editable through its exact overlay until the resident eraser mask is bound.',
 );
-assert.match(
-  viewportCanvasSource,
-  /const eraserHandoffUsesExactOverlay =\s*erasesPersistedLocalRepaint && previewOwnsOverlay;[\s\S]*?const exactOverlayPresentationRequired =\s*liveFeedbackRequested \|\| eraserHandoffUsesExactOverlay \|\| residentHandoffPending;[\s\S]*?shouldUseDedicatedLocalRepaintOverlay\([\s\S]*?exactOverlayPresentationRequired/,
-  'Switching directly from local repaint to eraser must retain the visible exact overlay during resident material preparation.',
-);
+const exactPresentation = viewportCanvasSource.match(/const exactOverlayPresentationRequired =([\s\S]*?);/);
+assert.ok(exactPresentation);
+const requiresExactPresentation = new Function('liveFeedbackRequested', 'previewOwnsOverlay', 'residentHandoffPending',
+  `return (${exactPresentation[1]});`);
+assert.equal(requiresExactPresentation(false, true, false), true,
+  'Switching to eraser or another tool must retain the existing exact owner while the material prepares.');
+assert.equal(requiresExactPresentation(false, false, true), true,
+  'A presented handoff must finish before the exact overlay is withdrawn.');
+assert.equal(requiresExactPresentation(false, false, false), false,
+  'An idle persisted layer without a live owner uses the formal material.');
 assert.match(
   sceneRootSource,
   /const localRepaintLiveFeedbackRequested =\s*localRepaintPaintTool === 'inpaint-apply' \|\|\s*\(localRepaintPaintTool === 'eraser' && localRepaintPreviewLayer\?\.id === activeLayerId\)/,
@@ -777,11 +782,15 @@ assert.match(
   /const visibleProjectionSource = latestSceneState\.localRepaintProjectionSource;[\s\S]*?resolveLocalRepaintBackgroundPrewarmDisposition\(\{[\s\S]*?currentSource: visibleProjectionSource,[\s\S]*?targetLayerId: currentTarget\.id,[\s\S]*?\}\);[\s\S]*?if \(disposition === 'preserve-current-source'\) return;/,
   'A live historical repaint source must remain the real ownership guard for background prewarm.',
 );
-assert.match(
-  viewportCanvasSource,
-  /const overlayCanOwnPresentation =\s*!existingLayer \|\| sceneState\.paintTool === 'inpaint-apply';/,
-  'The live overlay must temporarily own presentation for an existing repaint row while the apply brush is active.',
-);
+const ownershipExpression = viewportCanvasSource.match(/const overlayCanOwnPresentation =([\s\S]*?);/);
+assert.ok(ownershipExpression);
+const canOwnPresentation = new Function('existingLayer', 'sceneState', 'currentPreviewLayer', 'projectedLayer', 'composite',
+  `return (${ownershipExpression[1]});`);
+assert.equal(canOwnPresentation({}, { paintTool: 'inpaint-apply' }, undefined, { id: 'row' }, { hasContent: false }), true);
+assert.equal(canOwnPresentation({}, { paintTool: 'none' }, { id: 'row' }, { id: 'row' }, { hasContent: true }), true,
+  'A nonempty pending preview keeps ownership when switching tools.');
+assert.equal(canOwnPresentation({}, { paintTool: 'none' }, { id: 'other' }, { id: 'row' }, { hasContent: true }), false);
+assert.equal(canOwnPresentation({}, { paintTool: 'none' }, { id: 'row' }, { id: 'row' }, { hasContent: false }), false);
 assert.match(
   viewportCanvasSource,
   /visible: existingLayer\?\.visible \?\? true,[\s\S]*?opacity: existingLayer\?\.opacity \?\? 1,[\s\S]*?strength: existingLayer\?\.strength \?\? 1,[\s\S]*?adjustments: existingLayer\?\.adjustments/,
@@ -1124,6 +1133,34 @@ try {
     aspect: 1,
   };
   const layerStore = await server.ssrLoadModule('/src/stores/layerStore.ts');
+  const hybridLayers = Array.from({ length: 9 }, (_, index) => ({
+    layerId: `hybrid-${index}`, camera, objectId: 'hybrid', visible: true, opacity: 1,
+    imageUrl: index === 8 ? 'liclick-live-projected-canvas:color' : `memory://color-${index}`,
+    maskUrl: index === 8 ? 'liclick-live-projected-canvas:mask' : `memory://mask-${index}`,
+    depthUrl: `memory://depth-${index}`, useMask: true, useDepthCheck: true,
+  }));
+  const warmHybrid = (layers, maxTextureImageUnits = 16) =>
+    projection.createProjectedLayerStackProgramWarmupMaterial({ layers, objectId: 'hybrid' },
+      { isWebGL2: true, preferTextureArrays: true, maxTextureImageUnits });
+  const hybrid = warmHybrid(hybridLayers);
+  assert.ok(hybrid);
+  assert.match(hybrid.fragmentShader, /COMPACT_LAYER_CAPACITY = 9/,
+    'One live repaint must not expand nine layers of depth visibility math.');
+  assert.match(hybrid.fragmentShader, /if \(layerIndex == 8\) texel = texture2D\(maskMap8, sampleUv\)/);
+  assert.match(hybrid.fragmentShader, /compactDepthArraySlices\[layerIndex\]/);
+  assert.equal((hybrid.fragmentShader.match(/float computeCompactVisibility\(/g) ?? []).length, 1);
+  const simpleHybrid = warmHybrid(hybridLayers.map((layer) => ({ ...layer, useDepthCheck: false })));
+  assert.doesNotMatch(simpleHybrid.fragmentShader, /COMPACT_LAYER_CAPACITY/,
+    'Simple live color/mask stacks retain the less expensive direct program.');
+  const liveDepth = warmHybrid(hybridLayers.map((layer, index) => ({ ...layer,
+    depthUrl: index === 8 ? 'liclick-live-projected-canvas:depth' : layer.depthUrl,
+    normalUrl: index === 8 ? 'liclick-live-projected-canvas:normal' : 'memory://normal', useNormalCheck: true,
+  })));
+  assert.match(liveDepth.fragmentShader, /texture2D\(depthMap8, sampleUv\)/);
+  assert.match(liveDepth.fragmentShader, /texture2D\(normalMap8, sampleUv\)/);
+  assert.equal(warmHybrid(hybridLayers, 2), undefined,
+    'Compact loops must still obey the device sampler budget.');
+  hybrid.dispose(); simpleHybrid.dispose(); liveDepth.dispose();
   const sceneStore = await server.ssrLoadModule('/src/stores/sceneStore.ts');
   const visibilityLayers = [
     { id: 'visibility-a', type: 'projected', visible: true, order: 0 },

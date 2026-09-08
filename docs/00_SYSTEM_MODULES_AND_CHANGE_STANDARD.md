@@ -935,3 +935,5 @@ M13/M15，`IDENTITY-TELEMETRY` v1.1.0，日聚合 schema v3：来源由后端确
 2026-09-08 性能日志详细归因补充：ALG-PERF-SESSION-001 v1.0.3 / collector 2.1.1。span 耗时在事件广播前确定；管理员详情关联最慢 12 帧与同期任务，相关性和建议不冒充根因，缺失数据不补造。Schema 2 与生产图像算法、工程持久化不变。详见 CHG-20260908-PERFORMANCE-LAB-PRODUCTION。
 
 性能详细采集最终 collector 2.2.0：构建与支持能力、脚本位置、单调时钟、Observer drain、渲染器每秒快照、有效 GPU 查询、数值参数及模块覆盖明细；普通登录不启用录制，不改生产渲染输出。性能参数无法等同系统级采样，缺失与上限随报告明确说明。
+
+2026-09-08 `CHG-20260908-REPAINT-TOOL-HANDOFF-PROFILE`：UI-06/UI-10 → M08，`ALG-LR-007` v2.2.1。真实 perf_224920a6 记录切换时 overlay 提前隐藏、正式材质约 4.75 秒后才发布。保留有内容的 preview owner 至真实 resident mask 绑定与呈现屏障完成，缓存复用/可见性入口同义，空预览和 eye-off 仍遵守原规则。GPU/CPU/Worker/shader 像素、UV/export、分辨率、Schema、Command/Revision/ownership/资产不变，无迁移；回滚只恢复这些判断。旧生产回调时序回归失败、新实现通过；M06 / ALG-PROJ-007 v2.1.4 同时令带深度/法线的 live+array 混合栈使用既有 compact 循环，保留简单 live 栈原 GLSL、采样预算与所有像素公式；7 组真实 WebGL 三状态像素对照一致，9 层 GLSL 约 82 KB 降至 31 KB。首次编译仍可能阻塞，不承诺用户原项目整体帧率已达标。详见对应变更卡。

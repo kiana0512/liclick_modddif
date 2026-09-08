@@ -8479,8 +8479,6 @@ function SurfacePaintOverlay() {
       liveLayerId,
       layers,
     );
-    const eraserHandoffUsesExactOverlay =
-      erasesPersistedLocalRepaint && previewOwnsOverlay;
     const residentHandoffPending =
       localRepaintResidentPresentationLayerRef.current === liveLayerId;
     // A newly published repaint can still be represented by the exact GPU
@@ -8489,7 +8487,7 @@ function SurfacePaintOverlay() {
     // already-present overlay authoritative until the resident mask is bound,
     // then use the existing two-frame handoff to swap owners atomically.
     const exactOverlayPresentationRequired =
-      liveFeedbackRequested || eraserHandoffUsesExactOverlay || residentHandoffPending;
+      liveFeedbackRequested || previewOwnsOverlay || residentHandoffPending;
     const orderedStackOwnsPreview = !shouldUseDedicatedLocalRepaintOverlay(
       layers,
       sceneState.localRepaintPreviewLayer ?? persistedLayer,
@@ -8512,6 +8510,7 @@ function SurfacePaintOverlay() {
     const keepsLiveLocalRepaintPreview =
       liveFeedbackRequested ||
       erasesPersistedLocalRepaint ||
+      residentHandoffPending ||
       (previewOwnsOverlay &&
         (sceneState.paintTool === 'none' ||
           sceneState.paintTool === 'inpaint-add' ||
@@ -10540,7 +10539,9 @@ function SurfacePaintOverlay() {
       // SceneRoot uses this marker to mute only the matching resident twin;
       // every historical repaint row remains visible.
       const overlayCanOwnPresentation =
-        !existingLayer || sceneState.paintTool === 'inpaint-apply';
+        !existingLayer ||
+        sceneState.paintTool === 'inpaint-apply' ||
+        (currentPreviewLayer?.id === projectedLayer.id && composite.hasContent);
       const previewAlreadyPublished =
         currentPreviewLayer?.id === projectedLayer.id &&
         currentPreviewLayer.imageUrl === projectedLayer.imageUrl &&
@@ -10620,7 +10621,7 @@ function SurfacePaintOverlay() {
             layerState.layers,
             sceneState.localRepaintPreviewLayer ??
               layerState.layers.find((layer) => layer.id === composite.layerId),
-            sceneState.paintTool === 'inpaint-apply',
+            sceneState.paintTool === 'inpaint-apply' || previewOwnsOverlay,
           ) &&
           (sceneState.paintTool === 'inpaint-apply' ||
             erasesPersistedLocalRepaint ||
@@ -10783,7 +10784,7 @@ function SurfacePaintOverlay() {
               layerState.layers,
               sceneState.localRepaintPreviewLayer ??
                 layerState.layers.find((layer) => layer.id === composite.layerId),
-              sceneState.paintTool === 'inpaint-apply',
+              sceneState.paintTool === 'inpaint-apply' || previewOwnsOverlay,
             ) &&
             (sceneState.paintTool === 'inpaint-apply' ||
               erasesPersistedLocalRepaint ||
@@ -10857,7 +10858,7 @@ function SurfacePaintOverlay() {
             layerState.layers,
             sceneState.localRepaintPreviewLayer ??
               layerState.layers.find((layer) => layer.id === composite.layerId),
-            sceneState.paintTool === 'inpaint-apply',
+            sceneState.paintTool === 'inpaint-apply' || previewOwnsOverlay,
           ) &&
           (sceneState.paintTool === 'inpaint-apply' ||
             erasesPersistedLocalRepaint ||
