@@ -1151,8 +1151,8 @@ try {
   assert.ok(hybrid);
   assert.match(hybrid.fragmentShader, /COMPACT_LAYER_CAPACITY = 9/,
     'One live repaint must not expand nine layers of depth visibility math.');
-  assert.match(hybrid.fragmentShader, /if \(layerIndex == 8\) texel = texture2D\(maskMap8, sampleUv\)/);
-  assert.match(hybrid.fragmentShader, /compactDepthArraySlices\[layerIndex\]/);
+  assert.match(hybrid.fragmentShader, /if\(i==8\)t=texture2D\(maskMap8,uv\)/);
+  assert.match(hybrid.fragmentShader, /compactDepthArraySlices\[i\]/);
   assert.equal((hybrid.fragmentShader.match(/float computeCompactVisibility\(/g) ?? []).length, 1);
   const simpleHybrid = warmHybrid(hybridLayers.map((layer) => ({ ...layer, useDepthCheck: false })));
   assert.doesNotMatch(simpleHybrid.fragmentShader, /COMPACT_LAYER_CAPACITY/,
@@ -1161,8 +1161,8 @@ try {
     depthUrl: index === 8 ? 'liclick-live-projected-canvas:depth' : layer.depthUrl,
     normalUrl: index === 8 ? 'liclick-live-projected-canvas:normal' : 'memory://normal', useNormalCheck: true,
   })));
-  assert.match(liveDepth.fragmentShader, /texture2D\(depthMap8, sampleUv\)/);
-  assert.match(liveDepth.fragmentShader, /texture2D\(normalMap8, sampleUv\)/);
+  assert.match(liveDepth.fragmentShader, /texture2D\(depthMap8,uv\)/);
+  assert.match(liveDepth.fragmentShader, /texture2D\(normalMap8,uv\)/);
   assert.equal(warmHybrid(hybridLayers, 2), undefined,
     'Compact loops must still obey the device sampler budget.');
   hybrid.dispose(); simpleHybrid.dispose(); liveDepth.dispose();
