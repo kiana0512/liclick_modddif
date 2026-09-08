@@ -1,6 +1,7 @@
 import { useFrame, useThree } from '@react-three/fiber';
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three';
+import { compileForRenderTarget } from '@/engine/projection/compileForRenderTarget';
 import { useShallow } from 'zustand/react/shallow';
 import {
   createDisplayModeMaterial,
@@ -3689,7 +3690,10 @@ const ImportedModel = memo(function ImportedModel({
         await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
       }
     };
-    const precompileProjectedMaterial = async (material: THREE.ShaderMaterial) => {
+    const precompileProjectedMaterial = async (
+      material: THREE.ShaderMaterial,
+      target: THREE.WebGLRenderTarget | null = null,
+    ) => {
       if (typeof gl.compileAsync !== 'function') return false;
       if (cancelled) return false;
       // On ANGLE/NVIDIA, linking the large projected shader while several 4K
@@ -3708,7 +3712,7 @@ const ImportedModel = memo(function ImportedModel({
       compileScene.add(compileMesh);
       const compileStartedAt = performance.now();
       try {
-        await gl.compileAsync(compileScene, camera);
+        await compileForRenderTarget(gl, compileScene, camera, target);
       } finally {
         const compileDurationMs = performance.now() - compileStartedAt;
         if (typeof document !== 'undefined') {
@@ -3717,6 +3721,7 @@ const ImportedModel = memo(function ImportedModel({
         }
         markPerformanceEvent('projection', 'projected-material-precompile', {
           durationMs: compileDurationMs,
+          target: target ? 'offscreen' : 'viewport',
         });
         compileGeometry.dispose();
         compileMesh.removeFromParent();
@@ -3761,6 +3766,12 @@ const ImportedModel = memo(function ImportedModel({
       const context = gl.getContext();
 
       try {
+        // Three selects a distinct output-color/tone-mapping program for an
+        // offscreen target. Viewport compilation alone leaves the first warmup
+        // draw synchronously linking that variant (440–467ms in perf_3c6a4f18).
+        // Keep the same sampler exercise, but finish its exact program first.
+        await precompileProjectedMaterial(material, warmTarget);
+        if (cancelled) return;
         opacityUniforms.forEach((uniform) => {
           uniform.value = 0;
         });
