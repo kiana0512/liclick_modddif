@@ -1,16 +1,20 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
-> 文档版本：`2.18.27`
+> 文档版本：`2.18.28`
 >
 > 生效日期：`2026-09-08`
 >
-> 代码盘点基线：`919b1de + 本次局部重绘当前相机深度修复`
+> 代码盘点基线：`3a373f9 + 本次局部重绘步骤引导修复`
 >
 > 基线仓库：`E:\Liclick 3D Texture Modernization`
 >
 > 审计口径：`0a2519d + 607e82f + 2568e40`，不包含错误文档提交 `2bde8c6/e03bab2/d1c5f78`
 
 ## 1. 文档地位与强制边界
+
+变更卡 `CHG-20260908-REPAINT-WORKFLOW-GUIDE`：UI-06/UI-10 → M08，前端交互契约 `UI-LOCAL-REPAINT-GUIDE` v1.0.1。旧生图成功 effect 在 GPU 画笔未 ready 时就消耗 success key，同时侧栏发起生成不清除工具栏生图按钮的引导。改为唯一互斥步骤状态：任一入口开始生成均清除旧引导，成功立即登记待应用引导，跨任务解锁/GPU 准备保留，画笔真正可用后显示呼吸效果；点击/进入应用画笔后停止。失败/取消不引导旧结果，恢复蒙版工具不覆盖待应用引导，新一轮显式操作仍可重新引导。不自动切工具或提交任务；生成、GPU/CPU/Worker/shader、mask/回贴/UV/export、Schema、Revision、ownership 和资产不变，无迁移。回退恢复 BottomToolDock 的原三组 effect 并移除 UI helper 即可，不改用户数据。
+
+步骤引导验证：真实 Edge 挂载 BottomToolDock，执行蒙版点击→侧栏任务开始→成功但画笔未 ready→延迟 ready→点击画笔；基线 HEAD 组件仍为生图 pulse=true/画笔=false，修复后未 ready 两者=false、ready 后生图=false/画笔=true、点击后停止，浏览器 pageerror=0。时序回归另覆盖成功先于解锁、蒙版恢复、失败/取消、第二轮和已确认引导不复活；88 项 Web 回归、TypeScript/Vite 构建及修改文件 lint 通过，包体 3,133,466 bytes 通过原预算。测试不运行生图服务或修改用户工程；本次尚未提交/部署。
 
 变更卡 `CHG-20260908-REPAINT-RASTER-OCCLUSION`：UI-06/UI-10 → M06，`ALG-PROJ-006` v2.1.0。真实 WebGL 隔离复现证实，局部重绘 accepted fragment 的 -0.000080 深度前推与常驻投影的 -0.000006 不一致，会让内部表面盖过当前相机下的外壳。单独清零 overlay 又会被仍前推的常驻层挡住。单层、direct stack、texture-array stack 和实时 overlay 现在共用当前相机深度 helper：有材质片元保持几何深度，仅空诊断片元保留原 +0.000006 后移；overlay 关闭额外 polygonOffset，沿用 LessEqualDepth、末尾绘制及不写深度。捕获可见性阈值、mask/source-over、UV/CPU/Worker/export、Schema/Revision/ownership/资产不变，无迁移。隔离 3,240 状态旧规则失败 1,362、新规则 0（含不同细分的重合诊断面、显隐及 mask 更新）；不据此宣称用户原项目或所有 GPU 已验收。详见 [变更卡](changes/CHG-20260908-REPAINT-RASTER-OCCLUSION.md)。
 

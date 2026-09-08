@@ -29,6 +29,7 @@ import type { WorkspaceMode } from '@/components/workspace/workspacePanelTypes';
 import { runPaintMaskHistoryAction } from '@/engine/paint/paintMaskHistoryActions';
 import { getEraserTargetPolicy } from '@/engine/paint/eraserTargetPolicy';
 import { resolveLocalRepaintActivationDisposition } from '@/engine/localRepaint/activationRequestPolicy';
+import { reconcileRepaintWorkflowGuide, type RepaintGuideState } from './localRepaintWorkflowGuide';
 
 type BottomToolDockProps = {
   mode: WorkspaceMode;
@@ -116,13 +117,14 @@ export function BottomToolDock({
   const [activeMenu, setActiveMenu] = useState<
     'eraser' | 'inpaint-add' | 'inpaint-subtract' | 'inpaint-apply' | undefined
   >();
-  const [generationGuideActive, setGenerationGuideActive] = useState(false);
-  const [repaintGuideActive, setRepaintGuideActive] = useState(false);
-  const previousGenerationSuccessKeyRef = useRef(localImageGenerationSuccessKey);
-  const previousApplyToolSelectedRef = useRef(paintTool === 'inpaint-apply');
-  const previousMaskToolSelectedRef = useRef(
-    paintTool === 'inpaint-add' || paintTool === 'inpaint-subtract',
-  );
+  const [workflowGuide, setWorkflowGuide] = useState<RepaintGuideState>(() => ({
+    step: 'none', running: localImageGenerationRunning,
+    successKey: localImageGenerationSuccessKey, paintTool,
+  }));
+  const generationGuideActive = workflowGuide.step === 'generate';
+  const repaintGuideActive = workflowGuide.step === 'repaint';
+  const setGuideStep = (step: RepaintGuideState['step']) =>
+    setWorkflowGuide((current) => ({ ...current, step }));
   const paintMaskSettings = useSceneStore((state) => state.paintMaskSettings);
   const paintMaskPresentationVisible = useSceneStore(
     (state) => state.paintMaskPresentationVisible,
@@ -184,34 +186,12 @@ export function BottomToolDock({
   }, [canEraseSelectedLayer, onPaintToolChange, paintTool]);
 
   useEffect(() => {
-    if (localImageGenerationRunning) {
-      setRepaintGuideActive(false);
-    } else if (
-      previousGenerationSuccessKeyRef.current !== localImageGenerationSuccessKey &&
-      localRepaintReady
-    ) {
-      setRepaintGuideActive(true);
-    }
-    previousGenerationSuccessKeyRef.current = localImageGenerationSuccessKey;
-  }, [localImageGenerationRunning, localImageGenerationSuccessKey, localRepaintReady]);
-
-  useEffect(() => {
-    const applyToolSelected = paintTool === 'inpaint-apply';
-    if (!previousApplyToolSelectedRef.current && applyToolSelected) {
-      // Applying the returned repaint hides the mask presentation, but keeps
-      // the single live mask authored for reuse or later editing.
-      setRepaintGuideActive(false);
-    }
-    previousApplyToolSelectedRef.current = applyToolSelected;
-  }, [paintTool]);
-
-  useEffect(() => {
-    if (!previousMaskToolSelectedRef.current && isMaskPaintTool) {
-      setGenerationGuideActive(true);
-      setRepaintGuideActive(false);
-    }
-    previousMaskToolSelectedRef.current = isMaskPaintTool;
-  }, [isMaskPaintTool]);
+    setWorkflowGuide((previous) => reconcileRepaintWorkflowGuide(previous, {
+      running: localImageGenerationRunning,
+      successKey: localImageGenerationSuccessKey,
+      paintTool,
+    }));
+  }, [localImageGenerationRunning, localImageGenerationSuccessKey, paintTool]);
 
   function toggleMenu(menu: typeof activeMenu) {
     setActiveMenu((current) => (current === menu ? undefined : menu));
@@ -552,8 +532,7 @@ export function BottomToolDock({
                       // the resident repaint presentation stays mounted.
                       if (!isMaskPaintTool) {
                         onPaintToolChange('inpaint-add');
-                        setGenerationGuideActive(true);
-                        setRepaintGuideActive(false);
+                        setGuideStep('generate');
                       }
                       toggleMenu('inpaint-add');
                     }}
@@ -589,8 +568,7 @@ export function BottomToolDock({
                         notifyGenerationInProgress();
                         return;
                       }
-                      setGenerationGuideActive(false);
-                      setRepaintGuideActive(false);
+                      setGuideStep('none');
                       onLocalImageGeneration();
                       setActiveMenu(undefined);
                     }}
@@ -647,7 +625,7 @@ export function BottomToolDock({
                         onInteractionLocked?.();
                         return;
                       }
-                      setRepaintGuideActive(false);
+                      setGuideStep('none');
                       if (localRepaintActivationDisposition === 'queue-until-unlocked') {
                         onLocalRepaint();
                         setActiveMenu('inpaint-apply');
