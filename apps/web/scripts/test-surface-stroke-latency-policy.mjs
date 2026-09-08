@@ -16,6 +16,7 @@ try {
   const {
     shouldCollapseSurfaceStrokeToLatestSample,
     shouldDeferSurfaceStrokeCommit,
+    shouldRetainProjectedEraserPreview,
     shouldUploadSurfaceStrokeProjectionTexture,
   } = await server.ssrLoadModule('/src/engine/paint/surfaceStrokeLatencyPolicy.ts');
 
@@ -69,6 +70,22 @@ try {
     'Projected brush feedback must continue uploading its visible projection texture.',
   );
 
+  assert.equal(
+    shouldRetainProjectedEraserPreview({ target: 'projected-mask', pendingPaintCommits: 1 }),
+    true,
+    'A queued projected-mask commit must retain the shared live preview across UI rebuilds.',
+  );
+  assert.equal(
+    shouldRetainProjectedEraserPreview({ target: 'projected-mask', pendingPaintCommits: 0 }),
+    false,
+    'The shared live preview may be released after the resident projected mask is authoritative.',
+  );
+  assert.equal(
+    shouldRetainProjectedEraserPreview({ target: 'uv-image', pendingPaintCommits: 1 }),
+    false,
+    'UV-image erasing does not use the projected live-mask handoff.',
+  );
+
   const viewportSource = fs.readFileSync(
     path.join(root, 'src/engine/viewport/ViewportCanvas.tsx'),
     'utf8',
@@ -107,6 +124,11 @@ try {
     viewportSource,
     /layer\.pendingPaintCommits \+= 1;[\s\S]*?layer\.paintCommitChain = queuedCommit[\s\S]*?\.finally\(\(\) => \{\s*layer\.pendingPaintCommits = Math\.max\(0, layer\.pendingPaintCommits - 1\);/,
     'Projected paint commits must expose an exact pending count for the layer handoff barrier.',
+  );
+  assert.match(
+    viewportSource,
+    /function endLiveEraserPreview[\s\S]*?shouldRetainProjectedEraserPreview\([\s\S]*?return;[\s\S]*?promoteProjectedEraserMaskToResidentMaterial[\s\S]*?clearLiveSurfacePaintPreview/,
+    'Tool, layer and preview switches must not clear the shared live eraser authority before the queued resident commit finishes.',
   );
   const claimStart = viewportSource.indexOf('if (!result) return;\n      setViewportPaintPointer');
   assert(claimStart >= 0);

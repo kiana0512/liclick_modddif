@@ -1,6 +1,6 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
-> 文档版本：`2.18.13`
+> 文档版本：`2.18.17`
 >
 > 生效日期：`2026-09-08`
 >
@@ -11,6 +11,8 @@
 > 审计口径：`0a2519d + 607e82f + 2568e40`，不包含错误文档提交 `2bde8c6/e03bab2/d1c5f78`
 
 ## 1. 文档地位与强制边界
+
+变更卡 `CHG-20260908-PROJECTED-ERASER-UI-REBUILD-HANDOFF`：UI-05/UI-06/UI-09/UI-10，主模块 M08，协作 M04/M05/M06/M12；`ALG-ERASE-001` v1.3.5。普通 projected 橡皮的 512/1024 实时 keep-mask 已同时绑定当前材质与共享注册表，但旧退出逻辑在全分辨率提交未完成时保留对象 root、却提前清除共享注册表。当前材质尚能显示擦除，单视图准备、图层选择或 Flat/PBR 预览开关一旦重建材质，SceneRoot 便失去可重绑的实时蒙版，只能读取提交前的持久 mask，造成擦除区域回弹。现在只要 projected-mask 仍有 pending commit，就同时保留 root 和共享实时权威；最后一个提交把正式全分辨率 CanvasTexture 原子提升到全部驻留材质后，再统一清理。提交失败则恢复旧持久蒙版后清理。擦除覆盖、作者 mask、GPU shader、CPU/Worker 补缝、UV/export、最终分辨率、Project/Layer Schema、Command 幂等性、Revision CAS、ownership 与资产不变，无迁移；回退恢复提前清理会重新引入该竞态。
 
 变更卡 `CHG-20260907-FILE-RESPONSE-ABORT-CLOSE`：主模块 M14，协作 M01/M10/M13；文件响应生命周期契约 `FILE-RESPONSE-LIFETIME` v1.0.0。用户删除 11-20 工程时 Windows rename 到回收站报 EPERM。源码发现 workspace、烘焙单张产物、Web 静态文件响应直接 ReadStream.pipe(response)，取消下载后可能将源流留在背压暂停状态，继续持有文件描述符。改为共用 Node pipeline，由响应提前关闭/读取失败联动销毁源流；完整响应和背压不变，不将网络中断升级为未处理异常。真实 HTTP 测试用 16 MiB 文件中途取消，旧 pipe 实现在句柄关闭断言失败，新实现通过；同测验证完整字节、源读取失败及保留数据的目录移入回收站。该证据证明文件句柄泄漏，不据此认定所有 EPERM 都来自相同原因；旧进程句柄需重启释放。调用前的认证、owner、路径包含/realpath、安全响应头、HEAD 与烘焙状态门禁保持，删除仍走原回收站 rename，不以强制删除代替。GPU/CPU/Worker/shader、投影/UV/重绘/export 内容、分辨率、QA、Schema、Command 幂等性、Revision CAS 与 verified assets 不变，无迁移；回退仅恢复三个响应入口的 pipe，但会重新引入中断资源泄漏。
 
@@ -892,6 +894,7 @@ M15 / CLOUD-DEPLOYMENT v1.0.0（2026-09-03）：正常合并 release 部署历�
 | `2.18.11` | 2026-09-07 | `master 集成与交接测试夹具补全` | M15：保留 4fe9a58 运行时修复，补齐可见根节点/对象身份测试；旧断言与隐藏/跨对象/legacy 用例并存，不更改业务算法或数据。 |
 | `2.18.12` | 2026-09-07 | `中断下载释放文件句柄` | M14/M01、`FILE-RESPONSE-LIFETIME` v1.0.0：共享 pipeline 关闭被取消的模型/图片响应源流，防止 Windows 文件占用阻碍回收站移动；无算法或数据迁移。 |
 | `2.18.13` | 2026-09-08 | `官方生产 IDaaS 应用接入配置` | M13、`LICLICK-ACCOUNT-BINDING` v1.3.4：官方 lilithplugin_jwt62/lilith 与 prod Gateway 配对，保持根路径固定回调、target_url 和个人账号隔离；增加部署配置及生产 URL 回归。实际发布、正式授权和多用户生图待验收，无 Schema 或数据迁移。 |
+| `2.18.17` | 2026-09-08 | `本次投影橡皮跨界面重建交接修复` | UI-05/UI-06/UI-09/UI-10、M04/M05/M06/M08/M12，`ALG-ERASE-001` v1.3.5：全分辨率 projected keep-mask 提交未完成时同时保留对象 root 与共享实时蒙版权威，使单视图准备、切层和预览开关产生的新材质继续绑定已擦结果；正式蒙版验证驻留后再清理。覆盖公式、分辨率、Schema、Revision、ownership 与资产不变，无迁移。 |
 
 `ALG-LR-008` v2.4.1：局部重绘仍自动创建独立目标和结果图层；pointer-down 不再依赖当前图层是否选中、可见或为 UV，只检查自身 source/composite/Session/显示资源。默认保持按钮激活、GPU promotion、结果发布前的原选择（含 undefined），防止内部隐藏 draft 触发面板选择普通投影层。普通画笔/橡皮擦限制、GPU/CPU/Worker/shader、作者 mask、投影/UV/export、分辨率、Schema、Revision、ownership 与资产不变。真实 store 三类选择与入口 gate 回归通过；无数据迁移，回退选择保持与 gate 即可。详见 CHG-20260903-LOCAL-REPAINT-SELECTION-INDEPENDENCE。
 

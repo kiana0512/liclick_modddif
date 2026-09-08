@@ -92,6 +92,7 @@ import {
 import {
   shouldCollapseSurfaceStrokeToLatestSample,
   shouldDeferSurfaceStrokeCommit,
+  shouldRetainProjectedEraserPreview,
   shouldUploadSurfaceStrokeProjectionTexture,
 } from '@/engine/paint/surfaceStrokeLatencyPolicy';
 import { getCanvasAlphaBoundsAsync } from '@/utils/getCanvasAlphaBounds';
@@ -6726,6 +6727,19 @@ function promoteProjectedEraserMaskToResidentMaterial(
 function endLiveEraserPreview(layer: UvPaintLayer) {
   layer.liveEraserPreviewActive = false;
   const root = layer.liveEraserPreviewRoot;
+  if (
+    shouldRetainProjectedEraserPreview({
+      target: layer.target,
+      pendingPaintCommits: layer.pendingPaintCommits,
+    })
+  ) {
+    // The direct material still samples this multiplier, but layer/preview
+    // switches can replace that material before the deferred 4K commit lands.
+    // Keep the registry authority as well as the root so SceneRoot can rebind
+    // the same cumulative mask to every replacement material. The last queued
+    // commit calls this function again after promoting the resident texture.
+    return;
+  }
   if (root && layer.pendingPaintCommits === 0) {
     promoteProjectedEraserMaskToResidentMaterial(layer, root);
   }
