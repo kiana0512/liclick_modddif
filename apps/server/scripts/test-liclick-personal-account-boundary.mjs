@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
+import process from 'node:process';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import {
@@ -144,6 +145,21 @@ assert.equal(ssoUrl.searchParams.get('target_url'), bindingTargetUrl.toString())
 assert.equal(ssoUrl.searchParams.get('enterpriseId'), 'qa-enterprise');
 assert.equal(ssoUrl.searchParams.has('redirect_uri'), false);
 assert.equal(ssoUrl.searchParams.has('state'), false);
+
+const productionCallback = buildPersonalLiclickAccountCallbackUrl('https://li3d.lilithgames.com', '');
+assert.equal(productionCallback.href, 'https://li3d.lilithgames.com/api/liclick/account-binding/callback');
+const productionTarget = buildPersonalLiclickAccountTargetUrl('https://li3d.lilithgames.com', '', bindingId);
+const productionSso = buildPersonalLiclickAccountSsoUrl(
+  'https://idaas.lilith.com/enduser/sp/sso/lilithplugin_jwt62', 'lilith', productionTarget,
+);
+assert.equal(productionSso.origin, 'https://idaas.lilith.com');
+assert.equal(productionSso.pathname, '/enduser/sp/sso/lilithplugin_jwt62');
+assert.equal(productionSso.searchParams.get('enterpriseId'), 'lilith');
+assert.equal(productionSso.searchParams.has('redirect_uri'), false);
+assert.equal(productionSso.searchParams.has('state'), false);
+assert.equal(resolvePersonalLiclickAccountTargetLoginId(
+  productionSso.searchParams.get('target_url'), 'https://li3d.lilithgames.com', '',
+), bindingId);
 
 const localSsoUrl = buildLocalAtlasRuntimeSsoUrl(
   'https://idaas.lilith.com/enduser/sp/sso/lilithplugin_jwt62?target_url=old',

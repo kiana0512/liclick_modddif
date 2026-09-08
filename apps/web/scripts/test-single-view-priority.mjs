@@ -72,13 +72,22 @@ try {
     assert.equal(single.maskUrl, capture.maskUrl);
     assert.equal(single.maskSpace, 'projection');
     assert.equal(single.ignoreSourceAlpha, true);
-    assert.equal(single.minimumProjectionFacing, undefined);
+    assert.equal(single.minimumProjectionFacing, 0.18);
     assert.equal(single.projectionVisibilityPolicy, 'standard');
     assert.equal(overlay.getProjectedLayerOverlayMode(single), undefined);
   }
   assert.equal(multiview.projectionCompositeMode, undefined);
   assert.equal(multiview.projectionVisibilityPolicy, undefined);
   assert.equal(overlay.getProjectedLayerOverlayMode(multiview), undefined);
+
+  useLayerStore.getState().setLayers([
+    {
+      ...firstSingle,
+      minimumProjectionFacing: undefined,
+    },
+  ]);
+  const normalizedCanonicalSingle = useLayerStore.getState().layers[0];
+  assert.equal(normalizedCanonicalSingle.minimumProjectionFacing, 0.18);
 
   useLayerStore.getState().setLayers([
     {
@@ -96,7 +105,7 @@ try {
   assert.equal(migrated.projectionCompositeMode, undefined);
   assert.equal(migrated.projectionCoverageMode, 'capture-mask');
   assert.equal(migrated.ignoreSourceAlpha, true);
-  assert.equal(migrated.minimumProjectionFacing, undefined);
+  assert.equal(migrated.minimumProjectionFacing, 0.18);
   assert.equal(migrated.projectionVisibilityPolicy, 'standard');
 
   projection.primeProjectedImageTexture(firstSingle.imageUrl, { width: 2, height: 2 });
@@ -116,6 +125,7 @@ try {
         compositeRole: 'normal',
         visible: true,
         ignoreSourceAlpha: true,
+        minimumProjectionFacing: layer.minimumProjectionFacing,
         projectionVisibilityPolicy: 'standard',
       })),
     },
@@ -125,6 +135,11 @@ try {
   assert.equal(material.uniforms.layerOverlayMode0.value, 0);
   assert.equal(material.uniforms.layerOverlayMode1.value, 0);
   assert.match(material.fragmentShader, /insertBlendCandidate\(texel\.rgb, coverage, quality\)/);
+  assert.match(
+    material.fragmentShader,
+    /smoothstep\(0\.180, 0\.260, abs\(dot\(captureViewVertexNormal/,
+    'The resident stack must apply the single-view grazing-face guard.',
+  );
   projection.disposeGeneratedMaterialTree(material);
 
   const layerStoreSource = readFileSync(new URL('../src/stores/layerStore.ts', import.meta.url), 'utf8');

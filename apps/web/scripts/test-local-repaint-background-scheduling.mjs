@@ -106,3 +106,54 @@ await hiddenResult.done;
 assert.equal(hiddenResult.calls.length, 3);
 assert.equal(hiddenUploads.frames.size, 0);
 console.log('Local repaint GPU uploads passed: separate yields, cancellation after either yield, absent source, hidden-page completion.');
+
+// Run the production image cache with a decoder that can finish independently
+// of onload. Consumers must not start a canvas/GPU upload before that barrier.
+const imageLoaderSource = viewport.slice(viewport.indexOf('const LOCAL_REPAINT_IMAGE_CACHE_LIMIT'),
+  viewport.indexOf('function reportLocalRepaintPrewarmProgress'));
+function imageLoaderEnvironment() {
+  const images=[];
+  class Image {
+    naturalWidth=4096; naturalHeight=2048;
+    constructor() {images.push(this);}
+    decode() {this.decodes=(this.decodes??0)+1;return new Promise((resolve,reject)=>{this.finishDecode=resolve;this.failDecode=reject;});}
+  }
+  const load=new Function('Image',ts.transpileModule(imageLoaderSource,{compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText+'\nreturn loadImageElement;')(Image);
+  return {load,images};
+}
+const flushImages=async()=>{for(let i=0;i<8;i++)await Promise.resolve();};
+const loader=imageLoaderEnvironment();
+let published=false;
+const first=loader.load('source'); first.then(()=>{published=true;});
+assert.equal(loader.load('source'),first,'Concurrent consumers share loading and decoding');
+const original=loader.images[0];
+assert.equal(original.crossOrigin,'anonymous'); assert.equal(original.src,'source');
+void original.onload(); await flushImages();
+assert.equal(published,false,'onload alone must not start synchronous image consumers');
+assert.equal(original.decodes,1);
+assert.equal(loader.load('source'),first,'A pending decode stays shared');
+original.finishDecode(); assert.equal(await first,original,'Return the unchanged full-resolution image');
+assert.deepEqual([original.naturalWidth,original.naturalHeight],[4096,2048]);
+assert.equal(loader.load('source'),first,'Ready cache hit does not decode again');
+assert.equal(original.decodes,1);
+for(const fallback of ['unsupported','rejected']) {
+  const request=loader.load(fallback), image=loader.images.at(-1);
+  if(fallback==='unsupported')image.decode=undefined;
+  void image.onload();
+  if(fallback==='rejected')image.failDecode(Error('optional decode hint rejected'));
+  assert.equal(await request,image,'Loaded images remain usable when optional decode is unavailable/rejected');
+}
+const failed=loader.load('failed').catch(error=>error.message);
+loader.images.at(-1).onerror(); assert.match(await failed,/Could not load/);
+const beforeRetry=loader.images.length, retried=loader.load('failed');
+assert.equal(loader.images.length,beforeRetry+1,'Load errors must not poison the cache');
+void loader.images.at(-1).onload(); loader.images.at(-1).finishDecode(); await retried;
+const bounded=imageLoaderEnvironment();
+const warm=async(url)=>{const p=bounded.load(url), image=bounded.images.at(-1);void image.onload();image.finishDecode();return p;};
+for(let i=0;i<6;i++)await warm(`image-${i}`);
+const oldest=bounded.load('image-0');
+await warm('image-6');
+assert.equal(bounded.load('image-0'),oldest,'A ready cache hit refreshes recency');
+const beforeEvicted=bounded.images.length;
+await warm('image-1'); assert.equal(bounded.images.length,beforeEvicted+1,'Decoded cache remains bounded to six entries');
+console.log('Local repaint decode barrier passed: shared pending decode, original 4K image, fallback, retry and six-entry LRU.');

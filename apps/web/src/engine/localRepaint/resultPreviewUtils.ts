@@ -1,6 +1,7 @@
 import { blobToDataUrl, imageDataToBlob, resizeImageData, urlToImageData } from './imageUtils';
-import { requestDisplayPreview, type DisplayPreviewRequest } from './displayPreviewQueue';
+import { createDisplayPreviewQueue, requestDisplayPreview, type DisplayPreviewRequest } from './displayPreviewQueue';
 import { waitForViewportInteractionIdle } from '@/engine/viewport/viewportInteractionState';
+import { waitForBrowserPaint } from '@/utils/browserScheduling';
 
 const previewCache = new Map<string, Promise<string>>();
 const captureMaskedProjectionCache = new Map<
@@ -55,6 +56,7 @@ export function applyPackedDepthDisplayMask(source: ImageData, packedDepth: Imag
     throw new Error('Generated display source and depth dimensions must match.');
   }
   const output = new ImageData(new Uint8ClampedArray(source.data), source.width, source.height);
+  const pixels = new Uint32Array(output.data.buffer);
   let changedPixels = 0;
   for (let offset = 0; offset < output.data.length; offset += 4) {
     const clearPixel =
@@ -62,17 +64,9 @@ export function applyPackedDepthDisplayMask(source: ImageData, packedDepth: Imag
       packedDepth.data[offset + 1] >= 254 &&
       packedDepth.data[offset + 2] >= 254;
     if (!clearPixel) continue;
-    if (
-      output.data[offset] !== 0 ||
-      output.data[offset + 1] !== 0 ||
-      output.data[offset + 2] !== 0 ||
-      output.data[offset + 3] !== 0
-    )
-      changedPixels += 1;
-    output.data[offset] = 0;
-    output.data[offset + 1] = 0;
-    output.data[offset + 2] = 0;
-    output.data[offset + 3] = 0;
+    if (pixels[offset / 4] !== 0) changedPixels += 1;
+    // Zero is identical in either byte order; keep the depth RGB test above.
+    pixels[offset / 4] = 0;
   }
   return { imageData: output, changedPixels };
 }
@@ -90,11 +84,15 @@ export function removeStrictOuterDarkDisplayBackground(source: ImageData) {
   let head = 0;
   let tail = 0;
   const accepts = (index: number, seed: boolean) => {
-    const tone = getTone(data, index * 4);
-    if (tone.alpha <= (seed ? 8 : 16)) return true;
+    const offset = index * 4;
+    if (data[offset + 3] <= (seed ? 8 : 16)) return true;
+    const red = data[offset], green = data[offset + 1], blue = data[offset + 2];
+    const max = Math.max(red, green, blue);
+    const chroma = max - Math.min(red, green, blue);
+    const luma = red * 0.2126 + green * 0.7152 + blue * 0.0722;
     return seed
-      ? tone.luma <= 11 && tone.max <= 24 && tone.chroma <= 20
-      : tone.luma <= 17 && tone.max <= 32 && tone.chroma <= 24;
+      ? luma <= 11 && max <= 24 && chroma <= 20
+      : luma <= 17 && max <= 32 && chroma <= 24;
   };
   const enqueue = (index: number, seed: boolean) => {
     if (visited[index] || !accepts(index, seed)) return;
@@ -332,20 +330,56 @@ function getExactAlphaContentBounds(imageData: ImageData) {
   let right = -1;
   let bottom = -1;
   for (let y = 0; y < height; y += 1) {
-    for (let x = 0; x < width; x += 1) {
-      if (data[(y * width + x) * 4 + 3] === 0) continue;
-      left = Math.min(left, x);
-      top = Math.min(top, y);
-      right = Math.max(right, x);
-      bottom = Math.max(bottom, y);
-    }
+    const rowOffset = y * width * 4 + 3;
+    let first = 0;
+    while (first < width && data[rowOffset + first * 4] === 0) first += 1;
+    if (first === width) continue;
+    let last = width - 1;
+    while (last > first && data[rowOffset + last * 4] === 0) last -= 1;
+    // Only the first/last nonzero alpha in a row can extend its exact bounds.
+    // Interior gaps and faint nonzero alpha retain the original semantics.
+    left = Math.min(left, first);
+    right = Math.max(right, last);
+    top = Math.min(top, y);
+    bottom = y;
   }
   if (right < left || bottom < top) return undefined;
   return { x: left, y: top, width: right - left + 1, height: bottom - top + 1 };
 }
 
-async function encodeDisplayImage(imageData: ImageData) {
-  return blobToDataUrl(await imageDataToBlob(imageData));
+function paddedDisplayBounds(source: ImageData, bounds: { x: number; y: number; width: number; height: number }, padding: number) {
+  const x = Math.max(0, bounds.x - padding);
+  const y = Math.max(0, bounds.y - padding);
+  return [x, y,
+    Math.max(1, Math.min(source.width, bounds.x + bounds.width + padding) - x),
+    Math.max(1, Math.min(source.height, bounds.y + bounds.height + padding) - y),
+  ] as const;
+}
+
+// Both display paths use the same unscaled canvas crop. Keep their distinct
+// bounds, padding and missing-context fallback decisions in their callers.
+function cropDisplayImage(image: ImageData, x: number, y: number, width: number, height: number) {
+  const source = document.createElement('canvas');
+  const output = document.createElement('canvas');
+  try {
+    source.width = image.width;
+    source.height = image.height;
+    const sourceContext = source.getContext('2d');
+    if (!sourceContext) return undefined;
+    sourceContext.putImageData(image, 0, 0);
+    output.width = width;
+    output.height = height;
+    const context = output.getContext('2d', { willReadFrequently: true });
+    if (!context) return undefined;
+    context.drawImage(source, x, y, width, height, 0, 0, width, height);
+    return context.getImageData(0, 0, width, height);
+  } finally {
+    source.width = output.width = 0;
+  }
+}
+
+function encodeDisplayImage(imageData: ImageData) {
+  return imageDataToBlob(imageData).then(blobToDataUrl);
 }
 
 async function createGeneratedDisplayPreviewUncached(
@@ -353,10 +387,17 @@ async function createGeneratedDisplayPreviewUncached(
   depthUrl?: string,
   signal?: AbortSignal,
 ): Promise<GeneratedDisplayPreview> {
+  const checkpoint = async () => {
+    signal?.throwIfAborted();
+    // An idle check can resolve immediately. Cross a presentation boundary so
+    // resize, masking, bounds and PNG preparation cannot form one long task.
+    await waitForBrowserPaint();
+    await waitForViewportInteractionIdle();
+    signal?.throwIfAborted();
+  };
   const readOptions = { cooperative: true, signal };
   const decoded = await urlToImageData(sourceUrl, undefined, undefined, readOptions);
-  await waitForViewportInteractionIdle();
-  signal?.throwIfAborted();
+  await checkpoint();
   const scale = Math.min(
     1,
     GENERATED_DISPLAY_MAX_DIMENSION / Math.max(decoded.width, decoded.height, 1),
@@ -369,12 +410,12 @@ async function createGeneratedDisplayPreviewUncached(
           Math.max(1, Math.round(decoded.height * scale)),
         )
       : decoded;
+  await checkpoint();
   let processed: ReturnType<typeof removeStrictOuterDarkDisplayBackground>;
   if (depthUrl) {
     try {
       const depth = await urlToImageData(depthUrl, source.width, source.height, readOptions);
-      await waitForViewportInteractionIdle();
-      signal?.throwIfAborted();
+      await checkpoint();
       processed = applyPackedDepthDisplayMask(source, depth);
     } catch {
       signal?.throwIfAborted();
@@ -387,6 +428,7 @@ async function createGeneratedDisplayPreviewUncached(
     processed = removeStrictOuterDarkDisplayBackground(source);
   }
   const transparent = processed.imageData;
+  await checkpoint();
   const bounds = getExactAlphaContentBounds(transparent);
   if (!bounds) return { alignedUrl: sourceUrl, fittedUrl: sourceUrl };
 
@@ -394,49 +436,17 @@ async function createGeneratedDisplayPreviewUncached(
     processed.changedPixels > 0 || scale < 1
       ? await encodeDisplayImage(transparent)
       : sourceUrl;
-  await waitForViewportInteractionIdle();
-  signal?.throwIfAborted();
+  await checkpoint();
   const padding = Math.max(
     4,
     Math.round(Math.max(bounds.width, bounds.height) * GENERATED_DISPLAY_PADDING_RATIO),
   );
-  const cropX = Math.max(0, bounds.x - padding);
-  const cropY = Math.max(0, bounds.y - padding);
-  const cropRight = Math.min(source.width, bounds.x + bounds.width + padding);
-  const cropBottom = Math.min(source.height, bounds.y + bounds.height + padding);
-  const cropWidth = Math.max(1, cropRight - cropX);
-  const cropHeight = Math.max(1, cropBottom - cropY);
+  const [cropX, cropY, cropWidth, cropHeight] = paddedDisplayBounds(source, bounds, padding);
   if (cropWidth === source.width && cropHeight === source.height)
     return { alignedUrl, fittedUrl: alignedUrl };
 
-  const sourceCanvas = document.createElement('canvas');
-  sourceCanvas.width = source.width;
-  sourceCanvas.height = source.height;
-  const sourceContext = sourceCanvas.getContext('2d');
-  if (!sourceContext) return { alignedUrl, fittedUrl: alignedUrl };
-  sourceContext.putImageData(transparent, 0, 0);
-  const fittedCanvas = document.createElement('canvas');
-  fittedCanvas.width = cropWidth;
-  fittedCanvas.height = cropHeight;
-  const fittedContext = fittedCanvas.getContext('2d', { willReadFrequently: true });
-  if (!fittedContext) return { alignedUrl, fittedUrl: alignedUrl };
-  fittedContext.drawImage(
-    sourceCanvas,
-    cropX,
-    cropY,
-    cropWidth,
-    cropHeight,
-    0,
-    0,
-    cropWidth,
-    cropHeight,
-  );
-  return {
-    alignedUrl,
-    fittedUrl: await encodeDisplayImage(
-      fittedContext.getImageData(0, 0, cropWidth, cropHeight),
-    ),
-  };
+  const fitted = cropDisplayImage(transparent, cropX, cropY, cropWidth, cropHeight);
+  return { alignedUrl, fittedUrl: fitted ? await encodeDisplayImage(fitted) : alignedUrl };
 }
 
 export function createGeneratedDisplayPreview(
@@ -447,6 +457,23 @@ export function createGeneratedDisplayPreview(
     (signal) => createGeneratedDisplayPreviewUncached(sourceUrl, depthUrl, signal),
     request.signal,
   );
+}
+
+// Only 48px layer rows consume this bounded cache. Zoom previews and all
+// production assets retain their original dimensions and processing path.
+const requestLayerThumbnail = createDisplayPreviewQueue(4 * 1024 * 1024, 128);
+export function createLayerThumbnail(
+  sourceUrl: string, depthUrl?: string, request: DisplayPreviewRequest = {}, projected = true,
+) {
+  return requestLayerThumbnail(JSON.stringify([sourceUrl, depthUrl, request.revision, projected]), async (signal) => {
+    const url = projected
+      ? (await createGeneratedDisplayPreview(sourceUrl, depthUrl, { ...request, signal })).fittedUrl
+      : sourceUrl;
+    const pixels = await urlToImageData(url, undefined, undefined, { cooperative: true, signal, maxSize: 128 });
+    signal.throwIfAborted();
+    const thumbnail = await encodeDisplayImage(pixels);
+    return { alignedUrl: thumbnail, fittedUrl: thumbnail };
+  }, request.signal);
 }
 
 function smoothstep(edge0: number, edge1: number, value: number) {
@@ -649,12 +676,7 @@ async function createPreviewUncached(sourceUrl: string, mode: BackgroundRemovalM
     2,
     Math.round(Math.max(bounds.width, bounds.height) * SUBJECT_PADDING_RATIO),
   );
-  const cropX = Math.max(0, bounds.x - padding);
-  const cropY = Math.max(0, bounds.y - padding);
-  const cropRight = Math.min(source.width, bounds.x + bounds.width + padding);
-  const cropBottom = Math.min(source.height, bounds.y + bounds.height + padding);
-  const cropWidth = Math.max(1, cropRight - cropX);
-  const cropHeight = Math.max(1, cropBottom - cropY);
+  const [cropX, cropY, cropWidth, cropHeight] = paddedDisplayBounds(source, bounds, padding);
 
   // Avoid a needless PNG re-encode when the returned image is already opaque and tightly framed.
   if (
@@ -694,7 +716,7 @@ async function createPreviewUncached(sourceUrl: string, mode: BackgroundRemovalM
     cropHeight,
   );
   const output = outputContext.getImageData(0, 0, cropWidth, cropHeight);
-  return blobToDataUrl(await imageDataToBlob(output));
+  return encodeDisplayImage(output);
 }
 
 async function createCaptureMaskedPreviewUncached(sourceUrl: string, maskUrl: string, signal: AbortSignal) {
@@ -712,39 +734,10 @@ async function createCaptureMaskedPreviewUncached(sourceUrl: string, maskUrl: st
     2,
     Math.round(Math.max(bounds.width, bounds.height) * SUBJECT_PADDING_RATIO),
   );
-  const cropX = Math.max(0, bounds.x - padding);
-  const cropY = Math.max(0, bounds.y - padding);
-  const cropRight = Math.min(source.width, bounds.x + bounds.width + padding);
-  const cropBottom = Math.min(source.height, bounds.y + bounds.height + padding);
-  const cropWidth = Math.max(1, cropRight - cropX);
-  const cropHeight = Math.max(1, cropBottom - cropY);
+  const [cropX, cropY, cropWidth, cropHeight] = paddedDisplayBounds(source, bounds, padding);
 
-  const sourceCanvas = document.createElement('canvas');
-  sourceCanvas.width = source.width;
-  sourceCanvas.height = source.height;
-  const sourceContext = sourceCanvas.getContext('2d');
-  if (!sourceContext) return sourceUrl;
-  sourceContext.putImageData(masked, 0, 0);
-
-  const outputCanvas = document.createElement('canvas');
-  outputCanvas.width = cropWidth;
-  outputCanvas.height = cropHeight;
-  const outputContext = outputCanvas.getContext('2d', { willReadFrequently: true });
-  if (!outputContext) return sourceUrl;
-  outputContext.drawImage(
-    sourceCanvas,
-    cropX,
-    cropY,
-    cropWidth,
-    cropHeight,
-    0,
-    0,
-    cropWidth,
-    cropHeight,
-  );
-  return blobToDataUrl(
-    await imageDataToBlob(outputContext.getImageData(0, 0, cropWidth, cropHeight)),
-  );
+  const fitted = cropDisplayImage(masked, cropX, cropY, cropWidth, cropHeight);
+  return fitted ? encodeDisplayImage(fitted) : sourceUrl;
 }
 
 export function createCaptureMaskedPreview(sourceUrl: string, maskUrl: string, request: DisplayPreviewRequest = {}) {
@@ -764,7 +757,7 @@ async function createCaptureMaskedProjectionImageUncached(
 ) {
   const source = await urlToImageData(sourceUrl);
   const mask = await urlToImageData(maskUrl, source.width, source.height);
-  return blobToDataUrl(await imageDataToBlob(applyCaptureProjectionImage(source, mask)));
+  return encodeDisplayImage(applyCaptureProjectionImage(source, mask));
 }
 
 export function createCaptureMaskedProjectionImage(

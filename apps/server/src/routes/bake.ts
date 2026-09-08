@@ -16,6 +16,7 @@ import {
   type NormalBakeSettings,
 } from '../services/substanceBakeService.js';
 import { getBakeArchive, streamBakeArchive } from '../services/bakeArchiveService.js';
+import { streamFileResponse } from '../services/fileResponseService.js';
 
 type MultipartData = { fields: Record<string, string>; files: Record<string, BakeUpload> };
 
@@ -185,7 +186,7 @@ export async function handleBakeRoute(
         ? { 'content-disposition': `attachment; filename="${path.basename(outputPath)}"` }
         : {}),
     });
-    fs.createReadStream(outputPath).pipe(response);
+    streamFileResponse(outputPath, response);
     return true;
   }
   const job = getNormalBakeJob(jobId, user.id);

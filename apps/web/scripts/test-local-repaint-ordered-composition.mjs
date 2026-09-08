@@ -153,17 +153,31 @@ try {
   const releaseBlock = viewport.slice(viewport.indexOf('const releasePreviousPreview = async'));
   const readyBody = releaseBlock.match(/ready: \(\) => \{([\s\S]*?)\n {8}\},/);
   assert.ok(readyBody);
-  const canRelease = new Function('storedLayers', 'isLocalRepaintBelowMergedUv', 'resident', `
-    const previousLayerId = 'local-repaint-result', previousRoot = {};
+  const { isLocalRepaintHandoffForObject } = await server.ssrLoadModule(
+    '/src/engine/viewport/localRepaintResidentHandoff.ts',
+  );
+  const evaluateRelease = new Function('storedLayers', 'isLocalRepaintBelowMergedUv', 'resident',
+    'isLocalRepaintHandoffForObject', 'previousRoot', 'nextObjectId', `
+    const previousLayerId = 'local-repaint-result';
     const previousOverride = { root: previousRoot, layerId: previousLayerId };
     const useLayerStore = { getState: () => ({ layers: storedLayers }) };
     const isLocalRepaintLayerResident = () => resident;
     const promoteLocalRepaintResidentMaskTexture = () => resident;
     ${readyBody[1]}
   `);
+  const canRelease = (layers, policy, resident, previousRoot = { visible: true, userData: {} }, nextObjectId = 'object-a') =>
+    evaluateRelease(layers, policy, resident, isLocalRepaintHandoffForObject, previousRoot, nextObjectId);
   assert.equal(canRelease([merged, persistedRepaint], ordered.isLocalRepaintBelowMergedUv, false), true);
   assert.equal(canRelease([persistedRepaint], ordered.isLocalRepaintBelowMergedUv, false), false);
   assert.equal(canRelease([persistedRepaint], ordered.isLocalRepaintBelowMergedUv, true), true);
+  assert.equal(canRelease([persistedRepaint], ordered.isLocalRepaintBelowMergedUv, false,
+    { visible: false, userData: {} }), true, 'Hidden roots cannot block preview release');
+  assert.equal(canRelease([persistedRepaint], ordered.isLocalRepaintBelowMergedUv, false,
+    { userData: {} }), false, 'An unspecified visible flag is not an explicitly hidden root');
+  assert.equal(canRelease([persistedRepaint], ordered.isLocalRepaintBelowMergedUv, false,
+    { visible: true, userData: {} }, 'object-b'), true, 'A previous object cannot block the next object');
+  assert.equal(canRelease([{ ...persistedRepaint, objectId: undefined }], ordered.isLocalRepaintBelowMergedUv, false),
+    false, 'Legacy unscoped visible roots retain the conservative resident barrier');
   // Current renderer boundary is authoritative, including equal order and global UV rows.
   const boundaryStart = sceneRoot.indexOf('function getVisibleMergedUvBoundaryOrder');
   const boundaryEnd = sceneRoot.indexOf('function useStableValueBySignature', boundaryStart);

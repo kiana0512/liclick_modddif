@@ -11,14 +11,21 @@ const workerPath = path.resolve(
   scriptDirectory,
   '../src/workers/localRepaintGenerationInput.worker.ts',
 );
+const generationInputWorkerPath = path.resolve(
+  scriptDirectory,
+  '../src/engine/localRepaint/generationInputWorker.ts',
+);
 const panelPath = path.resolve(scriptDirectory, '../src/components/panels/GeneratePanel.tsx');
 const editorPagePath = path.resolve(scriptDirectory, '../src/routes/EditorPage.tsx');
 const pngCorePath = path.resolve(scriptDirectory, '../src/utils/encodeRgbaPngCore.ts');
 const workerSource = fs.readFileSync(workerPath, 'utf8');
+const generationInputWorkerSource = fs.readFileSync(generationInputWorkerPath, 'utf8');
 const panelSource = fs.readFileSync(panelPath, 'utf8');
 const editorPageSource = fs.readFileSync(editorPagePath, 'utf8');
 const pngCoreSource = fs.readFileSync(pngCorePath, 'utf8');
-const privateCoreSource = `${workerSource.slice(0, workerSource.indexOf('self.onmessage'))}
+const privateCoreSource = `${workerSource
+  .slice(0, workerSource.indexOf('self.onmessage'))
+  .replace(/^import[^\n]+\n/gm, '')}
 export { dilateMask, erodeMask, boxBlur, buildCompositeCoreMask, fillSmallMaskHoles, getMaskBounds };`;
 const compiled = ts.transpileModule(privateCoreSource, {
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
@@ -309,6 +316,16 @@ assert.match(
   /function getLocalRepaintAuthoringMaskUrl\([\s\S]*?metadata\.authoredMaskUrl[\s\S]*?metadata\.maskUrl/,
   'Brush restore must prefer the authored mask and retain legacy mask fallback.',
 );
+assert.match(
+  generationInputWorkerSource,
+  /blobs\.map\(\(blob\) => createImageBitmap\(blob\)\)/,
+  'Each Blob must be passed to createImageBitmap without Array.map index/array arguments.',
+);
+assert.doesNotMatch(
+  generationInputWorkerSource,
+  /blobs\.map\(createImageBitmap\)/,
+  'Passing createImageBitmap directly to Array.map breaks its overloaded argument resolution.',
+);
 assert.match(workerSource, /Math\.round\(24 \* scale\)/);
 assert.match(workerSource, /Math\.round\(64 \* scale\)/);
 assert.match(workerSource, /Math\.round\(minimumDimension \* 0\.25\)/);
@@ -323,7 +340,7 @@ assert.match(
 );
 assert.match(
   workerSource,
-  /const \{ core: compositeCore, bounds: coreBounds \} = buildCompositeCoreMask/,
+  /\(\{ core: compositeCore, bounds: coreBounds \} = buildCompositeCoreMask/,
 );
 assert.match(workerSource, /const dilated = dilateMask\(compositeCore/);
 assert.match(workerSource, /if \(compositeCore\[index\] > 0\) submittedMask\[index\] = 255/);

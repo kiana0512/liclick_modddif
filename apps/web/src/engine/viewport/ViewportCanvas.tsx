@@ -67,6 +67,7 @@ import {
   syncLocalRepaintGpuOverlayLighting,
 } from './localRepaintGpuOverlaySync';
 import {
+  isLocalRepaintHandoffForObject,
   isLocalRepaintLayerResident,
   waitForLocalRepaintResidentHandoff,
 } from './localRepaintResidentHandoff';
@@ -75,6 +76,8 @@ import type { Layer } from '@/types/layer';
 import type { SerializedCamera } from '@/types/capture';
 import { createId } from '@/utils/id';
 import { scheduleAfterBrowserPaint, waitForBrowserPaint, yieldToBrowserTask } from '@/utils/browserScheduling';
+import { cloneShaderWarmupMesh } from './cloneShaderWarmupMesh';
+import { queueSelectionPrewarm } from './queueSelectionPrewarm';
 import {
   isLocalRepaintBelowMergedUv,
   shouldUseDedicatedLocalRepaintOverlay,
@@ -6050,7 +6053,12 @@ function loadImageElement(url: string) {
   const pending = new Promise<HTMLImageElement>((resolve, reject) => {
     const image = new Image();
     image.crossOrigin = 'anonymous';
-    image.onload = () => resolve(image);
+    image.onload = async () => {
+      // Loading bytes does not guarantee decoded pixels. Keep every shared
+      // consumer behind the decoder so drawImage/initTexture need not force it.
+      await image.decode?.().catch(() => undefined);
+      resolve(image);
+    };
     image.onerror = () => reject(new Error('Could not load local repaint mask.'));
     image.src = url;
   });
@@ -8917,7 +8925,7 @@ function SurfacePaintOverlay() {
         hideInpaintMaskPresentation(layer);
       }
     };
-    const prepare = async () => {
+    const prepare = () => queueSelectionPrewarm(gl, canContinuePrewarm, async () => {
       if (!(await waitForQuietFrame())) return;
       layer = getUvPaintLayer(model);
       const resourceKey = `${model.objectId}:${layer.layerId}:${layer.projectionTexture.uuid}`;
@@ -8945,7 +8953,7 @@ function SurfacePaintOverlay() {
       ) => {
         const compileScene = new THREE.Scene();
         sourceMeshes.forEach((sourceMesh) => {
-          const compileMesh = sourceMesh.clone(false) as THREE.Mesh;
+          const compileMesh = cloneShaderWarmupMesh(sourceMesh);
           compileMesh.material = overrideMaterial ?? sourceMesh.material;
           compileMesh.visible = true;
           compileMesh.frustumCulled = false;
@@ -8989,7 +8997,7 @@ function SurfacePaintOverlay() {
           meshCount: meshes.length,
         });
       }
-    };
+    });
     if ('requestIdleCallback' in window) {
       idleId = window.requestIdleCallback(() => void prepare(), { timeout: 2_000 });
     } else {
@@ -9434,6 +9442,7 @@ function SurfacePaintOverlay() {
     let cancelled = false;
     const previousOverlay = localRepaintGpuOverlayRef.current;
     const previousOverride = localRepaintResidentMaskOverrideRef.current;
+    const nextObjectId = source?.objectId ?? selectedObjectId;
     const releasePreviousPreview = async () => {
       if (!previousOverlay && !previousOverride) return true;
       const previousLayerId = previousOverride?.layerId ?? previousOverlay?.layerId;
@@ -9447,9 +9456,16 @@ function SurfacePaintOverlay() {
         ready: () => {
           const layers = useLayerStore.getState().layers;
           const layer = layers.find((item) => item.id === previousLayerId);
+          const previousObjectId =
+            layer?.objectId ??
+            (typeof previousRoot?.userData.liclickObjectId === 'string'
+              ? previousRoot.userData.liclickObjectId
+              : undefined);
           return (
             !layer ||
             !layer.visible ||
+            previousRoot?.visible === false ||
+            !isLocalRepaintHandoffForObject(previousObjectId, nextObjectId) ||
             isLocalRepaintBelowMergedUv(layers, layer) ||
             !previousRoot ||
             (isLocalRepaintLayerResident(previousRoot, previousLayerId) &&

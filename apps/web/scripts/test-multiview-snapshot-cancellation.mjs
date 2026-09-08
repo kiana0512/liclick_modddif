@@ -5,6 +5,7 @@ const panel = await readFile(
   new URL('../src/components/panels/GeneratePanel.tsx', import.meta.url),
   'utf8',
 );
+const editor = await readFile(new URL('../src/routes/EditorPage.tsx', import.meta.url), 'utf8');
 
 assert.match(
   panel,
@@ -23,7 +24,7 @@ assert.match(
 );
 assert.match(
   panel,
-  /async function getTextureMapMultiviewCaptures\(views: CameraViewItem\[\], signal\?: AbortSignal\)[\s\S]*throwIfTexturePipelineCancelled\(signal\)[\s\S]*await captureTextureMapCameraView[\s\S]*throwIfTexturePipelineCancelled\(signal\)/,
+  /async function getTextureMapMultiviewCaptures\([\s\S]*?views: CameraViewItem\[\],[\s\S]*?signal\?: AbortSignal,[\s\S]*?\)[\s\S]*throwIfTexturePipelineCancelled\(signal\)[\s\S]*await captureTextureMapCameraView[\s\S]*throwIfTexturePipelineCancelled\(signal\)/,
   'snapshot capture must observe cancellation before and after each GPU capture',
 );
 assert.match(
@@ -41,5 +42,21 @@ assert.match(
   /不会继续向远端提交纹理生图任务/,
   'the confirmation dialog must explain that cancellation prevents remote submission',
 );
+assert.match(
+  panel,
+  /\(cancelConfirmGeneration \|\|[\s\S]*?cancelTextureSnapshotConfirmOpen \|\|[\s\S]*?cancelLocalRepaintPreparationConfirmOpen \|\|[\s\S]*?cancelContentAwareRepairConfirmOpen\)[\s\S]*?终止莉刻生图[\s\S]*?丢弃本次等待结果？[\s\S]*?终止并丢弃/,
+  'snapshot and final repair cancellation must use the same confirmation surface as every submitted generation',
+);
+assert.match(
+  editor,
+  /contentAwareRepairTaskTokenRef\.current = taskToken;[\s\S]*?setContentAwareRepairTaskActive\(true\);[\s\S]*?silentForeground/,
+  'silent multiview content-aware fill must expose a cancellable task before it is scheduled',
+);
+assert.match(
+  editor,
+  /contentAwareRepairActive=\{contentAwareRepairTaskActive\}[\s\S]*?contentAwareRepairCancelling=\{contentAwareRepairCancelling\}[\s\S]*?onCancelContentAwareRepair=\{interruptContentAwareRepair\}/,
+  'the final multiview fill cancellation state must reach the shared GeneratePanel stop control',
+);
+assert.doesNotMatch(panel, /停止本次快照任务？|>终止快照</);
 
 console.log('Multiview snapshot cancellation regression checks passed.');

@@ -2,8 +2,11 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import process from 'node:process';
+import { URL } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { test } from 'node:test';
+import { parseEnv } from 'node:util';
 import yaml from 'js-yaml';
 import { validateRuntimeEnv } from '../deploy/validate-runtime-env.mjs';
 
@@ -49,6 +52,35 @@ test('Every K8s and CI YAML parses without duplicate keys', () => {
   };
   visit('deploy');
   parse('.gitlab-ci.yml');
+});
+
+test('the CI production overlay uses the official personal Atlas application and root callback', () => {
+  const ci = parse('.gitlab-ci.yml');
+  const overlayDir = ci.variables.KUSTOMIZE_OVERLAY;
+  const overlay = parse(path.join(overlayDir, 'kustomization.yaml'));
+  const base = parse('deploy/k8s/base/kustomization.yaml');
+  const configName = 'li3d-server-config';
+  const baseConfig = base.configMapGenerator.find(config => config.name === configName);
+  const override = overlay.configMapGenerator.find(config => config.name === configName);
+  assert.equal(override.behavior, 'merge');
+  const env = Object.assign({},
+    ...baseConfig.envs.map(file => parseEnv(read(path.join('deploy/k8s/base', file)))),
+    ...override.envs.map(file => parseEnv(read(path.join(overlayDir, file)))),
+  );
+  assert.equal(env.IDAAS_JWT_SSO_ENABLED, 'true');
+  assert.equal(env.IDAAS_JWT_SSO_URL,
+    'https://idaas.lilith.com/enduser/sp/sso/lilithplugin_jwt62');
+  assert.equal(env.IDAAS_ENTERPRISE_ID, 'lilith');
+  assert.equal(env.ATLAS_AI_GATEWAY_ENV, 'prod');
+  assert.equal(env.ATLAS_AI_GATEWAY_URL, 'https://atlas-ai-gateway.lilithgames.com');
+  assert.equal(env.LICLICK_SHARED_TEST_ACCOUNT_ENABLED, 'false');
+  assert.equal(env.LICLICK_ENABLE_ATLAS_LOCAL_LOGIN, 'false');
+  assert.equal(env.LICLICK_PUBLIC_PATH, '');
+  assert.equal(env.LICLICK_PUBLIC_WORKSPACE_URL, 'https://li3d.lilithgames.com');
+  const callback = new URL('/api/liclick/account-binding/callback', env.LICLICK_PUBLIC_WORKSPACE_URL);
+  assert.equal(env.IDAAS_SP_SERVICE_URL, callback.href);
+  // The public callback must reach the API proxy, never the SPA fallback.
+  assert.match(read('deploy/docker/nginx/default.conf.template'), /location \^~ \/api\/\s*\{\s*proxy_pass/);
 });
 
 test('secret preparation preserves existing keys and blocks missing or multiline values', () => {

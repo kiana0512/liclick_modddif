@@ -32,6 +32,7 @@ export type ModelviewInpaintInput = ModelviewGenerationInput & {
 };
 
 export type ModelviewSingleViewInput = ModelviewGenerationInput;
+export type ModelviewSingleViewInpaintInput = ModelviewInpaintInput;
 
 async function requestJson<T>(
   path: string,
@@ -117,6 +118,54 @@ export function createModelviewApiClient() {
           materialReferenceName: input.materialReferenceName,
           materialReferenceRole: input.materialReferenceRole,
           singleViewProvider: 'remote',
+          serverSubmitted: true,
+        },
+      };
+    },
+    async generateSingleViewInpaint(
+      input: ModelviewSingleViewInpaintInput,
+      options?: { signal?: AbortSignal },
+    ): Promise<Generation> {
+      const result = await requestJson<{
+        id: string;
+        resultUrl?: string;
+        resultUrls?: string[];
+        modelviewJobId?: string;
+        modelviewClientId?: string;
+        output?: unknown;
+      }>('/api/modelview/single-view-inpaint', {
+        method: 'POST',
+        signal: options?.signal,
+        body: JSON.stringify(input),
+      });
+      return {
+        id: input.clientGenerationId,
+        mode: 'single',
+        prompt: input.prompt ?? '',
+        referenceIds: [input.modelViewReferenceId, input.materialReferenceId].filter(
+          (id): id is string => typeof id === 'string' && id.length > 0,
+        ),
+        captureId: input.captureId,
+        resultUrl: result.resultUrl,
+        status: result.resultUrl ? 'succeeded' : 'failed',
+        metadata: {
+          provider: 'modelview-single-view-inpaint',
+          workflow: 'texture-map',
+          modelviewWorkflow: '2026.08.31-e39ed5f-single-view-inpaint-4input-rseed-steps2-r1',
+          clientGenerationId: input.clientGenerationId,
+          serverJobId: result.modelviewJobId ?? result.id,
+          projectId: input.projectId,
+          modelviewJobId: result.modelviewJobId,
+          modelviewClientId: result.modelviewClientId,
+          resultUrls: result.resultUrls,
+          output: result.output,
+          objectId: input.objectId,
+          materialReferenceId: input.materialReferenceId,
+          materialReferenceGroupId: input.materialReferenceGroupId,
+          materialReferenceName: input.materialReferenceName,
+          materialReferenceRole: input.materialReferenceRole,
+          singleViewProvider: 'remote',
+          singleViewInputMode: 'existing-texture-completion',
           serverSubmitted: true,
         },
       };

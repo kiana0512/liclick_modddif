@@ -5,13 +5,66 @@ import { stdout } from 'node:process';
 import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const [editorPage, generatePanel] = await Promise.all([
+const [editorPage, generatePanel, textureMapPrompts, liclickGenerationService] = await Promise.all([
   readFile(path.join(root, 'src/routes/EditorPage.tsx'), 'utf8'),
   readFile(path.join(root, 'src/components/panels/GeneratePanel.tsx'), 'utf8'),
+  readFile(path.join(root, 'src/engine/generation/textureMapPrompts.ts'), 'utf8'),
+  readFile(path.join(root, '../server/src/services/liclickGenerationService.ts'), 'utf8'),
 ]);
 const progressStatusSource = generatePanel.slice(
   generatePanel.indexOf('function GenerationProgressStatus'),
-  generatePanel.indexOf('const textureMapDefaultPrompt'),
+  generatePanel.indexOf('function hasVisibleTextureLayerCandidate'),
+);
+
+assert.match(
+  textureMapPrompts,
+  /最终物体的外轮廓、剪影像素边界、位置、尺寸、比例、朝向、相机和透视，必须与图一的白模完全一致/,
+  'The texture prompt must treat the source silhouette as immutable pixel-level registration.',
+);
+assert.match(
+  textureMapPrompts,
+  /只修改图一中的白色、浅灰色、Clay、Primer或无纹理区域/,
+  'The texture prompt must completely replace every unfinished white-model region.',
+);
+assert.match(
+  textureMapPrompts,
+  /白模内部的三角面灰度、多边形色块、硬法线明暗和Flat Shading不是材质/,
+  'The texture prompt must reject low-poly shading artifacts as material evidence.',
+);
+assert.match(
+  textureMapPrompts,
+  /“内部平滑”只表示材质连续，绝不表示可以平滑或改变外轮廓/,
+  'Material smoothing must not be interpreted as permission to reshape the target silhouette.',
+);
+assert.match(
+  textureMapPrompts,
+  /图二只提供材质外观[\s\S]*?图二不提供几何、轮廓、位置、比例、相机、构图或光照/,
+  'The material reference must not influence geometry or composition.',
+);
+assert.match(
+  textureMapPrompts,
+  /图一中已经具有材质的区域必须保留原始颜色、纹理、光影和细节，不得重绘、调色、重新照明、锐化或模糊/,
+  'Existing material pixels must be absolutely locked.',
+);
+assert.match(
+  textureMapPrompts,
+  /`\$\{textureMapPrompt\}\\n\\n用户补充材质要求：\$\{trimmedPrompt\}`/,
+  'User material requirements must remain appended after the shared main template.',
+);
+assert.doesNotMatch(
+  textureMapPrompts,
+  /以参考图一为目标视角，将参考图二的材质外观迁移到图一对应的可见表面/,
+  'The retired whole-surface prompt must not remain as a fallback.',
+);
+assert.match(
+  liclickGenerationService,
+  /hasPurposeBuiltTextureConstraint =[\s\S]*?basePrompt\.includes\('【绝对第一优先级：轮廓配准】'\)[\s\S]*?basePrompt\.includes\(materialConstraint\) \|\| hasPurposeBuiltTextureConstraint/,
+  'The server must not append the legacy whole-image lighting constraint to the scoped shared template.',
+);
+assert.match(
+  generatePanel,
+  /await import\('@\/engine\/generation\/textureMapPrompts'\)/,
+  'Texture prompts must be loaded only when local generation is submitted.',
 );
 
 assert.doesNotMatch(
@@ -36,7 +89,17 @@ assert.match(
 );
 assert.match(
   generatePanel,
-  /const generateActionRunning =\s*previewIsGenerating \|\| \(tab === 'repaint' && submissionActive\);[\s\S]*?generateActionRunning \? \([\s\S]*?LoaderCircle[\s\S]*?: generateActionRunning[\s\S]*?t\('generating'\)/,
+  /requestAbortController = new AbortController\(\);[\s\S]*?localRepaintPreparationAbortControllerRef\.current = requestAbortController;[\s\S]*?const preparationSignal = requestAbortController\.signal;[\s\S]*?Promise\.race\(\[[\s\S]*?polishPrompt\([\s\S]*?preparationSignal\.addEventListener\([\s\S]*?'abort'/,
+  'Local repaint must expose an abort race before automatic prompt optimization starts.',
+);
+assert.match(
+  generatePanel,
+  /localRepaintPreparationCancellable[\s\S]*?setCancelLocalRepaintPreparationConfirmOpen\(true\)[\s\S]*?confirmCancelLocalRepaintPreparation[\s\S]*?controller\.abort\('user-cancelled-local-repaint-preparation'\)/,
+  'The shared stop control must confirm and abort local prompt optimization.',
+);
+assert.match(
+  generatePanel,
+  /const textureActionProgress =[\s\S]*?isTextureMapTab && texturePipelineProgress\?\.active[\s\S]*?const generateActionRunning =[\s\S]*?Boolean\(textureActionProgress\)[\s\S]*?generateActionRunning \? \([\s\S]*?LoaderCircle[\s\S]*?: generateActionRunning[\s\S]*?t\('generating'\)/,
   'The panel CTA must show the same running state as the dock before the Generation row exists.',
 );
 assert.match(

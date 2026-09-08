@@ -8,6 +8,14 @@ export function getTransientLocalRepaintLayerId(
   return previewId && !layers.some((layer) => layer.id === previewId) ? previewId : undefined;
 }
 
+/** Only the object that owns the previous preview can require a visual handoff. */
+export function isLocalRepaintHandoffForObject(
+  previousObjectId: string | undefined,
+  nextObjectId: string | undefined,
+) {
+  return !previousObjectId || !nextObjectId || previousObjectId === nextObjectId;
+}
+
 /** Inspect assigned background materials, never the renderer-only twin or an in-flight build. */
 export function isLocalRepaintLayerResident(group: THREE.Object3D, layerId: string) {
   let meshCount = 0;

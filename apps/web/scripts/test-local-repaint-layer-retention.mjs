@@ -216,6 +216,7 @@ try {
   assert.equal(blocksStroke(false, false, true), false);
   const {
     getTransientLocalRepaintLayerId,
+    isLocalRepaintHandoffForObject,
     isLocalRepaintLayerResident,
     waitForLocalRepaintResidentHandoff,
   } = await server.ssrLoadModule('/src/engine/viewport/localRepaintResidentHandoff.ts');
@@ -258,6 +259,17 @@ try {
   );
   assert.equal(getTransientLocalRepaintLayerId('B', [{ id: 'A' }]), 'B');
   assert.equal(getTransientLocalRepaintLayerId(undefined, [{ id: 'A' }]), undefined);
+  assert.equal(isLocalRepaintHandoffForObject('model-a', 'model-a'), true);
+  assert.equal(
+    isLocalRepaintHandoffForObject('model-a', 'model-b'),
+    false,
+    'a stale preview from another object must not block the next repaint session',
+  );
+  assert.equal(
+    isLocalRepaintHandoffForObject(undefined, 'model-b'),
+    true,
+    'legacy unscoped layers must retain the conservative same-object handoff',
+  );
 
   const group = new THREE.Group();
   const material = new THREE.ShaderMaterial();

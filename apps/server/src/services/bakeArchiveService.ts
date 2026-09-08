@@ -31,7 +31,9 @@ for (let index = 0; index < crcTable.length; index += 1) {
 
 function updateCrc32(crc: number, chunk: Buffer) {
   let value = crc;
-  for (const byte of chunk) value = crcTable[(value ^ byte) & 0xff] ^ (value >>> 8);
+  for (let index = 0; index < chunk.length; index += 1) {
+    value = crcTable[(value ^ chunk[index]) & 0xff] ^ (value >>> 8);
+  }
   return value >>> 0;
 }
 

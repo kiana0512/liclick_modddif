@@ -1,8 +1,11 @@
+import { inferProjectionGapMask } from '../engine/localRepaint/imageUtils';
+
 type GenerationInputWorkerRequest = {
+  mode: 'local' | 'single';
   id: number;
   currentEffect: ImageBitmap;
   clayPreview: ImageBitmap;
-  authoredMask: ImageBitmap;
+  inputMask: ImageBitmap;
 };
 
 type GenerationInputWorkerResponse =
@@ -15,6 +18,13 @@ type GenerationInputWorkerResponse =
       processMs: number;
       phaseDurationsMs: Record<string, number>;
     }
+  | {
+      id: number;
+      compositeBlob?: Blob;
+      submittedMaskBlob?: Blob;
+      hasVisibleTexture: boolean;
+      uncoveredPixelCount: number;
+    }
   | { id: number; error: string };
 
 function readPixels(bitmap: ImageBitmap, width: number, height: number) {
@@ -24,6 +34,21 @@ function readPixels(bitmap: ImageBitmap, width: number, height: number) {
   context.clearRect(0, 0, width, height);
   context.drawImage(bitmap, 0, 0, width, height);
   return context.getImageData(0, 0, width, height);
+}
+
+function readObjectMask(bitmap: ImageBitmap, width: number, height: number) {
+  const pixels = readPixels(bitmap, width, height);
+  const data = new Uint8ClampedArray(width * height);
+  for (let index = 0; index < data.length; index += 1) {
+    const offset = index * 4;
+    const value = Math.max(
+      pixels.data[offset] ?? 0,
+      pixels.data[offset + 1] ?? 0,
+      pixels.data[offset + 2] ?? 0,
+    );
+    data[index] = value > 127 && (pixels.data[offset + 3] ?? 0) > 8 ? 255 : 0;
+  }
+  return { width, height, data };
 }
 
 type MaskBounds = { minX: number; minY: number; maxX: number; maxY: number };
@@ -469,7 +494,9 @@ function writeMaskPixels(mask: Uint8Array, width: number, height: number) {
 }
 
 self.onmessage = async (event: MessageEvent<GenerationInputWorkerRequest>) => {
-  const { id, currentEffect, clayPreview, authoredMask } = event.data;
+  const request = event.data;
+  const { id, currentEffect, clayPreview, inputMask } = request;
+  const isSingleViewCompletion = request.mode === 'single';
   const startedAt = performance.now();
   try {
     const phaseDurationsMs: Record<string, number> = {};
@@ -486,39 +513,70 @@ self.onmessage = async (event: MessageEvent<GenerationInputWorkerRequest>) => {
       height <= 0 ||
       clayPreview.width !== width ||
       clayPreview.height !== height ||
-      authoredMask.width !== width ||
-      authoredMask.height !== height
+      inputMask.width !== width ||
+      inputMask.height !== height
     ) {
-      throw new Error('Current effect, clay preview and authored mask must have identical dimensions.');
+      throw new Error('Texture input dimensions differ.');
     }
     const currentPixels = readPixels(currentEffect, width, height);
     const clayPixels = readPixels(clayPreview, width, height);
-    const maskPixels = readPixels(authoredMask, width, height);
     finishPhase('read-input-pixels');
-    const authoredStrength = new Uint8Array(width * height);
-    for (let index = 0; index < authoredStrength.length; index += 1) {
-      const offset = index * 4;
-      const value = Math.round(
-        (Math.max(maskPixels.data[offset], maskPixels.data[offset + 1], maskPixels.data[offset + 2]) *
-          maskPixels.data[offset + 3]) /
-          255,
-      );
-      authoredStrength[index] = value;
-    }
-    finishPhase('extract-authored-mask');
-
     const scale = Math.max(width, height) / 2048;
-    const { core: compositeCore, bounds: coreBounds } = buildCompositeCoreMask(
-      authoredStrength,
-      width,
-      height,
-      scale,
-    );
+    let compositeCore: Uint8Array;
+    let coreBounds: MaskBounds;
+    let objectPixelCount = 0;
+    let uncoveredPixelCount = 0;
+    let texturedPixelCount = 0;
+    if (isSingleViewCompletion) {
+      const targetMask = readObjectMask(inputMask, width, height);
+      const gapMask = inferProjectionGapMask(currentPixels, targetMask, 1);
+      for (let index = 0; index < targetMask.data.length; index += 1) {
+        if ((targetMask.data[index] ?? 0) === 0) continue;
+        objectPixelCount += 1;
+        if ((gapMask.data[index] ?? 0) > 0) uncoveredPixelCount += 1;
+      }
+      if (objectPixelCount === 0) throw new Error('Object mask is empty.');
+      texturedPixelCount = Math.max(0, objectPixelCount - uncoveredPixelCount);
+      const hasVisibleTexture =
+        texturedPixelCount >= Math.max(64, Math.round(objectPixelCount * 0.0005));
+      if (!hasVisibleTexture || uncoveredPixelCount === 0) {
+        self.postMessage({
+          id,
+          hasVisibleTexture,
+          uncoveredPixelCount,
+        } satisfies GenerationInputWorkerResponse);
+        return;
+      }
+      compositeCore = Uint8Array.from(gapMask.data, (value) => (value > 0 ? 255 : 0));
+      coreBounds = getMaskBounds(compositeCore, width, height);
+    } else {
+      const maskPixels = readPixels(inputMask, width, height);
+      const authoredStrength = new Uint8Array(width * height);
+      for (let index = 0; index < authoredStrength.length; index += 1) {
+        const offset = index * 4;
+        authoredStrength[index] = Math.round(
+          (Math.max(
+            maskPixels.data[offset],
+            maskPixels.data[offset + 1],
+            maskPixels.data[offset + 2],
+          ) *
+            maskPixels.data[offset + 3]) /
+            255,
+        );
+      }
+      finishPhase('extract-authored-mask');
+      ({ core: compositeCore, bounds: coreBounds } = buildCompositeCoreMask(
+        authoredStrength,
+        width,
+        height,
+        scale,
+      ));
+    }
     if (coreBounds.maxX < coreBounds.minX || coreBounds.maxY < coreBounds.minY) {
-      throw new Error('The authored local repaint mask is empty.');
+      throw new Error('Input mask is empty.');
     }
     finishPhase('build-core-mask');
-    const compositeEdgeRadius = Math.max(1, Math.round(1.5 * scale));
+    const compositeEdgeRadius = isSingleViewCompletion ? 0 : Math.max(1, Math.round(1.5 * scale));
     const compositeAlpha = boxBlur(
       compositeCore,
       width,
@@ -592,15 +650,23 @@ self.onmessage = async (event: MessageEvent<GenerationInputWorkerRequest>) => {
       maskCanvas.convertToBlob({ type: 'image/png' }),
     ]);
     finishPhase('encode-output-png');
-    const response: GenerationInputWorkerResponse = {
-      id,
-      compositeBlob,
-      submittedMaskBlob,
-      dilationRadius,
-      featherRadius,
-      processMs: performance.now() - startedAt,
-      phaseDurationsMs,
-    };
+    const response: GenerationInputWorkerResponse = isSingleViewCompletion
+      ? {
+          id,
+          compositeBlob,
+          submittedMaskBlob,
+          hasVisibleTexture: true,
+          uncoveredPixelCount,
+        }
+      : {
+          id,
+          compositeBlob,
+          submittedMaskBlob,
+          dilationRadius,
+          featherRadius,
+          processMs: performance.now() - startedAt,
+          phaseDurationsMs,
+        };
     self.postMessage(response);
   } catch (error) {
     const response: GenerationInputWorkerResponse = {
@@ -611,7 +677,7 @@ self.onmessage = async (event: MessageEvent<GenerationInputWorkerRequest>) => {
   } finally {
     currentEffect.close();
     clayPreview.close();
-    authoredMask.close();
+    inputMask.close();
   }
 };
 

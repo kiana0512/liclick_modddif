@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import { PGlite } from '@electric-sql/pglite';
 import { createPostgresProjectRepository } from '../dist/repositories/postgresProjectRepository.js';
+import { resolveProjectAssetUrl } from '../dist/services/projectFileService.js';
+import { isProjectRevision } from '@liclick/contracts';
 
 process.env.LICLICK_RUNTIME_MODE = 'cloud';
 
@@ -13,10 +15,12 @@ const migration = await fs.readFile(
 );
 await engine.exec(migration);
 
+let listedRows;
 function connection(client) {
   return {
     async query(text, params = []) {
       const result = await client.query(text, params);
+      if (/ORDER BY updated_at DESC/.test(text)) listedRows = result.rows;
       return {
         rows: result.rows,
         affectedRows: result.affectedRows ?? 0,
@@ -44,7 +48,7 @@ const userB = 'employee-postgres-b';
 
 const created = await repositoryA.create(userA, { name: '事务项目', folderId: 'folder-a' });
 assert.equal(created.project.workspaceMode, 'cloud-server');
-assert.equal((await repositoryB.load(userB, created.project.id)), undefined);
+assert.equal(await repositoryB.load(userB, created.project.id), undefined);
 
 const featureDocument = {
   ...created.project,
@@ -156,6 +160,72 @@ const deleted = await repositoryB.delete(userA, duplicated.project.id);
 assert.equal(deleted.deleted, true);
 assert.equal((await repositoryA.list(userA)).length, 1);
 assert.equal(await repositoryA.load(userA, duplicated.project.id), undefined);
+
+// Real PostgreSQL JSONB query: a list must return exactly the old public
+// summaries without transferring each project's large authoring document.
+const large = await repositoryA.create(userA, { name: '列表大工程', folderId: null });
+await repositoryA.save(
+  userA,
+  large.project.id,
+  {
+    ...large.project,
+    thumbnail: 'captures/thumbnail.png',
+    captures: [{ id: 'large-capture', metadata: 'x'.repeat(2 * 1024 * 1024) }],
+    layers: [{ id: 'preserved-layer', type: 'paint', visible: true }],
+  },
+  { expectedRevisionId: large.project.revision.id, revisionSource: 'explicit' },
+);
+const fullRows = (
+  await engine.query(
+    `SELECT slug, document_json FROM project_documents
+  WHERE user_id=$1 AND deleted_at IS NULL ORDER BY updated_at DESC`,
+    [userA],
+  )
+).rows;
+const expected = fullRows.map(({ slug, document_json: project }) => ({
+  id: project.id,
+  name: project.name,
+  folderId: project.folderId ?? null,
+  createdAt: project.createdAt,
+  updatedAt: project.updatedAt,
+  thumbnail: project.thumbnail ? resolveProjectAssetUrl(userA, slug, project.thumbnail) : '',
+  local: false,
+  slug,
+  status: 'cloud',
+  revision: isProjectRevision(project.revision) ? project.revision : undefined,
+}));
+assert.deepEqual(
+  await repositoryB.list(userA),
+  expected,
+  'Listing preserves every public summary value and ordering',
+);
+const fullBytes = Buffer.byteLength(JSON.stringify(fullRows)),
+  summaryBytes = Buffer.byteLength(JSON.stringify(listedRows));
+assert(summaryBytes < fullBytes / 100, 'The database response must omit large authoring fields');
+assert(
+  listedRows.every((row) => !('captures' in row.document_json) && !('layers' in row.document_json)),
+);
+const reopened = await repositoryA.load(userA, large.project.id);
+assert.equal(
+  reopened.project.captures[0].metadata.length,
+  2 * 1024 * 1024,
+  'Full document load remains lossless',
+);
+assert.equal(reopened.project.layers[0].id, 'preserved-layer');
+assert.deepEqual(await repositoryA.list(userB), [], 'Projection must retain the owner predicate');
+// Legacy optional fields retain the same undefined/null public defaults.
+await engine.query(
+  `UPDATE project_documents SET document_json=document_json-'revision'-'folderId'-'thumbnail'
+  WHERE user_id=$1 AND project_id=$2`,
+  [userA, large.project.id],
+);
+const legacy = (await repositoryA.list(userA)).find((project) => project.id === large.project.id);
+assert.equal(legacy.folderId, null);
+assert.equal(legacy.thumbnail, '');
+assert.equal(legacy.revision, undefined);
+console.log(
+  `Project list database response: ${fullBytes} -> ${summaryBytes} bytes; public summaries unchanged.`,
+);
 
 await database.close();
 process.stdout.write(

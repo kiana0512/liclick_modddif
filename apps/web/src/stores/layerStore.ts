@@ -6,6 +6,7 @@ import type { Layer, LayerAdjustments } from '@/types/layer';
 import { markPerformanceEvent } from '@/engine/performance/performanceTimeline';
 import { isContentAwareEraserUnderlay } from '@/engine/paint/eraserTargetPolicy';
 import { isViewportInteractionBusy } from '@/engine/viewport/viewportInteractionState';
+import { SINGLE_VIEW_MINIMUM_PROJECTION_FACING } from '@/engine/projection/projectionTypes';
 import { useSceneStore } from './sceneStore';
 
 type LayerStore = {
@@ -143,10 +144,17 @@ function normalizeLayer(layer: Layer) {
     Boolean(layer.generationId) &&
     name === '投射贴图 · 当前视角' &&
     !layer.replacementTargetLayerId;
+  const canonicalSingleViewProjection =
+    layer.type === 'projected' &&
+    Boolean(layer.generationId) &&
+    layer.projectionCoverageMode === 'capture-mask' &&
+    !layer.replacementTargetLayerId;
   const singleViewGeneratedProjection =
     layer.type === 'projected' &&
     Boolean(layer.generationId) &&
-    (legacyProjectionCompositeMode === 'single-view-priority-v1' || legacySingleViewPriority) &&
+    (canonicalSingleViewProjection ||
+      legacyProjectionCompositeMode === 'single-view-priority-v1' ||
+      legacySingleViewPriority) &&
     !layer.replacementTargetLayerId;
   return {
     ...layerWithoutLegacyMode,
@@ -166,7 +174,7 @@ function normalizeLayer(layer: Layer) {
       : layer.projectionCoverageMode,
     ignoreSourceAlpha: singleViewGeneratedProjection ? true : layer.ignoreSourceAlpha,
     minimumProjectionFacing: singleViewGeneratedProjection
-      ? undefined
+      ? SINGLE_VIEW_MINIMUM_PROJECTION_FACING
       : layer.minimumProjectionFacing,
     projectionVisibilityPolicy: singleViewGeneratedProjection
       ? 'standard'
@@ -283,6 +291,9 @@ export const useLayerStore = create<LayerStore>((set, get) => ({
       // Provider PNG alpha is not geometry. Single and multiview projections
       // now differ only in capture coverage, not in their blend operator.
       ignoreSourceAlpha: singleViewTexture ? true : undefined,
+      minimumProjectionFacing: singleViewTexture
+        ? SINGLE_VIEW_MINIMUM_PROJECTION_FACING
+        : undefined,
       projectionVisibilityPolicy: singleViewTexture ? 'standard' : undefined,
       captureId: capture?.id ?? generation.captureId,
       visible: true,

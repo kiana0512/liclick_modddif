@@ -783,6 +783,29 @@ export function BakeWorkspacePage({
   const selectedHigh =
     highObjects.find((object) => object.id === selectedObjectId) ?? highObjects[0];
   selectedHighRef.current = selectedHigh;
+
+  function resolveImportTargetId(requestedObjectId?: string) {
+    const targetObjectId = firstNonEmptyId(
+      requestedObjectId,
+      selectedHigh?.id,
+      selectedObjectId,
+      fileTargetIdRef.current,
+      handoff?.objectId,
+      `bake-target-${projectId}`,
+    );
+    if (!targetObjectId) throw new Error('无法为导入资产创建有效的烘焙对象标识。');
+    fileTargetIdRef.current = targetObjectId;
+    if (selectedObjectId !== targetObjectId) setSelectedObjectId(targetObjectId);
+    return targetObjectId;
+  }
+
+  function assignImportedFiles(files: File[], targetObjectId: string) {
+    if (highObjects.length > 0) {
+      return assignFilesToObjects(files, highObjects, targetObjectId, {});
+    }
+    return files[0] ? { [targetObjectId]: files[0] } : {};
+  }
+
   const viewportHighObject = viewportProject?.objects.find(
     (object) => object.id === selectedHigh?.id,
   );
@@ -811,7 +834,9 @@ export function BakeWorkspacePage({
     Number(Boolean(selectedRoughness)) +
     Number(Boolean(selectedMetallic)) +
     Number(Boolean(selectedNormal));
-  const selectedLowInfo = selectedHigh ? alignmentInfo.low[selectedHigh.id] : undefined;
+  const selectedLowInfo = selectedBakeObjectId
+    ? alignmentInfo.low[selectedBakeObjectId]
+    : undefined;
   const selectedLowImportError = selectedBakeObjectId
     ? lowImportErrors[selectedBakeObjectId]
     : undefined;
@@ -1297,12 +1322,7 @@ export function BakeWorkspacePage({
     kind: 'high' | 'low' | 'cage' | 'color' | 'roughness' | 'metallic' | 'normal',
     objectId?: string,
   ) {
-    fileTargetIdRef.current = firstNonEmptyId(
-      objectId,
-      selectedHigh?.id,
-      selectedObjectId,
-      handoff?.objectId,
-    );
+    resolveImportTargetId(objectId);
     const input = {
       high: highInputRef.current,
       low: lowInputRef.current,
@@ -1328,12 +1348,8 @@ export function BakeWorkspacePage({
       setBakeError('低模仅支持 FBX、OBJ、GLB 或 GLTF 文件。');
       return;
     }
-    if (!selectedHigh) {
-      setBakeError('请先导入高模，再为它添加对应的低模。');
-      return;
-    }
-    const targetObjectId = selectedHigh.id;
-    const assigned = assignFilesToObjects(modelFiles, highObjects, targetObjectId, {});
+    const targetObjectId = resolveImportTargetId();
+    const assigned = assignImportedFiles(modelFiles, targetObjectId);
     const resourceFiles = files.filter((file) => !modelFiles.includes(file));
     const assignedResources = Object.fromEntries(
       Object.keys(assigned).map((objectId) => [objectId, resourceFiles]),
@@ -1394,12 +1410,8 @@ export function BakeWorkspacePage({
       setBakeError('颜色贴图仅支持 PNG、JPG、WEBP 或 TGA 图片。');
       return;
     }
-    if (!selectedHigh) {
-      setBakeError('请先导入高模，再添加对应的颜色贴图。');
-      return;
-    }
-    const targetObjectId = selectedHigh.id;
-    const assigned = assignFilesToObjects(imageFiles, highObjects, targetObjectId, {});
+    const targetObjectId = resolveImportTargetId();
+    const assigned = assignImportedFiles(imageFiles, targetObjectId);
     setColorFiles((current) => ({ ...current, ...assigned }));
     setBakeJob(undefined);
     setOneClickBakeAttempted(false);
@@ -1415,12 +1427,8 @@ export function BakeWorkspacePage({
       setBakeError('材质贴图仅支持 PNG、JPG、WEBP 或 TGA 图片。');
       return;
     }
-    if (!selectedHigh) {
-      setBakeError('请先导入高模，再添加对应的材质贴图。');
-      return;
-    }
-    const targetObjectId = selectedHigh.id;
-    const assigned = assignFilesToObjects(imageFiles, highObjects, targetObjectId, {});
+    const targetObjectId = resolveImportTargetId();
+    const assigned = assignImportedFiles(imageFiles, targetObjectId);
     if (kind === 'roughness') {
       setRoughnessFiles((current) => ({ ...current, ...assigned }));
       setRoughnessSource('manual');
@@ -1796,13 +1804,12 @@ export function BakeWorkspacePage({
     return 'pending';
   };
 
-  const selectedSetProgress = selectedHigh
-    ? Number(Boolean(selectedHigh)) +
-      Number(Boolean(selectedLow)) +
-      Number(Boolean(requiresColor && selectedColorName)) +
-      Number(Boolean(requiresRoughness && (selectedRoughness || canGenerateSelectedRoughness))) +
-      Number(Boolean(requiresMetallic && selectedMetallic))
-    : 0;
+  const selectedSetProgress =
+    Number(Boolean(selectedHigh)) +
+    Number(Boolean(selectedLow)) +
+    Number(Boolean(requiresColor && selectedColorName)) +
+    Number(Boolean(requiresRoughness && (selectedRoughness || canGenerateSelectedRoughness))) +
+    Number(Boolean(requiresMetallic && selectedMetallic));
   const selectedSetRequirementCount =
     2 + Number(requiresColor) + Number(requiresRoughness) + Number(requiresMetallic);
   const selectedObjectIndex = Math.max(
@@ -1956,7 +1963,7 @@ export function BakeWorkspacePage({
                 <div>
                   <p className="text-lg font-semibold text-white">材质贴图</p>
                   <p className="mt-1 text-xs leading-5 text-white/42">
-                    四张贴图按当前高模统一管理，可直接拖入对应栏位。
+                    四张贴图按当前 Bake Set 统一管理，可直接拖入对应栏位。
                   </p>
                 </div>
                 <button
@@ -2399,11 +2406,7 @@ export function BakeWorkspacePage({
                       disabled={highImporting}
                       aria-label="选择高模文件"
                       onClick={(event) => {
-                        fileTargetIdRef.current = firstNonEmptyId(
-                          selectedHigh?.id,
-                          selectedObjectId,
-                          handoff?.objectId,
-                        );
+                        resolveImportTargetId();
                         event.currentTarget.value = '';
                       }}
                       onChange={(event) =>
@@ -2453,11 +2456,7 @@ export function BakeWorkspacePage({
                       disabled={lowImporting}
                       aria-label="选择低模文件"
                       onClick={(event) => {
-                        fileTargetIdRef.current = firstNonEmptyId(
-                          selectedHigh?.id,
-                          selectedObjectId,
-                          handoff?.objectId,
-                        );
+                        resolveImportTargetId();
                         event.currentTarget.value = '';
                       }}
                       onChange={(event) => {
@@ -2807,12 +2806,7 @@ export function BakeWorkspacePage({
         accept=".fbx,.obj,.glb,.gltf"
         onChange={(event) => {
           const files = Array.from(event.target.files ?? []);
-          const assigned = assignFilesToObjects(files, highObjects, fileTargetIdRef.current, {});
-          setLowFiles((current) => ({ ...current, ...assigned }));
-          void persistImportedFiles('low', assigned);
-          setActiveStage('alignment');
-          setViewportMode('overlay');
-          event.target.value = '';
+          void handleLowImport(files);
         }}
       />
       {resultLightboxOpen && selectedResultUrl ? (
@@ -2861,9 +2855,7 @@ export function BakeWorkspacePage({
         accept="image/png,image/jpeg,image/webp,.tga"
         onChange={(event) => {
           const files = Array.from(event.target.files ?? []);
-          const assigned = assignFilesToObjects(files, highObjects, fileTargetIdRef.current, {});
-          setColorFiles((current) => ({ ...current, ...assigned }));
-          void persistImportedFiles('color', assigned);
+          handleColorImport(files);
           event.target.value = '';
         }}
       />

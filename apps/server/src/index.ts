@@ -28,6 +28,7 @@ import { identityTelemetryStorage } from './services/identityTelemetryService.js
 import { syncTelemetryAggregateToBitable } from './services/feishuPlatformService.js';
 import { publicWorkspaceFilePattern } from './services/publicWorkspaceFile.js';
 import { serveWebFrontend } from './services/webFrontendService.js';
+import { streamFileResponse } from './services/fileResponseService.js';
 import { serverReleaseManifest } from './release/releaseManifest.js';
 
 type ServiceState = 'starting' | 'ready' | 'draining';
@@ -106,7 +107,7 @@ async function serveWorkspaceFile(request: IncomingMessage, response: ServerResp
     'x-content-type-options': 'nosniff',
   });
   if (request.method === 'HEAD') response.end();
-  else fs.createReadStream(realAbsolute).pipe(response);
+  else streamFileResponse(realAbsolute, response);
   return true;
 }
 

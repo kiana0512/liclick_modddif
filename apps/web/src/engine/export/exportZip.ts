@@ -16,7 +16,8 @@ for (let index = 0; index < crcTable.length; index += 1) {
 
 function crc32(bytes: Uint8Array) {
   let crc = 0xffffffff;
-  for (const byte of bytes) {
+  for (let index = 0; index < bytes.length; index += 1) {
+    const byte = bytes[index];
     crc = crcTable[(crc ^ byte) & 0xff] ^ (crc >>> 8);
   }
   return (crc ^ 0xffffffff) >>> 0;
@@ -46,7 +47,7 @@ async function bytesFromData(data: BlobPart | Blob) {
 
 export async function createZipBlob(files: ZipFile[]) {
   const now = getDosTimestamp(new Date());
-  const chunks: Uint8Array[] = [];
+  const chunks: Uint8Array<ArrayBuffer>[] = [];
   const centralDirectory: number[] = [];
   let offset = 0;
 
@@ -107,10 +108,7 @@ export async function createZipBlob(files: ZipFile[]) {
   writeUint16(endHeader, 0);
   chunks.push(new Uint8Array(endHeader));
 
-  const blobParts = chunks.map((chunk) => {
-    const copy = new ArrayBuffer(chunk.byteLength);
-    new Uint8Array(copy).set(chunk);
-    return copy;
-  });
-  return new Blob(blobParts, { type: 'application/zip' });
+  // Blob snapshots each view, including its offset/length. Copying every chunk
+  // first duplicates the entire archive in JS without changing the output.
+  return new Blob(chunks, { type: 'application/zip' });
 }

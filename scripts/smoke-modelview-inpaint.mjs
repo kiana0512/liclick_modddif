@@ -79,8 +79,10 @@ const modelviewMock = http.createServer(async (request, response) => {
   try {
     assert.equal(request.method, 'POST');
     const isSingleView = request.url === '/api/v1/services/modelview-single-view';
+    const isSingleViewInpaint =
+      request.url === '/api/v1/services/modelview-single-view-inpaint';
     assert(
-      isSingleView || request.url === '/api/v1/services/modelview-inpaint',
+      isSingleView || isSingleViewInpaint || request.url === '/api/v1/services/modelview-inpaint',
       `Unexpected ModelView path: ${request.url}`,
     );
     const chunks = [];
@@ -92,7 +94,11 @@ const modelviewMock = http.createServer(async (request, response) => {
     assert.match(contentType, /^multipart\/form-data;/);
     assert.match(
       request.headers['idempotency-key'] ?? '',
-      isSingleView ? /:single-view:4step-r1$/ : /:inpaint:4input-rseed-r1$/,
+      isSingleView
+        ? /:single-view:4step-r1$/
+        : isSingleViewInpaint
+          ? /:single-view-inpaint:4input-rseed-steps2-r1$/
+          : /:inpaint:4input-rseed-r1$/,
     );
     const bodyText = body.toString('latin1');
     assert.match(
@@ -110,7 +116,14 @@ const modelviewMock = http.createServer(async (request, response) => {
     assert.match(bodyText, /Content-Type: image\/png/);
     assert(
       body.includes(
-        Buffer.from(isSingleView ? '保持当前视角结构并迁移参考材质' : '修复纸张边缘', 'utf8'),
+        Buffer.from(
+          isSingleView
+            ? '保持当前视角结构并迁移参考材质'
+            : isSingleViewInpaint
+              ? '只补全白模区域'
+              : '修复纸张边缘',
+          'utf8',
+        ),
       ),
     );
     assert(bodyText.endsWith(`--${boundary}--\r\n`));
@@ -120,7 +133,11 @@ const modelviewMock = http.createServer(async (request, response) => {
     });
     response.writeHead(200, {
       'content-type': 'image/png',
-      'x-job-id': isSingleView ? 'mock-modelview-single-view-job-1' : 'mock-modelview-job-1',
+      'x-job-id': isSingleView
+        ? 'mock-modelview-single-view-job-1'
+        : isSingleViewInpaint
+          ? 'mock-modelview-single-view-inpaint-job-1'
+          : 'mock-modelview-job-1',
       'x-client-id': 'mock-li3d-client',
     });
     response.end(resultPng);
@@ -148,6 +165,8 @@ const child = spawn(process.execPath, [serverEntry], {
     LICLICK_MODELVIEW_INPAINT_TIMEOUT_MS: '10000',
     LICLICK_MODELVIEW_SINGLE_VIEW_URL: `http://127.0.0.1:${modelviewPort}/api/v1/services/modelview-single-view`,
     LICLICK_MODELVIEW_SINGLE_VIEW_TIMEOUT_MS: '10000',
+    LICLICK_MODELVIEW_SINGLE_VIEW_INPAINT_URL: `http://127.0.0.1:${modelviewPort}/api/v1/services/modelview-single-view-inpaint`,
+    LICLICK_MODELVIEW_SINGLE_VIEW_INPAINT_TIMEOUT_MS: '10000',
     SERVER_HOST: '127.0.0.1',
     SERVER_PORT: String(workspacePort),
     SESSION_SECRET: 'modelview-smoke-test-secret-not-for-production',
@@ -307,6 +326,39 @@ try {
   assert.equal(recovered.status, 200);
   assert.deepEqual(Buffer.from(await recovered.arrayBuffer()), resultPng);
 
+  const singleViewInpaint = await fetch(
+    `${workspaceBaseUrl}/api/modelview/single-view-inpaint`,
+    {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        Cookie: cookie,
+        Origin: allowedOrigin,
+      },
+      body: JSON.stringify({
+        ...inpaintPayload,
+        clientGenerationId: 'single-view-inpaint-generation-1',
+        prompt: '只补全白模区域',
+      }),
+    },
+  );
+  assert.equal(singleViewInpaint.status, 200);
+  const singleViewInpaintResult = await singleViewInpaint.json();
+  assert.equal(
+    singleViewInpaintResult.modelviewJobId,
+    'mock-modelview-single-view-inpaint-job-1',
+  );
+  assert.equal(singleViewInpaintResult.output?.source, 'modelview-single-view-inpaint');
+  assert.equal(
+    singleViewInpaintResult.output?.workflow,
+    '2026.08.31-e39ed5f-single-view-inpaint-4input-rseed-steps2-r1',
+  );
+  const singleViewInpaintSaved = await fetch(singleViewInpaintResult.resultUrl, {
+    headers: { Cookie: cookie, Origin: allowedOrigin },
+  });
+  assert.equal(singleViewInpaintSaved.status, 200);
+  assert.deepEqual(Buffer.from(await singleViewInpaintSaved.arrayBuffer()), resultPng);
+
   const singleView = await fetch(`${workspaceBaseUrl}/api/modelview/single-view`, {
     method: 'POST',
     headers: {
@@ -336,11 +388,11 @@ try {
   assert.equal(singleViewSaved.status, 200);
   assert.deepEqual(Buffer.from(await singleViewSaved.arrayBuffer()), resultPng);
 
-  assert.equal(observedRequests.length, 4);
+  assert.equal(observedRequests.length, 5);
   assert.equal(observedRequests[0].idempotencyKey, observedRequests[1].idempotencyKey);
   assert.equal(observedRequests[0].sha256, observedRequests[1].sha256);
   console.log(
-    'ModelView smoke passed: inpaint uses aligned four-input multipart, single-view remains two-image, and both preserve deterministic idempotency, X-Job-ID, and PNG persistence.',
+    'ModelView smoke passed: local repaint and remote single-view completion use aligned four-input multipart, all-clay single-view remains two-image, and all preserve deterministic idempotency, X-Job-ID, and PNG persistence.',
   );
 } catch (error) {
   if (serverOutput.trim()) console.error(serverOutput.trim());

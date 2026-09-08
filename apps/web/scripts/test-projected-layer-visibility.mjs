@@ -123,6 +123,11 @@ assert.match(
   /function resolveProjectionMask\([\s\S]*?projectionCoverageMode === 'capture-mask'[\s\S]*?capture\?\.maskUrl[\s\S]*?maskUrl: capture\.maskUrl, maskSpace: 'projection'/,
   'Saved single-view layers must recover their authored capture silhouette without overwriting UV eraser masks.',
 );
+assert.match(
+  layerStoreSource,
+  /minimumProjectionFacing: singleViewTexture[\s\S]*?SINGLE_VIEW_MINIMUM_PROJECTION_FACING/,
+  'Generated single-view layers must reject extreme grazing faces instead of projecting isolated triangle islands.',
+);
 assert.doesNotMatch(
   maskedProjectedImageWorkerSource,
   /removeSolidBackground|removeEdgeConnectedNeutralBackground|alignCutoutToProjectionMask/,
@@ -891,12 +896,12 @@ assert.match(
 );
 assert.match(
   layersPanelSource,
-  /layer\.type === 'projected'[\s\S]*?createGeneratedDisplayPreview\(sourceUrl, depthUrl, \{[\s\S]*?signal: controller.signal,[\s\S]*?revision: layer.contentRevision,[\s\S]*?displayPreview\.fittedUrl/,
+  /thumbnail \? createLayerThumbnail : createGeneratedDisplayPreview\)\(sourceUrl, depthUrl, \{[\s\S]*?signal: controller.signal, revision,[\s\S]*?displayPreview\.fittedUrl/,
   'Projected layer thumbnails must share the generated transparent display path.',
 );
 assert.match(
   layersPanelSource,
-  /Boolean\(layer\.imageUrl\)\s*&&\s*!isLocalRepaintPreviewLayer\(layer\)/,
+  /sourceUrl\s*&&\s*!isLocalRepaintPreviewLayer\(layer\)/,
   'Local repaint thumbnails must keep their paint mask instead of showing the full generated subject.',
 );
 assert.doesNotMatch(
@@ -1596,6 +1601,7 @@ try {
   assert.equal(material.uniforms.layerOpacity2.value, 1);
   assert.equal(material.uniforms.showEmptyProjectionHatch.value, 1);
   assert.equal(material.uuid, materialId);
+
   assert.equal(
     projection.updateProjectedLayerStackMaterial(material, {
       layers,

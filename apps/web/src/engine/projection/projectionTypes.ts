@@ -2,6 +2,11 @@ import type * as THREE from 'three';
 import type { SerializedCamera } from '@/types/capture';
 import type { BlendMode, LayerMaskSpace, ProjectionVisibilityPolicy } from '@/types/layer';
 
+// Reject only extreme grazing faces for single-view projection. This keeps the
+// authored front/rounded surfaces while preventing edge-on side triangles from
+// appearing as isolated projected islands inside the empty-coverage hatch.
+export const SINGLE_VIEW_MINIMUM_PROJECTION_FACING = 0.18;
+
 export type ProjectionLayerInput = {
   layerId: string;
   imageUrl: string;

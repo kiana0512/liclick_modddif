@@ -27,6 +27,66 @@ const effect = (text, marker) => {
 // Execute the production indicator with real Three resources and a small hook
 // lifecycle harness. Selection must change visibility, not GPU resource identity.
 const scene = read('SceneRoot.tsx');
+// Execute the actual ImportedModel return tree, so a null return on hide cannot
+// silently unmount/recompile an already prepared wireframe helper.
+const modelTail = scene.slice(scene.lastIndexOf('  if (!importedModel) return null;'), scene.indexOf('\nexport function SceneRoot()'));
+const modelPresentation = compile(`const run = (props) => { const {importedModel, objectVisible, workspaceVisible, initialMaterialPresentationReadyForGroup, displayMode} = props;\n${modelTail.slice(0, modelTail.lastIndexOf('});'))}\n};`, {
+  React: { Fragment: 'fragment', createElement: (type, props, ...children) => ({type, props, children}) },
+  TopologyWireframeOverlay: 'wireframe', ModelRestoreLoadingIndicator: 'loading', SelectionBoundsCorners: 'selection',
+  initialMaterialPresentationVisibleForGroup: true, texturedRestoreReady: false, showSelectionGlow: false,
+  onSelect() {},
+});
+const findNodes = (node, type) => !node || typeof node !== 'object' ? [] : [
+  ...(node.type === type ? [node] : []), ...(node.children ?? []).flatMap((child) => findNodes(child, type)),
+];
+for (const objectVisible of [false, true]) for (const workspaceVisible of [false, true]) for (const ready of [false, true]) {
+  const tree = modelPresentation({ importedModel: {group: {}, restoreStage:'full'}, objectVisible, workspaceVisible,
+    initialMaterialPresentationReadyForGroup: ready, displayMode:'wire' });
+  const wires = findNodes(tree, 'wireframe');
+  assert.equal(wires.length, Number(ready), 'A prepared helper remains mounted when its model is hidden');
+  if (ready) assert.equal(wires[0].props.visible, objectVisible && workspaceVisible);
+  assert.equal(findNodes(tree, 'primitive').length, Number(objectVisible && workspaceVisible), 'Hidden models remain detached from the scene');
+}
+
+// Exercise the production helper with real Three geometry and controlled hooks.
+const wireSource = scene.slice(scene.indexOf('function TopologyWireframeOverlay'), scene.indexOf('function ModelRestoreLoadingIndicator'));
+const wireObject = new THREE.Group();
+const wireGeometry = new THREE.BoxGeometry();
+wireObject.add(new THREE.Mesh(wireGeometry, new THREE.MeshBasicMaterial()));
+let memo, effectDeps, cleanupWire, wireFrame, wireCompiles = 0, wireDraws = 0;
+const wireGl = {
+  compileAsync: async () => { wireCompiles++; }, getRenderTarget: () => null,
+  setRenderTarget() {}, autoClear: false,
+  render: (scene) => { wireDraws++; assert.equal(scene.children[0].children[0].geometry, wireGeometry); },
+};
+const wireCamera = new THREE.Camera();
+const renderWire = compile(`${wireSource}\nconst run = TopologyWireframeOverlay;`, {
+  THREE, React: { createElement: (_type, props) => props.object },
+  useThree: () => ({gl:wireGl, camera:wireCamera}),
+  useMemo: (factory) => memo ??= factory(),
+  useFrame: (callback) => { wireFrame = callback; },
+  useEffect: (callback, deps) => {
+    if (!effectDeps || deps.some((v,i) => v !== effectDeps[i])) { cleanupWire?.(); cleanupWire = callback(); effectDeps = deps; }
+  },
+  document: {body:{dataset:{}}}, waitForProjectionVisibilityIdle: async () => {},
+  isSharedViewportInteractionBusy: () => false,
+});
+const wireGroup = renderWire({object:wireObject, visible:true});
+await new Promise(setImmediate);
+let wireDisposals = 0;
+memo.material.addEventListener('dispose', () => wireDisposals++);
+for (let i = 0; i < 71; i++) {
+  wireObject.position.x = i;
+  assert.equal(renderWire({object:wireObject, visible:false}), wireGroup);
+  const hiddenMatrix = wireGroup.matrix.clone(); wireFrame();
+  assert(wireGroup.matrix.equals(hiddenMatrix), 'Hidden helpers perform no transform work');
+  assert.equal(renderWire({object:wireObject, visible:true}), wireGroup); wireFrame();
+  assert.equal(wireGroup.matrix.elements[12], i, 'Reopened wireframe follows current transforms');
+}
+assert.deepEqual([wireCompiles, wireDraws, wireDisposals], [1,1,0], '71 hide/show cycles reuse the exact warmed geometry/material');
+cleanupWire(); await new Promise(setImmediate);
+assert.equal(wireDisposals, 1, 'Real unmount still releases the helper material');
+wireObject.children[0].material.dispose(); wireGeometry.dispose();
 const indicatorSource = scene.slice(scene.indexOf('const selectionBoundsCache'), scene.indexOf('function TopologyWireframeOverlay'));
 let selectedObjectId;
 let workspaceMode = 'scene';
@@ -153,6 +213,45 @@ assert.match(scene, /texturedRestoreReady && showSelectionGlow && \(\s*<Selectio
 // Run the actual prewarm effect with controllable idle/frame boundaries.
 const viewport = read('ViewportCanvas.tsx');
 const prewarmEffect = effect(viewport, 'selection-mask-overlay-prewarm');
+const queueSelectionPrewarm = compile(`${read('queueSelectionPrewarm.ts').replace('export function', 'function')}\nconst run = queueSelectionPrewarm;`, { exports: {} });
+const cloneShaderWarmupMesh = compile(`${read('cloneShaderWarmupMesh.ts').replace('export function', 'function')}\nconst run = cloneShaderWarmupMesh;`, { exports: {} });
+const warmupGeometry = new THREE.BoxGeometry();
+warmupGeometry.morphAttributes.position = [warmupGeometry.attributes.position.clone()];
+const warmupMaterial = new THREE.MeshBasicMaterial();
+const warmupSources = [
+  new THREE.Mesh(warmupGeometry, warmupMaterial),
+  new THREE.SkinnedMesh(warmupGeometry, warmupMaterial),
+  new THREE.InstancedMesh(warmupGeometry, warmupMaterial, 2),
+];
+warmupSources[1].bind(new THREE.Skeleton([new THREE.Bone()]));
+warmupSources[2].setColorAt(0, new THREE.Color('red'));
+for (const source of warmupSources) {
+  source.position.set(1, 2, 3);
+  source.updateMatrixWorld();
+  source.add(new THREE.Object3D());
+  const parent = new THREE.Group();
+  parent.add(source);
+  const metadata = { originalMaterial: { toJSON() { throw new Error('Must not serialize original texture assets'); } } };
+  source.userData = metadata;
+  const shell = cloneShaderWarmupMesh(source);
+  assert.equal(shell.constructor, source.constructor);
+  assert.equal(shell.geometry, source.geometry);
+  assert.equal(shell.material, source.material);
+  assert.deepEqual(shell.matrixWorld.elements, source.matrixWorld.elements);
+  assert.deepEqual(shell.morphTargetInfluences, source.morphTargetInfluences);
+  assert.deepEqual(shell.morphTargetDictionary, source.morphTargetDictionary);
+  assert.equal(shell.skeleton, source.skeleton);
+  assert.deepEqual(shell.instanceMatrix?.array, source.instanceMatrix?.array);
+  assert.deepEqual(shell.instanceColor?.array, source.instanceColor?.array);
+  assert.deepEqual(shell.userData, {});
+  assert.notEqual(shell.uuid, source.uuid);
+  assert.equal(shell.children.length, 0);
+  assert.equal(source.userData, metadata, 'Live metadata retains identity');
+  assert.equal(source.parent, parent, 'Live hierarchy remains attached');
+  assert.equal(source.children.length, 1);
+}
+warmupGeometry.dispose();
+warmupMaterial.dispose();
 let currentModel = models[0];
 let busy = true;
 let tool = 'none';
@@ -164,7 +263,7 @@ let idleCallback;
 const frames = [];
 const layerRef = { current: undefined };
 const prewarmScope = {
-  THREE, canUseSurfacePaint: true, paintTool: 'none', shouldShowColorPaintOverlays: true,
+  THREE, cloneShaderWarmupMesh, queueSelectionPrewarm, canUseSurfacePaint: true, paintTool: 'none', shouldShowColorPaintOverlays: true,
   getTargetModel: () => currentModel,
   getUvPaintLayer: (model) => {
     allocations++;
@@ -179,7 +278,7 @@ const prewarmScope = {
     cancelIdleCallback: () => { idleCallback = undefined; },
   },
   syncInpaintMaskProjection() {}, hideInpaintMaskPresentation() {},
-  getPaintableSurfaceCache: () => ({ positionedMeshes: [] }), ensureOverlayForMesh() {},
+  getPaintableSurfaceCache: () => ({ positionedMeshes: [currentModel.group.children[0]] }), ensureOverlayForMesh() {},
   gl: { initTexture: () => uploads++, compileAsync: async () => { compiles++; } },
   camera: new THREE.Camera(), inpaintDepthMaterial: new THREE.MeshBasicMaterial(),
   captureInpaintProjectionDepth: () => { depths++; }, markPerformanceEvent() {},
@@ -211,6 +310,51 @@ tool = 'inpaint-add';
 await frame();
 assert.equal(uploads, 1, 'Tool ownership change cancels queued GPU stages');
 cancelDuringPrepare();
+
+// A native compile cannot be aborted by effect cleanup. Hold it across real
+// selection effects: intermediate owners must never allocate or submit work.
+await frame();
+tool = 'none';
+const before = [allocations, uploads, compiles, depths];
+let finishCompile;
+prewarmScope.gl.compileAsync = () => {
+  compiles++;
+  return new Promise((resolve) => { finishCompile = resolve; });
+};
+currentModel = models[2];
+let stopSelection = setup();
+idleCallback();
+for (let i = 0; i < 5; i++) await frame();
+assert.equal(compiles, before[2] + 1);
+for (let i = 0; i < 71; i++) {
+  stopSelection();
+  currentModel = models[(i + 3) % 9];
+  stopSelection = setup();
+  idleCallback();
+  await frame();
+}
+assert.deepEqual([allocations, uploads, compiles, depths], before.map((n, i) => n + (i < 3 ? 1 : 0)), 'Pending native compile excludes all later allocations/uploads/compiles');
+prewarmScope.gl.compileAsync = async () => { compiles++; };
+finishCompile();
+for (let i = 0; i < 10; i++) await frame();
+assert.deepEqual([allocations, uploads, compiles, depths], before.map((n, i) => n + [2, 2, 3, 1][i]), 'Only the final live selection completes both shaders and depth');
+stopSelection();
+
+// Rejection must release the queue without hiding the original failure, and
+// unrelated renderers must remain independent.
+const rendererA = {}, rendererB = {};
+let rejectFirst;
+const failure = new Error('native compile failed');
+const first = queueSelectionPrewarm(rendererA, () => true, () => new Promise((_, reject) => { rejectFirst = reject; }));
+const rejected = assert.rejects(first, (error) => error === failure);
+await new Promise(setImmediate);
+const admitted = [];
+const second = queueSelectionPrewarm(rendererA, () => true, async () => { admitted.push('A'); });
+await queueSelectionPrewarm(rendererB, () => true, async () => { admitted.push('B'); });
+assert.deepEqual(admitted, ['B']);
+rejectFirst(failure);
+await Promise.all([rejected, second]);
+assert.deepEqual(admitted, ['B', 'A']);
 
 // Framing must reject scene-only selection before traversing any model bounds.
 const cameraEffect = effect(read('CameraController.tsx'), 'const currentModelIds');

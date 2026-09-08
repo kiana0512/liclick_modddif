@@ -327,7 +327,7 @@ assert.match(
 );
 assert.match(
   previewTextureCacheSource,
-  /pinnedPreviewTextureCacheKeys[\s\S]*?prewarmPreviewTextures[\s\S]*?trimBakedTextureCache\(\)/,
+  /prewarmPreviewTextures[\s\S]*?retainPreviewTexture\(url, options\)[\s\S]*?finally\s*\{\s*releases\.forEach\(\(release\) => release\(\)\)/,
   'bulk preview prewarm must pin worker bitmaps until their striped uploads finish',
 );
 assert.match(

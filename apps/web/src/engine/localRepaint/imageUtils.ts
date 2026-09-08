@@ -24,7 +24,7 @@ export async function urlToImageData(
   url: string,
   width?: number,
   height?: number,
-  options?: { cooperative?: boolean; signal?: AbortSignal },
+  options?: { cooperative?: boolean; signal?: AbortSignal; maxSize?: number },
 ) {
   const signal = options?.signal;
   signal?.throwIfAborted();
@@ -60,22 +60,33 @@ export async function urlToImageData(
   const canvas = document.createElement('canvas');
   canvas.width = width ?? (image.naturalWidth || image.width);
   canvas.height = height ?? (image.naturalHeight || image.height);
-  const context = canvas.getContext('2d', { willReadFrequently: true });
-  if (!context) throw new Error('Could not create image canvas.');
-  context.drawImage(image, 0, 0, canvas.width, canvas.height);
-  if (options?.cooperative) {
-    // Draw once at exactly the original size/filtering, then copy lossless
-    // readback stripes. Never rescale tiles or change alpha/colour conversion.
-    const output = new ImageData(canvas.width, canvas.height);
-    const rows = Math.max(1, Math.floor(262_144 / canvas.width));
-    for (let y = 0; y < canvas.height; y += rows) {
-      await checkpoint();
-      const stripe = context.getImageData(0, y, canvas.width, Math.min(rows, canvas.height - y));
-      output.data.set(stripe.data, y * canvas.width * 4);
-    }
-    return output;
+  if (options?.maxSize) {
+    const scale = Math.min(1, options.maxSize / Math.max(canvas.width, canvas.height));
+    canvas.width = Math.max(1, Math.round(canvas.width * scale));
+    canvas.height = Math.max(1, Math.round(canvas.height * scale));
   }
-  return context.getImageData(0, 0, canvas.width, canvas.height);
+  try {
+    const context = canvas.getContext('2d', { willReadFrequently: true });
+    if (!context) throw new Error('Could not create image canvas.');
+    context.drawImage(image, 0, 0, canvas.width, canvas.height);
+    if (options?.cooperative) {
+      // Draw once at exactly the original size/filtering, then copy lossless
+      // readback stripes. Never rescale tiles or change alpha/colour conversion.
+      const output = new ImageData(canvas.width, canvas.height);
+      const rows = Math.max(1, Math.floor(262_144 / canvas.width));
+      for (let y = 0; y < canvas.height; y += rows) {
+        await checkpoint();
+        const stripe = context.getImageData(0, y, canvas.width, Math.min(rows, canvas.height - y));
+        output.data.set(stripe.data, y * canvas.width * 4);
+      }
+      return output;
+    }
+    return context.getImageData(0, 0, canvas.width, canvas.height);
+  } finally {
+    // ImageData owns its pixels. Release the scratch bitmap on success,
+    // readback failure and cancellation instead of waiting for canvas GC.
+    canvas.width = 0;
+  }
 }
 
 export function imageDataToBlob(imageData: ImageData) {
@@ -216,16 +227,20 @@ export function resizeImageData(imageData: ImageData, width: number, height: num
   const canvas = document.createElement('canvas');
   canvas.width = imageData.width;
   canvas.height = imageData.height;
-  const context = canvas.getContext('2d');
-  if (!context) throw new Error('Could not resize image.');
-  context.putImageData(imageData, 0, 0);
   const output = document.createElement('canvas');
-  output.width = width;
-  output.height = height;
-  const outputContext = output.getContext('2d', { willReadFrequently: true });
-  if (!outputContext) throw new Error('Could not resize image.');
-  outputContext.drawImage(canvas, 0, 0, width, height);
-  return outputContext.getImageData(0, 0, width, height);
+  try {
+    const context = canvas.getContext('2d');
+    if (!context) throw new Error('Could not resize image.');
+    context.putImageData(imageData, 0, 0);
+    output.width = width;
+    output.height = height;
+    const outputContext = output.getContext('2d', { willReadFrequently: true });
+    if (!outputContext) throw new Error('Could not resize image.');
+    outputContext.drawImage(canvas, 0, 0, width, height);
+    return outputContext.getImageData(0, 0, width, height);
+  } finally {
+    canvas.width = output.width = 0;
+  }
 }
 
 function getPixelToneStats(data: Uint8ClampedArray, offset: number) {

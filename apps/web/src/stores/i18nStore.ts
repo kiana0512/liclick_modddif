@@ -1,12 +1,10 @@
 import { useCallback } from 'react';
 import { create } from 'zustand';
-import { createJSONStorage, persist } from 'zustand/middleware';
 
 export type Language = 'zh' | 'en';
 
 type I18nStore = {
   language: Language;
-  setLanguage: (language: Language) => void;
 };
 
 export const translations = {
@@ -1006,18 +1004,9 @@ export const translations = {
 
 export type TranslationKey = keyof typeof translations.en;
 
-export const useI18nStore = create<I18nStore>()(
-  persist(
-    (set) => ({
-      language: 'zh',
-      setLanguage: (language) => set({ language }),
-    }),
-    {
-      name: 'liclick-language',
-      storage: createJSONStorage(() => localStorage),
-    },
-  ),
-);
+// LI3D currently ships one product language. Keep this runtime state explicit so
+// a browser locale or a legacy persisted language choice cannot change UI copy.
+export const useI18nStore = create<I18nStore>(() => ({ language: 'zh' }));
 
 export function useT() {
   const language = useI18nStore((state) => state.language);

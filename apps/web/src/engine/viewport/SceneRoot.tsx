@@ -1,6 +1,7 @@
 import { useFrame, useThree } from '@react-three/fiber';
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three';
+import { useShallow } from 'zustand/react/shallow';
 import {
   createDisplayModeMaterial,
   createFlatPreviewMaterial,
@@ -82,6 +83,7 @@ import {
   createWorkerBackedPreviewTexture,
   getReadyResidentPreviewTexture,
   loadPreviewTexture,
+  retainPreviewTexture,
   prewarmPreviewTextures,
   uploadPreviewTextureInStripes,
   waitForPreviewTextureUploadsIdle,
@@ -538,11 +540,13 @@ function useLoadedPreviewTextureState(
     // Keep the last valid GPU texture visible while the replacement decodes.
     // Clearing here produced the one-frame black/white flash during repaint,
     // image replacement and UV composition hand-offs.
+    const releaseTexture = retainPreviewTexture(imageUrl, { maxSize: options?.maxSize });
     void (async () => {
       let lastError: unknown;
       for (let attempt = 0; attempt < 3 && !cancelled; attempt += 1) {
         try {
           const texture = await loadPreviewTexture(imageUrl, { maxSize: options?.maxSize });
+          if (cancelled) return;
           if (options?.colorSpace) texture.colorSpace = options.colorSpace;
           await uploadPreviewTextureInStripes(gl, texture);
           if (!cancelled) setLoadedState({ key: requestKey, texture });
@@ -562,7 +566,7 @@ function useLoadedPreviewTextureState(
           lastError,
         );
       }
-    })();
+    })().finally(releaseTexture);
     return () => {
       cancelled = true;
     };
@@ -1169,6 +1173,7 @@ function TopologyWireframeOverlay({
   overlay.group.visible = visible;
 
   useFrame(() => {
+    if (!overlay.group.visible) return;
     overlay.group.matrix.compose(object.position, object.quaternion, object.scale);
     overlay.group.matrixWorldNeedsUpdate = true;
   });
@@ -1434,10 +1439,15 @@ const ImportedModel = memo(function ImportedModel({
         : undefined,
     [layers, localRepaintLiveFeedbackRequested, localRepaintPreviewLayer],
   );
-  const project = useProjectStore((state) =>
-    state.currentProjectId
-      ? state.projects.find((item) => item.id === state.currentProjectId)
-      : undefined,
+  const project = useProjectStore(
+    useShallow((state) => {
+      const current = state.currentProjectId
+        ? state.projects.find((item) => item.id === state.currentProjectId)
+        : undefined;
+      return current
+        ? { id: current.id, captures: current.captures, bakedTextures: current.bakedTextures }
+        : undefined;
+    }),
   );
   const captureById = useMemo(
     () => new Map(project?.captures.map((capture) => [capture.id, capture] as const) ?? []),
@@ -5132,31 +5142,34 @@ const ImportedModel = memo(function ImportedModel({
 
   if (!importedModel) return null;
 
-  // Keep this component and its decoded texture/material state alive when the
-  // workspace hides the model. Returning only its scene primitive prevents a
-  // scene/texture switch from rebuilding the complete material pipeline.
-  if (!objectVisible || !workspaceVisible) return null;
-
   return (
     <>
-      <primitive
-        object={importedModel.group}
-        visible={initialMaterialPresentationVisibleForGroup}
-        onClick={(event: { stopPropagation: () => void }) => {
-          event.stopPropagation();
-          onSelect(importedModel.objectId);
-        }}
-      />
-      {!initialMaterialPresentationVisibleForGroup && (
-        <ModelRestoreLoadingIndicator object={importedModel.group} />
-      )}
+      {/* Retain warmed wireframe resources across model/workspace selection.
+          Only geometry replacement or real unmount releases this helper. */}
       {initialMaterialPresentationReadyForGroup && importedModel.restoreStage !== 'bounds' && (
-        <TopologyWireframeOverlay object={importedModel.group} visible={displayMode === 'wire'} />
+        <TopologyWireframeOverlay
+          object={importedModel.group}
+          visible={objectVisible && workspaceVisible && displayMode === 'wire'}
+        />
       )}
-      {/* Keep each indicator resident: selecting another model only changes
-          visibility, so the last shared line program is not disposed/relinked. */}
-      {texturedRestoreReady && showSelectionGlow && (
-        <SelectionBoundsCorners object={importedModel.group} objectId={importedModel.objectId} />
+      {objectVisible && workspaceVisible && (
+        <>
+          <primitive
+            object={importedModel.group}
+            visible={initialMaterialPresentationVisibleForGroup}
+            onClick={(event: { stopPropagation: () => void }) => {
+              event.stopPropagation();
+              onSelect(importedModel.objectId);
+            }}
+          />
+          {!initialMaterialPresentationVisibleForGroup && (
+            <ModelRestoreLoadingIndicator object={importedModel.group} />
+          )}
+          {/* Scene selection keeps each visible object's indicator resident. */}
+          {texturedRestoreReady && showSelectionGlow && (
+            <SelectionBoundsCorners object={importedModel.group} objectId={importedModel.objectId} />
+          )}
+        </>
       )}
     </>
   );
