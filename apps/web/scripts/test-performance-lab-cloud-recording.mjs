@@ -125,11 +125,21 @@ const vite = await createServer({
   server: { middlewareMode: true },
 });
 try {
+  const timeline = await vite.ssrLoadModule('/src/engine/performance/performanceTimeline.ts');
+  timeline.setPerformanceTimelineEnabled(true);
+  const observed = [];
+  const unsubscribe = timeline.subscribePerformanceTimeline(event => observed.push({ ...event }));
+  const finish = timeline.startPerformanceSpan('projection', 'test-projection');
+  finish();
+  unsubscribe();
+  timeline.setPerformanceTimelineEnabled(false);
+  assert.equal(observed[1].phase, 'end');
+  assert.ok(Number.isFinite(observed[1].durationMs), 'Duration must be filled before notifying the Cloud collector.');
   const collector = await vite.ssrLoadModule(
     '/src/features/performanceLab/performanceLabCollector.ts',
   );
   assert.equal(collector.PERFORMANCE_LAB_REPORT_SCHEMA_VERSION, 2);
-  assert.equal(collector.PERFORMANCE_LAB_COLLECTOR_VERSION, '2.1.0');
+  assert.equal(collector.PERFORMANCE_LAB_COLLECTOR_VERSION, '2.2.0');
   assert.equal(
     collector.isJavaScriptPerformanceResource({
       initiatorType: 'worker',
@@ -149,13 +159,16 @@ try {
       profilerId: 'app-root',
       reactPhase: 'update',
       actualDurationMs: 12.5,
+      layerCount: 8,
+      textures: 12,
+      projectors: 4,
       projectId: 'project-secret',
       taskId: 42,
       prompt: 'secret prompt',
       url: 'https://secret.example/path',
       nested: { secret: true },
     }),
-    { profilerId: 'app-root', reactPhase: 'update', actualDurationMs: 12.5 },
+    { profilerId: 'app-root', reactPhase: 'update', actualDurationMs: 12.5, layerCount: 8, textures: 12, projectors: 4 },
   );
   assert.equal(collector.detectAngleBackend('ANGLE (NVIDIA, Direct3D11 vs_5_0 ps_5_0)'), 'd3d11');
   assert.equal(collector.detectAngleBackend('ANGLE (NVIDIA, Direct3D12)'), 'd3d12');

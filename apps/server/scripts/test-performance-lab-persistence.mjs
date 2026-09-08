@@ -362,6 +362,20 @@ const adminDetail = await requestJson(`/api/performance-lab/admin/sessions/${htt
 assert.equal(adminDetail.status, 200);
 assert.equal(adminDetail.body.session.user.displayName, '飞书用户甲（新名称）');
 assert.equal(adminDetail.body.session.chunks[0].payload.frames[0][1], 33.3);
+assert.equal(adminDetail.body.session.analysis.version, '1.0.3');
+const { analyzePerformanceSession } = await import('../dist/services/performanceLabAnalysis.js');
+const analysis = analyzePerformanceSession([{ payload: {
+  frames: [[100, 80], [120, 16], [NaN, 100]],
+  longTasks: [[30, 60, 'script'], [101, 90, 'unrelated']],
+  timelineEvents: [{ elapsedMs: 90, durationMs: 40, category: 'projection', name: 'apply', phase: 'end' }],
+} }]);
+assert.equal(analysis.采样帧数, 2);
+assert.equal(analysis.慢帧定位.length, 1);
+assert.equal(analysis.慢帧定位[0].开始秒, 0.02);
+assert.deepEqual(analysis.慢帧定位[0].同时段任务.map(v => v.名称), ['script', 'apply']);
+assert.match(analysis.说明, /不是因果证明/);
+assert.deepEqual(analyzePerformanceSession([]).慢帧定位, []);
+assert.equal(analyzePerformanceSession([{ payload: { frames: Array.from({length:100},(_,i)=>[i*100,40+i]) } }]).慢帧定位.length,12);
 // Traverse beyond the 200-row page, including identical timestamps and new inserts.
 for (let index = 0; index < 205; index++) {
   await repository.createPerformanceLabSession({

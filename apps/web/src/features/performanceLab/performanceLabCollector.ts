@@ -4,7 +4,7 @@ import {
 } from '@/engine/performance/performanceTimeline';
 
 export const PERFORMANCE_LAB_REPORT_SCHEMA_VERSION = 2 as const;
-export const PERFORMANCE_LAB_COLLECTOR_VERSION = '2.1.0';
+export const PERFORMANCE_LAB_COLLECTOR_VERSION = '2.2.0';
 
 const CHUNK_INTERVAL_MS = 5_000;
 const MEMORY_INTERVAL_MS = 2_000;
@@ -23,6 +23,7 @@ const allowedTimelineStringDetailKeys = new Set([
   'reactPhase',
   'scenario',
   'status',
+  'lane',
 ]);
 
 type NumericTuple = [elapsedMs: number, durationMs: number];
@@ -52,7 +53,7 @@ export type PerformanceLabChunk = {
     blockingDurationMs: number;
     renderDurationMs: number;
     styleAndLayoutDurationMs: number;
-    scripts: Array<{ durationMs: number; invoker?: string; sourceFunctionName?: string }>;
+    scripts: Array<{ durationMs: number; invoker?: string; sourceFunctionName?: string; sourceURL?: string; sourceCharPosition?: number; forcedStyleAndLayoutDuration?: number }>;
   }>;
   eventTimings: Array<{
     elapsedMs: number;
@@ -120,6 +121,7 @@ export type PerformanceLabClientContext = {
     deviceMemoryGb?: number;
     maxTouchPoints: number;
     crossOriginIsolated: boolean;
+    performanceEntryTypes: string[];
   };
   display: {
     viewportWidth: number;
@@ -139,6 +141,7 @@ export type PerformanceLabClientContext = {
   navigation?: Record<string, number | string>;
   webgl: ReturnType<typeof captureWebGlCapabilitySnapshot>;
   unsupportedWithoutNativeComponent: string[];
+  release: { id?: string; gitSha?: string; version?: string; buildTime?: string };
 };
 
 export type PerformanceLabSessionSummary = {
@@ -235,7 +238,7 @@ export function sanitizePerformanceTimelineDetail(detail: unknown) {
     const key = limitedText(rawKey, 60);
     if (
       !key ||
-      /(?:prompt|text|url|path|email|token|cookie|asset|project|layer|generation)/i.test(key) ||
+      /^(?:prompt|text|url|path|email|token|cookie)$/i.test(key) ||
       (key !== 'profilerId' && /id$/i.test(key))
     ) {
       continue;
@@ -416,6 +419,7 @@ export function capturePerformanceLabClientContext(projectId: string): Performan
   return {
     schemaVersion: PERFORMANCE_LAB_REPORT_SCHEMA_VERSION,
     collectorVersion: PERFORMANCE_LAB_COLLECTOR_VERSION,
+    release: { id: import.meta.env.VITE_LICLICK_RELEASE_ID, gitSha: import.meta.env.VITE_LICLICK_GIT_SHA, version: import.meta.env.VITE_LICLICK_RELEASE_VERSION, buildTime: import.meta.env.VITE_LICLICK_BUILD_TIME },
     capturedAt: new Date().toISOString(),
     page: {
       origin: window.location.origin,
@@ -432,6 +436,7 @@ export function capturePerformanceLabClientContext(projectId: string): Performan
       deviceMemoryGb: navigatorWithHardware.deviceMemory,
       maxTouchPoints: navigator.maxTouchPoints,
       crossOriginIsolated: window.crossOriginIsolated,
+      performanceEntryTypes: typeof PerformanceObserver === 'undefined' ? [] : [...PerformanceObserver.supportedEntryTypes],
     },
     display: {
       viewportWidth: window.innerWidth,
@@ -494,7 +499,7 @@ function errorMessage(value: unknown) {
 
 export class PerformanceLabCollector {
   private buffers = createChunkBuffers();
-  private observers: PerformanceObserver[] = [];
+  private observers: Array<{ observer: PerformanceObserver; callback: (entries: PerformanceEntry[]) => void }> = [];
   private disposers: Array<() => void> = [];
   private animationFrame = 0;
   private chunkTimer = 0;
@@ -554,8 +559,8 @@ export class PerformanceLabCollector {
     return this.startedAtUnixMs;
   }
 
-  private elapsed(unixMs = Date.now()) {
-    return Math.max(0, unixMs - this.startedAtUnixMs);
+  private elapsed() {
+    return Math.max(0, performance.now() - this.startedAtMonotonicMs);
   }
 
   private installFrameSampler() {
@@ -604,7 +609,7 @@ export class PerformanceLabCollector {
     const observer = new PerformanceObserver((list) => callback(list.getEntries()));
     try {
       observer.observe({ type, buffered: true, ...options } as PerformanceObserverInit);
-      this.observers.push(observer);
+      this.observers.push({ observer, callback });
     } catch {
       observer.disconnect();
     }
@@ -637,7 +642,7 @@ export class PerformanceLabCollector {
           blockingDuration?: number;
           renderStart?: number;
           styleAndLayoutStart?: number;
-          scripts?: Array<{ duration?: number; invoker?: string; sourceFunctionName?: string }>;
+          scripts?: Array<{ duration?: number; invoker?: string; sourceFunctionName?: string; sourceURL?: string; sourceCharPosition?: number; forcedStyleAndLayoutDuration?: number }>;
         };
         this.buffers.longAnimationFrames.push({
           elapsedMs: entry.startTime - this.startedAtMonotonicMs,
@@ -655,6 +660,9 @@ export class PerformanceLabCollector {
             durationMs: script.duration ?? 0,
             invoker: limitedText(script.invoker, 160) || undefined,
             sourceFunctionName: limitedText(script.sourceFunctionName, 160) || undefined,
+            sourceURL: script.sourceURL ? sanitizePerformanceResourceName(script.sourceURL) : undefined,
+            sourceCharPosition: script.sourceCharPosition,
+            forcedStyleAndLayoutDuration: script.forcedStyleAndLayoutDuration,
           })),
         });
         this.longAnimationFrameCount += 1;
@@ -811,6 +819,7 @@ export class PerformanceLabCollector {
   }
 
   private installDiagnosticObservers() {
+    this.buffers.visibility.push([this.elapsed(), document.visibilityState]);
     const bodyObserver = new MutationObserver((mutations) => {
       for (const mutation of mutations) {
         const attributeName = mutation.attributeName;
@@ -916,7 +925,10 @@ export class PerformanceLabCollector {
     window.cancelAnimationFrame(this.animationFrame);
     window.clearInterval(this.chunkTimer);
     window.clearInterval(this.memoryTimer);
-    this.observers.forEach((observer) => observer.disconnect());
+    this.observers.forEach(({ observer, callback }) => {
+      callback(observer.takeRecords());
+      observer.disconnect();
+    });
     this.disposers.forEach((dispose) => dispose());
     this.sampleMemory();
     this.flushChunk();

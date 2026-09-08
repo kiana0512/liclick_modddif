@@ -24,6 +24,7 @@ export type PerformanceLabSessionListItem = {
 };
 
 export type PerformanceLabSessionDetail = PerformanceLabSessionListItem & {
+  analysis?: Record<string, unknown>;
   clientContext: Record<string, unknown>;
   report?: Record<string, unknown>;
   chunks: Array<{

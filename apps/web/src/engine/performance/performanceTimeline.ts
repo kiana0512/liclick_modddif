@@ -53,6 +53,7 @@ export function markPerformanceEvent(
   name: string,
   detail?: Record<string, unknown>,
   phase: PerformanceTimelineEvent['phase'] = 'instant',
+  durationMs?: number,
 ) {
   if (!enabled) return undefined;
   const event: PerformanceTimelineEvent = {
@@ -63,6 +64,7 @@ export function markPerformanceEvent(
     name,
     phase,
     detail,
+    durationMs,
   };
   events.push(event);
   if (events.length > maximumEvents) events.splice(0, events.length - maximumEvents);
@@ -81,8 +83,7 @@ export function startPerformanceSpan(
   return (phase: 'end' | 'error' = 'end', endDetail?: Record<string, unknown>) => {
     if (ended) return;
     ended = true;
-    const finished = markPerformanceEvent(category, name, endDetail, phase);
-    if (finished) finished.durationMs = finished.monotonicMs - started.monotonicMs;
+    markPerformanceEvent(category, name, endDetail, phase, performance.now() - started.monotonicMs);
   };
 }
 

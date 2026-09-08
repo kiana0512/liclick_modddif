@@ -72,14 +72,6 @@ function statusText(state: UploadState, sessionId?: string) {
   return '等待人工录制';
 }
 
-function toneClass(state: UploadState) {
-  if (state === 'recording') return 'border-red-400/60 bg-red-950/90 text-red-100';
-  if (state === 'saved') return 'border-emerald-400/55 bg-emerald-950/90 text-emerald-100';
-  if (state === 'error') return 'border-rose-400/70 bg-rose-950/95 text-rose-100';
-  if (state === 'retrying') return 'border-amber-400/60 bg-amber-950/90 text-amber-100';
-  return 'border-white/20 bg-black/88 text-white/75';
-}
-
 function groupedSessions(sessions: PerformanceLabSessionListItem[]) {
   const groups = new Map<
     string,
@@ -218,11 +210,12 @@ export function PerformanceRecordsDialog({
                 ['样本', selected.sampleCount], ['数据量', (selected.totalBytes / 1024).toFixed(1) + ' KB'],
               ].map(([label, value]) => <div key={label}><p>{label}</p><strong>{value}</strong></div>)}</div>
               {[
+                ['慢帧定位与优化线索', selected.analysis ?? { 说明: '此记录没有分析结果' }],
                 ['性能汇总', selected.summary ?? {}],
                 ['设备能力 · ANGLE / D3D', selected.clientContext],
                 ['操作分析报告', selected.report ?? {}],
                 ['原始时间线与分块', selected.chunks],
-              ].map(([label, value]) => <details key={String(label)} open={label === '性能汇总'}>
+              ].map(([label, value]) => <details key={String(label)} open={label === '慢帧定位与优化线索'}>
                 <summary>{String(label)}</summary><pre>{JSON.stringify(value, null, 2)}</pre>
               </details>)}
             </>}
@@ -399,7 +392,7 @@ export function PerformanceLabCloudBridge({ projectId }: { projectId: string }) 
   return (
     <>
       <div
-        className={`fixed left-1/2 top-2 z-[65] flex -translate-x-1/2 items-center gap-2 rounded-lg border px-2.5 py-1.5 text-[11px] shadow-xl backdrop-blur-md ${toneClass(uploadState)}`}
+        className="perf-cloud-status"
         data-performance-cloud-state={uploadState}
         data-performance-session-id={sessionId}
       >

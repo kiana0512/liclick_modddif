@@ -22,3 +22,9 @@
 .perf-detail pre { max-height:460px; overflow:auto; padding:16px; background:#0005; font-size:11px; line-height:1.7; color:#b6d3cc; }
 .perf-error { padding:12px 20px; background:#501e30; }
 @media(max-width:760px) { .perf-dialog { padding:8px; } .perf-columns { grid-template-columns:1fr; overflow:auto; } .perf-list { max-height:34vh; } .perf-detail { overflow:visible; } .perf-header { padding:12px; } }
+
+.perf-cloud-status { position:fixed; top:8px; left:50%; transform:translateX(-50%); z-index:65; display:flex; align-items:center; gap:8px; padding:6px 10px; border:1px solid #ffffff30; border-radius:8px; background:#080a12ee; color:#d8dce8; font-size:11px; box-shadow:0 8px 24px #0006; }
+.perf-cloud-status[data-performance-cloud-state=recording] { border-color:#f66969; background:#431521; }
+.perf-cloud-status[data-performance-cloud-state=saved] { border-color:#49c49c; background:#12372c; }
+.perf-cloud-status[data-performance-cloud-state=error] { border-color:#ee6580; background:#441626; }
+.perf-cloud-status[data-performance-cloud-state=retrying] { border-color:#d9ad54; background:#3b2d15; }

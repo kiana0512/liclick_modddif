@@ -4,6 +4,7 @@ import { requireAuth } from '../auth/authMiddleware.js';
 import type { AuthUser } from '../auth/authTypes.js';
 import { canReadAllPerformanceSessions } from '../auth/performanceLabAccess.js';
 import { serverConfig } from '../config.js';
+import { analyzePerformanceSession } from '../services/performanceLabAnalysis.js';
 import { projectRepository as defaultProjectRepository } from '../repositories/projectRepository.js';
 import {
   PerformanceLabPersistenceConflictError,
@@ -293,7 +294,7 @@ async function getAdminSession(
     sendJson(response, 404, { error: 'Performance session not found.' });
     return;
   }
-  sendJson(response, 200, { session });
+  sendJson(response, 200, { session: { ...session, analysis: analyzePerformanceSession(session.chunks) } });
 }
 
 export function createPerformanceLabRoute(input: {
