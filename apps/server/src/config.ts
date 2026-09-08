@@ -291,6 +291,19 @@ const objectStorageEndpoint = objectStorageEndpointRaw
       allowNonLoopbackHttp: objectStorageAllowInsecureHttp,
     })
   : '';
+// Server-to-storage calls (the HEAD that verifies an uploaded object) can go
+// straight to the storage service inside the cluster instead of back out
+// through the public HTTPS ingress. Plain http is expected here — this URL is
+// never handed to a browser, so mixed-content rules don't apply — hence
+// allowNonLoopbackHttp regardless of the browser-facing setting above.
+// Presigned URLs given to the browser always keep using the public endpoint.
+const objectStorageInternalEndpointRaw =
+  process.env.LICLICK_OBJECT_STORAGE_INTERNAL_ENDPOINT?.trim() ?? '';
+const objectStorageInternalEndpoint = objectStorageInternalEndpointRaw
+  ? serverHttpUrl(objectStorageInternalEndpointRaw, 'LICLICK_OBJECT_STORAGE_INTERNAL_ENDPOINT', {
+      allowNonLoopbackHttp: true,
+    })
+  : objectStorageEndpoint;
 const objectStorageSignedUrlTtlSeconds = Math.min(
   900,
   Math.max(
@@ -782,6 +795,7 @@ export const serverConfig = {
   objectStorage: {
     enabled: objectStorageEnabled,
     endpoint: objectStorageEndpoint,
+    internalEndpoint: objectStorageInternalEndpoint,
     insecureHttpActive:
       objectStorageEnabled &&
       objectStorageAllowInsecureHttp &&

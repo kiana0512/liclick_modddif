@@ -78,19 +78,24 @@ metadata:
   name: li3d-object-storage
   namespace: li3d
   annotations:
-    # Assets are 3D models/textures — ASSET_SERVICE_MAX_UPLOAD_BYTES allows
-    # 2 GiB, so don't let the proxy be the thing that truncates them.
-    nginx.ingress.kubernetes.io/proxy-body-size: "2g"
+    # No proxy-imposed size ceiling: "0" disables nginx's check entirely, so
+    # the only limit left is S3's own 5 GiB single-PUT cap (the app signs a
+    # single PUT, not multipart). Pairs with buffering off below.
+    nginx.ingress.kubernetes.io/proxy-body-size: "0"
+    # Stream the body straight through to RGW instead of spooling the whole
+    # upload to the controller's disk first (nginx default is `on`, with only
+    # an 8k memory buffer, so every asset above 8 KiB was hitting disk and
+    # paying double latency). Required for large-object throughput.
+    nginx.ingress.kubernetes.io/proxy-request-buffering: "off"
     nginx.ingress.kubernetes.io/proxy-read-timeout: "600"
     nginx.ingress.kubernetes.io/proxy-send-timeout: "600"
-    # Browser-direct upload is cross-origin (page on li3d.lilithgames.com,
-    # PUT to li3d-s3.lilithgames.com). These three request headers are set by
-    # putDirectAsset() and are part of the SigV4 signed header set.
-    nginx.ingress.kubernetes.io/enable-cors: "true"
-    nginx.ingress.kubernetes.io/cors-allow-origin: "https://li3d.lilithgames.com"
-    nginx.ingress.kubernetes.io/cors-allow-methods: "GET, PUT, HEAD, OPTIONS"
-    nginx.ingress.kubernetes.io/cors-allow-headers: "content-type,x-amz-checksum-sha256,x-amz-meta-liclick-sha256,x-amz-content-sha256,x-amz-date,authorization"
-    nginx.ingress.kubernetes.io/cors-expose-headers: "etag,x-amz-checksum-sha256,x-amz-request-id"
+    #
+    # Deliberately NO enable-cors here. Browser-direct upload is cross-origin,
+    # but CORS is configured on the bucket itself via the S3 PutBucketCors API
+    # (2026-09-08) so RGW answers preflights natively — see this directory's
+    # README. Turning on the ingress CORS annotations as well makes nginx add
+    # a second set of Access-Control-* headers on top of RGW's, and a browser
+    # rejects a response carrying duplicate Access-Control-Allow-Origin.
 spec:
   ingressClassName: nginx
   tls:

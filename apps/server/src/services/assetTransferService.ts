@@ -95,6 +95,18 @@ function presigner() {
   return createS3Presigner(config);
 }
 
+// For requests this server makes itself, rather than URLs handed to a browser.
+// Defaults to the same endpoint, so behaviour is unchanged unless
+// LICLICK_OBJECT_STORAGE_INTERNAL_ENDPOINT is set; when it is, verification
+// reaches the storage service directly instead of looping back out through
+// the public ingress (and stops depending on public DNS/TLS resolving from
+// inside the cluster). The signature covers `host`, so this must be signed
+// against whichever endpoint the request is actually sent to.
+function internalPresigner() {
+  const config = assertObjectStorageConfigured();
+  return createS3Presigner({ ...config, endpoint: config.internalEndpoint });
+}
+
 function objectKeyFor(input: {
   userId: string;
   projectId: string;
@@ -269,7 +281,7 @@ export async function completeAssetUploadIntent(
     throw new AssetTransferError('Asset upload intent has expired.', 410, 'ASSET_INTENT_EXPIRED');
   }
   const checksumModeHeaders = { 'x-amz-checksum-mode': 'ENABLED' };
-  const headUrl = presigner()({
+  const headUrl = internalPresigner()({
     method: 'HEAD',
     objectKey: record.objectKey,
     expiresInSeconds: Math.min(120, config.signedUrlTtlSeconds),
