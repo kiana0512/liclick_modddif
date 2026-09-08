@@ -34,6 +34,15 @@ export type ModelviewInpaintInput = ModelviewGenerationInput & {
 export type ModelviewSingleViewInput = ModelviewGenerationInput;
 export type ModelviewSingleViewInpaintInput = ModelviewInpaintInput;
 
+type ModelviewResponse = {
+  id: string;
+  resultUrl?: string;
+  resultUrls?: string[];
+  modelviewJobId?: string;
+  modelviewClientId?: string;
+  output?: unknown;
+};
+
 async function requestJson<T>(
   path: string,
   init?: RequestInit & { timeoutMs?: number },
@@ -73,146 +82,101 @@ async function requestJson<T>(
   }
 }
 
+function toGeneration(
+  input: ModelviewGenerationInput,
+  result: ModelviewResponse,
+  provider: string,
+  modelviewWorkflow: string,
+  mode: Generation['mode'] = 'single',
+): Generation {
+  return {
+    id: input.clientGenerationId,
+    mode,
+    prompt: input.prompt ?? '',
+    referenceIds:
+      mode === 'inpaint'
+        ? []
+        : [input.modelViewReferenceId, input.materialReferenceId].filter(
+            (id): id is string => typeof id === 'string' && id.length > 0,
+          ),
+    captureId: input.captureId,
+    resultUrl: result.resultUrl,
+    status: result.resultUrl ? 'succeeded' : 'failed',
+    metadata: {
+      provider,
+      workflow: mode === 'inpaint' ? 'local-repaint' : 'texture-map',
+      modelviewWorkflow,
+      clientGenerationId: input.clientGenerationId,
+      serverJobId: result.modelviewJobId ?? result.id,
+      projectId: input.projectId,
+      modelviewJobId: result.modelviewJobId,
+      modelviewClientId: result.modelviewClientId,
+      resultUrls: result.resultUrls,
+      output: result.output,
+      objectId: input.objectId,
+      materialReferenceId: input.materialReferenceId,
+      materialReferenceGroupId: input.materialReferenceGroupId,
+      materialReferenceName: input.materialReferenceName,
+      materialReferenceRole: input.materialReferenceRole,
+      ...(mode === 'single' ? { singleViewProvider: 'remote' } : {}),
+      ...(provider === 'modelview-single-view-inpaint'
+        ? { singleViewInputMode: 'existing-texture-completion' }
+        : {}),
+      serverSubmitted: true,
+    },
+  };
+}
+
 export function createModelviewApiClient() {
   return {
     async generateSingleView(
       input: ModelviewSingleViewInput,
       options?: { signal?: AbortSignal },
     ): Promise<Generation> {
-      const result = await requestJson<{
-        id: string;
-        resultUrl?: string;
-        resultUrls?: string[];
-        modelviewJobId?: string;
-        modelviewClientId?: string;
-        output?: unknown;
-      }>('/api/modelview/single-view', {
+      const result = await requestJson<ModelviewResponse>('/api/modelview/single-view', {
         method: 'POST',
         signal: options?.signal,
         body: JSON.stringify(input),
       });
-      return {
-        id: input.clientGenerationId,
-        mode: 'single',
-        prompt: input.prompt ?? '',
-        referenceIds: [input.modelViewReferenceId, input.materialReferenceId].filter(
-          (id): id is string => typeof id === 'string' && id.length > 0,
-        ),
-        captureId: input.captureId,
-        resultUrl: result.resultUrl,
-        status: result.resultUrl ? 'succeeded' : 'failed',
-        metadata: {
-          provider: 'modelview-single-view',
-          workflow: 'texture-map',
-          modelviewWorkflow: '2026.08.26-c0e6218-single-view-4step-r1',
-          clientGenerationId: input.clientGenerationId,
-          serverJobId: result.modelviewJobId ?? result.id,
-          projectId: input.projectId,
-          modelviewJobId: result.modelviewJobId,
-          modelviewClientId: result.modelviewClientId,
-          resultUrls: result.resultUrls,
-          output: result.output,
-          objectId: input.objectId,
-          materialReferenceId: input.materialReferenceId,
-          materialReferenceGroupId: input.materialReferenceGroupId,
-          materialReferenceName: input.materialReferenceName,
-          materialReferenceRole: input.materialReferenceRole,
-          singleViewProvider: 'remote',
-          serverSubmitted: true,
-        },
-      };
+      return toGeneration(
+        input,
+        result,
+        'modelview-single-view',
+        '2026.08.26-c0e6218-single-view-4step-r1',
+      );
     },
     async generateSingleViewInpaint(
       input: ModelviewSingleViewInpaintInput,
       options?: { signal?: AbortSignal },
     ): Promise<Generation> {
-      const result = await requestJson<{
-        id: string;
-        resultUrl?: string;
-        resultUrls?: string[];
-        modelviewJobId?: string;
-        modelviewClientId?: string;
-        output?: unknown;
-      }>('/api/modelview/single-view-inpaint', {
+      const result = await requestJson<ModelviewResponse>('/api/modelview/single-view-inpaint', {
         method: 'POST',
         signal: options?.signal,
         body: JSON.stringify(input),
       });
-      return {
-        id: input.clientGenerationId,
-        mode: 'single',
-        prompt: input.prompt ?? '',
-        referenceIds: [input.modelViewReferenceId, input.materialReferenceId].filter(
-          (id): id is string => typeof id === 'string' && id.length > 0,
-        ),
-        captureId: input.captureId,
-        resultUrl: result.resultUrl,
-        status: result.resultUrl ? 'succeeded' : 'failed',
-        metadata: {
-          provider: 'modelview-single-view-inpaint',
-          workflow: 'texture-map',
-          modelviewWorkflow: '2026.08.31-e39ed5f-single-view-inpaint-4input-rseed-steps2-r1',
-          clientGenerationId: input.clientGenerationId,
-          serverJobId: result.modelviewJobId ?? result.id,
-          projectId: input.projectId,
-          modelviewJobId: result.modelviewJobId,
-          modelviewClientId: result.modelviewClientId,
-          resultUrls: result.resultUrls,
-          output: result.output,
-          objectId: input.objectId,
-          materialReferenceId: input.materialReferenceId,
-          materialReferenceGroupId: input.materialReferenceGroupId,
-          materialReferenceName: input.materialReferenceName,
-          materialReferenceRole: input.materialReferenceRole,
-          singleViewProvider: 'remote',
-          singleViewInputMode: 'existing-texture-completion',
-          serverSubmitted: true,
-        },
-      };
+      return toGeneration(
+        input,
+        result,
+        'modelview-single-view-inpaint',
+        '2026.08.31-e39ed5f-single-view-inpaint-4input-rseed-steps2-r1',
+      );
     },
     async generateInpaint(
       input: ModelviewInpaintInput,
       options?: { signal?: AbortSignal },
     ): Promise<Generation> {
-      const result = await requestJson<{
-        id: string;
-        resultUrl?: string;
-        resultUrls?: string[];
-        modelviewJobId?: string;
-        modelviewClientId?: string;
-        output?: unknown;
-      }>('/api/modelview/inpaint', {
+      const result = await requestJson<ModelviewResponse>('/api/modelview/inpaint', {
         method: 'POST',
         signal: options?.signal,
         body: JSON.stringify(input),
       });
-      return {
-        id: input.clientGenerationId,
-        mode: 'inpaint',
-        prompt: input.prompt ?? '',
-        referenceIds: [],
-        captureId: input.captureId,
-        resultUrl: result.resultUrl,
-        status: result.resultUrl ? 'succeeded' : 'failed',
-        metadata: {
-          provider: 'modelview-int8',
-          workflow: 'local-repaint',
-          modelviewWorkflow: '2026.08.28-cd48a78-truev3-gguf-mask-4input-rseed-r1',
-          clientGenerationId: input.clientGenerationId,
-          serverJobId: result.modelviewJobId ?? result.id,
-          projectId: input.projectId,
-          modelviewJobId: result.modelviewJobId,
-          modelviewClientId: result.modelviewClientId,
-          resultUrls: result.resultUrls,
-          output: result.output,
-          objectId: input.objectId,
-          materialReferenceId: input.materialReferenceId,
-          materialReferenceGroupId: input.materialReferenceGroupId,
-          materialReferenceName: input.materialReferenceName,
-          materialReferenceRole: input.materialReferenceRole,
-          serverSubmitted: true,
-        },
-      };
+      return toGeneration(
+        input,
+        result,
+        'modelview-int8',
+        '2026.08.28-cd48a78-truev3-gguf-mask-4input-rseed-r1',
+        'inpaint',
+      );
     },
   };
 }
