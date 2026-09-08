@@ -81,6 +81,26 @@ try {
     'The shared live preview may be released after the resident projected mask is authoritative.',
   );
   assert.equal(
+    shouldRetainProjectedEraserPreview({
+      target: 'projected-mask',
+      pendingPaintCommits: 0,
+      residentMaskBound: false,
+      layerVisible: true,
+    }),
+    true,
+    'A visible projected layer must retain the live mask until the rebuilt resident material binds it.',
+  );
+  assert.equal(
+    shouldRetainProjectedEraserPreview({
+      target: 'projected-mask',
+      pendingPaintCommits: 0,
+      residentMaskBound: false,
+      layerVisible: false,
+    }),
+    false,
+    'A hidden projected layer may release the live sampler because its stored live mask is authoritative when reopened.',
+  );
+  assert.equal(
     shouldRetainProjectedEraserPreview({ target: 'uv-image', pendingPaintCommits: 1 }),
     false,
     'UV-image erasing does not use the projected live-mask handoff.',
@@ -117,8 +137,8 @@ try {
   );
   assert.match(
     viewportSource,
-    /previousLayer\.objectId !== model\.objectId \|\|[\s\S]*?previousLayer\.layerId !== activePaintLayerId[\s\S]*?previousLayer\.pendingPaintCommits > 0[\s\S]*?paintLayerHandoffPromiseRef\.current = handoffPromise;[\s\S]*?await handoffPromise;[\s\S]*?const layer = getUvPaintLayer\(model\);/,
-    'Layer or model selection must keep the previous live eraser mask resident until its queued commit is authoritative.',
+    /previousLayer\.objectId !== model\.objectId \|\|[\s\S]*?previousLayer\.layerId !== activePaintLayerId[\s\S]*?previousLayer\.pendingPaintCommits > 0 \|\|[\s\S]*?previousLayer\.liveEraserPreviewActive \|\|[\s\S]*?previousLayer\.projectedEraserResidentHandoffPromise[\s\S]*?await handoffPromise;[\s\S]*?endLiveEraserPreview\(previousLayer\);[\s\S]*?await previousLayer\.projectedEraserResidentHandoffPromise;[\s\S]*?const layer = getUvPaintLayer\(model\);/,
+    'Layer or model selection must wait for both the queued pixel commit and the resident material handoff before reusing the single live eraser sampler.',
   );
   assert.match(
     viewportSource,
@@ -127,8 +147,13 @@ try {
   );
   assert.match(
     viewportSource,
-    /function endLiveEraserPreview[\s\S]*?shouldRetainProjectedEraserPreview\([\s\S]*?return;[\s\S]*?promoteProjectedEraserMaskToResidentMaterial[\s\S]*?clearLiveSurfacePaintPreview/,
-    'Tool, layer and preview switches must not clear the shared live eraser authority before the queued resident commit finishes.',
+    /function endLiveEraserPreview[\s\S]*?shouldRetainProjectedEraserPreview\([\s\S]*?return;[\s\S]*?promoteProjectedEraserMaskToResidentMaterial[\s\S]*?shouldRetainProjectedEraserPreview\([\s\S]*?projectedEraserResidentHandoffs\?\.add\(layer\)[\s\S]*?clearLiveSurfacePaintPreview/,
+    'Tool, layer and preview switches must retain the shared live authority through both pixel commit and resident-material handoff.',
+  );
+  assert.match(
+    viewportSource,
+    /liclick:projected-material-resident[\s\S]*?projectedEraserResidentHandoffsRef\.current[\s\S]*?endLiveEraserPreview\(layer\)/,
+    'A resident material publication must retry and complete pending projected eraser handoffs.',
   );
   const claimStart = viewportSource.indexOf('if (!result) return;\n      setViewportPaintPointer');
   assert(claimStart >= 0);

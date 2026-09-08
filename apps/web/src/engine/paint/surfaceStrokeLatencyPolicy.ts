@@ -35,6 +35,12 @@ export function shouldUploadSurfaceStrokeProjectionTexture(input: {
 export function shouldRetainProjectedEraserPreview(input: {
   target: SurfaceStrokeLatencyTarget;
   pendingPaintCommits: number;
+  residentMaskBound?: boolean;
+  layerVisible?: boolean;
 }) {
-  return input.target === 'projected-mask' && input.pendingPaintCommits > 0;
+  return (
+    input.target === 'projected-mask' &&
+    (input.pendingPaintCommits > 0 ||
+      (input.layerVisible !== false && input.residentMaskBound === false))
+  );
 }

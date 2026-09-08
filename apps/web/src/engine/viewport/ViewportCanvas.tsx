@@ -3939,6 +3939,9 @@ type UvPaintLayer = {
   liveEraserPreviewActive: boolean;
   liveEraserPreviewInitialized: boolean;
   liveEraserPreviewRoot?: THREE.Object3D;
+  projectedEraserResidentHandoffs?: Set<UvPaintLayer>;
+  projectedEraserResidentHandoffPromise?: Promise<void>;
+  resolveProjectedEraserResidentHandoff?: () => void;
   paintOverlayTargets: Set<THREE.Mesh>;
   paintPreviewOverlays: THREE.Mesh[];
   projectionCanvas: HTMLCanvasElement;
@@ -6740,10 +6743,47 @@ function endLiveEraserPreview(layer: UvPaintLayer) {
     // commit calls this function again after promoting the resident texture.
     return;
   }
+  let residentMaskBound = false;
   if (root && layer.pendingPaintCommits === 0) {
-    promoteProjectedEraserMaskToResidentMaterial(layer, root);
+    residentMaskBound = promoteProjectedEraserMaskToResidentMaterial(layer, root);
+  }
+  const storedLayer = useLayerStore.getState().layers.find((item) => item.id === layer.layerId);
+  const storedLayerOwnsEditedMask = Boolean(
+    storedLayer?.visible &&
+      storedLayer.type === 'projected' &&
+      storedLayer.maskSpace === 'uv' &&
+      storedLayer.maskUrl === layer.assetUrl,
+  );
+  if (
+    root &&
+    layer.isReady &&
+    !layer.pendingBaseImage &&
+    shouldRetainProjectedEraserPreview({
+      target: layer.target,
+      pendingPaintCommits: layer.pendingPaintCommits,
+      residentMaskBound,
+      layerVisible: storedLayerOwnsEditedMask,
+    })
+  ) {
+    // Texture-array materials cannot replace an authored mask URL in place.
+    // The layer store already points at the edited live canvas, but SceneRoot
+    // still has to publish a new material whose direct mask uniform owns that
+    // URL. Keep the cumulative eraser multiplier authoritative until the
+    // projected-material-resident event verifies that handoff. Releasing it at
+    // pixel-commit time makes tool/layer/preview switches reveal the old mask.
+    layer.projectedEraserResidentHandoffs?.add(layer);
+    if (!layer.projectedEraserResidentHandoffPromise) {
+      layer.projectedEraserResidentHandoffPromise = new Promise<void>((resolve) => {
+        layer.resolveProjectedEraserResidentHandoff = resolve;
+      });
+    }
+    return;
   }
   clearLiveSurfacePaintPreview(layer.layerId, layer.liveResultUrl);
+  layer.projectedEraserResidentHandoffs?.delete(layer);
+  layer.resolveProjectedEraserResidentHandoff?.();
+  layer.projectedEraserResidentHandoffPromise = undefined;
+  layer.resolveProjectedEraserResidentHandoff = undefined;
   if (root && layer.pendingPaintCommits === 0) {
     // A layer/eye change may end input while pointer-up is still queued. Keep
     // ownership in that case so the commit's finally block can either complete
@@ -6806,6 +6846,7 @@ function SurfacePaintOverlay() {
   const projectionTextureUpdateTimerRef = useRef<number>();
   const projectionTextureLastUpdateAtRef = useRef(0);
   const projectedEraserBatchesRef = useRef(new Map<string, PendingProjectedEraserBatch>());
+  const projectedEraserResidentHandoffsRef = useRef(new Set<UvPaintLayer>());
   const pointerListenerGenerationRef = useRef(0);
   const localRepaintUvCommitRevisionRef = useRef(0);
   const localRepaintUvCommitChainRef = useRef(Promise.resolve());
@@ -8079,6 +8120,7 @@ function SurfacePaintOverlay() {
         liveResultUrl,
         liveEraserPreviewActive: false,
         liveEraserPreviewInitialized: false,
+        projectedEraserResidentHandoffs: projectedEraserResidentHandoffsRef.current,
         paintOverlayTargets: new Set(),
         paintPreviewOverlays: [],
         projectionCanvas: projection.canvas,
@@ -8144,21 +8186,29 @@ function SurfacePaintOverlay() {
         previousLayer &&
         (previousLayer.objectId !== model.objectId ||
           previousLayer.layerId !== activePaintLayerId) &&
-        previousLayer.pendingPaintCommits > 0
+        (previousLayer.pendingPaintCommits > 0 ||
+          previousLayer.liveEraserPreviewActive ||
+          previousLayer.projectedEraserResidentHandoffPromise)
       ) {
         // Pointer-up publishes a projected eraser stroke from the idle commit
-        // queue. Keep the old live multiplier resident until that authoritative
-        // mask is in the layer store; otherwise selecting another row disposes
-        // the only copy of the stroke and the erased area appears to vanish.
-        const handoffPromise = previousLayer.paintCommitChain;
-        paintCommitHandoffLayerIdRef.current = previousLayer.layerId;
-        paintLayerHandoffPromiseRef.current = handoffPromise;
-        await handoffPromise;
-        if (paintLayerHandoffPromiseRef.current === handoffPromise) {
-          paintLayerHandoffPromiseRef.current = undefined;
+        // queue. Keep the old live multiplier resident until the layer store
+        // owns that mask and the rebuilt material has bound it; otherwise a
+        // row/tool/preview switch can reveal the previous authored mask.
+        if (previousLayer.pendingPaintCommits > 0) {
+          const handoffPromise = previousLayer.paintCommitChain;
+          paintCommitHandoffLayerIdRef.current = previousLayer.layerId;
+          paintLayerHandoffPromiseRef.current = handoffPromise;
+          await handoffPromise;
+          if (paintLayerHandoffPromiseRef.current === handoffPromise) {
+            paintLayerHandoffPromiseRef.current = undefined;
+          }
+          if (paintCommitHandoffLayerIdRef.current === previousLayer.layerId) {
+            paintCommitHandoffLayerIdRef.current = undefined;
+          }
         }
-        if (paintCommitHandoffLayerIdRef.current === previousLayer.layerId) {
-          paintCommitHandoffLayerIdRef.current = undefined;
+        endLiveEraserPreview(previousLayer);
+        if (previousLayer.projectedEraserResidentHandoffPromise) {
+          await previousLayer.projectedEraserResidentHandoffPromise;
         }
         if (cancelled) return;
       }
@@ -8528,7 +8578,15 @@ function SurfacePaintOverlay() {
   ]);
 
   useEffect(() => {
-    const handleProjectedMaterialResident = () => syncLocalRepaintGpuOverlayActivity();
+    const handleProjectedMaterialResident = (event: Event) => {
+      const objectId = (event as CustomEvent<{ objectId?: string }>).detail?.objectId;
+      for (const layer of [...projectedEraserResidentHandoffsRef.current]) {
+        if (objectId && layer.objectId !== objectId) continue;
+        if (layer.pendingPaintCommits > 0 || layer.liveEraserPreviewActive) continue;
+        endLiveEraserPreview(layer);
+      }
+      syncLocalRepaintGpuOverlayActivity();
+    };
     window.addEventListener('liclick:projected-material-resident', handleProjectedMaterialResident);
     return () =>
       window.removeEventListener(
@@ -8607,7 +8665,16 @@ function SurfacePaintOverlay() {
     layer.paintPreviewOverlays.push(paintOverlay);
   }, []);
 
-  useEffect(() => () => disposeUvPaintLayer(layerRef.current), []);
+  useEffect(
+    () => () => {
+      disposeUvPaintLayer(layerRef.current);
+      for (const layer of projectedEraserResidentHandoffsRef.current) {
+        layer.resolveProjectedEraserResidentHandoff?.();
+      }
+      projectedEraserResidentHandoffsRef.current.clear();
+    },
+    [],
+  );
 
   const scheduleTextureUpdate = useCallback(
     (texture: THREE.CanvasTexture) => {

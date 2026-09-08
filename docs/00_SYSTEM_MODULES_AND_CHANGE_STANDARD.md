@@ -12,7 +12,7 @@
 
 ## 1. 文档地位与强制边界
 
-变更卡 `CHG-20260908-PROJECTED-ERASER-UI-REBUILD-HANDOFF`：UI-05/UI-06/UI-09/UI-10，主模块 M08，协作 M04/M05/M06/M12；`ALG-ERASE-001` v1.3.5。普通 projected 橡皮的 512/1024 实时 keep-mask 已同时绑定当前材质与共享注册表，但旧退出逻辑在全分辨率提交未完成时保留对象 root、却提前清除共享注册表。当前材质尚能显示擦除，单视图准备、图层选择或 Flat/PBR 预览开关一旦重建材质，SceneRoot 便失去可重绑的实时蒙版，只能读取提交前的持久 mask，造成擦除区域回弹。现在只要 projected-mask 仍有 pending commit，就同时保留 root 和共享实时权威；最后一个提交把正式全分辨率 CanvasTexture 原子提升到全部驻留材质后，再统一清理。提交失败则恢复旧持久蒙版后清理。擦除覆盖、作者 mask、GPU shader、CPU/Worker 补缝、UV/export、最终分辨率、Project/Layer Schema、Command 幂等性、Revision CAS、ownership 与资产不变，无迁移；回退恢复提前清理会重新引入该竞态。
+变更卡 `CHG-20260908-PROJECTED-ERASER-UI-REBUILD-HANDOFF`：UI-05/UI-06/UI-09/UI-10，主模块 M08，协作 M04/M05/M06/M12；`ALG-ERASE-001` v1.3.6。普通 projected 橡皮的 512/1024 实时 keep-mask 已同时绑定当前材质与共享注册表。v1.3.5 只等待全分辨率提交完成，但多投影纹理数组不能在旧材质中原位替换 authored mask URL；提交已进入 LayerStore、SceneRoot 新材质尚未发布的窗口内，退出工具、启动单视图、选择图层或切换 Flat/PBR 仍会提前清除共享实时权威，重新显示旧蒙版。现在交接分为两段：先等待像素提交，再保持实时 multiplier，直至 `liclick:projected-material-resident` 后验证新材质的 direct mask uniform 已绑定当前 `layer.assetUrl`。切换投影层还会等待该驻留握手后才复用唯一实时采样器；隐藏层可直接释放，重新显示时从已提交蒙版恢复。提交失败仍恢复旧持久蒙版后清理。擦除覆盖、作者 mask、GPU shader、CPU/Worker 补缝、UV/export、最终分辨率、Project/Layer Schema、Command 幂等性、Revision CAS、ownership 与资产不变，无迁移；回退移除驻留握手会重新引入材质重建窗口内的回弹。
 
 变更卡 `CHG-20260907-FILE-RESPONSE-ABORT-CLOSE`：主模块 M14，协作 M01/M10/M13；文件响应生命周期契约 `FILE-RESPONSE-LIFETIME` v1.0.0。用户删除 11-20 工程时 Windows rename 到回收站报 EPERM。源码发现 workspace、烘焙单张产物、Web 静态文件响应直接 ReadStream.pipe(response)，取消下载后可能将源流留在背压暂停状态，继续持有文件描述符。改为共用 Node pipeline，由响应提前关闭/读取失败联动销毁源流；完整响应和背压不变，不将网络中断升级为未处理异常。真实 HTTP 测试用 16 MiB 文件中途取消，旧 pipe 实现在句柄关闭断言失败，新实现通过；同测验证完整字节、源读取失败及保留数据的目录移入回收站。该证据证明文件句柄泄漏，不据此认定所有 EPERM 都来自相同原因；旧进程句柄需重启释放。调用前的认证、owner、路径包含/realpath、安全响应头、HEAD 与烘焙状态门禁保持，删除仍走原回收站 rename，不以强制删除代替。GPU/CPU/Worker/shader、投影/UV/重绘/export 内容、分辨率、QA、Schema、Command 幂等性、Revision CAS 与 verified assets 不变，无迁移；回退仅恢复三个响应入口的 pipe，但会重新引入中断资源泄漏。
 
@@ -337,7 +337,7 @@ Layer 的 `type`、`role`、`blendMode`、`visibility policy` 是四个独立维
 
 删除最后一个活动对象图层后，store 自动创建空 UV 保底层。剪刀发布时会隐藏所有实际被消费的源层；若指定空 UV 目标则原位填充，否则在源层位置创建 merged-uv。
 
-### 5.1 当前图层橡皮 `ALG-ERASE-001` v1.3.4
+### 5.1 当前图层橡皮 `ALG-ERASE-001` v1.3.6
 
 橡皮采用 Modddif 式“编辑当前图层覆盖”语义，不对最终合成画面做破坏性擦除。快捷键为贴图工作区 `E`，目标由 `engine/paint/eraserTargetPolicy.ts` 唯一判定，React 和 Zustand 不得复制类型分支。
 
@@ -364,6 +364,8 @@ v1.3.2 投影蒙版显隐交接修复：多投影栈的 `DataArrayTexture` 是 l
 v1.3.3 投影蒙版统一原子交接修复：A100 项目逐个显示投影行时常为 `useTextureArrays=false`，多行同时显示且采样器吃紧时也可能进入 array；两条路径首次擦除都可能需要异步建立持久 keep-mask。旧输入层 `endLiveEraserPreview()` 会在眼睛/工具切换时抢先清除 GPU live multiplier，绕过 SceneRoot 的驻留检查；本地构建快时该时间窗不明显，A100 恢复项目的解码/材质队列较慢时则会显示未擦除的旧材质。现由 SceneRoot 独占清理权：不区分 direct/array，只要已提交材质结构键尚未匹配当前持久蒙版，所有图层均保留累计实时蒙版；替换材质驻留后再原子清除。已有 direct CanvasTexture 驻留时仍原地更新，不增加重建。覆盖、历史、补缝、持久化、分辨率、Schema 与资产均不变，无迁移。
 
 v1.3.4 投影蒙版纹理级原子交接修复：材质结构键相同只表示 sampler 布局相同，不能证明驻留 uniform 已从旧快照切换到本次全分辨率 CanvasTexture。每次普通 projected 橡皮提交及撤回/重做发布后，直接将同一稳定 live URL 对应的正式 keep-mask 纹理提升到当前对象的全部驻留投影材质；只有 `syncProjectedLayerResidentMaskTextureInObject()` 确认所有材质均已绑定后，才清除 512/1024 实时 multiplier。若眼睛、预览或图层切换发生在 pointer-up 提交完成前，则保留对象 root 与实时 multiplier，最后一个提交成功或失败后再完成交接，避免旧材质短暂回弹；刷新、保存资产、覆盖公式、补缝、分辨率、Schema 与 ownership 不变，无迁移。
+
+v1.3.6 材质重建驻留握手修复：pending commit 归零只证明新蒙版像素已经进入 LayerStore，不能证明多投影纹理数组的新材质已绑定该 mask URL。结束实时橡皮时先尝试把正式纹理提升到当前驻留材质；若可见目标层已保存当前 live mask、但驻留绑定尚未成立，则保留累计 multiplier，并登记对象级 handoff。SceneRoot 发布 `liclick:projected-material-resident` 后重试精确 URL 绑定，成功才清理共享实时预览；跨图层选择在复用单一 live sampler 前同时等待像素提交与该驻留 handoff。隐藏/已删除层不等待，因为其 LayerStore 蒙版在重新显示时是权威来源。覆盖公式、GPU shader、CPU/Worker、补缝、保存、UV/export、分辨率、Schema、Revision、ownership 与资产不变，无迁移。
 
 撤回/重做在同一任务中恢复持久瓦片、将当前及同层重建实例的 live eraser multiplier 重置为白色中性值、上传纹理并 invalidate；保持驻留 shader 结构，重新绑定 image/mask URL 和 contentRevision，随后同步 Project layers。此处中性白值是内部 keep-mask，不是编辑结果中的白模。后台细化仍采用项目原始分辨率和 3000ms idle；`engine/paint/refineStrokeHistory.ts` 从最早瓦片检查点按笔画顺序重放，分别更新每笔的 before/after。已撤回笔画仅更新 redo 检查点，不重新显示；新分支清除不再属于历史的笔画。每四个瓦片让出执行权，完成后无 await 地原子发布全部像素与历史；切换、撤回或新笔画使旧任务失效时不发布半成品。
 
@@ -899,6 +901,7 @@ M15 / CLOUD-DEPLOYMENT v1.0.0（2026-09-03）：正常合并 release 部署历�
 | `2.18.12` | 2026-09-07 | `中断下载释放文件句柄` | M14/M01、`FILE-RESPONSE-LIFETIME` v1.0.0：共享 pipeline 关闭被取消的模型/图片响应源流，防止 Windows 文件占用阻碍回收站移动；无算法或数据迁移。 |
 | `2.18.13` | 2026-09-08 | `官方生产 IDaaS 应用接入配置` | M13、`LICLICK-ACCOUNT-BINDING` v1.3.4：官方 lilithplugin_jwt62/lilith 与 prod Gateway 配对，保持根路径固定回调、target_url 和个人账号隔离；增加部署配置及生产 URL 回归。实际发布、正式授权和多用户生图待验收，无 Schema 或数据迁移。 |
 | `2.18.17` | 2026-09-08 | `本次投影橡皮跨界面重建交接修复` | UI-05/UI-06/UI-09/UI-10、M04/M05/M06/M08/M12，`ALG-ERASE-001` v1.3.5：全分辨率 projected keep-mask 提交未完成时同时保留对象 root 与共享实时蒙版权威，使单视图准备、切层和预览开关产生的新材质继续绑定已擦结果；正式蒙版验证驻留后再清理。覆盖公式、分辨率、Schema、Revision、ownership 与资产不变，无迁移。 |
+| `2.18.18` | 2026-09-08 | `本次投影橡皮材质驻留交接修复` | UI-05/UI-06/UI-09/UI-10、M04/M05/M06/M08/M12，`ALG-ERASE-001` v1.3.6：在像素提交后继续保留实时 keep-mask，直到新 projected 材质确认绑定当前 mask URL；切换图层复用实时采样器前等待两段交接，修复单视图、选择图层及预览切换后的旧蒙版回弹。覆盖公式、分辨率、Schema、Revision、ownership 与资产不变，无迁移。 |
 
 `ALG-LR-008` v2.4.1：局部重绘仍自动创建独立目标和结果图层；pointer-down 不再依赖当前图层是否选中、可见或为 UV，只检查自身 source/composite/Session/显示资源。默认保持按钮激活、GPU promotion、结果发布前的原选择（含 undefined），防止内部隐藏 draft 触发面板选择普通投影层。普通画笔/橡皮擦限制、GPU/CPU/Worker/shader、作者 mask、投影/UV/export、分辨率、Schema、Revision、ownership 与资产不变。真实 store 三类选择与入口 gate 回归通过；无数据迁移，回退选择保持与 gate 即可。详见 CHG-20260903-LOCAL-REPAINT-SELECTION-INDEPENDENCE。
 
