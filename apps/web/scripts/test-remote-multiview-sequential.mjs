@@ -34,6 +34,13 @@ const start = panel.indexOf('async function handleRemoteSequentialMultiviewGener
 const end = panel.indexOf('async function handleTextureMapMultiviewGenerate', start);
 assert(start >= 0 && end > start, 'the remote multiview sequential orchestrator must exist');
 const flow = panel.slice(start, end);
+const persistPairedStart = panel.indexOf('async function persistPairedMultiviewReference');
+const persistPairedEnd = panel.indexOf('async function generatePairedMultiviewReference', persistPairedStart);
+assert(
+  persistPairedStart >= 0 && persistPairedEnd > persistPairedStart,
+  'paired multiview reference persistence must exist',
+);
+const persistPairedFlow = panel.slice(persistPairedStart, persistPairedEnd);
 
 assert.match(
   panel,
@@ -84,6 +91,16 @@ assert.match(
   panel,
   /if \(isTextureMap\)[\s\S]*?pipelineController\.abort\('user-cancelled-texture-generation'\)/,
   'terminating a texture generation must abort the active remote request and prevent later views',
+);
+assert.match(
+  persistPairedFlow,
+  /setSelectedReferences\(\[multiviewReference\.id\]\)/,
+  'the generated multiview reference must remain selected for the texture pipeline',
+);
+assert.doesNotMatch(
+  persistPairedFlow,
+  /setTexturePreviewMode\('multi'\)|setTextureViewMode\('multi'\)|setTab\('multiview'\)/,
+  'background multiview reference persistence must not navigate away from the active generation tab',
 );
 assert.match(
   transformActions,
