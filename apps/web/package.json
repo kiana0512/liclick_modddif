@@ -19,6 +19,7 @@
     "test:generation-conflict-guard": "node scripts/test-generation-conflict-guard.mjs",
     "test:generation-preview-edge-decontamination": "node scripts/test-generation-preview-edge-decontamination.mjs",
     "test:global-auth-gate": "node scripts/test-global-auth-gate.mjs",
+    "test:fixed-chinese-language": "node scripts/test-fixed-chinese-language.mjs",
     "test:http-random-uuid": "node scripts/test-http-random-uuid.mjs",
     "test:layer-context-menu-policy": "node scripts/test-layer-context-menu-policy.mjs",
     "test:local-generation-entry-alignment": "node scripts/test-local-generation-entry-alignment.mjs",

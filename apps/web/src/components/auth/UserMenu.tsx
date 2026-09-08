@@ -1,11 +1,11 @@
 import { useEffect, useState } from 'react';
-import { KeyRound, Languages, LogIn, LogOut, Unlink } from 'lucide-react';
+import { KeyRound, LogIn, LogOut, Unlink } from 'lucide-react';
 import { devLogin, logout } from '@/services/authApiClient';
 import { runFeishuLoginFlow } from '@/services/feishuLoginFlow';
 import { getWorkspaceApiBase } from '@/services/workspaceApiBase';
 import { useAuthStore } from '@/stores/authStore';
 import { useGenerationStore } from '@/stores/generationStore';
-import { useI18nStore, useT } from '@/stores/i18nStore';
+import { useT } from '@/stores/i18nStore';
 import { useToastStore } from '@/stores/toastStore';
 
 type UserMenuProps = { onLogout: () => void };
@@ -43,8 +43,6 @@ export function UserMenu({ onLogout }: UserMenuProps) {
   const [loginStatus, setLoginStatus] = useState('');
   const [liclickAccount, setLiclickAccount] = useState<LiclickAccountStatus>();
   const t = useT();
-  const language = useI18nStore((state) => state.language);
-  const setLanguage = useI18nStore((state) => state.setLanguage);
   const user = useAuthStore((state) => state.user);
   const localProfile = useAuthStore((state) => state.localProfile);
   const providerStatus = useAuthStore((state) => state.providerStatus);
@@ -255,16 +253,6 @@ export function UserMenu({ onLogout }: UserMenuProps) {
               <div className="truncate text-xs text-white/46">{user.email ?? user.authSource}</div>
             </div>
           </div>
-          <button
-            type="button"
-            onClick={() => setLanguage(language === 'zh' ? 'en' : 'zh')}
-            className="mt-1 flex w-full items-center justify-between gap-3 rounded px-3 py-2 text-left text-sm text-white/76 transition hover:bg-white/10 hover:text-white"
-            title={t('switchLanguage')}
-          >
-            <span className="inline-flex min-w-0 items-center gap-2"><Languages className="h-4 w-4 shrink-0" /><span className="truncate">{t('language')}</span></span>
-            <span className="shrink-0 text-xs font-semibold text-liclick-pink">{language === 'zh' ? t('switchToEnglish') : t('switchToChinese')}</span>
-          </button>
-          <div className="my-1 h-px bg-white/28" />
           <div className="flex items-center justify-between gap-3 rounded px-3 py-2 text-left text-sm text-white/88">
             <span className="inline-flex min-w-0 items-start gap-2">
               <KeyRound className="mt-0.5 h-4 w-4 shrink-0" />

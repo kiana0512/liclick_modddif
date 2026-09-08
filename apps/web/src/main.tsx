@@ -16,6 +16,9 @@ import './styles/globals.css';
 const staleChunkReloadKey = 'li3d:stale-chunk-reload-at';
 const staleChunkReloadCooldownMs = 30_000;
 
+document.documentElement.lang = 'zh-CN';
+document.documentElement.translate = false;
+
 /**
  * A page that stays open across a deployment can still reference the previous
  * build's hashed lazy chunks. Vite reports that condition before the rejected
