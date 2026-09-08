@@ -5,6 +5,7 @@ import https from 'node:https';
 import tls from 'node:tls';
 import { createHash, randomUUID } from 'node:crypto';
 import sharp from 'sharp';
+import { createModelviewIdempotencyKey } from './modelviewIdempotency.js';
 import { serverConfig } from '../config.js';
 import { gpuControlLanCa } from '../certs/gpuControlLanCa.js';
 import { maxLocalAssetBytes, saveBinaryAsset, saveUserRecoveryAsset } from './assetFileService.js';
@@ -181,8 +182,7 @@ function safeFilename(value: string, fallback: string) {
 }
 
 function createIdempotencyKey(jobId: string, service: ModelviewServiceDefinition) {
-  const stableId = jobId.replace(/[^a-z0-9._-]+/gi, '-').slice(0, 160) || randomUUID();
-  return `${stableId}:${service.idempotencySuffix}`;
+  return createModelviewIdempotencyKey(jobId, service.idempotencySuffix);
 }
 
 function multipartBody(input: {

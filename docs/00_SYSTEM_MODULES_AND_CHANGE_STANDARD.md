@@ -919,3 +919,6 @@ M15 / CLOUD-DEPLOYMENT v1.0.0（2026-09-03）：正常合并 release 部署历�
 ## 2026-09-08 双入口统计补充
 
 M13/M15，`IDENTITY-TELEMETRY` v1.1.0，日聚合 schema v3：来源由后端确定并加入唯一键；A100/正式站共表分行，OAuth 创建会话后幂等记录登录。旧事件原子标记来源，不补造历史登录；回滚先停同步。详见 [双入口统计变更卡](changes/CHG-20260908-DUAL-SOURCE-TELEMETRY.md)。
+
+
+2026-09-08 `CHG-20260908-MODELVIEW-IDEMPOTENCY-LENGTH`：UI-05/M04（协作 M13/M15），`MODELVIEW-IDEMPOTENCY` v1.1.0。真实单视图任务 ID 拼普通后缀为 125 字符，补全后缀为 147，超过远端 128 限制导致第二张 422。保留全部旧合法键，仅对超长键使用完整原始 ID 的 SHA-256 + 原 workflow 后缀；同任务重试稳定，不截断尾部 UUID。三入口共用并加入 Server HTTP 回归，旧代码失败/修复通过。输入图片、mask、prompt、GPU/CPU/Worker/shader、投影/UV/export、分辨率、Schema、Command/Revision、ownership 与资产不变，无迁移；回退仅恢复旧键构造，会重新引入 422，不删除历史成果。详见对应变更卡。

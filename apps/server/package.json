@@ -17,6 +17,7 @@
     "test:postgres-project-soak": "node scripts/clean-dist.mjs && tsc -p tsconfig.json && node scripts/test-postgres-project-soak.mjs",
     "test:postgres-control-plane": "node scripts/clean-dist.mjs && tsc -p tsconfig.json && node scripts/test-postgres-control-plane.mjs",
     "test:performance-lab-persistence": "node scripts/clean-dist.mjs && tsc -p tsconfig.json && node scripts/test-performance-lab-persistence.mjs",
+    "test:modelview-proxy": "node scripts/clean-dist.mjs && tsc -p tsconfig.json && node ../../scripts/smoke-modelview-inpaint.mjs",
     "test:asset-transfer": "node scripts/clean-dist.mjs && tsc -p tsconfig.json && node scripts/test-asset-transfer.mjs",
     "test:telemetry": "node scripts/clean-dist.mjs && tsc -p tsconfig.json && node scripts/test-telemetry-aggregation.mjs",
     "test:prompt-polish": "node scripts/clean-dist.mjs && tsc -p tsconfig.json && node scripts/test-prompt-polish.mjs",
