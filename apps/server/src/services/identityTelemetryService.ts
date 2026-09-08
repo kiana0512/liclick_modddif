@@ -10,7 +10,7 @@ const identityFile = path.join(identityDirectory, 'device-bindings.json');
 const rawEventsFile = path.join(telemetryDirectory, 'events.ndjson');
 const dailyAggregatesFile = path.join(telemetryDirectory, 'daily-aggregates.json');
 const telemetryTimeZone = 'Asia/Shanghai';
-const telemetryAggregateSchemaVersion = 2;
+const telemetryAggregateSchemaVersion = 3;
 const telemetryDateFormatter = new Intl.DateTimeFormat('en-US', {
   timeZone: telemetryTimeZone,
   year: 'numeric',
@@ -102,6 +102,7 @@ export type TelemetryEventInput = {
 };
 
 type StoredTelemetryEvent = TelemetryEventInput & {
+  source?: string;
   received_at: string;
   identity: {
     user_key: string;
@@ -112,6 +113,7 @@ type StoredTelemetryEvent = TelemetryEventInput & {
 };
 
 export type DailyTelemetryAggregate = {
+  source: string;
   aggregate_key: string;
   date_key: string;
   user_key: string;
@@ -461,6 +463,7 @@ function aggregateKey(event: StoredTelemetryEvent) {
     event.identity.user_key,
     event.version ?? '',
     event.host_version ?? '',
+    event.source ?? serverConfig.telemetrySource,
   ]);
 }
 
@@ -468,6 +471,7 @@ function aggregateContentHash(aggregate: DailyTelemetryAggregate) {
   return createHash('sha256')
     .update(JSON.stringify({
       schema_version: telemetryAggregateSchemaVersion,
+      source: aggregate.source,
       date_key: aggregate.date_key,
       user_key: aggregate.user_key,
       user_name: aggregate.user_name ?? '',
@@ -502,6 +506,7 @@ function buildDailyAggregates(
     }
     aggregates.set(key, {
       aggregate_key: key,
+      source: event.source ?? serverConfig.telemetrySource,
       date_key: dateKey,
       user_key: event.identity.user_key,
       user_name: event.identity.user_name,
@@ -646,6 +651,14 @@ class FileIdentityTelemetryStorage implements IdentityTelemetryStorage {
         seen.add(event.event_id);
         return true;
       });
+    // Freeze provenance once for legacy files so later configuration changes
+    // cannot silently move historical activity to a different deployment.
+    if (this.rawEvents.some((event) => !event.source)) {
+      this.rawEvents = this.rawEvents.map((event) => ({
+        ...event, source: event.source || serverConfig.telemetrySource,
+      }));
+      await writeNdjsonAtomic(rawEventsFile, this.rawEvents);
+    }
     this.seenEventIds = seen;
     await this.persistAggregates();
   }
@@ -663,7 +676,7 @@ class FileIdentityTelemetryStorage implements IdentityTelemetryStorage {
     const aggregates = buildDailyAggregates(this.rawEvents, this.dailyAggregates);
     this.dailyAggregates = new Map(aggregates.map((aggregate) => [aggregate.aggregate_key, aggregate]));
     await writeJsonAtomic(dailyAggregatesFile, {
-      schema_version: 1,
+      schema_version: telemetryAggregateSchemaVersion,
       generated_at: new Date().toISOString(),
       aggregates,
     });
@@ -731,6 +744,7 @@ class FileIdentityTelemetryStorage implements IdentityTelemetryStorage {
             }).profile;
         acceptedEvents.push({
           ...event,
+          source: serverConfig.telemetrySource,
           received_at: receivedAt,
           identity: resolved
             ? {
@@ -841,4 +855,20 @@ export function feishuIdentityFromAuthUser(user: AuthUser): FeishuIdentityProfil
     userName: user.displayName,
     email: user.email,
   };
+}
+
+/** Trusted OAuth callback only; public /api/events still rejects login events. */
+export async function recordFeishuLogin(
+  user: AuthUser,
+  loginId: string,
+  department?: string,
+) {
+  const digest = createHash('sha256').update(`feishu-login:${loginId}`).digest('hex');
+  return identityTelemetryStorage.ingest([{
+    event_id: `login_${digest}`,
+    event_type: 'login_success',
+    ts: new Date().toISOString(),
+    host_version: 'browser',
+    data: { module: 'auth', action: 'login' },
+  }], { ...feishuIdentityFromAuthUser(user), department });
 }

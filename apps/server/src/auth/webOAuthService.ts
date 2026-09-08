@@ -5,6 +5,7 @@ import type { AuthUser } from './authTypes.js';
 import { createSession, parseCookies, upsertUser } from './sessionService.js';
 import {
   bindDeviceToFeishuIdentity,
+  recordFeishuLogin,
   type DeviceIdentityInput,
 } from '../services/identityTelemetryService.js';
 import { enrichFeishuUserByOpenId } from '../services/feishuPlatformService.js';
@@ -450,6 +451,12 @@ export async function handleWebOAuthCallback(
       });
     }
     await createSession(user.id, 'feishu-oauth', request, response);
+    try {
+      await recordFeishuLogin(user, login.id, profile.department);
+    } catch {
+      // Do not invalidate an established login if diagnostic storage fails.
+      console.warn('[LI3D telemetry] Failed to persist Feishu login event.');
+    }
     const existingLiclickAccount = await getPersonalLiclickAccount(user);
     if (existingLiclickAccount.bound) {
       login.user = user;

@@ -676,7 +676,15 @@ if (!loopbackHosts.has(host) && sessionSecret === 'dev-only-change-me') {
   );
 }
 
+// Deployment-owned dimension; never accept a browser-supplied source.
+const telemetryOrigin = new URL(publicWorkspaceUrl).origin;
+const telemetrySource = process.env.LICLICK_TELEMETRY_SOURCE?.trim() ||
+  (telemetryOrigin === 'http://10.3.2.59:44770' ? 'A100' :
+    telemetryOrigin === 'https://li3d.lilithgames.com' ? '正式站' : telemetryOrigin);
+if (telemetrySource.length > 128) throw new Error('LICLICK_TELEMETRY_SOURCE is too long.');
+
 export const serverConfig = {
+  telemetrySource,
   port,
   host,
   serverRequestTimeoutMs,
