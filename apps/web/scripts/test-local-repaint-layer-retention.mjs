@@ -44,6 +44,11 @@ assert.match(
   'selecting a persisted repaint must publish its exact row identity',
 );
 assert.match(
+  viewportCanvas,
+  /const hotSourceOwnsActiveLayer = Boolean\([\s\S]*?localRepaintCompositeRef\.current\?\.layerId === activePaintLayer\.id[\s\S]*?localRepaintCompositeRef\.current\.sourceKey === currentSourceKey[\s\S]*?currentSource\?\.projectionLayerId === activePaintLayer\.id \|\| hotSourceOwnsActiveLayer/,
+  'switching directly from a newly applied repaint to eraser must retain its already prepared runtime source',
+);
+assert.match(
   editorPage,
   /paintTool === 'inpaint-apply' \|\|\s*paintTool === 'eraser'/,
   'newest-generation background prewarm must not steal an active eraser session',

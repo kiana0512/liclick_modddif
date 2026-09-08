@@ -7116,9 +7116,20 @@ function SurfacePaintOverlay() {
 
     const currentSource = useSceneStore.getState().localRepaintProjectionSource;
     const targetLayerId = activePaintLayer.replacementTargetLayerId;
+    const currentSourceKey = currentSource
+      ? createLocalRepaintSourceKey(
+          currentSource,
+          currentSource.objectId ?? activePaintLayer.objectId ?? selectedObjectId ?? 'surface-object',
+        )
+      : undefined;
+    const hotSourceOwnsActiveLayer = Boolean(
+      currentSourceKey &&
+        localRepaintCompositeRef.current?.layerId === activePaintLayer.id &&
+        localRepaintCompositeRef.current.sourceKey === currentSourceKey,
+    );
     if (
-      currentSource?.projectionLayerId === activePaintLayer.id &&
-      isLocalRepaintSourceForLayer(currentSource, activePaintLayer)
+      isLocalRepaintSourceForLayer(currentSource, activePaintLayer) &&
+      (currentSource?.projectionLayerId === activePaintLayer.id || hotSourceOwnsActiveLayer)
     )
       return;
 
@@ -7164,7 +7175,7 @@ function SurfacePaintOverlay() {
     return () => {
       cancelled = true;
     };
-  }, [activePaintLayer, shouldPrewarmPersistedLocalRepaint]);
+  }, [activePaintLayer, selectedObjectId, shouldPrewarmPersistedLocalRepaint]);
   const shouldShowColorPaintOverlays = isLocalRepaintOverlayVisible(displayMode, true);
   const shouldShowInpaintMask =
     shouldShowColorPaintOverlays &&

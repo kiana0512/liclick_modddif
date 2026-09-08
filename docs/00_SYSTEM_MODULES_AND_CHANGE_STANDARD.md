@@ -1,16 +1,18 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
-> 文档版本：`2.18.24`
+> 文档版本：`2.18.25`
 >
 > 生效日期：`2026-09-08`
 >
-> 代码盘点基线：`e79bbca + 本次单投影驻留恢复发布`
+> 代码盘点基线：`e307f71 + 本次局部重绘热源交接修复`
 >
 > 基线仓库：`E:\Liclick 3D Texture Modernization`
 >
 > 审计口径：`0a2519d + 607e82f + 2568e40`，不包含错误文档提交 `2bde8c6/e03bab2/d1c5f78`
 
 ## 1. 文档地位与强制边界
+
+变更卡 `CHG-20260908-LOCAL-REPAINT-DIRECT-ERASER`：UI-06/UI-10，主模块 M08，协作 M05/M06；`ALG-LR-007` v2.2.2。新生成的局部重绘已经持有实时 composite、GPU overlay/常驻蒙版和新发布的重绘行，但生成链路中的运行时 source 尚未携带冷恢复使用的 `projectionLayerId`。直接切换橡皮擦时，持久行预热过去会把同一来源误判为冷恢复并重新发布，source key 改变后首个 pointer-down 被精确驻留门禁拒绝。现在仅当 source 的 generation/capture/target 校验通过，且实时 composite 的 `layerId` 与 `sourceKey` 同时证明其拥有当前行时保留热源；重载、无 composite 或切换历史重绘行仍发布带精确 `projectionLayerId` 的恢复源。GPU/CPU/Worker/shader、作者蒙版像素、投影/UV/export、分辨率、Project/Layer/Generation/Capture Schema、Command/Revision、ownership 与资产不变，无迁移；回退热源所有权判断会重新引入首次擦除需切换工具的问题。
 
 变更卡 `CHG-20260908-SINGLE-PROJECTION-RESTORE-REVEAL`：UI-04/UI-06，主模块 M03，协作 M05/M06/M12/M15；`PROJECT-TEXTURED-ATOMIC-REVEAL` v1.0.1。刷新或重新进入只有一个可见投影贴图的项目时，完整模型可能复用同一 Group 上已驻留且结构键一致的投影材质；旧快速路径直接返回，没有把该 Group 发布给模型级原子显示门禁，导致贴图实际已就绪但模型仍被加载动画隐藏，直到用户切换图层眼睛触发后续材质流程。现在驻留材质快速返回前同步发布当前 Group，保持零重复 4K 上传，同时结束对应模型加载态。Cloud Web 总 JavaScript 实测 3,134,406 bytes，总量门禁按约 8 KiB 余量重定标为 3,142,400 bytes，应用壳、编辑器、烘焙与共享 3D 管线独立硬门禁不变。多层/UV/白模恢复、图层显隐、投影公式、GPU 纹理内容、CPU/Worker/shader、UV/export、分辨率、Project/Layer Schema、Command/Revision、ownership 与资产不变，无迁移；回退移除该发布调用会重新引入单投影恢复假死，不删除历史结果。
 
@@ -493,7 +495,7 @@ UI-09 剪刀
 | `ALG-LR-004` 历史增强边界谐调 | `14.0.0-compatible` | 仅读取/重建旧 v6-v14 Generation 和图层；新 `direct-v1` 任务不调用 |
 | `ALG-LR-005` 历史兼容边界谐调 | `5.0.0-compatible` | 仅保留旧 v3-v5 全幅合成与 legacy 切换的读取兼容；新 `direct-v1` 任务不调用 |
 | `ALG-LR-006` 表面画笔重投影 | `2.0.0` | raycast 命中表面，投射到 frozen source UV；最小绝对 face-on 0.08；世界半径 0.004-0.12 包围盒比例；texture radius 1-72 |
-| `ALG-LR-007` 低延迟实时覆盖 | `2.2.0`（显示所有权以本次源码校正为准） | 当前源码在应用画笔激活时使用 depth-aware exact overlay，同 ID resident twin 临时静音；退出后仍由正式材质按图层顺序显示。新建顶层 preview 在首笔发布前不加入背景栈；位于 priority 层下方的 preview 才提前加入 ordered stack。pointer-down 只消费已准备的资源，pointer-up 保留已有 `contentRevision` 并发布累计蒙版。本次仅优化准备调度，不改变 source、capture projector、depth/surface-lock、颜色、blend、1024 live 上限或显示所有权 |
+| `ALG-LR-007` 低延迟实时覆盖 | `2.2.2`（显示所有权以本次源码校正为准） | 当前源码在应用画笔激活时使用 depth-aware exact overlay，同 ID resident twin 临时静音；退出后仍由正式材质按图层顺序显示。新建顶层 preview 在首笔发布前不加入背景栈；位于 priority 层下方的 preview 才提前加入 ordered stack。pointer-down 只消费已准备的资源，pointer-up 保留已有 `contentRevision` 并发布累计蒙版。新生成重绘行直接切换橡皮擦时，仅在 source 与实时 composite 双重证明拥有当前行时沿用热源；冷恢复和历史行切换仍按 `projectionLayerId` 隔离。不改变 source 像素、capture projector、depth/surface-lock、颜色、blend、1024 live 上限或显示所有权 |
 | `ALG-LR-008` 延迟投影持久化 | `2.4.5` | interactive UV bake 固定关闭；生图前 Project Command snapshot 后台执行。蒙版工具/生图开始即并行编译并持有 exact overlay 程序，预读作者蒙版；返图颜色缩放与 falloff 并行。内存 Session 按 Generation/目标复用活动任务。高清读取和 GPU 准备有 20 秒预算；仅背景栈已有行进入 resident 等待，单层直接蒙版登记完整、辅助网格排除，交接失败明确结束会话。Session 驱动按钮，DOM 仅诊断；pointer-up 两帧内发布权威图层行，idle 3000ms 仅合并持久化并设置 needsRebake=true；保存前必须把 live canvas 编码上传成 verified asset，runtime URL 不得进入 Project Revision；提交/GPU 准备调度含隐藏页兜底，不替代真实呈现交接；返图三纹理上传之间显式让帧并检查取消 |
 | `ALG-LR-009` Inward Crossfade 栈合成 | `1.0.0` | 连续重绘层向内部交叉淡化，避免普通 alpha stacking 在边缘重复显露接缝 |
 | `ALG-LR-010` Provider 兼容编辑 | `1.0.0-compat` | `LocalRepaintDialog` 的 image/edit/protect/hole masks 独立路径，不得与四输入主路径混改 |
