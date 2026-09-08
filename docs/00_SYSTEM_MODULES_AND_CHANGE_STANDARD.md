@@ -1,6 +1,6 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
-> 文档版本：`2.18.22`
+> 文档版本：`2.18.23`
 >
 > 生效日期：`2026-09-08`
 >
@@ -16,7 +16,7 @@
 
 变更卡 `CHG-20260908-PAIRED-MULTIVIEW-TAB-PRESERVATION`：UI-05，主模块 M04。单视图纹理生成在后台补全并保存配对多视图参考图时，只更新参考图分组与当前材质参考，不再强制切换生成页签、预览模式或视图模式；用户从单视图发起后始终停留在单视图，显式页签操作保持唯一导航入口。参考图资产、后续生图输入、投影、提示词、Schema、Revision、ownership 与服务端接口不变，无迁移。
 
-变更卡 `CHG-20260908-REMOTE-MULTIVIEW-SEQUENTIAL`：UI-05/UI-06/UI-12，主模块 M04，协作 M03/M05/M06/M09/M12/M15；`ALG-GEN-006` v1.0.0。多视图增加与单视图一致的远端入口，以当前视角为起点、按相邻方向重叠最大的顺序逐视角生成。静态 clay/mask/depth 预捕获，每次即时捕获已投影的当前材质；完整覆盖跳过，部分覆盖复用现有外扩补全蒙版，全白模复用普通 ModelView 单视图。每张返图立即建立 projected layer，等待正式材质驻留后才转下一视角，末尾只执行一次内容识别填补。统一终止可 abort 当前 HTTP 并阻止后续视角，保留已完成图层；重试会跳过已完整覆盖视角。不改分辨率、质量门禁、提示词、投影公式、GPU/CPU/Worker/shader、UV/export、Schema、Command/Revision、ownership 和资产，无迁移；回退移除远端多视图编排入口，不删除已生成成果。
+变更卡 `CHG-20260908-REMOTE-MULTIVIEW-SEQUENTIAL`：UI-05/UI-06/UI-12，主模块 M04，协作 M03/M05/M06/M09/M12/M15；`ALG-GEN-006` v1.1.0。多视图预览数组成为远端串行执行的唯一顺序，取消当前活动视角二次重排；预设 1、预设 2 和自定义基础预设按维护者指定顺序排列且顶/底最后。用户新增普通视角按邻近方向插到极向分组前，归一化方向 `y>=0.9`/`y<=-0.9` 的顶部/底部视角自动进入 GPT2 分组。普通视角仍走 ModelView，GPT2 视角复用现有单视图请求/轮询/取消，所有视角均在返图投影并正式驻留后才继续；完整覆盖仍跳过，末尾仍只执行一次内容识别填补。批次开始前同时校验两种服务账号。不改分辨率、质量门禁、提示词模板、投影公式、GPU/CPU/Worker/shader、UV/export、Schema、Command/Revision、ownership 和资产，无迁移；回退恢复 v1.0.0 排序与全 ModelView 路由，不删除已生成成果。
 
 变更卡 `CHG-20260908-GPT2-TEXTURE-COMPLETION-PROMPT-V2`：UI-05，主模块 M04；`ALG-GEN-001/002` v1.2.0。GPT2 单视图初始白模、已有贴图补全及多视图继续共用唯一提示词构建器，主模板替换为用户指定的精简版本。Image 1 是画布、相机、几何、轮廓、孔洞、真实部件边界、视图数量和排版的唯一依据；仅白色、浅灰色、Clay、Primer 或未贴图区域可修改。Image 2 只提供其特有的 Base Color、颜色变化、纹理颗粒、尺度、方向、粗糙度和磨损，不提供形状、构图或光照；白模内部低模三角面灰度、Flat Shading 和硬法线明暗不得作为材质。用户补充要求仍追加在主模板末尾。服务端 purpose-built 标记同步更新，避免再次拼入旧通用光照约束。生成输入图、LiClick/Atlas 供应方、任务轮询/取消、投影、GPU/CPU/Worker/shader、分辨率、Project/Layer/Generation/Capture Schema、Command/Revision、ownership 与资产不变，无迁移；回退恢复旧模板和识别标记即可。
 
@@ -587,7 +587,7 @@ Bake 设置包含 resolution、frontal/rear distance、distance/cage、cage infl
 | `ALG-GEN-003` 任务身份归一 | clientGenerationId/serverJobId/taskId 合并，避免恢复时重复 running 行 |
 | `ALG-GEN-004` ModelView 远端单视图 | `1.1.0`；当前视角白模 + 多视图材质参考 + 可选提示词 → `modelview-single-view` → Generation；结果使用 `ALG-PROJ-005` v3 捕获适配并进入统一质量合成 |
 | `ALG-GEN-005` 提示词智能润色 | `1.10.0`；UI-05 经同源 `/api/liclick/prompt-polish` 分流。普通单/多视图保持莉刻 `data-analysis` A2A；局部重绘空输入由 `qwen3-vl-plus` 在一次请求中输出诊断和英文正文，诊断与正文分别校验；显式输入跳过诊断，保持统一 Qwen → Klein 转换模板。服务端用未外扩原始 mask 定位，并从干净 Image 1 自动裁出带上下文的第四图供 Qwen 看清选中部件；完整参考图仍只提供有证据的结构/材质，第四图不改变编辑范围或 ModelView 输入。模板先用 Image 2、第四图和 mask 外邻域共同确定真实结构与材质；仅当三者证明选区为未完成的白灰占位时，要求 Klein 用明确目标材质完整替换 clay/primer/flat placeholder/untextured surface，真实浅色材质不受此规则影响。模板以 100–180 词、2–3 段英文为生成目标；段数、词数、语言和 Markdown 偏差只记脱敏告警，不阻断也不触发格式修正。若首段缺少明确 mask 范围，服务端确定性追加固定保护句。仅最终正文写入 Generation，诊断不持久化、不回填文本框；显式输入与空输入均一次 Qwen，保持 65 秒 deadline。模板策略进入所有局部重绘指纹，升级后首次重新解析、后续继续复用 |
-| `ALG-GEN-006` ModelView 远端多视图串行生成 | `1.0.0`；当前视角优先的最近方向遍历；静态 Capture 预捕获，当前材质逐视角即时捕获；完全覆盖跳过、部分覆盖用现有外扩补全蒙版、全白模用普通远端单视图；每张返图投影驻留后才继续，末尾一次内容填补 |
+| `ALG-GEN-006` 混合远端多视图串行生成 | `1.1.0`；预览数组即执行顺序，普通视角 ModelView、极向顶/底视角 GPT2；静态 Capture 预捕获，当前材质逐视角即时捕获；完全覆盖跳过、部分覆盖用现有外扩补全蒙版；每张返图投影驻留后才继续，末尾一次内容填补 |
 | `ALG-OUT-001` 纹理/模型导出 | BaseColor 与 GLB/GLTF/FBX/OBJ/STL/ZIP；验证 UV 方向和颜色空间 |
 | `ALG-OUT-002` 快照/转台 | 当前视口设置生成静态图或视频，不改变 Layer 作者数据 |
 
@@ -602,7 +602,7 @@ Bake 设置包含 resolution、frontal/rear distance、distance/cage、cage infl
 - 工作流：`modelview-single-view`，生产版本 `2026.08.26-c0e6218-single-view-4step-r1`，与局部重绘 `modelview-inpaint` 分开排队和审计。
 - 失败与回退：远端失败只标记本次 Generation 失败并显示真实错误，不自动改走 GPT2；用户可显式切回 GPT2 重新生成。远端为非默认、非持久化界面选择，旧工程无需迁移。
 - 回滚：移除单视图远端 UI 分支和同源路由即可；已有远端 Generation/Layer 继续按普通单视图质量层读取，不需要删除资产或改写 Project Revision。
-- 远端多视图：不使用 GPT2 batch 并发，按 `ALG-GEN-006` 逐视角提交同一 ModelView 单视图/补全端点，上一结果投影驻留是下一请求的前置条件。
+- 远端多视图：不使用 batch 并发，按 `ALG-GEN-006` 逐视角提交；普通视角使用 ModelView 单视图/补全端点，极向顶/底视角使用 GPT2 单视图端点，上一结果投影驻留是下一请求的前置条件。
 - 测试：`test:single-view-priority` 必须覆盖双提供方分流与投影语义；`smoke:modelview-inpaint` 同时验证两条 ModelView URL、multipart 字段、幂等键、X-Job-ID 和 PNG 持久化。
 
 ### 11.1.1 同源开发工作区资产兼容
@@ -916,6 +916,7 @@ M15 / CLOUD-DEPLOYMENT v1.0.0（2026-09-03）：正常合并 release 部署历�
 | `2.18.20` | 2026-09-08 | `ModelView 远端多视图逐视角生成与回贴` | UI-05/UI-06/UI-12、M03/M04/M05/M06/M09/M12/M15，`ALG-GEN-006` v1.0.0：多视图可选远端，按最近相机方向串行执行；每张返图先投影并等待材质驻留，后一视角再捕获当前效果。完全覆盖跳过，部分覆盖复用外扩蒙版，中断停止当前及后续请求。不改提示词、投影公式、分辨率、Schema、Revision、ownership 或资产，无迁移。 |
 | `2.18.21` | 2026-09-08 | `后台多视图参考生成保持当前页签` | UI-05/M04：自动补全配对多视图参考图后只更新参考图状态，不再强制切换生成页签、预览模式或视图模式；单视图任务完成后仍停留在单视图。生成资产与后续管线不变，无 Schema 或数据迁移。 |
 | `2.18.22` | 2026-09-08 | `UV 导入模型上限放宽至 7 万面` | UI-14/M10：Auto UV 导入前置限制由 20,000 调整为 70,000，并同步阈值提示；贴图工作区和本地 UV 内核的 200 万安全上限不变，无 Schema 或数据迁移。 |
+| `2.18.23` | 2026-09-08 | `远端多视图顺序与顶底 GPT2 混合生成` | UI-05/UI-06/UI-12、M03/M04/M05/M06/M09/M12/M15，`ALG-GEN-006` v1.1.0：预览与执行共用维护者指定顺序，新增视角按普通/顶部/底部分组插入；顶底及接近极向的自定义视角使用 GPT2，其余使用 ModelView，继续逐张回贴驻留后再生成下一张。无分辨率、提示词模板、投影公式、Schema、Revision、ownership 或资产迁移。 |
 
 `ALG-LR-008` v2.4.1：局部重绘仍自动创建独立目标和结果图层；pointer-down 不再依赖当前图层是否选中、可见或为 UV，只检查自身 source/composite/Session/显示资源。默认保持按钮激活、GPU promotion、结果发布前的原选择（含 undefined），防止内部隐藏 draft 触发面板选择普通投影层。普通画笔/橡皮擦限制、GPU/CPU/Worker/shader、作者 mask、投影/UV/export、分辨率、Schema、Revision、ownership 与资产不变。真实 store 三类选择与入口 gate 回归通过；无数据迁移，回退选择保持与 gate 即可。详见 CHG-20260903-LOCAL-REPAINT-SELECTION-INDEPENDENCE。
 
