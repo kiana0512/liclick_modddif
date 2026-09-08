@@ -1,8 +1,8 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
-> 文档版本：`2.18.12`
+> 文档版本：`2.18.13`
 >
-> 生效日期：`2026-09-07`
+> 生效日期：`2026-09-08`
 >
 > 代码盘点基线：`8d3b9f1 + 本次单/多视图统一合成`
 >
@@ -669,7 +669,9 @@ A100 发布同时显式配置 `LICLICK_PERFORMANCE_LAB_ENABLED=true` 与构建�
 
 迁移只新增性能会话/分片表，不回填旧 `sessionStorage` 报告，不改变 Project Command、Revision CAS、对象 ownership 或任何图层资产。回滚可停止挂载 Cloud bridge、关闭性能 API 并保留新增表供审计；IndexedDB 未发送记录可由恢复后的同版本页面继续重试，禁止为回滚删除用户项目或恢复 Windows 本地采集组件。
 
-### 13.2 当前用户莉刻账号绑定 `LICLICK-ACCOUNT-BINDING` v1.3.1
+### 13.2 当前用户莉刻账号绑定 `LICLICK-ACCOUNT-BINDING` v1.3.4
+
+2026-09-08（CHG-20260908-IDAAS-OFFICIAL-PRODUCTION-APP）：维护者确认改用官方既有生产应用，部署配置从 QA `testplugin_jwt92/test` 切到 `https://idaas.lilith.com/enduser/sp/sso/lilithplugin_jwt62`、`enterpriseId=lilith`、`ATLAS_AI_GATEWAY_ENV=prod` 和显式生产 Gateway URL。当前根路径回调固定为 `https://li3d.lilithgames.com/api/liclick/account-binding/callback`；当日无会话探测该路径返回后端 401 JSON，而 `/li3d/api/...` 返回 SPA HTML，后者不能登记为当前站点回调。继续使用同源 `target_url` 绑定任务，不恢复 OAuth `state` 或浏览器 localhost 回调。每人通过自己的 IDaaS 身份取得令牌，服务器独立 Atlas home、邮箱一致性、工具权限与任务 ownership 保持。以下 QA 段落是历史，后续生产部署以本段为准。上线前旧版 `release-2c49d521` 真实点击仍报 `401 invalid_token`；运维口头完成配置不代替正式应用回调、工具和生图验收。本次为配置契约 Patch，无业务算法、GPU/CPU/Worker/shader、投影/UV/export、分辨率、Schema、Project Command、Revision CAS 或 verified assets 变化，无数据迁移。QA 缓存不复制到生产；受影响用户本人重新授权，保留其他绑定和历史。回退兼容镜像时保留官方生产配对配置；不得把切回未被信任的 QA 应用当作恢复成功，失败时暂停新绑定并保留数据。详见对应变更卡。
 
 莉刻生图、编辑、轮询与通用提示词润色必须使用当前飞书 Session 用户独占的服务器端账号绑定。浏览器只通过同源、带 Cookie 的 Cloud API 发起绑定和查询状态；OAuth 临时状态、token 与 `atlas_home_dir` 只由 A100 控制面保管，禁止写入浏览器、Windows 本地组件或项目文档。
 
@@ -889,6 +891,7 @@ M15 / CLOUD-DEPLOYMENT v1.0.0（2026-09-03）：正常合并 release 部署历�
 | `2.18.10` | 2026-09-07 | `后端流式 ZIP CRC 优化` | M11/M10、`PERF-EXPORT-ZIP-001` v1.0.2：64 KiB 分块累计校验中位 46.90→25.60ms；真实流背压及归档字节对照通过，无算法语义/Schema 或数据迁移。 |
 | `2.18.11` | 2026-09-07 | `master 集成与交接测试夹具补全` | M15：保留 4fe9a58 运行时修复，补齐可见根节点/对象身份测试；旧断言与隐藏/跨对象/legacy 用例并存，不更改业务算法或数据。 |
 | `2.18.12` | 2026-09-07 | `中断下载释放文件句柄` | M14/M01、`FILE-RESPONSE-LIFETIME` v1.0.0：共享 pipeline 关闭被取消的模型/图片响应源流，防止 Windows 文件占用阻碍回收站移动；无算法或数据迁移。 |
+| `2.18.13` | 2026-09-08 | `官方生产 IDaaS 应用接入配置` | M13、`LICLICK-ACCOUNT-BINDING` v1.3.4：官方 lilithplugin_jwt62/lilith 与 prod Gateway 配对，保持根路径固定回调、target_url 和个人账号隔离；增加部署配置及生产 URL 回归。实际发布、正式授权和多用户生图待验收，无 Schema 或数据迁移。 |
 
 `ALG-LR-008` v2.4.1：局部重绘仍自动创建独立目标和结果图层；pointer-down 不再依赖当前图层是否选中、可见或为 UV，只检查自身 source/composite/Session/显示资源。默认保持按钮激活、GPU promotion、结果发布前的原选择（含 undefined），防止内部隐藏 draft 触发面板选择普通投影层。普通画笔/橡皮擦限制、GPU/CPU/Worker/shader、作者 mask、投影/UV/export、分辨率、Schema、Revision、ownership 与资产不变。真实 store 三类选择与入口 gate 回归通过；无数据迁移，回退选择保持与 gate 即可。详见 CHG-20260903-LOCAL-REPAINT-SELECTION-INDEPENDENCE。
 
