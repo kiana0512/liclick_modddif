@@ -4170,7 +4170,7 @@ export function GeneratePanel({
     submitLocksRef.current.add('single');
     setSubmissionActive(true);
     setTexturePipelineProgress({ active: true, progress: 4, label: '准备多视图参考' });
-    setGenerateNotice({ tone: 'info', message: '正在生成并保存多视图参考。' });
+    setGenerateNotice({ tone: 'info', message: '正在保存多视图参考。' });
     try {
       await generatePairedMultiviewReference(singleReference, updateTexturePipelineProgress);
       await waitForBrowserPaint();
