@@ -12,6 +12,8 @@
 
 ## 1. 文档地位与强制边界
 
+CHG-20260909-MASK-TEXTURE-PREPARATION：M06/M09，ALG-PROJ-007 v2.1.9。颜色蒙版与 UV 准备按实际色彩空间复用，去除同一未变蒙版的重复 GPU 上传。首次/内容 revision/角色转换仍上传；WebGL 4K 输入重复 20 次额外上传 20→0，对照输出零差异。像素、shader、分辨率、QA、持久化/导出不变，无迁移。见 [变更卡](changes/CHG-20260909-MASK-TEXTURE-PREPARATION.md)。
+
 CHG-20260909-PERFORMANCE-LAB-STRESS：M13/M15，ALG-PERF-SESSION-001 v1.0.4 / collector 2.2.1。精确统计复用排序，停止录制 drain 滚轮尾批；S2/S3/S5 解除普通 UV 覆盖，S7 预热后才获取交互测量锁。新增长期录制、输入洪峰、资源清理与保留上限回归。Schema 2、生产像素/4K/QA/持久化契约不变，无迁移。详见 [变更卡](changes/CHG-20260909-PERFORMANCE-LAB-STRESS.md)。
 
 `CHG-20260909-UV-COMPOSITE-RESOURCES`：M07，ALG-UV-003 v2.0.1 / ALG-UV-005 v2.0.3。质量 Worker 按任务复用精确 tile 缓冲，接缝提前去重等价记录，实际合成阶段诊断独立于 S4；PERF-UV-SOURCE-PREPARE-001 v1.0.1 静态Canvas分条读取，live同步快照保持。RGBA、shader、校验门禁和分辨率不变；无 Schema/资产迁移。见 [变更卡](changes/CHG-20260909-UV-COMPOSITE-RESOURCES.md)。
