@@ -708,8 +708,8 @@ assert.match(
 );
 assert.match(
   viewportCanvasSource,
-  /const shouldPrewarmPersistedLocalRepaint =\s*isEditableLocalRepaintProjectionLayer\(activePaintLayer\) &&\s*\(paintTool === 'none' \|\| isEditingPersistedLocalRepaint\)/,
-  'A selected persisted local repaint must restore its editing source before the eraser is pressed.',
+  /const shouldPrewarmPersistedLocalRepaint = isEditingPersistedLocalRepaint;/,
+  'Only an explicitly selected eraser target may restore a persisted editing source.',
 );
 const featherPrewarmGuard = viewportCanvasSource.match(
   /useEffect\(\(\) => \{\s*if \(([^\n]+)\) return;\s*(?:\/\/[^\n]*\n\s*)*getFeatheredBrushStamp\(localRepaintBrushSettings\.brushFeather\)/,
@@ -722,15 +722,15 @@ const shouldPrewarmFeather = new Function(
   'paintTool',
   `return !(${featherPrewarmGuard[1]});`,
 );
-assert.equal(shouldPrewarmFeather(true, false, false, 'none'), true, 'Restored results prewarm.');
+assert.equal(shouldPrewarmFeather(true, false, false, 'eraser'), true, 'Eraser targets prewarm before pointer input.');
 assert.equal(shouldPrewarmFeather(false, true, false, 'none'), true, 'Generation prewarms in parallel.');
 assert.equal(shouldPrewarmFeather(false, false, true, 'inpaint'), true, 'Mask authoring prewarms.');
 assert.equal(shouldPrewarmFeather(false, false, false, 'inpaint-apply'), true, 'Apply retains prewarming.');
 assert.equal(shouldPrewarmFeather(false, false, false, 'none'), false, 'Unrelated idle tools do not prewarm.');
 assert.match(
   viewportCanvasSource,
-  /if \(!shouldPrewarmPersistedLocalRepaint \|\| !activePaintLayer\?\.camera\) return;[\s\S]*?currentPaintTool !== 'none' && currentPaintTool !== 'eraser'/,
-  'Persisted local repaint prewarming must stay active while the viewport is idle or erasing.',
+  /if \(!shouldPrewarmPersistedLocalRepaint \|\| !activePaintLayer\?\.camera\) return;[\s\S]*?if \(currentPaintTool !== 'eraser'\) return;/,
+  'A persisted source cannot publish after leaving the eraser, even before effect cleanup.',
 );
 assert.match(
   viewportCanvasSource,

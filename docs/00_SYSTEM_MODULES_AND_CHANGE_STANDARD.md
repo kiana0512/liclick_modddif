@@ -1,6 +1,6 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
-> 文档版本：`2.19.12`
+> 文档版本：`2.19.13`
 >
 > 生效日期：`2026-09-09`
 >
@@ -11,6 +11,8 @@
 > 审计口径：`0a2519d + 607e82f + 2568e40`，不包含错误文档提交 `2bde8c6/e03bab2/d1c5f78`
 
 ## 1. 文档地位与强制边界
+
+`CHG-20260909-REPAINT-LAYER-SELECTION`：M08/M06，协作 M05/M12；REPAINT-LAYER-SELECTION v1.0.0。普通图层选择不恢复重绘编辑源、不重启 overlay 交接，停用的 progressive compositor 不再因选中 ID 生成新材质依赖。显式橡皮擦目标准备、实际图层显隐/编辑/删除与生图预热保持；迟到蒙版编码重新校验工具。GPU 仅生命周期调度变化，shader/CPU/Worker/蒙版/UV/export、分辨率、Schema/Command/CAS/ownership/verified assets 不变，无迁移。回滚恢复原触发条件即可，详见 [变更卡](changes/CHG-20260909-REPAINT-LAYER-SELECTION.md)。
 
 `CHG-20260909-UV-MERGE-REPAINT-CONSUMPTION`：主模块 M05/M07，协作 M06/M08/M12；`UV-MERGE-SOURCE-CONSUMPTION` v1.0.0、`UV-MERGE-EMPTY-PREVIEW` v1.0.0。合并完成并发布已验证资产后，原子删除本次参与合并的原图层，保留/选中新合并 UV，清理已无其他结果引用的内部重绘目标和被消费的活动重绘会话；不删除历史资产，原快照可撤销。单层/整栈 shader 的未覆盖区域诊断同时考虑仍显示的 UV 底图，不因重绘 live overlay 暂停普通投影绑定而切为白模。像素合成/覆盖、CPU/Worker/UV/export 不变，仅预览空白诊断变化；无 Schema/旧工程自动迁移，Command/CAS/ownership/verified assets 不变。详见 [变更卡](changes/CHG-20260909-UV-MERGE-REPAINT-CONSUMPTION.md)。
 

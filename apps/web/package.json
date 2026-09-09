@@ -4,6 +4,7 @@
   "version": "0.1.3",
   "type": "module",
   "scripts": {
+    "test:repaint-layer-selection": "node scripts/test-repaint-layer-selection.mjs",
     "test:preview-upload-cleanup": "node scripts/test-preview-upload-cleanup.mjs",
     "test:projected-texture-preparation": "node scripts/test-projected-texture-preparation.mjs",
     "test:performance-lab-stress": "node scripts/test-performance-lab-stress.mjs",

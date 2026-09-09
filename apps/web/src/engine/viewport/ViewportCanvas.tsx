@@ -7103,9 +7103,10 @@ function SurfacePaintOverlay() {
   const isEditingPersistedLocalRepaint =
     paintTool === 'eraser' && isEditableLocalRepaintProjectionLayer(activePaintLayer);
   const isLocalRepaintApplyMode = paintTool === 'inpaint-apply' || isEditingPersistedLocalRepaint;
-  const shouldPrewarmPersistedLocalRepaint =
-    isEditableLocalRepaintProjectionLayer(activePaintLayer) &&
-    (paintTool === 'none' || isEditingPersistedLocalRepaint);
+  // Restoring a source transfers live renderer ownership; it is not a passive
+  // cache warmup. Ordinary row selection must keep the presented source intact.
+  // Explicit eraser activation still prepares before the first pointer sample.
+  const shouldPrewarmPersistedLocalRepaint = isEditingPersistedLocalRepaint;
 
   useEffect(() => {
     if (!shouldPrewarmPersistedLocalRepaint && !localRepaintGenerationPresentationActive && !isInpaintMode && paintTool !== 'inpaint-apply') return;
@@ -7163,7 +7164,7 @@ function SurfacePaintOverlay() {
       const layerState = useLayerStore.getState();
       if (layerState.activeProjectedLayerId !== activePaintLayer.id) return;
       const currentPaintTool = useSceneStore.getState().paintTool;
-      if (currentPaintTool !== 'none' && currentPaintTool !== 'eraser') return;
+      if (currentPaintTool !== 'eraser') return;
       const targetLayer = layerState.layers.find((layer) => layer.id === targetLayerId);
       useSceneStore.getState().setLocalRepaintProjectionSource({
         imageUrl: sourceUrl,
@@ -8610,7 +8611,13 @@ function SurfacePaintOverlay() {
 
   useEffect(() => {
     syncLocalRepaintGpuOverlayActivity();
-    const unsubscribeLayers = useLayerStore.subscribe(syncLocalRepaintGpuOverlayActivity);
+    const unsubscribeLayers = useLayerStore.subscribe((state, previous) => {
+      if (
+        state.layers !== previous.layers ||
+        (useSceneStore.getState().paintTool === 'eraser' &&
+          state.activeProjectedLayerId !== previous.activeProjectedLayerId)
+      ) syncLocalRepaintGpuOverlayActivity();
+    });
     return unsubscribeLayers;
   }, [
     displayMode,

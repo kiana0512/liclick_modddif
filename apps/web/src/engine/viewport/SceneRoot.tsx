@@ -2532,12 +2532,15 @@ const ImportedModel = memo(function ImportedModel({
     !projectedSamplerBudget.withinBudget ||
     (textureArrayCompositionFallbackRequired && !canUseDirectVisibleStackAfterArrayFailure),
   );
+  // Selection is only a compositor input when that fallback is enabled. An
+  // unused active-row array must not restart the resident material effect.
+  const progressiveActiveLayerId = canUseProgressiveUvFallback ? activeLayerId : undefined;
   const activeProjectedPreviewInputs = useMemo(() => {
     const active = previewProjectionInputs.find(
-      (layer) => layer.layerId === activeLayerId && layer.visible,
+      (layer) => layer.layerId === progressiveActiveLayerId && layer.visible,
     );
     return active ? [active] : [];
-  }, [activeLayerId, previewProjectionInputs]);
+  }, [progressiveActiveLayerId, previewProjectionInputs]);
   const progressiveBackgroundInputs = useMemo(() => {
     if (activeProjectedPreviewInputs.length === 0) return previewProjectionInputs;
     const activeIds = new Set(activeProjectedPreviewInputs.map((layer) => layer.layerId));
