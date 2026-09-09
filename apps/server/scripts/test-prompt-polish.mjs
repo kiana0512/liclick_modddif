@@ -5,7 +5,6 @@ import { fileURLToPath } from 'node:url';
 import sharp from 'sharp';
 import {
   buildQwen3VlPlusRequest,
-  buildQwenLocalRepaintDiagnosisRequest,
   buildQwenLocalRepaintSelectionContext,
   buildPromptPolishAtlasArgs,
   buildPromptPolishMessage,
@@ -20,7 +19,6 @@ import {
   parsePolishedPrompt,
   polishPrompt,
   validateLocalRepaintPrompt,
-  validateLocalRepaintDiagnosis,
 } from '../dist/services/promptPolishService.js';
 import { serverConfig } from '../dist/config.js';
 
@@ -106,7 +104,7 @@ for (const prompt of ['', '   \n\t']) {
   assert.doesNotMatch(emptyMessage, /limit automatic diagnosis/);
   assert.doesNotMatch(emptyMessage, /then restore the corresponding content from Image 2/);
   assert.match(emptyMessage, /100至180词，2至3段/);
-  assert.match(emptyMessage, /用户未填写时仅修复有证据的问题/);
+  assert.match(emptyMessage, /用户要求：修补接缝/);
 }
 
 const currentEffectDataUrl = 'data:image/png;base64,AQ==';
@@ -144,40 +142,6 @@ const noTextMultimodalRequest = buildQwen3VlPlusRequest({
 });
 assert.equal(noTextMultimodalRequest.temperature, 0.2);
 assert.match(noTextMultimodalRequest.messages[0].content, /不得迁移进蒙版/);
-const diagnosisRequest = buildQwenLocalRepaintDiagnosisRequest({
-  prompt: '',
-  context: 'local-repaint',
-  hasMask: true,
-  currentEffectImage: { name: 'current.png', dataUrl: currentEffectDataUrl },
-  referenceImage: { name: 'reference.webp', dataUrl: referenceDataUrl },
-  maskImage: { name: 'mask.png', dataUrl: maskDataUrl },
-  selectionCropImage: { name: 'selected-region-context.jpg', dataUrl: selectionCropDataUrl },
-});
-assert.doesNotMatch(diagnosisRequest.messages[0].content, /FLUX\.2 Klein|100至180词/);
-assert.match(diagnosisRequest.messages[0].content, /只输出一句简短中文修复要求/);
-assert.match(diagnosisRequest.messages[0].content, /文字的重复、扭曲、缺笔或错位/);
-assert.match(diagnosisRequest.messages[0].content, /保留真实焊缝/);
-assert.match(diagnosisRequest.messages[0].content, /无法辨认时不得猜测/);
-assert.deepEqual(diagnosisRequest.messages[1].content.slice(1), multimodalContent.slice(1));
-assert.equal(diagnosisRequest.max_tokens, 512);
-for (const value of [
-  '修复接缝',
-  '修复面板下方的接缝和色差。',
-  '修复标牌文字的重影与错位。',
-  '未发现明确异常，保留现有外观。',
-])
-  assert.equal(validateLocalRepaintDiagnosis(value), true);
-for (const value of [
-  '',
-  '修复',
-  '修复接缝。修复色差。',
-  '修复接缝\n修复色差',
-  '# 修复接缝',
-  '{"问题":"修复接缝"}',
-  '修复' + '接缝'.repeat(61),
-])
-  assert.equal(validateLocalRepaintDiagnosis(value), false);
-
 const onePixelPng =
   'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
 const normalizedVisual = await normalizeQwen3VlPlusImage({
@@ -422,60 +386,25 @@ try {
   assert.match(implicitRemovalResult, /nearest unmasked ring/);
   assert.doesNotMatch(implicitRemovalResult, /continuous text-free continuation/);
   assert.equal(implicitRemoval.calls[0].body.temperature, 0.2);
-  for (const prompt of ['', '  \n\t']) {
-    const diagnosis = '修复控制面板下方的接缝和色差，以及标牌文字的重影。';
+  for (const prompt of ['', '  \n\t', '修补接缝', '  修复划痕  ']) {
     const input = { ...localInput, prompt };
-    const { result, calls } = await invokeWithReplies([JSON.stringify({ diagnosis, prompt: validLocalPrompt })], input);
+    const { result, calls } = await invokeWithReplies([validLocalPrompt], input);
     assert.equal(await result, validLocalPrompt);
-    assert.equal(input.prompt, prompt, 'Do not replace the user-owned blank input');
-    assert.equal(calls.length, 1, 'Automatic diagnosis and conversion share one visual request');
+    assert.equal(input.prompt, prompt);
+    assert.equal(calls.length, 1);
     assert.equal(calls[0].body.messages[1].content.filter((part) => part.type === 'image_url').length, 4);
-    assert.match(calls[0].body.messages[0].content, /不得增加其他修复目标/);
-    assert.match(calls[0].body.messages[0].content, /只有 diagnosis 明确要求修复已有文字/);
-    assert.match(calls[0].body.messages[0].content, /100至180词，2至3段/);
-    assert.equal(calls[0].body.temperature, 0.2);
-  }
-  const noDefect = await invokeWithReplies([JSON.stringify({ diagnosis: '未发现明确异常，保留现有外观。', prompt: validLocalPrompt })], {
-    ...localInput,
-    prompt: '',
-  });
-  assert.equal(await noDefect.result, validLocalPrompt);
-  assert.match(noDefect.calls[0].body.messages[0].content, /未发现明确异常，保留现有外观。/);
-  assert.match(noDefect.calls[0].body.messages[0].content, /无明确缺陷时只描述保留现有外观/);
-  const diagnosis = '修复控制面板下方的接缝和色差。';
-  const repaired = await invokeWithReplies([JSON.stringify({ diagnosis, prompt: 'Too short.' })], {
-    ...localInput,
-    prompt: '',
-  });
-  assert.equal(
-    await repaired.result,
-    'Too short. Confine all edits to the independent mask region and keep every area outside it unchanged.',
-  );
-  assert.equal(repaired.calls.length, 1, 'Noncanonical conversion output is accepted once');
-  assert.ok(repaired.calls.every((call) => call.signal === repaired.calls[0].signal));
-  for (const invalid of [
-    '',
-    validLocalPrompt,
-    '修复接缝。修复色差。',
-    JSON.stringify({ diagnosis: '修复接缝。修复色差。', prompt: validLocalPrompt }),
-    JSON.stringify({ diagnosis: 42, prompt: validLocalPrompt }),
-    'null',
-  ]) {
-    const rejected = await invokeWithReplies([invalid], { ...localInput, prompt: '' });
-    await assert.rejects(rejected.result, /PROMPT_POLISH_INVALID_LOCAL_REPAINT_DIAGNOSIS/);
-    assert.equal(rejected.calls.length, 1, 'Invalid diagnosis must not enter conversion');
+    const message = calls[0].body.messages[0].content;
+    assert.ok(message.includes('用户要求：' + (prompt.trim() || '修补接缝')));
+    assert.doesNotMatch(message, /diagnosis|用户未填写时/);
+    if (prompt.includes('划痕')) assert.doesNotMatch(message, /用户要求：修补接缝/);
   }
   for (const finishReason of ['length', 'content_filter']) {
-    const incompleteAuto = await invokeWithReplies([
-      { content: JSON.stringify({ diagnosis, prompt: validLocalPrompt }), finish_reason: finishReason },
-    ], { ...localInput, prompt: '' });
-    await assert.rejects(incompleteAuto.result, /PROMPT_POLISH_QWEN_INCOMPLETE/);
-    assert.equal(incompleteAuto.calls.length, 1);
+    const incompleteDefault = await invokeWithReplies([{ content: validLocalPrompt, finish_reason: finishReason }], { ...localInput, prompt: '' });
+    await assert.rejects(incompleteDefault.result, /PROMPT_POLISH_QWEN_INCOMPLETE/);
+    assert.equal(incompleteDefault.calls.length, 1);
   }
-  for (const prompt of [undefined, 42, '']) {
-    const invalidPrompt = await invokeWithReplies([JSON.stringify({ diagnosis, prompt })], { ...localInput, prompt: '' });
-    await assert.rejects(invalidPrompt.result, /PROMPT_POLISH_EMPTY_RESULT/);
-  }
+  const emptyDefault = await invokeWithReplies([''], { ...localInput, prompt: '' });
+  await assert.rejects(emptyDefault.result, /PROMPT_POLISH_EMPTY_RESULT/);
   const failedConversion = await invokeWithReplies([500], { ...localInput, prompt: '' });
   await assert.rejects(failedConversion.result, /PROMPT_POLISH_QWEN_HTTP_500/);
   assert.equal(failedConversion.calls.length, 1);
@@ -578,16 +507,16 @@ assert.match(panelSource, /context: isLocalRepaintTab \? 'local-repaint' : 'gene
 assert.match(panelSource, /prepareLocalRepaintPromptPolishInputs/);
 assert.match(
   panelSource,
-  /const promptFingerprint = JSON\.stringify\(\{[\s\S]*?promptTemplatePolicy: LOCAL_REPAINT_PROMPT_TEMPLATE_POLICY,[\s\S]*?\.\.\.\(rawUserPrompt \? \{\} : \{ autoDiagnosisPolicy: LOCAL_REPAINT_AUTO_DIAGNOSIS_POLICY \}\)/,
+  /const promptFingerprint = JSON\.stringify\(\{[\s\S]*?prompt: requestPrompt,[\s\S]*?promptTemplatePolicy: LOCAL_REPAINT_PROMPT_TEMPLATE_POLICY/,
   'Every local repaint prompt fingerprint must include the conversion template policy',
 );
 assert.match(
   visualInputSource,
-  /LOCAL_REPAINT_AUTO_DIAGNOSIS_POLICY = 'single-request-diagnosis-to-klein-v3'/,
+  /return prompt\.trim\(\) \|\| '修补接缝'/,
 );
 assert.match(
   visualInputSource,
-  /LOCAL_REPAINT_PROMPT_TEMPLATE_POLICY = 'qwen-to-klein-material-grounding-v8'/,
+  /LOCAL_REPAINT_PROMPT_TEMPLATE_POLICY = 'qwen-to-klein-default-seam-v9'/,
 );
 assert.match(panelSource, /activeReferences\.find\(\(reference\) =>/);
 assert.match(panelSource, /currentEffectImage: visualInputs\?\.currentEffectImage/);
@@ -624,3 +553,11 @@ assert.match(visualInputSource, /colorMode: 'viewport-clean'/);
 assert.match(visualInputSource, /revokeRegisteredObjectUrl\(currentEffectUrl\)/);
 
 console.log('Prompt polish integration tests passed.');
+assert.doesNotMatch(panelSource, /auto-diagnosis|留空则自动分析/);
+assert.match(panelSource, /const \[localRepaintPrompt, setLocalRepaintPrompt\] = useState\(''\)/);
+const resolverBody = visualInputSource.match(/export function resolveLocalRepaintUserPrompt\(prompt: string\) \{([\s\S]*?)\n\}/)[1];
+const resolveRequest = new Function('prompt', resolverBody);
+for (const value of ['', ' \n\t', '\u3000']) assert.equal(resolveRequest(value), '修补接缝');
+assert.equal(resolveRequest(' 修复划痕 '), '修复划痕');
+assert.match(panelSource, /polishPrompt\(\{\s*prompt: requestPrompt,/);
+assert.doesNotMatch(promptPolishServiceSource, /buildQwenAutomaticLocalRepaintRequest|buildQwenLocalRepaintDiagnosisRequest|needsDiagnosis/);

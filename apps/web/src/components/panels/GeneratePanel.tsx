@@ -59,7 +59,7 @@ import {
 import { getUserFacingGenerationError } from '@/services/generationErrorMessage';
 import { resolveLocalRepaintMaterialReference } from '@/services/localRepaintMaterialReference';
 import {
-  LOCAL_REPAINT_AUTO_DIAGNOSIS_POLICY,
+  resolveLocalRepaintUserPrompt,
   LOCAL_REPAINT_PROMPT_TEMPLATE_POLICY,
   prepareLocalRepaintPromptPolishInputs,
 } from '@/services/localRepaintPromptPolishInputs';
@@ -649,7 +649,7 @@ export function GeneratePanel({
   const promptPolishRequestRef = useRef(0);
   const promptValueRef = useRef({ key: '', value: '' });
   const localRepaintResolvedPromptCacheRef = useRef(
-    new Map<string, { prompt: string; source: 'user-request' | 'auto-diagnosis' }>(),
+    new Map<string, { prompt: string; source: 'user-request' | 'default-seam' }>(),
   );
   const [previewImageOpen, setPreviewImageOpen] = useState(false);
   const [subjectFilledPreview, setSubjectFilledPreview] = useState<{
@@ -3651,6 +3651,7 @@ export function GeneratePanel({
       });
 
       const rawUserPrompt = localRepaintPrompt.trim();
+      const requestPrompt = resolveLocalRepaintUserPrompt(rawUserPrompt);
       const surfaceSignature = useLayerStore
         .getState()
         .layers.filter((layer) => !layer.objectId || layer.objectId === objectId)
@@ -3661,9 +3662,9 @@ export function GeneratePanel({
           layer.opacity,
         ]);
       const promptFingerprint = JSON.stringify({
-        prompt: rawUserPrompt,
+        prompt: requestPrompt,
         promptTemplatePolicy: LOCAL_REPAINT_PROMPT_TEMPLATE_POLICY,
-        ...(rawUserPrompt ? {} : { autoDiagnosisPolicy: LOCAL_REPAINT_AUTO_DIAGNOSIS_POLICY }),
+        promptSource: rawUserPrompt ? 'user-request' : 'default-seam',
         projectId: currentProject.id,
         objectId,
         referenceId: materialReference.id,
@@ -3686,8 +3687,8 @@ export function GeneratePanel({
           resolvedPrompt = {
             prompt: persistedResolution.prompt,
             source:
-              persistedResolution.metadata.promptSource === 'auto-diagnosis'
-                ? 'auto-diagnosis'
+              persistedResolution.metadata.promptSource === 'default-seam'
+                ? 'default-seam'
                 : 'user-request',
           };
           localRepaintResolvedPromptCacheRef.current.set(promptFingerprint, resolvedPrompt);
@@ -3696,13 +3697,11 @@ export function GeneratePanel({
       if (!resolvedPrompt) {
         setLocalRepaintPreparation((current) => ({
           startedAt: current?.startedAt ?? Date.now(),
-          detail: rawUserPrompt ? '正在优化局部重绘提示词' : '正在分析蒙版区域问题',
+          detail: '正在优化局部重绘提示词',
         }));
         setGenerateNotice({
           tone: 'info',
-          message: rawUserPrompt
-            ? '正在结合蒙版与六视图优化提示词。'
-            : '正在分析蒙版区域问题并生成提示词。',
+          message: '正在结合蒙版与参考图优化提示词。',
         });
         const visualInputs = await prepareLocalRepaintPromptPolishInputs({
           objectId,
@@ -3718,7 +3717,7 @@ export function GeneratePanel({
         }
         const optimizedPrompt = await Promise.race([
           createLiclickApiClient().polishPrompt({
-            prompt: rawUserPrompt,
+            prompt: requestPrompt,
             context: 'local-repaint',
             modelName: 'FLUX.2 Klein',
             objectName: objects.find((object) => object.id === objectId)?.name,
@@ -3741,7 +3740,7 @@ export function GeneratePanel({
         }
         resolvedPrompt = {
           prompt: optimizedPrompt,
-          source: rawUserPrompt ? 'user-request' : 'auto-diagnosis',
+          source: rawUserPrompt ? 'user-request' : 'default-seam',
         };
         const promptCache = localRepaintResolvedPromptCacheRef.current;
         if (promptCache.size >= 6) {
@@ -5272,7 +5271,7 @@ export function GeneratePanel({
                 </span>
                 {isLocalRepaintTab ? (
                   <span className="text-[11px] font-medium text-white/46">
-                    生成时自动分析并优化
+                    生成时优化提示词
                   </span>
                 ) : (
                   <button
@@ -5302,7 +5301,7 @@ export function GeneratePanel({
                     : undefined
                 }
                 placeholder={
-                  isLocalRepaintTab ? '可补充编辑要求；留空则自动分析蒙版区域问题' : undefined
+                  isLocalRepaintTab ? '可输入本次编辑要求' : undefined
                 }
                 onChange={(event) => {
                   if (isLocalRepaintTab) {

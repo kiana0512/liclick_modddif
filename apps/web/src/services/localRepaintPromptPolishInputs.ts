@@ -11,10 +11,11 @@ import { prepareReferenceForPromptPolish } from './referenceImagePreprocessor';
 import type { PromptPolishImageInput } from './liclickApiClient';
 
 const promptPolishCaptureResolution = 2048;
-// Changing empty-request diagnosis must not reuse prompts from the old policy.
-export const LOCAL_REPAINT_AUTO_DIAGNOSIS_POLICY = 'single-request-diagnosis-to-klein-v3';
+export function resolveLocalRepaintUserPrompt(prompt: string) {
+  return prompt.trim() || '修补接缝';
+}
 // Any local repaint result from an older conversion contract must miss the prompt cache once.
-export const LOCAL_REPAINT_PROMPT_TEMPLATE_POLICY = 'qwen-to-klein-material-grounding-v8';
+export const LOCAL_REPAINT_PROMPT_TEMPLATE_POLICY = 'qwen-to-klein-default-seam-v9';
 
 export type LocalRepaintPromptPolishInputs = {
   currentEffectImage: PromptPolishImageInput;
