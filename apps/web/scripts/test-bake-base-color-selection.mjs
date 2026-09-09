@@ -129,11 +129,12 @@ try {
     ).id,
     'merged-current',
   );
-  assert.equal(hasWorkflowBakeBaseColor(project.layers, 'object-1'), true);
+  assert.equal(hasWorkflowBakeBaseColor(project.layers, 'object-1'), false);
+  assert.deepEqual(resolveBakeUvMergePlan(project.layers, 'object-1').uvUnderlayLayerIds, ['merged-old']);
   assert.equal(hasWorkflowBakeBaseColor(project.layers, 'missing-object'), false);
   assert.equal(
     requiresTextureUvMergeBeforeBake({ ...project, activeObjectId: 'object-1' }),
-    false,
+    true,
   );
   assert.equal(
     requiresTextureUvMergeBeforeBake(
@@ -299,6 +300,11 @@ try {
       visible: false,
     }),
   ];
+  assert.equal(
+    resolveBakeUvMergePlan([{ ...reusableLayers[0], uvMergeVersion: 4 }, legacyRepaintLayer], 'object-1').action,
+    'reuse',
+    'Version 5 must not resurrect intentionally hidden patches from a valid version 4 UV.',
+  );
   assert.deepEqual(resolveBakeUvMergePlan(legacyRepaintPlanLayers, 'object-1'), {
     action: 'merge',
     objectId: 'object-1',

@@ -2,7 +2,6 @@ import type { BakedTexture } from '@/engine/bake/uvBakeTypes';
 import { isLocalRepaintProjectedLayer } from '@/engine/bake/projectedOverlayComposition';
 import {
   isContentAwareUvUnderlay,
-  UV_MERGE_COMPOSITION_VERSION,
 } from '@/engine/layers/mergeUvComposition';
 import type { Layer } from '@/types/layer';
 import type { TextureBakeHandoff } from '@/types/project';
@@ -143,7 +142,7 @@ export function resolveBakeUvMergePlan(
   // Replay only those durable hidden patches over the existing merged base;
   // once the editor publishes the current version this migration is inert.
   const legacyLocalRepaintLayerIds =
-    mergedLayer && mergedLayer.uvMergeVersion !== UV_MERGE_COMPOSITION_VERSION
+    mergedLayer && (mergedLayer.uvMergeVersion ?? 0) < 4
       ? layers
           .filter(
             (layer) =>
@@ -158,7 +157,14 @@ export function resolveBakeUvMergePlan(
     ...visibleProjectedLayerIds,
     ...legacyLocalRepaintLayerIds.filter((layerId) => !visibleProjectedLayerIds.includes(layerId)),
   ];
-  const uvUnderlayLayerIds = findVisibleContentAwareUvLayerIdsForBake(layers, objectId);
+  const uvUnderlayLayerIds = [
+    ...layers.filter((layer) =>
+      layer.type === 'uv' && layer.role === 'merged-uv' && layer.visible &&
+      Boolean(layer.imageUrl) && layer.id !== mergedLayer?.id &&
+      (!layer.objectId || layer.objectId === objectId),
+    ).sort(compareLayers).map((layer) => layer.id),
+    ...findVisibleContentAwareUvLayerIdsForBake(layers, objectId),
+  ];
   const sourceLayerIds = [...projectedLayerIds, ...uvUnderlayLayerIds];
 
   if (mergedLayer && sourceLayerIds.length === 0) {

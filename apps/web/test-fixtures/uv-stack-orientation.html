@@ -1,0 +1,36 @@
+<!doctype html><meta charset="utf-8"><title>UV stack orientation regression</title>
+<pre id="result">Running real Worker/WebGL comparison…</pre>
+<script type="module">
+import * as THREE from 'three';
+import { compositeUvLayerUrlsInWorker } from '/src/engine/layers/uvLayerCompositeWorker.ts';
+import { createWorkerBackedPreviewTexture, uploadPreviewTextureInStripes, loadPreviewTexture } from '/src/engine/viewport/previewTextureCache.ts';
+import { isFlattenableUvMergeSource, compositeRgbaUnderInPlace } from '/src/engine/layers/mergeUvComposition.ts';
+try {
+  const canvas=document.createElement('canvas'); canvas.width=1024; canvas.height=1024;
+  const ctx=canvas.getContext('2d');
+  for(let y=0;y<1024;y++){ctx.fillStyle=`rgb(${y%251},${Math.floor(y/4)},${255-y%251})`;ctx.fillRect(0,y,1024,1);}
+  const url=URL.createObjectURL(await new Promise(r=>canvas.toBlob(r)));
+  ctx.clearRect(0,0,1024,1024);
+  const empty=URL.createObjectURL(await new Promise(r=>canvas.toBlob(r)));
+  const renderer=new THREE.WebGLRenderer(); renderer.setSize(64,64);
+  const target=new THREE.WebGLRenderTarget(64,64);
+  const scene=new THREE.Scene(); const camera=new THREE.OrthographicCamera(-1,1,1,-1,0,2);camera.position.z=1;
+  const material=new THREE.MeshBasicMaterial({toneMapped:false});scene.add(new THREE.Mesh(new THREE.PlaneGeometry(2,2),material));
+  async function pixels(texture){await uploadPreviewTextureInStripes(renderer,texture);material.map=texture;material.needsUpdate=true;renderer.setRenderTarget(target);renderer.render(scene,camera);const out=new Uint8Array(64*64*4);renderer.readRenderTargetPixels(target,0,0,64,64,out);return out;}
+  document.getElementById('result').textContent='Loading reference'; const reference=await pixels(await loadPreviewTexture(url)); document.getElementById('result').textContent='Reference uploaded';
+  const results={};
+  for(const old of [true,false]){
+    document.getElementById('result').textContent='Compositing '+old; const bitmap=await compositeUvLayerUrlsInWorker([{imageUrl:url,opacity:1},{imageUrl:empty,opacity:1}],`test-${old}`);
+    const texture=await createWorkerBackedPreviewTexture(bitmap);
+    if(old)texture.flipY=true;
+    const actual=await pixels(texture);results[old?'oldMismatchBytes':'fixedMismatchBytes']=actual.reduce((n,v,i)=>n+Number(v!==reference[i]),0);texture.dispose();
+  }
+  const accepted=isFlattenableUvMergeSource({id:'uv1',type:'uv',role:'merged-uv',imageUrl:url});
+  const merged=new Uint8Array([255,0,0,255,0,0,0,0]);
+  compositeRgbaUnderInPlace(merged,new Uint8Array([0,0,255,255,0,0,255,255]));
+  results.uv1Accepted=accepted;results.mergedPixels=Array.from(merged);
+  if(!results.oldMismatchBytes||results.fixedMismatchBytes!==0||!accepted||merged[6]!==255||merged[7]!==255)throw new Error(JSON.stringify(results));
+  document.getElementById('result').textContent='PASS '+JSON.stringify(results);renderer.dispose();URL.revokeObjectURL(url);URL.revokeObjectURL(empty);
+}catch(error){document.getElementById('result').textContent='FAIL '+error.stack;}
+</script>
+

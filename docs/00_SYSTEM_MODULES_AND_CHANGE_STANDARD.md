@@ -1,6 +1,6 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
-> 文档版本：`2.18.28`
+> 文档版本：`2.18.30`
 >
 > 生效日期：`2026-09-08`
 >
@@ -11,6 +11,10 @@
 > 审计口径：`0a2519d + 607e82f + 2568e40`，不包含错误文档提交 `2bde8c6/e03bab2/d1c5f78`
 
 ## 1. 文档地位与强制边界
+
+变更卡 `CHG-20260909-UV-STACK-REMERGE`：主模块 M09，协作 M05/M06；`ALG-UV-006` v2.1.0，UV_MERGE_COMPOSITION_VERSION=5。再次合并时接收所选 merged-uv 作为底图；多 UV Worker 合成已预翻转，DataTexture 条带上传必须保留工厂 flipY=false，不能根据 image 非 ImageBitmap 再置 true。真实 Worker/WebGL 1024² 输入与单图参考比较：旧分支 12,288 字节不同，新分支 0；验证 UV1 入选及透明区域保留底色。无旧资产自动重写；先前遗漏 UV1 的 UV2 需从原图层重新合成。GPU/CPU/Worker source-over 公式、shader、分辨率、QA、Command/CAS/ownership 不变。详见 [变更卡](changes/CHG-20260909-UV-STACK-REMERGE.md)。
+
+变更卡 `CHG-20260909-FILE-RESPONSE-CLOSED-DESTINATION`：主模块 M14；`FILE-RESPONSE-LIFETIME` v1.0.1。4517 日志证实文件响应向已关闭目标 pipeline 抛出同步异常，顶层 catch 再次写 JSON 引发 ERR_HTTP_HEADERS_SENT 并使进程退出。文件流启动前检查响应关闭状态，同步失败销毁源流；顶层错误响应仅在尚未发送头时写 JSON，已发送头则关闭连接，已结束则返回。真实 HTTP 回归覆盖提前关闭、已结束、部分响应失败、正常 500、取消下载与完整字节，并确认后续请求继续成功。认证、路径、ownership、Command/CAS、资产与 GPU/CPU/Worker/shader/export 均不变；无数据迁移。回退还原三个服务端文件会重新引入该崩溃风险。此修复不代表已解决多图层渲染；详见 [变更卡](changes/CHG-20260909-FILE-RESPONSE-CLOSED-DESTINATION.md)。
 
 变更卡 `CHG-20260908-REPAINT-WORKFLOW-GUIDE`：UI-06/UI-10 → M08，前端交互契约 `UI-LOCAL-REPAINT-GUIDE` v1.0.1。旧生图成功 effect 在 GPU 画笔未 ready 时就消耗 success key，同时侧栏发起生成不清除工具栏生图按钮的引导。改为唯一互斥步骤状态：任一入口开始生成均清除旧引导，成功立即登记待应用引导，跨任务解锁/GPU 准备保留，画笔真正可用后显示呼吸效果；点击/进入应用画笔后停止。失败/取消不引导旧结果，恢复蒙版工具不覆盖待应用引导，新一轮显式操作仍可重新引导。不自动切工具或提交任务；生成、GPU/CPU/Worker/shader、mask/回贴/UV/export、Schema、Revision、ownership 和资产不变，无迁移。回退恢复 BottomToolDock 的原三组 effect 并移除 UI helper 即可，不改用户数据。
 

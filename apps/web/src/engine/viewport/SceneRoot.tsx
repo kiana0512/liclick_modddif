@@ -898,9 +898,10 @@ function useCompositedUvTextureState(
               nextTexture = new THREE.CanvasTexture(canvas);
             }
             nextTexture.colorSpace = THREE.SRGBColorSpace;
-            nextTexture.flipY = !(
-              typeof ImageBitmap !== 'undefined' && nextTexture.image instanceof ImageBitmap
-            );
+            // Worker composites are already oriented for GL, including the
+            // dimension-only DataTexture used by striped bitmap uploads.
+            // Preserve the factory's flipY=false; only CanvasTexture needs a flip.
+            if (nextTexture instanceof THREE.CanvasTexture) nextTexture.flipY = true;
             nextTexture.wrapS = THREE.ClampToEdgeWrapping;
             nextTexture.wrapT = THREE.ClampToEdgeWrapping;
             nextTexture.minFilter = THREE.LinearFilter;

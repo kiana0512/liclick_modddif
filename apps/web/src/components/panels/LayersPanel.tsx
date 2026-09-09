@@ -1656,7 +1656,6 @@ function LayerMenu({
 }) {
   const t = useT();
   if (!layer) return null;
-  const selectedProjectedLayers = selectedLayers.filter((item) => item.type === 'projected');
   const selectedMergeSourceLayers = selectedLayers.filter(
     (item) => item.type === 'projected' || isFlattenableUvMergeSource(item),
   );
@@ -1684,7 +1683,7 @@ function LayerMenu({
               run(() => onMergeSelectedToUvLayer(selectedMergeSourceLayers.map((item) => item.id)))
             }
             icon={<Scissors className="h-4 w-4" />}
-            disabled={selectedProjectedLayers.length === 0}
+            disabled={selectedMergeSourceLayers.length === 0}
           >
             {t('mergeSelectedLayersToUvLayer')}
           </MenuButton>
@@ -1699,7 +1698,7 @@ function LayerMenu({
               )
             }
             icon={<Scissors className="h-4 w-4" />}
-            disabled={!selectedBlankUvLayer || selectedProjectedLayers.length === 0}
+            disabled={!selectedBlankUvLayer || selectedMergeSourceLayers.length === 0}
           >
             {t('mergeIntoSelectedBlankUvLayer')}
           </MenuButton>

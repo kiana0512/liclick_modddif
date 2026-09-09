@@ -4896,7 +4896,7 @@ export function EditorPage({
     const projectedLayerIds = projectedLayers.map((layer) => layer.id);
     const selectedUvLayerIds = selectedUvSourceLayers.map((layer) => layer.id);
     const consumedLayerIds = [...projectedLayerIds, ...selectedUvLayerIds];
-    if (projectedLayerIds.length === 0 && !baseUvLayer) {
+    if (projectedLayerIds.length === 0 && selectedUvLayers.length === 0) {
       pushToast({ tone: 'warning', title: t('mergeNoProjectedLayers') });
       return;
     }
