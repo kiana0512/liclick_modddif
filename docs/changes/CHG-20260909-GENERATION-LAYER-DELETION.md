@@ -21,4 +21,6 @@
 
 验证结果：100 项 Web 回归、TypeScript、变更文件 ESLint（0 错误，8 项既有警告）和 diff 检查通过。Edge 挂载真实 LayersPanel/Actions 与事件门禁夹具，验证菜单删除、焦点内 Delete、多选删除、清空确认、焦点外 Delete 不删、复制仍锁定及输入保护阶段禁止删除；无 pageerror。夹具不是完整用户工程或真实付费生图端到端验收。
 
+发布包记录：匹配 Cloud 配置，合并本次 GPT-only/删除交互/文案修改后总 JS 从 master-405f7f5 的 3,147,349 增至 3,148,233 bytes（+884）。原总量限额超出 483 bytes；按功能增量增加 1,000 bytes 至 3,148,750。shell/editor/bake/shared 独立上限、质量检查和输出分辨率保持，不跳过产物门禁。
+
 未改变 GPU/CPU/Worker/shader 像素公式、UV/export、输出分辨率、质量门禁、项目 Schema、Command 幂等性、ownership 或 verified assets。仅调整 UI 策略与最新图层快照读取；无迁移。回滚本策略/接线/保存读取修改即可，不删除资产。本次尚未提交 master 或部署 A100。

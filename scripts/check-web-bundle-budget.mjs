@@ -30,7 +30,9 @@ const budgets = [
 // CHG-20260909-PROJECTED-ERASER-STORAGE adds 171 bytes over master-73c6e03
 // (3,147,367 -> 3,147,538 with matching Cloud settings). Allow 250 bytes for
 // this correctness fix only; individual chunk and quality limits stay intact.
-const maxTotalJavaScriptBytes = 3_147_750;
+// GPT-only UI and generation-time layer deletion: Cloud 3,147,349 -> 3,148,233
+// (+884 bytes). Allow 1,000 bytes for this feature; per-chunk limits unchanged.
+const maxTotalJavaScriptBytes = 3_148_750;
 
 let entries;
 try {
