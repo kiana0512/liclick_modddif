@@ -1450,6 +1450,69 @@ try {
   assert(material, 'Expected the six-layer projected material to be created.');
   const state = material.userData.liclickProjectedLayerStackState;
   assert.equal(state.bindings.length, 6);
+  // Multi-layer ordered subsets must reuse the original sampler slots.
+  // Empty/single inputs preserve the white/single-shader factory semantics.
+  const subsetInput = {
+    layers, baseTexture: residentContentAwareTexture, uvOverlayTexture: residentUvTexture,
+    uvOverlayOpacity: 1, uvOverlayBelowProjected: true, baseTextureOpacity: 1,
+  };
+  const originalShader = material.fragmentShader;
+  const originalVersion = material.version;
+  const originalLayers = JSON.stringify(layers);
+  const uniformSnapshot = () => JSON.stringify(Object.fromEntries(
+    Object.entries(material.uniforms).map(([name, uniform]) => [
+      name, uniform.value instanceof THREE.Texture ? uniform.value.uuid : uniform.value,
+    ]),
+  ));
+  for (let cycle = 0; cycle < 10; cycle++) {
+    for (let mask = 1; mask < 64; mask++) {
+      const subset = layers.filter((_, index) => mask & (1 << index));
+      if (subset.length === 1) continue;
+      const eraserLayer = subset.at(-1);
+      assert.equal(projection.updateProjectedLayerStackMaterial(material, {
+        ...subsetInput, layers: subset, liveEraserLayerId: eraserLayer.layerId,
+        liveEraserMaskTexture: residentContentAwareTexture,
+      }), true);
+      state.bindings.forEach((binding, index) => {
+        assert.equal(material.uniforms[binding.opacityUniform].value, mask & (1 << index) ? 1 : 0);
+      });
+      assert.equal(material.uniforms.liveEraserLayerIndex.value, layers.indexOf(eraserLayer));
+      assert.equal(material.uniforms.useLiveEraserMask.value, 1);
+    }
+  }
+  assert.equal(material.fragmentShader, originalShader);
+  assert.equal(material.version, originalVersion, 'Visibility reuse must never request recompilation.');
+  assert.equal(JSON.stringify(layers), originalLayers, 'Authored layers must remain unchanged.');
+  assert.equal(projection.updateProjectedLayerStackMaterial(material, {
+    ...subsetInput, layers: [layers[3], layers[4]], liveEraserLayerId: layers[0].layerId,
+    liveEraserMaskTexture: residentContentAwareTexture,
+  }), true);
+  assert.equal(material.uniforms.liveEraserLayerIndex.value, -1);
+  assert.equal(material.uniforms.useLiveEraserMask.value, 0);
+  const rejectedSubsets = [
+    [], [layers[2]], [layers[4], layers[1]], [layers[1], layers[1]],
+    [{ ...layers[2], layerId: 'unknown' }],
+    ...[
+      { imageUrl: 'memory://changed' }, { maskUrl: 'memory://mask', useMask: true },
+      { depthUrl: 'memory://depth', useDepthCheck: true }, { normalUrl: 'memory://normal', useNormalCheck: true },
+      { renderedColor: true }, { compositeRole: 'underlay' }, { ignoreSourceAlpha: true },
+      { camera: { ...camera, position: [11, 12, 13] } }, { objectMatrixWorld: Array(16).fill(2) },
+    ].map((patch) => [layers[0], { ...layers[2], ...patch }]),
+  ];
+  for (const rejected of rejectedSubsets) {
+    const before = uniformSnapshot();
+    assert.equal(projection.updateProjectedLayerStackMaterial(material, { ...subsetInput, layers: rejected }), false);
+    assert.equal(uniformSnapshot(), before, 'Rejected structure must not partially change live uniforms.');
+  }
+  for (const feature of ['baseRenderedColorMaskTexture', 'uvOverlayRenderedColorMaskTexture', 'topUvOverlayTexture']) {
+    const before = uniformSnapshot();
+    assert.equal(projection.updateProjectedLayerStackMaterial(material, {
+      ...subsetInput, layers: [layers[0], layers[2]], [feature]: residentUvTexture,
+    }), false);
+    assert.equal(uniformSnapshot(), before);
+  }
+  assert.equal(projection.updateProjectedLayerStackMaterial(material, subsetInput), true);
+  console.log('Resident subset reuse passed: 570 transitions, eraser slot ownership, single/structural rejection and unchanged inputs/shader.');
   assert.equal(material.uniforms.uvOverlayBelowProjected.value, 1);
   assert.deepEqual(
     state.bindings.map((binding) => binding.layerId),

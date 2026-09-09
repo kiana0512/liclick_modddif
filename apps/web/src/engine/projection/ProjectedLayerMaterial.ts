@@ -208,6 +208,7 @@ type ProjectedLayerUniformBinding = {
 
 type ProjectedLayerMaterialState = {
   signature: string;
+  layers?: ProjectionLayerStackInput['layers'];
   bindings: ProjectedLayerUniformBinding[];
   usesTextureArrays?: boolean;
 };
@@ -3029,8 +3030,27 @@ export function updateProjectedLayerStackMaterial(
     | ProjectedLayerMaterialState
     | undefined;
   if (!state) return false;
-  const layers = input.layers.filter((layer) => layer.imageUrl && layer.camera);
+  let layers = input.layers.filter((layer) => layer.imageUrl && layer.camera);
   if (layers.length === 0) return false;
+  // Keep compiled slots and eraser indices stable when reusing a resident subset.
+  if (state.layers && layers.length < state.layers.length) {
+    // The single-layer shader has distinct coverage/diagnostic semantics.
+    // Preserve its existing factory path instead of substituting Top-K blending.
+    if (layers.length === 1) return false;
+    let next = 0;
+    const residentLayers = state.layers.map((layer) =>
+      layer.layerId === layers[next]?.layerId ? layers[next++]! : { ...layer, opacity: 0 },
+    );
+    if (next !== layers.length) return false;
+    input = {
+      ...input,
+      liveEraserLayerId: layers.some((layer) => layer.layerId === input.liveEraserLayerId)
+        ? input.liveEraserLayerId
+        : undefined,
+      layers: residentLayers,
+    };
+    layers = residentLayers;
+  }
   if (
     state.signature !==
     getProjectionLayerStructureSignature(layers, {
@@ -3043,11 +3063,12 @@ export function updateProjectedLayerStackMaterial(
     })
   )
     return false;
+  if (layers.some((layer, index) => state.bindings[index]?.layerId !== layer.layerId))
+    return false;
   updateSharedPreviewUniforms(material, input);
   for (let index = 0; index < layers.length; index += 1) {
     const binding = state.bindings[index];
     const layer = layers[index];
-    if (!binding || binding.layerId !== layer.layerId) return false;
     updateLayerUniforms(material, binding, layer);
   }
   return true;
@@ -4069,6 +4090,7 @@ export async function createProjectedLayerMaterial(input: ProjectionLayerInput) 
     hiddenMaskTexture,
   ];
   material.userData[PROJECTED_LAYER_STACK_STATE_KEY] = {
+    layers: [materialLayer],
     signature: getProjectionLayerStructureSignature([materialLayer], {
       useBaseMap: Boolean(input.baseTexture || input.reserveBaseMapSampler),
       useBaseRenderedColorMaskMap: Boolean(input.baseRenderedColorMaskTexture),
@@ -4798,11 +4820,7 @@ export async function createProjectedLayerStackMaterial(
     name: `LiclickProjectedLayerStack:${loadedLayers.map((layer) => layer.layerId).join(',')}`,
     vertexShader,
     fragmentShader: buildStackFragmentShader(loadedLayers, {
-      useBaseMap: Boolean(input.baseTexture || input.reserveBaseMapSampler),
-      useBaseRenderedColorMaskMap: Boolean(input.baseRenderedColorMaskTexture),
-      useUvOverlayMap: Boolean(input.uvOverlayTexture || input.reserveUvOverlaySampler),
-      useUvOverlayRenderedColorMaskMap: Boolean(input.uvOverlayRenderedColorMaskTexture),
-      useTopUvOverlayMap: Boolean(input.topUvOverlayTexture),
+      ...samplerFeatures,
       useTextureArrays,
     }),
     uniforms,
@@ -4817,12 +4835,9 @@ export async function createProjectedLayerStackMaterial(
   }
   material.userData[DISPOSABLE_TEXTURES_KEY] = [...new Set(disposableTextures)];
   material.userData[PROJECTED_LAYER_STACK_STATE_KEY] = {
+    layers: loadedLayers,
     signature: getProjectionLayerStructureSignature(loadedLayers, {
-      useBaseMap: Boolean(input.baseTexture || input.reserveBaseMapSampler),
-      useBaseRenderedColorMaskMap: Boolean(input.baseRenderedColorMaskTexture),
-      useUvOverlayMap: Boolean(input.uvOverlayTexture || input.reserveUvOverlaySampler),
-      useUvOverlayRenderedColorMaskMap: Boolean(input.uvOverlayRenderedColorMaskTexture),
-      useTopUvOverlayMap: Boolean(input.topUvOverlayTexture),
+      ...samplerFeatures,
       useTextureArrays,
     }),
     bindings: loadedLayers.map((layer, index) => ({

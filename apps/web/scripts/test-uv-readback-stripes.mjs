@@ -6,8 +6,8 @@ const compiled = ts.transpileModule(source.replace(/import[^;]+;/g, '').replace(
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
 }).outputText;
 let yields = 0;
-const read = new Function('waitForBrowserPaint', 'window', `${compiled}; return readRenderTargetPixelsInStripes;`)(
-  async () => { yields++; }, { setTimeout: (callback) => { yields++; callback(); } },
+const read = new Function('waitForBrowserPaint', 'yieldToBrowserTask', `${compiled}; return readRenderTargetPixelsInStripes;`)(
+  async () => { yields++; }, async () => { yields++; },
 );
 for (const visible of [true, false]) {
   const destinations = [];

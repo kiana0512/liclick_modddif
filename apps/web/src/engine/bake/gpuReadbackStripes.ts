@@ -1,5 +1,5 @@
 import type * as THREE from 'three';
-import { waitForBrowserPaint } from '@/utils/browserScheduling';
+import { waitForBrowserPaint, yieldToBrowserTask } from '@/utils/browserScheduling';
 
 // Eight 8 MiB stripes for a 4K RGBA target keep each driver readback bounded.
 // The smaller transfer is intentionally retained: stress testing showed a
@@ -24,7 +24,7 @@ export async function readRenderTargetPixelsInStripes(
       if (usesVisibleRenderer) {
         await waitForBrowserPaint();
       } else {
-        await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+        await yieldToBrowserTask();
       }
     }
     const rowCount = Math.min(rowsPerStripe, resolution - y);
@@ -54,4 +54,3 @@ export async function readRenderTargetPixelsInStripes(
   }
   return pixels;
 }
-
