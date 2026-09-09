@@ -990,3 +990,5 @@ M13/M15，`IDENTITY-TELEMETRY` v1.1.0，日聚合 schema v3：来源由后端确
 2026-09-08 `CHG-20260908-REPAINT-TOOL-HANDOFF-PROFILE`：UI-06/UI-10 → M08，`ALG-LR-007` v2.2.1。真实 perf_224920a6 记录切换时 overlay 提前隐藏、正式材质约 4.75 秒后才发布。保留有内容的 preview owner 至真实 resident mask 绑定与呈现屏障完成，缓存复用/可见性入口同义，空预览和 eye-off 仍遵守原规则。GPU/CPU/Worker/shader 像素、UV/export、分辨率、Schema、Command/Revision/ownership/资产不变，无迁移；回滚只恢复这些判断。旧生产回调时序回归失败、新实现通过；M06 / ALG-PROJ-007 v2.1.4 同时令带深度/法线的 live+array 混合栈使用既有 compact 循环，保留简单 live 栈原 GLSL、采样预算与所有像素公式；7 组真实 WebGL 三状态像素对照一致，9 层 GLSL 约 82 KB 降至 31 KB。首次编译仍可能阻塞，不承诺用户原项目整体帧率已达标。详见对应变更卡。
 
 2026-09-08 CHG-20260908-PROJECTED-OFFSCREEN-COMPILE：UI-06 / M06，协作 M08/M13；ALG-PROJ-007 v2.1.5。正式材质的 UV 离屏预热先异步编译精确 framebuffer 变体，绑定目标只跨同步 compileAsync 调用，立即恢复 target/cube face/mip；保留采样预热、GPU fence、取消与交互门禁。真实 14 层 WebGL 对照首绘 554.7ms → 1.0ms，180224 字节像素一致；原项目实测待新录制。Shader/CPU/Worker/UV/export/分辨率/Schema/Command/Revision/ownership/资产不变，无迁移；回退恢复原同步首绘。详见对应变更卡。
+
+2026-09-09 CHG-20260909-CI-WATCH-CONFIG-MERGE：M15/M13/M08，一次性 SSR 回归改用忽略全部路径的监听配置，修复 Vite 合并时丢弃 watch:null 导致的 CI EMFILE；新增零监听断言，保留所有业务断言。算法、Schema、资产与部署语义不变，无迁移。

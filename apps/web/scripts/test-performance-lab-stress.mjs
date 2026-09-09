@@ -3,7 +3,9 @@ import { createServer } from 'vite';
 import { fileURLToPath } from 'node:url';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
-const vite = await createServer({ root, appType: 'custom', logLevel: 'silent', server: { middlewareMode: true, watch: null } });
+// Vite drops null overrides while merging vite.config.ts. Ignore every path
+// instead, so this one-shot SSR test never opens native filesystem watchers.
+const vite = await createServer({ root, appType: 'custom', logLevel: 'silent', server: { middlewareMode: true, watch: { ignored: () => true } } });
 const saved = new Map(['window', 'document', 'MutationObserver', 'PerformanceObserver'].map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
 const frames = new Map();
 const timers = new Map();
@@ -125,6 +127,7 @@ try {
   }
   timeline.setPerformanceTimelineEnabled(false);
   timeline.clearPerformanceTimelineEvents();
+  assert.deepEqual(vite.watcher.getWatched(), {}, 'one-shot regression must not retain filesystem watches');
   console.log('Performance Lab stress passed: 100 start/stop cycles, 100,000 wheel events, 200,100 timeline events, exact full-retention quantiles.');
 } finally {
   for (const [key, descriptor] of saved) { if (descriptor) Object.defineProperty(globalThis, key, descriptor); else delete globalThis[key]; }
