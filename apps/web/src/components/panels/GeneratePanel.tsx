@@ -599,6 +599,7 @@ function getImportedModelMatrixWorld(objectId?: string) {
 type GeneratePanelProps = {
   workspaceActive?: boolean;
   localImageGenerationRequestKey?: number;
+  openLocalRepaintPanelRequestKey?: number;
   onRequestLocalImageGeneration?: () => void;
   onLocalImageGenerationSettled?: (result: LocalImageGenerationSettledResult) => void;
   cancelActiveGenerationRequestKey?: number;
@@ -622,6 +623,7 @@ export type LocalImageGenerationSettledResult =
 export function GeneratePanel({
   workspaceActive = true,
   localImageGenerationRequestKey = 0,
+  openLocalRepaintPanelRequestKey = 0,
   onRequestLocalImageGeneration,
   onLocalImageGenerationSettled,
   cancelActiveGenerationRequestKey = 0,
@@ -637,6 +639,11 @@ export function GeneratePanel({
   const [textureViewMode, setTextureViewMode] = useState<TextureViewMode>('multi');
   const [singleViewProvider, setSingleViewProvider] = useState<SingleViewProvider>('gpt');
   const [texturePreviewMode, setTexturePreviewMode] = useState<TexturePreviewMode>('multi');
+  useEffect(() => {
+    if (!openLocalRepaintPanelRequestKey) return;
+    setTab('repaint');
+    setTexturePreviewMode('repaint');
+  }, [openLocalRepaintPanelRequestKey]);
   const [localRepaintPrompt, setLocalRepaintPrompt] = useState('');
   const [promptPolishing, setPromptPolishing] = useState(false);
   const promptPolishRequestRef = useRef(0);
@@ -3826,16 +3833,16 @@ export function GeneratePanel({
         },
         { signal: requestAbortController.signal },
       );
-      // The depth guard is local-only. Capture it at 1K from the exact frozen
+      // The depth guard is local-only. Capture it at 2K from the exact frozen
       // camera while the remote request is already running, then attach it to
       // the archived capture before the result can be painted back.
       const depthPreviewPromise = captureCurrentDepthPreview({
         objectId,
-        resolution: 1024,
+        resolution: 2048,
         framing: 'current',
         aspect: captureAspect,
         cameraSnapshot: captureCameraSnapshot,
-      }).catch((error) => {
+      }, 2048).catch((error) => {
         console.warn('[Liclick 3D Texture] Local repaint depth guard was not captured:', error);
         return undefined;
       });
@@ -3862,13 +3869,20 @@ export function GeneratePanel({
         setLastCapture(capture);
       }
       if (isCancelledGeneration(pendingGeneration)) return false;
+      if (!generation.resultUrl) throw new Error('局部重绘没有返回图片。');
+      const { MODEL_SILHOUETTE_CLIP_VERSION, prepareModelClippedRepaint } =
+        await import('@/engine/localRepaint/modelSilhouetteClip');
+      const clippedResultUrl = await prepareModelClippedRepaint(
+        generation.resultUrl, capture.depthUrl, requestAbortController.signal,
+      );
+      if (isCancelledGeneration(pendingGeneration)) return false;
       const completedGeneration: Generation = {
         ...generation,
         // Keep one canonical client id from start through completion. Some
         // legacy ModelView responses used the remote id here, leaving the
         // persisted client-id record permanently `running` beside the result.
         id: pendingGeneration.id,
-        resultUrl: generation.resultUrl,
+        resultUrl: clippedResultUrl,
         captureId: generation.captureId ?? capture.id,
         metadata: {
           ...pendingGeneration.metadata,
@@ -3877,6 +3891,7 @@ export function GeneratePanel({
           captureCamera: capture.camera,
           maskUrl: currentPaintMaskDataUrl,
           rawResultUrl: generation.resultUrl,
+          modelSilhouetteClipVersion: MODEL_SILHOUETTE_CLIP_VERSION,
           resultComposition: 'direct-v1',
           paintMaskRevision: currentPaintMaskRevision,
           sourceColorMode: 'flat-clay-mask-v1',
@@ -3934,7 +3949,7 @@ export function GeneratePanel({
               maskUrl: persistedAuthoredMaskUrl,
               authoredMaskUrl: persistedAuthoredMaskUrl,
               submittedMaskUrl: persistedSubmittedMaskUrl,
-              rawResultUrl: persistedResultUrl ?? completedGeneration.resultUrl,
+              rawResultUrl: generation.resultUrl,
               resultComposition: 'direct-v1',
             },
           };

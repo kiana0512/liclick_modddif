@@ -1157,6 +1157,7 @@ export function EditorPage({
   const [modelImportBusy, setModelImportBusy] = useState(false);
   const [layerAdjustmentsOpen, setLayerAdjustmentsOpen] = useState(false);
   const [localImageGenerationRequestKey, setLocalImageGenerationRequestKey] = useState(0);
+  const [openLocalRepaintPanelRequestKey, setOpenLocalRepaintPanelRequestKey] = useState(0);
   const [localImageGenerationRequested, setLocalImageGenerationRequested] = useState(false);
   const [
     localRepaintGenerationSettledAwaitingUnlock,
@@ -5770,6 +5771,10 @@ export function EditorPage({
       const rawResultUrl =
         typeof metadata.rawResultUrl === 'string' ? metadata.rawResultUrl : generation.resultUrl;
       if (!rawResultUrl) return Promise.reject(new Error('Local repaint result is missing.'));
+      if (metadata.modelSilhouetteClipVersion === 1 && generation.resultUrl) {
+        return Promise.resolve({ imageUrl: generation.resultUrl, persistentImageUrl: generation.resultUrl,
+          rawImageUrl: rawResultUrl, seamMode: 'legacy' as const, seamHarmonizationVersion: undefined });
+      }
       const referenceUrl =
         typeof metadata.viewportReferenceUrl === 'string'
           ? metadata.viewportReferenceUrl
@@ -6269,6 +6274,7 @@ export function EditorPage({
           imageUrl: projectionImage.imageUrl,
           persistentImageUrl: projectionImage.persistentImageUrl,
           rawImageUrl: projectionImage.rawImageUrl,
+          ignoreSourceAlpha: latestLocalRepaintGeneration.metadata.modelSilhouetteClipVersion !== 1,
           seamHarmonizationVersion: projectionImage.seamHarmonizationVersion,
           autoActivate: false,
           allowedMaskUrl: generationMaskUrl,
@@ -6348,6 +6354,12 @@ export function EditorPage({
     setLocalRepaintProjectionSource,
     t,
   ]);
+
+  const handleOpenLocalRepaintPanel = useCallback(() => {
+    showPanel('generate');
+    setPanelCollapsed('generate', false);
+    setOpenLocalRepaintPanelRequestKey((current) => current + 1);
+  }, [showPanel, setPanelCollapsed]);
 
   const handleLocalImageGenerationFromToolbar = useCallback(() => {
     if (generationOperationLocked) {
@@ -6690,6 +6702,7 @@ export function EditorPage({
         imageUrl: projectionImage.imageUrl,
         persistentImageUrl: projectionImage.persistentImageUrl,
         rawImageUrl: projectionImage.rawImageUrl,
+        ignoreSourceAlpha: latestLocalRepaintGeneration.metadata.modelSilhouetteClipVersion !== 1,
         seamHarmonizationVersion: projectionImage.seamHarmonizationVersion,
         autoActivate: true,
         allowedMaskUrl: generationMaskUrl,
@@ -7776,6 +7789,7 @@ export function EditorPage({
           <GeneratePanel
             workspaceActive={isActive}
             localImageGenerationRequestKey={localImageGenerationRequestKey}
+            openLocalRepaintPanelRequestKey={openLocalRepaintPanelRequestKey}
             onRequestLocalImageGeneration={handleLocalImageGenerationFromToolbar}
             onLocalImageGenerationSettled={handleLocalImageGenerationSettled}
             cancelActiveGenerationRequestKey={cancelActiveGenerationRequestKey}
@@ -8073,6 +8087,7 @@ export function EditorPage({
               onPaintToolChange={setPaintTool}
               onLocalImageGeneration={handleLocalImageGenerationFromToolbar}
               onLocalRepaint={handleLocalRepaintFromToolbar}
+              onOpenLocalRepaintPanel={handleOpenLocalRepaintPanel}
               localImageGenerationRunning={localImageGenerationRunning}
               localImageGenerationSuccessKey={localImageGenerationSuccessKey}
               canLocalRepaint={localRepaintGenerationReady && localRepaintInteractiveReady}

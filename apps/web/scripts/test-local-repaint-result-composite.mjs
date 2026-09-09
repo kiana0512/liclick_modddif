@@ -151,8 +151,8 @@ assert.match(
 );
 assert.match(
   generatePanelSource,
-  /resultUrl: generation\.resultUrl,[\s\S]*resultComposition: 'direct-v1'/,
-  'new workflow results must be used directly without browser colour harmonization',
+  /resultUrl: clippedResultUrl,[\s\S]*rawResultUrl: generation\.resultUrl,[\s\S]*resultComposition: 'direct-v1'/,
+  'model silhouette clipping preserves the untouched provider result without colour harmonization',
 );
 assert.doesNotMatch(
   generatePanelSource,
