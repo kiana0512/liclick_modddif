@@ -2,6 +2,7 @@ import { useFrame, useThree } from '@react-three/fiber';
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { compileForRenderTarget } from '@/engine/projection/compileForRenderTarget';
+import { isResidentProjectedMaterial } from '@/engine/projection/projectedMaterialIdentity';
 import { isProjectedUniformBudgetSafe } from '@/engine/projection/projectedUniformBudget';
 import { projectionDisplayCapacity, publishPendingProjectionLayers } from '@/engine/projection/projectionDisplayAdmission';
 import { useShallow } from 'zustand/react/shallow';
@@ -3615,7 +3616,7 @@ const ImportedModel = memo(function ImportedModel({
       const materials = Array.isArray(child.material) ? child.material : [child.material];
       hasPresentedMaterial = true;
       hasResidentProjectedMaterial ||= materials.some((material) =>
-        material.name.startsWith('LiclickProjectedLayerStack:'),
+        isResidentProjectedMaterial(material),
       );
       presentsOnlyWhiteMembrane &&= materials.every(
         (material) => material.name === 'LiclickWhiteMembranePreview',
@@ -4049,7 +4050,7 @@ const ImportedModel = memo(function ImportedModel({
       const hasPresentedProjectedMaterial = meshes.some((mesh) => {
         const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
         return materials.some((material) =>
-          material.name.startsWith('LiclickProjectedLayerStack:'),
+          isResidentProjectedMaterial(material),
         );
       });
       const hasPresentedBootstrapMaterial = meshes.some((mesh) => {
@@ -4258,7 +4259,7 @@ const ImportedModel = memo(function ImportedModel({
       const retainProjectedMaterialForReuse = (material: THREE.Material | THREE.Material[]) => {
         if (
           !(material instanceof THREE.ShaderMaterial) ||
-          !material.name.startsWith('LiclickProjectedLayerStack:')
+          !isResidentProjectedMaterial(material)
         )
           return false;
         const alreadyResident = residentProjectedMaterialRef.current;
@@ -5047,7 +5048,7 @@ const ImportedModel = memo(function ImportedModel({
       const presentsProjectedMaterial = meshes.some((mesh) => {
         const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
         return materials.some((material) =>
-          material.name.startsWith('LiclickProjectedLayerStack:'),
+          isResidentProjectedMaterial(material),
         );
       });
       committedProjectedMaterialStructureRef.current = presentsProjectedMaterial
@@ -5066,7 +5067,7 @@ const ImportedModel = memo(function ImportedModel({
         const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
         return materials.every(
           (material) =>
-            material.name.startsWith('LiclickProjectedLayerStack:') ||
+            isResidentProjectedMaterial(material) ||
             material.name === 'LiclickUvOverlayPreview',
         );
       });

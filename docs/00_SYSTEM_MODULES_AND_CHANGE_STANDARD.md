@@ -1,6 +1,6 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
-> 文档版本：`2.19.13`
+> 文档版本：`2.19.14`
 >
 > 生效日期：`2026-09-09`
 >
@@ -11,6 +11,8 @@
 > 审计口径：`0a2519d + 607e82f + 2568e40`，不包含错误文档提交 `2bde8c6/e03bab2/d1c5f78`
 
 ## 1. 文档地位与强制边界
+
+`CHG-20260909-SINGLE-PROJECTION-RESTORE-REVEAL`：M06/M03，协作 M08；PROJECTED-MATERIAL-IDENTITY v1.0.0。A100 实际工程恢复已完成 full 模型/2048 UV/单投影编译，原显示门禁只识别 Stack 名称，遗漏单层工厂返回的 LiclickProjectedLayer，导致无限旋转。统一常驻材质身份，覆盖初次显示、结构复用、UV bootstrap 和临时保留；不接受 Warmup/白模/不完整投影。GPU 仅显示与驻留生命周期变化，shader/CPU/Worker/蒙版/UV/export/分辨率及持久化契约不改，无迁移。详见 [变更卡](changes/CHG-20260909-SINGLE-PROJECTION-RESTORE-REVEAL.md)。
 
 `CHG-20260909-REPAINT-LAYER-SELECTION`：M08/M06，协作 M05/M12；REPAINT-LAYER-SELECTION v1.0.0。普通图层选择不恢复重绘编辑源、不重启 overlay 交接，停用的 progressive compositor 不再因选中 ID 生成新材质依赖。显式橡皮擦目标准备、实际图层显隐/编辑/删除与生图预热保持；迟到蒙版编码重新校验工具。GPU 仅生命周期调度变化，shader/CPU/Worker/蒙版/UV/export、分辨率、Schema/Command/CAS/ownership/verified assets 不变，无迁移。回滚恢复原触发条件即可，详见 [变更卡](changes/CHG-20260909-REPAINT-LAYER-SELECTION.md)。
 
