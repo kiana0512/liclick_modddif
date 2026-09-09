@@ -1322,6 +1322,21 @@ export function EditorPage({
     };
   }, [progressiveModelStageSignature, setImportedModelRestoreStage]);
 
+  const retireLocalRepaintSession = useCallback(() => {
+    const sceneState = useSceneStore.getState();
+    localRepaintToolRequestRevisionRef.current += 1;
+    pendingLocalRepaintBackgroundGenerationIdRef.current = undefined;
+    localRepaintGpuPrepareRequestedKeyRef.current = undefined;
+    pendingLocalRepaintActivationRequestRef.current = undefined;
+    setLocalRepaintActivationQueued(false);
+    setLocalRepaintGenerationSettledAwaitingUnlock(false);
+    sceneState.setLocalRepaintProjectionSource(undefined);
+    sceneState.setLocalRepaintPreviewLayer(undefined);
+    sceneState.setLocalRepaintGenerationPresentationActive(false);
+    sceneState.setPaintTool('none');
+    sceneState.clearPaintMask();
+  }, []);
+
   useEffect(() => {
     const activeObjectId = selectedObjectId ?? importedModel?.objectId;
     const nextScope = `${projectId}:${activeObjectId ?? ''}`;
@@ -1338,18 +1353,8 @@ export function EditorPage({
     // The live projection source and mask are renderer-owned session state.
     // They cannot follow a project/model switch even when a legacy layer lacks
     // objectId, otherwise that old image is painted onto every later model.
-    localRepaintToolRequestRevisionRef.current += 1;
-    pendingLocalRepaintBackgroundGenerationIdRef.current = undefined;
-    localRepaintGpuPrepareRequestedKeyRef.current = undefined;
-    pendingLocalRepaintActivationRequestRef.current = undefined;
-    setLocalRepaintActivationQueued(false);
-    setLocalRepaintGenerationSettledAwaitingUnlock(false);
-    sceneState.setLocalRepaintProjectionSource(undefined);
-    sceneState.setLocalRepaintPreviewLayer(undefined);
-    sceneState.setLocalRepaintGenerationPresentationActive(false);
-    sceneState.setPaintTool('none');
-    sceneState.clearPaintMask();
-  }, [importedModel?.objectId, projectId, selectedObjectId]);
+    retireLocalRepaintSession();
+  }, [importedModel?.objectId, projectId, selectedObjectId, retireLocalRepaintSession]);
 
   const setLayers = useLayerStore((state) => state.setLayers);
   const setActiveLayer = useLayerStore((state) => state.setActiveLayer);
@@ -5234,13 +5239,14 @@ export function EditorPage({
       }
       setManualBakeProgress({
         title: t('mergeSelectedLayersToUvLayer'),
-        detail: '最终纹理已就绪，正在同步图层眼睛状态',
+        detail: '最终纹理已就绪，正在替换已合并的原图层',
         progress: 0.995,
       });
+      const layersBeforeMerge = useLayerStore.getState().layers;
       const mergedLayer = mergeLayersIntoUvLayer({
         // Every source that actually contributed to this PNG is consumed. A
         // selected repair layer no longer remains as an apparently enabled but
-        // visually disconnected layer after the projected sources are hidden.
+        // visually disconnected layer after the projected sources are removed.
         sourceLayerIds: consumedLayerIds,
         targetUvLayerId: blankUvLayerId,
         imageUrl,
@@ -5251,13 +5257,24 @@ export function EditorPage({
         renderedColor: false,
         renderedColorMaskUrl: undefined,
       });
+      const retainedLayerIds = new Set(useLayerStore.getState().layers.map((layer) => layer.id));
+      const removedLayerIds = new Set(layersBeforeMerge.filter((layer) => !retainedLayerIds.has(layer.id)).map((layer) => layer.id));
+      const sceneState = useSceneStore.getState();
+      const oldPreview = sceneState.localRepaintPreviewLayer;
+      if (
+        removedLayerIds.has(sceneState.localRepaintProjectionSource?.targetLayerId ?? '') ||
+        removedLayerIds.has(oldPreview?.id ?? '') ||
+        removedLayerIds.has(oldPreview?.replacementTargetLayerId ?? '')
+      ) {
+        // Retire the consumed live session as well as its two stored rows.
+        // Otherwise button 3 can keep painting the old hidden destination.
+        retireLocalRepaintSession();
+      }
       document.body.dataset.uvMergeAtomicHandoff = JSON.stringify({
         mergedLayerId: mergedLayer.id,
         mergedVisible: mergedLayer.visible,
         sourceLayerCount: consumedLayerIds.length,
-        hiddenSourceCount: useLayerStore
-          .getState()
-          .layers.filter((layer) => consumedLayerIds.includes(layer.id) && !layer.visible).length,
+        removedSourceCount: removedLayerIds.size,
         previewPrewarmReady,
         previewPrewarmDurationMs,
       });

@@ -5,6 +5,7 @@ import type { Generation } from '@/types/generation';
 import type { Layer, LayerAdjustments } from '@/types/layer';
 import { markPerformanceEvent } from '@/engine/performance/performanceTimeline';
 import { isContentAwareEraserUnderlay } from '@/engine/paint/eraserTargetPolicy';
+import { prepareUvMergeConsumption } from '@/engine/layers/uvMergeConsumption';
 import { isViewportInteractionBusy } from '@/engine/viewport/viewportInteractionState';
 import { SINGLE_VIEW_MINIMUM_PROJECTION_FACING } from '@/engine/projection/projectionTypes';
 import { useSceneStore } from './sceneStore';
@@ -339,19 +340,10 @@ export const useLayerStore = create<LayerStore>((set, get) => ({
     return layer;
   },
   mergeLayersIntoUvLayer: (input) => {
-    const sourceLayerIdSet = new Set(input.sourceLayerIds);
     let mergedLayer: Layer | undefined;
     set((state) => {
-      const sourceIndexes = state.layers
-        .map((layer, index) => (sourceLayerIdSet.has(layer.id) ? index : -1))
-        .filter((index) => index >= 0);
-      const insertIndex = sourceIndexes.length > 0 ? Math.min(...sourceIndexes) : 0;
+      const { layers: nextLayers, insertIndex } = prepareUvMergeConsumption(state.layers, input);
       const createdAt = new Date().toISOString();
-      const nextLayers = state.layers.map((layer) =>
-        sourceLayerIdSet.has(layer.id) && layer.id !== input.targetUvLayerId
-          ? { ...layer, visible: false, needsRebake: false }
-          : layer,
-      );
 
       if (input.targetUvLayerId) {
         nextLayers.forEach((layer, index) => {
@@ -405,7 +397,7 @@ export const useLayerStore = create<LayerStore>((set, get) => ({
 
       return {
         layers: withOrder(nextLayers),
-        activeProjectedLayerId: nextLayers.find((layer) => layer.visible)?.id,
+        activeProjectedLayerId: mergedLayer?.id,
       };
     });
     return mergedLayer!;

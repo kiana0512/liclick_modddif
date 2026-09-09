@@ -57,6 +57,7 @@
     "test:single-view-texture-completion": "node scripts/test-single-view-texture-completion.mjs",
     "test:texture-load-recovery": "node scripts/test-texture-load-recovery.mjs",
     "test:uv-merge-layer-preview": "node scripts/test-uv-merge-layer-preview.mjs",
+    "test:uv-merge-consumption": "node scripts/test-uv-merge-consumption.mjs",
     "test:bake-entry-project": "node scripts/test-bake-entry-project.mjs",
     "test:bake-base-color-selection": "node scripts/test-bake-base-color-selection.mjs",
     "test:content-aware-repair": "node --test src/engine/contentAware/__tests__/buildRepairMask.test.mjs src/engine/contentAware/__tests__/surfaceAwareRepair.test.mjs",

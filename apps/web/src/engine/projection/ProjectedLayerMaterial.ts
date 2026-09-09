@@ -353,6 +353,9 @@ function createWhiteMembranePreviewMaterial(_previewLightingInput?: ProjectionPr
   return markGeneratedMaterial(material);
 }
 
+// UV empty coverage stays diagnostic. Live and resident authored fragments
+// share geometric depth; see projectionRasterDepth.ts. Keep these comments
+// outside GLSL instead of shipping duplicated prose in each generated shader.
 const fragmentShader = `
   ${PROJECTED_RASTER_DEPTH_GLSL}
   uniform sampler2D projectedMap;
@@ -553,11 +556,10 @@ const fragmentShader = `
   }
 
   vec3 computeProjectionEmptyPreviewColor(vec3 baseSurfaceColor, float lighting) {
-    // Keep uncovered texels visually distinct from actual projected content.
-    // This is display-only and does not alter the source or baked resolution.
     float stripe = step(0.5, fract((gl_FragCoord.x - gl_FragCoord.y) * 0.095));
     vec3 hatchColor = mix(vec3(0.012), vec3(0.09), stripe * 0.62);
-    return mix(baseSurfaceColor * lighting, hatchColor, showEmptyProjectionHatch);
+    return mix(baseSurfaceColor * lighting, hatchColor,
+      max(showEmptyProjectionHatch, useUvOverlayMap * step(0.0001, uvOverlayOpacity)));
   }
 
   void main() {
@@ -872,8 +874,6 @@ const fragmentShader = `
         ${COVERAGE_THRESHOLD.toFixed(2)},
         literalReplacementAlpha
       );
-      // Match the resident surface exactly. A larger foreground offset makes
-      // an inner repaint pass the current camera's outer-shell depth test.
       gl_FragDepthEXT = projectedRasterDepth(gl_FragCoord.z, projectedDepthPriority);
       gl_FragColor = vec4(
         clamp(projectedDisplayColor, 0.0, 1.0),
@@ -923,8 +923,6 @@ const fragmentShader = `
     );
     mixedColor = mix(mixedColor, topUvOverlayDisplayColor, topUvOverlayAlpha);
 
-    // Keep empty diagnostics behind coincident authored colour, but never
-    // pull authored fragments ahead of their actual geometric surface.
     float projectedDepthCoverage = max(
       max(projectionAlpha, baseTextureAlpha),
       max(uvOverlayTexel.a * useUvOverlayMap * uvOverlayOpacity, topUvOverlayAlpha)
@@ -2037,11 +2035,12 @@ function buildStackFragmentShader(
   }
 
   vec3 computeProjectionEmptyPreviewColor(vec3 baseSurfaceColor, float lighting) {
-    // Match the UV-layer empty-area treatment so projection gaps never look
-    // like a valid white texture contribution.
     float stripe = step(0.5, fract((gl_FragCoord.x - gl_FragCoord.y) * 0.095));
     vec3 hatchColor = mix(vec3(0.012), vec3(0.09), stripe * 0.62);
-    return mix(baseSurfaceColor * lighting, hatchColor, showEmptyProjectionHatch);
+    float emptyHatch = ${features.useUvOverlayMap
+      ? 'max(showEmptyProjectionHatch, step(0.0001, uvOverlayOpacity))'
+      : 'showEmptyProjectionHatch'};
+    return mix(baseSurfaceColor * lighting, hatchColor, emptyHatch);
   }
 
   float topQuality0 = 0.0;
@@ -5082,6 +5081,10 @@ export function createDisplayModeMaterial(
   return material;
 }
 
+// UV-MERGE-RASTER-PARITY v1.0.0: both the merged base and live repaint must
+// explicitly write geometric depth. With MSAA, implicit per-sample depth on
+// the UV base fights the repaint's per-fragment depth on sloped surfaces.
+// Do not fix this with a foreground bias: that would reintroduce shell leaks.
 const uvOverlayFragmentShader = `
   uniform sampler2D baseMap;
   uniform sampler2D baseRenderedColorMaskMap;
@@ -5239,6 +5242,7 @@ const uvOverlayFragmentShader = `
     litBaseSurface = mix(baseColor * lighting, litBaseSurface, surfaceMask);
     surfaceColor = mix(litBaseSurface, surfaceColor * lighting, max(overlayAlpha, showEmptyUvChecker * hasUvOverlay));
     vec3 displayColor = mix(surfaceColor, liveOverlayDisplayColor, liveOverlayAlpha);
+    gl_FragDepthEXT = gl_FragCoord.z;
     gl_FragColor = vec4(clamp(displayColor, 0.0, 1.0), 1.0);
     #include <tonemapping_fragment>
     #include <colorspace_fragment>
