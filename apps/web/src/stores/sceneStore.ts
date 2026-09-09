@@ -63,7 +63,8 @@ export type LocalRepaintBrushSettings = {
 };
 
 export const MIN_PAINT_MASK_BRUSH_SIZE = 0.1;
-export const DEFAULT_PAINT_MASK_BRUSH_SIZE = 10;
+export const DEFAULT_PAINT_MASK_BRUSH_SIZE = 45;
+export const DEFAULT_LOCAL_REPAINT_BRUSH_SIZE = 10;
 export const MAX_PAINT_MASK_BRUSH_SIZE = 60;
 
 export type PaintToolSettings = {
@@ -304,7 +305,7 @@ export const useSceneStore = create<SceneStore>()(
         brushSize: DEFAULT_PAINT_MASK_BRUSH_SIZE,
       },
       localRepaintBrushSettings: {
-        brushSize: DEFAULT_PAINT_MASK_BRUSH_SIZE,
+        brushSize: DEFAULT_LOCAL_REPAINT_BRUSH_SIZE,
         // Preserve the former fixed soft edge (solid through 55% of the radius).
         brushFeather: 45,
       },
