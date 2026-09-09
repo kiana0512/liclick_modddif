@@ -32,7 +32,10 @@ const budgets = [
 // this correctness fix only; individual chunk and quality limits stay intact.
 // GPT-only UI and generation-time layer deletion: Cloud 3,147,349 -> 3,148,233
 // (+884 bytes). Allow 1,000 bytes for this feature; per-chunk limits unchanged.
-const maxTotalJavaScriptBytes = 3_148_750;
+// Single-view restored-result auto projection adds recovery/commit guards.
+// Candidate Cloud build: 3,150,063 bytes; allow 2,000 bytes of feature growth.
+// Individual chunk limits, image resolution and QA gates remain unchanged.
+const maxTotalJavaScriptBytes = 3_150_750;
 
 let entries;
 try {

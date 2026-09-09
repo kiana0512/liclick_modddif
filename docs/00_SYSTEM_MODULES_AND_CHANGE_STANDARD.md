@@ -1,16 +1,20 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
-> 文档版本：`2.19.9`
+> 文档版本：`2.19.11`
 >
 > 生效日期：`2026-09-09`
 >
-> 代码盘点基线：`405f7f5 + GPT-only 入口与生图期间删除图层`
+> 代码盘点基线：`9e69980 + 单视图成功结果自动投影恢复`
 >
 > 基线仓库：`E:\Liclick 3D Texture Modernization`
 >
 > 审计口径：`0a2519d + 607e82f + 2568e40`，不包含错误文档提交 `2bde8c6/e03bab2/d1c5f78`
 
 ## 1. 文档地位与强制边界
+
+`CHG-20260909-SINGLE-VIEW-PROJECTION-LATENCY`：主模块 M04，协作 M05/M06/M12；`SINGLE-VIEW-AUTO-PROJECTION` v1.1.0。单视图不再开启多视图整批预览冻结，图片资产持久化后发布图层即可开始准备视口材质，不等待工程 CAS 保存；多视图冻结及保存验证保持。成功记录变化和任务解锁立即唤醒恢复检查，5 秒定时器仅用于失败重试兜底，in-flight 去重/项目隔离/取消/已删除不复活保持。GPU/CPU/Worker/shader、蒙版/像素/UV/export、分辨率与 Schema 不变，无数据迁移。回滚恢复无条件批冻结并移除事件唤醒；详见 [变更卡](changes/CHG-20260909-SINGLE-VIEW-PROJECTION-LATENCY.md)。
+
+`CHG-20260909-SINGLE-VIEW-AUTO-PROJECTION`：主模块 M04，协作 M05/M06/M12；`SINGLE-VIEW-AUTO-PROJECTION` v1.0.0。单视图成功结果统一使用既有串行投影事务；补齐刷新/重新进入后的后台成功结果回贴，每 5 秒及回到窗口/恢复网络时检查未提交记录，只重试图片/资产，不重新生图。与活动生成互斥，按原 capture 相机回贴，提交回执与图层同次保存；已提交后删除不复活，重复返回不覆盖既有橡皮和可见性。持久化保留 Project Command 幂等、Revision CAS、ownership 和 verified assets；GPU/CPU/Worker/shader、像素/深度/蒙版/UV/export、分辨率不改。复用原 metadata 字段，无 Schema/资产迁移。详见 [变更卡](changes/CHG-20260909-SINGLE-VIEW-AUTO-PROJECTION.md)。
 
 2026-09-09 UI-05 / M05 图层行文案样式：移除行 hover 背景高亮，保留 selected 背景及 active 底线；按钮自身交互、拖拽、待显示诊断和图层逻辑不变。仅样式，无算法/Schema/迁移；回滚恢复行 hover 类即可。
 

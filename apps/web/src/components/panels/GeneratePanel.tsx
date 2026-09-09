@@ -16,6 +16,11 @@ import {
 } from '@/engine/capture/captureCurrentView';
 import { requestContentAwareRepair } from '@/engine/contentAware';
 import {
+  hasProjectionCommit,
+  needsSingleViewAutoProjection,
+  withProjectionCommit,
+} from '@/engine/generation/singleViewAutoProjection';
+import {
   insertCameraViewByPreviewOrder,
   usesGptTextureGeneration,
 } from '@/engine/generation/remoteMultiviewSequence';
@@ -929,6 +934,8 @@ export function GeneratePanel({
   const generationAbortControllersRef = useRef(new Map<string, AbortController>());
   const texturePipelineAbortControllerRef = useRef<AbortController>();
   const projectedLayerCommitQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const recoverSingleViewProjectionsRef = useRef<() => Promise<void>>();
+  const wakeSingleViewProjectionsRef = useRef<() => void>();
   const criticalProjectSaveQueueRef = useRef<Promise<void>>(Promise.resolve());
   const pairedGenerationPersistenceRef = useRef(new Set<string>());
   const persistPairedMultiviewReferenceRef =
@@ -1225,6 +1232,51 @@ export function GeneratePanel({
     },
     [addGeneration, addProjectGeneration, currentProjectId],
   );
+
+  // Normal completion owns its transaction. Also reconcile results restored by
+  // either background poller (including reloads), without depending on the tab
+  // or selected preview. Retry assets only, never resubmit a paid generation.
+  useEffect(() => {
+    if (!currentProjectId) return undefined;
+    let disposed = false;
+    let inFlight = false;
+    let wakePending = false;
+    let timeout: number | undefined;
+    async function recover() {
+      if (disposed) return;
+      if (inFlight) {
+        wakePending = true;
+        return;
+      }
+      if (timeout !== undefined) window.clearTimeout(timeout);
+      inFlight = true;
+      try {
+        await recoverSingleViewProjectionsRef.current?.();
+      } finally {
+        inFlight = false;
+        if (!disposed) timeout = window.setTimeout(() => void recover(), wakePending ? 0 : 5000);
+        wakePending = false;
+      }
+    }
+    const wake = () => void recover();
+    wakeSingleViewProjectionsRef.current = wake;
+    void recover();
+    window.addEventListener('online', recover);
+    window.addEventListener('focus', recover);
+    return () => {
+      disposed = true;
+      if (wakeSingleViewProjectionsRef.current === wake) wakeSingleViewProjectionsRef.current = undefined;
+      if (timeout !== undefined) window.clearTimeout(timeout);
+      window.removeEventListener('online', recover);
+      window.removeEventListener('focus', recover);
+    };
+  }, [currentProjectId]);
+
+  // New terminal results and the foreground pipeline releasing its lock should
+  // not wait for the periodic retry tick. In-flight recovery remains deduped.
+  useEffect(() => {
+    wakeSingleViewProjectionsRef.current?.();
+  }, [generations, workflowSubmissionLocked]);
 
   useEffect(() => {
     if (!currentProjectId || authStatus !== 'authenticated') return undefined;
@@ -3211,12 +3263,14 @@ export function GeneratePanel({
     });
     await saveGenerationStateBestEffort();
 
-    // Generation/network/persistence may finish one view at a time, but a
+    // Multi-view generation/network/persistence may finish one view at a time, but a
     // different projected-layer count requires a different shader and texture
     // array. Keep the last valid viewport material resident throughout the
     // batch and publish the complete stack once. Layer rows and durable project
-    // saves still progress normally.
-    useLayerStore.getState().beginProjectedPreviewBatch();
+    // saves still progress normally. Single-view has no intermediate stack to
+    // hide: publish its durable assets immediately, while the project CAS save
+    // and material preparation continue independently.
+    if (isMultiviewRequest) useLayerStore.getState().beginProjectedPreviewBatch();
     try {
       let completedTextureViewCount = 0;
       const completionResults = await Promise.allSettled(
@@ -3343,7 +3397,7 @@ export function GeneratePanel({
         }
       }
     } finally {
-      useLayerStore.getState().endProjectedPreviewBatch();
+      if (isMultiviewRequest) useLayerStore.getState().endProjectedPreviewBatch();
     }
     const completedGenerationIds = new Set(completedGenerations.map((generation) => generation.id));
     projectedGenerationCount = useLayerStore
@@ -3386,11 +3440,13 @@ export function GeneratePanel({
     if (completedGenerations.length > 0) {
       setGenerateNotice(undefined);
       pushToast({
-        tone: 'success',
+        tone: projectedGenerationCount === completedGenerations.length ? 'success' : 'warning',
         title: t('textureMapGenerated'),
         description: isMultiviewRequest
           ? `已生成 ${completedGenerations.length}/${pendingGenerations.length} 个多视图纹理贴图，自动投影 ${projectedGenerationCount}/${completedGenerations.length} 个。`
-          : `单视图纹理贴图已生成并自动投影 ${projectedGenerationCount}/${completedGenerations.length} 个。`,
+          : projectedGenerationCount === completedGenerations.length
+            ? '单视图纹理贴图已自动投影并添加到图层。'
+            : '单视图图片已生成，尚未完成回贴的结果将自动重试，请勿重复生图。',
       });
     } else {
       setGenerateNotice({
@@ -4801,13 +4857,30 @@ export function GeneratePanel({
     if (targetProjectId && useProjectStore.getState().currentProjectId !== targetProjectId) {
       return undefined;
     }
+    const latestGeneration = useGenerationStore.getState().generations.find(
+      (item) => item.id === generation.id,
+    );
+    if (
+      options.automatic &&
+      (!latestGeneration || isCancelledGeneration(generation) || latestGeneration.metadata.cancelled === true)
+    ) return undefined;
     const currentExisting = useLayerStore
       .getState()
       .layers.find((layer) => layer.id === layerId || layer.generationId === generation.id);
+    if (options.automatic && !currentExisting && hasProjectionCommit(latestGeneration ?? generation)) {
+      return undefined;
+    }
     // A manual replacement may target a layer that the user deleted while its
     // files were saving. New automatic layers have not entered the store yet,
     // so they can be committed safely only after every asset is durable.
     if (existingLayer && !currentExisting) return undefined;
+    if (currentExisting && options.automatic) {
+      // Another mounted panel may have committed while these assets uploaded.
+      // Keep its image, eraser mask and visibility exactly as the user left them.
+      syncGeneration(withProjectionCommit(generation, currentExisting.id));
+      await saveCriticalProjectState({});
+      return currentExisting;
+    }
     let layer: Layer;
     if (currentExisting) {
       const singleViewTexture =
@@ -4857,6 +4930,9 @@ export function GeneratePanel({
     }
     const nextLayers = useLayerStore.getState().layers;
     setProjectLayers(nextLayers);
+    // Commit the receipt in the same save as the layer. Late polling and a
+    // user deleting this layer must not turn a completed operation into a retry.
+    syncGeneration(withProjectionCommit(generation, layer.id));
     try {
       await saveCriticalProjectState({});
     } catch (error) {
@@ -4892,8 +4968,26 @@ export function GeneratePanel({
     const operation = projectedLayerCommitQueueRef.current
       .catch(() => undefined)
       .then(async () => {
+        const latest = useGenerationStore.getState().generations.find(
+          (item) => item.id === generation.id,
+        );
+        if (options.automatic) {
+          if (isCancelledGeneration(generation) || latest?.metadata.cancelled === true) return undefined;
+          const existing = useLayerStore.getState().layers.find(
+            (layer) => layer.generationId === generation.id,
+          );
+          if (!existing && hasProjectionCommit(latest ?? generation)) return undefined;
+        }
         const prepared = await stageGenerationAsProjectedLayer(generation, options);
-        if (!prepared || !prepared.shouldPersist) return prepared?.layer;
+        if (!prepared) return undefined;
+        if (!prepared.shouldPersist) {
+          if (!hasProjectionCommit(latest ?? generation)) {
+            syncGeneration(withProjectionCommit(latest ?? generation, prepared.layer.id));
+            await saveCriticalProjectState({});
+          }
+          return prepared.layer;
+        }
+        if (options.automatic && isCancelledGeneration(generation)) return undefined;
         return persistGenerationAsProjectedLayer(prepared, options);
       });
     projectedLayerCommitQueueRef.current = operation.then(
@@ -4902,6 +4996,30 @@ export function GeneratePanel({
     );
     return operation;
   }
+
+  recoverSingleViewProjectionsRef.current = async () => {
+    if (!currentProjectId || workflowSubmissionLocked || submitLocksRef.current.size > 0) return;
+    const pending = useGenerationStore.getState().generations.filter((generation) =>
+      needsSingleViewAutoProjection(generation, currentProjectId),
+    );
+    for (const generation of pending) {
+      if (
+        useProjectStore.getState().currentProjectId !== currentProjectId ||
+        submitLocksRef.current.size > 0
+      ) return;
+      try {
+        const layer = await addGenerationAsProjectedLayer(generation, { automatic: true });
+        if (layer) dismissToastByDedupeKey(`auto-project:${generation.id}`);
+      } catch (error) {
+        pushToast({
+          tone: 'warning',
+          title: '图片已生成，正在重试自动投影',
+          description: error instanceof Error ? error.message : '请保持网络连接，无需重新生图。',
+          dedupeKey: `auto-project:${generation.id}`,
+        });
+      }
+    }
+  };
 
   async function handleAddProjectedLayer() {
     if (workflowConfigurationLocked) {
