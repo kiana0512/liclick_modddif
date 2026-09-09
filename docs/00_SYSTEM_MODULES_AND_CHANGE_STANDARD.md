@@ -4,7 +4,7 @@
 >
 > 生效日期：`2026-09-09`
 >
-> 代码盘点基线：`6d8d97d + 本次原模型轮廓裁切`
+> 代码盘点基线：`c94ae57 + 生图期间草稿与参考图预览`
 >
 > 基线仓库：`E:\Liclick 3D Texture Modernization`
 >
@@ -14,6 +14,13 @@
 
 变更卡 `CHG-20260909-GENERATION-DRAFT-PREVIEW`：M04/M08，UI-05，GENERATION-INTERACTION-LOCK v1.0.1。生图期间提示词 textarea 使用只读预览白名单通行（草稿编辑例外），不再 readonly/被强制 blur；输入修改下一次任务草稿，现有请求继续使用发起函数冻结的提示词。参考图在任务/准备锁内点击任意缩略图仅打开预览，缩放与关闭可用；不改变选中项，不开放上传、删除、复制或重复生成。任务取消、模型编辑及其他配置锁保持；GPU/CPU/Worker/shader、图像算法、Schema/CAS/ownership/资产无变化，无迁移。回退恢复 textarea 锁与参考图 disabled 即可，不回写已发出任务。
 
+`CHG-20260909-PROJECTION-PENDING-DISPLAY`：M05/M06，ALG-PROJ-007 v2.1.8。关闭不等价分批显示，设备预算内底层显示，超限行运行期标记，常驻原风格合并引导；合并包含待显示行。M09 会话缓存 v9 在临时蒙版编码之前以作者输入和 live revision 查询。89 项 Web 回归、类型和构建通过，实际复杂工程效果及帧率仍需验收。详见 [变更卡](changes/CHG-20260909-PROJECTION-PENDING-DISPLAY.md)。以下 v2.1.7 分批准入已被本条替代。
+
+`CHG-20260909-PROJECTED-UNIFORM-BUDGET`：M06 / ALG-PROJ-007 v2.1.7，按设备参数上限阻止超限整栈材质与预热，进入已有分批预览并提示合并 UV。详见 [变更卡](changes/CHG-20260909-PROJECTED-UNIFORM-BUDGET.md)。
+
+`CHG-20260909-PROJECTED-COMPILE-LIFETIME`：M06 / ALG-PROJ-007 v2.1.6，编译期间保留生成材质至所有轮询完成，再释放资源；不改变像素和图层语义。详见 [变更卡](changes/CHG-20260909-PROJECTED-COMPILE-LIFETIME.md)。
+
+`CHG-20260909-UV-READBACK-DIRECT`：主模块 M09，ALG-UV-008 v2.0.1。GPU 条带异步读回直接写最终 Uint8Array 的 subarray，移除临时 RGBA 条带和主线程 pixels.set。8 MiB 条带、逐条等待、让出浏览器绘制及 Worker 转换不变。真实 4K GPU 对照 67,108,864 字节零差异，省掉每次读回 64 MiB 临时分配/复制；不据此宣称总耗时提升。见 [变更卡](changes/CHG-20260909-UV-READBACK-DIRECT.md)。
 变更卡 `CHG-20260909-REPAINT-TOOL-PANEL`：主模块 M08，UI-05/UI-10，交互契约 LOCAL-REPAINT-PANEL-NAVIGATION v1.0.0。底部蒙版、局部生图、应用重绘三个按钮的 click 请求展开生成面板并选择 repaint 页签及预览；重复点击已激活工具同样导航。导航使用独立递增 key，与生图请求 key 分离，不因打开界面提交任务、重新生成或重置提示词/参考图。手动切回单/多视图不受旧 key 干扰；原任务锁、点击行为和回贴逻辑保持。GPU/CPU/Worker/shader/投影/UV/export/持久化与 Schema 均无变化，无迁移；回退移除导航 callback、key 与 effect 即可。
 
 变更卡 `CHG-20260909-MASK-BRUSH-DEFAULT-45`：主模块 M08，UI-10，参数契约 MASK-BRUSH-DEFAULT v1.0.1。蒙版画笔默认大小由 10 调为 45；回贴画笔拆分独立默认常量保持 10，普通画笔 32、橡皮擦 42 与羽化均不变。参数不是持久化字段，新页面初始化生效，会话内手动调整不被覆盖。GPU/CPU/Worker/shader、作者 mask 算法、投影/UV/export、Schema/Command/CAS/ownership 与资产不变，无迁移；回退默认常量即可。

@@ -1,0 +1,28 @@
+<!doctype html><meta charset="utf-8"><title>UV readback parity</title><pre id="result">Running…</pre>
+<script type="module">
+import * as THREE from 'three';
+
+try { const { readRenderTargetPixelsInStripes } = await import('/src/engine/bake/gpuReadbackStripes.ts');
+ document.getElementById('result').textContent='Rendering'; const resolution=4096;
+ const renderer=new THREE.WebGLRenderer();
+ const target=new THREE.WebGLRenderTarget(resolution,resolution);
+ const scene=new THREE.Scene();
+ const camera=new THREE.OrthographicCamera(-1,1,1,-1,0,2);camera.position.z=1;
+ scene.add(new THREE.Mesh(new THREE.PlaneGeometry(2,2),new THREE.ShaderMaterial({
+ vertexShader:'varying vec2 v;void main(){v=uv;gl_Position=vec4(position.xy,0.,1.);}',
+ fragmentShader:'varying vec2 v;void main(){gl_FragColor=vec4(v.x,v.y,fract(v.y*13.0),1.0);}',depthTest:false,depthWrite:false
+ })));
+ renderer.setRenderTarget(target);renderer.render(scene,camera);
+ const reference=new Uint8Array(resolution*resolution*4);
+ document.getElementById('result').textContent='Reference readback'; await renderer.readRenderTargetPixelsAsync(target,0,0,resolution,resolution,reference);
+ const buffers=[];const offsets=[];const original=renderer.readRenderTargetPixelsAsync.bind(renderer);
+ renderer.readRenderTargetPixelsAsync=async (...args)=>{buffers.push(args[5].buffer);offsets.push(args[5].byteOffset);return original(...args);};
+ document.getElementById('result').textContent='Striped readback'; const actual=await readRenderTargetPixelsInStripes(renderer,target,resolution);
+ let differences=0;for(let i=0;i<actual.length;i++)differences+=Number(actual[i]!==reference[i]);
+ if(differences||!buffers.every(b=>b===actual.buffer)||offsets[1]!==8*1024*1024)throw new Error('Parity/ownership failed');
+ document.getElementById('result').textContent='PASS '+JSON.stringify({differences,bytes:actual.length,stripes:buffers.length,offsets,temporaryBytesAvoided:actual.length});
+ target.dispose();renderer.dispose();
+}catch(e){document.getElementById('result').textContent='FAIL '+e.stack;}
+</script>
+
+

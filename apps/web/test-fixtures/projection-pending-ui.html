@@ -1,0 +1,14 @@
+<!doctype html><meta charset="utf-8"><div id="result">Loading modules…</div><div id="root" style="width:440px;margin:20px"></div>
+<script>window.addEventListener('error',e=>document.querySelector('#result').textContent=e.message);window.addEventListener('unhandledrejection',e=>document.querySelector('#result').textContent=String(e.reason));</script>
+<script type="module">
+import React from 'react';import{createRoot}from'react-dom/client';
+import '/src/styles/globals.css';
+import{LayersPanel}from'/src/components/panels/LayersPanel.tsx';
+import{useLayerStore}from'/src/stores/layerStore.ts';
+import{useSceneStore}from'/src/stores/sceneStore.ts';
+import{publishPendingProjectionLayers}from'/src/engine/projection/projectionDisplayAdmission.ts';
+const layers=Array.from({length:30},(_,i)=>({id:`fixture-${i}`,objectId:'fixture',name:`投影图层 ${i+1}`,type:'projected',imageUrl:'',camera:{},order:i,visible:true,opacity:1,blendMode:'normal'}));
+useSceneStore.setState({selectedObjectId:'fixture'});useLayerStore.setState({layers});
+publishPendingProjectionLayers('fixture',['fixture-0','fixture-1']);
+createRoot(document.querySelector('#root')).render(React.createElement(LayersPanel,{onMergeSelectedToUvLayer:(ids)=>{document.querySelector('#result').textContent=JSON.stringify({submitted:ids.length,pendingIncluded:ids.includes('fixture-0')&&ids.includes('fixture-1')});}}));
+</script>

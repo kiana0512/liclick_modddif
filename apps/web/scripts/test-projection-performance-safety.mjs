@@ -55,12 +55,23 @@ const [warmupEffect] = findNodes((node) => ts.isCallExpression(node) &&
 assert.ok(warmupEffect);
 const gate = warmupEffect.arguments[0].body.statements[0];
 assert.ok(ts.isIfStatement(gate));
-const shouldWarm = new Function('stage', 'visible', 'selected', `
+const uniformBudgetSource = await readFile(new URL('../src/engine/projection/projectedUniformBudget.ts', import.meta.url), 'utf8');
+const uniformBudgetJs = ts.transpileModule(uniformBudgetSource, {
+  compilerOptions: { module: ts.ModuleKind.CommonJS },
+}).outputText;
+const budgetExports = {};
+new Function('exports', uniformBudgetJs)(budgetExports);
+const { isProjectedUniformBudgetSafe } = budgetExports;
+assert.equal(isProjectedUniformBudgetSafe(34, 1024), false, 'reported 34-layer shader must not reach the driver');
+assert.equal(isProjectedUniformBudgetSafe(14, 1024), true);
+assert.equal(isProjectedUniformBudgetSafe(14, 256), false, 'limits follow the actual device');
+const evaluateWarm = new Function('stage', 'visible', 'selected', 'isProjectedUniformBudgetSafe', `
   const importedModel = { restoreStage: stage }, workspaceVisible = visible;
-  const gl = { compileAsync() {} }, projectedProgramWarmupInputs = [{}, {}];
+  const gl = { compileAsync() {}, capabilities: { maxFragmentUniforms: 1024 } }, projectedProgramWarmupInputs = [{}, {}];
   const projectedProgramWarmupSignature = 'test';
   return !(${gate.expression.getText(sceneAst)});
 `);
+const shouldWarm = (...args) => evaluateWarm(...args, isProjectedUniformBudgetSafe);
 assert.equal(shouldWarm('outline', true, true), true);
 for (const stage of ['bounds', 'proxy', 'full', undefined]) {
   assert.equal(shouldWarm(stage, true, true), false, 'editing a resident stack must not start speculative compilation');
@@ -121,6 +132,26 @@ const targetCompilerJs = ts.transpileModule(targetCompilerSource, {
 }).outputText;
 const targetCompilerExports = {};
 new Function('exports', targetCompilerJs)(targetCompilerExports);
+// A layer change can request disposal while two offscreen/viewport link polls
+// still refer to the same material. Keep it alive until both settle.
+const leasedMaterial = new THREE.ShaderMaterial();
+const leasedScene = new THREE.Scene();
+leasedScene.add(new THREE.Mesh(new THREE.PlaneGeometry(), leasedMaterial));
+const resolvers = [];
+const leaseRenderer = {
+  getRenderTarget: () => null, getActiveCubeFace: () => 0,
+  getActiveMipmapLevel: () => 0, setRenderTarget() {},
+  compileAsync: () => new Promise(resolve => resolvers.push(resolve)),
+};
+let disposals = 0;
+const firstLease = targetCompilerExports.compileForRenderTarget(leaseRenderer, leasedScene, {}, null);
+const secondLease = targetCompilerExports.compileForRenderTarget(leaseRenderer, leasedScene, {}, null);
+assert.equal(targetCompilerExports.deferDisposalDuringCompile(leasedMaterial, () => { disposals++; }), true);
+resolvers[0](); await firstLease;
+assert.equal(disposals, 0);
+resolvers[1](); await secondLease;
+assert.equal(disposals, 1);
+assert.equal(targetCompilerExports.deferDisposalDuringCompile(leasedMaterial, () => {}), false);
 let finishColdWarmup;
 const coldWarmup = new Promise((resolve) => { finishColdWarmup = resolve; });
 const scheduleEvents = [];

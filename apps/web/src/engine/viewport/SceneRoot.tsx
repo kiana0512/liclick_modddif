@@ -2,6 +2,8 @@ import { useFrame, useThree } from '@react-three/fiber';
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { compileForRenderTarget } from '@/engine/projection/compileForRenderTarget';
+import { isProjectedUniformBudgetSafe } from '@/engine/projection/projectedUniformBudget';
+import { projectionDisplayCapacity, publishPendingProjectionLayers } from '@/engine/projection/projectionDisplayAdmission';
 import { useShallow } from 'zustand/react/shallow';
 import {
   createDisplayModeMaterial,
@@ -1750,7 +1752,7 @@ const ImportedModel = memo(function ImportedModel({
     useState<ProjectedPreviewComposite>();
   const [failedProjectedTextureArraySignature, setFailedProjectedTextureArraySignature] =
     useState('');
-  const previewProjectedLayers = useMemo(() => {
+  const allPreviewProjectedLayers = useMemo(() => {
     if (!texturedRestoreReady) return [];
     const projectedCandidates = layers.filter(
       (layer) =>
@@ -1783,6 +1785,17 @@ const ImportedModel = memo(function ImportedModel({
     texturedRestoreReady,
     visibleMergedUvBoundaryOrder,
   ]);
+  const projectedDisplayCapacity = projectionDisplayCapacity(gl.capabilities.maxFragmentUniforms);
+  const previewProjectedLayers = useMemo(
+    () => allPreviewProjectedLayers.slice(0, projectedDisplayCapacity),
+    [allPreviewProjectedLayers, projectedDisplayCapacity],
+  );
+  useEffect(() => {
+    if (!importedObjectId) return;
+    publishPendingProjectionLayers(importedObjectId,
+      allPreviewProjectedLayers.slice(projectedDisplayCapacity).map((layer) => layer.id));
+    return () => publishPendingProjectionLayers(importedObjectId, []);
+  }, [importedObjectId, allPreviewProjectedLayers, projectedDisplayCapacity]);
   const previewProjectedLayerSignature = useMemo(
     () => layerStackPreviewSignature(previewProjectedLayers),
     [previewProjectedLayers],
@@ -2496,7 +2509,8 @@ const ImportedModel = memo(function ImportedModel({
   const textureArrayCompositionFallbackRequired = Boolean(
     useProjectedTextureArrays &&
     projectedTextureArrayStructureSignature &&
-    failedProjectedTextureArraySignature === projectedTextureArrayStructureSignature,
+    (failedProjectedTextureArraySignature === projectedTextureArrayStructureSignature ||
+      !isProjectedUniformBudgetSafe(previewProjectionInputs.length, gl.capabilities.maxFragmentUniforms)),
   );
   const canUseDirectVisibleStackAfterArrayFailure = Boolean(
     // Once the array path has failed, correctness is more important than the
@@ -2505,14 +2519,14 @@ const ImportedModel = memo(function ImportedModel({
     // material. Sending it to the progressive compositor instead can leave the
     // last UV/bootstrap material resident if that asynchronous publication is
     // superseded by an eye toggle or eraser clear.
-    textureArrayCompositionFallbackRequired && directProjectedSamplerBudget.withinBudget,
+    textureArrayCompositionFallbackRequired && directProjectedSamplerBudget.withinBudget &&
+    isProjectedUniformBudgetSafe(previewProjectionInputs.length, gl.capabilities.maxFragmentUniforms),
   );
   // Prefer an exact projected material. If the device still rejects a downscaled
   // array, preserve every visible layer through the tiled compositor rather than
   // dropping layers. UV-safe imports may use this path proactively as before.
   const canUseProgressiveUvFallback = Boolean(
-    importedModel?.group.userData.liclickUvCompositeSafe === true ||
-    (textureArrayCompositionFallbackRequired && !canUseDirectVisibleStackAfterArrayFailure),
+    false,
   );
   const projectedPreviewNeedsComposition = Boolean(
     !projectedSamplerBudget.withinBudget ||
@@ -3306,6 +3320,7 @@ const ImportedModel = memo(function ImportedModel({
       typeof gl.compileAsync !== 'function' ||
       importedModel.restoreStage !== 'outline' ||
       projectedProgramWarmupInputs.length <= 1 ||
+      !isProjectedUniformBudgetSafe(projectedProgramWarmupInputs.length, gl.capabilities.maxFragmentUniforms) ||
       !projectedProgramWarmupSignature
     ) {
       return;
@@ -3509,7 +3524,7 @@ const ImportedModel = memo(function ImportedModel({
       const previousAutoClear = gl.autoClear;
       try {
         if (typeof gl.compileAsync === 'function') {
-          await gl.compileAsync(warmScene, warmCamera);
+          await compileForRenderTarget(gl, warmScene, warmCamera, gl.getRenderTarget());
         }
         if (nextBuild.cancelled || projectedTextureArrayBuildRef.current !== nextBuild) {
           return;
@@ -4000,18 +4015,14 @@ const ImportedModel = memo(function ImportedModel({
         const warningKey = `${projectedSamplerBudget.required}/${projectedSamplerBudget.available}:${previewProjectedLayerSignature}`;
         if (lastProjectedSamplerWarningRef.current !== warningKey) {
           lastProjectedSamplerWarningRef.current = warningKey;
-          // Keep the last valid preview and record the hardware limit for
-          // diagnostics, but do not interrupt normal painting with a warning
-          // toast. The progressive compositor can recover on a later frame.
           const toastStore = useToastStore.getState();
-          if (
-            toastStore.toasts.some((toast) => toast.dedupeKey === PROJECTED_PREVIEW_LIMIT_TOAST_KEY)
-          ) {
-            toastStore.dismissToastByDedupeKey(PROJECTED_PREVIEW_LIMIT_TOAST_KEY);
-          }
-          console.warn(
-            `[Liclick 3D Texture] Projected preview kept the last valid material because ${projectedSamplerBudget.required} fragment texture units exceed the device limit of ${projectedSamplerBudget.available}.`,
-          );
+          toastStore.pushToast({
+            title: '投影图层较多，正在准备完整预览',
+            description: '当前预览尚未更新完成。可使用图层栏的“合并可见投影层为 UV 图层”减少实时混合负担。',
+            tone: 'warning',
+            persistent: true,
+            dedupeKey: PROJECTED_PREVIEW_LIMIT_TOAST_KEY,
+          });
         }
       } else {
         lastProjectedSamplerWarningRef.current = '';

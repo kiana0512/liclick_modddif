@@ -4,6 +4,7 @@
   "version": "0.1.3",
   "type": "module",
   "scripts": {
+    "test:uv-readback-stripes": "node scripts/test-uv-readback-stripes.mjs",
     "test:model-silhouette-clip": "node scripts/test-model-silhouette-clip.mjs",
     "test:repaint-panel-navigation": "node scripts/test-repaint-panel-navigation.mjs",
     "test:generation-draft-preview": "node scripts/test-generation-draft-preview.mjs",

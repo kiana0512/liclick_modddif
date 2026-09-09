@@ -1,3 +1,4 @@
+import { readRenderTargetPixelsInStripes } from './gpuReadbackStripes';
 import * as THREE from 'three';
 import { loadImageData } from './imageSampler';
 import { collectUvSeamPairs, type UvSeamEdgeRecord } from './uvSeamReconciliation';
@@ -1418,57 +1419,6 @@ function waitForSharedRendererBakeSlot() {
   // R3F owns this WebGL context. During an active drag, allow its onscreen
   // frame to submit before issuing the next offscreen 4K bake pass.
   return waitForBrowserPaint();
-}
-
-// Eight 8 MiB stripes for a 4K RGBA target keep each driver readback bounded.
-// The smaller transfer is intentionally retained: stress testing showed a
-// 100.1ms maximum frame versus 433.6ms at 32 MiB, with identical pixels.
-const GPU_READBACK_STRIPE_BYTES = 8 * 1024 * 1024;
-
-async function readRenderTargetPixelsInStripes(
-  renderer: THREE.WebGLRenderer,
-  target: THREE.WebGLRenderTarget,
-  resolution: number,
-) {
-  const pixels = new Uint8Array(resolution * resolution * 4);
-  const rowsPerStripe = Math.max(
-    1,
-    Math.min(resolution, Math.floor(GPU_READBACK_STRIPE_BYTES / (resolution * 4))),
-  );
-  let maximumStripeMs = 0;
-  const startedAt = performance.now();
-  const usesVisibleRenderer = renderer.domElement.isConnected;
-  for (let y = 0; y < resolution; y += rowsPerStripe) {
-    if (y > 0) {
-      if (usesVisibleRenderer) {
-        await waitForBrowserPaint();
-      } else {
-        await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
-      }
-    }
-    const rowCount = Math.min(rowsPerStripe, resolution - y);
-    const stripe = new Uint8Array(resolution * rowCount * 4);
-    const stripeStartedAt = performance.now();
-    await renderer.readRenderTargetPixelsAsync(
-      target,
-      0,
-      y,
-      resolution,
-      rowCount,
-      stripe,
-    );
-    maximumStripeMs = Math.max(maximumStripeMs, performance.now() - stripeStartedAt);
-    pixels.set(stripe, y * resolution * 4);
-  }
-  if (typeof document !== 'undefined') {
-    document.body.dataset.uvBakeReadbackStripeRows = String(rowsPerStripe);
-    document.body.dataset.uvBakeReadbackStripeCount = String(
-      Math.ceil(resolution / rowsPerStripe),
-    );
-    document.body.dataset.uvBakeReadbackMaximumStripeMs = maximumStripeMs.toFixed(1);
-    document.body.dataset.uvBakeReadbackTotalMs = (performance.now() - startedAt).toFixed(1);
-  }
-  return pixels;
 }
 
 async function readRenderTargetToImageData(
