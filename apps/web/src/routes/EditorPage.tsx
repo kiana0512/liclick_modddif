@@ -5770,6 +5770,10 @@ export function EditorPage({
       const rawResultUrl =
         typeof metadata.rawResultUrl === 'string' ? metadata.rawResultUrl : generation.resultUrl;
       if (!rawResultUrl) return Promise.reject(new Error('Local repaint result is missing.'));
+      if (metadata.modelSilhouetteClipVersion === 1 && generation.resultUrl) {
+        return Promise.resolve({ imageUrl: generation.resultUrl, persistentImageUrl: generation.resultUrl,
+          rawImageUrl: rawResultUrl, seamMode: 'legacy' as const, seamHarmonizationVersion: undefined });
+      }
       const referenceUrl =
         typeof metadata.viewportReferenceUrl === 'string'
           ? metadata.viewportReferenceUrl
@@ -6269,6 +6273,7 @@ export function EditorPage({
           imageUrl: projectionImage.imageUrl,
           persistentImageUrl: projectionImage.persistentImageUrl,
           rawImageUrl: projectionImage.rawImageUrl,
+          ignoreSourceAlpha: latestLocalRepaintGeneration.metadata.modelSilhouetteClipVersion !== 1,
           seamHarmonizationVersion: projectionImage.seamHarmonizationVersion,
           autoActivate: false,
           allowedMaskUrl: generationMaskUrl,
@@ -6690,6 +6695,7 @@ export function EditorPage({
         imageUrl: projectionImage.imageUrl,
         persistentImageUrl: projectionImage.persistentImageUrl,
         rawImageUrl: projectionImage.rawImageUrl,
+        ignoreSourceAlpha: latestLocalRepaintGeneration.metadata.modelSilhouetteClipVersion !== 1,
         seamHarmonizationVersion: projectionImage.seamHarmonizationVersion,
         autoActivate: true,
         allowedMaskUrl: generationMaskUrl,

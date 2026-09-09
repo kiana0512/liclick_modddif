@@ -1,10 +1,10 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
-> 文档版本：`2.18.30`
+> 文档版本：`2.19.0`
 >
-> 生效日期：`2026-09-08`
+> 生效日期：`2026-09-09`
 >
-> 代码盘点基线：`3a373f9 + 本次局部重绘步骤引导修复`
+> 代码盘点基线：`6d8d97d + 本次原模型轮廓裁切`
 >
 > 基线仓库：`E:\Liclick 3D Texture Modernization`
 >
@@ -12,9 +12,16 @@
 
 ## 1. 文档地位与强制边界
 
+本次裁切按需加载；图像 I/O 原模块独立为缓存 chunk，避免懒加载裁切反向依赖整个 EditorPage。仅调整构建分块，原包体门禁与图像处理行为保持，不修改提示词准备逻辑。
+
 变更卡 `CHG-20260909-UV-STACK-REMERGE`：主模块 M09，协作 M05/M06；`ALG-UV-006` v2.1.0，UV_MERGE_COMPOSITION_VERSION=5。再次合并时接收所选 merged-uv 作为底图；多 UV Worker 合成已预翻转，DataTexture 条带上传必须保留工厂 flipY=false，不能根据 image 非 ImageBitmap 再置 true。真实 Worker/WebGL 1024² 输入与单图参考比较：旧分支 12,288 字节不同，新分支 0；验证 UV1 入选及透明区域保留底色。无旧资产自动重写；先前遗漏 UV1 的 UV2 需从原图层重新合成。GPU/CPU/Worker source-over 公式、shader、分辨率、QA、Command/CAS/ownership 不变。详见 [变更卡](changes/CHG-20260909-UV-STACK-REMERGE.md)。
 
 变更卡 `CHG-20260909-FILE-RESPONSE-CLOSED-DESTINATION`：主模块 M14；`FILE-RESPONSE-LIFETIME` v1.0.1。4517 日志证实文件响应向已关闭目标 pipeline 抛出同步异常，顶层 catch 再次写 JSON 引发 ERR_HTTP_HEADERS_SENT 并使进程退出。文件流启动前检查响应关闭状态，同步失败销毁源流；顶层错误响应仅在尚未发送头时写 JSON，已发送头则关闭连接，已结束则返回。真实 HTTP 回归覆盖提前关闭、已结束、部分响应失败、正常 500、取消下载与完整字节，并确认后续请求继续成功。认证、路径、ownership、Command/CAS、资产与 GPU/CPU/Worker/shader/export 均不变；无数据迁移。回退还原三个服务端文件会重新引入该崩溃风险。此修复不代表已解决多图层渲染；详见 [变更卡](changes/CHG-20260909-FILE-RESPONSE-CLOSED-DESTINATION.md)。
+变更卡 `CHG-20260909-REPAINT-MODEL-SILHOUETTE`：UI-05/UI-06/UI-10 → M08，协作 M03/M06/M07/M12，新增 `ALG-LR-013`（Model silhouette inset clip / 原模型轮廓内缩裁切）v1.0.0。维护者明确批准：使用生成时冻结相机及对象的原模型实体轮廓，而非返图颜色识别或作者蒙版，外轮廓内缩且内部孔洞同时扩大 2px@2048。专用深度捕获显式提升到真实 2048，其他调用仍默认 1024；新返图在发布前使用深度 RGB 非全 >=254 的实体 coverage 做欧氏圆盘腐蚀，半径 round(2×最长边/2048)、最少 1px。RGB、完整画布、位置及相机不变，只按裁后 coverage 写 alpha；不重采样、不按主体包围盒裁图、不校色。窄于腐蚀直径的部件可能消失，由本次 A100 美术验收决定后续阈值，不静默扩大覆盖。
+
+Generation.resultUrl 保存裁后同尺寸 PNG，metadata.modelSilhouetteClipVersion=1，rawResultUrl 保留原始远端资产。预览继续从结果派生；新投影 source 显式 ignoreSourceAlpha=false，exact overlay、常驻层、冷恢复/橡皮及 GPU UV/CPU raster/Worker/export 复用已有 source alpha 规则，不改 shader 公式。作者 mask、外扩提交 mask、深度表面锁定仍独立，最终覆盖是原作者覆盖与裁后 source alpha 的交集。缺少/空深度、尺寸不符或解码失败停止本次应用，不以颜色扣图回退；远端原始资产仍由生成服务保留。只对部署后新生成任务生效，既有图层/Generation 不重算、不批量迁移；原 Project Command、Revision CAS、ownership 和 verified assets 不变，新增 metadata 不升级 Schema。回退恢复前一构建；已裁结果和显式 false 的合法 Layer 继续可读，原图仍可恢复。跨文件仅为捕获、编排、source 类型、四个投影/持久入口与测试同步，未重构其他模块。实施 Codex，效果验收维护者；自动回归和浏览器验证结果以最终记录为准。
+
+验证记录（2026-09-09）：Web 全量 89 项回归通过，类型检查通过，变更文件 lint 无错误。Edge 浏览器执行实际 helper 完成 2048×2048 PNG 解码→内缩→编码→重新解码，外边界退 2px、封闭孔洞扩 2px、内部 RGB 和画布尺寸保持；缺少遮罩及取消均拒绝。该机完整处理约 375ms（一次性返图处理，非每帧）。真实远端生成及美术效果留待 A100 用户验收，未声称完成实际项目端到端生图。
 
 变更卡 `CHG-20260908-REPAINT-WORKFLOW-GUIDE`：UI-06/UI-10 → M08，前端交互契约 `UI-LOCAL-REPAINT-GUIDE` v1.0.1。旧生图成功 effect 在 GPU 画笔未 ready 时就消耗 success key，同时侧栏发起生成不清除工具栏生图按钮的引导。改为唯一互斥步骤状态：任一入口开始生成均清除旧引导，成功立即登记待应用引导，跨任务解锁/GPU 准备保留，画笔真正可用后显示呼吸效果；点击/进入应用画笔后停止。失败/取消不引导旧结果，恢复蒙版工具不覆盖待应用引导，新一轮显式操作仍可重新引导。不自动切工具或提交任务；生成、GPU/CPU/Worker/shader、mask/回贴/UV/export、Schema、Revision、ownership 和资产不变，无迁移。回退恢复 BottomToolDock 的原三组 effect 并移除 UI helper 即可，不改用户数据。
 

@@ -25,6 +25,8 @@ export type PaintToolMode =
 
 export type LocalRepaintProjectionSource = {
   imageUrl: string;
+  /** False for model-silhouette-clipped RGBA; undefined preserves legacy behavior. */
+  ignoreSourceAlpha?: boolean;
   /** Original server/project URL used by autosave without data-URL readback. */
   persistentImageUrl?: string;
   /** Untouched generated result retained for an exact legacy-mode rollback. */
