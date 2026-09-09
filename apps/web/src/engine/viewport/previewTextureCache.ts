@@ -302,7 +302,10 @@ export function registerPreviewTextureRenderer(renderer: THREE.WebGLRenderer | u
 /** Hold a cache entry from before decode until its consumer finishes upload. */
 export function retainPreviewTexture(imageUrl: string, options?: PreviewTextureLoadOptions) {
   const cacheKey = getPreviewTextureCacheKey(imageUrl, options);
-  pinnedPreviewTextureCacheKeys.set(cacheKey, (pinnedPreviewTextureCacheKeys.get(cacheKey) ?? 0) + 1);
+  pinnedPreviewTextureCacheKeys.set(
+    cacheKey,
+    (pinnedPreviewTextureCacheKeys.get(cacheKey) ?? 0) + 1,
+  );
   let released = false;
   return () => {
     if (released) return;
@@ -515,10 +518,7 @@ export function uploadPreviewTextureInStripes(
     const pauseDuringInteraction = options?.allowWhileInteracting !== true;
     const workerBitmapId = getWorkerBitmapId(texture);
     const imageBitmap = typeof ImageBitmap !== 'undefined' && image instanceof ImageBitmap;
-    if (!imageBitmap && workerBitmapId === undefined) {
-      if (pauseDuringInteraction) await waitForViewportInteractionIdle();
-      throwIfCancelled();
-      renderer.initTexture(texture);
+    const markReady = () => {
       texture.userData.liclickPreviewStripedUploadReady = true;
       let readyRenderers = previewTextureReadyRenderers.get(texture);
       if (!readyRenderers) {
@@ -526,6 +526,12 @@ export function uploadPreviewTextureInStripes(
         previewTextureReadyRenderers.set(texture, readyRenderers);
       }
       readyRenderers.add(renderer);
+    };
+    if (!imageBitmap && workerBitmapId === undefined) {
+      if (pauseDuringInteraction) await waitForViewportInteractionIdle();
+      throwIfCancelled();
+      renderer.initTexture(texture);
+      markReady();
       return;
     }
     const context = renderer.getContext();
@@ -538,24 +544,26 @@ export function uploadPreviewTextureInStripes(
     let stripeCount = 0;
     let minimumUploadPixels = uploadBudget.pixels;
     let maximumUploadPixels = uploadBudget.pixels;
-    texture.source.dataReady = false;
-    texture.needsUpdate = true;
-    if (pauseDuringInteraction) await waitForViewportInteractionIdle();
-    throwIfCancelled();
-    const allocationStartedAt = performance.now();
-    renderer.initTexture(texture);
-    document.body.dataset.previewTextureAllocationMs = (
-      performance.now() - allocationStartedAt
-    ).toFixed(1);
-    document.body.dataset.previewTextureStripedUploadSize = `${image.width}x${image.height}`;
-    const properties = renderer.properties.get(texture) as { __webglTexture?: WebGLTexture };
-    const webGlTexture = properties.__webglTexture;
-    if (!webGlTexture) throw new Error('Could not allocate the UV preview texture.');
+    type PreparedPreviewStripe = { rowCount: number; stripe: ImageBitmap; y: number };
+    let pendingStripe: Promise<PreparedPreviewStripe> | undefined;
+    let activeStripe: ImageBitmap | undefined;
     try {
+      texture.source.dataReady = false;
+      texture.needsUpdate = true;
+      if (pauseDuringInteraction) await waitForViewportInteractionIdle();
+      throwIfCancelled();
+      const allocationStartedAt = performance.now();
+      renderer.initTexture(texture);
+      document.body.dataset.previewTextureAllocationMs = (
+        performance.now() - allocationStartedAt
+      ).toFixed(1);
+      document.body.dataset.previewTextureStripedUploadSize = `${image.width}x${image.height}`;
+      const properties = renderer.properties.get(texture) as { __webglTexture?: WebGLTexture };
+      const webGlTexture = properties.__webglTexture;
+      if (!webGlTexture) throw new Error('Could not allocate the UV preview texture.');
       // Most preview bitmaps are pre-oriented and use flipY=false. Bake
       // textures may intentionally retain flipY=true; preserve that exact
       // sampling contract while still splitting the upload into stripes.
-      type PreparedPreviewStripe = { rowCount: number; stripe: ImageBitmap; y: number };
       const prepareStripe = async (
         y: number,
         pixelBudget: number,
@@ -576,17 +584,19 @@ export function uploadPreviewTextureInStripes(
         return { rowCount, stripe, y };
       };
       let y = 0;
-      let pendingStripe: Promise<PreparedPreviewStripe> | undefined = prepareStripe(
+      pendingStripe = prepareStripe(
         0,
         usesVisibleRenderer
           ? uploadBudget.pixels
           : DETACHED_PREVIEW_TEXTURE_UPLOAD_PIXELS_PER_FRAME,
       );
+      void pendingStripe.catch(() => undefined);
       while (y < image.height) {
         throwIfCancelled();
         if (pauseDuringInteraction) await waitForViewportInteractionIdle();
         throwIfCancelled();
         const prepared: PreparedPreviewStripe = await pendingStripe!;
+        activeStripe = prepared.stripe;
         const nextY: number = y + prepared.rowCount;
         // Keep one worker crop in flight while the browser presents. Budget
         // changes therefore take effect after at most one already-prepared
@@ -600,6 +610,7 @@ export function uploadPreviewTextureInStripes(
                   : DETACHED_PREVIEW_TEXTURE_UPLOAD_PIXELS_PER_FRAME,
               )
             : undefined;
+        void pendingStripe?.catch(() => undefined);
         markPreviewUploadStep(`${uploadPhasePrefix}-yield`);
         if (usesVisibleRenderer) {
           // The visible context must yield through presentation because R3F
@@ -619,6 +630,7 @@ export function uploadPreviewTextureInStripes(
         const { rowCount, stripe } = prepared;
         if (options?.shouldCancel?.()) {
           stripe.close();
+          activeStripe = undefined;
           throw new DOMException('Texture upload superseded.', 'AbortError');
         }
         // The crop/worker transfer for the next stripe is already in flight.
@@ -668,6 +680,7 @@ export function uploadPreviewTextureInStripes(
           }
         } finally {
           stripe.close();
+          activeStripe = undefined;
           context.activeTexture(frameActiveTexture);
           context.bindTexture(context.TEXTURE_2D, frameBinding);
           context.pixelStorei(context.UNPACK_FLIP_Y_WEBGL, Number(frameFlipY));
@@ -702,13 +715,7 @@ export function uploadPreviewTextureInStripes(
         }
       }
       texture.source.dataReady = true;
-      texture.userData.liclickPreviewStripedUploadReady = true;
-      let readyRenderers = previewTextureReadyRenderers.get(texture);
-      if (!readyRenderers) {
-        readyRenderers = new WeakSet<THREE.WebGLRenderer>();
-        previewTextureReadyRenderers.set(texture, readyRenderers);
-      }
-      readyRenderers.add(renderer);
+      markReady();
       document.body.dataset.previewTextureStripedUploadMs = (performance.now() - startedAt).toFixed(
         1,
       );
@@ -724,6 +731,13 @@ export function uploadPreviewTextureInStripes(
       invalidatePreviewTextureAfterUploadFailure(texture);
       throw error;
     } finally {
+      activeStripe?.close();
+      // A crop already in flight still owns its eventual bitmap after abort.
+      // Rejections are observed without replacing the original upload error.
+      void pendingStripe?.then(
+        ({ stripe }) => stripe.close(),
+        () => undefined,
+      );
       frameMonitor?.stop();
     }
   })().finally(() => markPreviewTextureUploadFinished(renderer));

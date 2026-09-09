@@ -9,7 +9,8 @@ const server = await createServer({
   resolve: { alias: { '@': fileURLToPath(new URL('../src', import.meta.url)) } },
   // One-shot SSR regression: file watching is unnecessary and can exhaust
   // the shared Linux runner's inotify/file-descriptor limits (EMFILE).
-  server: { middlewareMode: true, watch: null },
+  // null is discarded when Vite merges the project config; ignore all paths.
+  server: { middlewareMode: true, watch: { ignored: () => true } },
 });
 try {
   const {
@@ -100,6 +101,7 @@ try {
   console.log(
     'Repaint selection consumption: sparse history, sided coverage, erase guard, atomic restore and lifecycle passed.',
   );
+  assert.deepEqual(server.watcher.getWatched(), {}, 'one-shot regression must not retain filesystem watches');
 } finally {
   await server.close();
 }

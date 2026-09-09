@@ -2347,16 +2347,19 @@ function getPreviewLighting(input?: ProjectionPreviewLighting) {
   };
 }
 
-function prepareUvTexture(texture: THREE.Texture) {
-  if (texture.userData[PREPARED_TEXTURE_PROFILE_KEY] === UV_OVERLAY_TEXTURE_PROFILE) return;
+function prepareUvTexture(texture: THREE.Texture, colorSpace: string = THREE.SRGBColorSpace) {
+  if (
+    texture.userData[PREPARED_TEXTURE_PROFILE_KEY] === UV_OVERLAY_TEXTURE_PROFILE &&
+    texture.colorSpace === colorSpace
+  ) return;
   const uploadStateChanged =
-    texture.colorSpace !== THREE.SRGBColorSpace ||
+    texture.colorSpace !== colorSpace ||
     texture.wrapS !== THREE.ClampToEdgeWrapping ||
     texture.wrapT !== THREE.ClampToEdgeWrapping ||
     texture.minFilter !== THREE.LinearFilter ||
     texture.magFilter !== THREE.LinearFilter ||
     texture.generateMipmaps;
-  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.colorSpace = colorSpace;
   // Keep the source's established orientation. ImageBitmap previews are
   // decoded pre-flipped and uploaded with flipY=false, while TextureLoader and
   // canvas sources carry their own correct value. Forcing true here invalidated
@@ -2372,9 +2375,7 @@ function prepareUvTexture(texture: THREE.Texture) {
 }
 
 function prepareRenderedColorMaskTexture(texture: THREE.Texture) {
-  prepareUvTexture(texture);
-  texture.colorSpace = THREE.NoColorSpace;
-  texture.needsUpdate = true;
+  prepareUvTexture(texture, THREE.NoColorSpace);
 }
 
 function prepareLiveEraserMaskTexture(texture: THREE.Texture) {
