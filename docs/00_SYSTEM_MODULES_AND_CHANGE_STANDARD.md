@@ -1,10 +1,10 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
-> 文档版本：`2.19.6`
+> 文档版本：`2.19.7`
 >
 > 生效日期：`2026-09-09`
 >
-> 代码盘点基线：`73c6e03 + 普通投影橡皮蒙版 GPU 尺寸交接`
+> 代码盘点基线：`0f0a0ee + ModelView 复用连接超时修复`
 >
 > 基线仓库：`E:\Liclick 3D Texture Modernization`
 >
@@ -15,6 +15,8 @@
 2026-09-08 master/release 集成（M15）：合入 master a112655，包括 b374a9f/a0093a3 橡皮材质驻留交接、a7fa3b9 GPT2 提示词和 a112655 远端多视图逐视角生成；完整保留 release f3870f3 的 Ceph 流式 SHA-256 校验、内网 RGW 配置和生产部署基础设施。仅维护文档产生合并冲突，业务代码保持各分支已提交实现。算法版本沿用各变更卡，无新增 Schema 或数据迁移；回退整批镜像时保留 Ceph 修复与生产配置，已有工程/资产不删除。集成本地验证：88 项 Web/14 项 Server 回归、全仓 typecheck、lint（0 errors，15 条既有 warnings）、6 项部署策略、contracts/边界检查与完整 Cloud 构建通过；80 chunks / 3,133,800 bytes，通过原包体门禁，OAuth/资产/重启部署模拟通过。Ceph 前一批 f3870f3 的 CI #627368（含 deploy）已全部成功；本次新增功能的生产部署和真实项目验收以新流水线与维护者实测为准。
 
 变更卡 `CHG-20260908-CEPH-SHA256-READBACK`：M14，协作 M02/M15，`ALG-ASSET-VERIFY-001` v1.1.0。基于 release de1507c 保留效率组内网 RGW/公开浏览器地址分离。缺少附加 checksum 时流式读回验证实际 SHA-256；每进程最多 4 项执行、16 项等待，60 秒预算含排队/HEAD/GET，同用户同资产完成请求合并；前端完成接口等待上限 75 秒，校验完立即返回。完整性失败仍保持 pending，不放宽 verified、ownership、Revision CAS 或 Command 幂等性。线协议 v1/Schema 不变，无迁移；回退会恢复旧 Ceph 拒绝，但保留资产数据。真实 Ceph 与生产体验待验收，详见对应变更卡。
+`CHG-20260909-MODELVIEW-CONNECTION-LIFECYCLE`：主模块 M04，协作 M08/M15；请求生命周期契约 `MODELVIEW-CONNECTION-LIFECYCLE` v1.0.1。共享 ModelView 请求仅对新连接启动 10 秒建连计时，keep-alive 复用连接不再等待不会重发的 connect/secureConnect；HTTPS 新连接仍等待 TLS 握手。总任务超时、取消、证书验证、幂等性、输入输出与持久化不变，结束时清理监听。无 Schema/资产迁移，回退仅还原请求函数。见 [变更卡](changes/CHG-20260909-MODELVIEW-CONNECTION-LIFECYCLE.md)。
+
 CHG-20260909-MASK-TEXTURE-PREPARATION：M06/M09，ALG-PROJ-007 v2.1.9。颜色蒙版与 UV 准备按实际色彩空间复用，去除同一未变蒙版的重复 GPU 上传。首次/内容 revision/角色转换仍上传；WebGL 4K 输入重复 20 次额外上传 20→0，对照输出零差异。像素、shader、分辨率、QA、持久化/导出不变，无迁移。见 [变更卡](changes/CHG-20260909-MASK-TEXTURE-PREPARATION.md)。
 
 CHG-20260909-PERFORMANCE-LAB-STRESS：M13/M15，ALG-PERF-SESSION-001 v1.0.4 / collector 2.2.1。精确统计复用排序，停止录制 drain 滚轮尾批；S2/S3/S5 解除普通 UV 覆盖，S7 预热后才获取交互测量锁。新增长期录制、输入洪峰、资源清理与保留上限回归。Schema 2、生产像素/4K/QA/持久化契约不变，无迁移。详见 [变更卡](changes/CHG-20260909-PERFORMANCE-LAB-STRESS.md)。
@@ -1007,3 +1009,5 @@ M13/M15，`IDENTITY-TELEMETRY` v1.1.0，日聚合 schema v3：来源由后端确
 2026-09-09 CHG-20260909-UV-READBACK-TASK-YIELD：M09/M07，ALG-UV-008 v2.0.2。离屏 8 MiB 读回条间改用既有任务让出，保留可见 renderer 呈现等待；6 次真实 4K 全 RGBA 零差异，隔离阶段均值 175.2→140.4ms，不代表总合成/FPS 收益。无像素、QA、Schema 或资产迁移。见对应变更卡。
 
 2026-09-09 release 集成（M15）：合入 master 942417c，保留 release dff6ba6 的 Ceph 完整性验证、生产配置及部署策略。算法版本沿用各变更卡，不新增 Schema 或数据迁移。UV 90% 等待和复杂图层交互峰值仍列为下次优化，未宣称零卡顿。回滚使用上一 release dff6ba6 的前后端同版本镜像，保留生产数据与资产。发布结果以本次 release 流水线及部署核验为准。
+
+2026-09-09 release 增量发布（M15/M04）：同步 master 405f7f51 的 MODELVIEW-CONNECTION-LIFECYCLE v1.0.1 修复，保留 release 8a6d0e21 的生产配置及 Ceph 验证。无新增算法语义或数据迁移；回退前后端至 8a6d0e21 同版本镜像，保留工程和资产。

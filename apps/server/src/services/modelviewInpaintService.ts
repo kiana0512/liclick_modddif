@@ -276,7 +276,7 @@ function requestModelview(
   const transport = url.protocol === 'https:' ? https : http;
   return new Promise<RemoteResponse>((resolve, reject) => {
     let settled = false;
-    let connectTimer: NodeJS.Timeout | undefined;
+    let clearConnectionWatch: (() => void) | undefined;
     const totalTimer = setTimeout(() => {
       request.destroy(new Error(`${service.label}等待超过 ${Math.round(timeoutMs / 1000)} 秒。`));
     }, timeoutMs);
@@ -284,7 +284,7 @@ function requestModelview(
       if (settled) return;
       settled = true;
       clearTimeout(totalTimer);
-      if (connectTimer) clearTimeout(connectTimer);
+      clearConnectionWatch?.();
       signal?.removeEventListener('abort', abortRequest);
       callback();
     };
@@ -330,13 +330,20 @@ function requestModelview(
       },
     );
     request.once('socket', (socket) => {
-      connectTimer = setTimeout(() => {
+      // Agent keep-alive sockets have already connected and will not emit a
+      // second connect/secureConnect. Their generation still has totalTimer.
+      if (settled || request.reusedSocket) return;
+      const connectedEvent = url.protocol === 'https:' ? 'secureConnect' : 'connect';
+      const connectTimer = setTimeout(() => {
         request.destroy(new Error(`连接${service.label}服务超过 10 秒。`));
       }, 10_000);
-      socket.once(url.protocol === 'https:' ? 'secureConnect' : 'connect', () => {
-        if (connectTimer) clearTimeout(connectTimer);
-        connectTimer = undefined;
-      });
+      const onConnected = () => {
+        clearTimeout(connectTimer);
+        socket.removeListener(connectedEvent, onConnected);
+        clearConnectionWatch = undefined;
+      };
+      clearConnectionWatch = onConnected;
+      socket.once(connectedEvent, onConnected);
     });
     request.once('error', (error) => settle(() => reject(error)));
     if (signal?.aborted) {
