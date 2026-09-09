@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { createServer } from 'vite';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
-const server = await createServer({ root, logLevel: 'silent', server: { middlewareMode: true } });
+const server = await createServer({ root, logLevel: 'silent', server: { middlewareMode: true, watch: { ignored: () => true } } });
 
 const identity = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
 const capture = {

@@ -10,7 +10,7 @@ const server = await createServer({
   root,
   appType: 'custom',
   logLevel: 'silent',
-  server: { middlewareMode: true },
+  server: { middlewareMode: true, watch: { ignored: () => true } },
 });
 
 const originalWindow = globalThis.window;

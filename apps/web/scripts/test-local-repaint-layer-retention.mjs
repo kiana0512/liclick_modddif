@@ -176,7 +176,7 @@ assert.match(
 const server = await createServer({
   root: fileURLToPath(new URL('../', import.meta.url)),
   logLevel: 'silent',
-  server: { middlewareMode: true },
+  server: { middlewareMode: true, watch: { ignored: () => true } },
 });
 try {
   const { ensureLocalRepaintSessionLayer, restoreLocalRepaintLayerSelection } = await server.ssrLoadModule(

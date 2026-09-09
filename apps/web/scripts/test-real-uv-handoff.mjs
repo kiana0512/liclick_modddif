@@ -40,7 +40,7 @@ const server = await createServer({
   root: path.resolve(import.meta.dirname, '..'),
   appType: 'custom',
   logLevel: 'silent',
-  server: { middlewareMode: true },
+  server: { middlewareMode: true, watch: { ignored: () => true } },
 });
 try {
   const { getBakeHighObjects } = await server.ssrLoadModule('/src/services/bakeHighSnapshot.ts');

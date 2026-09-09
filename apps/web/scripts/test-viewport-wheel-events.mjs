@@ -86,7 +86,7 @@ const frames = [];
 globalThis.requestAnimationFrame = (callback) => frames.push(callback);
 const server = await createServer({
   root: fileURLToPath(new URL('..', import.meta.url)),
-  appType: 'custom', logLevel: 'silent', server: { middlewareMode: true },
+  appType: 'custom', logLevel: 'silent', server: { middlewareMode: true, watch: { ignored: () => true } },
 });
 try {
   const { createViewportEvents, setViewportPaintPointer } = await server.ssrLoadModule('/src/engine/viewport/viewportEvents.ts');

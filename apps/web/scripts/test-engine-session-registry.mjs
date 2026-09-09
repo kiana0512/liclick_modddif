@@ -22,7 +22,7 @@ const server = await createServer({
   root,
   appType: 'custom',
   logLevel: 'silent',
-  server: { middlewareMode: true },
+  server: { middlewareMode: true, watch: { ignored: () => true } },
 });
 const plan = {
   policyVersion: 1,

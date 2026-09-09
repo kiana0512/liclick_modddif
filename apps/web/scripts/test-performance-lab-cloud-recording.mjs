@@ -122,7 +122,7 @@ const vite = await createServer({
   root,
   appType: 'custom',
   logLevel: 'silent',
-  server: { middlewareMode: true },
+  server: { middlewareMode: true, watch: { ignored: () => true } },
 });
 try {
   const timeline = await vite.ssrLoadModule('/src/engine/performance/performanceTimeline.ts');

@@ -58,7 +58,7 @@ console.log('首页四个可用功能入口、隐藏自动拓扑与真实计算�
 const { createServer } = await import('vite');
 const { createElement } = await import('react');
 const { renderToStaticMarkup } = await import('react-dom/server');
-const vite = await createServer({ root: path.resolve(import.meta.dirname, '..'), appType: 'custom', logLevel: 'silent', server: { middlewareMode: true } });
+const vite = await createServer({ root: path.resolve(import.meta.dirname, '..'), appType: 'custom', logLevel: 'silent', server: { middlewareMode: true, watch: { ignored: () => true } } });
 try {
   const { HomePage } = await vite.ssrLoadModule('/src/routes/HomePage.tsx');
   const { useAuthStore } = await vite.ssrLoadModule('/src/stores/authStore.ts');

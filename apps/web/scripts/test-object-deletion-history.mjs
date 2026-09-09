@@ -26,7 +26,7 @@ const server = await createServer({
   root,
   appType: 'custom',
   logLevel: 'silent',
-  server: { middlewareMode: true },
+  server: { middlewareMode: true, watch: { ignored: () => true } },
 });
 
 function makeObject(id, position, selected = false) {
