@@ -8,8 +8,8 @@ const source = await readFile(
 
 assert.match(
   source,
-  /onClick=\{\(\) => \{\s*if \(selected\) \{\s*setPreviewReference\(reference\);\s*return;\s*\}\s*selectReference\(reference\);\s*\}\}/,
-  'reference thumbnail should select on first click and preview the selected reference on the next click',
+  /onClick=\{\(\) => \{\s*if \(disabled \|\| selected\) \{\s*setPreviewReference\(reference\);\s*return;\s*\}\s*selectReference\(reference\);\s*\}\}/,
+  'unlocked thumbnails select then preview; task-locked thumbnails only preview',
 );
 assert.doesNotMatch(
   source,

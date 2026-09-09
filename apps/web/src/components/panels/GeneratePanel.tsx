@@ -1815,10 +1815,7 @@ export function GeneratePanel({
   }, [currentProject?.id, generations, pushToast, references]);
 
   function updateGenerationSettings(patch: Partial<typeof defaultImageGenerationSettings>) {
-    if (workflowConfigurationLocked) {
-      notifyWorkflowOperationLocked();
-      return;
-    }
+    // This writer only updates the next-request prompt draft, not the running request snapshot.
     if (!currentProject) return;
     updateCurrentProject({
       settings: {
@@ -5298,8 +5295,7 @@ export function GeneratePanel({
               <textarea
                 value={prompt}
                 aria-label={isLocalRepaintTab ? '补充提示词（可选）' : '纹理提示词'}
-                readOnly={workflowConfigurationLocked}
-                aria-readonly={workflowConfigurationLocked}
+                data-task-preview-allowed="true"
                 maxLength={
                   isLocalRepaintTab || (isTextureMapTab && singleViewProvider === 'remote')
                     ? 4096
@@ -5309,10 +5305,6 @@ export function GeneratePanel({
                   isLocalRepaintTab ? '可补充编辑要求；留空则自动分析蒙版区域问题' : undefined
                 }
                 onChange={(event) => {
-                  if (workflowConfigurationLocked) {
-                    notifyWorkflowOperationLocked();
-                    return;
-                  }
                   if (isLocalRepaintTab) {
                     setLocalRepaintPrompt(event.target.value);
                     return;
@@ -5323,9 +5315,7 @@ export function GeneratePanel({
                       : { liclickPrompt: event.target.value },
                   );
                 }}
-                className={`generate-prompt-adaptive w-full resize-none rounded-md border border-white/18 bg-black/34 p-2.5 text-[13px] leading-5 text-white outline-none transition placeholder:text-white/38 focus:border-liclick-pink ${
-                  workflowConfigurationLocked ? 'cursor-default' : ''
-                }`}
+                className="generate-prompt-adaptive w-full resize-none rounded-md border border-white/18 bg-black/34 p-2.5 text-[13px] leading-5 text-white outline-none transition placeholder:text-white/38 focus:border-liclick-pink"
               />
             </section>
 
@@ -5338,6 +5328,7 @@ export function GeneratePanel({
                 <ReferenceGroupPicker
                   disabled={
                     workflowConfigurationLocked ||
+                    workflowSubmissionLocked ||
                     displayedReferenceGroupGenerationState?.status === 'generating'
                   }
                   generationState={displayedReferenceGroupGenerationState}

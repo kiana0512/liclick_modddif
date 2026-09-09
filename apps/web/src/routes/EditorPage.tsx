@@ -1637,6 +1637,7 @@ export function EditorPage({
     const activeElement = document.activeElement;
     if (
       activeElement instanceof HTMLElement &&
+      !activeElement.closest('[data-task-preview-allowed="true"]') &&
       (activeElement.matches('input, textarea, select') || activeElement.isContentEditable)
     ) {
       activeElement.blur();

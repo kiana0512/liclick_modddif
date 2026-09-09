@@ -6,6 +6,7 @@
   "scripts": {
     "test:model-silhouette-clip": "node scripts/test-model-silhouette-clip.mjs",
     "test:repaint-panel-navigation": "node scripts/test-repaint-panel-navigation.mjs",
+    "test:generation-draft-preview": "node scripts/test-generation-draft-preview.mjs",
     "test:capture-renderer-isolation": "node scripts/test-capture-renderer-isolation.mjs",
     "predev": "corepack pnpm --filter @liclick/contracts build",
     "dev": "vite --host 127.0.0.1 --port 5173 --strictPort",

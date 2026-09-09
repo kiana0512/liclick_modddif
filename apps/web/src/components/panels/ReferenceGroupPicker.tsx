@@ -220,6 +220,7 @@ function ImagePreviewDialog({ reference, onClose }: { reference: ReferenceImage;
       role="dialog"
       aria-modal="true"
       aria-label={`${reference.name} 预览`}
+      data-task-preview-allowed="true"
       onClick={onClose}
       onKeyDown={(event) => {
         if (event.key === 'Escape') onClose();
@@ -536,7 +537,7 @@ export function ReferenceGroupPicker({
               >
                 <button
                   type="button"
-                  disabled={disabled}
+                  data-task-preview-allowed="true"
                   className={`relative block aspect-square w-full overflow-hidden rounded-lg bg-[#101019] transition disabled:cursor-not-allowed disabled:opacity-55 ${
                     selected
                       ? 'shadow-[0_0_0_2px_rgba(238,72,197,0.92),0_0_18px_rgba(238,72,197,0.18)]'
@@ -544,14 +545,16 @@ export function ReferenceGroupPicker({
                   }`}
                   style={checkerboardStyle()}
                   onClick={() => {
-                    if (selected) {
+                    if (disabled || selected) {
                       setPreviewReference(reference);
                       return;
                     }
                     selectReference(reference);
                   }}
                   title={
-                    selected
+                    disabled
+                      ? `单击预览${role === 'multi-view' ? '多视图' : '单视图'}`
+                      : selected
                       ? `再次单击预览${role === 'multi-view' ? '多视图' : '单视图'}`
                       : `单击选择${role === 'multi-view' ? '多视图' : '单视图'}`
                   }
