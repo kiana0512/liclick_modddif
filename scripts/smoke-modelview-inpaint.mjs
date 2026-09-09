@@ -1,3 +1,4 @@
+/* global Buffer, console, fetch, process, setTimeout */
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
@@ -88,6 +89,7 @@ for (const suffix of suffixes) {
 }
 assert.notEqual(createModelviewIdempotencyKey('x'.repeat(200) + 'a', suffixes[1]), createModelviewIdempotencyKey('x'.repeat(200) + 'b', suffixes[1]));
 const observedRequests = [];
+let firstSocket;
 const modelviewMock = http.createServer(async (request, response) => {
   try {
     assert.equal(request.method, 'POST');
@@ -149,6 +151,12 @@ const modelviewMock = http.createServer(async (request, response) => {
       idempotencyKey: request.headers['idempotency-key'],
       sha256: createHash('sha256').update(body).digest('hex'),
     });
+    if (observedRequests.length === 1) firstSocket = request.socket;
+    if (observedRequests.length === 2) {
+      assert.equal(request.socket, firstSocket, 'Regression must exercise real keep-alive reuse.');
+      // Longer than the connection deadline, shorter than the task deadline.
+      await new Promise((resolve) => setTimeout(resolve, 11_000));
+    }
     response.writeHead(200, {
       'content-type': 'image/png',
       'x-job-id': isSingleView
@@ -180,7 +188,7 @@ const child = spawn(process.execPath, [serverEntry], {
     LICLICK_PUBLIC_WORKSPACE_URL: workspaceBaseUrl,
     LICLICK_WORKSPACE_DIR: workspaceDir,
     LICLICK_MODELVIEW_INPAINT_URL: `http://127.0.0.1:${modelviewPort}/api/v1/services/modelview-inpaint`,
-    LICLICK_MODELVIEW_INPAINT_TIMEOUT_MS: '10000',
+    LICLICK_MODELVIEW_INPAINT_TIMEOUT_MS: '20000',
     LICLICK_MODELVIEW_SINGLE_VIEW_URL: `http://127.0.0.1:${modelviewPort}/api/v1/services/modelview-single-view`,
     LICLICK_MODELVIEW_SINGLE_VIEW_TIMEOUT_MS: '10000',
     LICLICK_MODELVIEW_SINGLE_VIEW_INPAINT_URL: `http://127.0.0.1:${modelviewPort}/api/v1/services/modelview-single-view-inpaint`,

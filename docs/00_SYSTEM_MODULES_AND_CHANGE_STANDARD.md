@@ -1,16 +1,18 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
-> 文档版本：`2.19.6`
+> 文档版本：`2.19.7`
 >
 > 生效日期：`2026-09-09`
 >
-> 代码盘点基线：`73c6e03 + 普通投影橡皮蒙版 GPU 尺寸交接`
+> 代码盘点基线：`0f0a0ee + ModelView 复用连接超时修复`
 >
 > 基线仓库：`E:\Liclick 3D Texture Modernization`
 >
 > 审计口径：`0a2519d + 607e82f + 2568e40`，不包含错误文档提交 `2bde8c6/e03bab2/d1c5f78`
 
 ## 1. 文档地位与强制边界
+
+`CHG-20260909-MODELVIEW-CONNECTION-LIFECYCLE`：主模块 M04，协作 M08/M15；请求生命周期契约 `MODELVIEW-CONNECTION-LIFECYCLE` v1.0.1。共享 ModelView 请求仅对新连接启动 10 秒建连计时，keep-alive 复用连接不再等待不会重发的 connect/secureConnect；HTTPS 新连接仍等待 TLS 握手。总任务超时、取消、证书验证、幂等性、输入输出与持久化不变，结束时清理监听。无 Schema/资产迁移，回退仅还原请求函数。见 [变更卡](changes/CHG-20260909-MODELVIEW-CONNECTION-LIFECYCLE.md)。
 
 CHG-20260909-MASK-TEXTURE-PREPARATION：M06/M09，ALG-PROJ-007 v2.1.9。颜色蒙版与 UV 准备按实际色彩空间复用，去除同一未变蒙版的重复 GPU 上传。首次/内容 revision/角色转换仍上传；WebGL 4K 输入重复 20 次额外上传 20→0，对照输出零差异。像素、shader、分辨率、QA、持久化/导出不变，无迁移。见 [变更卡](changes/CHG-20260909-MASK-TEXTURE-PREPARATION.md)。
 
