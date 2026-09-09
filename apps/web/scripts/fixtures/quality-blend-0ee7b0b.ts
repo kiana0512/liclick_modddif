@@ -462,47 +462,38 @@ async function resolveGpu(topK: TopK, preserveAlpha: boolean) {
     compute: { module: device.createShaderModule({ code: shader, label: 'Li3D top-k quality blend' }), entryPoint: 'resolve' },
   });
   const finalOutput = new Uint8ClampedArray(topK.coverage.length * 4);
-  const tileCapacity = Math.min(TILE_PIXELS, topK.coverage.length);
-  if (tileCapacity === 0) return finalOutput;
-  const packed = new ArrayBuffer(tileCapacity * TOP_K * 24);
-  const view = new DataView(packed);
-  const buffers: GpuBuffer[] = [];
-  const allocate = (size: number, usage: number) => {
-    const buffer = device.createBuffer({ size, usage });
-    buffers.push(buffer);
-    return buffer;
-  };
-  try {
-    const inputBuffer = allocate(packed.byteLength, GPU_BUFFER_USAGE_STORAGE | GPU_BUFFER_USAGE_COPY_DST);
-    const outputBuffer = allocate(tileCapacity * 4, GPU_BUFFER_USAGE_STORAGE | GPU_BUFFER_USAGE_COPY_SRC);
-    const readback = allocate(tileCapacity * 4, GPU_BUFFER_USAGE_MAP_READ | GPU_BUFFER_USAGE_COPY_DST);
-    const paramsBuffer = allocate(16, GPU_BUFFER_USAGE_UNIFORM | GPU_BUFFER_USAGE_COPY_DST);
-    // Reuse only after the previous submission and mapped readback are complete.
-    for (let first = 0; first < topK.coverage.length; first += TILE_PIXELS) {
-      const count = Math.min(TILE_PIXELS, topK.coverage.length - first);
-      for (let local = 0; local < count; local += 1) {
-        for (let slot = 0; slot < TOP_K; slot += 1) {
-          const byteOffset = (local * TOP_K + slot) * 24;
-          const pixel = first + local;
-          const packedColor = topK.colors[slot][pixel];
-          view.setUint32(byteOffset, packedColor, true);
-          view.setFloat32(byteOffset + 4, topK.coverages[slot][pixel], true);
-          view.setFloat32(byteOffset + 8, topK.qualities[slot][pixel], true);
-          view.setFloat32(byteOffset + 12, SRGB_BYTE_TO_LINEAR[packedColor & 255], true);
-          view.setFloat32(byteOffset + 16, SRGB_BYTE_TO_LINEAR[(packedColor >>> 8) & 255], true);
-          view.setFloat32(byteOffset + 20, SRGB_BYTE_TO_LINEAR[(packedColor >>> 16) & 255], true);
-        }
+  for (let first = 0; first < topK.coverage.length; first += TILE_PIXELS) {
+    const count = Math.min(TILE_PIXELS, topK.coverage.length - first);
+    const packed = new ArrayBuffer(count * TOP_K * 24);
+    const view = new DataView(packed);
+    for (let local = 0; local < count; local += 1) {
+      for (let slot = 0; slot < TOP_K; slot += 1) {
+        const byteOffset = (local * TOP_K + slot) * 24;
+        const pixel = first + local;
+        const packedColor = topK.colors[slot][pixel];
+        view.setUint32(byteOffset, packedColor, true);
+        view.setFloat32(byteOffset + 4, topK.coverages[slot][pixel], true);
+        view.setFloat32(byteOffset + 8, topK.qualities[slot][pixel], true);
+        view.setFloat32(byteOffset + 12, SRGB_BYTE_TO_LINEAR[packedColor & 255], true);
+        view.setFloat32(byteOffset + 16, SRGB_BYTE_TO_LINEAR[(packedColor >>> 8) & 255], true);
+        view.setFloat32(byteOffset + 20, SRGB_BYTE_TO_LINEAR[(packedColor >>> 16) & 255], true);
       }
-      const outputBytes = count * 4;
-      device.queue.writeBuffer(inputBuffer, 0, packed, 0, count * TOP_K * 24);
+    }
+    const outputBytes = count * 4;
+    const inputBuffer = device.createBuffer({ size: packed.byteLength, usage: GPU_BUFFER_USAGE_STORAGE | GPU_BUFFER_USAGE_COPY_DST });
+    const outputBuffer = device.createBuffer({ size: outputBytes, usage: GPU_BUFFER_USAGE_STORAGE | GPU_BUFFER_USAGE_COPY_SRC });
+    const readback = device.createBuffer({ size: outputBytes, usage: GPU_BUFFER_USAGE_MAP_READ | GPU_BUFFER_USAGE_COPY_DST });
+    const paramsBuffer = device.createBuffer({ size: 16, usage: GPU_BUFFER_USAGE_UNIFORM | GPU_BUFFER_USAGE_COPY_DST });
+    try {
+      device.queue.writeBuffer(inputBuffer, 0, packed);
       const params = new Uint32Array(4);
       params[0] = preserveAlpha ? 1 : 0;
       device.queue.writeBuffer(paramsBuffer, 0, params.buffer);
       const bindGroup = device.createBindGroup({
         layout: pipeline.getBindGroupLayout(0),
         entries: [
-          { binding: 0, resource: { buffer: inputBuffer, size: count * TOP_K * 24 } },
-          { binding: 1, resource: { buffer: outputBuffer, size: outputBytes } },
+          { binding: 0, resource: { buffer: inputBuffer } },
+          { binding: 1, resource: { buffer: outputBuffer } },
           { binding: 2, resource: { buffer: paramsBuffer } },
         ],
       });
@@ -516,12 +507,12 @@ async function resolveGpu(topK: TopK, preserveAlpha: boolean) {
       device.queue.submit([encoder.finish()]);
       await device.queue.onSubmittedWorkDone();
       await readback.mapAsync(GPU_MAP_MODE_READ);
-      finalOutput.set(new Uint8ClampedArray(readback.getMappedRange(), 0, outputBytes), first * 4);
+      finalOutput.set(new Uint8ClampedArray(readback.getMappedRange()), first * 4);
       readback.unmap();
-      await yieldWorkerBudget();
+    } finally {
+      inputBuffer.destroy(); outputBuffer.destroy(); readback.destroy(); paramsBuffer.destroy();
     }
-  } finally {
-    for (const buffer of buffers) buffer.destroy();
+    await yieldWorkerBudget();
   }
   return finalOutput;
 }

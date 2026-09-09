@@ -92,8 +92,7 @@ const SHARPEN_KERNEL = [
 
 function markUvBakePerformancePhase(phase: string) {
   if (
-    typeof document !== 'undefined' &&
-    document.body.dataset.perfSimulatedViewportInteraction === '1'
+    typeof document !== 'undefined'
   ) {
     document.body.dataset.perfUvBakePhase = phase;
   }

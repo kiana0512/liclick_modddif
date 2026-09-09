@@ -71,3 +71,38 @@ for (const mode of ['decode', 'reject', 'absent', 'load-error']) {
   assert.deepEqual(events.slice(-3), ['paint', 'draw', 'cache']);
 }
 console.log('UV source scheduling: frozen cleanup RGBA/coverage, event loop, decode barrier/fallback and load failure passed.');
+
+const stripeTree = ts.createSourceFile('imageSampler.ts', imageSource, ts.ScriptTarget.Latest, true);
+const stripeFunction = stripeTree.statements.find(n => ts.isFunctionDeclaration(n) && n.name?.text === 'readStaticSamplingCanvas');
+const stripeJs = ts.transpileModule(stripeFunction.getText(stripeTree), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+const readStripes = new Function('ImageData', 'waitForBrowserPaint', `${stripeJs}; return readStaticSamplingCanvas;`)(
+  class { constructor(width, height) { this.width = width; this.height = height; this.data = new Uint8ClampedArray(width * height * 4); } },
+  () => new Promise(resolve => setImmediate(resolve)),
+);
+for (const [width, height] of [[1, 1], [257, 1031], [4097, 2051]]) {
+  const pixels = Uint8ClampedArray.from({ length: width * height * 4 }, (_, i) => i % 256);
+  const output = await readStripes({ getImageData(x, y, w, h) {
+    assert.equal(x, 0); assert.equal(w, width); assert(y + h <= height);
+    return { data: pixels.slice(y * width * 4, (y + h) * width * 4) };
+  } }, width, height);
+  assert.deepEqual(output.data, pixels, 'all channels and partial final stripe preserved');
+}
+await assert.rejects(readStripes({ getImageData() { throw new Error('read failed'); } }, 4096, 4096), /read failed/);
+console.log('Static canvas stripe reads: all RGBA, odd dimensions, tail rows and read failure passed.');
+
+const liveSource = { width: 4096, height: 4096, value: 3 };
+const liveEnv = {
+  getLiveProjectedTextureSourceState: () => ({ revision: 1, source: liveSource }),
+  resolveImageAssetUrl: x => x, getImageDataCacheKey: x => x,
+  imageDataCache: new Map(), rememberImageData: () => {},
+  HTMLImageElement: class {},
+  readStaticSamplingCanvas: () => { throw new Error('live snapshot must not yield'); },
+  document: { createElement: () => ({ getContext: () => ({
+    drawImage: () => {}, getImageData: () => ({ data: new Uint8ClampedArray([liveSource.value]) }),
+  }) }) },
+};
+const liveLoad = new Function('env', `const {${Object.keys(liveEnv).join(',')}}=env; ${js}; return loadImageData;`)(liveEnv);
+const snapshot = liveLoad('live:test', 4096);
+liveSource.value = 9;
+assert.equal((await snapshot).data[0], 3, '4K live source is captured before the caller can mutate it');
+console.log('4K live source synchronous snapshot timing preserved.');

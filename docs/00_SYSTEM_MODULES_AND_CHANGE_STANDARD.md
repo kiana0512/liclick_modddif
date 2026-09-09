@@ -12,6 +12,8 @@
 
 ## 1. 文档地位与强制边界
 
+`CHG-20260909-UV-COMPOSITE-RESOURCES`：M07，ALG-UV-003 v2.0.1 / ALG-UV-005 v2.0.3。质量 Worker 按任务复用精确 tile 缓冲，接缝提前去重等价记录，实际合成阶段诊断独立于 S4；PERF-UV-SOURCE-PREPARE-001 v1.0.1 静态Canvas分条读取，live同步快照保持。RGBA、shader、校验门禁和分辨率不变；无 Schema/资产迁移。见 [变更卡](changes/CHG-20260909-UV-COMPOSITE-RESOURCES.md)。
+
 CI 修复（2026-09-09，M15）：GitLab #628349 / job #3561523 的 `test:repaint-selection-consumption` 因 Vite/chokidar 文件监听报 EMFILE。最新 #628365 虽通过，同一脚本仍开启监听；本次为一次性 SSR 回归设置 `server.watch=null`，并断言加载后 watcher 列表为空，避免依赖共享 runner 的剩余句柄。全部选区、撤销与资源释放断言保留；不修改运行时/算法/Schema、CI 门禁或输出质量，无迁移。回退只恢复测试监听配置和移除资源断言，将重新暴露句柄风险。
 
 变更卡 `CHG-20260909-REPAINT-DEFAULT-SEAM`：主模块 M08/M04，`ALG-GEN-005` 请求策略 `qwen-to-klein-default-seam-v9`。局部输入框保留空草稿，不显示/回填默认内容；发起任务时 trim，空白统一按“修补接缝”发送 Qwen，非空仅采用用户要求。服务端对旧客户端空请求同样兜底；移除空输入 diagnosis/JSON 分支与旧诊断构造器，直接走现有四图英文提示词转换，非空删除/无文字等约束不变。缓存指纹升级并区分 default-seam/user-request，旧自动诊断缓存不能命中；历史记录不改写。取消、请求快照及生图期间草稿编辑保持。GPU/CPU/Worker/shader、蒙版/投影/UV/export、输出分辨率、Schema/CAS/ownership/verified assets 不变，无迁移；回退恢复旧策略和诊断分支即可。测试覆盖空串/空格换行/全角空格、用户覆盖、单次 Qwen 请求、无诊断 JSON、四图顺序、空响应/截断/过滤/HTTP 错误和缓存版本。
@@ -496,9 +498,9 @@ UI-09 剪刀
 | --- | --- | --- |
 | `ALG-UV-001` UV0 三角形投影栅格 | `2.0.0` | GPU 默认把 mesh UV 三角形画入 RT，重建世界位置/法线并复用投影门控；CPU 每 texel 4 子样本是诊断回退 |
 | `ALG-UV-002` Runtime 可见性补获 | `2.0.0` | stale/missing depth 按原 capture camera 重新捕获，完整捕获上限 2048，不改变最终 UV 分辨率 |
-| `ALG-UV-003` Top-3 质量合成 | `2.0.0` | 与第 6 节常量一致；输出 authored color、coverage confidence、rendered-color mask |
+| `ALG-UV-003` Top-3 质量合成 | `2.0.1` | 与第 6 节常量一致；输出 authored color、coverage confidence、rendered-color mask |
 | `ALG-UV-004` 有序 Overlay | `4.0.0` | 仅用户显式 overlay 使用 feathered=`coverage×(0.75+0.25×qualityFade)`；局部重绘 literal=`coverage`。普通单/多视图均先进入 Top-3，不再拥有 priority overlay；实时与 GPU UV bake 同义 |
-| `ALG-UV-005` 拓扑约束后处理 | `2.0.2` | gutter/gap=`clamp(ceil(res/512),2,8)`；hole=`clamp(ceil(res/2048),1,3)`；seam=`clamp(ceil(res/1024),2,4)`，不得跨无关 island |
+| `ALG-UV-005` 拓扑约束后处理 | `2.0.3` | gutter/gap=`clamp(ceil(res/512),2,8)`；hole=`clamp(ceil(res/2048),1,3)`；seam=`clamp(ceil(res/1024),2,4)`，不得跨无关 island |
 | `ALG-UV-006` Under 合成 | `2.0.0` | 投影在前、content-aware 在下；straight alpha：`Aout=Af+Au(1-Af)` |
 | `ALG-UV-007` PBR 预览光照固化 | `4.0.0` | 依据 UV 法线、环境预设、曝光、环境强度、主光强度/方位计算 deterministic preview light；rendered-color 像素权重 1 时保持原色 |
 | `ALG-UV-008` Straight-RGBA 发布 | `2.0.0` | RGB 不预乘；透明 texel 的 padding RGB 可保留；PNG 与 Layer 在资产就绪后原子发布 |

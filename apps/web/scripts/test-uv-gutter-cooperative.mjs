@@ -141,3 +141,23 @@ assert(seamDeliveries > 0, 'seam geometry traversal yields control');
 largeRoot.geometry.dispose();
 largeRoot.material.dispose();
 console.log('UV repair/seam event-loop delivery checks passed.');
+
+// Repeated and non-manifold edges must retain first UV-key order / last record.
+for (const count of [4, 5, 6, 50]) {
+  const root = new THREE.Group();
+  for (let index = 0; index < count; index++) {
+    const geometry = new THREE.PlaneGeometry(1, 1);
+    const uv = geometry.getAttribute('uv');
+    for (let vertex = 0; vertex < uv.count; vertex++) {
+      uv.setXY(vertex, uv.getX(vertex) * 0.5 + (index % 17) / 34, uv.getY(vertex) * 0.5);
+    }
+    root.add(new THREE.Mesh(geometry));
+  }
+  for (const include of [false, true]) {
+    assert.deepEqual(nextSeams.collectUvSeamPairs(root, include), oldSeams.collectUvSeamPairs(root, include));
+  }
+  root.traverse((object) => {
+    if (object instanceof THREE.Mesh) { object.geometry.dispose(); object.material.dispose(); }
+  });
+}
+console.log('UV seam repeated/non-manifold edge order parity passed.');

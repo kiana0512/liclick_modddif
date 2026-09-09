@@ -133,8 +133,17 @@ function* collectUvSeamPairSteps(root: THREE.Object3D, includeDiscontinuous = fa
           ? (aKey < bKey ? `${aKey}|${bKey}` : `${bKey}|${aKey}`)
           : edgeKey(record.a.position, record.b.position);
         const records = groupedEdges.get(key);
-        if (records) records.push(record);
-        else groupedEdges.set(key, [record]);
+        if (records) {
+          // Keep the same first UV-key order and last record per key as the
+          // former final Map pass. Interior triangle edges need only one
+          // retained record, avoiding a second object graph during pairing.
+          const uvKey = uvEdgeKey(record);
+          const existing = records.length <= 4
+            ? records.findIndex((edge) => uvEdgeKey(edge) === uvKey)
+            : -1;
+          if (existing < 0) records.push(record);
+          else records[existing] = record;
+        } else groupedEdges.set(key, [record]);
       }
     }
   }
@@ -144,9 +153,11 @@ function* collectUvSeamPairSteps(root: THREE.Object3D, includeDiscontinuous = fa
   for (const records of groupedEdges.values()) {
     if (groupIndex++ % 512 === 0) yield;
     if (records.length < 2) continue;
-    const uniqueByUv = new Map<string, UvSeamEdgeRecord>();
-    records.forEach((record) => uniqueByUv.set(uvEdgeKey(record), record));
-    const unique = [...uniqueByUv.values()];
+    // Pathological non-manifold groups keep linear Map deduplication rather
+    // than extending the bounded small-group search quadratically.
+    const unique = records.length <= 4
+      ? records
+      : [...new Map(records.map((record) => [uvEdgeKey(record), record])).values()];
     if (unique.length < 2) continue;
     const reference = unique[0];
     for (let index = 1; index < unique.length; index += 1) {
