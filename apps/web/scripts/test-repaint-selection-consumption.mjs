@@ -7,7 +7,9 @@ const server = await createServer({
   configFile: false,
   optimizeDeps: { noDiscovery: true, entries: [] },
   resolve: { alias: { '@': fileURLToPath(new URL('../src', import.meta.url)) } },
-  server: { middlewareMode: true },
+  // One-shot SSR regression: file watching is unnecessary and can exhaust
+  // the shared Linux runner's inotify/file-descriptor limits (EMFILE).
+  server: { middlewareMode: true, watch: null },
 });
 try {
   const {
@@ -16,6 +18,7 @@ try {
     selectionPixelsHaveContent,
     getSelectionConsumptionMaterial,
   } = await server.ssrLoadModule('/src/engine/localRepaint/consumeSelectionMask.ts');
+  assert.deepEqual(server.watcher.getWatched(), {}, 'one-shot SSR must not install file watchers');
   const before = new Uint8Array(256 * 256 * 4).fill(255),
     after = before.slice();
   after[4096] = 0;
