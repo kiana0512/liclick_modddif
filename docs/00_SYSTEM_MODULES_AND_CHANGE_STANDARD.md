@@ -12,6 +12,8 @@
 
 ## 1. 文档地位与强制边界
 
+CI 检查修正（2026-09-09，M15）：`test-generation-draft-preview.mjs` 正则的两个字面空格改用 ` {2}`，保持匹配范围和断言不变，消除 ESLint `no-regex-spaces` 错误。仅测试脚本变化，业务/GPU/CPU/Worker/Schema/资产及运行时版本不变，无迁移；回退此行会重新引入 lint 失败。
+
 变更卡 `CHG-20260909-GENERATION-DRAFT-PREVIEW`：M04/M08，UI-05，GENERATION-INTERACTION-LOCK v1.0.1。生图期间提示词 textarea 使用只读预览白名单通行（草稿编辑例外），不再 readonly/被强制 blur；输入修改下一次任务草稿，现有请求继续使用发起函数冻结的提示词。参考图在任务/准备锁内点击任意缩略图仅打开预览，缩放与关闭可用；不改变选中项，不开放上传、删除、复制或重复生成。任务取消、模型编辑及其他配置锁保持；GPU/CPU/Worker/shader、图像算法、Schema/CAS/ownership/资产无变化，无迁移。回退恢复 textarea 锁与参考图 disabled 即可，不回写已发出任务。
 
 `CHG-20260909-PROJECTION-PENDING-DISPLAY`：M05/M06，ALG-PROJ-007 v2.1.8。关闭不等价分批显示，设备预算内底层显示，超限行运行期标记，常驻原风格合并引导；合并包含待显示行。M09 会话缓存 v9 在临时蒙版编码之前以作者输入和 live revision 查询。89 项 Web 回归、类型和构建通过，实际复杂工程效果及帧率仍需验收。详见 [变更卡](changes/CHG-20260909-PROJECTION-PENDING-DISPLAY.md)。以下 v2.1.7 分批准入已被本条替代。

@@ -7,7 +7,7 @@ assert.ok(textarea);
 assert.match(textarea,/data-task-preview-allowed="true"/);
 assert.doesNotMatch(textarea,/readOnly|workflowConfigurationLocked|disabled=/);
 assert.match(textarea,/setLocalRepaintPrompt\(event.target.value\)/);
-const writer=panel.match(/function updateGenerationSettings\([\s\S]*?\n  function writePromptValue/)?.[0];
+const writer=panel.match(/function updateGenerationSettings\([\s\S]*?\n {2}function writePromptValue/)?.[0];
 assert.ok(writer);assert.doesNotMatch(writer,/workflowConfigurationLocked/);
 assert.match(panel,/<ReferenceGroupPicker\s+disabled=\{\s*workflowConfigurationLocked \|\|\s*workflowSubmissionLocked/);
 const picker=read('components/panels/ReferenceGroupPicker.tsx');
