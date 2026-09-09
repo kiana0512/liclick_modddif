@@ -1,16 +1,24 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
-> 文档版本：`2.19.7`
+> 文档版本：`2.19.9`
 >
 > 生效日期：`2026-09-09`
 >
-> 代码盘点基线：`0f0a0ee + ModelView 复用连接超时修复`
+> 代码盘点基线：`405f7f5 + GPT-only 入口与生图期间删除图层`
 >
 > 基线仓库：`E:\Liclick 3D Texture Modernization`
 >
 > 审计口径：`0a2519d + 607e82f + 2568e40`，不包含错误文档提交 `2bde8c6/e03bab2/d1c5f78`
 
 ## 1. 文档地位与强制边界
+
+2026-09-09 UI-05 / M05 图层行文案样式：移除行 hover 背景高亮，保留 selected 背景及 active 底线；按钮自身交互、拖拽、待显示诊断和图层逻辑不变。仅样式，无算法/Schema/迁移；回滚恢复行 hover 类即可。
+
+2026-09-09 UI-02 / M01 文件夹文案：创建文件夹输入框的 folderPlaceholder 从“客户概念”改为“文件夹1”（英文对应 Folder 1）。仅替换占位提示，创建/重命名校验和现有文件夹名称不变；无算法、Schema 或资产迁移。回滚恢复该翻译键即可。
+
+`CHG-20260909-GENERATION-LAYER-DELETION`：M05/M04，协作 M08/M12；`GENERATION-LAYER-DELETION` v1.0.0。生图等待阶段独立放开单/多选图层删除和确认清空，输入快照、局部输入准备/启动交接、内容识别填补仍锁定；其他模型/图层修改锁不放开。仅行选择、菜单入口、删除按钮通过全局事件门禁，Delete/Backspace 仅在图层区域获得焦点时放行。保留现有历史、局部重绘双层及 live session 清理；关键保存每次 CAS 尝试从当前图层 store 获取列表，避免生图旧快照恢复删除。GPU/CPU/Worker/shader/UV/export 不改，无 Schema/资产迁移；回滚恢复独立锁与旧保存读取方式。见 [变更卡](changes/CHG-20260909-GENERATION-LAYER-DELETION.md)。
+
+`CHG-20260909-TEXTURE-GPT-ONLY`：主模块 M04 / UI-05，入口策略 `TEXTURE-GENERATION-PROVIDER` v1.0.1。单视图和多视图共同固定 GPT-only 会话值，不提供 setter，也不读取历史 provider；移除 GPT2/远端整行选择 UI。GPT 提示词、参考图、视角排序、取消与回贴不变；局部重绘、历史远端结果和后端接口保持。GPU/CPU/Worker/shader/UV/export 与 Schema/CAS/资产无变化，无迁移。回退恢复 provider setter 和选项行即可；详见 [变更卡](changes/CHG-20260909-TEXTURE-GPT-ONLY.md)。
 
 `CHG-20260909-MODELVIEW-CONNECTION-LIFECYCLE`：主模块 M04，协作 M08/M15；请求生命周期契约 `MODELVIEW-CONNECTION-LIFECYCLE` v1.0.1。共享 ModelView 请求仅对新连接启动 10 秒建连计时，keep-alive 复用连接不再等待不会重发的 connect/secureConnect；HTTPS 新连接仍等待 TLS 握手。总任务超时、取消、证书验证、幂等性、输入输出与持久化不变，结束时清理监听。无 Schema/资产迁移，回退仅还原请求函数。见 [变更卡](changes/CHG-20260909-MODELVIEW-CONNECTION-LIFECYCLE.md)。
 

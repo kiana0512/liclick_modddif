@@ -60,11 +60,35 @@ assert(
 );
 const persistPairedFlow = panel.slice(persistPairedStart, persistPairedEnd);
 
-assert.match(
-  panel,
-  /isTextureMapTab && displayedTexturePreviewMode !== 'repaint'[\s\S]*?<SegmentedControl<SingleViewProvider>[\s\S]*?远端/,
-  'both single-view and multiview texture modes must expose the remote provider',
-);
+// GPT-only UI policy: keep legacy remote implementation/history compatible,
+// but neither a toggle nor persisted settings can select it for new tasks.
+assert.match(panel, /const \[singleViewProvider\] = useState<SingleViewProvider>\('gpt'\)/);
+assert.doesNotMatch(panel, /setSingleViewProvider|<SegmentedControl<SingleViewProvider>|data-single-view-provider=/);
+assert.doesNotMatch(panel, /label: 'GPT2'|label: '远端'/);
+const routeStart = panel.indexOf('async function handleTextureMapMultiviewGenerate(');
+const routeEnd = panel.indexOf('    const objectId = captureObjectId;', routeStart);
+assert(routeStart >= 0 && routeEnd > routeStart);
+const routeJs = ts.transpileModule(`${panel.slice(routeStart, routeEnd)}\n}`, {
+  compilerOptions: { target: ts.ScriptTarget.ES2022 },
+}).outputText;
+const providerBinding = panel.match(/const \[singleViewProvider\] = useState<SingleViewProvider>\('gpt'\);/)[0];
+const bindingJs = ts.transpileModule(providerBinding, {
+  compilerOptions: { target: ts.ScriptTarget.ES2022 },
+}).outputText;
+for (const mode of ['single', 'multi']) {
+  const calls = [];
+  const scope = {
+    useState: (initial) => [initial, () => { throw new Error('Provider must stay fixed'); }],
+    throwIfTexturePipelineCancelled: () => {}, captureObjectId: 'object',
+    requireFeishuLogin: async () => { calls.push('remote-login'); return true; },
+    requirePersonalLiclickAccount: async () => { calls.push('gpt-login'); },
+    usesGptTextureGeneration: () => true,
+    handleRemoteSequentialMultiviewGenerate: async () => { calls.push('remote-generation'); },
+  };
+  const route = new Function(...Object.keys(scope), `${bindingJs}\n${routeJs}\nreturn handleTextureMapMultiviewGenerate;`)(...Object.values(scope));
+  await route({ id: 'material' }, [{ id: 'front' }, { id: 'top' }, { id: 'custom' }], mode);
+  assert.deepEqual(calls, ['gpt-login'], `${mode} must use GPT authorization, never the remote route`);
+}
 assert.match(
   panel,
   /isMultiviewRequest && usesRemoteTextureGeneration[\s\S]*?handleRemoteSequentialMultiviewGenerate/,

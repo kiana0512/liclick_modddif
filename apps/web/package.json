@@ -27,6 +27,7 @@
     "test:content-aware-topology": "node scripts/test-content-aware-topology.mjs",
     "test:generation-auth-continuation": "node scripts/test-generation-auth-continuation.mjs",
     "test:generation-conflict-guard": "node scripts/test-generation-conflict-guard.mjs",
+    "test:generation-layer-deletion": "node scripts/test-generation-layer-deletion.mjs",
     "test:generation-preview-edge-decontamination": "node scripts/test-generation-preview-edge-decontamination.mjs",
     "test:global-auth-gate": "node scripts/test-global-auth-gate.mjs",
     "test:fixed-chinese-language": "node scripts/test-fixed-chinese-language.mjs",

@@ -63,7 +63,7 @@ export const translations = {
     deleteFolderHelp:
       'Projects in this folder will be moved back to All Projects. The project files will not be deleted.',
     folderName: 'Folder name',
-    folderPlaceholder: 'Client concepts',
+    folderPlaceholder: 'Folder 1',
     projectName: 'Project name',
     renameProject: 'Rename Project',
     deleteProject: 'Delete Project',
@@ -571,7 +571,7 @@ export const translations = {
     deleteFolder: '删除文件夹',
     deleteFolderHelp: '该文件夹内的项目会移回全部项目，不会删除工程文件。',
     folderName: '文件夹名称',
-    folderPlaceholder: '客户概念',
+    folderPlaceholder: '文件夹1',
     projectName: '项目名称',
     renameProject: '重命名项目',
     deleteProject: '删除项目',

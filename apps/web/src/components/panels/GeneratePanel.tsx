@@ -614,6 +614,7 @@ type GeneratePanelProps = {
 export type GeneratePanelTaskState = {
   running: boolean;
   snapshotPreparing: boolean;
+  layerInputsPreparing?: boolean;
 };
 
 export type LocalImageGenerationSettledResult =
@@ -637,7 +638,9 @@ export function GeneratePanel({
   const t = useT();
   const [tab, setTab] = useState<GenerateTab>('multiview');
   const [textureViewMode, setTextureViewMode] = useState<TextureViewMode>('multi');
-  const [singleViewProvider, setSingleViewProvider] = useState<SingleViewProvider>('gpt');
+  // Single/multiview share GPT-only session state. No setter or persisted
+  // provider is accepted; historical remote results remain readable.
+  const [singleViewProvider] = useState<SingleViewProvider>('gpt');
   const [texturePreviewMode, setTexturePreviewMode] = useState<TexturePreviewMode>('multi');
   useEffect(() => {
     if (!openLocalRepaintPanelRequestKey) return;
@@ -1007,8 +1010,12 @@ export function GeneratePanel({
   }, [onInteractionLocked, panelTaskRunning, pushToast, setGenerateNotice, snapshotPreparing]);
 
   useEffect(() => {
-    onTaskRunningChange?.({ running: panelTaskRunning, snapshotPreparing });
-  }, [onTaskRunningChange, panelTaskRunning, snapshotPreparing]);
+    onTaskRunningChange?.({
+      running: panelTaskRunning,
+      snapshotPreparing,
+      layerInputsPreparing: Boolean(localRepaintPreparation),
+    });
+  }, [onTaskRunningChange, panelTaskRunning, snapshotPreparing, localRepaintPreparation]);
 
   useEffect(
     () => () => {
@@ -4562,7 +4569,11 @@ export function GeneratePanel({
         name: project.name,
         thumbnail: project.thumbnail,
         objects,
-        layers,
+        // Re-read on every CAS attempt: a deletion during upload/retry must
+        // never be overwritten by the generation's earlier layer snapshot.
+        layers: useProjectStore.getState().currentProjectId === targetProjectId
+          ? useLayerStore.getState().layers
+          : layers,
         references,
         generations,
         captures,
@@ -4847,7 +4858,7 @@ export function GeneratePanel({
     const nextLayers = useLayerStore.getState().layers;
     setProjectLayers(nextLayers);
     try {
-      await saveCriticalProjectState({ layers: nextLayers });
+      await saveCriticalProjectState({});
     } catch (error) {
       console.error('[Liclick 3D Texture] Could not persist projected layer:', error);
       if (!options.automatic) {
@@ -5053,27 +5064,6 @@ export function GeneratePanel({
             />
           </div>
         )}
-        {isTextureMapTab && displayedTexturePreviewMode !== 'repaint' && (
-          <div
-            data-single-view-provider={singleViewProvider}
-            className="mb-2 rounded-md border border-white/10 bg-black/20 p-1.5"
-          >
-            <SegmentedControl<SingleViewProvider>
-              value={singleViewProvider}
-              options={[
-                { value: 'gpt', label: 'GPT2', disabled: workflowConfigurationLocked },
-                { value: 'remote', label: '远端', disabled: workflowConfigurationLocked },
-              ]}
-              onChange={(value) => {
-                if (workflowConfigurationLocked) {
-                  notifyWorkflowOperationLocked();
-                  return;
-                }
-                setSingleViewProvider(value);
-              }}
-            />
-          </div>
-        )}
         <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-md border border-white/10 bg-black/24">
           {displayedTexturePreviewMode !== 'multi' && (
             <div className="generate-preview-adaptive relative shrink-0 overflow-hidden bg-[#1b1b1b]">
@@ -5265,9 +5255,7 @@ export function GeneratePanel({
                 <span className="text-sm font-semibold text-white/88">
                   {isLocalRepaintTab
                     ? '补充提示词（可选）'
-                    : singleViewProvider === 'remote'
-                      ? '纹理提示词（可选）'
-                      : '纹理提示词'}
+                    : '纹理提示词（可选）'}
                 </span>
                 {isLocalRepaintTab ? (
                   <span className="text-[11px] font-medium text-white/46">
@@ -5293,7 +5281,7 @@ export function GeneratePanel({
               </div>
               <textarea
                 value={prompt}
-                aria-label={isLocalRepaintTab ? '补充提示词（可选）' : '纹理提示词'}
+                aria-label={isLocalRepaintTab ? '补充提示词（可选）' : '纹理提示词（可选）'}
                 data-task-preview-allowed="true"
                 maxLength={
                   isLocalRepaintTab || (isTextureMapTab && singleViewProvider === 'remote')

@@ -51,9 +51,10 @@ assert.match(editor, /showGenerationConflict\('进入拓扑工作区'\)/);
 for (const action of ['切换当前模型', '切换模型显隐', '删除模型', '复制模型', '排列模型']) {
   assert.ok(objectsPanel.includes(`onMutationLocked?.('${action}')`), `${action} must be guarded.`);
 }
-for (const action of ['删除图层', '合并图层', '编辑图层图片']) {
+for (const action of ['合并图层', '编辑图层图片']) {
   assert.ok(layersPanel.includes(`blockMutation('${action}')`), `${action} must be guarded.`);
 }
+assert.match(layersPanel, /blockMutation\('删除图层', deletionLocked\)/);
 for (const action of ['导入参考图', '切换参考图', '复制参考图', '删除参考图']) {
   assert.ok(referencePicker.includes(`blockMutation('${action}')`), `${action} must be guarded.`);
 }
@@ -67,7 +68,7 @@ assert.match(
 assert.doesNotMatch(generatePanel, /停止本次快照任务？|>终止快照</);
 assert.match(
   generatePanel,
-  /const result = await updateLatestProject\([\s\S]*?\.\.\.latest,[\s\S]*?objects,[\s\S]*?layers,[\s\S]*?references,[\s\S]*?generations,[\s\S]*?captures,[\s\S]*?settings: project\.settings,[\s\S]*?\},[\s\S]*?5,[\s\S]*?\);/,
+  /const result = await updateLatestProject\([\s\S]*?\.\.\.latest,[\s\S]*?objects,[\s\S]*?layers:[\s\S]*?references,[\s\S]*?generations,[\s\S]*?captures,[\s\S]*?settings: project\.settings,[\s\S]*?\},[\s\S]*?5,[\s\S]*?\);/,
   'Generation submission must merge texture-owned state into the latest server revision.',
 );
 assert.doesNotMatch(

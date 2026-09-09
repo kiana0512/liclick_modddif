@@ -17,6 +17,11 @@ const layersPanelSource = readFileSync(
   path.join(root, 'src/components/panels/LayersPanel.tsx'),
   'utf8',
 );
+const layerRowStyles = layersPanelSource.match(/'group relative flex h-\[58px\][\s\S]*?pendingDisplay &&[^\n]+/)?.[0];
+assert.ok(layerRowStyles);
+assert.doesNotMatch(layerRowStyles, /hover:/, 'Layer rows must not highlight on hover.');
+assert.match(layerRowStyles, /selected && 'bg-white\/\[0\.22\]'/);
+assert.match(layerRowStyles, /active && 'after:absolute/);
 const viewportCanvasInteractionSource = readFileSync(
   path.join(root, 'src/engine/viewport/ViewportCanvas.tsx'),
   'utf8',
