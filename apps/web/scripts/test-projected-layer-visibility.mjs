@@ -930,8 +930,8 @@ assert.doesNotMatch(
 );
 assert.match(
   viewportCanvasSource,
-  /const compileScene = new THREE\.Scene\(\);[\s\S]*?const compilePromise = gl\.compileAsync\(compileScene, camera\);[\s\S]*?overlayState\.compilePromise = compilePromise/,
-  'Local repaint must compile only its isolated overlay instead of capturing replaceable scene materials.',
+  /const compileScene = new THREE\.Scene\(\);[\s\S]*?const overlayCompile = gl\.compileAsync\(compileScene, camera\);[\s\S]*?consumptionCompile = gl\.compileAsync\(consumptionScene, camera\);[\s\S]*?overlayState\.compilePromise = compilePromise/,
+  'Local repaint must compile isolated overlay/selection programs, never replaceable scene materials.',
 );
 assert.match(
   viewportCanvasSource,

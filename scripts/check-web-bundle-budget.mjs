@@ -24,10 +24,10 @@ const budgets = [
     maxBytes: 850_000,
   },
 ];
-// The single-projection restore release measures 3,134,406 bytes in the cloud
-// build. Keep about 8 KiB of deterministic-build headroom; the tighter shell,
-// editor, bake and shared-pipeline budgets still guard every hot path independently.
-const maxTotalJavaScriptBytes = 3_142_400;
+// Repaint selection consumption adds ~4.9 KiB of shader/history code: the cloud
+// candidate measures 3,144,697 bytes (previous 3,139,864). Grant only this feature's
+// measured growth; retain the existing shell/editor/bake/shared hot-path limits.
+const maxTotalJavaScriptBytes = 3_147_500;
 
 let entries;
 try {

@@ -1,0 +1,57 @@
+<!doctype html><meta charset="utf-8"><link rel="icon" href="data:,"><pre id="result">Running</pre>
+<script type="module">
+import * as THREE from 'three';
+import {createProjectedLayerMaterial} from '/src/engine/projection/ProjectedLayerMaterial.ts';
+import {createRuntimeProjectionDepth} from '/src/engine/projection/createRuntimeProjectionDepth.ts';
+import {serializeCamera} from '/src/engine/projection/ProjectionCamera.ts';
+import {consumeSelectionMask,diffSelectionPixels,applySelectionPixelPatches,getSelectionConsumptionMaterial} from '/src/engine/localRepaint/consumeSelectionMask.ts';
+const assert=(value,message)=>{if(!value)throw Error(message)};
+try {
+ const renderer=new THREE.WebGLRenderer();renderer.setSize(128,128);
+ const camera=new THREE.OrthographicCamera(-1,1,1,-1,.1,20);camera.position.z=5;camera.updateMatrixWorld(true);
+ const serialized=serializeCamera(camera,1,new THREE.Vector3());
+ const group=new THREE.Group();
+ // Front and occluded back plane have separate UV islands; both sides start selected.
+ const makePlane=(z,left)=>{const g=new THREE.PlaneGeometry(1.8,1.8);const uv=g.getAttribute('uv');for(let i=0;i<uv.count;i++)uv.setX(i,uv.getX(i)*.45+left);const m=new THREE.Mesh(g,new THREE.MeshBasicMaterial());m.position.z=z;group.add(m);return m};
+ makePlane(0,.025);makePlane(-1,.525);group.updateMatrixWorld(true);
+ const depth=await createRuntimeProjectionDepth({renderer,group,camera:serialized,captureObjectMatrixWorld:group.matrixWorld.toArray(),width:256,height:256,includeNormal:false});
+ const canvas=document.createElement('canvas');canvas.width=canvas.height=128;
+ const ctx=canvas.getContext('2d');ctx.fillStyle='white';ctx.fillRect(0,0,128,128);
+ // Transparent inner aperture represents the original eroded model cutout.
+ ctx.clearRect(48,48,32,32);const imageUrl=canvas.toDataURL();
+ ctx.fillRect(0,0,128,128);const maskUrl=canvas.toDataURL();
+ const source=await createProjectedLayerMaterial({layerId:'test',imageUrl,maskUrl,maskSpace:'projection',depthUrl:depth.depthUrl,depthIsLinearView:true,camera:serialized,objectId:'test',objectMatrixWorld:group.matrixWorld.toArray(),currentObjectMatrixWorld:group.matrixWorld.toArray(),opacity:1,strength:1,visible:true,depthTest:true,useMask:true,useDepthCheck:true,ignoreSourceAlpha:false,transparentProjectionOnly:true,projectionVisibilityPolicy:'surface-locked-v1',compositeRole:'overlay',minimumProjectionFacing:.1,previewLighting:{enabled:false,exposure:1,ambientIntensity:1,keyLightIntensity:0,keyLightDirection:[0,0,1]}});
+ const originalMask=source.uniforms.maskMap.value;
+ const size=Number(new URLSearchParams(location.search).get('size')||128);
+ const target=new THREE.WebGLRenderTarget(size,size,{depthBuffer:false});
+ const warmScene=new THREE.Scene();warmScene.add(new THREE.Mesh(group.children[0].geometry,getSelectionConsumptionMaterial(source)));
+ renderer.setRenderTarget(target);await renderer.compileAsync(warmScene,camera);renderer.setRenderTarget(null);
+ renderer.setRenderTarget(target);renderer.setClearColor('white',1);renderer.clear();renderer.setRenderTarget(null);
+ const read=()=>{const p=new Uint8Array(size*size*4);renderer.readRenderTargetPixels(target,0,0,size,size,p);return p};
+ const before=read();
+ // Asymmetric top half stroke also catches flipped-Y regressions.
+ ctx.clearRect(0,0,128,128);ctx.fillRect(0,0,128,64);
+ const start=performance.now();
+ consumeSelectionMask({renderer,camera,meshes:group.children,material:source,stroke:canvas,target,inverted:false});
+ const after=read();const firstMs=performance.now()-start;
+ const pixel=(p,x,y,c=0)=>p[(Math.floor(y*size/128)*size+Math.floor(x*size/128))*4+c];
+ assert(pixel(after,15,100)<5,'accepted upper front surface should clear');
+ assert(pixel(after,15,20)===255,'unpainted lower surface must stay selected');
+ assert(pixel(after,32,70)===255,'source aperture must stay untouched');
+ assert(pixel(after,90,100)===255,'occluded back plane must stay selected');
+ assert(pixel(after,15,100,1)===255,'reverse-side channel must stay selected');
+ assert(source.uniforms.maskMap.value===originalMask,'frozen authorization must remain unchanged');
+ const patches=diffSelectionPixels(before,after,size);const restored=after.slice();applySelectionPixelPatches(restored,patches,'before');
+ assert(restored.every((v,i)=>v===before[i]),'undo exact');applySelectionPixelPatches(restored,patches,'after');assert(restored.every((v,i)=>v===after[i]),'redo exact');
+ // Inverted masks store the complement. Only front channel increases.
+ renderer.setRenderTarget(target);renderer.setClearColor('black',0);renderer.clear();renderer.setRenderTarget(null);
+ const second=performance.now();consumeSelectionMask({renderer,camera,meshes:group.children,material:source,stroke:canvas,target,inverted:true});const inverse=read();
+ assert(pixel(inverse,15,100)>250 && pixel(inverse,15,100,1)===0,'inverted selection must clear same side');
+ assert(pixel(inverse,90,100)===0,'inverted hidden side untouched');
+ const invertedMs=performance.now()-second;
+ ctx.clearRect(0,0,128,128);consumeSelectionMask({renderer,camera,meshes:group.children,material:source,stroke:canvas,target,inverted:true});
+ assert(read().every((v,i)=>v===inverse[i]),'empty stroke must be a no-op');
+ document.querySelector('#result').textContent=JSON.stringify({ok:true,firstMs,invertedMs,patchBytes:patches.reduce((n,p)=>n+p.before.length+p.after.length,0)});
+ source.dispose();renderer.dispose();
+} catch(error){document.querySelector('#result').textContent=JSON.stringify({error:error.stack});}
+</script>

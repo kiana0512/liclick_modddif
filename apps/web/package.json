@@ -102,6 +102,7 @@
     "test:display-preview-queue": "node scripts/test-display-preview-queue.mjs",
     "test:display-image-readback": "node scripts/test-display-image-readback.mjs",
     "test:live-projected-texture-registry": "node --test src/engine/projection/__tests__/liveProjectedCanvasTextureRegistry.test.mjs",
+    "test:repaint-selection-consumption": "node scripts/test-repaint-selection-consumption.mjs",
     "test:regression": "corepack pnpm --filter @liclick/contracts build && node scripts/run-regression-suite.mjs",
     "smoke:sites-auth": "node scripts/smoke-sites-auth.mjs",
     "lint": "eslint .",

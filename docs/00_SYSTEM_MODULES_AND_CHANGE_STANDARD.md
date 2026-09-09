@@ -1,16 +1,18 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
-> 文档版本：`2.19.3`
+> 文档版本：`2.19.4`
 >
 > 生效日期：`2026-09-09`
 >
-> 代码盘点基线：`c94ae57 + 生图期间草稿与参考图预览`
+> 代码盘点基线：`b3431cb + 重绘笔画同步消耗工作蒙版`
 >
 > 基线仓库：`E:\Liclick 3D Texture Modernization`
 >
 > 审计口径：`0a2519d + 607e82f + 2568e40`，不包含错误文档提交 `2bde8c6/e03bab2/d1c5f78`
 
 ## 1. 文档地位与强制边界
+
+变更卡 `CHG-20260909-REPAINT-SELECTION-CONSUMPTION`：主模块 M08，协作 M06/M12，新增 `ALG-LR-014` v1.0.0。仅左键应用重绘记录本笔实际裁过 falloff 的脏区，pointer-up 复用正式 literal repaint 材质的 source alpha、冻结相机 depth/surface-lock、朝向和 inward-crossfade alpha，将覆盖投到工作选区 UV；普通选区乘以 (1-coverage)，反选选区更新其补集，正反面 R/G 独立，镂空/遮挡/原模型裁边/未涂区域不清除。绝不修改生成时冻结的 allowedMask，也不清空历史贴图。右键/橡皮擦不补回选区；一笔重绘与对应选区差异共用原 runtime undo/redo。GPU pass 在原 overlay 准备阶段预编译；绘制中只追加本笔脏区，不编码 PNG；松手时 GPU 更新及原始字节读回，历史仅保存变化行区间（不保存两张整图），下一次生成仍走原 canonical UV mask 捕获。工作蒙版仍是会话态，不新增持久化字段；作者蒙版、Layer 保存/UV合成/CPU/Worker/export 使用原路径，Project Command 幂等性/Revision CAS/ownership/verified assets 和输出分辨率不变，无数据迁移。异常恢复消费前选区，空覆盖不消费。回退移除本模块及调用即可；旧工程无重算要求。测试包含稀疏历史/空操作/两面分离/资源释放及 2048² 真 WebGL 内孔、遮挡、上下坐标、反选、精确撤销重做；用户复杂模型的实际交互仍需 A100 验收。 发布包体：候选全参数构建 3,144,697 bytes，对比上一功能基线 3,139,864，新增 GPU/差异历史约 4.9 KiB；总 JS 门禁按本次功能增量调整到 3,147,500，shell/editor/bake/shared 各热路径硬门禁不变，未删除 QA 或降低输出分辨率。93 项完整 Web 回归通过，lint 无错误（15 项既有警告）。
 
 CI 检查修正（2026-09-09，M15）：`test-generation-draft-preview.mjs` 正则的两个字面空格改用 ` {2}`，保持匹配范围和断言不变，消除 ESLint `no-regex-spaces` 错误。仅测试脚本变化，业务/GPU/CPU/Worker/Schema/资产及运行时版本不变，无迁移；回退此行会重新引入 lint 失败。
 
