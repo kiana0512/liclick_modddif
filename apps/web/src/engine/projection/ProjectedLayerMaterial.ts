@@ -356,6 +356,9 @@ function createWhiteMembranePreviewMaterial(_previewLightingInput?: ProjectionPr
 // UV empty coverage stays diagnostic. Live and resident authored fragments
 // share geometric depth; see projectionRasterDepth.ts. Keep these comments
 // outside GLSL instead of shipping duplicated prose in each generated shader.
+// overlayProjectionAlpha matches UV-bake composition: coverage already contains
+// source mask, capture angle, depth/normal visibility and image-edge fade.
+// Applying another gate would crop strong frontal data around the nose.
 const fragmentShader = `
   ${PROJECTED_RASTER_DEPTH_GLSL}
   uniform sampler2D projectedMap;
@@ -818,9 +821,6 @@ const fragmentShader = `
     float softCoverageGate = smoothstep(0.0, ${COVERAGE_FEATHER_END.toFixed(2)}, coverage);
     float projectionAlpha = inside * backfaceAlpha * alphaCoverage * coverage * softCoverageGate;
     float overlayQualityFade = smoothstep(0.0, 0.15, max(quality, coverage * 0.25));
-    // Match UV-bake overlay composition exactly. Coverage already contains the
-    // source mask, capture angle, depth/normal visibility and image-edge fade;
-    // applying another gate here cropped strong frontal data around the nose.
     float overlayProjectionAlpha = inside * backfaceAlpha * alphaCoverage * coverage * mix(0.75, 1.0, overlayQualityFade);
     projectionAlpha = mix(projectionAlpha, overlayProjectionAlpha, projectedBlendModeOverlay);
     // A repair underlay is a fallback texel, not a translucent decal. Hardening

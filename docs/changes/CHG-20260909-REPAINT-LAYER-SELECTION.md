@@ -28,4 +28,6 @@ GPU 只改变资源准备/显示交接触发时机；shader、source alpha、深
 
 ## 回滚
 
+发布准备：完整发布 metadata 构建比原总包体门禁多 66 bytes。将一段 overlayProjectionAlpha 说明从 GLSL 字符串搬到 TS 注释，避免重复打入生成 shader；不改变任何 GLSL 可执行语句、图像公式或门禁。完整参数需重新构建验证后部署。
+
 恢复两个 viewport 文件的旧触发条件即可；不需要资产回写、工程迁移或删除数据。会重新引入普通选中触发 source/材质准备的风险。
