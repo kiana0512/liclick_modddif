@@ -829,12 +829,14 @@ async function loadLayerTextureFromCpuImageData(input: {
     return texture;
   }
   const imageData = await loadImageData(input.url, input.resolution, input.label);
+  await waitForBrowserPaint();
   const canvas = document.createElement('canvas');
   canvas.width = imageData.width;
   canvas.height = imageData.height;
   const context = canvas.getContext('2d', { willReadFrequently: true });
   if (!context) throw new Error(`Could not create texture canvas for ${input.label}.`);
   context.putImageData(imageData, 0, 0);
+  await waitForBrowserPaint();
   const bitmap =
     typeof createImageBitmap === 'function' ? await createImageBitmap(canvas) : undefined;
   return prepareTexture(

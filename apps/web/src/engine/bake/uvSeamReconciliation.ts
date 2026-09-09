@@ -66,39 +66,59 @@ function normalsAreContinuous(a: UvSeamEdgeRecord, b: UvSeamEdgeRecord) {
 }
 
 export function collectUvSeamPairs(root: THREE.Object3D, includeDiscontinuous = false) {
+  const steps = collectUvSeamPairSteps(root, includeDiscontinuous);
+  let step = steps.next();
+  while (!step.done) step = steps.next();
+  return step.value;
+}
+
+function* collectUvSeamPairSteps(root: THREE.Object3D, includeDiscontinuous = false, reuseEndpoints = false) {
   const groupedEdges = new Map<string, UvSeamEdgeRecord[]>();
   root.updateMatrixWorld(true);
 
-  root.traverse((object) => {
-    if (!(object instanceof THREE.Mesh)) return;
+  const meshes: THREE.Mesh[] = [];
+  root.traverse((object) => { if (object instanceof THREE.Mesh) meshes.push(object); });
+  for (const object of meshes) {
     const geometry = object.geometry;
     const position = geometry.getAttribute('position');
     const uv = geometry.getAttribute('uv');
-    if (!position || !uv) return;
+    if (!position || !uv) continue;
     if (!geometry.getAttribute('normal')) geometry.computeVertexNormals();
     const normal = geometry.getAttribute('normal');
-    if (!normal) return;
+    if (!normal) continue;
     const index = geometry.getIndex();
     const triangleCount = index ? index.count / 3 : position.count / 3;
     const normalMatrix = new THREE.Matrix3().getNormalMatrix(object.matrixWorld);
 
+    // Cache only within this pass: no stale geometry/transform state can survive a bake.
+    // Synchronous public callers retain their original endpoint object identities.
+    const endpointsByIndex: Array<UvSeamEndpoint | undefined> = [];
+    const endpointKeys = new WeakMap<UvSeamEndpoint, string>();
     for (let triangle = 0; triangle < triangleCount; triangle += 1) {
+      if (triangle % 128 === 0) yield;
       const indices = [0, 1, 2].map((offset) =>
         index ? index.getX(triangle * 3 + offset) : triangle * 3 + offset,
       );
-      const endpoints = indices.map((vertexIndex): UvSeamEndpoint => ({
-        position: new THREE.Vector3(
-          position.getX(vertexIndex),
-          position.getY(vertexIndex),
-          position.getZ(vertexIndex),
-        ).applyMatrix4(object.matrixWorld),
-        normal: new THREE.Vector3(
-          normal.getX(vertexIndex),
-          normal.getY(vertexIndex),
-          normal.getZ(vertexIndex),
-        ).applyMatrix3(normalMatrix).normalize(),
-        uv: new THREE.Vector2(uv.getX(vertexIndex), uv.getY(vertexIndex)),
-      }));
+      const endpoints = indices.map((vertexIndex): UvSeamEndpoint => {
+        const cached = reuseEndpoints && index ? endpointsByIndex[vertexIndex] : undefined;
+        if (cached) return cached;
+        const endpoint: UvSeamEndpoint = {
+          position: new THREE.Vector3(
+            position.getX(vertexIndex),
+            position.getY(vertexIndex),
+            position.getZ(vertexIndex),
+          ).applyMatrix4(object.matrixWorld),
+          normal: new THREE.Vector3(
+            normal.getX(vertexIndex),
+            normal.getY(vertexIndex),
+            normal.getZ(vertexIndex),
+          ).applyMatrix3(normalMatrix).normalize(),
+          uv: new THREE.Vector2(uv.getX(vertexIndex), uv.getY(vertexIndex)),
+        };
+        if (reuseEndpoints && index) endpointsByIndex[vertexIndex] = endpoint;
+        if (reuseEndpoints) endpointKeys.set(endpoint, positionKey(endpoint.position));
+        return endpoint;
+      });
 
       const edgeIndices = [[0, 1, 2], [1, 2, 0], [2, 0, 1]] as const;
       for (const [start, end, inside] of edgeIndices) {
@@ -107,21 +127,27 @@ export function collectUvSeamPairs(root: THREE.Object3D, includeDiscontinuous = 
           b: endpoints[end],
           insideUv: endpoints[inside].uv,
         };
-        const key = edgeKey(record.a.position, record.b.position);
+        const aKey = reuseEndpoints ? endpointKeys.get(record.a)! : '';
+        const bKey = reuseEndpoints ? endpointKeys.get(record.b)! : '';
+        const key = reuseEndpoints
+          ? (aKey < bKey ? `${aKey}|${bKey}` : `${bKey}|${aKey}`)
+          : edgeKey(record.a.position, record.b.position);
         const records = groupedEdges.get(key);
         if (records) records.push(record);
         else groupedEdges.set(key, [record]);
       }
     }
-  });
+  }
 
   const pairs: Array<[UvSeamEdgeRecord, UvSeamEdgeRecord]> = [];
-  groupedEdges.forEach((records) => {
-    if (records.length < 2) return;
+  let groupIndex = 0;
+  for (const records of groupedEdges.values()) {
+    if (groupIndex++ % 512 === 0) yield;
+    if (records.length < 2) continue;
     const uniqueByUv = new Map<string, UvSeamEdgeRecord>();
     records.forEach((record) => uniqueByUv.set(uvEdgeKey(record), record));
     const unique = [...uniqueByUv.values()];
-    if (unique.length < 2) return;
+    if (unique.length < 2) continue;
     const reference = unique[0];
     for (let index = 1; index < unique.length; index += 1) {
       const candidate = orientedLike(reference, unique[index]);
@@ -129,7 +155,7 @@ export function collectUvSeamPairs(root: THREE.Object3D, includeDiscontinuous = 
         pairs.push([reference, candidate]);
       }
     }
-  });
+  }
   return pairs;
 }
 
@@ -139,7 +165,31 @@ function pixelIndex(point: PixelPoint, width: number, height: number) {
   return y * width + x;
 }
 
-export function reconcileUvSeams(
+export function reconcileUvSeams(...args: Parameters<typeof reconcileUvSeamSteps>) {
+  const steps = reconcileUvSeamSteps(...args);
+  let step = steps.next();
+  while (!step.done) step = steps.next();
+  return step.value;
+}
+
+/** Retains donor order and precision while allowing input/paint between CPU slices. */
+export async function reconcileUvSeamsCooperatively(
+  yieldToUi: () => Promise<void>, ...args: Parameters<typeof reconcileUvSeamSteps>
+) {
+  const steps = reconcileUvSeamSteps(...args);
+  let startedAt = performance.now();
+  let step = steps.next();
+  while (!step.done) {
+    if (performance.now() - startedAt >= 8) {
+      await yieldToUi();
+      startedAt = performance.now();
+    }
+    step = steps.next();
+  }
+  return step.value;
+}
+
+function* reconcileUvSeamSteps(
   imageData: ImageData,
   root: THREE.Object3D,
   coverage: Uint8Array,
@@ -147,7 +197,7 @@ export function reconcileUvSeams(
 ) {
   const { width, height, data } = imageData;
   const source = new Uint8ClampedArray(data);
-  const seamPairs = collectUvSeamPairs(root, Boolean(options.repairMissingCoverage));
+  const seamPairs = yield* collectUvSeamPairSteps(root, Boolean(options.repairMissingCoverage), true);
   const bandPixels = Math.max(
     2,
     Math.min(32, options.bandPixels ?? Math.round(Math.max(width, height) / 1024)),
@@ -172,6 +222,7 @@ export function reconcileUvSeams(
     );
 
     for (let sampleIndex = 0; sampleIndex < samples; sampleIndex += 1) {
+      if (sampleIndex % 128 === 0) yield;
       const t = (sampleIndex + 0.5) / samples;
       const firstEdge = {
         x: firstStart.x + (firstEnd.x - firstStart.x) * t,

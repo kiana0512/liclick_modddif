@@ -15,6 +15,9 @@
 变更卡 `CHG-20260909-REPAINT-DEFAULT-SEAM`：主模块 M08/M04，`ALG-GEN-005` 请求策略 `qwen-to-klein-default-seam-v9`。局部输入框保留空草稿，不显示/回填默认内容；发起任务时 trim，空白统一按“修补接缝”发送 Qwen，非空仅采用用户要求。服务端对旧客户端空请求同样兜底；移除空输入 diagnosis/JSON 分支与旧诊断构造器，直接走现有四图英文提示词转换，非空删除/无文字等约束不变。缓存指纹升级并区分 default-seam/user-request，旧自动诊断缓存不能命中；历史记录不改写。取消、请求快照及生图期间草稿编辑保持。GPU/CPU/Worker/shader、蒙版/投影/UV/export、输出分辨率、Schema/CAS/ownership/verified assets 不变，无迁移；回退恢复旧策略和诊断分支即可。测试覆盖空串/空格换行/全角空格、用户覆盖、单次 Qwen 请求、无诊断 JSON、四图顺序、空响应/截断/过滤/HTTP 错误和缓存版本。
 
 变更卡 `CHG-20260909-REPAINT-SELECTION-CONSUMPTION`：主模块 M08，协作 M06/M12，新增 `ALG-LR-014` v1.0.0。仅左键应用重绘记录本笔实际裁过 falloff 的脏区，pointer-up 复用正式 literal repaint 材质的 source alpha、冻结相机 depth/surface-lock、朝向和 inward-crossfade alpha，将覆盖投到工作选区 UV；普通选区乘以 (1-coverage)，反选选区更新其补集，正反面 R/G 独立，镂空/遮挡/原模型裁边/未涂区域不清除。绝不修改生成时冻结的 allowedMask，也不清空历史贴图。右键/橡皮擦不补回选区；一笔重绘与对应选区差异共用原 runtime undo/redo。GPU pass 在原 overlay 准备阶段预编译；绘制中只追加本笔脏区，不编码 PNG；松手时 GPU 更新及原始字节读回，历史仅保存变化行区间（不保存两张整图），下一次生成仍走原 canonical UV mask 捕获。工作蒙版仍是会话态，不新增持久化字段；作者蒙版、Layer 保存/UV合成/CPU/Worker/export 使用原路径，Project Command 幂等性/Revision CAS/ownership/verified assets 和输出分辨率不变，无数据迁移。异常恢复消费前选区，空覆盖不消费。回退移除本模块及调用即可；旧工程无重算要求。测试包含稀疏历史/空操作/两面分离/资源释放及 2048² 真 WebGL 内孔、遮挡、上下坐标、反选、精确撤销重做；用户复杂模型的实际交互仍需 A100 验收。 发布包体：候选全参数构建 3,144,697 bytes，对比上一功能基线 3,139,864，新增 GPU/差异历史约 4.9 KiB；总 JS 门禁按本次功能增量调整到 3,147,500，shell/editor/bake/shared 各热路径硬门禁不变，未删除 QA 或降低输出分辨率。93 项完整 Web 回归通过，lint 无错误（15 项既有警告）。
+`CHG-20260909-UV-SOURCE-PRESENTATION`：M07，PERF-UV-SOURCE-PREPARE-001 v1.0.0 / ALG-UV-005 v2.0.2。静态图片等待 decode 与绘制，原 Canvas 转纹理前后让帧，透明清理按约 8ms CPU 预算等待绘制；保留 live 快照、fallback、缓存、完整尺寸与全部 RGBA/coverage 公式。真实原工程首轮面板最大帧 83.4→33.5ms，仍有 61.2ms LoAF，不宣称零卡顿或速度已达标。无 shader、Worker、Schema、Command/CAS 或资产语义改变，无迁移。见 [变更卡](changes/CHG-20260909-UV-SOURCE-PRESENTATION.md)。
+
+`CHG-20260909-UV-GUTTER-COOPERATIVE`：UI-09/M07，ALG-UV-005 v2.0.1（调度/实现 Patch，像素语义保持）。接缝、拓扑、补洞、gutter 在约 8ms CPU 后让出绘制；单次顶点复用与邻点索引读取减少重复开销。冻结旧核 1140 组及浏览器拓扑 80 组对照通过，原工程分段核同输入逐字节零差异。S4 最大帧 1701.3→83.4ms、掉帧 19%→3%，但 bake 阶段 23.2→25.5s，缩短总耗时尚未达标；不同轮次视口/缓存有差异，不宣称严格收益比例。Schema、UV merge version、Command/CAS/ownership/verified assets 不变，无迁移。回退恢复同步入口、旧扫描和接缝构建。详见 [变更卡](changes/CHG-20260909-UV-GUTTER-COOPERATIVE.md)。
 
 CI 检查修正（2026-09-09，M15）：`test-generation-draft-preview.mjs` 正则的两个字面空格改用 ` {2}`，保持匹配范围和断言不变，消除 ESLint `no-regex-spaces` 错误。仅测试脚本变化，业务/GPU/CPU/Worker/Schema/资产及运行时版本不变，无迁移；回退此行会重新引入 lint 失败。
 
@@ -493,7 +496,7 @@ UI-09 剪刀
 | `ALG-UV-002` Runtime 可见性补获 | `2.0.0` | stale/missing depth 按原 capture camera 重新捕获，完整捕获上限 2048，不改变最终 UV 分辨率 |
 | `ALG-UV-003` Top-3 质量合成 | `2.0.0` | 与第 6 节常量一致；输出 authored color、coverage confidence、rendered-color mask |
 | `ALG-UV-004` 有序 Overlay | `4.0.0` | 仅用户显式 overlay 使用 feathered=`coverage×(0.75+0.25×qualityFade)`；局部重绘 literal=`coverage`。普通单/多视图均先进入 Top-3，不再拥有 priority overlay；实时与 GPU UV bake 同义 |
-| `ALG-UV-005` 拓扑约束后处理 | `2.0.0` | gutter/gap=`clamp(ceil(res/512),2,8)`；hole=`clamp(ceil(res/2048),1,3)`；seam=`clamp(ceil(res/1024),2,4)`，不得跨无关 island |
+| `ALG-UV-005` 拓扑约束后处理 | `2.0.2` | gutter/gap=`clamp(ceil(res/512),2,8)`；hole=`clamp(ceil(res/2048),1,3)`；seam=`clamp(ceil(res/1024),2,4)`，不得跨无关 island |
 | `ALG-UV-006` Under 合成 | `2.0.0` | 投影在前、content-aware 在下；straight alpha：`Aout=Af+Au(1-Af)` |
 | `ALG-UV-007` PBR 预览光照固化 | `4.0.0` | 依据 UV 法线、环境预设、曝光、环境强度、主光强度/方位计算 deterministic preview light；rendered-color 像素权重 1 时保持原色 |
 | `ALG-UV-008` Straight-RGBA 发布 | `2.0.0` | RGB 不预乘；透明 texel 的 padding RGB 可保留；PNG 与 Layer 在资产就绪后原子发布 |

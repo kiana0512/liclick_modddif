@@ -1,6 +1,7 @@
 import { getProjectApiBase } from '@/platform/projectApiBase';
 import { urlToBlob } from '@/services/workspaceApiClient';
 import { useProjectStore } from '@/stores/projectStore';
+import { waitForBrowserPaint } from '@/utils/browserScheduling';
 import {
   getLiveProjectedTextureSourceState,
   isLiveProjectedCanvasUrl,
@@ -165,12 +166,17 @@ export async function loadImageData(
             ),
           );
       });
+      // onload guarantees availability, not completed decoding. Let the
+      // browser finish decoding before Canvas would synchronously demand it.
+      // Some otherwise drawable sources reject decode(), so retain that path.
+      if (typeof image.decode === 'function') await image.decode().catch(() => undefined);
     } finally {
       if (fetchedObjectUrl) URL.revokeObjectURL(fetchedObjectUrl);
     }
     source = image;
     sourceWidth = image.naturalWidth || image.width;
     sourceHeight = image.naturalHeight || image.height;
+    await waitForBrowserPaint();
   }
   const scale = Math.min(1, maxDimension / Math.max(sourceWidth, sourceHeight));
   const canvas = document.createElement('canvas');

@@ -2,12 +2,12 @@ import type * as THREE from 'three';
 import { createBakeReport } from './bakeReport';
 import {
   dilateImageData,
-  dilateUvCoverageWithinTopology,
-  fillEnclosedUvCoverageGaps,
-  fillEnclosedUvCoverageGapsWithinTopology,
+  rasterizeUvTopologyMaskCooperatively,
+  dilateImageDataCooperatively,
+  fillEnclosedUvCoverageGapsCooperatively,
   getUvDilationPixels,
-  padUvIslandGutters,
-  padUvIslandGuttersWithTopology,
+  padUvIslandGuttersCooperatively,
+  padUvIslandGuttersWithTopologyCooperatively,
 } from './dilation';
 import {
   bakeProjectedLayerRastersWithGpu,
@@ -21,7 +21,7 @@ import { loadImageData } from './imageSampler';
 import { getVisibleProjectedLayerStack } from './layerStackCache';
 import { getDebugGpuProjectedImageUvFlipY, getDebugUvBakeMethod } from './uvBakeDebugControls';
 import { rasterizeProjectedLayerToUv } from './uvRasterizer';
-import { reconcileUvSeams } from './uvSeamReconciliation';
+import { reconcileUvSeamsCooperatively } from './uvSeamReconciliation';
 import { createRuntimeProjectionDepth } from '@/engine/projection/createRuntimeProjectionDepth';
 import { buildContentAwareSurfaceTopology } from '@/engine/contentAware/buildSurfaceTopology';
 import type {
@@ -99,6 +99,16 @@ function markUvBakePerformancePhase(phase: string) {
   }
 }
 
+async function dilateUvCoverageWithinTopology(
+  imageData: ImageData, coverage: Uint8Array, root: THREE.Object3D, iterations: number,
+) {
+  if (iterations <= 0) return 0;
+  const topology = await rasterizeUvTopologyMaskCooperatively(
+    waitForBrowserPaint, root, imageData.width, imageData.height, 'conservative',
+  );
+  return dilateImageDataCooperatively(waitForBrowserPaint, imageData, coverage, iterations, topology, true);
+}
+
 async function fillUvInteriorGapsWithIslandOwnership(
   imageData: ImageData,
   coverage: Uint8Array,
@@ -122,7 +132,8 @@ async function fillUvInteriorGapsWithIslandOwnership(
         yieldIntervalMs: 8,
       },
     );
-    return fillEnclosedUvCoverageGaps(
+    return await fillEnclosedUvCoverageGapsCooperatively(
+      waitForBrowserPaint,
       imageData,
       coverage,
       topology.coreMask,
@@ -134,11 +145,11 @@ async function fillUvInteriorGapsWithIslandOwnership(
       '[Liclick 3D Texture] Island-aware UV repair topology failed; using conservative fallback.',
       error,
     );
-    return fillEnclosedUvCoverageGapsWithinTopology(
-      imageData,
-      coverage,
-      root,
-      iterations,
+    const topology = await rasterizeUvTopologyMaskCooperatively(
+      waitForBrowserPaint, root, imageData.width, imageData.height, 'conservative',
+    );
+    return fillEnclosedUvCoverageGapsCooperatively(
+      waitForBrowserPaint, imageData, coverage, topology, iterations,
     );
   }
 }
@@ -280,9 +291,12 @@ function yieldToBakeUi() {
 }
 
 async function fillTransparentTexelsForViewport(imageData: ImageData) {
+  let sliceStartedAt = performance.now();
   for (let offset = 0; offset < imageData.data.length; offset += 4) {
-    if (offset > 0 && offset % (BAKE_PIXELS_PER_YIELD * 4) === 0) {
-      await yieldToBakeUi();
+    if (offset > 0 && offset % (BAKE_PIXELS_PER_YIELD * 4) === 0 &&
+        performance.now() - sliceStartedAt >= 8) {
+      await waitForBrowserPaint();
+      sliceStartedAt = performance.now();
     }
     if (imageData.data[offset + 3] !== 0) continue;
     imageData.data[offset] = UNPROJECTED_TEXTURE_FILL[0];
@@ -293,9 +307,12 @@ async function fillTransparentTexelsForViewport(imageData: ImageData) {
 }
 
 async function clearWeakTransparentTexels(imageData: ImageData, coverage?: Uint8Array) {
+  let sliceStartedAt = performance.now();
   for (let offset = 0; offset < imageData.data.length; offset += 4) {
-    if (offset > 0 && offset % (BAKE_PIXELS_PER_YIELD * 4) === 0) {
-      await yieldToBakeUi();
+    if (offset > 0 && offset % (BAKE_PIXELS_PER_YIELD * 4) === 0 &&
+        performance.now() - sliceStartedAt >= 8) {
+      await waitForBrowserPaint();
+      sliceStartedAt = performance.now();
     }
     if (imageData.data[offset + 3] > MIN_TRANSPARENT_OUTPUT_ALPHA) continue;
     const pixelIndex = offset / 4;
@@ -431,7 +448,7 @@ export async function bakeProjectedLayerToTexture(
   if (!rasterContext) throw new Error('Could not read UV bake canvas.');
   const rasterImage = rasterContext.getImageData(0, 0, input.resolution, input.resolution);
   await sharpenCoveredTexels(rasterImage, rasterized.coverage);
-  const seamResult = reconcileUvSeams(rasterImage, importedModel.group, rasterized.coverage);
+  const seamResult = await reconcileUvSeamsCooperatively(waitForBrowserPaint, rasterImage, importedModel.group, rasterized.coverage);
   if (input.enableDilation) {
     dilateImageData(rasterImage, rasterized.coverage, dilationPixels);
   }
@@ -1385,7 +1402,8 @@ export async function bakeVisibleProjectedLayersToTexture(
         const seamStartedAt = performance.now();
         markUvBakePerformancePhase('seam-reconcile');
         if (input.outputAlpha !== 'transparent' || input.repairMissingUvSeams) {
-          const seamResult = reconcileUvSeams(
+          const seamResult = await reconcileUvSeamsCooperatively(
+            waitForBrowserPaint,
             composite,
             importedModel.group,
             qualityCoverage,
@@ -1404,7 +1422,7 @@ export async function bakeVisibleProjectedLayersToTexture(
         const coverageRepairStartedAt = performance.now();
         markUvBakePerformancePhase('coverage-repair');
         if ((input.uvCoverageGapPixels ?? 0) > 0) {
-          const filledPixels = dilateUvCoverageWithinTopology(
+          const filledPixels = await dilateUvCoverageWithinTopology(
             composite,
             qualityCoverage,
             importedModel.group,
@@ -1434,19 +1452,21 @@ export async function bakeVisibleProjectedLayersToTexture(
         if ((input.uvIslandGutterPixels ?? 0) > 0) {
           const topology = await getUvGutterTopology();
           const paddedPixels = topology
-            ? padUvIslandGuttersWithTopology(
+            ? await padUvIslandGuttersWithTopologyCooperatively(
                 composite,
                 qualityCoverage,
                 topology.mask,
                 input.uvIslandGutterPixels ?? 0,
                 input.outputAlpha === 'transparent',
+                waitForBrowserPaint,
               )
-            : padUvIslandGutters(
+            : await padUvIslandGuttersCooperatively(
                 composite,
                 qualityCoverage,
                 importedModel.group,
                 input.uvIslandGutterPixels ?? 0,
                 input.outputAlpha === 'transparent',
+                waitForBrowserPaint,
               );
           if (paddedPixels > 0) {
             warnings.push(`UV-island gutter padding added ${paddedPixels} filter-only texels.`);
@@ -1598,7 +1618,8 @@ export async function bakeVisibleProjectedLayersToTexture(
         }
         if (needsCpuSharpen) await sharpenCoveredTexels(gpuImage, gpuBake.coverage);
         if (!wantsTransparentOutput || input.repairMissingUvSeams) {
-          const seamResult = reconcileUvSeams(
+          const seamResult = await reconcileUvSeamsCooperatively(
+            waitForBrowserPaint,
             gpuImage,
             importedModel.group,
             gpuBake.coverage,
@@ -1614,7 +1635,7 @@ export async function bakeVisibleProjectedLayersToTexture(
           }
         }
         if ((input.uvCoverageGapPixels ?? 0) > 0) {
-          const filledPixels = dilateUvCoverageWithinTopology(
+          const filledPixels = await dilateUvCoverageWithinTopology(
             gpuImage,
             gpuBake.coverage,
             importedModel.group,
@@ -1644,19 +1665,21 @@ export async function bakeVisibleProjectedLayersToTexture(
         if ((input.uvIslandGutterPixels ?? 0) > 0) {
           const topology = await getUvGutterTopology();
           const paddedPixels = topology
-            ? padUvIslandGuttersWithTopology(
+            ? await padUvIslandGuttersWithTopologyCooperatively(
                 gpuImage,
                 gpuBake.coverage,
                 topology.mask,
                 input.uvIslandGutterPixels ?? 0,
                 wantsTransparentOutput,
+                waitForBrowserPaint,
               )
-            : padUvIslandGutters(
+            : await padUvIslandGuttersCooperatively(
                 gpuImage,
                 gpuBake.coverage,
                 importedModel.group,
                 input.uvIslandGutterPixels ?? 0,
                 wantsTransparentOutput,
+                waitForBrowserPaint,
               );
           if (paddedPixels > 0) {
             gpuBake.warnings.push(
@@ -1923,7 +1946,8 @@ export async function bakeVisibleProjectedLayersToTexture(
     await sharpenCoveredTexels(composite, qualityBlendComposite.coverage);
   }
   if (input.outputAlpha !== 'transparent' || input.repairMissingUvSeams) {
-    const seamResult = reconcileUvSeams(
+    const seamResult = await reconcileUvSeamsCooperatively(
+      waitForBrowserPaint,
       composite,
       importedModel.group,
       qualityBlendComposite.coverage,
@@ -1939,7 +1963,7 @@ export async function bakeVisibleProjectedLayersToTexture(
     }
   }
   if ((input.uvCoverageGapPixels ?? 0) > 0) {
-    const filledPixels = dilateUvCoverageWithinTopology(
+    const filledPixels = await dilateUvCoverageWithinTopology(
       composite,
       qualityBlendComposite.coverage,
       importedModel.group,
@@ -1966,19 +1990,21 @@ export async function bakeVisibleProjectedLayersToTexture(
   if ((input.uvIslandGutterPixels ?? 0) > 0) {
     const topology = await getUvGutterTopology();
     const paddedPixels = topology
-      ? padUvIslandGuttersWithTopology(
+      ? await padUvIslandGuttersWithTopologyCooperatively(
           composite,
           qualityBlendComposite.coverage,
           topology.mask,
           input.uvIslandGutterPixels ?? 0,
           input.outputAlpha === 'transparent',
+          waitForBrowserPaint,
         )
-      : padUvIslandGutters(
+      : await padUvIslandGuttersCooperatively(
           composite,
           qualityBlendComposite.coverage,
           importedModel.group,
           input.uvIslandGutterPixels ?? 0,
           input.outputAlpha === 'transparent',
+          waitForBrowserPaint,
         );
     if (paddedPixels > 0) {
       warnings.push(`UV-island gutter padding added ${paddedPixels} filter-only texels.`);

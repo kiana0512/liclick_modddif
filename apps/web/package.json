@@ -4,6 +4,8 @@
   "version": "0.1.3",
   "type": "module",
   "scripts": {
+    "test:uv-source-scheduling": "node scripts/test-uv-source-scheduling.mjs",
+    "test:uv-gutter-cooperative": "node scripts/test-uv-gutter-cooperative.mjs",
     "test:uv-readback-stripes": "node scripts/test-uv-readback-stripes.mjs",
     "test:model-silhouette-clip": "node scripts/test-model-silhouette-clip.mjs",
     "test:repaint-panel-navigation": "node scripts/test-repaint-panel-navigation.mjs",
