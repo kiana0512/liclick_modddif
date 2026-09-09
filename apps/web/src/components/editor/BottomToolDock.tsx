@@ -39,6 +39,7 @@ type BottomToolDockProps = {
   onPaintToolChange: (mode: PaintToolMode) => void;
   onLocalImageGeneration: () => void;
   onLocalRepaint: () => void;
+  onOpenLocalRepaintPanel?: () => void;
   localImageGenerationRunning: boolean;
   localImageGenerationSuccessKey: number;
   canLocalRepaint: boolean;
@@ -100,6 +101,7 @@ export function BottomToolDock({
   onPaintToolChange,
   onLocalImageGeneration,
   onLocalRepaint,
+  onOpenLocalRepaintPanel,
   localImageGenerationRunning,
   localImageGenerationSuccessKey,
   canLocalRepaint,
@@ -528,6 +530,7 @@ export function BottomToolDock({
                     className={cn(workflowButton, isMaskPaintTool && activeWorkflowButton)}
                     onClick={() => {
                       // The mask step is a mode selector, not an on/off toggle.
+                      onOpenLocalRepaintPanel?.();
                       // Repeated clicks only open or close its settings menu so
                       // the resident repaint presentation stays mounted.
                       if (!isMaskPaintTool) {
@@ -564,6 +567,7 @@ export function BottomToolDock({
                       localImageGenerationRunning && runningWorkflowButton,
                     )}
                     onClick={() => {
+                      onOpenLocalRepaintPanel?.();
                       if (localImageGenerationRunning) {
                         notifyGenerationInProgress();
                         return;
@@ -613,6 +617,7 @@ export function BottomToolDock({
                     data-local-repaint-apply="true"
                     aria-busy={localRepaintActivationQueued}
                     onClick={() => {
+                      onOpenLocalRepaintPanel?.();
                       if (localRepaintActivationDisposition === 'blocked-generation-running') {
                         notifyGenerationInProgress();
                         return;

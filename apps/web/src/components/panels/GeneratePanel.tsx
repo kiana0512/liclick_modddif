@@ -599,6 +599,7 @@ function getImportedModelMatrixWorld(objectId?: string) {
 type GeneratePanelProps = {
   workspaceActive?: boolean;
   localImageGenerationRequestKey?: number;
+  openLocalRepaintPanelRequestKey?: number;
   onRequestLocalImageGeneration?: () => void;
   onLocalImageGenerationSettled?: (result: LocalImageGenerationSettledResult) => void;
   cancelActiveGenerationRequestKey?: number;
@@ -622,6 +623,7 @@ export type LocalImageGenerationSettledResult =
 export function GeneratePanel({
   workspaceActive = true,
   localImageGenerationRequestKey = 0,
+  openLocalRepaintPanelRequestKey = 0,
   onRequestLocalImageGeneration,
   onLocalImageGenerationSettled,
   cancelActiveGenerationRequestKey = 0,
@@ -637,6 +639,11 @@ export function GeneratePanel({
   const [textureViewMode, setTextureViewMode] = useState<TextureViewMode>('multi');
   const [singleViewProvider, setSingleViewProvider] = useState<SingleViewProvider>('gpt');
   const [texturePreviewMode, setTexturePreviewMode] = useState<TexturePreviewMode>('multi');
+  useEffect(() => {
+    if (!openLocalRepaintPanelRequestKey) return;
+    setTab('repaint');
+    setTexturePreviewMode('repaint');
+  }, [openLocalRepaintPanelRequestKey]);
   const [localRepaintPrompt, setLocalRepaintPrompt] = useState('');
   const [promptPolishing, setPromptPolishing] = useState(false);
   const promptPolishRequestRef = useRef(0);

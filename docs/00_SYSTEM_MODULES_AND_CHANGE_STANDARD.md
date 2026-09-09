@@ -1,6 +1,6 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
-> 文档版本：`2.19.1`
+> 文档版本：`2.19.2`
 >
 > 生效日期：`2026-09-09`
 >
@@ -11,6 +11,8 @@
 > 审计口径：`0a2519d + 607e82f + 2568e40`，不包含错误文档提交 `2bde8c6/e03bab2/d1c5f78`
 
 ## 1. 文档地位与强制边界
+
+变更卡 `CHG-20260909-REPAINT-TOOL-PANEL`：主模块 M08，UI-05/UI-10，交互契约 LOCAL-REPAINT-PANEL-NAVIGATION v1.0.0。底部蒙版、局部生图、应用重绘三个按钮的 click 请求展开生成面板并选择 repaint 页签及预览；重复点击已激活工具同样导航。导航使用独立递增 key，与生图请求 key 分离，不因打开界面提交任务、重新生成或重置提示词/参考图。手动切回单/多视图不受旧 key 干扰；原任务锁、点击行为和回贴逻辑保持。GPU/CPU/Worker/shader/投影/UV/export/持久化与 Schema 均无变化，无迁移；回退移除导航 callback、key 与 effect 即可。
 
 变更卡 `CHG-20260909-MASK-BRUSH-DEFAULT-45`：主模块 M08，UI-10，参数契约 MASK-BRUSH-DEFAULT v1.0.1。蒙版画笔默认大小由 10 调为 45；回贴画笔拆分独立默认常量保持 10，普通画笔 32、橡皮擦 42 与羽化均不变。参数不是持久化字段，新页面初始化生效，会话内手动调整不被覆盖。GPU/CPU/Worker/shader、作者 mask 算法、投影/UV/export、Schema/Command/CAS/ownership 与资产不变，无迁移；回退默认常量即可。
 

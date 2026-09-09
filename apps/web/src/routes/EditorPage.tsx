@@ -1154,6 +1154,7 @@ export function EditorPage({
   const [modelImportBusy, setModelImportBusy] = useState(false);
   const [layerAdjustmentsOpen, setLayerAdjustmentsOpen] = useState(false);
   const [localImageGenerationRequestKey, setLocalImageGenerationRequestKey] = useState(0);
+  const [openLocalRepaintPanelRequestKey, setOpenLocalRepaintPanelRequestKey] = useState(0);
   const [localImageGenerationRequested, setLocalImageGenerationRequested] = useState(false);
   const [
     localRepaintGenerationSettledAwaitingUnlock,
@@ -6354,6 +6355,12 @@ export function EditorPage({
     t,
   ]);
 
+  const handleOpenLocalRepaintPanel = useCallback(() => {
+    showPanel('generate');
+    setPanelCollapsed('generate', false);
+    setOpenLocalRepaintPanelRequestKey((current) => current + 1);
+  }, [showPanel, setPanelCollapsed]);
+
   const handleLocalImageGenerationFromToolbar = useCallback(() => {
     if (generationOperationLocked) {
       notifyEditorTaskRunning();
@@ -7782,6 +7789,7 @@ export function EditorPage({
           <GeneratePanel
             workspaceActive={isActive}
             localImageGenerationRequestKey={localImageGenerationRequestKey}
+            openLocalRepaintPanelRequestKey={openLocalRepaintPanelRequestKey}
             onRequestLocalImageGeneration={handleLocalImageGenerationFromToolbar}
             onLocalImageGenerationSettled={handleLocalImageGenerationSettled}
             cancelActiveGenerationRequestKey={cancelActiveGenerationRequestKey}
@@ -8079,6 +8087,7 @@ export function EditorPage({
               onPaintToolChange={setPaintTool}
               onLocalImageGeneration={handleLocalImageGenerationFromToolbar}
               onLocalRepaint={handleLocalRepaintFromToolbar}
+              onOpenLocalRepaintPanel={handleOpenLocalRepaintPanel}
               localImageGenerationRunning={localImageGenerationRunning}
               localImageGenerationSuccessKey={localImageGenerationSuccessKey}
               canLocalRepaint={localRepaintGenerationReady && localRepaintInteractiveReady}
