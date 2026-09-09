@@ -7,6 +7,8 @@ type LiveCanvasEntry = {
   texture: THREE.CanvasTexture;
   revision: number;
   flipY: boolean;
+  width: number;
+  height: number;
   encodedPng?: EncodedPng;
 };
 
@@ -25,6 +27,20 @@ type EncodedPng = {
 
 const liveCanvasTextures = new Map<string, LiveCanvasEntry>();
 const liveImageTextures = new Map<string, LiveImageEntry>();
+
+// WebGL2 allocates immutable storage on the first upload. Resizing the canvas
+// (notably the eraser's 1px bootstrap -> full UV mask) cannot be uploaded into
+// that old allocation with needsUpdate alone. Release GPU storage, not the
+// shared Texture/Source identity: every resident uniform must keep this object.
+function refreshCanvasStorage(entry: LiveCanvasEntry) {
+  const { width, height } = entry.canvas;
+  if (entry.width === width && entry.height === height) return false;
+  entry.texture.dispose();
+  entry.width = width;
+  entry.height = height;
+  entry.encodedPng = undefined;
+  return true;
+}
 
 function configureTexture(
   texture: THREE.Texture,
@@ -85,6 +101,7 @@ export function registerLiveProjectedCanvasTexture(
       existing.encodedPng = undefined;
     }
     existing.flipY = options.flipY ?? existing.flipY;
+    refreshCanvasStorage(existing);
     configureTexture(existing.texture, colorSpace, existing.flipY, true);
     return url;
   }
@@ -98,6 +115,8 @@ export function registerLiveProjectedCanvasTexture(
     texture,
     revision: 0,
     flipY,
+    width: canvas.width,
+    height: canvas.height,
   });
   return url;
 }
@@ -131,11 +150,9 @@ export function getLiveProjectedCanvasTexture(
   colorSpace: THREE.ColorSpace = THREE.NoColorSpace,
   options: { flipY?: boolean } = {},
 ) {
-  const entry = liveCanvasTextures.get(url);
-  if (!entry) return undefined;
-  entry.flipY = options.flipY ?? entry.flipY;
-  configureTexture(entry.texture, colorSpace, entry.flipY);
-  return entry.texture;
+  return liveCanvasTextures.has(url)
+    ? (getLiveProjectedTexture(url, colorSpace, options) as THREE.CanvasTexture)
+    : undefined;
 }
 
 export function getLiveProjectedTexture(
@@ -146,7 +163,12 @@ export function getLiveProjectedTexture(
   const entry = liveCanvasTextures.get(url) ?? liveImageTextures.get(url);
   if (!entry) return undefined;
   entry.flipY = options.flipY ?? entry.flipY;
-  configureTexture(entry.texture, colorSpace, entry.flipY);
+  configureTexture(
+    entry.texture,
+    colorSpace,
+    entry.flipY,
+    'canvas' in entry && refreshCanvasStorage(entry),
+  );
   return entry.texture;
 }
 
@@ -161,7 +183,8 @@ export function markLiveProjectedCanvasTextureUpdated(
     // the interactive frame only need to invalidate the encoded-asset cache at
     // pointer-up. Scheduling the same full canvas upload again on release made
     // every short dot pay an avoidable presentation stall.
-    if (options.upload !== false) entry.texture.needsUpdate = true;
+    const resized = refreshCanvasStorage(entry);
+    if (options.upload !== false || resized) entry.texture.needsUpdate = true;
   }
 }
 

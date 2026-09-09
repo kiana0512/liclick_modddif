@@ -97,6 +97,41 @@ test('keeps resident texture identity when a stable live canvas URL changes back
   assert.equal(getLiveProjectedCanvasState(url)?.revision, 1);
 });
 
+test('resized eraser masks reallocate GPU storage once, without changing resident texture identity', () => {
+  for (const access of ['publish', 'canvas-read', 'texture-read', 'registration']) {
+    const canvas = { width: 1, height: 1 };
+    const url = registerLiveProjectedCanvasTexture(`resize-${access}`, canvas);
+    const texture = getLiveProjectedCanvasTexture(url);
+    const source = texture.source;
+    let disposals = 0;
+    texture.addEventListener('dispose', () => { disposals += 1; });
+    const version = texture.version;
+    canvas.width = canvas.height = 2048;
+    if (access === 'publish') markLiveProjectedCanvasTextureUpdated(url);
+    if (access === 'canvas-read') getLiveProjectedCanvasTexture(url);
+    if (access === 'texture-read') getLiveProjectedTexture(url);
+    if (access === 'registration') registerLiveProjectedCanvasTexture(`resize-${access}`, canvas);
+    assert.equal(disposals, 1, access);
+    assert.equal(texture.version, version + 1, access);
+    assert.equal(getLiveProjectedCanvasTexture(url), texture);
+    assert.equal(texture.source, source);
+    assert.equal(texture.image, canvas);
+    for (let i = 0; i < 50; i += 1) {
+      markLiveProjectedCanvasTextureUpdated(url);
+      getLiveProjectedTexture(url);
+    }
+    assert.equal(disposals, 1, 'same-size strokes and reads must not reallocate storage');
+    canvas.height = 1024;
+    markLiveProjectedCanvasTextureUpdated(url, { upload: false });
+    assert.equal(disposals, 2, 'a one-axis resize must also discard incompatible storage');
+    const replacement = { width: 4096, height: 2048 };
+    registerLiveProjectedCanvasTexture(`resize-${access}`, replacement);
+    assert.equal(disposals, 3);
+    assert.equal(getLiveProjectedTexture(url), texture);
+    assert.equal(texture.image, replacement);
+  }
+});
+
 test('exposes decoded live images to baking and persistence consumers', async () => {
   const previousHtmlImageElement = globalThis.HTMLImageElement;
   class TestImageElement {

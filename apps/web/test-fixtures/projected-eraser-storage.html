@@ -1,0 +1,100 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Ordinary projected eraser GPU storage regression</title>
+<pre id="result">Running</pre>
+<script type="module">
+import * as THREE from 'three';
+import {
+  registerLiveProjectedCanvasTexture, getLiveProjectedCanvasTexture,
+  markLiveProjectedCanvasTextureUpdated,
+} from '/src/engine/projection/liveProjectedCanvasTextureRegistry.ts';
+import {
+  createProjectedLayerStackMaterial, syncProjectedLayerLiveEraserPreviewInObject,
+  syncProjectedLayerResidentMaskTextureInObject, syncProjectedLayerMaterialDisplayStateInObject,
+} from '/src/engine/projection/ProjectedLayerMaterial.ts';
+
+const results = [];
+const assert = (condition, message) => { if (!condition) throw new Error(message); };
+try {
+  const renderer = new THREE.WebGLRenderer();
+  renderer.setSize(128, 128);
+  const gl = renderer.getContext();
+  const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, .1, 100);
+  camera.position.z = 5;
+  camera.updateMatrixWorld(true);
+  const serialized = {
+    projectionMatrix: camera.projectionMatrix.toArray(), viewMatrix: camera.matrixWorldInverse.toArray(),
+    matrixWorld: camera.matrixWorld.toArray(), position: [0,0,5], near: .1, far: 100,
+  };
+  const lighting = {enabled: false, exposure: 1, ambientIntensity: 1, keyLightIntensity: 0, keyLightDirection: [0,0,1]};
+  const scene = new THREE.Scene(), root = new THREE.Group();
+  const mesh = new THREE.Mesh(new THREE.PlaneGeometry(2,2), new THREE.MeshBasicMaterial());
+  root.add(mesh); scene.add(root);
+  const target = new THREE.WebGLRenderTarget(128,128);
+  function canvas(size, color) {
+    const result = document.createElement('canvas'); result.width = result.height = size;
+    const context = result.getContext('2d'); context.fillStyle = color; context.fillRect(0,0,size,size);
+    return result;
+  }
+  const red = canvas(128, '#e04020').toDataURL(), green = canvas(128, '#20d080').toDataURL();
+  function read(material) {
+    mesh.material = material; renderer.setRenderTarget(target); renderer.render(scene,camera);
+    const pixels = new Uint8Array(128*128*4);
+    renderer.readRenderTargetPixels(target,0,0,128,128,pixels); renderer.setRenderTarget(null);
+    const error = gl.getError(); assert(error === gl.NO_ERROR, `WebGL upload/render error: ${error}`);
+    return pixels;
+  }
+  function equal(a,b,label) {
+    let max = 0; for(let i=0;i<a.length;i++) max = Math.max(max, Math.abs(a[i]-b[i]));
+    assert(max <= 1, `${label}: max pixel error ${max}`);
+  }
+  for (const [name,count,array] of [['single',1,false],['two-direct',2,false],['two-array',2,true]]) {
+    const mask = canvas(1,'white');
+    const url = registerLiveProjectedCanvasTexture(`gpu-eraser-${name}`,mask);
+    const texture = getLiveProjectedCanvasTexture(url);
+    const layers = Array.from({length:count},(_,i)=>({
+      layerId:`${name}-${i}`,imageUrl:i===0?red:green,visible:true,opacity:1,strength:1,camera:serialized,
+      ...(i===0?{useMask:true,maskUrl:url,maskSpace:'uv'}:{}),
+    }));
+    const build = rows => createProjectedLayerStackMaterial({layers:rows,previewLighting:lighting},{renderer,preferTextureArrays:array});
+    const material = await build(layers);
+    const before = read(material); // Upload the real 1x1 neutral bootstrap first.
+    mask.width = mask.height = 2048;
+    const context = mask.getContext('2d');
+    context.fillStyle = 'white'; context.fillRect(0,0,2048,2048);
+    context.fillStyle = 'black'; context.fillRect(128,256,768,768);
+    markLiveProjectedCanvasTextureUpdated(url);
+    const after = read(material);
+    assert(after.some((v,i)=>v!==before[i]), `${name}: persistent erase must be visible`);
+    const preview = new THREE.CanvasTexture(mask); preview.flipY=false;
+    syncProjectedLayerLiveEraserPreviewInObject(root,layers[0].layerId,preview);
+    equal(read(material),after,`${name}: pointer down`);
+    assert(syncProjectedLayerResidentMaskTextureInObject(root,layers[0].layerId,url,texture).bound,'resident mask handoff');
+    syncProjectedLayerLiveEraserPreviewInObject(root);
+    equal(read(material),after,`${name}: pointer up/tool exit`);
+    syncProjectedLayerLiveEraserPreviewInObject(root,layers.at(-1).layerId,new THREE.CanvasTexture(canvas(32,'white')));
+    equal(read(material),after,`${name}: select another layer`);
+    syncProjectedLayerLiveEraserPreviewInObject(root);
+    syncProjectedLayerMaterialDisplayStateInObject(root,layers.map(row=>({...row,visible:false})));
+    read(material);
+    syncProjectedLayerMaterialDisplayStateInObject(root,layers,false,false,lighting);
+    equal(read(material),after,`${name}: preview off/on`);
+    const rebuilt = await build(layers);
+    equal(read(rebuilt),after,`${name}: material rebuild`);
+    // A saved PNG is the independent full-resolution mask oracle, not a live sampler.
+    const reopened = await build(layers.map((row,i)=>i===0?{...row,maskUrl:mask.toDataURL()}:row));
+    equal(read(reopened),after,`${name}: saved mask reload`);
+    context.fillStyle='white';context.fillRect(0,0,2048,2048);markLiveProjectedCanvasTextureUpdated(url);
+    equal(read(material),before,`${name}: undo`);
+    context.fillStyle='black';context.fillRect(128,256,768,768);markLiveProjectedCanvasTextureUpdated(url);
+    equal(read(material),after,`${name}: redo`);
+    assert(getLiveProjectedCanvasTexture(url)===texture, 'resident identity changed');
+    results.push({name,maskSize:[mask.width,mask.height],passed:true});
+    material.dispose();rebuilt.dispose();reopened.dispose();preview.dispose();
+  }
+  renderer.dispose();target.dispose();
+  document.querySelector('#result').textContent = JSON.stringify({ok:true,results});
+} catch(error) {
+  document.querySelector('#result').textContent = JSON.stringify({ok:false,results,error:error.stack});
+}
+</script>
