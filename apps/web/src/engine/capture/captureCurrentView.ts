@@ -620,8 +620,8 @@ export async function captureCurrentLocalRepaintView(
   return capture;
 }
 
-export async function captureCurrentDepthPreview(request: CaptureCurrentViewRequest) {
-  const size = Math.min(request.resolution, 1024);
+export async function captureCurrentDepthPreview(request: CaptureCurrentViewRequest, maxResolution = 1024) {
+  const size = Math.min(request.resolution, maxResolution, 2048);
   const aspect = Number.isFinite(request.aspect) && (request.aspect ?? 0) > 0 ? request.aspect! : 1;
   const width = aspect >= 1 ? size : Math.max(1, Math.round(size * aspect));
   const height = aspect >= 1 ? Math.max(1, Math.round(size / aspect)) : size;

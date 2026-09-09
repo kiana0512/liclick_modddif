@@ -129,7 +129,7 @@ export default defineConfig({
     // names while removing more redundant expressions than the fast dev tool.
     minify: 'terser',
     terserOptions: {
-      compress: { passes: 3, drop_console: false, unsafe: false },
+      compress: { passes: 4, drop_console: false, unsafe: false },
       mangle: { properties: false },
       // Licenses remain available in the shipped THIRD_PARTY_NOTICES.txt.
       format: { comments: false },
@@ -144,6 +144,8 @@ export default defineConfig({
         // cacheable outside the large viewport snapshot instead of reparsing it
         // as part of that feature chunk on every release.
         manualChunks(id) {
+          // Shared image I/O must not make the lazy silhouette clip import the editor route.
+          if (id.endsWith('/engine/localRepaint/imageUtils.ts')) return 'local-repaint-image-utils';
           if (id.includes('/node_modules/.pnpm/zod@')) return 'vendor-zod';
           return undefined;
         },

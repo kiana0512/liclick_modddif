@@ -8,8 +8,8 @@ const source = await readFile(
 
 assert.match(
   source,
-  /onClick=\{\(\) => \{\s*if \(selected\) \{\s*setPreviewReference\(reference\);\s*return;\s*\}\s*selectReference\(reference\);\s*\}\}/,
-  'an unselected reference should only be selected; the already-selected reference should preview',
+  /onClick=\{\(\) => \{\s*if \(disabled \|\| selected\) \{\s*setPreviewReference\(reference\);\s*return;\s*\}\s*selectReference\(reference\);\s*\}\}/,
+  'locked tasks only preview; otherwise unselected references select and selected references preview',
 );
 assert.doesNotMatch(
   source,
@@ -22,4 +22,11 @@ assert.match(
   'the selected thumbnail tooltip should explain the second-click preview behavior',
 );
 
-console.log('reference select-then-preview regression passed');
+const body = source.match(/onClick=\{\(\) => \{(\s*if \(disabled \|\| selected\)[\s\S]*?selectReference\(reference\);)\s*\}\}/)[1];
+const click = new Function('disabled','selected','reference','setPreviewReference','selectReference',body);
+for (const disabled of [false,true]) for (const selected of [false,true]) {
+  const calls=[];
+  click(disabled,selected,'ref',r=>calls.push(['preview',r]),r=>calls.push(['select',r]));
+  assert.deepEqual(calls,[[disabled || selected ? 'preview' : 'select','ref']]);
+}
+console.log('reference select-then-preview and locked preview-only regression passed');

@@ -60,7 +60,8 @@ assert.match(
   /prepareLocalRepaintPromptPolishInputs\(\{[\s\S]*?currentEffectUrl: promptAnalysisCurrentEffectUrl,[\s\S]*?maskUrl: currentPaintMaskDataUrl/,
 );
 assert.match(panel, /generations\.find\([\s\S]*?metadata\.promptFingerprint === promptFingerprint/);
-assert.match(panel, /生成时自动分析并优化/);
+assert.match(panel, /生成时优化提示词/);
+assert.doesNotMatch(panel, /生成时自动分析并优化|留空则自动分析/);
 assert.match(
   panel,
   /maxLength=\{[\s\S]*?isLocalRepaintTab \|\|[\s\S]*?singleViewProvider === 'remote'\)[\s\S]*?\? 4096[\s\S]*?: undefined[\s\S]*?\}/,

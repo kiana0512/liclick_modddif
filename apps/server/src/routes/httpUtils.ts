@@ -68,6 +68,19 @@ export function sendNoContent(response: ServerResponse) {
   response.end();
 }
 
+export function sendRequestFailure(response: ServerResponse, error: unknown) {
+  if (response.destroyed || response.writableEnded) return;
+  // Once a file/stream has started, a JSON response would corrupt its body and
+  // writeHead would throw outside the request handler's catch block.
+  if (response.headersSent) {
+    response.destroy();
+    return;
+  }
+  sendJson(response, 500, {
+    error: error instanceof Error ? error.message : 'Internal server error.',
+  });
+}
+
 export function getPathSegments(url: URL) {
   return url.pathname.split('/').filter(Boolean).map(decodeURIComponent);
 }

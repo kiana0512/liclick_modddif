@@ -28,6 +28,16 @@ new Function('exports', 'require', compiled)(exports, (id) => id === 'node:fs' ?
 const send = process.argv.includes('--baseline')
   ? (file, response) => { const stream = fs.createReadStream(file); streams.push(stream); stream.pipe(response); }
   : exports.streamFileResponse;
+const httpSource = await fs.promises.readFile(new URL('../src/routes/httpUtils.ts', import.meta.url), 'utf8');
+const httpExports = {};
+new Function('exports', 'require', ts.transpileModule(httpSource, {
+  compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+}).outputText)(httpExports, (id) => id === '../config.js'
+  ? { serverConfig: { allowedOrigins: [], frontendOrigin: 'http://127.0.0.1' } }
+  : require(id));
+const { sendRequestFailure } = httpExports;
+const entrySource = await fs.promises.readFile(new URL('../src/index.ts', import.meta.url), 'utf8');
+assert.match(entrySource, /catch \(error\) \{\s*console\.error\('\[Liclick Workspace Server\]', error\);\s*sendRequestFailure\(response, error\);/);
 const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'li3d-file-response-'));
 const project = path.join(root, 'project');
 await fs.promises.mkdir(project);
@@ -38,6 +48,33 @@ await descriptor.close();
 const expected = Buffer.from('Complete image bytes, unchanged.');
 await fs.promises.writeFile(path.join(project, 'image.png'), expected);
 const server = http.createServer((request, response) => {
+  if (request.url === '/closed-before-pipe') {
+    response.destroy();
+    const count = streams.length;
+    send(large, response);
+    assert.equal(streams.length, count, 'Do not open files for an already disconnected client');
+    sendRequestFailure(response, new Error('aborted'));
+    return;
+  }
+  if (request.url === '/ended-before-pipe') {
+    response.end('done');
+    const count = streams.length;
+    send(large, response);
+    assert.equal(streams.length, count, 'Do not reopen an already completed response');
+    sendRequestFailure(response, new Error('late completion'));
+    return;
+  }
+  if (request.url === '/partial-error') {
+    response.writeHead(200, { 'content-type': 'application/octet-stream' });
+    response.flushHeaders();
+    response.write('partial');
+    sendRequestFailure(response, new Error('read failed after headers'));
+    return;
+  }
+  if (request.url === '/early-error') {
+    sendRequestFailure(response, new Error('before headers'));
+    return;
+  }
   send(path.join(project, request.url === '/complete' ? 'image.png' : request.url === '/missing' ? 'missing.png' : 'model.glb'), response);
 });
 server.listen(0, '127.0.0.1');
@@ -57,6 +94,17 @@ try {
   const response = await globalThis.fetch(`${base}/complete`);
   assert.deepEqual(Buffer.from(await response.arrayBuffer()), expected);
   await assert.rejects(globalThis.fetch(`${base}/missing`), 'A read failure must terminate the response without an uncaught stream error');
+  await assert.rejects(globalThis.fetch(`${base}/closed-before-pipe`));
+  assert.equal(await (await globalThis.fetch(`${base}/ended-before-pipe`)).text(), 'done');
+  await assert.rejects(async () => {
+    const partial = await globalThis.fetch(`${base}/partial-error`);
+    await partial.text();
+  }, 'Partial streams must terminate instead of receiving a second set of JSON headers');
+  const earlyError = await globalThis.fetch(`${base}/early-error`);
+  assert.equal(earlyError.status, 500);
+  assert.deepEqual(await earlyError.json(), { error: 'before headers' });
+  assert.deepEqual(Buffer.from(await (await globalThis.fetch(`${base}/complete`)).arrayBuffer()), expected,
+    'The same HTTP server must remain available after aborted and partially sent responses');
   const trash = path.join(root, 'trash');
   assert.equal(path.dirname(project), root);
   assert.equal(path.dirname(trash), root);

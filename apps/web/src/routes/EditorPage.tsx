@@ -439,13 +439,16 @@ function createReusableProjectionBakeSignature(input: {
     )
     .join('|');
   return [
-    'editor-projection-bake-cache-v8',
+    'editor-projection-bake-cache-v9',
     input.purpose,
     stackSignature,
     input.group.matrixWorld.elements.join(','),
     JSON.stringify(getDebugUvBakeStatus()),
     input.optionSignature,
     exactAssets,
+    // Include the full authored contract: visibility policy, alpha handling,
+    // camera near/far and future layer fields must also invalidate this cache.
+    JSON.stringify(normalizedLayers),
   ].join('||');
 }
 
@@ -1154,6 +1157,7 @@ export function EditorPage({
   const [modelImportBusy, setModelImportBusy] = useState(false);
   const [layerAdjustmentsOpen, setLayerAdjustmentsOpen] = useState(false);
   const [localImageGenerationRequestKey, setLocalImageGenerationRequestKey] = useState(0);
+  const [openLocalRepaintPanelRequestKey, setOpenLocalRepaintPanelRequestKey] = useState(0);
   const [localImageGenerationRequested, setLocalImageGenerationRequested] = useState(false);
   const [
     localRepaintGenerationSettledAwaitingUnlock,
@@ -1636,6 +1640,7 @@ export function EditorPage({
     const activeElement = document.activeElement;
     if (
       activeElement instanceof HTMLElement &&
+      !activeElement.closest('[data-task-preview-allowed="true"]') &&
       (activeElement.matches('input, textarea, select') || activeElement.isContentEditable)
     ) {
       activeElement.blur();
@@ -4896,7 +4901,7 @@ export function EditorPage({
     const projectedLayerIds = projectedLayers.map((layer) => layer.id);
     const selectedUvLayerIds = selectedUvSourceLayers.map((layer) => layer.id);
     const consumedLayerIds = [...projectedLayerIds, ...selectedUvLayerIds];
-    if (projectedLayerIds.length === 0 && !baseUvLayer) {
+    if (projectedLayerIds.length === 0 && selectedUvLayers.length === 0) {
       pushToast({ tone: 'warning', title: t('mergeNoProjectedLayers') });
       return;
     }
@@ -4951,20 +4956,6 @@ export function EditorPage({
       // source alpha before UV rasterization so the baked result cannot silently
       // fall back to projecting the complete ComfyUI frame when a mask texture
       // is unavailable. Other projected layers keep their normal mask path.
-      const layersToBake = await Promise.all(
-        projectedLayers.map(async (layer) =>
-          isLocalRepaintProjectionLayer(layer) && layer.maskUrl
-            ? {
-                ...layer,
-                imageUrl: await createProjectionMaskedImage(layer.imageUrl, layer.maskUrl),
-                maskUrl: undefined,
-                // This temporary source has already flattened the brush mask
-                // into alpha. Preserve that authored alpha during the bake.
-                ignoreSourceAlpha: false,
-              }
-            : layer,
-        ),
-      );
       const postprocess = getMergeUvPostprocessOptions(bakeResolution);
       const projectionBakeSignature = createReusableProjectionBakeSignature({
         purpose: 'merge-uv',
@@ -4972,7 +4963,7 @@ export function EditorPage({
         objectId,
         resolution: bakeResolution,
         group: currentImportedModel.group,
-        layers: layersToBake,
+        layers: projectedLayers,
         optionSignature: [
           `gutter:${postprocess.uvIslandGutterPixels}`,
           `interior:${postprocess.uvInteriorHolePixels}`,
@@ -4983,6 +4974,17 @@ export function EditorPage({
       });
       const reusableProjectionBake = reusableProjectionBakeCacheRef.current.get('merge-uv');
       const projectionBakeCacheHit = reusableProjectionBake?.signature === projectionBakeSignature;
+      // Key the authored inputs (including live-mask revision), never freshly
+      // allocated flattened blob URLs. A cache hit needs no mask re-encoding.
+      const layersToBake = projectionBakeCacheHit ? projectedLayers : await Promise.all(
+        projectedLayers.map(async (layer) =>
+          isLocalRepaintProjectionLayer(layer) && layer.maskUrl
+            ? { ...layer,
+                imageUrl: await createProjectionMaskedImage(layer.imageUrl, layer.maskUrl),
+                maskUrl: undefined, ignoreSourceAlpha: false }
+            : layer,
+        ),
+      );
       document.body.dataset.perfProjectionBakeCache = projectionBakeCacheHit
         ? 'merge-uv-hit'
         : 'merge-uv-miss';
@@ -5770,6 +5772,10 @@ export function EditorPage({
       const rawResultUrl =
         typeof metadata.rawResultUrl === 'string' ? metadata.rawResultUrl : generation.resultUrl;
       if (!rawResultUrl) return Promise.reject(new Error('Local repaint result is missing.'));
+      if (metadata.modelSilhouetteClipVersion === 1 && generation.resultUrl) {
+        return Promise.resolve({ imageUrl: generation.resultUrl, persistentImageUrl: generation.resultUrl,
+          rawImageUrl: rawResultUrl, seamMode: 'legacy' as const, seamHarmonizationVersion: undefined });
+      }
       const referenceUrl =
         typeof metadata.viewportReferenceUrl === 'string'
           ? metadata.viewportReferenceUrl
@@ -6269,6 +6275,7 @@ export function EditorPage({
           imageUrl: projectionImage.imageUrl,
           persistentImageUrl: projectionImage.persistentImageUrl,
           rawImageUrl: projectionImage.rawImageUrl,
+          ignoreSourceAlpha: latestLocalRepaintGeneration.metadata.modelSilhouetteClipVersion !== 1,
           seamHarmonizationVersion: projectionImage.seamHarmonizationVersion,
           autoActivate: false,
           allowedMaskUrl: generationMaskUrl,
@@ -6348,6 +6355,12 @@ export function EditorPage({
     setLocalRepaintProjectionSource,
     t,
   ]);
+
+  const handleOpenLocalRepaintPanel = useCallback(() => {
+    showPanel('generate');
+    setPanelCollapsed('generate', false);
+    setOpenLocalRepaintPanelRequestKey((current) => current + 1);
+  }, [showPanel, setPanelCollapsed]);
 
   const handleLocalImageGenerationFromToolbar = useCallback(() => {
     if (generationOperationLocked) {
@@ -6690,6 +6703,7 @@ export function EditorPage({
         imageUrl: projectionImage.imageUrl,
         persistentImageUrl: projectionImage.persistentImageUrl,
         rawImageUrl: projectionImage.rawImageUrl,
+        ignoreSourceAlpha: latestLocalRepaintGeneration.metadata.modelSilhouetteClipVersion !== 1,
         seamHarmonizationVersion: projectionImage.seamHarmonizationVersion,
         autoActivate: true,
         allowedMaskUrl: generationMaskUrl,
@@ -7776,6 +7790,7 @@ export function EditorPage({
           <GeneratePanel
             workspaceActive={isActive}
             localImageGenerationRequestKey={localImageGenerationRequestKey}
+            openLocalRepaintPanelRequestKey={openLocalRepaintPanelRequestKey}
             onRequestLocalImageGeneration={handleLocalImageGenerationFromToolbar}
             onLocalImageGenerationSettled={handleLocalImageGenerationSettled}
             cancelActiveGenerationRequestKey={cancelActiveGenerationRequestKey}
@@ -8073,6 +8088,7 @@ export function EditorPage({
               onPaintToolChange={setPaintTool}
               onLocalImageGeneration={handleLocalImageGenerationFromToolbar}
               onLocalRepaint={handleLocalRepaintFromToolbar}
+              onOpenLocalRepaintPanel={handleOpenLocalRepaintPanel}
               localImageGenerationRunning={localImageGenerationRunning}
               localImageGenerationSuccessKey={localImageGenerationSuccessKey}
               canLocalRepaint={localRepaintGenerationReady && localRepaintInteractiveReady}

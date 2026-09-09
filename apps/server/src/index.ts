@@ -21,7 +21,7 @@ import { handleLiclickRoute } from './routes/liclick.js';
 import { handleLocalSettingsRoute } from './routes/localSettings.js';
 import { handleModelviewRoute } from './routes/modelview.js';
 import { handlePerformanceLabRoute } from './routes/performanceLab.js';
-import { corsHeaders, isAllowedRequestOrigin, sendJson, sendNoContent } from './routes/httpUtils.js';
+import { corsHeaders, isAllowedRequestOrigin, sendJson, sendNoContent, sendRequestFailure } from './routes/httpUtils.js';
 import { handleProjectsRoute } from './routes/projects.js';
 import { initializeWorkspace } from './services/workspaceService.js';
 import { identityTelemetryStorage } from './services/identityTelemetryService.js';
@@ -330,7 +330,7 @@ async function startServer() {
       await handleWorkspaceRequest(request, response, atlasRuntime);
     } catch (error) {
       console.error('[Liclick Workspace Server]', error);
-      sendJson(response, 500, { error: error instanceof Error ? error.message : 'Internal server error.' });
+      sendRequestFailure(response, error);
     }
   });
 

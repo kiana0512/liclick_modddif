@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
+import { reconcileRepaintWorkflowGuide } from '../src/components/editor/localRepaintWorkflowGuide.ts';
 
 const sourceRoot = new URL('../src/', import.meta.url);
 const [editorPage, generatePanel, bottomToolDock, sceneStore, viewportCanvas] = await Promise.all([
@@ -61,8 +62,8 @@ assert.match(
   'brush activation must pass the settled generation to the shared deterministic selector',
 );
 const applyToolLifecycle = bottomToolDock.slice(
-  bottomToolDock.indexOf("const applyToolSelected = paintTool === 'inpaint-apply'"),
-  bottomToolDock.indexOf('previousMaskToolSelectedRef.current = isMaskPaintTool'),
+  bottomToolDock.indexOf('setWorkflowGuide((previous) => reconcileRepaintWorkflowGuide'),
+  bottomToolDock.indexOf('function toggleMenu'),
 );
 assert.doesNotMatch(
   applyToolLifecycle,
@@ -91,3 +92,25 @@ assert.match(
 );
 
 console.log('Local generation entry alignment regression checks passed.');
+
+let guide = { step: 'generate', running: false, successKey: 0, paintTool: 'inpaint-add' };
+const updateGuide = (patch) => {
+  guide = reconcileRepaintWorkflowGuide(guide, { ...guide, ...patch });
+  return guide.step;
+};
+assert.equal(updateGuide({ running: true, paintTool: 'none' }), 'none', 'Side-panel start clears the dock generation pulse');
+assert.equal(updateGuide({ successKey: 1 }), 'repaint', 'Success before unlock/GPU readiness must remain pending');
+assert.equal(updateGuide({}), 'repaint', 'A still-running notification must not consume pending success');
+assert.equal(updateGuide({ running: false, paintTool: 'inpaint-add' }), 'repaint', 'Tool restore cannot override success');
+assert.equal(updateGuide({}), 'repaint', 'Later GPU readiness renders the same pending guide');
+assert.equal(updateGuide({ paintTool: 'inpaint-apply' }), 'none', 'Entering the apply brush acknowledges the guide');
+assert.equal(updateGuide({ paintTool: 'inpaint-add' }), 'generate', 'A new mask cycle can guide generation again');
+assert.equal(updateGuide({ running: true, paintTool: 'none' }), 'none');
+assert.equal(updateGuide({ running: false }), 'none', 'Failure/cancellation without a success key must not suggest applying an old result');
+assert.equal(updateGuide({ running: true }), 'none');
+assert.equal(updateGuide({ running: false, successKey: 2 }), 'repaint', 'Second successful round transfers the pulse again');
+guide = { ...guide, step: 'none' }; // Explicit apply/queue click acknowledges it.
+assert.equal(updateGuide({}), 'none', 'Rerenders after an explicit acknowledgement must not relight the brush');
+assert.match(bottomToolDock, /repaintGuideActive &&\s*localRepaintReady &&\s*!localImageGenerationRunning/,
+  'Pending guidance remains visually gated until the brush is ready and generation has stopped');
+console.log('Local repaint workflow guide timing regression checks passed.');

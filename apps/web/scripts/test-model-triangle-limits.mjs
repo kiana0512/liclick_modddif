@@ -3,7 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { createServer } from 'vite';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
-const server = await createServer({ root, logLevel: 'silent', server: { middlewareMode: true } });
+const server = await createServer({ root, logLevel: 'silent', server: { middlewareMode: true, watch: { ignored: () => true } } });
 
 try {
   const THREE = await server.ssrLoadModule('three');

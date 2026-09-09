@@ -3,10 +3,10 @@ import type { Layer } from '@/types/layer';
 
 /**
  * Increment when a merged UV produced by an older editor can no longer be
- * trusted to match the live layer stack. Version 4 writes the current PBR
- * preview light into the final UV and displays that merged layer unlit.
+ * trusted to match the live layer stack. Version 5 includes selected merged
+ * UV layers as underlays instead of silently dropping them from repeat merges.
  */
-export const UV_MERGE_COMPOSITION_VERSION = 4;
+export const UV_MERGE_COMPOSITION_VERSION = 5;
 
 export function compositeRenderedColorMaskUnderInPlace(
   frontMask: Uint8Array,
@@ -209,7 +209,7 @@ export function isFlattenableUvMergeSource(
   return Boolean(
     layer.type === 'uv' &&
       layer.imageUrl &&
-      isContentAwareUvUnderlay(layer),
+      (isContentAwareUvUnderlay(layer) || layer.role === 'merged-uv'),
   );
 }
 

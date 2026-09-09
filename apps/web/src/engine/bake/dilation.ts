@@ -71,7 +71,20 @@ class ChunkedUint32Queue {
   }
 }
 
-export function rasterizeUvTopologyMask(
+export function rasterizeUvTopologyMask(...args: Parameters<typeof rasterizeUvTopologyMaskSteps>) {
+  const steps = rasterizeUvTopologyMaskSteps(...args);
+  let step = steps.next();
+  while (!step.done) step = steps.next();
+  return step.value;
+}
+
+export function rasterizeUvTopologyMaskCooperatively(
+  yieldToUi: () => Promise<void>, ...args: Parameters<typeof rasterizeUvTopologyMaskSteps>
+) {
+  return runUvPostprocessSteps(rasterizeUvTopologyMaskSteps(...args), yieldToUi);
+}
+
+function* rasterizeUvTopologyMaskSteps(
   root: THREE.Object3D,
   width: number,
   height: number,
@@ -84,14 +97,16 @@ export function rasterizeUvTopologyMask(
   if (!context) throw new Error('Could not create UV topology mask.');
   context.fillStyle = '#ffffff';
 
-  root.traverse((object) => {
-    if (!(object instanceof THREE.Mesh)) return;
+  const meshes: THREE.Mesh[] = [];
+  root.traverse((object) => { if (object instanceof THREE.Mesh) meshes.push(object); });
+  for (const object of meshes) {
     const geometry = object.geometry;
     const uv = geometry.getAttribute('uv');
-    if (!uv) return;
+    if (!uv) continue;
     const index = geometry.getIndex();
     const triangleCount = index ? index.count / 3 : uv.count / 3;
     for (let triangle = 0; triangle < triangleCount; triangle += 1) {
+      if (triangle % 256 === 0) yield;
       const vertexIndices = [0, 1, 2].map((offset) =>
         index ? index.getX(triangle * 3 + offset) : triangle * 3 + offset,
       );
@@ -107,12 +122,13 @@ export function rasterizeUvTopologyMask(
       context.closePath();
       context.fill();
     }
-  });
+  }
 
   const alpha = context.getImageData(0, 0, width, height).data;
   const topology = new Uint8Array(width * height);
   const alphaThreshold = coverageMode === 'conservative' ? 1 : 128;
   for (let index = 0; index < topology.length; index += 1) {
+    if (index % 8192 === 0) yield;
     // Gutter padding needs pixel-centre coverage so a faint anti-aliasing fringe
     // cannot become a no-man's-land outside the island. Hole repair has the
     // opposite requirement: high-poly atlases contain many sub-pixel triangles,
@@ -146,6 +162,22 @@ export function padUvIslandGutters(
   );
 }
 
+export async function padUvIslandGuttersCooperatively(
+  imageData: ImageData,
+  coverage: Uint8Array,
+  root: THREE.Object3D,
+  iterations: number,
+  alphaMode: UvGutterAlphaMode,
+  yieldToUi: () => Promise<void>,
+) {
+  const topology = await rasterizeUvTopologyMaskCooperatively(
+    yieldToUi, root, imageData.width, imageData.height,
+  );
+  return padUvIslandGuttersWithTopologyCooperatively(
+    imageData, coverage, topology, iterations, alphaMode, yieldToUi,
+  );
+}
+
 /**
  * Pure topology-mask variant used by the bake pipeline and focused tests.
  * `true` retains the historical source-alpha behavior. `rgb-only` is intended
@@ -153,6 +185,41 @@ export function padUvIslandGutters(
  * texel fully transparent, so the gutter cannot paint a model surface.
  */
 export function padUvIslandGuttersWithTopology(
+  ...args: Parameters<typeof padUvIslandGutterSteps>
+) {
+  const steps = padUvIslandGutterSteps(...args);
+  let step = steps.next();
+  while (!step.done) step = steps.next();
+  return step.value;
+}
+
+/** Same ordered writes as the synchronous kernel, in bounded CPU slices. */
+export async function padUvIslandGuttersWithTopologyCooperatively(
+  imageData: ImageData,
+  coverage: Uint8Array,
+  topology: Uint8Array,
+  iterations: number,
+  alphaMode: UvGutterAlphaMode,
+  yieldToUi: () => Promise<void>,
+) {
+  const steps = padUvIslandGutterSteps(imageData, coverage, topology, iterations, alphaMode);
+  return runUvPostprocessSteps(steps, yieldToUi);
+}
+
+async function runUvPostprocessSteps<T>(steps: Generator<void, T>, yieldToUi: () => Promise<void>) {
+  let sliceStartedAt = performance.now();
+  let step = steps.next();
+  while (!step.done) {
+    if (performance.now() - sliceStartedAt >= 8) {
+      await yieldToUi();
+      sliceStartedAt = performance.now();
+    }
+    step = steps.next();
+  }
+  return step.value;
+}
+
+function* padUvIslandGutterSteps(
   imageData: ImageData,
   coverage: Uint8Array,
   topology: Uint8Array,
@@ -171,28 +238,34 @@ export function padUvIslandGuttersWithTopology(
   ] as const;
   let currentFrontier: number[] = [];
   for (let y = 0; y < height; y += 1) {
+    if (y > 0) yield;
     for (let x = 0; x < width; x += 1) {
       const index = y * width + x;
       if (!coverage[index]) continue;
-      const touchesAtlasGutter = neighborOffsets.some(([offsetX, offsetY]) => {
-        const neighborX = x + offsetX;
-        const neighborY = y + offsetY;
-        if (neighborX < 0 || neighborX >= width || neighborY < 0 || neighborY >= height)
-          return false;
-        const neighborIndex = neighborY * width + neighborX;
-        return !topology[neighborIndex];
-      });
+      // This is a boolean membership test, not donor selection. Keep the
+      // row-major frontier and the ordered donor walk below unchanged.
+      const touchesAtlasGutter =
+        (y > 0 && ((x > 0 && !topology[index - width - 1]) ||
+          !topology[index - width] || (x + 1 < width && !topology[index - width + 1]))) ||
+        (x > 0 && !topology[index - 1]) ||
+        (x + 1 < width && !topology[index + 1]) ||
+        (y + 1 < height && ((x > 0 && !topology[index + width - 1]) ||
+          !topology[index + width] || (x + 1 < width && !topology[index + width + 1])));
       if (touchesAtlasGutter) currentFrontier.push(index);
     }
   }
   let paddedPixels = 0;
+  let processedSeeds = 0;
 
   for (let iteration = 0; iteration < iterations && currentFrontier.length > 0; iteration += 1) {
     const pending = new Map<number, number>();
     for (const sourceIndex of currentFrontier) {
+      if (++processedSeeds % 1024 === 0) yield;
       const sourceX = sourceIndex % width;
       const sourceY = Math.floor(sourceIndex / width);
-      for (const [offsetX, offsetY] of neighborOffsets) {
+      for (let neighbor = 0; neighbor < neighborOffsets.length; neighbor += 1) {
+        const offsetX = neighborOffsets[neighbor][0];
+        const offsetY = neighborOffsets[neighbor][1];
         const x = sourceX + offsetX;
         const y = sourceY + offsetY;
         if (x < 0 || x >= width || y < 0 || y >= height) continue;
@@ -208,7 +281,8 @@ export function padUvIslandGuttersWithTopology(
     }
 
     const nextFrontier: number[] = [];
-    pending.forEach((sourceIndex, targetIndex) => {
+    for (const [targetIndex, sourceIndex] of pending) {
+      if (++processedSeeds % 1024 === 0) yield;
       const sourceOffset = sourceIndex * 4;
       const targetOffset = targetIndex * 4;
       data[targetOffset] = data[sourceOffset];
@@ -227,13 +301,26 @@ export function padUvIslandGuttersWithTopology(
       coverage[targetIndex] = alphaMode === 'rgb-only' ? 2 : 1;
       nextFrontier.push(targetIndex);
       paddedPixels += 1;
-    });
+    }
     currentFrontier = nextFrontier;
   }
   return paddedPixels;
 }
 
-export function dilateImageData(
+export function dilateImageData(...args: Parameters<typeof dilateImageDataSteps>) {
+  const steps = dilateImageDataSteps(...args);
+  let step = steps.next();
+  while (!step.done) step = steps.next();
+  return step.value;
+}
+
+export function dilateImageDataCooperatively(
+  yieldToUi: () => Promise<void>, ...args: Parameters<typeof dilateImageDataSteps>
+) {
+  return runUvPostprocessSteps(dilateImageDataSteps(...args), yieldToUi);
+}
+
+function* dilateImageDataSteps(
   imageData: ImageData,
   coverage: Uint8Array,
   iterations: number,
@@ -257,6 +344,7 @@ export function dilateImageData(
   ] as const;
 
   for (let y = 0; y < height; y += 1) {
+    yield;
     for (let x = 0; x < width; x += 1) {
       const index = y * width + x;
       if (!currentCoverage[index]) continue;
@@ -274,10 +362,12 @@ export function dilateImageData(
 
   let currentFrontier = frontier;
   let filledPixels = 0;
+  let work = 0;
   for (let iteration = 0; iteration < iterations && currentFrontier.length > 0; iteration += 1) {
     const touched: number[] = [];
 
     for (const index of currentFrontier) {
+      if (++work % 512 === 0) yield;
       const x = index % width;
       const y = Math.floor(index / width);
       const seedValue = sourceSeeds[index];
@@ -286,7 +376,9 @@ export function dilateImageData(
       const seedX = seedIndex % width;
       const seedY = Math.floor(seedIndex / width);
 
-      for (const [offsetX, offsetY] of neighborOffsets) {
+      for (let neighbor = 0; neighbor < neighborOffsets.length; neighbor += 1) {
+        const offsetX = neighborOffsets[neighbor][0];
+        const offsetY = neighborOffsets[neighbor][1];
         const nextX = x + offsetX;
         const nextY = y + offsetY;
         if (nextX < 0 || nextX >= width || nextY < 0 || nextY >= height) continue;
@@ -313,6 +405,7 @@ export function dilateImageData(
 
     const nextFrontier: number[] = [];
     for (const index of touched) {
+      if (++work % 1024 === 0) yield;
       const seedValue = pendingSeeds[index];
       pendingSeeds[index] = 0;
       if (!seedValue || currentCoverage[index]) continue;
@@ -366,7 +459,20 @@ export function dilateUvCoverageWithinTopology(
  * islands. Accepted components use a multi-source breadth-first fill from all
  * neighbouring covered texels, giving a nearest-donor result in O(N).
  */
-export function fillEnclosedUvCoverageGaps(
+export function fillEnclosedUvCoverageGaps(...args: Parameters<typeof fillEnclosedUvCoverageGapsSteps>) {
+  const steps = fillEnclosedUvCoverageGapsSteps(...args);
+  let step = steps.next();
+  while (!step.done) step = steps.next();
+  return step.value;
+}
+
+export function fillEnclosedUvCoverageGapsCooperatively(
+  yieldToUi: () => Promise<void>, ...args: Parameters<typeof fillEnclosedUvCoverageGapsSteps>
+) {
+  return runUvPostprocessSteps(fillEnclosedUvCoverageGapsSteps(...args), yieldToUi);
+}
+
+function* fillEnclosedUvCoverageGapsSteps(
   imageData: ImageData,
   coverage: Uint8Array,
   topology: Uint8Array,
@@ -386,6 +492,7 @@ export function fillEnclosedUvCoverageGaps(
   // samples before topology analysis so they cannot masquerade as covered
   // texels and then disappear only after the repair has already skipped them.
   for (let index = 0; index < coverage.length; index += 1) {
+    if (index % 1024 === 0) yield;
     if (
       !topology[index] ||
       coverage[index] !== 1 ||
@@ -423,6 +530,7 @@ export function fillEnclosedUvCoverageGaps(
   const filledMarker = 4;
 
   for (let startIndex = 0; startIndex < coverage.length; startIndex += 1) {
+    if (startIndex % 1024 === 0) yield;
     if (!topology[startIndex] || coverage[startIndex] !== 0) continue;
 
     component.clear();
@@ -431,11 +539,14 @@ export function fillEnclosedUvCoverageGaps(
     let touchesTopologyBoundary = false;
 
     for (let cursor = 0; cursor < component.length; cursor += 1) {
+      if (cursor % 1024 === 0) yield;
       const index = component.get(cursor);
       const x = index % width;
       const y = Math.floor(index / width);
 
-      for (const [offsetX, offsetY] of neighborOffsets) {
+      for (let neighbor = 0; neighbor < neighborOffsets.length; neighbor += 1) {
+        const offsetX = neighborOffsets[neighbor][0];
+        const offsetY = neighborOffsets[neighbor][1];
         const neighborX = x + offsetX;
         const neighborY = y + offsetY;
         if (
@@ -452,7 +563,9 @@ export function fillEnclosedUvCoverageGaps(
         }
       }
 
-      for (const [offsetX, offsetY] of componentOffsets) {
+      for (let neighbor = 0; neighbor < componentOffsets.length; neighbor += 1) {
+        const offsetX = componentOffsets[neighbor][0];
+        const offsetY = componentOffsets[neighbor][1];
         const neighborX = x + offsetX;
         const neighborY = y + offsetY;
         if (
@@ -475,13 +588,16 @@ export function fillEnclosedUvCoverageGaps(
     seedPixels.clear();
     seedDonors.clear();
     for (let cursor = 0; cursor < component.length; cursor += 1) {
+      if (cursor % 1024 === 0) yield;
       const index = component.get(cursor);
       const x = index % width;
       const y = Math.floor(index / width);
       let bestDonor = -1;
       let bestAlpha = 0;
 
-      for (const [offsetX, offsetY] of neighborOffsets) {
+      for (let neighbor = 0; neighbor < neighborOffsets.length; neighbor += 1) {
+        const offsetX = neighborOffsets[neighbor][0];
+        const offsetY = neighborOffsets[neighbor][1];
         const neighborX = x + offsetX;
         const neighborY = y + offsetY;
         if (
@@ -513,6 +629,7 @@ export function fillEnclosedUvCoverageGaps(
 
     component.clear();
     for (let seedIndex = 0; seedIndex < seedPixels.length; seedIndex += 1) {
+      if (seedIndex % 1024 === 0) yield;
       const targetIndex = seedPixels.get(seedIndex);
       const donorIndex = seedDonors.get(seedIndex);
       const sourceOffset = donorIndex * 4;
@@ -527,10 +644,13 @@ export function fillEnclosedUvCoverageGaps(
     }
 
     for (let cursor = 0; cursor < component.length; cursor += 1) {
+      if (cursor % 1024 === 0) yield;
       const sourceIndex = component.get(cursor);
       const sourceX = sourceIndex % width;
       const sourceY = Math.floor(sourceIndex / width);
-      for (const [offsetX, offsetY] of componentOffsets) {
+      for (let neighbor = 0; neighbor < componentOffsets.length; neighbor += 1) {
+        const offsetX = componentOffsets[neighbor][0];
+        const offsetY = componentOffsets[neighbor][1];
         const neighborX = sourceX + offsetX;
         const neighborY = sourceY + offsetY;
         if (
@@ -556,6 +676,7 @@ export function fillEnclosedUvCoverageGaps(
   }
 
   for (let index = 0; index < coverage.length; index += 1) {
+    if (index % 1024 === 0) yield;
     if (coverage[index] === rejectedMarker) coverage[index] = 0;
     else if (coverage[index] === filledMarker) coverage[index] = 1;
   }
@@ -577,6 +698,7 @@ export function fillEnclosedUvCoverageGaps(
     seedDonors.clear();
 
     for (let index = 0; index < coverage.length; index += 1) {
+      if (index % 1024 === 0) yield;
       if (coverage[index] !== 0) continue;
       const x = index % width;
       const y = Math.floor(index / width);
@@ -612,7 +734,9 @@ export function fillEnclosedUvCoverageGaps(
       let chosenDonor = -1;
       let chosenAlpha = -1;
 
-      for (const [firstDirection, secondDirection] of crackDirectionPairs) {
+      for (let direction = 0; direction < crackDirectionPairs.length; direction += 1) {
+        const firstDirection = crackDirectionPairs[direction][0];
+        const secondDirection = crackDirectionPairs[direction][1];
         let firstDonor = -1;
         let secondDonor = -1;
 
@@ -690,6 +814,7 @@ export function fillEnclosedUvCoverageGaps(
 
     if (seedPixels.length === 0) break;
     for (let candidate = 0; candidate < seedPixels.length; candidate += 1) {
+      if (candidate % 1024 === 0) yield;
       const targetIndex = seedPixels.get(candidate);
       const donorIndex = seedDonors.get(candidate);
       const targetOffset = targetIndex * 4;

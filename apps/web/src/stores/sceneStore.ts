@@ -25,6 +25,8 @@ export type PaintToolMode =
 
 export type LocalRepaintProjectionSource = {
   imageUrl: string;
+  /** False for model-silhouette-clipped RGBA; undefined preserves legacy behavior. */
+  ignoreSourceAlpha?: boolean;
   /** Original server/project URL used by autosave without data-URL readback. */
   persistentImageUrl?: string;
   /** Untouched generated result retained for an exact legacy-mode rollback. */
@@ -61,7 +63,8 @@ export type LocalRepaintBrushSettings = {
 };
 
 export const MIN_PAINT_MASK_BRUSH_SIZE = 0.1;
-export const DEFAULT_PAINT_MASK_BRUSH_SIZE = 10;
+export const DEFAULT_PAINT_MASK_BRUSH_SIZE = 45;
+export const DEFAULT_LOCAL_REPAINT_BRUSH_SIZE = 10;
 export const MAX_PAINT_MASK_BRUSH_SIZE = 60;
 
 export type PaintToolSettings = {
@@ -302,7 +305,7 @@ export const useSceneStore = create<SceneStore>()(
         brushSize: DEFAULT_PAINT_MASK_BRUSH_SIZE,
       },
       localRepaintBrushSettings: {
-        brushSize: DEFAULT_PAINT_MASK_BRUSH_SIZE,
+        brushSize: DEFAULT_LOCAL_REPAINT_BRUSH_SIZE,
         // Preserve the former fixed soft edge (solid through 55% of the radius).
         brushFeather: 45,
       },

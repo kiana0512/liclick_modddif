@@ -1,6 +1,7 @@
 import { getProjectApiBase } from '@/platform/projectApiBase';
 import { urlToBlob } from '@/services/workspaceApiClient';
 import { useProjectStore } from '@/stores/projectStore';
+import { waitForBrowserPaint } from '@/utils/browserScheduling';
 import {
   getLiveProjectedTextureSourceState,
   isLiveProjectedCanvasUrl,
@@ -165,12 +166,17 @@ export async function loadImageData(
             ),
           );
       });
+      // onload guarantees availability, not completed decoding. Let the
+      // browser finish decoding before Canvas would synchronously demand it.
+      // Some otherwise drawable sources reject decode(), so retain that path.
+      if (typeof image.decode === 'function') await image.decode().catch(() => undefined);
     } finally {
       if (fetchedObjectUrl) URL.revokeObjectURL(fetchedObjectUrl);
     }
     source = image;
     sourceWidth = image.naturalWidth || image.width;
     sourceHeight = image.naturalHeight || image.height;
+    await waitForBrowserPaint();
   }
   const scale = Math.min(1, maxDimension / Math.max(sourceWidth, sourceHeight));
   const canvas = document.createElement('canvas');
@@ -181,9 +187,28 @@ export async function loadImageData(
   context.imageSmoothingEnabled = true;
   context.imageSmoothingQuality = 'high';
   context.drawImage(source, 0, 0, canvas.width, canvas.height);
-  const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
+  const imageData = liveTextureState || canvas.width * canvas.height <= 262144
+    ? context.getImageData(0, 0, canvas.width, canvas.height)
+    : await readStaticSamplingCanvas(context, canvas.width, canvas.height);
   rememberImageData(cacheKey, imageData);
   return imageData;
+}
+
+// The canvas is private and already contains the complete high-quality scaled
+// draw. Reading disjoint rows cannot alter sampling, alpha or live-source timing.
+async function readStaticSamplingCanvas(context: CanvasRenderingContext2D, width: number, height: number) {
+  const image = new ImageData(width, height);
+  const rows = Math.max(1, Math.floor(262144 / width));
+  let startedAt = performance.now();
+  for (let y = 0; y < height; y += rows) {
+    const stripe = context.getImageData(0, y, width, Math.min(rows, height - y));
+    image.data.set(stripe.data, y * width * 4);
+    if (y + rows < height && performance.now() - startedAt >= 8) {
+      await waitForBrowserPaint();
+      startedAt = performance.now();
+    }
+  }
+  return image;
 }
 
 export function sampleImageNearest(image: ImageData, u: number, v: number): ImageSample {

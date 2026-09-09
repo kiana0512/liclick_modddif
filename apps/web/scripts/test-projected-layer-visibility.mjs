@@ -930,8 +930,8 @@ assert.doesNotMatch(
 );
 assert.match(
   viewportCanvasSource,
-  /const compileScene = new THREE\.Scene\(\);[\s\S]*?const compilePromise = gl\.compileAsync\(compileScene, camera\);[\s\S]*?overlayState\.compilePromise = compilePromise/,
-  'Local repaint must compile only its isolated overlay instead of capturing replaceable scene materials.',
+  /const compileScene = new THREE\.Scene\(\);[\s\S]*?const overlayCompile = gl\.compileAsync\(compileScene, camera\);[\s\S]*?consumptionCompile = gl\.compileAsync\(consumptionScene, camera\);[\s\S]*?overlayState\.compilePromise = compilePromise/,
+  'Local repaint must compile isolated overlay/selection programs, never replaceable scene materials.',
 );
 assert.match(
   viewportCanvasSource,
@@ -966,7 +966,7 @@ const server = await createServer({
   root,
   appType: 'custom',
   logLevel: 'silent',
-  server: { middlewareMode: true },
+  server: { middlewareMode: true, watch: { ignored: () => true } },
 });
 
 try {
@@ -1011,7 +1011,7 @@ try {
       });
     },
   };
-  const compilation = compileForRenderTarget(rendererFixture, {}, {}, offscreenTarget);
+  const compilation = compileForRenderTarget(rendererFixture, new THREE.Scene(), {}, offscreenTarget);
   assert.deepEqual(
     [boundTarget, boundFace, boundMip],
     [originalTarget, 3, 2],
@@ -1023,7 +1023,7 @@ try {
     throw new Error('compile failed');
   };
   assert.throws(
-    () => compileForRenderTarget(rendererFixture, {}, {}, offscreenTarget),
+    () => compileForRenderTarget(rendererFixture, new THREE.Scene(), {}, offscreenTarget),
     /compile failed/,
   );
   assert.deepEqual(
@@ -1033,7 +1033,7 @@ try {
   );
   rendererFixture.compileAsync = () => Promise.reject(new Error('link failed'));
   await assert.rejects(
-    compileForRenderTarget(rendererFixture, {}, {}, offscreenTarget),
+    compileForRenderTarget(rendererFixture, new THREE.Scene(), {}, offscreenTarget),
     /link failed/,
   );
   assert.deepEqual(
@@ -1450,6 +1450,69 @@ try {
   assert(material, 'Expected the six-layer projected material to be created.');
   const state = material.userData.liclickProjectedLayerStackState;
   assert.equal(state.bindings.length, 6);
+  // Multi-layer ordered subsets must reuse the original sampler slots.
+  // Empty/single inputs preserve the white/single-shader factory semantics.
+  const subsetInput = {
+    layers, baseTexture: residentContentAwareTexture, uvOverlayTexture: residentUvTexture,
+    uvOverlayOpacity: 1, uvOverlayBelowProjected: true, baseTextureOpacity: 1,
+  };
+  const originalShader = material.fragmentShader;
+  const originalVersion = material.version;
+  const originalLayers = JSON.stringify(layers);
+  const uniformSnapshot = () => JSON.stringify(Object.fromEntries(
+    Object.entries(material.uniforms).map(([name, uniform]) => [
+      name, uniform.value instanceof THREE.Texture ? uniform.value.uuid : uniform.value,
+    ]),
+  ));
+  for (let cycle = 0; cycle < 10; cycle++) {
+    for (let mask = 1; mask < 64; mask++) {
+      const subset = layers.filter((_, index) => mask & (1 << index));
+      if (subset.length === 1) continue;
+      const eraserLayer = subset.at(-1);
+      assert.equal(projection.updateProjectedLayerStackMaterial(material, {
+        ...subsetInput, layers: subset, liveEraserLayerId: eraserLayer.layerId,
+        liveEraserMaskTexture: residentContentAwareTexture,
+      }), true);
+      state.bindings.forEach((binding, index) => {
+        assert.equal(material.uniforms[binding.opacityUniform].value, mask & (1 << index) ? 1 : 0);
+      });
+      assert.equal(material.uniforms.liveEraserLayerIndex.value, layers.indexOf(eraserLayer));
+      assert.equal(material.uniforms.useLiveEraserMask.value, 1);
+    }
+  }
+  assert.equal(material.fragmentShader, originalShader);
+  assert.equal(material.version, originalVersion, 'Visibility reuse must never request recompilation.');
+  assert.equal(JSON.stringify(layers), originalLayers, 'Authored layers must remain unchanged.');
+  assert.equal(projection.updateProjectedLayerStackMaterial(material, {
+    ...subsetInput, layers: [layers[3], layers[4]], liveEraserLayerId: layers[0].layerId,
+    liveEraserMaskTexture: residentContentAwareTexture,
+  }), true);
+  assert.equal(material.uniforms.liveEraserLayerIndex.value, -1);
+  assert.equal(material.uniforms.useLiveEraserMask.value, 0);
+  const rejectedSubsets = [
+    [], [layers[2]], [layers[4], layers[1]], [layers[1], layers[1]],
+    [{ ...layers[2], layerId: 'unknown' }],
+    ...[
+      { imageUrl: 'memory://changed' }, { maskUrl: 'memory://mask', useMask: true },
+      { depthUrl: 'memory://depth', useDepthCheck: true }, { normalUrl: 'memory://normal', useNormalCheck: true },
+      { renderedColor: true }, { compositeRole: 'underlay' }, { ignoreSourceAlpha: true },
+      { camera: { ...camera, position: [11, 12, 13] } }, { objectMatrixWorld: Array(16).fill(2) },
+    ].map((patch) => [layers[0], { ...layers[2], ...patch }]),
+  ];
+  for (const rejected of rejectedSubsets) {
+    const before = uniformSnapshot();
+    assert.equal(projection.updateProjectedLayerStackMaterial(material, { ...subsetInput, layers: rejected }), false);
+    assert.equal(uniformSnapshot(), before, 'Rejected structure must not partially change live uniforms.');
+  }
+  for (const feature of ['baseRenderedColorMaskTexture', 'uvOverlayRenderedColorMaskTexture', 'topUvOverlayTexture']) {
+    const before = uniformSnapshot();
+    assert.equal(projection.updateProjectedLayerStackMaterial(material, {
+      ...subsetInput, layers: [layers[0], layers[2]], [feature]: residentUvTexture,
+    }), false);
+    assert.equal(uniformSnapshot(), before);
+  }
+  assert.equal(projection.updateProjectedLayerStackMaterial(material, subsetInput), true);
+  console.log('Resident subset reuse passed: 570 transitions, eraser slot ownership, single/structural rejection and unchanged inputs/shader.');
   assert.equal(material.uniforms.uvOverlayBelowProjected.value, 1);
   assert.deepEqual(
     state.bindings.map((binding) => binding.layerId),
@@ -1501,8 +1564,8 @@ try {
   assert.equal(liveRepaintOverlay.transparent, true);
   assert.equal(liveRepaintOverlay.depthWrite, false);
   assert.equal(liveRepaintOverlay.depthFunc, THREE.LessEqualDepth);
-  assert.equal(liveRepaintOverlay.polygonOffsetFactor, -1);
-  assert.equal(liveRepaintOverlay.polygonOffsetUnits, -1);
+  assert.equal(liveRepaintOverlay.polygonOffsetFactor, 0);
+  assert.equal(liveRepaintOverlay.polygonOffsetUnits, 0);
   assert.equal(liveRepaintOverlay.uniforms.transparentProjectionOnly.value, 1);
   assert.equal(
     repaintOverlaySync.syncLocalRepaintGpuOverlayLighting(
@@ -1550,9 +1613,17 @@ try {
   );
   assert.match(
     liveRepaintOverlay.fragmentShader,
-    /float acceptedDepthOffset = -0\.000080;[\s\S]*mix\(0\.000006, acceptedDepthOffset, projectedDepthPriority\)/,
-    'The final repaint pass must have deterministic depth priority above the projected background.',
+    /gl_FragDepthEXT = projectedRasterDepth\(gl_FragCoord.z, projectedDepthPriority\)/,
+    'Live repaint must share the resident surface depth instead of pushing inner faces through the shell.',
   );
+  assert.equal(liveRepaintOverlay.polygonOffset, false);
+  const rasterDepth = await server.ssrLoadModule('/src/engine/projection/projectionRasterDepth.ts');
+  for (const material of [liveRepaintOverlay, hybrid, simpleHybrid, liveDepth]) {
+    assert.ok(material.fragmentShader.includes(rasterDepth.PROJECTED_RASTER_DEPTH_GLSL));
+    assert.doesNotMatch(material.fragmentShader, /-0\.000080|-0\.000006/);
+  }
+  assert.match(rasterDepth.PROJECTED_RASTER_DEPTH_GLSL, /geometricDepth \+ \(1\.0 - accepted\) \* 0\.000006/,
+    'Accepted pixels keep geometric depth; only the existing empty diagnostic retreat remains.');
   projection.syncProjectedLayerMaterialDisplayState(liveRepaintOverlay, []);
   assert.equal(
     liveRepaintOverlay.uniforms.layerOpacity.value,

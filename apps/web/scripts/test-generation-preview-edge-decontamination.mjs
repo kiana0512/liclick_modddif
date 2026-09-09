@@ -76,7 +76,7 @@ const server = await createServer({
   root: fileURLToPath(new URL('../', import.meta.url)),
   appType: 'custom',
   logLevel: 'silent',
-  server: { middlewareMode: true },
+  server: { middlewareMode: true, watch: { ignored: () => true } },
 });
 
 try {

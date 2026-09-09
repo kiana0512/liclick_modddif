@@ -20,6 +20,7 @@ import {
   createClayModelMaterial,
 } from '@/engine/materials/clayModelMaterial';
 import { waitForBrowserPaint } from '@/utils/browserScheduling';
+import { PROJECTED_RASTER_DEPTH_GLSL } from './projectionRasterDepth';
 
 const DEFAULT_PREVIEW_COLOR = CLAY_MODEL_COLOR;
 const DEFAULT_WIRE_COLOR = '#e9ebe8';
@@ -207,6 +208,7 @@ type ProjectedLayerUniformBinding = {
 
 type ProjectedLayerMaterialState = {
   signature: string;
+  layers?: ProjectionLayerStackInput['layers'];
   bindings: ProjectedLayerUniformBinding[];
   usesTextureArrays?: boolean;
 };
@@ -352,6 +354,7 @@ function createWhiteMembranePreviewMaterial(_previewLightingInput?: ProjectionPr
 }
 
 const fragmentShader = `
+  ${PROJECTED_RASTER_DEPTH_GLSL}
   uniform sampler2D projectedMap;
   uniform sampler2D baseMap;
   uniform sampler2D uvOverlayMap;
@@ -869,16 +872,9 @@ const fragmentShader = `
         ${COVERAGE_THRESHOLD.toFixed(2)},
         literalReplacementAlpha
       );
-      // Keep the accepted repaint at the same decisive foreground depth as a
-      // standard projection. The previous surface-locked offset was only
-      // 0.000010 and coplanar fragments alternated with the base mesh at
-      // grazing view angles, producing regular zebra stripes.
-      float acceptedDepthOffset = -0.000080;
-      gl_FragDepthEXT = clamp(
-        gl_FragCoord.z + mix(0.000006, acceptedDepthOffset, projectedDepthPriority),
-        0.0,
-        1.0
-      );
+      // Match the resident surface exactly. A larger foreground offset makes
+      // an inner repaint pass the current camera's outer-shell depth test.
+      gl_FragDepthEXT = projectedRasterDepth(gl_FragCoord.z, projectedDepthPriority);
       gl_FragColor = vec4(
         clamp(projectedDisplayColor, 0.0, 1.0),
         literalReplacementAlpha
@@ -927,22 +923,14 @@ const fragmentShader = `
     );
     mixedColor = mix(mixedColor, topUvOverlayDisplayColor, topUvOverlayAlpha);
 
-    // Different meshes in imported assets can contain coincident or nearly
-    // coincident faces.  Without a deterministic per-fragment priority, an
-    // accepted projection and the diagnostic empty-preview hatch compete in
-    // the depth buffer and turn into dense zebra/Moire stripes.  Keep the
-    // offset tiny so real occlusion is unchanged, while making projected
-    // fragments consistently win over an overlapping diagnostic fragment.
+    // Keep empty diagnostics behind coincident authored colour, but never
+    // pull authored fragments ahead of their actual geometric surface.
     float projectedDepthCoverage = max(
       max(projectionAlpha, baseTextureAlpha),
       max(uvOverlayTexel.a * useUvOverlayMap * uvOverlayOpacity, topUvOverlayAlpha)
     );
     float projectedDepthPriority = step(${COVERAGE_THRESHOLD.toFixed(2)}, projectedDepthCoverage);
-    gl_FragDepthEXT = clamp(
-      gl_FragCoord.z + mix(0.000006, -0.000006, projectedDepthPriority),
-      0.0,
-      1.0
-    );
+    gl_FragDepthEXT = projectedRasterDepth(gl_FragCoord.z, projectedDepthPriority);
 
     gl_FragColor = vec4(clamp(mixedColor, 0.0, 1.0), 1.0);
     #include <tonemapping_fragment>
@@ -2151,6 +2139,7 @@ function buildStackFragmentShader(
   }
 
   ${compactBlendHelpers}
+  ${PROJECTED_RASTER_DEPTH_GLSL}
 
   void main() {
     vec3 normal = normalize(vWorldNormal);
@@ -2169,8 +2158,8 @@ function buildStackFragmentShader(
     if (wirePreviewEnabled > 0.5) {
       ${
         features.useTextureArrays
-          ? 'gl_FragDepth = clamp(gl_FragCoord.z + 0.000006, 0.0, 1.0);'
-          : 'gl_FragDepthEXT = clamp(gl_FragCoord.z + 0.000006, 0.0, 1.0);'
+          ? 'gl_FragDepth = projectedRasterDepth(gl_FragCoord.z, 0.0);'
+          : 'gl_FragDepthEXT = projectedRasterDepth(gl_FragCoord.z, 0.0);'
       }
       gl_FragColor = vec4(
         clamp(baseColor * computeWhiteMembraneLight(normal), 0.0, 1.0),
@@ -2334,8 +2323,8 @@ function buildStackFragmentShader(
     float projectedDepthPriority = step(${COVERAGE_THRESHOLD.toFixed(2)}, projectedDepthCoverage);
     ${
       features.useTextureArrays
-        ? 'gl_FragDepth = clamp(gl_FragCoord.z + mix(0.000006, -0.000006, projectedDepthPriority), 0.0, 1.0);'
-        : 'gl_FragDepthEXT = clamp(gl_FragCoord.z + mix(0.000006, -0.000006, projectedDepthPriority), 0.0, 1.0);'
+        ? 'gl_FragDepth = projectedRasterDepth(gl_FragCoord.z, projectedDepthPriority);'
+        : 'gl_FragDepthEXT = projectedRasterDepth(gl_FragCoord.z, projectedDepthPriority);'
     }
     gl_FragColor = vec4(clamp(mixedColor, 0.0, 1.0), 1.0);
     #include <tonemapping_fragment>
@@ -2359,16 +2348,19 @@ function getPreviewLighting(input?: ProjectionPreviewLighting) {
   };
 }
 
-function prepareUvTexture(texture: THREE.Texture) {
-  if (texture.userData[PREPARED_TEXTURE_PROFILE_KEY] === UV_OVERLAY_TEXTURE_PROFILE) return;
+function prepareUvTexture(texture: THREE.Texture, colorSpace: string = THREE.SRGBColorSpace) {
+  if (
+    texture.userData[PREPARED_TEXTURE_PROFILE_KEY] === UV_OVERLAY_TEXTURE_PROFILE &&
+    texture.colorSpace === colorSpace
+  ) return;
   const uploadStateChanged =
-    texture.colorSpace !== THREE.SRGBColorSpace ||
+    texture.colorSpace !== colorSpace ||
     texture.wrapS !== THREE.ClampToEdgeWrapping ||
     texture.wrapT !== THREE.ClampToEdgeWrapping ||
     texture.minFilter !== THREE.LinearFilter ||
     texture.magFilter !== THREE.LinearFilter ||
     texture.generateMipmaps;
-  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.colorSpace = colorSpace;
   // Keep the source's established orientation. ImageBitmap previews are
   // decoded pre-flipped and uploaded with flipY=false, while TextureLoader and
   // canvas sources carry their own correct value. Forcing true here invalidated
@@ -2384,9 +2376,7 @@ function prepareUvTexture(texture: THREE.Texture) {
 }
 
 function prepareRenderedColorMaskTexture(texture: THREE.Texture) {
-  prepareUvTexture(texture);
-  texture.colorSpace = THREE.NoColorSpace;
-  texture.needsUpdate = true;
+  prepareUvTexture(texture, THREE.NoColorSpace);
 }
 
 function prepareLiveEraserMaskTexture(texture: THREE.Texture) {
@@ -3040,8 +3030,27 @@ export function updateProjectedLayerStackMaterial(
     | ProjectedLayerMaterialState
     | undefined;
   if (!state) return false;
-  const layers = input.layers.filter((layer) => layer.imageUrl && layer.camera);
+  let layers = input.layers.filter((layer) => layer.imageUrl && layer.camera);
   if (layers.length === 0) return false;
+  // Keep compiled slots and eraser indices stable when reusing a resident subset.
+  if (state.layers && layers.length < state.layers.length) {
+    // The single-layer shader has distinct coverage/diagnostic semantics.
+    // Preserve its existing factory path instead of substituting Top-K blending.
+    if (layers.length === 1) return false;
+    let next = 0;
+    const residentLayers = state.layers.map((layer) =>
+      layer.layerId === layers[next]?.layerId ? layers[next++]! : { ...layer, opacity: 0 },
+    );
+    if (next !== layers.length) return false;
+    input = {
+      ...input,
+      liveEraserLayerId: layers.some((layer) => layer.layerId === input.liveEraserLayerId)
+        ? input.liveEraserLayerId
+        : undefined,
+      layers: residentLayers,
+    };
+    layers = residentLayers;
+  }
   if (
     state.signature !==
     getProjectionLayerStructureSignature(layers, {
@@ -3054,11 +3063,12 @@ export function updateProjectedLayerStackMaterial(
     })
   )
     return false;
+  if (layers.some((layer, index) => state.bindings[index]?.layerId !== layer.layerId))
+    return false;
   updateSharedPreviewUniforms(material, input);
   for (let index = 0; index < layers.length; index += 1) {
     const binding = state.bindings[index];
     const layer = layers[index];
-    if (!binding || binding.layerId !== layer.layerId) return false;
     updateLayerUniforms(material, binding, layer);
   }
   return true;
@@ -4065,9 +4075,9 @@ export async function createProjectedLayerMaterial(input: ProjectionLayerInput) 
     toneMapped: true,
     transparent: Boolean(input.transparentProjectionOnly),
     depthWrite: !input.transparentProjectionOnly,
-    polygonOffset: Boolean(input.transparentProjectionOnly),
-    polygonOffsetFactor: input.transparentProjectionOnly ? -1 : 0,
-    polygonOffsetUnits: input.transparentProjectionOnly ? -1 : 0,
+    // Explicit gl_FragDepth already resolves coplanar ties. Slope-scaled
+    // polygon offset must not turn grazing inner faces into foreground pixels.
+    polygonOffset: false,
     depthFunc: THREE.LessEqualDepth,
   });
   material.userData[GENERATED_MATERIAL_FLAG] = true;
@@ -4080,6 +4090,7 @@ export async function createProjectedLayerMaterial(input: ProjectionLayerInput) 
     hiddenMaskTexture,
   ];
   material.userData[PROJECTED_LAYER_STACK_STATE_KEY] = {
+    layers: [materialLayer],
     signature: getProjectionLayerStructureSignature([materialLayer], {
       useBaseMap: Boolean(input.baseTexture || input.reserveBaseMapSampler),
       useBaseRenderedColorMaskMap: Boolean(input.baseRenderedColorMaskTexture),
@@ -4809,11 +4820,7 @@ export async function createProjectedLayerStackMaterial(
     name: `LiclickProjectedLayerStack:${loadedLayers.map((layer) => layer.layerId).join(',')}`,
     vertexShader,
     fragmentShader: buildStackFragmentShader(loadedLayers, {
-      useBaseMap: Boolean(input.baseTexture || input.reserveBaseMapSampler),
-      useBaseRenderedColorMaskMap: Boolean(input.baseRenderedColorMaskTexture),
-      useUvOverlayMap: Boolean(input.uvOverlayTexture || input.reserveUvOverlaySampler),
-      useUvOverlayRenderedColorMaskMap: Boolean(input.uvOverlayRenderedColorMaskTexture),
-      useTopUvOverlayMap: Boolean(input.topUvOverlayTexture),
+      ...samplerFeatures,
       useTextureArrays,
     }),
     uniforms,
@@ -4828,12 +4835,9 @@ export async function createProjectedLayerStackMaterial(
   }
   material.userData[DISPOSABLE_TEXTURES_KEY] = [...new Set(disposableTextures)];
   material.userData[PROJECTED_LAYER_STACK_STATE_KEY] = {
+    layers: loadedLayers,
     signature: getProjectionLayerStructureSignature(loadedLayers, {
-      useBaseMap: Boolean(input.baseTexture || input.reserveBaseMapSampler),
-      useBaseRenderedColorMaskMap: Boolean(input.baseRenderedColorMaskTexture),
-      useUvOverlayMap: Boolean(input.uvOverlayTexture || input.reserveUvOverlaySampler),
-      useUvOverlayRenderedColorMaskMap: Boolean(input.uvOverlayRenderedColorMaskTexture),
-      useTopUvOverlayMap: Boolean(input.topUvOverlayTexture),
+      ...samplerFeatures,
       useTextureArrays,
     }),
     bindings: loadedLayers.map((layer, index) => ({
@@ -4985,13 +4989,14 @@ function retainProjectedProgram(material: THREE.ShaderMaterial) {
     const retiredAnchor = residentProjectedProgramAnchors.shift();
     if (!retiredAnchor) break;
     retiredAnchor.userData[DISPOSED_MATERIAL_FLAG] = true;
-    retiredAnchor.dispose();
+    if (!deferDisposalDuringCompile(retiredAnchor, () => retiredAnchor.dispose())) retiredAnchor.dispose();
   }
 }
 
 function disposeGeneratedMaterial(material: THREE.Material) {
   if (!material.userData[GENERATED_MATERIAL_FLAG]) return;
   if (material.userData[DISPOSED_MATERIAL_FLAG]) return;
+  if (deferDisposalDuringCompile(material, () => disposeGeneratedMaterial(material))) return;
   if (material.userData[PROJECTED_PROGRAM_RESIDENT_ANCHOR_FLAG]) return;
   if (
     material instanceof THREE.ShaderMaterial &&
@@ -5520,3 +5525,4 @@ export function createPbrPreviewMaterial(
     ? originalMaterial.map((material) => prepareSinglePreviewMaterial(material, bakedTexture))
     : prepareSinglePreviewMaterial(originalMaterial, bakedTexture);
 }
+import { deferDisposalDuringCompile } from './compileForRenderTarget';

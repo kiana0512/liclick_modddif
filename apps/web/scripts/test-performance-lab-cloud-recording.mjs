@@ -122,7 +122,7 @@ const vite = await createServer({
   root,
   appType: 'custom',
   logLevel: 'silent',
-  server: { middlewareMode: true },
+  server: { middlewareMode: true, watch: { ignored: () => true } },
 });
 try {
   const timeline = await vite.ssrLoadModule('/src/engine/performance/performanceTimeline.ts');
@@ -139,7 +139,7 @@ try {
     '/src/features/performanceLab/performanceLabCollector.ts',
   );
   assert.equal(collector.PERFORMANCE_LAB_REPORT_SCHEMA_VERSION, 2);
-  assert.equal(collector.PERFORMANCE_LAB_COLLECTOR_VERSION, '2.2.0');
+  assert.equal(collector.PERFORMANCE_LAB_COLLECTOR_VERSION, '2.2.1');
   assert.equal(
     collector.isJavaScriptPerformanceResource({
       initiatorType: 'worker',

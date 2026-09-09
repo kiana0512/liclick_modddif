@@ -1,0 +1,28 @@
+<!doctype html><meta charset="utf-8"><title>34-layer GPU budget regression</title>
+<pre id="result">Running</pre>
+<script type="module">
+import * as THREE from 'three';
+import { ProjectedLayerPreviewCompositor } from '/src/engine/projection/ProjectedLayerPreviewCompositor.ts';
+import { isProjectedUniformBudgetSafe } from '/src/engine/projection/projectedUniformBudget.ts';
+try {
+  const renderer = new THREE.WebGLRenderer(); renderer.setSize(64,64);
+  const camera = new THREE.PerspectiveCamera(45,1,.1,100); camera.position.z=5; camera.updateMatrixWorld(true);
+  const canvas=document.createElement('canvas');canvas.width=canvas.height=4;
+  const context=canvas.getContext('2d');context.fillStyle='#ff0000';context.fillRect(0,0,4,4);
+  const layers=Array.from({length:34},(_,i)=>({layerId:`layer-${i}`,imageUrl:canvas.toDataURL(),visible:true,opacity:1,strength:1,
+    camera:{projectionMatrix:camera.projectionMatrix.toArray(),viewMatrix:camera.matrixWorldInverse.toArray(),matrixWorld:camera.matrixWorld.toArray(),position:[0,0,5],near:.1,far:100}}));
+  const group=new THREE.Group();group.add(new THREE.Mesh(new THREE.PlaneGeometry(2,2),new THREE.MeshBasicMaterial()));group.updateMatrixWorld(true);
+  const compositor=new ProjectedLayerPreviewCompositor();
+  let done=false;const output=await new Promise((resolve,reject)=>{
+    compositor.request({signature:'34-layer-regression',renderer,group,layers,resolution:64,onReady:resolve,onError:reject});
+    function tick(){if(done)return;compositor.step(3,2);requestAnimationFrame(tick);}tick();
+  });done=true;
+  const target=new THREE.WebGLRenderTarget(64,64);const scene=new THREE.Scene();
+  scene.add(new THREE.Mesh(new THREE.PlaneGeometry(2,2),new THREE.MeshBasicMaterial({map:output.colorTexture})));
+  renderer.setRenderTarget(target);renderer.render(scene,new THREE.OrthographicCamera(-1,1,1,-1,0,2));
+  const pixels=new Uint8Array(64*64*4);renderer.readRenderTargetPixels(target,0,0,64,64,pixels);
+  const center=[...pixels.slice((32*64+32)*4,(32*64+32)*4+4)];
+  if(output.layerIds.length!==34 || center[0]<240 || center[1]>10 || center[2]>10)throw Error(JSON.stringify({center,layers:output.layerIds.length}));
+  document.querySelector('#result').textContent=JSON.stringify({passed:true,layerCount:output.layerIds.length,center,budgetSafe:isProjectedUniformBudgetSafe(34,1024)});
+}catch(error){document.querySelector('#result').textContent='FAIL '+error.stack;}
+</script>

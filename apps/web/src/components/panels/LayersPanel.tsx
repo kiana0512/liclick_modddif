@@ -1,3 +1,4 @@
+import { usePendingProjectionLayers } from '@/engine/projection/projectionDisplayAdmission';
 import {
   startTransition,
   useCallback,
@@ -513,6 +514,7 @@ export function LayersPanel({
   // snapshot made rapid clicks calculate the next value from an older frame.
   const layers = useLayerStore((state) => state.layers);
   const authoritativeLayers = layers;
+  const pendingProjectionIds = usePendingProjectionLayers();
   const selectedObjectId = useSceneStore((state) => state.selectedObjectId);
   const setLayerVisibility = useLayerStore((state) => state.setLayerVisibility);
   const setOpacity = useLayerStore((state) => state.setOpacity);
@@ -1003,11 +1005,23 @@ export function LayersPanel({
           if (layer) onLayerImageReplace?.(layer, file);
         }}
       />
+      {visibleLayers.some((layer) => pendingProjectionIds.includes(layer.id)) && (
+        <div role="status" className="mb-2 rounded-md border border-amber-400/50 bg-amber-400/10 p-3 text-sm text-amber-100">
+          <strong>部分投影图层待显示</strong>
+          <p className="mt-1">已达到设备实时显示上限。琥珀色图层已保留，尚未参与当前画面，请先合成 UV。</p>
+          <button type="button" className="mt-2 rounded border border-liclick-pink/70 bg-liclick-pink/20 px-3 py-1 font-semibold text-white shadow-[0_0_14px_rgba(236,72,189,0.62)] disabled:opacity-40"
+            disabled={mutationLocked || !onMergeSelectedToUvLayer}
+            onClick={() => onMergeSelectedToUvLayer?.(visibleLayers.filter((layer) => layer.visible && (layer.type === 'projected' || isFlattenableUvMergeSource(layer))).map((layer) => layer.id))}>
+            合成 UV（包含待显示图层）
+          </button>
+        </div>
+      )}
       <div className="max-h-[min(72vh,820px)] min-h-[260px] overflow-y-auto overflow-x-hidden rounded-md border border-white/28">
         {visibleLayers.map((layer) => (
           <LayerRow
             key={layer.id}
             layer={layer}
+            pendingDisplay={pendingProjectionIds.includes(layer.id)}
             active={layer.id === activeProjectedLayerId}
             selected={selectedLayerIdSet.has(layer.id)}
             dragging={draggingLayerId === layer.id}
@@ -1417,6 +1431,7 @@ export function LayersPanelActions({
 }
 
 function LayerRow({
+  pendingDisplay = false,
   layer,
   active,
   selected,
@@ -1436,6 +1451,7 @@ function LayerRow({
   onDragEnd,
 }: {
   layer: Layer;
+  pendingDisplay?: boolean;
   active: boolean;
   selected: boolean;
   dragging: boolean;
@@ -1491,6 +1507,7 @@ function LayerRow({
         selected && 'bg-white/[0.22]',
         active && 'after:absolute after:inset-x-0 after:bottom-0 after:h-px after:bg-[#74a7ff]',
         dragging && 'opacity-45',
+        pendingDisplay && 'h-[76px] border-l-4 border-l-amber-400 bg-amber-400/10',
       )}
     >
       <button
@@ -1515,6 +1532,7 @@ function LayerRow({
       </div>
       <div className="min-w-0 flex-1">
         <div className="truncate text-base font-semibold leading-5 text-white">{layer.name}</div>
+        {pendingDisplay && <span className="text-xs text-amber-300">待显示 · 请先合成 UV</span>}
         <div className="mt-1 flex items-center gap-3 text-white">
           <SmallLayerToggle
             active={layer.opacity > 0.01}
@@ -1656,7 +1674,6 @@ function LayerMenu({
 }) {
   const t = useT();
   if (!layer) return null;
-  const selectedProjectedLayers = selectedLayers.filter((item) => item.type === 'projected');
   const selectedMergeSourceLayers = selectedLayers.filter(
     (item) => item.type === 'projected' || isFlattenableUvMergeSource(item),
   );
@@ -1684,7 +1701,7 @@ function LayerMenu({
               run(() => onMergeSelectedToUvLayer(selectedMergeSourceLayers.map((item) => item.id)))
             }
             icon={<Scissors className="h-4 w-4" />}
-            disabled={selectedProjectedLayers.length === 0}
+            disabled={selectedMergeSourceLayers.length === 0}
           >
             {t('mergeSelectedLayersToUvLayer')}
           </MenuButton>
@@ -1699,7 +1716,7 @@ function LayerMenu({
               )
             }
             icon={<Scissors className="h-4 w-4" />}
-            disabled={!selectedBlankUvLayer || selectedProjectedLayers.length === 0}
+            disabled={!selectedBlankUvLayer || selectedMergeSourceLayers.length === 0}
           >
             {t('mergeIntoSelectedBlankUvLayer')}
           </MenuButton>

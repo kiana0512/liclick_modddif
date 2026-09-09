@@ -59,7 +59,7 @@ import {
 import { getUserFacingGenerationError } from '@/services/generationErrorMessage';
 import { resolveLocalRepaintMaterialReference } from '@/services/localRepaintMaterialReference';
 import {
-  LOCAL_REPAINT_AUTO_DIAGNOSIS_POLICY,
+  resolveLocalRepaintUserPrompt,
   LOCAL_REPAINT_PROMPT_TEMPLATE_POLICY,
   prepareLocalRepaintPromptPolishInputs,
 } from '@/services/localRepaintPromptPolishInputs';
@@ -599,6 +599,7 @@ function getImportedModelMatrixWorld(objectId?: string) {
 type GeneratePanelProps = {
   workspaceActive?: boolean;
   localImageGenerationRequestKey?: number;
+  openLocalRepaintPanelRequestKey?: number;
   onRequestLocalImageGeneration?: () => void;
   onLocalImageGenerationSettled?: (result: LocalImageGenerationSettledResult) => void;
   cancelActiveGenerationRequestKey?: number;
@@ -622,6 +623,7 @@ export type LocalImageGenerationSettledResult =
 export function GeneratePanel({
   workspaceActive = true,
   localImageGenerationRequestKey = 0,
+  openLocalRepaintPanelRequestKey = 0,
   onRequestLocalImageGeneration,
   onLocalImageGenerationSettled,
   cancelActiveGenerationRequestKey = 0,
@@ -637,12 +639,17 @@ export function GeneratePanel({
   const [textureViewMode, setTextureViewMode] = useState<TextureViewMode>('multi');
   const [singleViewProvider, setSingleViewProvider] = useState<SingleViewProvider>('gpt');
   const [texturePreviewMode, setTexturePreviewMode] = useState<TexturePreviewMode>('multi');
+  useEffect(() => {
+    if (!openLocalRepaintPanelRequestKey) return;
+    setTab('repaint');
+    setTexturePreviewMode('repaint');
+  }, [openLocalRepaintPanelRequestKey]);
   const [localRepaintPrompt, setLocalRepaintPrompt] = useState('');
   const [promptPolishing, setPromptPolishing] = useState(false);
   const promptPolishRequestRef = useRef(0);
   const promptValueRef = useRef({ key: '', value: '' });
   const localRepaintResolvedPromptCacheRef = useRef(
-    new Map<string, { prompt: string; source: 'user-request' | 'auto-diagnosis' }>(),
+    new Map<string, { prompt: string; source: 'user-request' | 'default-seam' }>(),
   );
   const [previewImageOpen, setPreviewImageOpen] = useState(false);
   const [subjectFilledPreview, setSubjectFilledPreview] = useState<{
@@ -1808,10 +1815,7 @@ export function GeneratePanel({
   }, [currentProject?.id, generations, pushToast, references]);
 
   function updateGenerationSettings(patch: Partial<typeof defaultImageGenerationSettings>) {
-    if (workflowConfigurationLocked) {
-      notifyWorkflowOperationLocked();
-      return;
-    }
+    // This writer only updates the next-request prompt draft, not the running request snapshot.
     if (!currentProject) return;
     updateCurrentProject({
       settings: {
@@ -3647,6 +3651,7 @@ export function GeneratePanel({
       });
 
       const rawUserPrompt = localRepaintPrompt.trim();
+      const requestPrompt = resolveLocalRepaintUserPrompt(rawUserPrompt);
       const surfaceSignature = useLayerStore
         .getState()
         .layers.filter((layer) => !layer.objectId || layer.objectId === objectId)
@@ -3657,9 +3662,9 @@ export function GeneratePanel({
           layer.opacity,
         ]);
       const promptFingerprint = JSON.stringify({
-        prompt: rawUserPrompt,
+        prompt: requestPrompt,
         promptTemplatePolicy: LOCAL_REPAINT_PROMPT_TEMPLATE_POLICY,
-        ...(rawUserPrompt ? {} : { autoDiagnosisPolicy: LOCAL_REPAINT_AUTO_DIAGNOSIS_POLICY }),
+        promptSource: rawUserPrompt ? 'user-request' : 'default-seam',
         projectId: currentProject.id,
         objectId,
         referenceId: materialReference.id,
@@ -3682,8 +3687,8 @@ export function GeneratePanel({
           resolvedPrompt = {
             prompt: persistedResolution.prompt,
             source:
-              persistedResolution.metadata.promptSource === 'auto-diagnosis'
-                ? 'auto-diagnosis'
+              persistedResolution.metadata.promptSource === 'default-seam'
+                ? 'default-seam'
                 : 'user-request',
           };
           localRepaintResolvedPromptCacheRef.current.set(promptFingerprint, resolvedPrompt);
@@ -3692,13 +3697,11 @@ export function GeneratePanel({
       if (!resolvedPrompt) {
         setLocalRepaintPreparation((current) => ({
           startedAt: current?.startedAt ?? Date.now(),
-          detail: rawUserPrompt ? '正在优化局部重绘提示词' : '正在分析蒙版区域问题',
+          detail: '正在优化局部重绘提示词',
         }));
         setGenerateNotice({
           tone: 'info',
-          message: rawUserPrompt
-            ? '正在结合蒙版与六视图优化提示词。'
-            : '正在分析蒙版区域问题并生成提示词。',
+          message: '正在结合蒙版与参考图优化提示词。',
         });
         const visualInputs = await prepareLocalRepaintPromptPolishInputs({
           objectId,
@@ -3714,7 +3717,7 @@ export function GeneratePanel({
         }
         const optimizedPrompt = await Promise.race([
           createLiclickApiClient().polishPrompt({
-            prompt: rawUserPrompt,
+            prompt: requestPrompt,
             context: 'local-repaint',
             modelName: 'FLUX.2 Klein',
             objectName: objects.find((object) => object.id === objectId)?.name,
@@ -3737,7 +3740,7 @@ export function GeneratePanel({
         }
         resolvedPrompt = {
           prompt: optimizedPrompt,
-          source: rawUserPrompt ? 'user-request' : 'auto-diagnosis',
+          source: rawUserPrompt ? 'user-request' : 'default-seam',
         };
         const promptCache = localRepaintResolvedPromptCacheRef.current;
         if (promptCache.size >= 6) {
@@ -3826,16 +3829,16 @@ export function GeneratePanel({
         },
         { signal: requestAbortController.signal },
       );
-      // The depth guard is local-only. Capture it at 1K from the exact frozen
+      // The depth guard is local-only. Capture it at 2K from the exact frozen
       // camera while the remote request is already running, then attach it to
       // the archived capture before the result can be painted back.
       const depthPreviewPromise = captureCurrentDepthPreview({
         objectId,
-        resolution: 1024,
+        resolution: 2048,
         framing: 'current',
         aspect: captureAspect,
         cameraSnapshot: captureCameraSnapshot,
-      }).catch((error) => {
+      }, 2048).catch((error) => {
         console.warn('[Liclick 3D Texture] Local repaint depth guard was not captured:', error);
         return undefined;
       });
@@ -3862,13 +3865,20 @@ export function GeneratePanel({
         setLastCapture(capture);
       }
       if (isCancelledGeneration(pendingGeneration)) return false;
+      if (!generation.resultUrl) throw new Error('局部重绘没有返回图片。');
+      const { MODEL_SILHOUETTE_CLIP_VERSION, prepareModelClippedRepaint } =
+        await import('@/engine/localRepaint/modelSilhouetteClip');
+      const clippedResultUrl = await prepareModelClippedRepaint(
+        generation.resultUrl, capture.depthUrl, requestAbortController.signal,
+      );
+      if (isCancelledGeneration(pendingGeneration)) return false;
       const completedGeneration: Generation = {
         ...generation,
         // Keep one canonical client id from start through completion. Some
         // legacy ModelView responses used the remote id here, leaving the
         // persisted client-id record permanently `running` beside the result.
         id: pendingGeneration.id,
-        resultUrl: generation.resultUrl,
+        resultUrl: clippedResultUrl,
         captureId: generation.captureId ?? capture.id,
         metadata: {
           ...pendingGeneration.metadata,
@@ -3877,6 +3887,7 @@ export function GeneratePanel({
           captureCamera: capture.camera,
           maskUrl: currentPaintMaskDataUrl,
           rawResultUrl: generation.resultUrl,
+          modelSilhouetteClipVersion: MODEL_SILHOUETTE_CLIP_VERSION,
           resultComposition: 'direct-v1',
           paintMaskRevision: currentPaintMaskRevision,
           sourceColorMode: 'flat-clay-mask-v1',
@@ -3934,7 +3945,7 @@ export function GeneratePanel({
               maskUrl: persistedAuthoredMaskUrl,
               authoredMaskUrl: persistedAuthoredMaskUrl,
               submittedMaskUrl: persistedSubmittedMaskUrl,
-              rawResultUrl: persistedResultUrl ?? completedGeneration.resultUrl,
+              rawResultUrl: generation.resultUrl,
               resultComposition: 'direct-v1',
             },
           };
@@ -5260,7 +5271,7 @@ export function GeneratePanel({
                 </span>
                 {isLocalRepaintTab ? (
                   <span className="text-[11px] font-medium text-white/46">
-                    生成时自动分析并优化
+                    生成时优化提示词
                   </span>
                 ) : (
                   <button
@@ -5283,21 +5294,16 @@ export function GeneratePanel({
               <textarea
                 value={prompt}
                 aria-label={isLocalRepaintTab ? '补充提示词（可选）' : '纹理提示词'}
-                readOnly={workflowConfigurationLocked}
-                aria-readonly={workflowConfigurationLocked}
+                data-task-preview-allowed="true"
                 maxLength={
                   isLocalRepaintTab || (isTextureMapTab && singleViewProvider === 'remote')
                     ? 4096
                     : undefined
                 }
                 placeholder={
-                  isLocalRepaintTab ? '可补充编辑要求；留空则自动分析蒙版区域问题' : undefined
+                  isLocalRepaintTab ? '可输入本次编辑要求' : undefined
                 }
                 onChange={(event) => {
-                  if (workflowConfigurationLocked) {
-                    notifyWorkflowOperationLocked();
-                    return;
-                  }
                   if (isLocalRepaintTab) {
                     setLocalRepaintPrompt(event.target.value);
                     return;
@@ -5308,9 +5314,7 @@ export function GeneratePanel({
                       : { liclickPrompt: event.target.value },
                   );
                 }}
-                className={`generate-prompt-adaptive w-full resize-none rounded-md border border-white/18 bg-black/34 p-2.5 text-[13px] leading-5 text-white outline-none transition placeholder:text-white/38 focus:border-liclick-pink ${
-                  workflowConfigurationLocked ? 'cursor-default' : ''
-                }`}
+                className="generate-prompt-adaptive w-full resize-none rounded-md border border-white/18 bg-black/34 p-2.5 text-[13px] leading-5 text-white outline-none transition placeholder:text-white/38 focus:border-liclick-pink"
               />
             </section>
 
@@ -5323,6 +5327,7 @@ export function GeneratePanel({
                 <ReferenceGroupPicker
                   disabled={
                     workflowConfigurationLocked ||
+                    workflowSubmissionLocked ||
                     displayedReferenceGroupGenerationState?.status === 'generating'
                   }
                   generationState={displayedReferenceGroupGenerationState}
