@@ -4,7 +4,7 @@ import {
 } from '@/engine/performance/performanceTimeline';
 
 export const PERFORMANCE_LAB_REPORT_SCHEMA_VERSION = 2 as const;
-export const PERFORMANCE_LAB_COLLECTOR_VERSION = '2.2.0';
+export const PERFORMANCE_LAB_COLLECTOR_VERSION = '2.2.1';
 
 const CHUNK_INTERVAL_MS = 5_000;
 const MEMORY_INTERVAL_MS = 2_000;
@@ -211,9 +211,9 @@ function createChunkBuffers(): ChunkBuffers {
   };
 }
 
-function percentile(values: readonly number[], ratio: number) {
+function percentile(values: readonly number[] | Float64Array, ratio: number) {
   if (values.length === 0) return 0;
-  const sorted = [...values].sort((left, right) => left - right);
+  const sorted = values instanceof Float64Array ? values : Float64Array.from(values).sort();
   return sorted[Math.max(0, Math.ceil(sorted.length * ratio) - 1)] ?? 0;
 }
 
@@ -758,6 +758,12 @@ export class PerformanceLabCollector {
     };
     let wheelFrame = 0;
     let wheelSample: { deltaX: number; deltaY: number; rawEventCount: number } | undefined;
+    const flushWheel = () => {
+      wheelFrame = 0;
+      if (!wheelSample) return;
+      this.buffers.inputs.push({ elapsedMs: this.elapsed(), type: 'wheel', ...wheelSample });
+      wheelSample = undefined;
+    };
     const onWheel = (event: WheelEvent) => {
       if (wheelSample) {
         wheelSample.deltaX += event.deltaX;
@@ -767,12 +773,7 @@ export class PerformanceLabCollector {
         wheelSample = { deltaX: event.deltaX, deltaY: event.deltaY, rawEventCount: 1 };
       }
       if (wheelFrame) return;
-      wheelFrame = window.requestAnimationFrame(() => {
-        wheelFrame = 0;
-        if (!wheelSample) return;
-        this.buffers.inputs.push({ elapsedMs: this.elapsed(), type: 'wheel', ...wheelSample });
-        wheelSample = undefined;
-      });
+      wheelFrame = window.requestAnimationFrame(flushWheel);
     };
     window.addEventListener('pointerdown', onPointer, { capture: true, passive: true });
     window.addEventListener('pointerup', onPointer, { capture: true, passive: true });
@@ -782,6 +783,7 @@ export class PerformanceLabCollector {
       window.removeEventListener('pointerup', onPointer, true);
       window.removeEventListener('wheel', onWheel, true);
       if (wheelFrame) window.cancelAnimationFrame(wheelFrame);
+      flushWheel();
     });
   }
 
@@ -935,6 +937,10 @@ export class PerformanceLabCollector {
     this.stopped = true;
     const endedAtUnixMs = Date.now();
     const frameCount = this.totalFrameCount;
+    // One exact numeric sort serves all three quantiles without modifying the
+    // chronological samples. Native typed-array sorting avoids JS comparator
+    // calls for every comparison at the 216,000-frame retention boundary.
+    const sortedFrames = Float64Array.from(this.frameDurations).sort();
     return {
       schemaVersion: PERFORMANCE_LAB_REPORT_SCHEMA_VERSION,
       collectorVersion: PERFORMANCE_LAB_COLLECTOR_VERSION,
@@ -945,9 +951,9 @@ export class PerformanceLabCollector {
       frameCount,
       averageFps:
         this.totalFrameDurationMs > 0 ? (frameCount * 1_000) / this.totalFrameDurationMs : 0,
-      frameP50Ms: percentile(this.frameDurations, 0.5),
-      frameP95Ms: percentile(this.frameDurations, 0.95),
-      frameP99Ms: percentile(this.frameDurations, 0.99),
+      frameP50Ms: percentile(sortedFrames, 0.5),
+      frameP95Ms: percentile(sortedFrames, 0.95),
+      frameP99Ms: percentile(sortedFrames, 0.99),
       frameMaximumMs: this.frameMaximumMs,
       droppedFrameCount: this.droppedFrameCount,
       droppedFramePercent: frameCount > 0 ? (this.droppedFrameCount / frameCount) * 100 : 0,

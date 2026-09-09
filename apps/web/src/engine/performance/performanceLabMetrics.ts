@@ -47,8 +47,18 @@ export function summarizeDurationSamples(
   samples: readonly DurationSample[],
   thresholdMs: number,
 ): DurationSummary {
+  return summarizeDurationSamplesAndOrder(samples, thresholdMs).summary;
+}
+
+function summarizeDurationSamplesAndOrder(
+  samples: readonly DurationSample[],
+  thresholdMs: number,
+) {
   if (samples.length === 0) {
-    return { count: 0, average: 0, p95: 0, maximum: 0, aboveThresholdPercent: 0 };
+    return {
+      durations: [] as number[],
+      summary: { count: 0, average: 0, p95: 0, maximum: 0, aboveThresholdPercent: 0 },
+    };
   }
 
   const durations = new Array<number>(samples.length);
@@ -65,11 +75,14 @@ export function summarizeDurationSamples(
   durations.sort((left, right) => left - right);
   const p95Index = Math.max(0, Math.ceil(durations.length * 0.95) - 1);
   return {
-    count: samples.length,
-    average: total / samples.length,
-    p95: durations[p95Index] ?? 0,
-    maximum,
-    aboveThresholdPercent: (aboveThreshold / samples.length) * 100,
+    durations,
+    summary: {
+      count: samples.length,
+      average: total / samples.length,
+      p95: durations[p95Index] ?? 0,
+      maximum,
+      aboveThresholdPercent: (aboveThreshold / samples.length) * 100,
+    },
   };
 }
 
@@ -88,7 +101,7 @@ export function summarizeFramePacing(
   samples: readonly DurationSample[],
   thresholdMs: number,
 ): FramePacingSummary {
-  const summary = summarizeDurationSamples(samples, thresholdMs);
+  const { summary, durations } = summarizeDurationSamplesAndOrder(samples, thresholdMs);
   if (samples.length === 0) {
     return {
       ...summary,
@@ -99,7 +112,6 @@ export function summarizeFramePacing(
       missedFramePercent: 0,
     };
   }
-  const durations = samples.map((sample) => sample.durationMs).sort((left, right) => left - right);
   const percentile = (ratio: number) =>
     durations[Math.max(0, Math.ceil(durations.length * ratio) - 1)] ?? 0;
   const median = percentile(0.5);
@@ -107,12 +119,14 @@ export function summarizeFramePacing(
     .map((duration) => Math.abs(duration - median))
     .sort((left, right) => left - right);
   const jitterP95 = deviations[Math.max(0, Math.ceil(deviations.length * 0.95) - 1)] ?? 0;
+  const missedFrameCount = estimateMissedFrameCount(samples, thresholdMs);
+  const refreshOpportunities = samples.length + missedFrameCount;
   return {
     ...summary,
     p99: percentile(0.99),
     median,
     jitterP95,
-    missedFrameCount: estimateMissedFrameCount(samples, thresholdMs),
-    missedFramePercent: estimateMissedFramePercent(samples, thresholdMs),
+    missedFrameCount,
+    missedFramePercent: refreshOpportunities > 0 ? (missedFrameCount / refreshOpportunities) * 100 : 0,
   };
 }

@@ -12,6 +12,8 @@
 
 ## 1. 文档地位与强制边界
 
+CHG-20260909-PERFORMANCE-LAB-STRESS：M13/M15，ALG-PERF-SESSION-001 v1.0.4 / collector 2.2.1。精确统计复用排序，停止录制 drain 滚轮尾批；S2/S3/S5 解除普通 UV 覆盖，S7 预热后才获取交互测量锁。新增长期录制、输入洪峰、资源清理与保留上限回归。Schema 2、生产像素/4K/QA/持久化契约不变，无迁移。详见 [变更卡](changes/CHG-20260909-PERFORMANCE-LAB-STRESS.md)。
+
 `CHG-20260909-UV-COMPOSITE-RESOURCES`：M07，ALG-UV-003 v2.0.1 / ALG-UV-005 v2.0.3。质量 Worker 按任务复用精确 tile 缓冲，接缝提前去重等价记录，实际合成阶段诊断独立于 S4；PERF-UV-SOURCE-PREPARE-001 v1.0.1 静态Canvas分条读取，live同步快照保持。RGBA、shader、校验门禁和分辨率不变；无 Schema/资产迁移。见 [变更卡](changes/CHG-20260909-UV-COMPOSITE-RESOURCES.md)。
 
 CI 修复（2026-09-09，M15）：GitLab #628349 / job #3561523 的 `test:repaint-selection-consumption` 因 Vite/chokidar 文件监听报 EMFILE。最新 #628365 虽通过，同一脚本仍开启监听；本次为一次性 SSR 回归设置 `server.watch=null`，并断言加载后 watcher 列表为空，避免依赖共享 runner 的剩余句柄。全部选区、撤销与资源释放断言保留；不修改运行时/算法/Schema、CI 门禁或输出质量，无迁移。回退只恢复测试监听配置和移除资源断言，将重新暴露句柄风险。

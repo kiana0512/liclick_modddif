@@ -321,6 +321,16 @@ assert.match(
   /perfSuppressProjectLayerSync = '1';[\s\S]*?setLayerVisibility\(targetIds, true\)[\s\S]*?waitForProjectedResidentReady/,
   'S7 must acquire its read-only lock before the resident projected-stack preflight mutates layers',
 );
+assert.doesNotMatch(
+  viewportSource,
+  /setViewportLayerStressRunning\(true\);\s*document\.body\.dataset\.perfViewportStressMeasuring = '1'/,
+  'S7 cannot pause background material publication before awaiting its prewarm',
+);
+assert.match(
+  viewportSource,
+  /performanceScenarioOccludingUvIds\(originalLayers, selectedObjectId\), false,[\s\S]*?await waitForProjectedResidentReady\(\);[\s\S]*?viewportLayerStressRunningRef\.current = true;[\s\S]*?perfViewportStressMeasuring = '1'/,
+  'S7 must uncover projected layers and complete prewarm before reserving the interaction budget',
+);
 assert.match(
   editorSource,
   /perfSuppressProjectLayerSync === '1'[\s\S]*?pendingLayers = undefined/,

@@ -18,6 +18,7 @@ import { useEditorHistoryStore } from '@/stores/editorHistoryStore';
 import { paintHistoryBoundary } from '@/engine/paint/paintHistoryBoundary';
 import { stageRefinedStrokeHistory } from '@/engine/paint/refineStrokeHistory';
 import { useLayerStore } from '@/stores/layerStore';
+import { performanceScenarioOccludingUvIds, performanceScenarioVisibleBindings } from '@/engine/performance/performanceScenarioLayers';
 import { useProjectStore } from '@/stores/projectStore';
 import {
   MAX_PAINT_MASK_BRUSH_SIZE,
@@ -2236,6 +2237,9 @@ function PerformanceTestHud() {
       setLayerToggleScenario({ running: true, scenario });
       try {
         document.body.dataset.perfLayerTogglePhase = `${scenario}-warmup`;
+        useLayerStore.getState().setLayerVisibility(
+          performanceScenarioOccludingUvIds(originalLayers, selectedObjectId), false,
+        );
         useLayerStore.getState().setLayerVisibility(ids, false);
         if (uvTarget) useLayerStore.getState().setLayerVisibility([uvTarget.id], true);
         await waitForProjectedResidentReady();
@@ -2851,7 +2855,6 @@ function PerformanceTestHud() {
       };
     };
     setViewportLayerStressRunning(true);
-    document.body.dataset.perfViewportStressMeasuring = '1';
     clearReport(true);
     try {
       // Let the diagnostics panel finish its own reset render before measuring.
@@ -3256,7 +3259,7 @@ function PerformanceTestHud() {
           <pre className="max-h-64 overflow-auto whitespace-pre-wrap select-text">
             {JSON.stringify(
               longAnimationFrameSamplesRef.current
-                .filter((sample) => !manualReport || (
+                .filter((sample) => !manualReport || manualReport.endedAtUnixMs < recordingStartedAtRef.current || (
                   sample.unixMs >= manualReport.startedAtUnixMs &&
                   sample.unixMs <= manualReport.endedAtUnixMs
                 ))
@@ -7390,7 +7393,7 @@ function SurfacePaintOverlay() {
             return;
           await waitForFrame();
         }
-        throw new Error('完整投影材质预热超时，S7 未开始，避免使用临时白膜结果。');
+        throw new Error('S7 投影材质预热超时，测试未开始。');
       };
       const modeMismatchDetails: string[] = [];
       const modeMaterialSnapshots: Array<{
@@ -7490,15 +7493,13 @@ function SurfacePaintOverlay() {
               if (material.userData.liclickLiveLocalRepaintOverlayMaterial) continue;
               const projectedState = material.userData.liclickProjectedLayerStackState as
                 | {
-                    bindings?: Array<{ layerId?: string; opacityUniform: string }>;
+                    bindings?: Array<{ layerId?: string; opacityUniform: string; arrayIndex?: number }>;
                   }
                 | undefined;
-              const hasProjectedContribution = Boolean(
-                projectedState?.bindings?.some(
-                  (binding) =>
-                    Number(material.uniforms[binding.opacityUniform]?.value ?? 0) > 0.0001,
-                ),
+              const visibleBindings = performanceScenarioVisibleBindings(
+                projectedState?.bindings, material.uniforms,
               );
+              const hasProjectedContribution = visibleBindings.length > 0;
               const hasResidentTextureContribution =
                 (Number(material.uniforms.useUvOverlayMap?.value ?? 0) > 0 &&
                   Number(material.uniforms.uvOverlayOpacity?.value ?? 0) > 0.0001) ||
@@ -7508,12 +7509,10 @@ function SurfacePaintOverlay() {
                   Number(material.uniforms.baseTextureOpacity?.value ?? 0) > 0.0001);
               if (hasProjectedContribution || hasResidentTextureContribution) {
                 modelUsesSurfaceColorMaterial = true;
-                projectedState?.bindings?.forEach((binding) => {
-                  if (Number(material.uniforms[binding.opacityUniform]?.value ?? 0) > 0.0001) {
-                    surfaceColorSources.add(
-                      `projected:${binding.layerId ?? binding.opacityUniform}`,
-                    );
-                  }
+                visibleBindings.forEach((binding) => {
+                  surfaceColorSources.add(
+                    `projected:${binding.layerId ?? binding.opacityUniform}`,
+                  );
                 });
                 if (Number(material.uniforms.uvOverlayOpacity?.value ?? 0) > 0.0001)
                   surfaceColorSources.add('uv');
@@ -7586,6 +7585,12 @@ function SurfacePaintOverlay() {
       document.body.dataset.perfSuppressProjectLayerSync = '1';
       useLayerStore.getState().setLayerVisibility(targetIds, true);
       try {
+        // All-on includes merged UV rows that legitimately hide the projected
+        // stack. Warm the uncovered projections first; the loop still tests
+        // every original UV row and restores the complete original snapshot.
+        useLayerStore.getState().setLayerVisibility(
+          performanceScenarioOccludingUvIds(originalLayers, selectedObjectId), false,
+        );
         await waitForProjectedResidentReady();
       } catch (error) {
         useLayerStore.getState().setLayers(originalLayers);
@@ -7604,6 +7609,9 @@ function SurfacePaintOverlay() {
       let modeStateMismatches = 0;
       let overlayVisibilityMismatches = 0;
       viewportLayerStressRunningRef.current = true;
+      // SceneRoot pauses background publication while this flag is set. Acquire
+      // it only after prewarm; otherwise S7 waits for work it has itself paused.
+      document.body.dataset.perfViewportStressMeasuring = '1';
       document.body.dataset.perfAutoOrbit = '1';
       document.body.dataset.perfSimulatedViewportInteraction = '1';
       document.body.dataset.perfViewportStressPhase = 's7-viewport-layer-stress';
