@@ -1,0 +1,30 @@
+<!doctype html><meta charset="utf-8"><pre id="result">Running</pre>
+<script type="module">
+import * as THREE from 'three';
+import {ProjectedLayerPreviewCompositor} from '/src/engine/projection/ProjectedLayerPreviewCompositor.ts';
+import {createProjectedLayerStackMaterial,createUvOverlayPreviewMaterial} from '/src/engine/projection/ProjectedLayerMaterial.ts';
+const results=[];
+try{
+ const renderer=new THREE.WebGLRenderer();renderer.setSize(128,128);
+ const camera=new THREE.OrthographicCamera(-1,1,1,-1,.1,100);camera.position.z=5;camera.updateMatrixWorld(true);
+ const lighting={enabled:false,exposure:1,ambientIntensity:1,keyLightIntensity:0,keyLightDirection:[0,0,1]};
+ const canvas=document.createElement('canvas');canvas.width=canvas.height=32;const ctx=canvas.getContext('2d');
+ const url=(color)=>{ctx.fillStyle=color;ctx.fillRect(0,0,32,32);return canvas.toDataURL();};
+ const group=new THREE.Group();const mesh=new THREE.Mesh(new THREE.PlaneGeometry(2,2),new THREE.MeshBasicMaterial());group.add(mesh);group.updateMatrixWorld(true);
+ const scene=new THREE.Scene();scene.add(group);const target=new THREE.WebGLRenderTarget(128,128);
+ function read(material){mesh.material=material;renderer.setRenderTarget(target);renderer.render(scene,camera);const p=new Uint8Array(128*128*4);renderer.readRenderTargetPixels(target,0,0,128,128,p);renderer.setRenderTarget(null);return p;}
+ for(const [name,count,role] of [['normal-2',2,'normal'],['overlay-6',6,'overlay'],['normal-14',14,'normal']]){
+  const layers=Array.from({length:count},(_,i)=>({layerId:`${name}-${i}`,objectId:'test',imageUrl:url(i%2?'#20d080':'#e04020'),visible:true,opacity:role==='overlay'?.35:1,strength:1,depthTest:true,compositeRole:role,camera:{projectionMatrix:camera.projectionMatrix.toArray(),viewMatrix:camera.matrixWorldInverse.toArray(),matrixWorld:camera.matrixWorld.toArray(),position:[0,0,5],near:.1,far:100}}));
+  const reference=await createProjectedLayerStackMaterial({layers,previewLighting:lighting},{renderer,preferTextureArrays:true});const expected=read(reference);
+  const compositor=new ProjectedLayerPreviewCompositor();let running=true;const start=performance.now();
+  const output=await new Promise((resolve,reject)=>{compositor.request({signature:name,renderer,group,layers,resolution:128,onReady:resolve,onError:reject});function tick(){if(!running)return;compositor.step(3,2);requestAnimationFrame(tick);}tick();});running=false;
+  const elapsedMs=performance.now()-start;
+  const material=createUvOverlayPreviewMaterial({displayMode:'flat',selected:false,previewLighting:lighting,baseTexture:output.colorTexture,baseTextureOpacity:1,baseRenderedColorMaskTexture:output.renderedColorMaskTexture});
+  const actual=read(material);let sum=0,max=0,different=0,pixelDiff=0;
+  for(let i=0;i<expected.length;i+=4){let pd=false;for(let c=0;c<3;c++){const d=Math.abs(actual[i+c]-expected[i+c]);sum+=d;max=Math.max(max,d);if(d>1){different++;pd=true;}}if(pd)pixelDiff++;}
+  results.push({name,count,elapsedMs:+elapsedMs.toFixed(2),meanAbsoluteRgbError:sum/(128*128*3),maxChannelError:max,pixelsOver1:pixelDiff,totalPixels:128*128,centerExpected:[...expected.slice(33024,33028)],centerActual:[...actual.slice(33024,33028)]});
+  compositor.dispose();reference.dispose();material.dispose();
+ }
+ document.querySelector('#result').textContent=JSON.stringify(results,null,2);
+}catch(e){document.querySelector('#result').textContent=JSON.stringify({results,error:e.stack});}
+</script>

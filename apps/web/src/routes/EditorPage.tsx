@@ -439,13 +439,16 @@ function createReusableProjectionBakeSignature(input: {
     )
     .join('|');
   return [
-    'editor-projection-bake-cache-v8',
+    'editor-projection-bake-cache-v9',
     input.purpose,
     stackSignature,
     input.group.matrixWorld.elements.join(','),
     JSON.stringify(getDebugUvBakeStatus()),
     input.optionSignature,
     exactAssets,
+    // Include the full authored contract: visibility policy, alpha handling,
+    // camera near/far and future layer fields must also invalidate this cache.
+    JSON.stringify(normalizedLayers),
   ].join('||');
 }
 
@@ -4951,20 +4954,6 @@ export function EditorPage({
       // source alpha before UV rasterization so the baked result cannot silently
       // fall back to projecting the complete ComfyUI frame when a mask texture
       // is unavailable. Other projected layers keep their normal mask path.
-      const layersToBake = await Promise.all(
-        projectedLayers.map(async (layer) =>
-          isLocalRepaintProjectionLayer(layer) && layer.maskUrl
-            ? {
-                ...layer,
-                imageUrl: await createProjectionMaskedImage(layer.imageUrl, layer.maskUrl),
-                maskUrl: undefined,
-                // This temporary source has already flattened the brush mask
-                // into alpha. Preserve that authored alpha during the bake.
-                ignoreSourceAlpha: false,
-              }
-            : layer,
-        ),
-      );
       const postprocess = getMergeUvPostprocessOptions(bakeResolution);
       const projectionBakeSignature = createReusableProjectionBakeSignature({
         purpose: 'merge-uv',
@@ -4972,7 +4961,7 @@ export function EditorPage({
         objectId,
         resolution: bakeResolution,
         group: currentImportedModel.group,
-        layers: layersToBake,
+        layers: projectedLayers,
         optionSignature: [
           `gutter:${postprocess.uvIslandGutterPixels}`,
           `interior:${postprocess.uvInteriorHolePixels}`,
@@ -4983,6 +4972,17 @@ export function EditorPage({
       });
       const reusableProjectionBake = reusableProjectionBakeCacheRef.current.get('merge-uv');
       const projectionBakeCacheHit = reusableProjectionBake?.signature === projectionBakeSignature;
+      // Key the authored inputs (including live-mask revision), never freshly
+      // allocated flattened blob URLs. A cache hit needs no mask re-encoding.
+      const layersToBake = projectionBakeCacheHit ? projectedLayers : await Promise.all(
+        projectedLayers.map(async (layer) =>
+          isLocalRepaintProjectionLayer(layer) && layer.maskUrl
+            ? { ...layer,
+                imageUrl: await createProjectionMaskedImage(layer.imageUrl, layer.maskUrl),
+                maskUrl: undefined, ignoreSourceAlpha: false }
+            : layer,
+        ),
+      );
       document.body.dataset.perfProjectionBakeCache = projectionBakeCacheHit
         ? 'merge-uv-hit'
         : 'merge-uv-miss';

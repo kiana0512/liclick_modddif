@@ -1,6 +1,6 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
-> 文档版本：`2.18.30`
+> 文档版本：`2.18.33`
 >
 > 生效日期：`2026-09-08`
 >
@@ -11,6 +11,14 @@
 > 审计口径：`0a2519d + 607e82f + 2568e40`，不包含错误文档提交 `2bde8c6/e03bab2/d1c5f78`
 
 ## 1. 文档地位与强制边界
+
+`CHG-20260909-PROJECTION-PENDING-DISPLAY`：M05/M06，ALG-PROJ-007 v2.1.8。关闭不等价分批显示，设备预算内底层显示，超限行运行期标记，常驻原风格合并引导；合并包含待显示行。M09 会话缓存 v9 在临时蒙版编码之前以作者输入和 live revision 查询。89 项 Web 回归、类型和构建通过，实际复杂工程效果及帧率仍需验收。详见 [变更卡](changes/CHG-20260909-PROJECTION-PENDING-DISPLAY.md)。以下 v2.1.7 分批准入已被本条替代。
+
+`CHG-20260909-PROJECTED-UNIFORM-BUDGET`：M06 / ALG-PROJ-007 v2.1.7，按设备参数上限阻止超限整栈材质与预热，进入已有分批预览并提示合并 UV。详见 [变更卡](changes/CHG-20260909-PROJECTED-UNIFORM-BUDGET.md)。
+
+`CHG-20260909-PROJECTED-COMPILE-LIFETIME`：M06 / ALG-PROJ-007 v2.1.6，编译期间保留生成材质至所有轮询完成，再释放资源；不改变像素和图层语义。详见 [变更卡](changes/CHG-20260909-PROJECTED-COMPILE-LIFETIME.md)。
+
+`CHG-20260909-UV-READBACK-DIRECT`：主模块 M09，ALG-UV-008 v2.0.1。GPU 条带异步读回直接写最终 Uint8Array 的 subarray，移除临时 RGBA 条带和主线程 pixels.set。8 MiB 条带、逐条等待、让出浏览器绘制及 Worker 转换不变。真实 4K GPU 对照 67,108,864 字节零差异，省掉每次读回 64 MiB 临时分配/复制；不据此宣称总耗时提升。见 [变更卡](changes/CHG-20260909-UV-READBACK-DIRECT.md)。
 
 变更卡 `CHG-20260909-UV-STACK-REMERGE`：主模块 M09，协作 M05/M06；`ALG-UV-006` v2.1.0，UV_MERGE_COMPOSITION_VERSION=5。再次合并时接收所选 merged-uv 作为底图；多 UV Worker 合成已预翻转，DataTexture 条带上传必须保留工厂 flipY=false，不能根据 image 非 ImageBitmap 再置 true。真实 Worker/WebGL 1024² 输入与单图参考比较：旧分支 12,288 字节不同，新分支 0；验证 UV1 入选及透明区域保留底色。无旧资产自动重写；先前遗漏 UV1 的 UV2 需从原图层重新合成。GPU/CPU/Worker source-over 公式、shader、分辨率、QA、Command/CAS/ownership 不变。详见 [变更卡](changes/CHG-20260909-UV-STACK-REMERGE.md)。
 

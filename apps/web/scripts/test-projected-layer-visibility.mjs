@@ -1011,7 +1011,7 @@ try {
       });
     },
   };
-  const compilation = compileForRenderTarget(rendererFixture, {}, {}, offscreenTarget);
+  const compilation = compileForRenderTarget(rendererFixture, new THREE.Scene(), {}, offscreenTarget);
   assert.deepEqual(
     [boundTarget, boundFace, boundMip],
     [originalTarget, 3, 2],
@@ -1023,7 +1023,7 @@ try {
     throw new Error('compile failed');
   };
   assert.throws(
-    () => compileForRenderTarget(rendererFixture, {}, {}, offscreenTarget),
+    () => compileForRenderTarget(rendererFixture, new THREE.Scene(), {}, offscreenTarget),
     /compile failed/,
   );
   assert.deepEqual(
@@ -1033,7 +1033,7 @@ try {
   );
   rendererFixture.compileAsync = () => Promise.reject(new Error('link failed'));
   await assert.rejects(
-    compileForRenderTarget(rendererFixture, {}, {}, offscreenTarget),
+    compileForRenderTarget(rendererFixture, new THREE.Scene(), {}, offscreenTarget),
     /link failed/,
   );
   assert.deepEqual(

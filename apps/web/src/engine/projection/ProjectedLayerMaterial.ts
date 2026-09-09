@@ -4973,13 +4973,14 @@ function retainProjectedProgram(material: THREE.ShaderMaterial) {
     const retiredAnchor = residentProjectedProgramAnchors.shift();
     if (!retiredAnchor) break;
     retiredAnchor.userData[DISPOSED_MATERIAL_FLAG] = true;
-    retiredAnchor.dispose();
+    if (!deferDisposalDuringCompile(retiredAnchor, () => retiredAnchor.dispose())) retiredAnchor.dispose();
   }
 }
 
 function disposeGeneratedMaterial(material: THREE.Material) {
   if (!material.userData[GENERATED_MATERIAL_FLAG]) return;
   if (material.userData[DISPOSED_MATERIAL_FLAG]) return;
+  if (deferDisposalDuringCompile(material, () => disposeGeneratedMaterial(material))) return;
   if (material.userData[PROJECTED_PROGRAM_RESIDENT_ANCHOR_FLAG]) return;
   if (
     material instanceof THREE.ShaderMaterial &&
@@ -5508,3 +5509,4 @@ export function createPbrPreviewMaterial(
     ? originalMaterial.map((material) => prepareSinglePreviewMaterial(material, bakedTexture))
     : prepareSinglePreviewMaterial(originalMaterial, bakedTexture);
 }
+import { deferDisposalDuringCompile } from './compileForRenderTarget';
