@@ -992,3 +992,5 @@ M13/M15，`IDENTITY-TELEMETRY` v1.1.0，日聚合 schema v3：来源由后端确
 2026-09-08 CHG-20260908-PROJECTED-OFFSCREEN-COMPILE：UI-06 / M06，协作 M08/M13；ALG-PROJ-007 v2.1.5。正式材质的 UV 离屏预热先异步编译精确 framebuffer 变体，绑定目标只跨同步 compileAsync 调用，立即恢复 target/cube face/mip；保留采样预热、GPU fence、取消与交互门禁。真实 14 层 WebGL 对照首绘 554.7ms → 1.0ms，180224 字节像素一致；原项目实测待新录制。Shader/CPU/Worker/UV/export/分辨率/Schema/Command/Revision/ownership/资产不变，无迁移；回退恢复原同步首绘。详见对应变更卡。
 
 2026-09-09 CHG-20260909-CI-WATCH-CONFIG-MERGE：M15/M13/M08，一次性 SSR 回归改用忽略全部路径的监听配置，修复 Vite 合并时丢弃 watch:null 导致的 CI EMFILE；新增零监听断言，保留所有业务断言。算法、Schema、资产与部署语义不变，无迁移。
+
+2026-09-09 CHG-20260909-METRICS-EMPTY-SUMMARY：M13/M15，统计空样本分支去重，保持所有统计结果与报告 Schema；正式配置包体减少 197 字节并通过原门禁。算法语义、像素、QA、持久化和导出不变，无迁移。

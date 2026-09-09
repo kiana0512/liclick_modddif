@@ -54,13 +54,6 @@ function summarizeDurationSamplesAndOrder(
   samples: readonly DurationSample[],
   thresholdMs: number,
 ) {
-  if (samples.length === 0) {
-    return {
-      durations: [] as number[],
-      summary: { count: 0, average: 0, p95: 0, maximum: 0, aboveThresholdPercent: 0 },
-    };
-  }
-
   const durations = new Array<number>(samples.length);
   let total = 0;
   let maximum = 0;
@@ -78,10 +71,10 @@ function summarizeDurationSamplesAndOrder(
     durations,
     summary: {
       count: samples.length,
-      average: total / samples.length,
+      average: total / (samples.length || 1),
       p95: durations[p95Index] ?? 0,
       maximum,
-      aboveThresholdPercent: (aboveThreshold / samples.length) * 100,
+      aboveThresholdPercent: (aboveThreshold / (samples.length || 1)) * 100,
     },
   };
 }
@@ -102,16 +95,6 @@ export function summarizeFramePacing(
   thresholdMs: number,
 ): FramePacingSummary {
   const { summary, durations } = summarizeDurationSamplesAndOrder(samples, thresholdMs);
-  if (samples.length === 0) {
-    return {
-      ...summary,
-      p99: 0,
-      median: 0,
-      jitterP95: 0,
-      missedFrameCount: 0,
-      missedFramePercent: 0,
-    };
-  }
   const percentile = (ratio: number) =>
     durations[Math.max(0, Math.ceil(durations.length * ratio) - 1)] ?? 0;
   const median = percentile(0.5);
