@@ -16,7 +16,10 @@ const budgets = [
   },
   // Generation framing adds the submission guards and lazy entry (~480 bytes).
   // Retain both measured allowances when integrating paired generation.
-  { label: 'editor route', prefix: 'EditorPage-', maxBytes: 498_512 },
+  // CHG-20260910-GPT-GUIDE-CAPTURE-ISOLATION: per-tile material identity
+  // guard + authored-before-clay sequencing measures 498,829 bytes. Allow
+  // 512 bytes here; retain the existing 3,160,000-byte total and other limits.
+  { label: 'editor route', prefix: 'EditorPage-', maxBytes: 499_024 },
   { label: 'high bake snapshot', prefix: 'bakeHighSnapshot-', maxBytes: 700_000 },
   {
     label: 'shared 3D pipeline',

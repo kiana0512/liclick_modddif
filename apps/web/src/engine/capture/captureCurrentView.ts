@@ -435,9 +435,8 @@ function createFlatTargetCaptureMaterial(sourceMaterial: THREE.Material) {
   return material;
 }
 
-async function captureFlatTarget(
+function prepareFlatTargetCapture(
   passRequest: CapturePassRequest,
-  encodedSize?: { width: number; height: number },
   options: { forceEmptyProjectionHatch?: boolean } = {},
 ) {
   const temporaryMaterials = new Set<THREE.Material>();
@@ -489,38 +488,65 @@ async function captureFlatTarget(
     },
   );
   let restored = false;
-  const restore = () => {
+  return () => {
     if (restored) return;
     restored = true;
     restoreScene();
     restoreUniforms.forEach((restoreUniform) => restoreUniform());
     temporaryMaterials.forEach((material) => material.dispose());
   };
-  try {
-    return {
-      url: await renderSceneToPngUrl(
-        {
-          ...passRequest,
-          clearColor: '#eeeeec',
-          clearAlpha: 1,
-        },
-        // The render target's sRGB encoding is the texture asset encoding. Do
-        // not bake exposure/tone mapping here: the preview shader applies that
-        // presentation transform after the generated image is painted back.
-        {
-          applyDisplayTransform: false,
-          tileSize: 512,
-          performancePhasePrefix: 'button2-viewport-reference',
-          encodedWidth: encodedSize?.width,
-          encodedHeight: encodedSize?.height,
-          onRenderSubmitted: restore,
-        },
-      ),
-      warnings: [],
-    };
-  } finally {
-    restore();
-  }
+}
+
+async function captureFlatTarget(
+  passRequest: CapturePassRequest,
+  encodedSize?: { width: number; height: number },
+  options: { forceEmptyProjectionHatch?: boolean } = {},
+) {
+  // CAPTURE-MATERIAL-ISOLATION v1.0.0: never retain presentation mutations
+  // across a browser-paint yield. Reject an interrupted snapshot rather than
+  // encode tiles from different material generations into one GPT guide.
+  const sourceMaterials = new Map<THREE.Mesh, THREE.Material[]>();
+  passRequest.scene.traverse((object) => {
+    if (object instanceof THREE.Mesh && object.userData.liclickObjectId === passRequest.objectId) {
+      sourceMaterials.set(
+        object,
+        Array.isArray(object.material) ? [...object.material] : [object.material],
+      );
+    }
+  });
+  const prepareScene = () => {
+    for (const [mesh, expected] of sourceMaterials) {
+      const current = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+      if (
+        current.length !== expected.length ||
+        current.some((material, index) => material !== expected[index])
+      ) {
+        throw new Error('模型材质在截图期间发生变化，请等待预览稳定后重试。');
+      }
+    }
+    return prepareFlatTargetCapture(passRequest, options);
+  };
+  return {
+    url: await renderSceneToPngUrl(
+      {
+        ...passRequest,
+        clearColor: '#eeeeec',
+        clearAlpha: 1,
+      },
+      // The render target's sRGB encoding is the texture asset encoding. Do
+      // not bake exposure/tone mapping here: the preview shader applies that
+      // presentation transform after the generated image is painted back.
+      {
+        applyDisplayTransform: false,
+        tileSize: 512,
+        performancePhasePrefix: 'button2-viewport-reference',
+        encodedWidth: encodedSize?.width,
+        encodedHeight: encodedSize?.height,
+        prepareScene,
+      },
+    ),
+    warnings: [],
+  };
 }
 
 /**

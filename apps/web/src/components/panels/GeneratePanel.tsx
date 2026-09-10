@@ -3036,6 +3036,21 @@ export function GeneratePanel({
       currentSingleViewEffectUrl = currentEffect.colorUrl;
       throwIfTexturePipelineCancelled(signal);
     }
+    const pairCurrentEffects = new Map<string, string>();
+    if (pairContext && hasVisibleTextureLayerCandidate(objectId)) {
+      // Freeze authored colour BEFORE white presentation replaces the resident
+      // material. Clearing that flag later does not synchronously restore it.
+      updateTexturePipelineProgress(20, '准备多视图快照 · 保存已有纹理');
+      for (const view of requestedViews) {
+        throwIfTexturePipelineCancelled(signal);
+        const effect = await captureCurrentColorPreview({
+          objectId, resolution: resolutionToSize[resolution], framing: 'fit-object',
+          colorMode: 'flat-target-coverage', fillRatio: 0.88,
+          viewDirection: view.viewDirection, viewUp: view.viewUp,
+        });
+        pairCurrentEffects.set(view.id, effect.colorUrl);
+      }
+    }
     updateTexturePipelineProgress(24, isMultiviewRequest ? '准备多视角快照' : '准备当前单视图');
     let capturedViews = await getTextureMapMultiviewCaptures(requestedViews, signal, {
       cameraSnapshot: singleViewCameraSnapshot,
@@ -3045,23 +3060,15 @@ export function GeneratePanel({
       throw new Error(isMultiviewRequest ? '无法捕获多视图模型方向。' : '无法捕获当前单视图。');
     }
     const completionViewIds = new Set<string>();
-    if (pairContext && hasVisibleTextureLayerCandidate(objectId)) {
+    if (pairContext && pairCurrentEffects.size > 0) {
       // Capture only this pair, after the previous pair's resident barrier. GPU
       // capture/compositing is serial; only the remote jobs run concurrently.
       for (const view of capturedViews) {
         throwIfTexturePipelineCancelled(signal);
-        const cameraView = requestedViews.find((item) => item.id === view.viewId)!;
-        const currentEffect = await captureCurrentColorPreview({
-          objectId,
-          resolution: resolutionToSize[resolution],
-          framing: 'fit-object',
-          colorMode: 'flat-target-coverage',
-          fillRatio: 0.88,
-          viewDirection: cameraView.viewDirection,
-          viewUp: cameraView.viewUp,
-        });
+        const currentEffectUrl = pairCurrentEffects.get(view.viewId);
+        if (!currentEffectUrl) throw new Error('当前视角的已有纹理截图未准备完成。');
         const completion = await prepareSingleViewTextureCompletion({
-          currentEffectUrl: currentEffect.colorUrl,
+          currentEffectUrl,
           clayPreviewUrl: view.capture.colorUrl,
           objectMaskUrl: view.capture.maskUrl,
         });
@@ -3069,7 +3076,7 @@ export function GeneratePanel({
           // The input worker intentionally omits a composite for fully covered
           // views. Still honor every selected angle using its current texture.
           const guideUrl = completion.imageUrl ??
-            (completion.uncoveredPixelCount === 0 ? currentEffect.colorUrl : undefined);
+            (completion.uncoveredPixelCount === 0 ? currentEffectUrl : undefined);
           if (!guideUrl) throw new Error('无法准备本组已有纹理补全引导图。');
           view.capture = { ...view.capture, colorUrl: guideUrl };
           completionViewIds.add(view.viewId);

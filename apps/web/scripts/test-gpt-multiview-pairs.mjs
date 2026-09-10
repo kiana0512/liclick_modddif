@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
 import ts from 'typescript';
 import * as THREE from 'three';
 
@@ -70,7 +71,9 @@ await assert.rejects(waitForGptPairPresentation(() => true, () => { throw new Er
 // Execute both production panel adapters with controlled network/GPU ports.
 // This verifies fresh guides, frozen original masks, persistence and the routing
 // boundary, not just a copy of the pairing algorithm.
-const panel = await read('components/panels/GeneratePanel.tsx');
+const panel = process.argv.includes('--baseline')
+  ? execFileSync('git', ['show', 'HEAD:apps/web/src/components/panels/GeneratePanel.tsx'], { encoding: 'utf8' })
+  : await read('components/panels/GeneratePanel.tsx');
 const ast = ts.createSourceFile('panel.tsx', panel, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
 const declarations = [];
 function visit(node) {
@@ -79,7 +82,7 @@ function visit(node) {
 }
 visit(ast); assert.equal(declarations.length, 2);
 async function fixture(failedView, fullyCovered = false) {
-  let sequence = 0, rows = [], frozen = false, repairCount = 0;
+  let sequence = 0, rows = [], frozen = false, repairCount = 0, whitePresentation = false;
   const jobs = new Map(), requests = [], captures = [], saved = [];
   const project = { id: 'project', captures: [] };
   const sceneRoot = new THREE.Group(), resident = new THREE.ShaderMaterial({ name: 'LiclickProjectedLayerStack:layers' });
@@ -105,15 +108,25 @@ async function fixture(failedView, fullyCovered = false) {
       beginProjectedPreviewBatch: () => { assert.equal(frozen, false); frozen = true; },
       endProjectedPreviewBatch: () => {
         frozen = false;
+        whitePresentation = false;
         resident.userData.liclickProjectedLayerStackState = { bindings: rows.map((layer) => ({ layerId: layer.id })) };
       },
     }) },
     getTextureMapMultiviewCaptures: async (views) => {
       active(); assert(views.length <= 2); captures.push(views.map((view) => view.id));
+      // Clearing transient white mode does not synchronously restore SceneRoot's
+      // resident texture material. Model the gap that the old adapter captured.
+      whitePresentation = true;
       return views.map((view) => ({ viewId: view.id, cameraView: view.id, label: view.id,
         capture: { id: `capture-${view.id}`, objectId: 'object', colorUrl: `clay-${view.id}`, maskUrl: `original-mask-${view.id}`, width: 2048, height: 2048 } }));
     },
-    captureCurrentColorPreview: async () => { active(); return { colorUrl: `effect:${rows.map((row) => row.id)}` }; },
+    captureCurrentColorPreview: async (input) => {
+      active();
+      assert.equal(whitePresentation, false, 'authored colour must be frozen BEFORE asynchronous clay presentation');
+      assert.equal(input.resolution, 2048);
+      assert.equal(input.colorMode, 'flat-target-coverage');
+      return { colorUrl: `effect:${rows.map((row) => row.id)}` };
+    },
     prepareSingleViewTextureCompletion: async (input) => ({ hasVisibleTexture: true, imageUrl: fullyCovered ? undefined : input.currentEffectUrl, uncoveredPixelCount: fullyCovered ? 0 : 10 }),
     persistCaptureAssets: async (items) => items,
     updateProjectById: (_, patch) => Object.assign(project, patch),
@@ -126,6 +139,7 @@ async function fixture(failedView, fullyCovered = false) {
     createFailedGeneration: (job, error) => ({ ...job, status: 'failed', metadata: { ...job.metadata, error } }),
     mergeGenerationMetadataPreservingStartedAt: (a, b) => ({ ...a, ...b }),
     submitGptTextureView: async (id, prompt, guide, reference, capture) => {
+      assert.equal(reference.id, 'material', 'second input remains the user-selected material reference');
       assert(saved.some((patch) => patch.captures?.some((item) => item.id === capture.id)), 'capture must be durable before submission');
       requests.push({ id, prompt, guide, capture });
       assert.equal(capture.maskUrl, `original-mask-${jobs.get(id).metadata.cameraViewId}`);

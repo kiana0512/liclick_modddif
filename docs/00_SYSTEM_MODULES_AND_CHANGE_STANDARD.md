@@ -1,6 +1,6 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
-> 文档版本：`2.19.16`
+> 文档版本：`2.19.17`
 >
 > 生效日期：`2026-09-10`
 >
@@ -11,6 +11,8 @@
 > 审计口径：`0a2519d + 607e82f + 2568e40`，不包含错误文档提交 `2bde8c6/e03bab2/d1c5f78`
 
 ## 1. 文档地位与强制边界
+
+`CHG-20260910-GPT-GUIDE-CAPTURE-ISOLATION`：主模块 M03，协作 M04/M06/M08；新增 `CAPTURE-MATERIAL-ISOLATION` v1.0.0。GPT 成对生成先冻结已有纹理截图，再捕获带明暗的 clay/原模型 mask/depth；避免临时白模异步恢复前被无光照截图转为纯白剪影。flat 捕获逐 tile 同步借用/恢复材质与 uniforms，不跨帧占用；源材质中途替换则拒绝混合截图。GPT 输入仍为模型引导图和原材质参考图，完整 2048、原相机/蒙版/Worker 补全和投影裁切不变。GPU 仅捕获生命周期调整，CPU/Worker/shader 公式、UV/export、Schema/Command/CAS/ownership/verified assets 不改，无数据迁移。详见 [变更卡](changes/CHG-20260910-GPT-GUIDE-CAPTURE-ISOLATION.md)。
 
 `CHG-20260910-GPT-MULTIVIEW-PAIRS`：主模块 M04，协作 M03/M05/M06/M12/M15；`GPT-MULTIVIEW-PAIR-SEQUENCE` v1.0.0。GPT 多视图按预设固定相对视角两张一组，组内请求/等待并行，返图按组内固定顺序提交，组间串行。每组仅捕获本组白模，结合此时实际已有纹理生成引导图，保留原 capture 相机/depth/完整模型 mask；发布本组预览后验证实际材质 bindings 和两帧呈现，再开始下一组。新加角度独立生成，继承预设视角仍配对，顶底最后，不重排缩略图、不新增提供方标识。部分失败保留成功结果并停止后续组，取消沿用同一 batchId；最后仅补缝一次。单视图与隐藏远端兼容路径保持。GPU/CPU/Worker/shader/UV/export 像素、分辨率、Project Command/CAS/ownership/verified assets 不改，无 Schema/资产迁移；详见 [变更卡](changes/CHG-20260910-GPT-MULTIVIEW-PAIRS.md)。
 
@@ -661,6 +663,7 @@ Bake 设置包含 resolution、frontal/rear distance、distance/cage、cage infl
 | `ALG-CAP-004` Depth 捕获 | `(-viewZ-near)/(far-near)` linear-view，RGB packing，alpha=1 |
 | `ALG-CAP-005` Normal 捕获 | 默认 view normal，编码 `n×0.5+0.5` |
 | `ALG-CAP-006` 捕获状态隔离 v1.0.0 | 首次及逐 tile/pass 的 await 前归还共享 renderer/背景；每个同步 draw 重绑捕获 target/clear，保留像素与分辨率 |
+| `CAPTURE-MATERIAL-ISOLATION` v1.0.0 | flat 材质/uniforms 仅在每个同步 tile draw 内借用，逐 tile 恢复；材质身份变化拒绝混合截图，已有纹理在 clay 展示前冻结 |
 | `ALG-GEN-001` 单视图生成 | `1.2.0`；当前相机 Capture + 材质参考 → Generation；GPT2 初始白模与已有贴图补全共用图一几何锁定/图二材质参考模板；结果先生成原捕获尺寸的边缘去污染投影源，再与独立 capture mask/depth 一起创建普通质量合成 projected layer |
 | `ALG-GEN-002` 多视图批次 | `1.2.0`；N 个捕获共享 batch；GPT2 与单视图共用同一材质补全模板；完成层串行 commit，整批结束一次发布新投影栈 |
 | `ALG-GEN-003` 任务身份归一 | clientGenerationId/serverJobId/taskId 合并，避免恢复时重复 running 行 |
