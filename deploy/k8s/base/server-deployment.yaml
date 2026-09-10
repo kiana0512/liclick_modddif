@@ -79,13 +79,26 @@ spec:
               port: http
             initialDelaySeconds: 15
             periodSeconds: 20
+          # OOMKilled at the old 1Gi limit on 2026-09-10 (exit 137) after ~1h43m
+          # of local-repaint traffic. The memory is not V8 heap — Node had sized
+          # heap_size_limit to 524Mi from that cgroup and was nowhere near it —
+          # it's Buffers: this process holds whole images in memory while
+          # proxying ModelView inpaint and asset-service traffic (each repaint
+          # round trip is a handful of MB in, ~1.3MB out, and
+          # ASSET_SERVICE_MAX_UPLOAD_BYTES allows far larger artifacts). Buffers
+          # are external to the heap, so V8's own limit can't cap them and the
+          # cgroup is what has to give. Raising the limit also lets Node scale
+          # heap_size_limit up with it.
+          # Idle usage is ~400Mi; requests stay well under the limit on purpose
+          # so the burst is absorbed by node headroom (prod-worker-06 is at 64%
+          # of 125Gi requested) rather than being reserved permanently.
           resources:
             requests:
               cpu: 250m
-              memory: 256Mi
+              memory: 512Mi
             limits:
-              cpu: "1"
-              memory: 1Gi
+              cpu: "2"
+              memory: 4Gi
       volumes:
         - name: workspace
           persistentVolumeClaim:
