@@ -31,12 +31,8 @@ const paintFragment = `
   uniform sampler2D visibleFaces;
   uniform sampler2D visibleDepth;
   uniform vec2 visibilitySize;
-  uniform vec2 viewportSize;
-  uniform vec2 brushFrom;
-  uniform vec2 brushTo;
-  uniform float brushRadius;
-  uniform float feather;
-  uniform float erase;
+  uniform vec2 viewportSize, brushFrom, brushTo;
+  uniform float brushRadius, feather, erase;
   float repaintWeight() {
     vec3 ndc = currentClip.xyz / max(currentClip.w, 1e-20);
     vec2 screenUv = ndc.xy * 0.5 + 0.5;
@@ -57,8 +53,7 @@ const paintFragment = `
     float t = clamp(dot(p - brushFrom, ab) / max(dot(ab, ab), 0.0001), 0.0, 1.0);
     float distanceToStroke = length(p - (brushFrom + ab * t)) / max(brushRadius, 0.001);
     if (distanceToStroke >= 1.0) discard;
-    float weight = 1.0 - smoothstep(max(0.0, 1.0 - feather), 1.0, distanceToStroke);
-    return weight;
+    return 1.0 - smoothstep(max(0.0, 1.0 - feather), 1.0, distanceToStroke);
   }
 `;
 
