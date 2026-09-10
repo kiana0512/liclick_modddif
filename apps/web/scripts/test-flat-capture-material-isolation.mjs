@@ -17,12 +17,12 @@ const source = declarations(await read('renderTargetUtils.ts'), ['applyTargetOnl
   declarations(capture, ['createFlatTargetCaptureMaterial', 'prepareFlatTargetCapture', 'captureFlatTarget']);
 const compiled = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
 
-async function check(mode = 'success') {
+async function check(mode = 'success', coverage = true) {
   const scene = new THREE.Scene();
   const shader = new THREE.ShaderMaterial({ uniforms: {
     previewLightingEnabled: { value: 1 }, previewExposure: { value: 2 },
     normalPreviewEnabled: { value: 1 }, wirePreviewEnabled: { value: 1 },
-    showEmptyProjectionHatch: { value: 0 },
+    showEmptyProjectionHatch: { value: 1 },
   } });
   const map = new THREE.Texture();
   const authored = new THREE.MeshStandardMaterial({ color: '#b38346', map });
@@ -43,7 +43,7 @@ async function check(mode = 'success') {
     assert.equal(shader.uniforms.previewExposure.value, 2);
     assert.equal(shader.uniforms.normalPreviewEnabled.value, 1);
     assert.equal(shader.uniforms.wirePreviewEnabled.value, 1);
-    assert.equal(shader.uniforms.showEmptyProjectionHatch.value, 0);
+    assert.equal(shader.uniforms.showEmptyProjectionHatch.value, 1);
     assert.equal(helper.visible, true);
     assert.equal(originalDisposed, 0);
   };
@@ -60,7 +60,7 @@ async function check(mode = 'success') {
         assert.equal(meshes[0].material, shader, 'resident GPU program must be reused');
         assert.equal(shader.uniforms.previewLightingEnabled.value, 0);
         assert.equal(shader.uniforms.previewExposure.value, 1);
-        assert.equal(shader.uniforms.showEmptyProjectionHatch.value, 2);
+        assert.equal(shader.uniforms.showEmptyProjectionHatch.value, coverage ? 2 : 0);
         assert.equal(helper.visible, false);
         assert(meshes[2].material instanceof THREE.MeshBasicMaterial);
         assert.equal(meshes[2].material.map, map, 'authored texture is not replaced by a silhouette mask');
@@ -80,7 +80,7 @@ async function check(mode = 'success') {
     return 'encoded-authored-2048';
   };
   const run = new Function('THREE', 'renderSceneToPngUrl', `${compiled}\nreturn captureFlatTarget;`)(THREE, render);
-  const task = run({ scene, objectId: 'target', resolution: 2048 }, { width: 2048, height: 2048 }, { forceEmptyProjectionHatch: true });
+  const task = run({ scene, objectId: 'target', resolution: 2048 }, { width: 2048, height: 2048 }, { forceEmptyProjectionHatch: coverage });
   if (mode === 'replacement') await assert.rejects(task, /模型材质在截图期间发生变化/);
   else if (mode === 'render-error') await assert.rejects(task, /controlled render failure/);
   else assert.equal((await task).url, 'encoded-authored-2048');
@@ -89,6 +89,7 @@ async function check(mode = 'success') {
   assert.equal(draws, mode === 'success' ? 16 : 1);
 }
 await check();
+await check('success', false);
 await check('render-error');
 await check('replacement');
 console.log('Production flat capture: per-tile material/uniform isolation, unchanged texture/2048, interrupted snapshot rejection and error cleanup passed.');

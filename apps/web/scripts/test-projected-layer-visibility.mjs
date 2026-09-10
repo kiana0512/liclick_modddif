@@ -1777,7 +1777,7 @@ try {
 
   projection.syncProjectedLayerMaterialDisplayState(material, layers);
   assert.equal(material.uniforms.layerOpacity2.value, 1);
-  assert.equal(material.uniforms.showEmptyProjectionHatch.value, 0, 'visible projections still use clean clay outside coverage');
+  assert.equal(material.uniforms.showEmptyProjectionHatch.value, 1, 'visible projections show the viewport-only empty hatch');
   assert.equal(material.uuid, materialId);
 
   assert.equal(

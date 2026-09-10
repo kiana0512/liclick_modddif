@@ -37,6 +37,7 @@ export async function run() {
   const layer = (id, alpha = 1) => ({ layerId:id, imageUrl:imageUrl('#b57632',alpha), objectId:'test', camera:snapshot,
     opacity:1, visible:true, depthTest:true, minimumProjectionFacing:0.18 });
   const single = await createProjectedLayerMaterial(layer('single'));
+  check(single.uniforms.showEmptyProjectionHatch.value === 1, 'visible projection defaults to hatch');
   // Same result/capture through the actual two generation entry policies.
   const parityCapture = { id: 'parity', objectId: 'test', camera: snapshot, maskUrl: imageUrl('#fff') };
   const parityMaterials = [];
@@ -58,11 +59,14 @@ export async function run() {
   check(front[3] === 255, 'front must retain full coverage');
   const weak = render(single,Math.acos(0.21));
   check(weak[3] === 0, `grazing transition must be clipped: ${weak}`);
-  const weakVisible = render(single,Math.acos(0.21),0);
-  check(weakVisible[3] === 255 && Math.max(...weakVisible.slice(0,3))-Math.min(...weakVisible.slice(0,3)) < 8, `viewport cut must reveal neutral clay: ${weakVisible}`);
+  const weakVisible = render(single,Math.acos(0.21),1);
+  check(weakVisible[3] === 255 && Math.max(...weakVisible.slice(0,3)) < 120, `viewport cut must reveal dark hatch: ${weakVisible}`);
+  check(Math.min(...weak.slice(0,3)) > 150, 'coverage capture remains clean clay, not hatch');
   let stackCount = 0;
   for (const preferTextureArrays of [false,true]) {
     const material = await createProjectedLayerStackMaterial({ objectId:'test',opacity:1,visible:true,depthTest:true,layers:[layer('a'),layer('b')] }, { renderer,preferTextureArrays });
+    check(material.uniforms.showEmptyProjectionHatch.value === 1, 'stack defaults to hatch');
+    check(Math.max(...render(material,Math.acos(0.21),1).slice(0,3)) < 120, 'stack cut uses dark hatch');
     check(render(material)[3] === 255, 'stack front');
     check(render(material,Math.acos(0.21))[3] === 0, 'stack grazing clip');
     const partial = await createProjectedLayerStackMaterial({ objectId:'test',opacity:1,visible:true,depthTest:true,layers:[layer('c',0.5),layer('d',0.5)] }, { renderer,preferTextureArrays });
@@ -72,6 +76,12 @@ export async function run() {
   const uv = new THREE.DataTexture(new Uint8Array([100,50,20,255]),1,1); uv.needsUpdate=true;
   const uvOnly = createUvOverlayPreviewMaterial({ displayMode:'material', selected:false, uvOverlayTexture:uv });
   check(render(uvOnly)[3] === 255, 'merged UV remains authoritative');
+  const emptyUv = new THREE.DataTexture(new Uint8Array([0,0,0,0]),1,1); emptyUv.needsUpdate=true;
+  const emptyUvMaterial = createUvOverlayPreviewMaterial({ displayMode:'material', selected:false, uvOverlayTexture:emptyUv });
+  check(emptyUvMaterial.uniforms.showEmptyProjectionHatch.value === 1, 'UV defaults to hatch');
+  check(Math.max(...render(emptyUvMaterial,0,1).slice(0,3)) < 120, 'UV gap hatch');
+  const uvCapture = render(emptyUvMaterial,0,2);
+  check(uvCapture[3] === 0 && Math.min(...uvCapture.slice(0,3)) > 150, 'UV capture clean clay and empty coverage');
   const onUv = await createProjectedLayerMaterial({ ...layer('on-uv'),baseTexture:uv });
   check(render(onUv,Math.acos(0.21))[3] === 255, 'cut projection must retain valid UV underneath');
   // Real Worker and PNG alpha transport: left half black artwork, right half gap.

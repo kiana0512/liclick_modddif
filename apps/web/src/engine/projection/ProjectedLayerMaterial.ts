@@ -2611,7 +2611,7 @@ export function syncProjectedLayerMaterialDisplayState(
       }
     }
     if (candidate.uniforms.showEmptyProjectionHatch) {
-      candidate.uniforms.showEmptyProjectionHatch.value = 0;
+      candidate.uniforms.showEmptyProjectionHatch.value = layers.some((layer) => layer.visible) ? 1 : 0;
     }
     if (candidate.uniforms.normalPreviewEnabled) {
       candidate.uniforms.normalPreviewEnabled.value = normalPreview ? 1 : 0;
@@ -3008,7 +3008,7 @@ function updateSharedPreviewUniforms(
   if (material.uniforms.baseColor)
     material.uniforms.baseColor.value.set(input.baseColor ?? DEFAULT_PREVIEW_COLOR);
   if (material.uniforms.showEmptyProjectionHatch)
-    material.uniforms.showEmptyProjectionHatch.value = 0;
+    material.uniforms.showEmptyProjectionHatch.value = input.layers.some((layer) => layer.visible) ? 1 : 0;
   if (material.uniforms.normalPreviewEnabled)
     material.uniforms.normalPreviewEnabled.value = input.normalPreview ? 1 : 0;
   if (material.uniforms.wirePreviewEnabled)
@@ -4053,7 +4053,7 @@ export async function createProjectedLayerMaterial(input: ProjectionLayerInput) 
       uvOverlaySaturationShift: { value: input.uvOverlaySaturation ?? 0 },
       uvOverlayLightnessShift: { value: input.uvOverlayLightness ?? 0 },
       baseColor: { value: new THREE.Color(input.baseColor ?? DEFAULT_PREVIEW_COLOR) },
-      showEmptyProjectionHatch: { value: 0 },
+      showEmptyProjectionHatch: { value: input.visible ? 1 : 0 },
       normalPreviewEnabled: { value: input.normalPreview ? 1 : 0 },
       wirePreviewEnabled: { value: input.wirePreview ? 1 : 0 },
       useBaseMap: { value: input.baseTexture ? 1 : 0 },
@@ -4226,7 +4226,7 @@ export async function createProjectedLayerStackMaterial(
     edgeFeather: { value: input.edgeFeather ?? 0.004 },
     depthBias: { value: input.depthBias ?? 0.025 },
     baseColor: { value: new THREE.Color(input.baseColor ?? DEFAULT_PREVIEW_COLOR) },
-    showEmptyProjectionHatch: { value: 0 },
+    showEmptyProjectionHatch: { value: input.layers.some((layer) => layer.visible) ? 1 : 0 },
     normalPreviewEnabled: { value: input.normalPreview ? 1 : 0 },
     wirePreviewEnabled: { value: input.wirePreview ? 1 : 0 },
     baseMap: { value: input.baseTexture ?? neutralTexture },
@@ -5184,7 +5184,12 @@ const uvOverlayFragmentShader = `
   }
 
   uniform float showEmptyProjectionHatch;
-  vec3 computeUvEmptyPreviewColor() { return baseColor; }
+  vec3 computeUvEmptyPreviewColor() {
+    float stripe = step(0.5, fract((gl_FragCoord.x - gl_FragCoord.y) * 0.095));
+    vec3 hatchColor = mix(vec3(0.012), vec3(0.09), stripe * 0.62);
+    float displayHatch = step(0.5, showEmptyProjectionHatch) * (1.0 - step(1.5, showEmptyProjectionHatch));
+    return mix(baseColor, hatchColor, displayHatch);
+  }
 
   void main() {
     vec3 normal = normalize(vWorldNormal);
@@ -5316,7 +5321,7 @@ export function createUvOverlayPreviewMaterial(input: UvOverlayPreviewMaterialIn
     vertexShader,
     fragmentShader: uvOverlayFragmentShader,
     uniforms: {
-      showEmptyProjectionHatch: { value: 0 },
+      showEmptyProjectionHatch: { value: 1 },
       baseMap: { value: input.baseTexture ?? neutralTexture },
       baseRenderedColorMaskMap: { value: input.baseRenderedColorMaskTexture ?? neutralTexture },
       uvOverlayMap: { value: input.uvOverlayTexture ?? neutralTexture },
