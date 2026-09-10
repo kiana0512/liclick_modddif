@@ -12,6 +12,8 @@
 
 ## 1. 文档地位与强制边界
 
+2026-09-10 M07 / PERF-UV-SOURCE-PREPARE-001 v1.1.0：GPU 栈以一层 lookahead 重叠源准备与计算，live 源保持消费时同步快照；删除逐纹理固定等帧，保留 4ms 预算、分条上传与交互让出。异常排空在途资源并保护借用 bitmap。真实 WebGL 4K/6层冻结旧核对照 RGBA/coverage/count 零差异，阶段约 1223–1609→851–1044ms；非完整 Merge。GPU/CPU/Worker/shader 像素和 QA、导出、持久化/缓存不变，无数据迁移；回滚只恢复调度。见 CHG-20260910-UV-DEFAULT-RESIDENT 后续记录。
+
 2026-09-10 用户要求先移除自动补洞：M07 / Merge profile v8，关闭 uvCoverageGapPixels 和 uvInteriorHolePixels，旧算法保留但正常合成不调用；接缝 band/gutter 与 QA 保留。新结果保留未覆盖区，会话键 v12、持久派生键 persistent-3，旧补洞缓存不复用；Project Schema/历史资产不变，无 release 变更。详见 CHG-20260910-UV-DEFAULT-RESIDENT 后续记录。
 
 `CHG-20260910-UV-DEFAULT-RESIDENT`：主模块 M07，协作 M06/M09；ALG-UV-003 v2.1.1、准备策略 v2.2.2、ALG-UV-005 v2.0.5。按用户要求普通投影转 UV 入口统一常驻 GPU，旧 CPU 投影/质量路径只在显式 perfLab 对照中可用，不再失败后静默回退；首轮完整 CPU 校验仍保留。补洞仅枚举有相对拓扑邻点的候选，像素顺序/岛屿门禁不变；最终 PNG 在后台提前上传，仅在相同 Blob 正式保存后移动独占缓存所有权。全分辨率、QA、Command/CAS/ownership/verified assets 保留，无 Project Schema 迁移；8K/超 255 层普通质量合成尚不支持新常驻核时明确失败，不降采样、不走旧算法。GPU/CPU/Worker/shader/export 审计及测试见 [变更卡](changes/CHG-20260910-UV-DEFAULT-RESIDENT.md)。

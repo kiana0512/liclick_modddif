@@ -28,4 +28,20 @@ GPU/GLSL：质量核公式不改，单层首次纳入校验；转交纹理保留
 
 ## 迁移和回滚
 
+### 后续：源准备与 GPU 执行重叠（PERF-UV-SOURCE-PREPARE-001 v1.1.0）
+
+M07 / 协作 M06、M09。两个 GPU 栈入口共用一层 lookahead：当前层上传/光栅化期间只准备下一层，不同时加载整个栈；失败和取消排空在途资源。live canvas/image URL 不提前采样，仍在消费时同步快照。借用 resident bitmap 期间持有缓存引用，异常解码回收已完成的兄弟纹理；未使用的 neutral 及时释放。
+
+删除每个纹理（包括 1px neutral）上传前必等一帧的固定成本，改用 4ms 提交预算，纹理内部的分条上传/交互让出保留。新增源等待、上传、逐层读回分段计时，便于继续定位，不能把总时长都归因于 GPU 运算。
+
+GPU/CPU/Worker/shader：本轮只调整准备/提交调度和资源所有权，不改采样、Top-3、蒙版/深度/alpha、RGBA 转换或 QA。Merge、自动合成和 export 经同一入口获益；持久数据/缓存字节不变，无 Schema/资产迁移，不因等价调度再次失效持久预热。回滚仅恢复本轮调度代码，历史版本 8 / 缓存 v12 保持。release 和 CI 配置不改。
+
+冻结 d3800a9 原 GPU 模块，真实 WebGL 同源 PNG、新 URL 防止解码缓存偏置、旧/新/新/旧顺序：4K/6层阶段旧 1222.6、1609.0ms，新 851.0、1043.7ms；完整 RGBA、coverage、覆盖计数/三角计数一致。512/13层旧 3113.5（含首次编译）、1539.0ms，新 704.8、719.6ms。均为隔离平面夹具的源准备+GPU合成阶段，不含持久保存/接缝/gutter，也不证明用户整个 Merge 已达毫秒级。
+
+新增 23 层调度/有界资源/同步 live 快照/错误/取消回归；真实 WebGL 脚本 `verify-uv-source-lookahead-webgl.mjs` 固定旧模块对照。后续实际工程验收另记。
+
+本轮 115 项回归通过，类型检查通过，lint 0 errors/15 既有 warnings，Cloud 包体 3,193,980 bytes 通过原 3,194,000 门禁。内置浏览器当前 shelter 工程刷新后确认 `uvMergePreparationRead=disk-hit`；13层/4096 实际点击 Merge，`mergeDurationMs=48.8`（处理开始至合并图层发布），`previewPrewarmDurationMs=0.5`、`uvMergeGpuPreparation=adopted`、final cache hit，截图确认合并 UV 已显示。随后撤销一次恢复原始 13 个投影层供用户测试。此结果依赖已完成的持久结果恢复/PNG与GPU预热，不代表冷启动或任意编辑后都能 48.8ms。
+
+最终核再次验证：4K/6层旧 1220.4、1628.7ms，新 866.5、1174.2ms，字节零差异，存在运行时波动；新增512/13层带蒙版与首轮保留 rasters 路径，逐层 RGBA/coverage/quality 与最终结果全部零差异，旧2486.0、2430.2ms，新1611.2、1608.5ms。CPU参考和首轮校验依然保留。
+
 不修改 Project/Layer Schema、历史资产或派生缓存格式；关闭补洞改变新输出语义，缓存版本按上文更新，旧含补洞结果不复用。GPU 纹理只会话预热，页面刷新从当前版本持久 RGBA 恢复后重建 GPU，不能把显存本身写到磁盘。回滚本卡路由、候选删减和GPU转交，并恢复旧 profile/版本；旧算法保留于源码。正常用户不用 debug 参数。release 保持不动。

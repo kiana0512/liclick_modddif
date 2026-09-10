@@ -1288,6 +1288,9 @@ async function bakeVisibleProjectedLayersToTextureUnlocked(
           }
         }
         performanceBreakdown.gpuRasterAndReadbackMs = performance.now() - gpuRasterStartedAt;
+        for (const key of ['sourcePreparationWaitMs', 'textureUploadMs', 'layerReadbackWaitMs'] as const) {
+          performanceBreakdown[key] = (gpuBake[key] ?? 0) + (literalFallbackBake[key] ?? 0);
+        }
         performanceBreakdown.localRepaintBatchedLayers = literalOverlayBake?.sourceSizes.length ?? 0;
         performanceBreakdown.localRepaintSavedFullResolutionReadbacks = literalOverlayBake
           ? literalOverlayBake.sourceSizes.length * 2 - 1

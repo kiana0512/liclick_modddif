@@ -1,6 +1,8 @@
 import { RELIABLE_PROJECTION_GLSL } from '../projection/projectionCoverageContract.mjs';
 import { readRenderTargetPixelsInStripes } from './gpuReadbackStripes';
 import { ResidentQualityComposite } from './residentQualityComposite';
+import { createSingleItemLookahead } from './singleItemLookahead';
+import { isLiveProjectedCanvasUrl } from '../projection/liveProjectedCanvasTextureRegistry';
 import type { QualityBlendWorkerResult } from './qualityBlendWorker';
 import { getProjectedLayerOverlayMode } from './projectedOverlayComposition';
 import * as THREE from 'three';
@@ -13,6 +15,7 @@ import { isViewportInteractionBusy } from '@/engine/viewport/viewportInteraction
 import { waitForBrowserPaint } from '@/utils/browserScheduling';
 import {
   residentPreviewTextureCache,
+  retainPreviewTexture,
   uploadPreviewTextureInStripes,
 } from '@/engine/viewport/previewTextureCache';
 import { yieldToBrowserTask } from '@/utils/browserScheduling';
@@ -101,6 +104,9 @@ export type GpuLayerRaster = {
 };
 
 export type GpuLayerRastersBakeOutput = {
+  sourcePreparationWaitMs?: number;
+  textureUploadMs?: number;
+  layerReadbackWaitMs?: number;
   residentQuality?: QualityBlendWorkerResult;
   rasters: GpuLayerRaster[];
   sourceSizes: GpuLayerSourceSize[];
@@ -834,6 +840,8 @@ async function loadLayerTextureFromCpuImageData(input: {
       resident.flipY,
     );
     texture.userData.liclickSharedResidentBitmap = true;
+    const release = retainPreviewTexture(input.url);
+    texture.addEventListener('dispose', release);
     return texture;
   }
   const imageData = await loadImageData(input.url, input.resolution, input.label);
@@ -861,15 +869,14 @@ async function stageLayerTexturesForGpu(
 ) {
   let maximumUploadMs = 0;
   const usesVisibleRenderer = renderer.domElement.isConnected;
+  let nextYieldAt = performance.now() + 4;
   for (const texture of new Set(textures)) {
-    // Give the onscreen renderer one presentation opportunity before every
-    // full-resolution asset upload. ImageBitmap sources use exact striped
-    // texSubImage2D uploads; compatibility sources still remain one asset per
-    // frame instead of four consecutive uploads inside the bake draw.
-    if (usesVisibleRenderer) {
-      await waitForBrowserPaint();
-    } else {
-      await yieldToBrowserTask();
+    // Uploads already yield in stripes. Do not charge an extra frame for each
+    // source (including the 1px neutral); retain a bounded submission budget.
+    if (performance.now() >= nextYieldAt) {
+      if (usesVisibleRenderer) await waitForBrowserPaint();
+      else await yieldToBrowserTask();
+      nextYieldAt = performance.now() + 4;
     }
     await waitForSharedRendererBakeSlot();
     const startedAt = performance.now();
@@ -907,7 +914,7 @@ async function loadLayerTexturesWithOptions(
   // every layer pay image + mask + depth + normal latency back-to-back even
   // though decoding is already isolated in workers and does not touch GL.
   // Filtering, orientation and source bytes are unchanged.
-  const [projectedTexture, maskTexture, depthTexture, normalTexture] = await Promise.all([
+  const loaded = await Promise.allSettled([
     loadLayerTextureFromCpuImageData({
       url: layer.imageUrl,
       resolution,
@@ -947,6 +954,16 @@ async function loadLayerTexturesWithOptions(
         })
       : Promise.resolve(neutralTexture),
   ]);
+  const failure=loaded.find(result=>result.status==='rejected');
+  if(failure?.status==='rejected') {
+    disposeLayerTextures([neutralTexture,...loaded.flatMap(result=>result.status==='fulfilled'?[result.value]:[])]);
+    throw failure.reason;
+  }
+  const [projectedTexture, maskTexture, depthTexture, normalTexture]=loaded.map(result=>{
+    if(result.status==='rejected')throw result.reason;
+    return result.value;
+  });
+  if (layer.maskUrl && layer.depthUrl && layer.normalUrl) neutralTexture.dispose();
   return {
     projectedTexture,
     maskTexture,
@@ -965,6 +982,23 @@ async function loadLayerTexturesWithOptions(
       normalImage: layer.normalUrl ? getTextureImageSize(normalTexture) : undefined,
     },
   };
+}
+
+function createLayerTextureLookahead(input: GpuLayerStackBakeInput) {
+  // Mutable paint sources must be sampled at consumption, never ahead of it.
+  const enabled = !input.layers.some(layer =>
+    [layer.imageUrl, layer.maskUrl, layer.depthUrl, layer.normalUrl].some(
+      url => url && isLiveProjectedCanvasUrl(url),
+    ),
+  );
+  return createSingleItemLookahead(
+    input.layers.length,
+    index => loadLayerTexturesWithOptions(input.layers[index], input.resolution, {
+      inputTextureFlipY: input.inputTextureFlipY ?? true,
+    }),
+    textures => disposeLayerTextures(textures.disposableTextures),
+    enabled,
+  );
 }
 
 function createObjectMatrixDelta(group: THREE.Group, layer: Layer) {
@@ -1576,6 +1610,8 @@ export async function bakeProjectedLayerRastersWithGpu(
   const resident = input.residentQuality ? new ResidentQualityComposite(renderer,resolution) : undefined;
   const retainRasters = !resident || input.residentQuality!.retainRasters;
   let residentAccumulateMs = 0;
+  let sourcePreparationWaitMs=0,textureUploadMs=0,layerReadbackWaitMs=0;
+  const sources=createLayerTextureLookahead(input);
   let activeTextures: THREE.Texture[] = [];
   const activeMaterials: THREE.Material[] = [];
   let previousState = captureRendererState(renderer);
@@ -1614,12 +1650,14 @@ export async function bakeProjectedLayerRastersWithGpu(
         layerIndex,
         layerCount: input.layers.length,
       });
-      const textures = await loadLayerTexturesWithOptions(layer, resolution, {
-        inputTextureFlipY: input.inputTextureFlipY ?? true,
-      });
+      const sourceStartedAt=performance.now();
+      const textures = await sources.take();
+      sourcePreparationWaitMs+=performance.now()-sourceStartedAt;
       activeTextures = textures.disposableTextures;
       sourceSizes.push(textures.sourceSizes);
+      const uploadStartedAt=performance.now();
       await stageLayerTexturesForGpu(renderer, textures.disposableTextures);
+      textureUploadMs+=performance.now()-uploadStartedAt;
 
       const coverageMaterial = createLayerMaterial({
         group: input.group,
@@ -1678,7 +1716,9 @@ export async function bakeProjectedLayerRastersWithGpu(
       restoreRendererState(renderer, previousState);
       // The PBOs own both submitted images now. Convert the two exact byte
       // buffers concurrently while R3F has already regained the viewport.
+      const readbackStartedAt=performance.now();
       const [layerRaster, quality] = await Promise.all([layerRasterPromise, qualityPromise]);
+      layerReadbackWaitMs+=performance.now()-readbackStartedAt;
       previousState = captureRendererState(renderer);
       coverageMaterial.dispose();
       qualityMaterial.dispose();
@@ -1724,10 +1764,11 @@ export async function bakeProjectedLayerRastersWithGpu(
     }
 
     warnings.push(
-      'GPU per-layer UV bake used CPU parity compositing; CPU raster fallback remains available for diagnostics.',
+      'GPU UV uses quantized sampling; CPU raster is diagnostic-only.',
     );
     return {
       residentQuality,
+      sourcePreparationWaitMs,textureUploadMs,layerReadbackWaitMs,
       rasters,
       sourceSizes,
       totalTriangles,
@@ -1743,6 +1784,7 @@ export async function bakeProjectedLayerRastersWithGpu(
     restoreRendererState(renderer, previousState);
     colorTarget.dispose();
     qualityTarget.dispose();
+    await sources.close();
   }
 }
 
@@ -1774,6 +1816,9 @@ export async function bakeProjectedLayerStackWithGpu(
   renderTarget.texture.colorSpace = THREE.NoColorSpace;
   let uvTopologyTarget: THREE.WebGLRenderTarget | undefined;
   let uvSeamGeometry: THREE.BufferGeometry | undefined;
+  const sources=createLayerTextureLookahead(input);
+  let activeTextures:THREE.Texture[]=[];
+  let activeMaterial:THREE.Material|undefined;
 
   let previousState = captureRendererState(renderer);
 
@@ -1808,9 +1853,8 @@ export async function bakeProjectedLayerStackWithGpu(
         layerIndex,
         layerCount: input.layers.length,
       });
-      const textures = await loadLayerTexturesWithOptions(layer, resolution, {
-        inputTextureFlipY: input.inputTextureFlipY ?? true,
-      });
+      const textures = await sources.take();
+      activeTextures=textures.disposableTextures;
       sourceSizes.push(textures.sourceSizes);
       await stageLayerTexturesForGpu(renderer, textures.disposableTextures);
       const material = createLayerMaterial({
@@ -1824,6 +1868,7 @@ export async function bakeProjectedLayerStackWithGpu(
         maximumDepthError: input.maximumDepthError,
         minimumOutputCoverage: input.minimumOutputCoverage,
       });
+      activeMaterial=material;
       bakeScene.bakeMeshes.forEach((mesh) => {
         mesh.material = material;
       });
@@ -1841,7 +1886,9 @@ export async function bakeProjectedLayerStackWithGpu(
       processedTriangles += totalTrianglesPerLayer;
       reportProgress(layer, layerIndex, true);
       material.dispose();
+      activeMaterial=undefined;
       disposeLayerTextures(textures.disposableTextures);
+      activeTextures=[];
       // The editor render loop can run at this await. Restore the onscreen target
       // and viewport first so UV baking can never leak into the main viewport.
       restoreRendererState(renderer, previousState);
@@ -1945,5 +1992,7 @@ export async function bakeProjectedLayerStackWithGpu(
     uvSeamGeometry?.dispose();
     uvTopologyTarget?.dispose();
     renderTarget.dispose();
+    activeMaterial?.dispose();disposeLayerTextures(activeTextures);
+    await sources.close();
   }
 }
