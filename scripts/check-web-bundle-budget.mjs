@@ -14,7 +14,7 @@ const budgets = [
     // application shell and is counted by the total JavaScript budget below.
     minimumMatchBytes: 100_000,
   },
-  { label: 'editor route', prefix: 'EditorPage-', maxBytes: 495_000 },
+  { label: 'editor route', prefix: 'EditorPage-', maxBytes: 498_000 },
   { label: 'high bake snapshot', prefix: 'bakeHighSnapshot-', maxBytes: 700_000 },
   {
     label: 'shared 3D pipeline',
@@ -35,7 +35,11 @@ const budgets = [
 // Single-view restored-result auto projection adds recovery/commit guards.
 // Candidate Cloud build: 3,150,063 bytes; allow 2,000 bytes of feature growth.
 // Individual chunk limits, image resolution and QA gates remain unchanged.
-const maxTotalJavaScriptBytes = 3_150_750;
+// CHG-20260910-GPT-MULTIVIEW-PAIRS: lazy pair scheduler + fresh-capture /
+// resident barriers add 5,191 bytes (3,150,085 -> 3,155,276). Editor adapters
+// measure 497,751 bytes. Grant only this feature's measured payload; preserve
+// the shell/bake/shared limits, output resolution and every QA contract.
+const maxTotalJavaScriptBytes = 3_156_000;
 
 let entries;
 try {

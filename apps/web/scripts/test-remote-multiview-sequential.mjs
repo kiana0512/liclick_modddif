@@ -84,10 +84,11 @@ for (const mode of ['single', 'multi']) {
     requirePersonalLiclickAccount: async () => { calls.push('gpt-login'); },
     usesGptTextureGeneration: () => true,
     handleRemoteSequentialMultiviewGenerate: async () => { calls.push('remote-generation'); },
+    handleGptPairedMultiviewGenerate: async () => { calls.push('gpt-pairs'); },
   };
   const route = new Function(...Object.keys(scope), `${bindingJs}\n${routeJs}\nreturn handleTextureMapMultiviewGenerate;`)(...Object.values(scope));
   await route({ id: 'material' }, [{ id: 'front' }, { id: 'top' }, { id: 'custom' }], mode);
-  assert.deepEqual(calls, ['gpt-login'], `${mode} must use GPT authorization, never the remote route`);
+  assert.deepEqual(calls, mode === 'multi' ? ['gpt-login', 'gpt-pairs'] : ['gpt-login'], `${mode} must use GPT authorization, never the remote route`);
 }
 assert.match(
   panel,

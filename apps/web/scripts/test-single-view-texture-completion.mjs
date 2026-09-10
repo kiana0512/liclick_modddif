@@ -80,7 +80,7 @@ assert.deepEqual(request.referenceIds, ['guide', 'material']);
 assert.deepEqual(request.referenceImages, [guide, material], 'Atlas receives exactly the guide then material reference.');
 assert.equal(request.capture, capture);
 assert.equal(request.count, 1);
-assert.match(panel, /return submitGptTextureView\(\s*generationId,\s*texturePrompt,\s*modelViewReference,\s*materialReference,\s*capture/);
+assert.match(panel, /return submitGptTextureView\(\s*generationId,\s*pendingGeneration.prompt,\s*modelViewReference,\s*materialReference,\s*capture/);
 assert.match(textureMapPrompts, /只在图一上进行材质补全，不重新生成物体/);
 assert.match(
   textureMapPrompts,
