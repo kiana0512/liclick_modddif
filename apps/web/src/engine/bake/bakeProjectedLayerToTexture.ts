@@ -42,6 +42,7 @@ import { createId } from '@/utils/id';
 import { waitForBrowserPaint } from '@/utils/browserScheduling';
 import { usesUnlitRenderedColor } from '@/engine/viewport/renderedLayerColor';
 import { blendProjectedRastersInWorker } from './qualityBlendWorker';
+import { residentQualityPolicy, verifyResidentQuality } from './residentQualityComposite';
 import {
   getBatchedLiteralOverlaySuffix,
   isLocalRepaintProjectedLayer,
@@ -116,7 +117,7 @@ async function fillUvInteriorGapsWithIslandOwnership(
 ) {
   if (iterations <= 0) return 0;
   try {
-    // This is the same cached topology used by content-aware repair. Its
+    // This uses the same topology analysis as content-aware repair. Its
     // regionIds let the micro-crack pass distinguish a missing texel inside
     // one UV island from an intentional one-pixel gap between two islands.
     const topology = await buildContentAwareSurfaceTopology(
@@ -125,7 +126,9 @@ async function fillUvInteriorGapsWithIslandOwnership(
       imageData.height,
       {
         includeInvisible: false,
-        includeSeamLinks: true,
+        // This consumer reads only coreMask/regionIds. Seam-link generation
+        // does not affect either array and can be omitted entirely.
+        includeSeamLinks: false,
         seamBandPixels: 1,
         minimumSeamNormalDot: 0.65,
         yieldIntervalMs: 8,
@@ -996,7 +999,14 @@ async function validateGpuBakeCoverage(input: {
   return { ...comparison, meanColorError };
 }
 
-export async function bakeVisibleProjectedLayersToTexture(
+let bakeQueue: Promise<unknown> = Promise.resolve();
+export async function bakeVisibleProjectedLayersToTexture(input: BakeVisibleProjectedLayersInput): Promise<BakeProjectedLayerResult> {
+  const result=bakeQueue.then(()=>bakeVisibleProjectedLayersToTextureUnlocked(input));
+  bakeQueue=result.catch(()=>undefined);
+  return result;
+}
+
+async function bakeVisibleProjectedLayersToTextureUnlocked(
   input: BakeVisibleProjectedLayersInput,
 ): Promise<BakeProjectedLayerResult> {
   const startedAt = performance.now();
@@ -1228,8 +1238,11 @@ export async function bakeVisibleProjectedLayersToTexture(
             }),
         });
 
+        const residentPolicy = layers.length>=2 && layers.length<=255 && input.resolution<=4096 &&
+          parityLayers.filter(layer=>!getProjectedLayerOverlayMode(layer)).length>=2
+          ? residentQualityPolicy(renderer,input.preserveCoverageConfidenceAlpha ?? false) : undefined;
         const gpuBake = parityLayers.length
-          ? await bakeProjectedLayerRastersWithGpu(createGpuBakeInput(parityLayers, 0))
+          ? await bakeProjectedLayerRastersWithGpu({...createGpuBakeInput(parityLayers, 0),residentQuality:residentPolicy})
           : emptyGpuBake();
         let literalOverlayBake: GpuLayerStackBakeOutput | undefined;
         let literalFallbackBake = emptyGpuBake();
@@ -1339,29 +1352,33 @@ export async function bakeVisibleProjectedLayersToTexture(
             mode: 'literal',
           };
         }
-        const qualityBlend = await blendProjectedRastersInWorker(
-          normalRasters,
-          input.resolution,
-          input.preserveCoverageConfidenceAlpha ?? false,
-          [
+        let residentBase=gpuBake.residentQuality;
+        if(residentBase && residentPolicy?.retainRasters) {
+          const reference=await blendProjectedRastersInWorker(normalRasters,input.resolution,
+            input.preserveCoverageConfidenceAlpha ?? false,[],true);
+          residentBase=verifyResidentQuality(renderer,input.preserveCoverageConfidenceAlpha ?? false,residentBase,reference);
+        }
+        const blendOverlays = [
             ...overlayRasters.map((raster) => ({
-              color: raster.imageData.data,
-              quality: raster.quality,
-              overlayMode: raster.mode,
+              color: raster.imageData.data, quality: raster.quality, overlayMode: raster.mode,
               renderedColor: usesUnlitRenderedColor(raster.layer),
             })),
-            ...(batchedLiteralOverlay
-              ? [{
-                  color: batchedLiteralOverlay.imageData.data,
-                  // Literal overlay alpha is coverage-only, so the worker can
-                  // omit the full-resolution quality map as well as all of its
-                  // GPU readbacks.
-                  overlayMode: batchedLiteralOverlay.mode,
-                  renderedColor: usesUnlitRenderedColor(batchedLiteralOverlay.layer),
-                }]
-              : []),
-          ],
+            ...(batchedLiteralOverlay ? [{color:batchedLiteralOverlay.imageData.data,
+              overlayMode:batchedLiteralOverlay.mode,renderedColor:usesUnlitRenderedColor(batchedLiteralOverlay.layer)}] : []),
+        ];
+        const qualityBlend = residentBase && blendOverlays.length===0 ? residentBase : await blendProjectedRastersInWorker(
+          residentBase ? [] : normalRasters,
+          input.resolution,
+          input.preserveCoverageConfidenceAlpha ?? false,
+          blendOverlays,false,residentBase,
         );
+        if(residentBase && qualityBlend!==residentBase) {
+          qualityBlend.backend=residentBase.backend;
+          qualityBlend.accumulateMs+=residentBase.accumulateMs;
+          qualityBlend.resolveMs+=residentBase.resolveMs;
+          qualityBlend.totalMs+=residentBase.totalMs;
+          qualityBlend.verification=residentBase.verification;
+        }
         const composite = qualityBlend.imageData;
         const qualityCoverage = qualityBlend.coverage;
         writtenTexels = qualityBlend.writtenTexels;
@@ -1378,7 +1395,9 @@ export async function bakeVisibleProjectedLayersToTexture(
             qualityBlend.verification.alphaByteMismatches;
         }
         warnings.push(
-          qualityBlend.backend === 'webgpu-worker'
+          qualityBlend.backend === 'webgl-resident'
+            ? 'Resident WebGL quality composite used the full-resolution canonical calibration gate.'
+            : qualityBlend.backend === 'webgpu-worker'
             ? qualityBlend.verification?.usedCpuOutput
               ? `WebGPU quality blend parity rejected ${qualityBlend.verification.byteMismatches} differing bytes; exact Worker CPU output was used.`
               : qualityBlend.verification?.acceptedGpuOutput
@@ -1780,6 +1799,7 @@ export async function bakeVisibleProjectedLayersToTexture(
         report,
       };
     } catch (error) {
+      if(error instanceof Error && error.name==='AbortError') throw error;
       const message = error instanceof Error ? error.message : String(error);
       if (input.disableGpuFallback) {
         throw new Error(`GPU bake failed with debug fallback disabled. ${message}`);

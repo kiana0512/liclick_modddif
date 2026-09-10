@@ -5,6 +5,9 @@
   "type": "module",
   "scripts": {
     "test:fbx-temporary-uv": "node scripts/test-fbx-temporary-uv.mjs",
+    "test:merge-final-preparation": "node scripts/test-merge-final-preparation.mjs",
+    "test:merge-projection-preparation": "node scripts/test-merge-projection-preparation.mjs",
+    "test:persistent-merge-preparation": "node scripts/test-persistent-merge-preparation.mjs",
     "test:projection-reliability": "node scripts/test-projection-reliability.mjs",
     "test:flat-capture-material-isolation": "node scripts/test-flat-capture-material-isolation.mjs",
     "test:gpt-multiview-pairs": "node scripts/test-gpt-multiview-pairs.mjs",

@@ -44,7 +44,7 @@ assert.match(viewport,/ignoreSourceAlpha: activePaintLayer.ignoreSourceAlpha/);
 assert.match(read('engine/bake/bakeProjectedLayerToTexture.ts'),/ignoreSourceAlpha: layer.ignoreSourceAlpha \?\? localRepaint/);
 assert.match(read('engine/bake/uvRasterizer.ts'),/ignoreSourceAlpha \? 1 : color\[3\] \/ 255/);
 // Both flattening entry points must retain the viewport's authored alpha rule.
-for (const path of ['routes/EditorPage.tsx', 'engine/export/texturedExportUtils.ts']) {
+for (const path of ['engine/bake/mergeProjectionPreparation.ts', 'engine/export/texturedExportUtils.ts']) {
   assert.match(read(path), /createProjectionMaskedImage\(layer.imageUrl, layer.maskUrl,\s*\{\s*ignoreSourceAlpha: layer.ignoreSourceAlpha \?\? true/);
 }
 const maskModule = read('engine/projection/createMaskedProjectedImage.ts');

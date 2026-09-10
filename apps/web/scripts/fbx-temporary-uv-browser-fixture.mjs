@@ -1,3 +1,4 @@
+/* global createImageBitmap, Image, HTMLAnchorElement, fetch, TextDecoder */
 import * as THREE from 'three';
 import { prepareFbxModelExport } from '../src/engine/export/texturedExportUtils.ts';
 import { exportModelFbx } from '../src/engine/export/exportFbx.ts';

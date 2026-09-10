@@ -536,6 +536,12 @@ export function uploadPreviewTextureInStripes(
     }
     const context = renderer.getContext();
     const adaptiveVisibleUpload = usesVisibleRenderer && previewUploadGovernorEnabled();
+    // Candidate Merge path: retain exact stripes and the presentation gate,
+    // but do not charge a whole display frame for every sub-millisecond upload.
+    const batchVisibleStripes = usesVisibleRenderer && typeof window !== 'undefined' &&
+      new URLSearchParams(window.location.search).get('perfResidentQuality') === '1';
+    let batchSynchronousMs = 0;
+    let presentationRequired = false;
     let uploadBudget = createTextureUploadBudget();
     const frameMonitor = adaptiveVisibleUpload ? startFrameIntervalMonitor() : undefined;
     const startedAt = performance.now();
@@ -612,10 +618,12 @@ export function uploadPreviewTextureInStripes(
             : undefined;
         void pendingStripe?.catch(() => undefined);
         markPreviewUploadStep(`${uploadPhasePrefix}-yield`);
-        if (usesVisibleRenderer) {
+        if (usesVisibleRenderer && (!batchVisibleStripes || batchSynchronousMs >= 4 || presentationRequired)) {
           // The visible context must yield through presentation because R3F
           // owns the same GL state and command stream.
           await waitForBrowserPaint();
+          batchSynchronousMs = 0;
+          presentationRequired = false;
         } else {
           // The detached renderer has independent GL state. A macrotask yield
           // lets pointer/rAF work run without adding a mandatory 16.7ms wait to
@@ -664,6 +672,7 @@ export function uploadPreviewTextureInStripes(
             stripe,
           );
           stripeSubmitMs = performance.now() - stripeStartedAt;
+          batchSynchronousMs += stripeSubmitMs;
           maximumStripeMs = Math.max(maximumStripeMs, stripeSubmitMs);
           stripeCount += 1;
           submittedSinceFlush += 1;
@@ -688,6 +697,8 @@ export function uploadPreviewTextureInStripes(
         }
         if (adaptiveVisibleUpload && frameMonitor) {
           const frameSample = frameMonitor.readAndReset();
+          presentationRequired = frameSample.sampleCount > 0 &&
+            frameSample.maximumMs > frameSample.targetMs * 1.5;
           uploadBudget = updateTextureUploadBudget(uploadBudget, {
             frameMaximumMs: frameSample.maximumMs,
             frameSampleCount: frameSample.sampleCount,

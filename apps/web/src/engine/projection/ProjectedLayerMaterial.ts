@@ -5259,6 +5259,13 @@ const uvOverlayFragmentShader = `
     gl_FragDepthEXT = gl_FragCoord.z;
     float capturedCoverage = 1.0 - (1.0 - baseTextureAlpha * surfaceMask) *
       (1.0 - overlayAlpha) * (1.0 - liveOverlayAlpha);
+    // A sparse repair base disables the overlay checker to reveal valid base
+    // pixels. It must not turn texels missing from *both* maps into white clay.
+    // Keep every covered fragment and both capture modes unchanged.
+    if (showEmptyUvChecker < 0.5 && hasAnyColor > 0.5 && capturedCoverage == 0.0 &&
+        showEmptyProjectionHatch > 0.5 && showEmptyProjectionHatch < 1.5) {
+      displayColor = computeUvEmptyPreviewColor();
+    }
     float captureAlpha = showEmptyProjectionHatch > 1.5
       ? step(${PROJECTION_RELIABILITY_CUTOFF.toFixed(2)}, capturedCoverage) : 1.0;
     gl_FragColor = vec4(clamp(displayColor, 0.0, 1.0), captureAlpha);

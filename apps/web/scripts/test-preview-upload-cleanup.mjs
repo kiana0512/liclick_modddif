@@ -8,7 +8,7 @@ const code = ts.transpileModule(source.slice(source.indexOf('export function upl
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
 }).outputText;
 
-async function run(failure, flipY) {
+async function run(failure, flipY, fast = false) {
   let cancelled = false;
   let uploads = 0;
   let monitors = 0;
@@ -41,6 +41,8 @@ async function run(failure, flipY) {
   const onUnhandled = error => unhandled.push(error);
   process.on('unhandledRejection', onUnhandled);
   const scope = {
+    window: { location: { search: fast ? '?perfResidentQuality=1' : '' } },
+    yieldToBrowserTask: async () => { await new Promise(resolve => setImmediate(resolve)); },
     exports: {}, ImageBitmap: Bitmap, document: { body: { dataset: {} } },
     previewTextureReadyRenderers: new WeakMap(), previewTextureUploadPromises: new WeakMap(),
     markPreviewTextureUploadStarted: () => uploads++, markPreviewTextureUploadFinished: () => uploads--,
@@ -86,9 +88,13 @@ async function run(failure, flipY) {
   } finally { process.off('unhandledRejection', onUnhandled); }
 }
 
+for (const failure of [undefined, 'before-allocation', 'allocate', 'first-crop', 'next-crop', 'submit', 'late-crop']) {
+  for (const flipY of [false,true]) await run(failure,flipY,true);
+}
+
 for (let cycle = 0; cycle < 10; cycle++) {
   for (const failure of [undefined, 'before-allocation', 'allocate', 'first-crop', 'next-crop', 'after-crop', 'submit', 'late-crop', 'drain']) {
     await run(failure, cycle % 2 === 1);
   }
 }
-console.log('Preview upload cleanup passed: 90 success/cancel/failure cases; late/rejected crops, GL state, source ownership, orientation and zero live monitors/uploads.');
+console.log('Preview upload cleanup passed: 90 baseline + 14 batched success/cancel/failure cases; late/rejected crops, GL state, source ownership, orientation and zero live monitors/uploads.');

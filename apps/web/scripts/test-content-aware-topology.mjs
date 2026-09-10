@@ -83,6 +83,26 @@ try {
   const { buildContentAwareSurfaceTopology } = await server.ssrLoadModule(
     '/src/engine/contentAware/buildSurfaceTopology.ts',
   );
+  // Merge uses only these masks/owners. Removing the unused seam-link table
+  // must not alter either one, including overlaps, hard edges and hidden meshes.
+  for (let trial = 0; trial < 24; trial++) {
+    const fixture = new THREE.Group();
+    fixture.add(createSeamedMesh('seam'));
+    if (trial % 2) fixture.add(createCrossComponentMesh());
+    const extra = new THREE.Mesh(trial % 3 ? new THREE.BoxGeometry(1, 1, 1)
+      : new THREE.SphereGeometry(1, 10, 8));
+    extra.visible = trial % 4 !== 0;
+    extra.rotation.y = trial / 7;
+    fixture.add(extra);
+    const options = { includeInvisible: false, seamBandPixels: 1, minimumSeamNormalDot: 0.65 };
+    const full = await buildContentAwareSurfaceTopology(fixture, 64, 64, { ...options, includeSeamLinks: true });
+    const lean = await buildContentAwareSurfaceTopology(fixture, 64, 64, { ...options, includeSeamLinks: false });
+    assert.deepEqual(lean.coreMask, full.coreMask);
+    assert.deepEqual(lean.regionIds, full.regionIds);
+    assert.deepEqual(lean.conflictMask, full.conflictMask);
+    assert.equal(lean.seamLinks.length, 0);
+    fixture.traverse(node => { if (node.isMesh) { node.geometry.dispose(); node.material.dispose(); } });
+  }
   const recoverable = await buildFixture(buildContentAwareSurfaceTopology, false);
   const recoverableIndices = [];
   for (let index = 0; index < recoverable.conflictMask.length; index += 1) {

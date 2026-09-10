@@ -55,7 +55,11 @@ const budgets = [
 // CHG-20260910-ADAPTIVE-GAP-DISTANCE: same Cloud configuration grows 876
 // bytes (3,162,508 -> 3,163,384) for adaptive CPU/Worker traversal and partial
 // result feedback. Allow 1,000 bytes; individual chunks/quality gates unchanged.
-const maxTotalJavaScriptBytes = 3_164_000;
+// CHG-20260910-UV-RESIDENT-QUALITY: exact resident GPU quality kernel,
+// preparation and verified local derived cache measure 3,189,943 bytes
+// (upstream 3,163,384). Allocate 27,000 bytes for this feature, including
+// build metadata; retain all individual chunk and pixel/QA gates.
+const maxTotalJavaScriptBytes = 3_191_000;
 
 let entries;
 try {

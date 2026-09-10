@@ -19,6 +19,11 @@
 `CHG-20260910-LOCAL-BOUNDARY-REPAIR`：主模块 M07，协作 M05/M06/M08；`LOCAL-BOUNDARY-REPAIR` v1.0.0。补缝生产策略改为同 UV 区域、有限距离、高置信边界多点颜色过渡，不跨岛借色、不锁整块单色、不使用全图平均色兜底；无可靠来源处保留缺口。CPU 与 Worker 共用算法，兼容主线程按需加载；已有图层/历史、GPU 投影、分辨率、导出合成及 Schema/Command/CAS/ownership 不改，无资产迁移。24 项专项测试、109 项回归和真实浏览器 2K Worker/主线程字节一致验证通过；尚未用用户鱼模型原工程验收。详见 [变更卡](changes/CHG-20260910-LOCAL-BOUNDARY-REPAIR.md)。
 
 `CHG-20260910-FBX-TEMPORARY-UV`：主模块 M07，协作 M05/M06；`FBX-TEMP-UV-EXPORT` v1.0.0。场景/对象 FBX 复用颜色导出的 UV 合并计划、局部重绘蒙版、拓扑修补参数和 source-under 合成，生成临时完整 PNG 后直接嵌入，不发布合并图层或烘焙记录、不消费源图层；层/模型/live revision 变化时拒绝混合快照。修复蒙版 Worker 转移共享缓存 buffer 导致重复处理失败，改为任务私有副本并清理 postMessage 失败回调。GPU/CPU 像素算法和质量门禁、1K–8K 分辨率、Schema/Command/CAS/ownership/verified assets 不变；无资产迁移。真实浏览器 2K 未合并/合并后贴图字节差异 0，两个 FBX 均含可解码 PNG；详见 [变更卡](changes/CHG-20260910-FBX-TEMPORARY-UV.md)。
+2026-09-10 候选验收：M07 / ALG-UV-003 v2.1.0，普通投影 GPU 常驻 Top-3，稀疏舍入校正，保留实际 CPU 校准门禁、完整 4K、overlay/补缝/持久化。仅 perfResidentQuality=1 启用，完整 Merge 耗时尚待真实工程验收；不代表已达到毫秒级。见 [变更卡](changes/CHG-20260910-UV-RESIDENT-QUALITY.md)。
+
+同卡补充：M07 / ALG-UV-005 v2.0.4 等价移除 gutter pending Map/二次遍历、未使用的 seamLinks 和透明接缝整图复制；按实际几何字节与矩阵有界复用接缝关系。冻结核与拓扑对照通过，隔离 4K gutter 中位约 1296→260ms，接缝关系复用约 7.5ms；不是完整 Merge 时间。GPU/Worker/shader、像素、QA、Schema/CAS/ownership/verified assets 与持久缓存键不变，无数据迁移；回滚仅恢复后处理实现。
+
+同次实测发现并修复 M06 / UV-MERGE-EMPTY-FALLBACK v1.0.0：UV-only 存在 sparse repair 底图且两层完全未覆盖时，普通显示恢复深灰斜线，避免 Merge 后变白模。96 组真实 WebGL 对照保留所有有效 RGBA 与 capture mode=0/2，无额外 pass/采样/读回；UV/export/CPU/Worker/持久像素与缓存键不变，无迁移。见 [变更卡](changes/CHG-20260910-UV-MERGE-EMPTY-FALLBACK.md)。
 
 `CHG-20260910-PROJECTION-EMPTY-DISPLAY`：主模块 M06，协作 M03/M08；`PROJECTION-EMPTY-DISPLAY` v1.0.0。按用户要求恢复有可见投影/UV 时未覆盖区域的深灰斜线预览；单层、stack/array、UV-only 一致。flat 截图按 tile 临时使用模式 0，coverage 截图模式 2，结束或失败恢复视口模式，斜线不进入 GPT 引导图。保留可靠区域裁切和单/多视图投影一致性，不改 CPU/Worker/UV 烘焙公式、分辨率、作者 mask、历史和持久化协议，无迁移；本次仅部署 A100，不推送 master。详见 [变更卡](changes/CHG-20260910-PROJECTION-EMPTY-DISPLAY.md)。
 

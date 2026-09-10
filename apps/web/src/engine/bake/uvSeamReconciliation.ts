@@ -1,4 +1,6 @@
 import * as THREE from 'three';
+import { matchesUvSeamGeometry, snapshotUvSeamGeometry,
+  type UvSeamGeometrySnapshot } from './uvSeamGeometrySnapshot';
 
 export type UvSeamEndpoint = {
   position: THREE.Vector3;
@@ -13,6 +15,27 @@ export type UvSeamEdgeRecord = {
 };
 
 type PixelPoint = { x: number; y: number };
+
+type SeamPlan = {
+  snapshot: UvSeamGeometrySnapshot;
+  includeDiscontinuous: boolean;
+  pairs: Array<[UvSeamEdgeRecord, UvSeamEdgeRecord]>;
+};
+let seamPlanCache = new WeakMap<THREE.Object3D, SeamPlan>();
+
+function* getReusableSeamPairs(root: THREE.Object3D, includeDiscontinuous: boolean) {
+  const cached = seamPlanCache.get(root);
+  if (cached?.includeDiscontinuous === includeDiscontinuous &&
+    (yield* matchesUvSeamGeometry(root, cached.snapshot))) return cached.pairs;
+  const snapshot = yield* snapshotUvSeamGeometry(root);
+  const pairs = yield* collectUvSeamPairSteps(root, includeDiscontinuous, true);
+  // Do not cache mixed geometry if the model changed while the cooperative
+  // traversal was yielding. Pair objects remain private to this consumer.
+  if (snapshot && pairs.length <= 100000 && (yield* matchesUvSeamGeometry(root, snapshot))) {
+    seamPlanCache = new WeakMap([[root, { snapshot, includeDiscontinuous, pairs }]]);
+  } else seamPlanCache.delete(root);
+  return pairs;
+}
 
 function quantize(value: number, scale: number) {
   return Math.round(value * scale);
@@ -207,8 +230,11 @@ function* reconcileUvSeamSteps(
   options: { repairMissingCoverage?: boolean; bandPixels?: number } = {},
 ) {
   const { width, height, data } = imageData;
-  const source = new Uint8ClampedArray(data);
-  const seamPairs = yield* collectUvSeamPairSteps(root, Boolean(options.repairMissingCoverage), true);
+  const seamPairs = yield* getReusableSeamPairs(root, Boolean(options.repairMissingCoverage));
+  // Missing-coverage repair has always updated both arrays after each donor
+  // transfer, so its working source is exactly data. Averaging still needs the
+  // immutable original. Avoid the redundant 64 MiB copy for a 4K Merge.
+  const source = options.repairMissingCoverage ? data : new Uint8ClampedArray(data);
   const bandPixels = Math.max(
     2,
     Math.min(32, options.bandPixels ?? Math.round(Math.max(width, height) / 1024)),
@@ -270,7 +296,6 @@ function* reconcileUvSeamSteps(
             // Let a repaired seam become a source for another geometrically
             // connected UV edge later in this pass. This closes fragmented
             // high-poly islands without leaking across unrelated atlas space.
-            source[targetOffset + channel] = source[sourceOffset + channel];
           }
           coverage[targetIndex] = 1;
           adjustedPixels += 1;

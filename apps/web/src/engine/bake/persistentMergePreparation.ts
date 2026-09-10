@@ -1,0 +1,90 @@
+import type * as THREE from 'three';
+import type {Layer} from '@/types/layer';
+import type {BakeProjectedLayerResult,UvBakeResolution} from './uvBakeTypes';
+import {useAuthStore} from '@/stores/authStore';
+import {getDebugUvBakeStatus} from './uvBakeDebugControls';
+import {getMergeUvPostprocessOptions} from '@/engine/layers/mergeUvComposition';
+const CACHE='li3d-verified-merge-preparation-v1';
+const hash=async(bytes:Uint8Array<ArrayBuffer>)=>Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',bytes)),b=>b.toString(16).padStart(2,'0')).join('');
+const textBytes=(value:unknown)=>new TextEncoder().encode(JSON.stringify(value));
+
+/** Hash actual geometry and source bytes: runtime UUIDs and blob URLs are not identity. */
+export async function persistentMergeKey(input:{projectId:string;objectId:string;resolution:UvBakeResolution;group:THREE.Group;layers:Layer[]}) {
+  const userId=useAuthStore.getState().user?.id;
+  if(!userId || !globalThis.crypto?.subtle || !('caches' in window)) return undefined;
+  try {
+    input.group.updateMatrixWorld(true);
+    const nodes:THREE.Object3D[]=[];input.group.traverse(node=>nodes.push(node));
+    const geometry=[];
+    for(const node of nodes) {
+      const mesh=node as THREE.Mesh;
+      const record:unknown[]=[node.visible,node.matrixWorld.elements];
+      if(mesh.isMesh) {
+        if((mesh as THREE.SkinnedMesh).isSkinnedMesh) return undefined;
+        for(const name of ['position','normal','uv','index']) {
+          const attribute=name==='index' ? mesh.geometry.index : mesh.geometry.getAttribute(name);
+          if(!attribute) {record.push(null);continue;}
+          const array='data' in attribute ? attribute.data.array : attribute.array;
+          const bytes=new Uint8Array(array.buffer,array.byteOffset,array.byteLength).slice();
+          record.push([name,attribute.itemSize,attribute.normalized,attribute.count,
+            'data' in attribute ? [attribute.offset,attribute.data.stride] : null,await hash(bytes)]);
+        }
+        record.push(mesh.geometry.drawRange,mesh.geometry.groups);
+      }
+      geometry.push(record);
+    }
+    const assets=new Map<string,Promise<string>>();
+    const layers=[];
+    for(const layer of [...input.layers].sort((a,b)=>b.order-a.order || a.id.localeCompare(b.id))) {
+      const snapshot={...layer};
+      for(const key of ['imageUrl','maskUrl','depthUrl','normalUrl'] as const) {
+        const url=layer[key];if(!url) continue;
+        if(!/^(https?:|blob:|data:|\/)/.test(url)) return undefined;
+        let digest=assets.get(url);
+        if(!digest) {
+          digest=fetch(url).then(async response=>{
+            if(!response.ok) throw new Error('Merge source unavailable.');
+            return hash(new Uint8Array(await response.arrayBuffer()));
+          });
+          assets.set(url,digest);
+        }
+        snapshot[key]=await digest;
+      }
+      layers.push(snapshot);
+    }
+    return await hash(textBytes({version:'uv-composition-7/resident-2.2.1/persistent-2',
+      userId,projectId:input.projectId,objectId:input.objectId,resolution:input.resolution,
+      geometry,layers,options:getMergeUvPostprocessOptions(input.resolution),debug:getDebugUvBakeStatus()}));
+  } catch {return undefined;}
+}
+
+const requestFor=(key:string)=>new Request(`${location.origin}/__li3d_internal/merge-preparation/${key}`);
+export async function readPersistentMerge(key:string|undefined,resolution:number):Promise<BakeProjectedLayerResult|undefined> {
+  if(!key) return undefined;
+  try {
+    const response=await (await caches.open(CACHE)).match(requestFor(key));
+    if(!response) return undefined;
+    const bytes=new Uint8Array(await response.arrayBuffer());
+    if(bytes.length<4 || await hash(bytes)!==response.headers.get('x-li3d-sha256')) return undefined;
+    const size=new DataView(bytes.buffer).getUint32(0,true);
+    if(size>1_000_000 || bytes.length!==4+size+resolution*resolution*4) return undefined;
+    const metadata=JSON.parse(new TextDecoder().decode(bytes.subarray(4,4+size)));
+    if(metadata.report.width!==resolution || metadata.report.height!==resolution) return undefined;
+    const canvas=document.createElement('canvas');canvas.width=canvas.height=resolution;
+    return {...metadata,canvas,imageUrl:'',imageData:new ImageData(new Uint8ClampedArray(bytes.buffer,4+size),resolution,resolution)};
+  } catch {return undefined;}
+}
+
+export async function writePersistentMerge(key:string|undefined,result:BakeProjectedLayerResult) {
+  if(!key || !result.imageData) return;
+  try {
+    const metadata=textBytes({report:result.report,bakedTexture:result.bakedTexture});
+    const bytes=new Uint8Array(4+metadata.length+result.imageData.data.length);
+    new DataView(bytes.buffer).setUint32(0,metadata.length,true);bytes.set(metadata,4);bytes.set(result.imageData.data,4+metadata.length);
+    const digest=await hash(bytes);
+    const cache=await caches.open(CACHE);
+    await cache.put(requestFor(key),new Response(bytes,{headers:{'content-type':'application/octet-stream','x-li3d-sha256':digest}}));
+    const keys=await cache.keys();
+    for(const old of keys.slice(0,Math.max(0,keys.length-2))) await cache.delete(old);
+  } catch { /* Optional derived cache: authoritative project assets are unchanged. */ }
+}
