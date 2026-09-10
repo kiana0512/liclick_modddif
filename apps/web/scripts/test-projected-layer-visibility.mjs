@@ -120,7 +120,7 @@ assert.match(
 );
 assert.match(
   layerStoreSource,
-  /addProjectedLayerFromGeneration:[\s\S]*?captureMaskUrl = singleViewTexture \? capture\?\.maskUrl : undefined[\s\S]*?maskUrl: captureMaskUrl[\s\S]*?maskSpace: captureMaskUrl \? 'projection' : undefined[\s\S]*?projectionCoverageMode: singleViewTexture[\s\S]*?'capture-mask'[\s\S]*?ignoreSourceAlpha: singleViewTexture \? true : undefined[\s\S]*?projectionVisibilityPolicy: singleViewTexture \? 'standard' : undefined/,
+  /addProjectedLayerFromGeneration:[\s\S]*?captureMaskUrl = captureMaskTexture \? capture\?\.maskUrl : undefined[\s\S]*?maskUrl: captureMaskUrl[\s\S]*?maskSpace: captureMaskUrl \? 'projection' : undefined[\s\S]*?projectionCoverageMode: captureMaskTexture[\s\S]*?'capture-mask'[\s\S]*?ignoreSourceAlpha: captureMaskTexture \? true : undefined[\s\S]*?projectionVisibilityPolicy: captureMaskTexture \? 'standard' : undefined/,
   'New GPT and remote single-view layers must use the capture silhouette while joining ordinary quality composition.',
 );
 assert.match(
@@ -130,7 +130,7 @@ assert.match(
 );
 assert.match(
   layerStoreSource,
-  /minimumProjectionFacing: singleViewTexture[\s\S]*?SINGLE_VIEW_MINIMUM_PROJECTION_FACING/,
+  /minimumProjectionFacing: captureMaskTexture[\s\S]*?SINGLE_VIEW_MINIMUM_PROJECTION_FACING/,
   'Generated single-view layers must reject extreme grazing faces instead of projecting isolated triangle islands.',
 );
 assert.doesNotMatch(

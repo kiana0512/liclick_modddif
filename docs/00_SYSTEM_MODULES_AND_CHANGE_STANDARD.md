@@ -1,6 +1,6 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
-> 文档版本：`2.20.0`
+> 文档版本：`2.20.1`
 >
 > 生效日期：`2026-09-10`
 >
@@ -11,6 +11,8 @@
 > 审计口径：`0a2519d + 607e82f + 2568e40`，不包含错误文档提交 `2bde8c6/e03bab2/d1c5f78`
 
 ## 1. 文档地位与强制边界
+
+`CHG-20260910-TEXTURE-PROJECTION-PARITY`：主模块 M06，协作 M04/M05/M08；`TEXTURE-PROJECTION-PARITY` v1.0.0。每个 texture-map 单/多视图结果共享原模型 capture-mask、边缘颜色清理、ignoreSourceAlpha、0.18 minimum facing 和 standard visibility；新增图层及显式重新投影使用统一入口判断。组内两张并发/组间串行不改，局部重绘和材质参考生成不纳入。GPU/CPU/Worker/shader/UV/export 复用既有单视图参数契约，无像素公式、分辨率或 Schema 变更；不自动迁移旧多视图、清除橡皮或重写历史资产。108 项回归与真实 WebGL 同相机/同返图六组逐像素一致检查通过。详见 [变更卡](changes/CHG-20260910-TEXTURE-PROJECTION-PARITY.md)。
 
 `CHG-20260910-PROJECTION-RELIABLE-FOOTPRINT`：主模块 M06，协作 M03/M04/M07/M08/M09；`PROJECTION-RELIABLE-FOOTPRINT` v1.0.0。普通投影对原 angle/visibility/facing/image-edge 几何支撑乘积应用 0.98 硬边准入，准入后仍保留作者 opacity/source alpha/mask；surface-locked 重绘不变。单层/直接多层/compact array、GPU UV/CPU loose fallback/预览合成共用阈值。默认未覆盖显示白模；新 flat-target-coverage 捕获用 PNG alpha 传递实际合成覆盖，Worker 按 alpha 补白模，不再通过斜线 RGB 猜缺口。UV-only、底图、上下 UV 与 overlay 顺序纳入覆盖，内孔和原深度/背面/相机/2048保持。UV bake cache v8、UV merge v6、content-aware projection cache v2 不复用旧几何羽化结果；无 Layer/Project Schema/Command/CAS/ownership 改动，不批量重写历史资产。详见 [变更卡](changes/CHG-20260910-PROJECTION-RELIABLE-FOOTPRINT.md)。
 

@@ -1,3 +1,4 @@
+import { usesCaptureMaskTextureProjection } from '@/engine/generation/textureProjectionPolicy';
 import { create } from 'zustand';
 import { v4 as uuid } from 'uuid';
 import type { Capture } from '@/types/capture';
@@ -183,14 +184,6 @@ function normalizeLayer(layer: Layer) {
   };
 }
 
-function isSingleViewTextureGeneration(generation: Generation) {
-  return (
-    generation.mode === 'single' &&
-    generation.metadata.workflow === 'texture-map' &&
-    generation.metadata.multiview !== true
-  );
-}
-
 function getObjectMatrixWorld(generation: Generation) {
   const value = generation.metadata.objectMatrixWorld;
   if (!Array.isArray(value) || value.length !== 16) return undefined;
@@ -258,8 +251,8 @@ export const useLayerStore = create<LayerStore>((set, get) => ({
     return layer;
   },
   addProjectedLayerFromGeneration: (generation, capture, objectId, layerId) => {
-    const singleViewTexture = isSingleViewTextureGeneration(generation);
-    const captureMaskUrl = singleViewTexture ? capture?.maskUrl : undefined;
+    const captureMaskTexture = usesCaptureMaskTextureProjection(generation);
+    const captureMaskUrl = captureMaskTexture ? capture?.maskUrl : undefined;
     const cameraViewLabel =
       typeof generation.metadata.cameraViewLabel === 'string'
         ? generation.metadata.cameraViewLabel.trim()
@@ -276,7 +269,7 @@ export const useLayerStore = create<LayerStore>((set, get) => ({
       objectId: objectId ?? capture?.objectId,
       objectMatrixWorld: getObjectMatrixWorld(generation),
       camera: capture?.camera,
-      // Single-view providers may return an opaque RGB PNG. Persist the exact
+      // Texture providers may return an opaque RGB PNG. Persist the exact
       // capture silhouette instead of asking provider-specific alpha to define
       // the projection footprint.
       maskUrl: captureMaskUrl,
@@ -284,18 +277,17 @@ export const useLayerStore = create<LayerStore>((set, get) => ({
       depthUrl: capture?.depthUrl,
       depthEncoding: capture?.depthEncoding,
       generationId: generation.id,
-      projectionCoverageMode: singleViewTexture
+      projectionCoverageMode: captureMaskTexture
         ? 'capture-mask'
         : generation.metadata.alphaMode === 'geometry-mask-separated'
           ? 'source-alpha-depth'
           : undefined,
-      // Provider PNG alpha is not geometry. Single and multiview projections
-      // now differ only in capture coverage, not in their blend operator.
-      ignoreSourceAlpha: singleViewTexture ? true : undefined,
-      minimumProjectionFacing: singleViewTexture
+      // Single and multiview results share geometry coverage and quality blending.
+      ignoreSourceAlpha: captureMaskTexture ? true : undefined,
+      minimumProjectionFacing: captureMaskTexture
         ? SINGLE_VIEW_MINIMUM_PROJECTION_FACING
         : undefined,
-      projectionVisibilityPolicy: singleViewTexture ? 'standard' : undefined,
+      projectionVisibilityPolicy: captureMaskTexture ? 'standard' : undefined,
       captureId: capture?.id ?? generation.captureId,
       visible: true,
       opacity: 1,

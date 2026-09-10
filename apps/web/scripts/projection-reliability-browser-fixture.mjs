@@ -5,6 +5,7 @@ import { serializeCamera } from '../src/engine/projection/ProjectionCamera.ts';
 import { projectionGapMaskFromAlpha } from '../src/engine/projection/projectionCoverageContract.mjs';
 import { prepareSingleViewTextureCompletion } from '../src/engine/localRepaint/generationInputWorker.ts';
 import { bakeProjectedLayerRastersWithGpu } from '../src/engine/bake/gpuUvBakeRenderer.ts';
+import { useLayerStore } from '../src/stores/layerStore.ts';
 
 const check = (value, message) => { if (!value) throw new Error(message); };
 const imageUrl = (color, alpha = 1) => {
@@ -36,6 +37,23 @@ export async function run() {
   const layer = (id, alpha = 1) => ({ layerId:id, imageUrl:imageUrl('#b57632',alpha), objectId:'test', camera:snapshot,
     opacity:1, visible:true, depthTest:true, minimumProjectionFacing:0.18 });
   const single = await createProjectedLayerMaterial(layer('single'));
+  // Same result/capture through the actual two generation entry policies.
+  const parityCapture = { id: 'parity', objectId: 'test', camera: snapshot, maskUrl: imageUrl('#fff') };
+  const parityMaterials = [];
+  for (const mode of ['single', 'multiview']) {
+    const row = useLayerStore.getState().addProjectedLayerFromGeneration({
+      id: `parity-${mode}`, mode, resultUrl: imageUrl('#b57632', 0.5), prompt: '',
+      metadata: { workflow: 'texture-map', multiview: mode === 'multiview' },
+    }, parityCapture, 'test');
+    parityMaterials.push(await createProjectedLayerMaterial({ ...row, layerId: row.id, depthTest: true }));
+  }
+  let parityCases = 0;
+  for (const mode of [0, 2]) for (const angle of [0, 0.8, Math.acos(0.21)]) {
+    render(parityMaterials[0], angle, mode); const expected = pixels.slice();
+    render(parityMaterials[1], angle, mode);
+    check(pixels.every((value, index) => value === expected[index]), 'single/multiview must be pixel-identical for the same capture and result');
+    parityCases++;
+  }
   const front = render(single);
   check(front[3] === 255, 'front must retain full coverage');
   const weak = render(single,Math.acos(0.21));
@@ -80,5 +98,5 @@ export async function run() {
     check(alpha===(angle===0?255:0),`GPU UV coverage must match viewport cutoff: ${alpha}`);
   }
   renderer.dispose(); target.dispose(); geometry.dispose(); bitmap.close();
-  return {single: {front,weak,weakVisible},stackCount,workerGapPixels:result.uncoveredPixelCount,baked,shaderErrors:errors};
+  return {single: {front,weak,weakVisible},parityCases,stackCount,workerGapPixels:result.uncoveredPixelCount,baked,shaderErrors:errors};
 }

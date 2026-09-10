@@ -9,6 +9,7 @@ const compile = (source) => ts.transpileModule(source, {
 }).outputText;
 const policy = {};
 new Function('exports', compile(await read('engine/generation/singleViewAutoProjection.ts')))(policy);
+new Function('exports', compile(await read('engine/generation/textureProjectionPolicy.ts')))(policy);
 const base = { id: 'g1', mode: 'single', status: 'succeeded', resultUrl: 'data:image/png;base64,result',
   captureId: 'capture', metadata: { projectId: 'p', workflow: 'texture-map' } };
 assert(policy.needsSingleViewAutoProjection(base, 'p'));
@@ -79,8 +80,9 @@ assert.equal(timers.size, 0);
 assert.equal(listeners.size, 0);
 assert.equal(wakeRef.current, undefined);
 
-function fixture() {
+function fixture(allowUpdates = false) {
   let rows = [], generations = [base], failureCount = 0, sequence = 0;
+  let cleanedImages = 0;
   let onAsset, onSave, previewRows;
   const state = { currentProjectId: 'p' };
   const capture = { id: 'capture', objectId: 'o', camera: { frozen: true }, maskUrl: 'mask', depthUrl: 'depth' };
@@ -97,11 +99,11 @@ function fixture() {
     useLayerStore: { getState: () => ({ layers: rows,
       beginProjectedPreviewBatch: () => { previewRows = rows; },
       endProjectedPreviewBatch: () => { previewRows = undefined; },
-      updateLayer: () => assert.fail('automatic result must not replace an existing layer') }) },
+      updateLayer: (id, patch) => { assert(allowUpdates, 'automatic result must not replace an existing layer'); rows = rows.map((row) => row.id === id ? { ...row, ...patch } : row); } }) },
     isTextureMapGeneration: (g) => g.metadata.workflow === 'texture-map',
     isCancelledGeneration: () => false,
     lastCapture: undefined, createId: () => `layer-${++sequence}`,
-    createCaptureMaskedProjectionImage: async (url, mask) => { assert.equal(mask, 'mask'); return url; },
+    createCaptureMaskedProjectionImage: async (url, mask) => { cleanedImages++; assert.equal(mask, 'mask'); return url; },
     persistGeneratedImage: async (_category, url) => {
       if (onAsset) { const callback = onAsset; onAsset = undefined; callback(); }
       if (failureCount > 0) { failureCount--; throw new Error('transient asset upload error'); }
@@ -117,15 +119,34 @@ function fixture() {
       await onSave?.();
     },
     pushToast: (notice) => notices.push(notice), dismissToastByDedupeKey: () => {},
-    SINGLE_VIEW_MINIMUM_PROJECTION_FACING: 0, t: (key) => key,
+    SINGLE_VIEW_MINIMUM_PROJECTION_FACING: 0.18, t: (key) => key,
   };
   const api = new Function(...Object.keys(scope), compile(`${declarations.join('\n')}\n${recovery};
     return { add: addGenerationAsProjectedLayer, recover: recoverSingleViewProjectionsRef.current };`))(...Object.values(scope));
   return { ...api, rows: () => rows, generations: () => generations, notices, saves, state,
+    cleanedImages: () => cleanedImages,
     previewRows: () => previewRows ?? rows, onSave: (callback) => { onSave = callback; },
     batch: (multi, phase) => new Function('isMultiviewRequest', 'useLayerStore', compile(batchGuards[phase]))(multi, scope.useLayerStore),
     fail: (count) => { failureCount = count; }, deleteAll: () => { rows = []; },
     setGenerations: (value) => { generations = value; }, onAsset: (callback) => { onAsset = callback; } };
+}
+// Execute both production transaction branches with the same single/multiview input.
+for (const mode of ['single', 'multiview']) {
+  const projection = fixture(true);
+  const result = { ...base, mode, metadata: { ...base.metadata, multiview: mode === 'multiview' } };
+  projection.setGenerations([result]);
+  await projection.add(result, { automatic: true });
+  assert.equal(projection.cleanedImages(), 1, `${mode} must use capture-mask edge cleanup`);
+  await projection.add(result, { automatic: false });
+  assert.equal(projection.cleanedImages(), 2);
+  const row = projection.rows()[0];
+  assert.equal(row.projectionCoverageMode, 'capture-mask');
+  assert.equal(row.minimumProjectionFacing, 0.18);
+  assert.equal(row.projectionVisibilityPolicy, 'standard');
+  assert.equal(row.ignoreSourceAlpha, true);
+  assert.equal(row.maskUrl, 'mask');
+  assert.equal(row.maskSpace, 'projection');
+  assert.equal(row.depthUrl, 'depth');
 }
 // Hold the actual transaction at its project-save await. A single-view layer
 // must already be eligible for viewport rendering; multiview stays batched.

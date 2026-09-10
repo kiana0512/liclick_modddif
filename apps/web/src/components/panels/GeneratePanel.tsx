@@ -1,3 +1,4 @@
+import { usesCaptureMaskTextureProjection } from '@/engine/generation/textureProjectionPolicy';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Download, Layers, LoaderCircle, Maximize2, Plus, Sparkles, Square, X } from 'lucide-react';
@@ -4921,12 +4922,9 @@ export function GeneratePanel({
     const readableResultUrl = generation.resultUrl.startsWith('http')
       ? await urlToDataUrl(generation.resultUrl)
       : generation.resultUrl;
-    const singleViewTexture =
-      generation.mode === 'single' &&
-      generation.metadata.workflow === 'texture-map' &&
-      generation.metadata.multiview !== true;
+    const captureMaskTexture = usesCaptureMaskTextureProjection(generation);
     let projectedResultUrl = readableResultUrl;
-    if (singleViewTexture && generationCapture.maskUrl) {
+    if (captureMaskTexture && generationCapture.maskUrl) {
       try {
         // The panel preview is tightly cropped and cannot be projected without
         // changing camera UVs. Prepare the same cleaned edge colours in the
@@ -5058,10 +5056,7 @@ export function GeneratePanel({
     }
     let layer: Layer;
     if (currentExisting) {
-      const singleViewTexture =
-        generation.mode === 'single' &&
-        generation.metadata.workflow === 'texture-map' &&
-        generation.metadata.multiview !== true;
+      const captureMaskTexture = usesCaptureMaskTextureProjection(generation);
       layer = {
         ...currentExisting,
         imageUrl,
@@ -5069,14 +5064,14 @@ export function GeneratePanel({
         maskSpace: maskUrl ? 'projection' : undefined,
         depthUrl,
         camera: persistedGenerationCapture.camera,
-        projectionCoverageMode: singleViewTexture
+        projectionCoverageMode: captureMaskTexture
           ? 'capture-mask'
           : currentExisting.projectionCoverageMode,
-        ignoreSourceAlpha: singleViewTexture ? true : currentExisting.ignoreSourceAlpha,
-        minimumProjectionFacing: singleViewTexture
+        ignoreSourceAlpha: captureMaskTexture ? true : currentExisting.ignoreSourceAlpha,
+        minimumProjectionFacing: captureMaskTexture
           ? SINGLE_VIEW_MINIMUM_PROJECTION_FACING
           : currentExisting.minimumProjectionFacing,
-        projectionVisibilityPolicy: singleViewTexture
+        projectionVisibilityPolicy: captureMaskTexture
           ? 'standard'
           : currentExisting.projectionVisibilityPolicy,
         contentRevision: (currentExisting.contentRevision ?? 0) + 1,
