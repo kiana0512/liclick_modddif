@@ -14,6 +14,14 @@
 
 `CHG-20260910-UV-REPAINT`：主模块 M08，协作 M03/M05/M07/M11/M12；新增 `ALG-LR-UV-PAINT` v1.0.0。新局部返图冻结来源并准备原分辨率 UV 颜色，当前视口最前可见面决定 UV 笔画覆盖；不锁起笔部件，大笔刷允许同时绘制孔洞里可见后板，不穿透遮挡。新层保存独立 BaseColor RGBA，脏瓦片历史与选区消费共同撤销，PNG/FBX/合并等待读回；原投影重绘兼容保留，单视图及其 UV 预缓存不改，不迁移旧资产。Cloud verified assets / Command / CAS / ownership 保持。110 项回归及真实 Edge WebGL/React 视口夹具通过；复杂用户原工程、8K 内存压力与 A100 验收尚未执行。本次仅本地实现，详见 [变更卡](changes/CHG-20260910-UV-REPAINT.md)。
 
+2026-09-10 M07 / PERF-UV-SOURCE-PREPARE-001 v1.2.0：静态 PNG 源解码/相同软件 Canvas 转换移入 Worker，交付 ImageBitmap，删除完整 CPU RGBA 读回及第二张 Canvas；JPEG 候选对照失败，保留原兼容入口。后台按真实多选/右键意图准备有序 UV 底层，前台加入相同 PNG/GPU 准备任务；最终会话键 v2 包含 live revision。常驻 readback 的 Y 翻转/完整 RGBA/coverage 交 Worker，舍入扫描与私有复制有界让出并避让交互。完整 4K 对照零像素差异，新夹具0 longtask，最大帧间隔33–50ms；不能宣称原工程零卡顿/所有入口毫秒级。GPU/CPU/Worker/shader/persistence/export 审计、公开案例适用边界、测试及回滚见 CHG-20260910-UV-DEFAULT-RESIDENT v1.2.0 记录。持久 RGBA/Project Schema/资产/CAS 不变，release 不动。
+
+2026-09-10 M07 / PERF-UV-SOURCE-PREPARE-001 v1.1.0：GPU 栈以一层 lookahead 重叠源准备与计算，live 源保持消费时同步快照；删除逐纹理固定等帧，保留 4ms 预算、分条上传与交互让出。异常排空在途资源并保护借用 bitmap。真实 WebGL 4K/6层冻结旧核对照 RGBA/coverage/count 零差异，阶段约 1223–1609→851–1044ms；非完整 Merge。GPU/CPU/Worker/shader 像素和 QA、导出、持久化/缓存不变，无数据迁移；回滚只恢复调度。见 CHG-20260910-UV-DEFAULT-RESIDENT 后续记录。
+
+2026-09-10 用户要求先移除自动补洞：M07 / Merge profile v8，关闭 uvCoverageGapPixels 和 uvInteriorHolePixels，旧算法保留但正常合成不调用；接缝 band/gutter 与 QA 保留。新结果保留未覆盖区，会话键 v12、持久派生键 persistent-3，旧补洞缓存不复用；Project Schema/历史资产不变，无 release 变更。详见 CHG-20260910-UV-DEFAULT-RESIDENT 后续记录。
+
+`CHG-20260910-UV-DEFAULT-RESIDENT`：主模块 M07，协作 M06/M09；ALG-UV-003 v2.1.1、准备策略 v2.2.2、ALG-UV-005 v2.0.5。按用户要求普通投影转 UV 入口统一常驻 GPU，旧 CPU 投影/质量路径只在显式 perfLab 对照中可用，不再失败后静默回退；首轮完整 CPU 校验仍保留。补洞仅枚举有相对拓扑邻点的候选，像素顺序/岛屿门禁不变；最终 PNG 在后台提前上传，仅在相同 Blob 正式保存后移动独占缓存所有权。全分辨率、QA、Command/CAS/ownership/verified assets 保留，无 Project Schema 迁移；8K/超 255 层普通质量合成尚不支持新常驻核时明确失败，不降采样、不走旧算法。GPU/CPU/Worker/shader/export 审计及测试见 [变更卡](changes/CHG-20260910-UV-DEFAULT-RESIDENT.md)。
+
 `CHG-20260910-ADAPTIVE-GAP-DISTANCE`：主模块 M07，协作 M05/M06/M08；`LOCAL-BOUNDARY-REPAIR` v1.1.0。生产补缝从按分辨率计算的初始半径开始，沿同 UV 区域内已选缺口自适应扩大直到填满或无可达边界；不跨未选区域找远处颜色、不跨 UV 岛、不恢复全局平均或单色锁定。本次输入的原始边界索引始终固定，不把新补颜色作为新来源重跑。CPU/Worker 共用算法及取消/节流，仍有不可达区域时显示数量提示。GPU/shader/导出公式及 Schema/CAS/ownership 不改，无资产迁移；详见 [变更卡](changes/CHG-20260910-ADAPTIVE-GAP-DISTANCE.md)。
 
 `CHG-20260910-REPAINT-MERGE-ALPHA`：主模块 M07，协作 M05/M06/M08；`ALG-LR-013` 合并一致性 v1.1.0。UV 合并及模型导出预处理透传图层 ignoreSourceAlpha，原模型裁切版本保留源 alpha 与画笔 mask 的乘积，旧全帧重绘仍按 mask 覆盖；压入 alpha 后清除独立 mask，避免重复相乘。复用既有 CPU/Worker 两种模式，无 shader/分辨率/持久化协议改动。合并版本 7、会话缓存 v10；旧合并资产不自动重写，需撤销合并后重合。详见 [变更卡](changes/CHG-20260910-REPAINT-MERGE-ALPHA.md)。
@@ -21,6 +29,11 @@
 `CHG-20260910-LOCAL-BOUNDARY-REPAIR`：主模块 M07，协作 M05/M06/M08；`LOCAL-BOUNDARY-REPAIR` v1.0.0。补缝生产策略改为同 UV 区域、有限距离、高置信边界多点颜色过渡，不跨岛借色、不锁整块单色、不使用全图平均色兜底；无可靠来源处保留缺口。CPU 与 Worker 共用算法，兼容主线程按需加载；已有图层/历史、GPU 投影、分辨率、导出合成及 Schema/Command/CAS/ownership 不改，无资产迁移。24 项专项测试、109 项回归和真实浏览器 2K Worker/主线程字节一致验证通过；尚未用用户鱼模型原工程验收。详见 [变更卡](changes/CHG-20260910-LOCAL-BOUNDARY-REPAIR.md)。
 
 `CHG-20260910-FBX-TEMPORARY-UV`：主模块 M07，协作 M05/M06；`FBX-TEMP-UV-EXPORT` v1.0.0。场景/对象 FBX 复用颜色导出的 UV 合并计划、局部重绘蒙版、拓扑修补参数和 source-under 合成，生成临时完整 PNG 后直接嵌入，不发布合并图层或烘焙记录、不消费源图层；层/模型/live revision 变化时拒绝混合快照。修复蒙版 Worker 转移共享缓存 buffer 导致重复处理失败，改为任务私有副本并清理 postMessage 失败回调。GPU/CPU 像素算法和质量门禁、1K–8K 分辨率、Schema/Command/CAS/ownership/verified assets 不变；无资产迁移。真实浏览器 2K 未合并/合并后贴图字节差异 0，两个 FBX 均含可解码 PNG；详见 [变更卡](changes/CHG-20260910-FBX-TEMPORARY-UV.md)。
+2026-09-10 候选验收：M07 / ALG-UV-003 v2.1.0，普通投影 GPU 常驻 Top-3，稀疏舍入校正，保留实际 CPU 校准门禁、完整 4K、overlay/补缝/持久化。仅 perfResidentQuality=1 启用，完整 Merge 耗时尚待真实工程验收；不代表已达到毫秒级。见 [变更卡](changes/CHG-20260910-UV-RESIDENT-QUALITY.md)。
+
+同卡补充：M07 / ALG-UV-005 v2.0.4 等价移除 gutter pending Map/二次遍历、未使用的 seamLinks 和透明接缝整图复制；按实际几何字节与矩阵有界复用接缝关系。冻结核与拓扑对照通过，隔离 4K gutter 中位约 1296→260ms，接缝关系复用约 7.5ms；不是完整 Merge 时间。GPU/Worker/shader、像素、QA、Schema/CAS/ownership/verified assets 与持久缓存键不变，无数据迁移；回滚仅恢复后处理实现。
+
+同次实测发现并修复 M06 / UV-MERGE-EMPTY-FALLBACK v1.0.0：UV-only 存在 sparse repair 底图且两层完全未覆盖时，普通显示恢复深灰斜线，避免 Merge 后变白模。96 组真实 WebGL 对照保留所有有效 RGBA 与 capture mode=0/2，无额外 pass/采样/读回；UV/export/CPU/Worker/持久像素与缓存键不变，无迁移。见 [变更卡](changes/CHG-20260910-UV-MERGE-EMPTY-FALLBACK.md)。
 
 `CHG-20260910-PROJECTION-EMPTY-DISPLAY`：主模块 M06，协作 M03/M08；`PROJECTION-EMPTY-DISPLAY` v1.0.0。按用户要求恢复有可见投影/UV 时未覆盖区域的深灰斜线预览；单层、stack/array、UV-only 一致。flat 截图按 tile 临时使用模式 0，coverage 截图模式 2，结束或失败恢复视口模式，斜线不进入 GPT 引导图。保留可靠区域裁切和单/多视图投影一致性，不改 CPU/Worker/UV 烘焙公式、分辨率、作者 mask、历史和持久化协议，无迁移；本次仅部署 A100，不推送 master。详见 [变更卡](changes/CHG-20260910-PROJECTION-EMPTY-DISPLAY.md)。
 

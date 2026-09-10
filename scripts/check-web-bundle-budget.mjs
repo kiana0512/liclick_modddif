@@ -21,8 +21,9 @@ const budgets = [
   // 512 bytes here; retain the existing 3,160,000-byte total and other limits.
   { label: 'editor route', prefix: 'EditorPage-', maxBytes: 499_024 },
   // CHG-20260910-UV-REPAINT: lazy UV engine/session, shared visibility and
-  // viewport adapters measure ~701,300 bytes here. Allocate 2,000 bytes only.
-  { label: 'high bake snapshot', prefix: 'bakeHighSnapshot-', maxBytes: 702_000 },
+  // viewport adapters measured ~701,300 bytes before integration. The merged
+  // resident graph measures 702,997; allow 3,500 bytes including release metadata.
+  { label: 'high bake snapshot', prefix: 'bakeHighSnapshot-', maxBytes: 703_500 },
   {
     label: 'shared 3D pipeline',
     // Rollup chooses the facade name from the shared module graph. Adding the
@@ -61,7 +62,21 @@ const budgets = [
 // Matching Cloud builds: 3,163,590 -> 3,185,232 bytes (+21,642). The engine
 // and commit coordinator are lazy; grant 22,000 bytes, keeping every other
 // chunk limit, regression contract and output-resolution gate unchanged.
-const maxTotalJavaScriptBytes = 3_186_000;
+// CHG-20260910-UV-RESIDENT-QUALITY: exact resident GPU quality kernel,
+// preparation and verified local derived cache measure 3,189,943 bytes
+// (upstream 3,163,384). Allocate 27,000 bytes for this feature, including
+// build metadata; retain all individual chunk and pixel/QA gates.
+// CHG-20260910-UV-DEFAULT-RESIDENT: strict routing and bounded GPU texture
+// ownership handoff add 2,178 bytes (3,189,943 -> 3,192,121). Allow 3,000
+// bytes for this feature and metadata; keep every per-chunk/quality gate.
+// PERF-UV-SOURCE-PREPARE-001 v1.2.0: exact bitmap source handoff, selection
+// preparation keys, background PNG decode and exact readback Worker handoff
+// measure ~3.1 KiB over 3,193,980. Allow 4,000 bytes for these changes;
+// all per-chunk/QA gates remain.
+// Integration with a2eef53: 3,219,936 bytes including the live-UV background
+// snapshot bridge. Add 1,000 bytes to combined allowances for this adapter and
+// release metadata; every pixel/QA gate and other chunk limit stays unchanged.
+const maxTotalJavaScriptBytes = 3_221_000;
 
 let entries;
 try {

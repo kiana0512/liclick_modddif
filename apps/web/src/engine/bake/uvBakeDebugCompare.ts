@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { getBarycentric, isInsideBarycentric } from './barycentric';
 import { bakeVisibleProjectedLayersToTexture } from './bakeProjectedLayerToTexture';
+import { isLegacyUvBakeDiagnosticEnabled } from './uvBakeDebugControls';
 import { getVisibleProjectedLayerStack } from './layerStackCache';
 import type {
   BakeProgress,
@@ -445,6 +446,7 @@ function makeProgressLogger(method: 'cpu' | 'gpu', enabled: boolean | undefined)
 }
 
 export async function debugCompareCpuGpuUvBake(options: DebugCompareOptions = {}): Promise<DebugCompareResult> {
+  if (!isLegacyUvBakeDiagnosticEnabled()) throw new Error('CPU/GPU comparison requires the explicit perfLab=1 diagnostic page.');
   const importedModel = useSceneStore.getState().importedModel;
   if (!importedModel) throw new Error('Please import a model first.');
   const objectId = options.objectId ?? useSceneStore.getState().selectedObjectId ?? importedModel.objectId;

@@ -6,7 +6,13 @@
   "scripts": {
     "test:native-uv-repaint": "node scripts/test-native-uv-repaint.mjs",
     "check:native-uv-browser": "node scripts/run-uv-repaint-browser.mjs --viewport",
+    "test:uv-source-lookahead": "node scripts/test-uv-source-lookahead.mjs",
     "test:fbx-temporary-uv": "node scripts/test-fbx-temporary-uv.mjs",
+    "test:merge-final-preparation": "node scripts/test-merge-final-preparation.mjs",
+    "test:resident-uv-policy": "node scripts/test-resident-uv-policy.mjs",
+    "test:prepared-merge-preview": "node scripts/test-prepared-merge-preview.mjs",
+    "test:merge-projection-preparation": "node scripts/test-merge-projection-preparation.mjs",
+    "test:persistent-merge-preparation": "node scripts/test-persistent-merge-preparation.mjs",
     "test:projection-reliability": "node scripts/test-projection-reliability.mjs",
     "test:flat-capture-material-isolation": "node scripts/test-flat-capture-material-isolation.mjs",
     "test:gpt-multiview-pairs": "node scripts/test-gpt-multiview-pairs.mjs",

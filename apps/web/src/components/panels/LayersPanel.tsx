@@ -1,4 +1,5 @@
 import { usePendingProjectionLayers } from '@/engine/projection/projectionDisplayAdmission';
+import {setMergePreparationSelection} from '@/engine/bake/mergeProjectionPreparation';
 import {
   startTransition,
   useCallback,
@@ -542,6 +543,9 @@ export function LayersPanel({
   const [selectedLayerIds, setSelectedLayerIds] = useState<string[]>(() =>
     activeProjectedLayerId ? [activeProjectedLayerId] : [],
   );
+  useEffect(() => setMergePreparationSelection(selectedObjectId,
+    menu && !selectedLayerIds.includes(menu.layerId) ? [menu.layerId] : selectedLayerIds,
+    Boolean(menu)), [selectedObjectId, selectedLayerIds, menu]);
   const [lastSelectedLayerId, setLastSelectedLayerId] = useState<string | undefined>(
     activeProjectedLayerId,
   );

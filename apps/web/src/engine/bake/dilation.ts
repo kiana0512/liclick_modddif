@@ -258,7 +258,7 @@ function* padUvIslandGutterSteps(
   let processedSeeds = 0;
 
   for (let iteration = 0; iteration < iterations && currentFrontier.length > 0; iteration += 1) {
-    const pending = new Map<number, number>();
+    const nextFrontier: number[] = [];
     for (const sourceIndex of currentFrontier) {
       if (++processedSeeds % 1024 === 0) yield;
       const sourceX = sourceIndex % width;
@@ -272,36 +272,27 @@ function* padUvIslandGutterSteps(
         const targetIndex = y * width + x;
         if (
           coverage[targetIndex] ||
-          topology[targetIndex] ||
-          pending.has(targetIndex)
+          topology[targetIndex]
         )
           continue;
-        pending.set(targetIndex, sourceIndex);
+        // Every donor belongs to the previous frontier and is already covered.
+        // A newly discovered target cannot be a donor until the next iteration.
+        // Publish it immediately: coverage replaces pending.has(), while append
+        // order retains the original Map's first-donor and insertion ordering.
+        const sourceOffset = sourceIndex * 4;
+        const targetOffset = targetIndex * 4;
+        data[targetOffset] = data[sourceOffset];
+        data[targetOffset + 1] = data[sourceOffset + 1];
+        data[targetOffset + 2] = data[sourceOffset + 2];
+        // RGB-only padding must remain transparent and survive weak-alpha cleanup.
+        data[targetOffset + 3] = alphaMode === 'rgb-only' ? 0
+          : alphaMode ? data[sourceOffset + 3] : 255;
+        coverage[targetIndex] = alphaMode === 'rgb-only' ? 2 : 1;
+        nextFrontier.push(targetIndex);
+        paddedPixels += 1;
       }
     }
 
-    const nextFrontier: number[] = [];
-    for (const [targetIndex, sourceIndex] of pending) {
-      if (++processedSeeds % 1024 === 0) yield;
-      const sourceOffset = sourceIndex * 4;
-      const targetOffset = targetIndex * 4;
-      data[targetOffset] = data[sourceOffset];
-      data[targetOffset + 1] = data[sourceOffset + 1];
-      data[targetOffset + 2] = data[sourceOffset + 2];
-      // Gutter texels are outside all model UV triangles and cannot paint an
-      // actual surface. Transparent overlays keep useful RGB for bilinear
-      // filtering while remaining alpha-zero. Coverage value 2 tags those
-      // texels so the later weak-alpha cleanup does not erase their RGB.
-      data[targetOffset + 3] =
-        alphaMode === 'rgb-only'
-          ? 0
-          : alphaMode
-            ? data[sourceOffset + 3]
-            : 255;
-      coverage[targetIndex] = alphaMode === 'rgb-only' ? 2 : 1;
-      nextFrontier.push(targetIndex);
-      paddedPixels += 1;
-    }
     currentFrontier = nextFrontier;
   }
   return paddedPixels;
@@ -693,12 +684,34 @@ function* fillEnclosedUvCoverageGapsSteps(
     [[1, -1], [-1, 1]],
   ] as const;
   const crackRadius = Math.min(3, Math.max(1, Math.ceil(enabled)));
+  // Every donor ray stops at the FIRST texel outside topology. A target with
+  // no opposite pair of immediate topology neighbours can never be repaired,
+  // even after another pass fills nearby coverage. Collect the remaining
+  // targets once in row order, reusing the now-unused component queue. This
+  // avoids repeated ray searches and temporary arrays across empty atlas space.
+  component.clear();
+  for (let index = 0; index < coverage.length; index += 1) {
+    if (index % 1024 === 0) yield;
+    if (coverage[index] !== 0) continue;
+    const x = index % width;
+    const hasHorizontal = x > 0 && x + 1 < width;
+    const hasVertical = index >= width && index + width < coverage.length;
+    if (
+      (hasHorizontal && topology[index - 1] && topology[index + 1]) ||
+      (hasVertical && topology[index - width] && topology[index + width]) ||
+      (hasHorizontal && hasVertical && (
+        (topology[index - width - 1] && topology[index + width + 1]) ||
+        (topology[index - width + 1] && topology[index + width - 1])
+      ))
+    ) component.push(index);
+  }
   for (let pass = 0; pass < crackRadius; pass += 1) {
     seedPixels.clear();
     seedDonors.clear();
 
-    for (let index = 0; index < coverage.length; index += 1) {
-      if (index % 1024 === 0) yield;
+    for (let candidateIndex = 0; candidateIndex < component.length; candidateIndex += 1) {
+      if (candidateIndex % 1024 === 0) yield;
+      const index = component.get(candidateIndex);
       if (coverage[index] !== 0) continue;
       const x = index % width;
       const y = Math.floor(index / width);

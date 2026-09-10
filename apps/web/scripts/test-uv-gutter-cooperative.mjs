@@ -5,15 +5,47 @@ import * as THREE from 'three';
 import * as oldDilation from './fixtures/uv-gutter-b3431cb.ts';
 import * as nextDilation from '../src/engine/bake/dilation.ts';
 import * as oldSeams from './fixtures/uv-seam-b3431cb.ts';
-import * as nextSeams from '../src/engine/bake/uvSeamReconciliation.ts';
+import ts from 'typescript';
+import * as seamSnapshot from '../src/engine/bake/uvSeamGeometrySnapshot.ts';
 import { padUvIslandGuttersWithTopology as reference } from './fixtures/uv-gutter-b3431cb.ts';
 import {
   padUvIslandGuttersWithTopology as synchronous,
   padUvIslandGuttersWithTopologyCooperatively as cooperative,
 } from '../src/engine/bake/dilation.ts';
 
+const nextSeams = {};
+const seamCode = ts.transpileModule(await readFile(
+  new URL('../src/engine/bake/uvSeamReconciliation.ts', import.meta.url), 'utf8'), {
+  compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
+}).outputText;
+new Function('require', 'exports', seamCode)(name => {
+  if (name === 'three') return THREE;
+  if (name === './uvSeamGeometrySnapshot') return seamSnapshot;
+  throw new Error(`Unexpected dependency: ${name}`);
+}, nextSeams);
+
 let seed = 72913;
 const random = () => ((seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0) / 2 ** 32);
+if (process.env.LI3D_UV_REPAIR_BENCHMARK === '1') {
+  const size=4096, rgba=new Uint8ClampedArray(size*size*4);
+  const topology=new Uint8Array(size*size), coverage=new Uint8Array(size*size), regions=new Uint32Array(size*size);
+  for(let panel=0;panel<6;panel++) {
+    const left=128+(panel%3)*1300,top=128+Math.floor(panel/3)*2000;
+    for(let y=top;y<top+1500;y++) for(let x=left;x<left+700;x++) {
+      const index=y*size+x;topology[index]=1;regions[index]=panel+1;
+      if(x%80===0) continue;
+      coverage[index]=1;rgba.set([100+panel*10,80,50,255],index*4);
+    }
+  }
+  const run=kernel=>{
+    const image={width:size,height:size,data:rgba.slice()}, mask=coverage.slice();
+    const start=performance.now(),count=kernel(image,mask,topology,3,regions);
+    return {image,mask,count,ms:performance.now()-start};
+  };
+  const before=run(oldDilation.fillEnclosedUvCoverageGaps),after=run(nextDilation.fillEnclosedUvCoverageGaps);
+  assert.equal(after.count,before.count);assert.deepEqual(after.image.data,before.image.data);assert.deepEqual(after.mask,before.mask);
+  console.log(JSON.stringify({phase:'4K interior crack repair',beforeMs:before.ms,afterMs:after.ms,filled:after.count,byteDifferences:0}));
+}
 for (let trial = 0; trial < 600; trial++) {
   const width = 1 + Math.floor(random() * 43);
   const height = trial % 7 === 0 ? 1 : 1 + Math.floor(random() * 37);
@@ -161,3 +193,75 @@ for (const count of [4, 5, 6, 50]) {
   });
 }
 console.log('UV seam repeated/non-manifold edge order parity passed.');
+
+// Reuse must follow exact geometry, including direct edits without needsUpdate.
+const mutableRoot = new THREE.Group();
+const mutableMesh = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1));
+mutableRoot.add(mutableMesh);
+const drain = generator => { let step; do { step = generator.next(); } while (!step.done); return step.value; };
+const changes = [
+  () => mutableMesh.geometry.attributes.uv.setX(0, 0.37),
+  () => mutableMesh.geometry.attributes.position.setY(0, 0.13),
+  () => mutableMesh.geometry.attributes.normal.setZ(0, -0.77),
+  () => mutableMesh.geometry.index.setX(0, 2),
+  () => { mutableRoot.rotation.x += 0.33; },
+  () => { mutableMesh.scale.z = 2.1; },
+  () => { mutableMesh.geometry.attributes.uv.normalized = true; },
+  () => { mutableRoot.add(new THREE.Mesh(new THREE.PlaneGeometry(1, 1))); },
+  () => { mutableRoot.remove(mutableRoot.children[1]); },
+];
+for (const change of changes) {
+  const before = drain(seamSnapshot.snapshotUvSeamGeometry(mutableRoot));
+  assert(before);
+  assert(drain(seamSnapshot.matchesUvSeamGeometry(mutableRoot, before)));
+  const run = () => {
+    const bytes = Uint8ClampedArray.from({ length: 64 * 64 * 4 }, () => random() * 256);
+    const mask = Uint8Array.from({ length: 64 * 64 }, () => random() < 0.3 ? 0 : 1);
+    const expected = { width: 64, height: 64, data: bytes.slice() }, expectedMask = mask.slice();
+    const actual = { width: 64, height: 64, data: bytes }, options = { repairMissingCoverage: true };
+    const count = oldSeams.reconcileUvSeams(expected, mutableRoot, expectedMask, options);
+    assert.deepEqual(nextSeams.reconcileUvSeams(actual, mutableRoot, mask, options), count);
+    assert.deepEqual(actual.data, expected.data);
+    assert.deepEqual(mask, expectedMask);
+  };
+  run(); run();
+  change();
+  assert(!drain(seamSnapshot.matchesUvSeamGeometry(mutableRoot, before)));
+  run(); run();
+}
+console.log('Exact seam reuse: geometry bytes, normals, indices, UV, hierarchy and transforms invalidate; cold/warm output matches frozen kernel.');
+
+if (process.env.LICLICK_BENCH_UV_POSTPROCESS === '1') {
+  const width = 4096, height = 4096, pixels = width * height;
+  const data = new Uint8ClampedArray(pixels * 4);
+  const topology = new Uint8Array(pixels), coverage = new Uint8Array(pixels);
+  for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
+    const index = y * width + x;
+    if (x % 128 < 64 && y % 128 < 64) {
+      topology[index] = coverage[index] = 1;
+      data[index * 4] = x % 255; data[index * 4 + 1] = y % 255;
+      data[index * 4 + 2] = (x + y) % 255; data[index * 4 + 3] = 127;
+    }
+  }
+  const durations = { old: [], next: [] };
+  for (let round = 0; round < 3; round++) {
+    const results = {};
+    for (const name of round % 2 ? ['next', 'old'] : ['old', 'next']) {
+      const image = { width, height, data: data.slice() }, mask = coverage.slice();
+      const start = performance.now();
+      const count = (name === 'old' ? reference : synchronous)(image, mask, topology, 16, true);
+      durations[name].push(performance.now() - start);
+      results[name] = { image, mask, count };
+    }
+    assert.deepEqual(results.next, results.old);
+  }
+  const mesh = new THREE.Mesh(new THREE.SphereGeometry(1, 256, 256));
+  const seamTimes = [];
+  for (let run = 0; run < 3; run++) {
+    const image = { width: 128, height: 128, data: new Uint8ClampedArray(128 * 128 * 4) };
+    const start = performance.now();
+    nextSeams.reconcileUvSeams(image, mesh, new Uint8Array(128 * 128), { repairMissingCoverage: true });
+    seamTimes.push(performance.now() - start);
+  }
+  console.log(JSON.stringify({ full4kGutterMs: durations, geometrySeamColdWarmMs: seamTimes, byteDifferences: 0 }));
+}

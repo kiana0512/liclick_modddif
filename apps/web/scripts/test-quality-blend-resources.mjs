@@ -4,9 +4,12 @@ import ts from 'typescript';
 import { createHash } from 'node:crypto';
 const current = fs.readFileSync(new URL('../src/workers/qualityBlend.worker.ts', import.meta.url), 'utf8');
 const frozen = fs.readFileSync(new URL('./fixtures/quality-blend-0ee7b0b.ts', import.meta.url), 'utf8');
+const pixelSource=fs.readFileSync(new URL('../src/engine/bake/qualityBlendCpuPixel.ts', import.meta.url),'utf8');
+const pixelCode=ts.transpileModule(pixelSource.replace('export function','function'),{compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText;
+const sharedResolve=new Function(pixelCode+';return resolvePixelCpu;')();
 function load(source, device) {
   const code = ts.transpileModule(source.slice(source.indexOf('const TOP_K')), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
-  return new Function('self', `${code}; return {createTopK, resolveCpu, resolveGpu, shader};`)({ navigator: { gpu: device ? { requestAdapter: async () => ({ requestDevice: async () => device }) } : undefined } });
+  return new Function('resolvePixelCpu','self', `${code}; return {createTopK, resolveCpu, resolveGpu, shader};`)(sharedResolve,{ navigator: { gpu: device ? { requestAdapter: async () => ({ requestDevice: async () => device }) } : undefined } });
 }
 const old = load(frozen), next = load(current);
 assert.equal(next.shader, old.shader, 'production shader is unchanged');
