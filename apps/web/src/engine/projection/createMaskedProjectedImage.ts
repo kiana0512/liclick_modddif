@@ -779,25 +779,32 @@ function processMaskedProjectedImageInWorker(
     return Promise.resolve(mask ? applyProjectedAlphaMask(source, mask) : source);
   }
   const id = ++maskedProjectedRequestId;
-  const sourceBuffer = source.data.buffer as ArrayBuffer;
+  // imageSampler lends cached pixels. Transfer only task-owned copies or the
+  // next export/merge of this same repaint receives a detached cache entry.
+  const sourceBuffer = source.data.slice().buffer as ArrayBuffer;
   const transfer: Transferable[] = [sourceBuffer];
   let maskPayload: { width: number; height: number; data: ArrayBuffer } | undefined;
   if (mask) {
-    const maskBuffer = mask.data.buffer as ArrayBuffer;
+    const maskBuffer = mask.data.slice().buffer as ArrayBuffer;
     maskPayload = { width: mask.width, height: mask.height, data: maskBuffer };
     transfer.push(maskBuffer);
   }
   return new Promise<ImageData>((resolve, reject) => {
     maskedProjectedRequests.set(id, { resolve, reject });
-    worker.postMessage(
-      {
-        id,
-        source: { width: source.width, height: source.height, data: sourceBuffer },
-        mask: maskPayload,
-        mode,
-      },
-      transfer,
-    );
+    try {
+      worker.postMessage(
+        {
+          id,
+          source: { width: source.width, height: source.height, data: sourceBuffer },
+          mask: maskPayload,
+          mode,
+        },
+        transfer,
+      );
+    } catch (error) {
+      maskedProjectedRequests.delete(id);
+      reject(error);
+    }
   });
 }
 

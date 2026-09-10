@@ -14,8 +14,15 @@ import {
 import {
   getVisibleUvLayerStack,
   isLocalRepaintUvOverlayLayer,
+  compareUvLayersForComposition,
 } from '@/engine/layers/uvLayerComposition';
-import { findMergedUvBakeLayer } from '@/features/workflow/selectBakeBaseColor';
+import { findMergedUvBakeLayer, resolveBakeUvMergePlan } from '@/features/workflow/selectBakeBaseColor';
+import {
+  compositeRgbaUnderInPlace,
+  getMergeUvPostprocessOptions,
+  isContentAwareUvUnderlay,
+} from '@/engine/layers/mergeUvComposition';
+import { encodeRgbaPngBlob } from '@/utils/encodeRgbaPng';
 import {
   dilateUvCoverageWithinTopology,
   padUvIslandGutters,
@@ -26,7 +33,7 @@ import { useProjectStore } from '@/stores/projectStore';
 import { useSceneStore } from '@/stores/sceneStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { saveBlobAsset, saveDataUrlAsset } from '@/services/workspaceApiClient';
-import { getRegisteredObjectUrlBlob } from '@/utils/blobUrlRegistry';
+import { getRegisteredObjectUrlBlob, revokeRegisteredObjectUrl } from '@/utils/blobUrlRegistry';
 import type { BakedTexture, UvBakeResolution } from '@/engine/bake/uvBakeTypes';
 import type { BakeProjectedLayerResult } from '@/engine/bake/uvBakeTypes';
 import type { ModelExportInput } from './exportTypes';
@@ -668,7 +675,7 @@ async function getAverageTextureColor(blob: Blob): Promise<[number, number, numb
   canvas.width = sampleSize;
   canvas.height = sampleSize;
   const context = canvas.getContext('2d', { willReadFrequently: true });
-  if (!context) return [1, 1, 1];
+  if (!context) { bitmap.close(); return [1, 1, 1]; }
   context.drawImage(bitmap, 0, 0, sampleSize, sampleSize);
   bitmap.close();
   const imageData = context.getImageData(0, 0, sampleSize, sampleSize);
@@ -923,4 +930,106 @@ export async function prepareTexturedModelExport(
     textureFilename: `${slugifyExportName(input.project.name)}_basecolor_${textureId.replace(/[^a-zA-Z0-9-]+/g, '-')}.png`,
     averageColor,
   };
+}
+
+/** FBX-TEMP-UV-EXPORT v1: the color-export merge, without publishing a layer. */
+export async function prepareFbxModelExport(input: ModelExportInput): Promise<PreparedTexturedExport> {
+  const root = cloneExportRoot(input);
+  const objectId = getTexturedExportObjectId(input);
+  const resolution = exportResolutionToSize[useSettingsStore.getState().resolution] ?? 2048;
+  const layerSnapshot = useLayerStore.getState().layers;
+  const sceneSnapshot = useSceneStore.getState();
+  const projectId = useProjectStore.getState().getCurrentProject()?.id;
+  const projectedLayers = getCurrentExportProjectedLayers(objectId);
+  const snapshot = [...projectedLayers, ...layerSnapshot.filter(
+    (layer) => !projectedLayers.some((projected) => projected.id === layer.id),
+  )];
+  const plan = resolveBakeUvMergePlan(snapshot, objectId);
+  const uvLayers = getVisibleUvLayerStack(snapshot, objectId);
+  const liveSources = snapshot.flatMap((layer) => [layer.imageUrl, layer.maskUrl])
+    .filter((url): url is string => Boolean(url))
+    .map((url) => ({ url, revision: getLiveProjectedCanvasState(url)?.revision }));
+  const modelTransform = () => {
+    input.importedModel.group.updateMatrixWorld(true);
+    const matrices: number[] = [];
+    input.importedModel.group.traverse((object) => matrices.push(...object.matrixWorld.elements));
+    return matrices.join(',');
+  };
+  const transformSnapshot = modelTransform();
+  const assertCurrent = () => {
+    const scene = useSceneStore.getState();
+    if (useLayerStore.getState().layers !== layerSnapshot ||
+      scene.importedModel !== sceneSnapshot.importedModel ||
+      scene.localRepaintPreviewLayer !== sceneSnapshot.localRepaintPreviewLayer ||
+      useProjectStore.getState().getCurrentProject()?.id !== projectId ||
+      modelTransform() !== transformSnapshot ||
+      liveSources.some(({ url, revision }) => getLiveProjectedCanvasState(url)?.revision !== revision)) {
+      throw new Error('导出期间模型或图层已改变，请停止编辑后重新导出 FBX。');
+    }
+  };
+  const temporaryUrls: string[] = [];
+  const temporaryCanvases: HTMLCanvasElement[] = [];
+  try {
+    let atlas: Blob | undefined;
+    let remainingUv = uvLayers;
+    if (plan.action === 'merge') {
+      const sources = plan.projectedLayerIds.map((id) => snapshot.find((layer) => layer.id === id)!);
+      // Track each temporary URL as soon as it is created, including partial
+      // preparation failures. Never revoke borrowed/persisted source URLs.
+      const prepared = [];
+      for (const layer of sources) {
+        const [next] = await prepareProjectedLayersForExport([layer]);
+        if (next.imageUrl !== layer.imageUrl) temporaryUrls.push(next.imageUrl);
+        prepared.push(next);
+      }
+      assertCurrent();
+      const result = prepared.length ? await bakeVisibleProjectedLayersToTexture({
+        objectId, transientLayers: prepared, resolution,
+        enableBackfaceCulling: true, enableDilation: false, dilationPixels: 0,
+        ...getMergeUvPostprocessOptions(resolution), repairMissingUvSeams: true,
+        outputAlpha: 'transparent', commitToProject: false, markSourceLayersBaked: false,
+        skipImageEncoding: true, skipCanvasUpload: true, onProgress: input.onProgress,
+      }) : undefined;
+      if (result) temporaryCanvases.push(result.canvas);
+      const pixels = result?.imageData ?? (result
+        ? result.canvas.getContext('2d', { willReadFrequently: true })?.getImageData(0, 0, resolution, resolution)
+        : new ImageData(resolution, resolution));
+      if (!pixels) throw new Error('Could not read temporary UV bake.');
+      const mergedIds = new Set([plan.baseUvLayerId, ...plan.uvUnderlayLayerIds]);
+      const underlays = uvLayers.filter((layer) => mergedIds.has(layer.id)).sort((left, right) =>
+        Number(isContentAwareUvUnderlay(left)) - Number(isContentAwareUvUnderlay(right)) ||
+        compareUvLayersForComposition(left, right, 'top-to-bottom'));
+      for (const layer of underlays) {
+        const bitmap = await createImageBitmap(await blobFromImageAssetUrl(layer.imageUrl));
+        const canvas = document.createElement('canvas');
+        canvas.width = resolution; canvas.height = resolution;
+        try {
+          const context = canvas.getContext('2d', { willReadFrequently: true });
+          if (!context) throw new Error('Could not composite temporary UV underlay.');
+          context.drawImage(bitmap, 0, 0, resolution, resolution);
+          compositeRgbaUnderInPlace(pixels.data, context.getImageData(0, 0, resolution, resolution).data, layer.opacity);
+        } finally { bitmap.close(); canvas.width = canvas.height = 1; }
+      }
+      atlas = await encodeRgbaPngBlob(resolution, resolution, pixels.data);
+      remainingUv = uvLayers.filter((layer) => !mergedIds.has(layer.id));
+    }
+    // Match FBX-after-manual-merge: the merged atlas is authoritative. Do not
+    // re-fetch original model image sources (they may no longer be decodable).
+    // Additional ordinary UV/local UV patches retain their existing export order.
+    const importedBaseTexture = plan.action === 'missing' && uvLayers.length
+      ? findImportedBaseColorTexture(root) : undefined;
+    const importedBaseBlob = importedBaseTexture ? await blobFromTextureImage(importedBaseTexture) : undefined;
+    const textureBlob = await flattenVisibleLayersToBaseColor(
+      importedBaseBlob, atlas, remainingUv, getExportMaterialBaseColor(root), root,
+    );
+    assertCurrent();
+    // FBX uses a fixed material color when a PNG is embedded; no thumbnail
+    // readback or texture upload is needed merely to calculate that color.
+    return { root, textureBlob };
+  } catch (error) {
+    throw new Error(`FBX 临时 UV 贴图合成失败：${error instanceof Error ? error.message : String(error)}`, { cause: error });
+  } finally {
+    temporaryUrls.forEach(revokeRegisteredObjectUrl);
+    temporaryCanvases.forEach((canvas) => { canvas.width = canvas.height = 1; });
+  }
 }
