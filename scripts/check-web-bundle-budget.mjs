@@ -62,7 +62,11 @@ const budgets = [
 // CHG-20260910-UV-DEFAULT-RESIDENT: strict routing and bounded GPU texture
 // ownership handoff add 2,178 bytes (3,189,943 -> 3,192,121). Allow 3,000
 // bytes for this feature and metadata; keep every per-chunk/quality gate.
-const maxTotalJavaScriptBytes = 3_194_000;
+// PERF-UV-SOURCE-PREPARE-001 v1.2.0: exact bitmap source handoff, selection
+// preparation keys, background PNG decode and exact readback Worker handoff
+// measure ~3.1 KiB over 3,193,980. Allow 4,000 bytes for these changes;
+// all per-chunk/QA gates remain.
+const maxTotalJavaScriptBytes = 3_198_000;
 
 let entries;
 try {

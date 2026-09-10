@@ -12,6 +12,8 @@
 
 ## 1. 文档地位与强制边界
 
+2026-09-10 M07 / PERF-UV-SOURCE-PREPARE-001 v1.2.0：静态 PNG 源解码/相同软件 Canvas 转换移入 Worker，交付 ImageBitmap，删除完整 CPU RGBA 读回及第二张 Canvas；JPEG 候选对照失败，保留原兼容入口。后台按真实多选/右键意图准备有序 UV 底层，前台加入相同 PNG/GPU 准备任务；最终会话键 v2 包含 live revision。常驻 readback 的 Y 翻转/完整 RGBA/coverage 交 Worker，舍入扫描与私有复制有界让出并避让交互。完整 4K 对照零像素差异，新夹具0 longtask，最大帧间隔33–50ms；不能宣称原工程零卡顿/所有入口毫秒级。GPU/CPU/Worker/shader/persistence/export 审计、公开案例适用边界、测试及回滚见 CHG-20260910-UV-DEFAULT-RESIDENT v1.2.0 记录。持久 RGBA/Project Schema/资产/CAS 不变，release 不动。
+
 2026-09-10 M07 / PERF-UV-SOURCE-PREPARE-001 v1.1.0：GPU 栈以一层 lookahead 重叠源准备与计算，live 源保持消费时同步快照；删除逐纹理固定等帧，保留 4ms 预算、分条上传与交互让出。异常排空在途资源并保护借用 bitmap。真实 WebGL 4K/6层冻结旧核对照 RGBA/coverage/count 零差异，阶段约 1223–1609→851–1044ms；非完整 Merge。GPU/CPU/Worker/shader 像素和 QA、导出、持久化/缓存不变，无数据迁移；回滚只恢复调度。见 CHG-20260910-UV-DEFAULT-RESIDENT 后续记录。
 
 2026-09-10 用户要求先移除自动补洞：M07 / Merge profile v8，关闭 uvCoverageGapPixels 和 uvInteriorHolePixels，旧算法保留但正常合成不调用；接缝 band/gutter 与 QA 保留。新结果保留未覆盖区，会话键 v12、持久派生键 persistent-3，旧补洞缓存不复用；Project Schema/历史资产不变，无 release 变更。详见 CHG-20260910-UV-DEFAULT-RESIDENT 后续记录。

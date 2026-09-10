@@ -322,8 +322,12 @@ export class ResidentQualityComposite {
     const bytes=await readRenderTargetPixelsInStripes(this.renderer,this.resolve(preserveAlpha,true),this.resolution);
     const output=new Uint8ClampedArray(bytes.buffer);
     const indices:number[]=[];
-    for(let i=0;i<output.length;i+=4) {
-      if(output[i+3]===0 && output[i]===255 && output[i+2]===255) indices.push(i/4);
+    for(let first=0;first<output.length;first+=1048576) {
+      const end=Math.min(output.length,first+1048576);
+      for(let i=first;i<end;i+=4) {
+        if(output[i+3]===0 && output[i]===255 && output[i+2]===255) indices.push(i/4);
+      }
+      if(end<output.length) await yieldToBrowserTask();
     }
     if(!indices.length) return {output,correctedPixels:0};
     const width=Math.min(indices.length,Math.floor(this.renderer.capabilities.maxTextureSize/4)), height=Math.ceil(indices.length/width);

@@ -111,11 +111,14 @@ function describeUrlKind(url: string) {
   return 'relative URL';
 }
 
+export function loadImageData(url: string, maxDimension?: number, label?: string): Promise<ImageData>;
+export function loadImageData(url: string, maxDimension: number, label: string, bitmap: true): Promise<ImageBitmap>;
 export async function loadImageData(
   url: string,
   maxDimension = Number.POSITIVE_INFINITY,
   label = 'projected layer image',
-): Promise<ImageData> {
+  bitmap = false,
+): Promise<ImageData | ImageBitmap> {
   const liveTextureState = getLiveProjectedTextureSourceState(url);
   const resolvedUrl = liveTextureState
     ? `${url}#${liveTextureState.revision}`
@@ -125,7 +128,25 @@ export async function loadImageData(
   const cached = imageDataCache.get(cacheKey);
   if (cached) {
     cached.usedAt = performance.now();
-    return cached.imageData;
+    return bitmap ? createImageBitmap(cached.imageData) : cached.imageData;
+  }
+  let fetchedSource:Blob|undefined;
+  if(bitmap && !liveTextureState && typeof Worker!=='undefined' && typeof OffscreenCanvas!=='undefined') {
+    const blob=fetchedSource=await urlToBlob(resolvedUrl);
+    // Static production PNG sources can decode entirely off-thread.
+    // Other formats retain the existing HTML image compatibility path.
+    if(blob.type==='image/png') {
+      const header=await blob.slice(0,24).arrayBuffer();
+      const bytes=new DataView(header);
+      // Bitmap-vs-HTMLImage resize filters differ at fractional ratios.
+      // Only transfer unchanged-size PNG sources; scaling keeps its exact path.
+      if(header.byteLength===24 && bytes.getUint32(0)===0x89504e47 && bytes.getUint32(4)===0x0d0a1a0a &&
+        bytes.getUint32(8)===13 && bytes.getUint32(12)===0x49484452 &&
+        bytes.getUint32(16)>0 && bytes.getUint32(20)>0 && Math.max(bytes.getUint32(16),bytes.getUint32(20))<=maxDimension) {
+        const {prepareSamplingBitmap}=await import('./prepareSamplingBitmap');
+        return prepareSamplingBitmap(blob,maxDimension);
+      }
+    }
   }
   let source: CanvasImageSource;
   let sourceWidth: number;
@@ -145,8 +166,8 @@ export async function loadImageData(
     image.decoding = 'async';
     let fetchedObjectUrl: string | undefined;
     try {
-      if (/^https?:/i.test(resolvedUrl)) {
-        fetchedObjectUrl = URL.createObjectURL(await urlToBlob(resolvedUrl));
+      if (fetchedSource || /^https?:/i.test(resolvedUrl)) {
+        fetchedObjectUrl = URL.createObjectURL(fetchedSource ?? await urlToBlob(resolvedUrl));
         image.src = fetchedObjectUrl;
       } else {
         image.crossOrigin = 'anonymous';
@@ -187,6 +208,12 @@ export async function loadImageData(
   context.imageSmoothingEnabled = true;
   context.imageSmoothingQuality = 'high';
   context.drawImage(source, 0, 0, canvas.width, canvas.height);
+  // GPU inputs need the rendered sampling image, not a full CPU readback and
+  // a second canvas upload. Keep the same draw/resize/alpha conversion above.
+  if (bitmap) {
+    try { return await createImageBitmap(canvas); }
+    finally { canvas.width = canvas.height = 1; }
+  }
   const imageData = liveTextureState || canvas.width * canvas.height <= 262144
     ? context.getImageData(0, 0, canvas.width, canvas.height)
     : await readStaticSamplingCanvas(context, canvas.width, canvas.height);

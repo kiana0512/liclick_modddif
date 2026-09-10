@@ -1,20 +1,22 @@
+/* global requestAnimationFrame, cancelAnimationFrame, CanvasRenderingContext2D, WebGL2RenderingContext, PerformanceObserver */
 import * as THREE from 'three';
 import { bakeProjectedLayerRastersWithGpu as current } from '../src/engine/bake/gpuUvBakeRenderer.ts';
 import { bakeProjectedLayerRastersWithGpu as reference } from 'virtual:uv-source-reference';
 import { serializeCamera } from '../src/engine/projection/ProjectionCamera.ts';
 
-export async function run(resolution=512, count=13, retainRasters=false) {
+export async function run(resolution=512, count=13, retainRasters=false, fullAlpha=false, mime='image/png', aspect=false) {
   const renderer=new THREE.WebGLRenderer({antialias:false});
   renderer.setSize(64,64);document.body.append(renderer.domElement);
   const group=new THREE.Group(),geometry=new THREE.PlaneGeometry(2,2,12,12),material=new THREE.MeshBasicMaterial();
   group.add(new THREE.Mesh(geometry,material));group.updateMatrixWorld(true);
   const camera=new THREE.PerspectiveCamera(45,1,0.1,100);camera.position.set(0,0,4);camera.lookAt(0,0,0);
   const snapshot=serializeCamera(camera,1,new THREE.Vector3());
-  const canvas=document.createElement('canvas');canvas.width=canvas.height=Math.min(resolution,2048);
+  const canvas=document.createElement('canvas');canvas.width=canvas.height=fullAlpha?Math.max(1024,resolution):Math.min(resolution,2048);
+  if(mime==='image/jpeg' || aspect){canvas.width=1025;canvas.height=769;}
   const context=canvas.getContext('2d'),data=new ImageData(canvas.width,canvas.height);
-  for(let i=0;i<data.data.length;i+=4) data.data.set([i/4%251,(i/4/canvas.width)%253,71,i%28===0?128:255],i);
+  for(let i=0;i<data.data.length;i+=4) data.data.set([i/4%256,(i/4/canvas.width)%253,71,fullAlpha?Math.floor(i/1024)%256:i%28===0?128:255],i);
   context.putImageData(data,0,0);
-  const blob=await new Promise(resolve=>canvas.toBlob(resolve,'image/png'));
+  const blob=await new Promise(resolve=>canvas.toBlob(resolve,mime));
   const allUrls=[],results=[];
   try {
     // Alternate order; each run uses fresh URLs so decoded-source cache hits cannot favor it.
@@ -25,9 +27,28 @@ export async function run(resolution=512, count=13, retainRasters=false) {
           camera:snapshot,visible:true,opacity:1,order:i,blendMode:'normal',strength:1};
       });
       const started=performance.now();
-      const result=await algorithm({renderer,group,layers,resolution,enableBackfaceCulling:true,
-        enableDilation:false,dilationPixels:0,residentQuality:{preserveAlpha:true,retainRasters}});
-      results.push({ms:performance.now()-started,result});
+      let lastFrame=started,frameId,maxFrameGapMs=0,frames=0;
+      const frame=now=>{maxFrameGapMs=Math.max(maxFrameGapMs,now-lastFrame);lastFrame=now;frames++;frameId=requestAnimationFrame(frame);};
+      frameId=requestAnimationFrame(frame);
+      const longTasks=[];
+      const slowCalls=[],restore=[];
+      for(const [owner,key] of [[CanvasRenderingContext2D.prototype,'drawImage'],[CanvasRenderingContext2D.prototype,'getImageData'],
+        [window,'createImageBitmap'],[WebGL2RenderingContext.prototype,'readPixels'],[WebGL2RenderingContext.prototype,'texImage2D'],
+        [WebGL2RenderingContext.prototype,'texSubImage2D'],[WebGL2RenderingContext.prototype,'bufferData']]) {
+        const original=owner[key];
+        owner[key]=function(...args){const started=performance.now();try{return original.apply(this,args);}finally{
+          const ms=performance.now()-started;if(ms>=20)slowCalls.push({key,ms});}};
+        restore.push(()=>{owner[key]=original;});
+      }
+      const observer=new PerformanceObserver(list=>longTasks.push(...list.getEntries().map(entry=>entry.duration)));
+      observer.observe({type:'longtask'});
+      try {
+        const result=await algorithm({renderer,group,layers,resolution,enableBackfaceCulling:true,
+          enableDilation:false,dilationPixels:0,residentQuality:{preserveAlpha:true,retainRasters}});
+        longTasks.push(...observer.takeRecords().map(entry=>entry.duration));
+        results.push({ms:performance.now()-started,result,interaction:{frames,maxFrameGapMs,
+          longTasks:longTasks.length,maxLongTaskMs:Math.max(0,...longTasks),slowCalls}});
+      } finally {cancelAnimationFrame(frameId);observer.disconnect();restore.forEach(fn=>fn());}
     }
     const expected=results[0].result;
     if(!expected.residentQuality.writtenTexels)throw Error('fixture must have covered pixels');
@@ -44,8 +65,9 @@ export async function run(resolution=512, count=13, retainRasters=false) {
         for(let i=0;i<a.length;i++)if(a[i]!==b[i])throw Error(`Changed ${field} byte ${i}: ${a[i]} / ${b[i]}`);
       }
     }
-    return {resolution,count,retainRasters,referenceMs:[results[0].ms,results[3].ms],currentMs:[results[1].ms,results[2].ms],
+    return {resolution,count,retainRasters,fullAlpha,mime,referenceMs:[results[0].ms,results[3].ms],currentMs:[results[1].ms,results[2].ms],
       differences:0,coveredPixels:expected.residentQuality.writtenTexels,
+      interaction:results.map(({interaction})=>interaction),
       stages:results.slice(1,3).map(({result:r})=>({source:r.sourcePreparationWaitMs,upload:r.textureUploadMs,readback:r.layerReadbackWaitMs}))};
   } finally {for(const url of allUrls)URL.revokeObjectURL(url);geometry.dispose();material.dispose();renderer.dispose();renderer.domElement.remove();}
 }

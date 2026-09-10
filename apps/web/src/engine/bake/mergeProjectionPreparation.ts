@@ -11,11 +11,19 @@ import {useProjectStore} from '@/stores/projectStore';
 import {isViewportInteractionBusy} from '@/engine/viewport/viewportInteractionState';
 import {cancelMergeFinalPreparation,prepareMergeFinal} from './mergeFinalPreparation';
 import {persistentMergeKey,readPersistentMerge,writePersistentMerge} from './persistentMergePreparation';
+import {isFlattenableUvMergeSource,isContentAwareUvUnderlay} from '@/engine/layers/mergeUvComposition';
+import {compareUvLayersForComposition} from '@/engine/layers/uvLayerComposition';
 
 type Request={projectId:string;objectId:string;resolution:UvBakeResolution;group:THREE.Group;layers:Layer[]};
 type Job={signature:string;controller:AbortController;promise:Promise<BakeProjectedLayerResult>};
 let job:Job|undefined;
 let ready:{signature:string;result:BakeProjectedLayerResult}|undefined;
+let selection:{objectId?:string;ids:string[];explicit:boolean}|undefined;
+/** UI publishes intent only; source selection and all preparation remain in the engine. */
+export function setMergePreparationSelection(objectId:string|undefined,ids:string[],explicit=false) {
+  const current={objectId,ids,explicit};selection=current;
+  return ()=>{if(selection===current) selection=undefined;};
+}
 
 export function mergePreparationSignature(input:Request) {
   const postprocess=getMergeUvPostprocessOptions(input.resolution);
@@ -103,24 +111,29 @@ export function startMergeProjectionPreparation(options:{projectId:string;resolu
     if(!model || useProjectStore.getState().getCurrentProject()?.id!==options.projectId ||
       model.group.userData.liclickRestorePlaceholder || !options.canPrepare() ||
       document.visibilityState!=='visible' || isViewportInteractionBusy(500)) return;
-    const layers=useLayerStore.getState().layers.filter(layer=>layer.type==='projected' && layer.visible &&
-      layer.imageUrl && layer.camera && (!layer.objectId || layer.objectId===model.objectId));
-    if(layers.length<2) return;
+    const selected=selection;
+    const authored=useLayerStore.getState().layers;
+    const selectedIds=selected?.objectId===model.objectId && (selected.ids.length>1 || selected.explicit) ? new Set(selected.ids) : undefined;
+    const candidates=authored.filter(layer=>(!layer.objectId || layer.objectId===model.objectId) &&
+      (selectedIds ? selectedIds.has(layer.id) : layer.visible));
+    const layers=candidates.filter(layer=>layer.type==='projected' && layer.imageUrl && layer.camera);
+    if(!layers.length) return;
+    const underlays=selectedIds ? candidates.filter(isFlattenableUvMergeSource).sort((a,b)=>
+      Number(isContentAwareUvUnderlay(a))-Number(isContentAwareUvUnderlay(b)) ||
+      compareUvLayersForComposition(a,b,'top-to-bottom')) : [];
     const input={...options,objectId:model.objectId,group:model.group,layers};
     const next=mergePreparationSignature(input);
     const prepareFinal=(result:BakeProjectedLayerResult)=>{
-      if(!result.imageData || stopped) return;
-      // The visible-projection toolbar passes projected IDs only. Visible UV
-      // underlays remain separate layers; including them here guarantees a
-      // final-cache miss (and would be wrong to force-reuse at commit).
-      // Explicit selected-UV merges keep their exact keyed fallback.
-      void prepareMergeFinal(next,result.imageData,[]).catch(()=>{
+      if(!result.imageData || stopped || selection!==selected || signature!==next) return;
+      // Match the current explicit selection, including its ordered UV sources.
+      // With no multiple selection, the toolbar still prepares projections only.
+      void prepareMergeFinal(next,result.imageData,underlays).catch(()=>{
         document.body.dataset.uvMergeFinalPreparation='unavailable';
       });
     };
     if(next!==signature) {signature=next;stableSince=performance.now();job?.controller.abort();return;}
     if(ready?.signature===next) {document.body.dataset.uvMergePreparation='ready';prepareFinal(ready.result);return;}
-    if(performance.now()-stableSince<1500 || job) return;
+    if(performance.now()-stableSince<250 || job) return;
     document.body.dataset.uvMergePreparation='preparing';
     void prepareMergeProjection(input,undefined,true).then(prepareFinal).catch(error=>{
       if(error instanceof Error && error.name==='AbortError') return;
@@ -130,6 +143,6 @@ export function startMergeProjectionPreparation(options:{projectId:string;resolu
       stableSince=Infinity;
     });
   };
-  const timer=window.setInterval(tick,500);
+  const timer=window.setInterval(tick,250);
   return ()=>{stopped=true;window.clearInterval(timer);unsubscribe();invalidate(true);delete document.body.dataset.uvMergePreparation;};
 }

@@ -1,5 +1,5 @@
-import {prepareMergeProjection,startMergeProjectionPreparation} from '@/engine/bake/mergeProjectionPreparation';
-import {getPreparedMergePng} from '@/engine/bake/mergeFinalPreparation';
+import {prepareMergeProjection,startMergeProjectionPreparation,mergePreparationSignature} from '@/engine/bake/mergeProjectionPreparation';
+import {getPreparedMergePng,awaitPreparedMergePng,reuseUnchangedMergePng} from '@/engine/bake/mergeFinalPreparation';
 import {compareProjectedLayersForDeterministicBake,createReusableProjectionBakeSignature,cloneProjectionBakeImageData,type ReusableProjectionBakeEntry,type ReusableProjectionBakePurpose} from '@/engine/bake/projectionBakeSignature';
 import {
   startTransition,
@@ -123,7 +123,6 @@ import { placeImportedModelBesideScene } from '@/engine/scene/placeImportedModel
 import { getBoundingBoxForObject } from '@/engine/scene/boundingBoxUtils';
 import {
   compositeRgbaUnderInPlace,
-  getMergeUvPostprocessOptions,
   getRgbaAlphaCoverageRatio,
   isContentAwareUvUnderlay,
   isFlattenableUvMergeSource,
@@ -4915,26 +4914,17 @@ export function EditorPage({
       // source alpha before UV rasterization so the baked result cannot silently
       // fall back to projecting the complete ComfyUI frame when a mask texture
       // is unavailable. Other projected layers keep their normal mask path.
-      const postprocess = getMergeUvPostprocessOptions(bakeResolution);
-      const projectionBakeSignature = createReusableProjectionBakeSignature({
-        purpose: 'merge-uv',
+      const projectionBakeSignature = mergePreparationSignature({
         projectId: project.id,
         objectId,
         resolution: bakeResolution,
         group: currentImportedModel.group,
         layers: projectedLayers,
-        optionSignature: [
-          `gutter:${postprocess.uvIslandGutterPixels}`,
-          `interior:${postprocess.uvInteriorHolePixels}`,
-          `coverage:${postprocess.uvCoverageGapPixels}`,
-          `seam:${postprocess.uvSeamRepairPixels}`,
-          'coverage-confidence:0',
-        ].join('|'),
       });
       const reusableProjectionBake = reusableProjectionBakeCacheRef.current.get('merge-uv');
       const projectionBakeCacheHit = reusableProjectionBake?.signature === projectionBakeSignature;
-      const mergedImageBlob = getPreparedMergePng(projectionBakeSignature, selectedUvLayers);
-      const preparedFinalHit = !!mergedImageBlob;
+      let mergedImageBlob = getPreparedMergePng(projectionBakeSignature, selectedUvLayers);
+      let preparedFinalHit = !!mergedImageBlob;
       document.body.dataset.uvMergeFinalCache = preparedFinalHit ? 'hit' : 'miss';
       // Key the authored inputs (including live-mask revision), never freshly
       // allocated flattened blob URLs. A cache hit needs no mask re-encoding.
@@ -4953,6 +4943,13 @@ export function EditorPage({
           ? await prepareMergeProjection({projectId:project.id,objectId,group:currentImportedModel.group,
               layers:projectedLayers,resolution:bakeResolution},updateManualBakeProgress,preparedFinalHit)
           : undefined;
+      // A joined projection job may have finished its final preparation while
+      // we awaited it. Reuse/join that exact result instead of encoding again.
+      if (!preparedFinalHit) {
+        mergedImageBlob = await awaitPreparedMergePng(projectionBakeSignature, selectedUvLayers);
+        preparedFinalHit = !!mergedImageBlob;
+        document.body.dataset.uvMergeFinalCache = preparedFinalHit ? 'joined-hit' : 'miss';
+      }
       if (options?.taskContext?.signal.aborted) {
         throw new DOMException('UV merge was superseded.', 'AbortError');
       }
@@ -5055,6 +5052,11 @@ export function EditorPage({
       }
       // Store authored albedo only. PBR remains a live viewport operation and
       // is never flattened into the merged UV texture.
+      const preparedProjection = reusableProjectionBakeCacheRef.current.get('merge-uv');
+      if (!mergedImageBlob && selectedUvLayers.length && preparedProjection?.signature === projectionBakeSignature) {
+        mergedImageBlob = await reuseUnchangedMergePng(projectionBakeSignature, preparedProjection.imageData.data, mergedRgba);
+        if (mergedImageBlob) document.body.dataset.uvMergeFinalCache = 'unchanged-underlay-hit';
+      }
       uvCompositeDurationMs = performance.now() - uvCompositeStartedAt;
       const mergedCoverageRatio =
         bakeResult?.report.coverageRatio ??

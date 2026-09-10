@@ -53,6 +53,17 @@ queued.shift()();await settle();assert.equal(scope.document.body.dataset.uvMerge
 assert(finalInputs.length>0);
 assert(finalInputs.every(underlays=>underlays.length===0),
   'visible projection toolbar excludes even visible repair UV layers from its final PNG');
+const select=api.setMergePreparationSelection('object',[...layers.map(layer=>layer.id),'repair']);
+tick();await settle();
+assert.deepEqual(finalInputs.at(-1).map(layer=>layer.id),['repair'],'selected repair is precomposed under the projection');
+assert.equal(calls,3,'selection of an underlay reuses the same projection result');
+select();tick();await settle();assert.equal(finalInputs.at(-1).length,0,'cleared selection restores toolbar intent');
+const other=api.setMergePreparationSelection('another-object',['repair','a']);
+tick();await settle();assert.equal(finalInputs.at(-1).length,0,'another object cannot change the current merge');
+other();
+const single=api.setMergePreparationSelection('object',[layers[0].id],true);
+tick();clock+=250;tick();await settle();assert.equal(calls,4,'single-layer context menu also prewarms');
+queued.shift()();await settle();single();
 stop();assert.equal(tick,undefined);assert.equal(listener,undefined);
 assert.equal(scope.document.body.dataset.uvMergePreparation,undefined);
 console.log('Merge preparation: deduplication, immutable full-resolution results, edit invalidation, stale-result rejection and teardown passed.');

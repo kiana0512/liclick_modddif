@@ -844,19 +844,19 @@ async function loadLayerTextureFromCpuImageData(input: {
     texture.addEventListener('dispose', release);
     return texture;
   }
+  if (typeof createImageBitmap === 'function') {
+    const bitmap = await loadImageData(input.url, input.resolution, input.label, true);
+    return prepareTexture(new THREE.Texture(bitmap), input.minFilter, input.magFilter, input.flipY);
+  }
   const imageData = await loadImageData(input.url, input.resolution, input.label);
-  await waitForBrowserPaint();
   const canvas = document.createElement('canvas');
   canvas.width = imageData.width;
   canvas.height = imageData.height;
   const context = canvas.getContext('2d', { willReadFrequently: true });
   if (!context) throw new Error(`Could not create texture canvas for ${input.label}.`);
   context.putImageData(imageData, 0, 0);
-  await waitForBrowserPaint();
-  const bitmap =
-    typeof createImageBitmap === 'function' ? await createImageBitmap(canvas) : undefined;
   return prepareTexture(
-    bitmap ? new THREE.Texture(bitmap) : new THREE.CanvasTexture(canvas),
+    new THREE.CanvasTexture(canvas),
     input.minFilter,
     input.magFilter,
     input.flipY,
@@ -1748,16 +1748,11 @@ export async function bakeProjectedLayerRastersWithGpu(
     if (resident) {
       const started = performance.now();
       const {output,correctedPixels} = await resident.readCorrected(input.residentQuality!.preserveAlpha);
-      const data = new Uint8ClampedArray(output.length);
-      const coverage = new Uint8Array(resolution*resolution);
-      let writtenTexels=0;
-      for(let y=0;y<resolution;y++) {
-        data.set(output.subarray(y*resolution*4,(y+1)*resolution*4),(resolution-1-y)*resolution*4);
-      }
-      for(let i=0;i<coverage.length;i++) if(data[i*4+3]>0) {coverage[i]=1;writtenTexels++;}
+      const {imageData,coverage,coveredPixels:writtenTexels}=await convertLayerGpuReadbackInWorker(
+        new Uint8Array(output.buffer,output.byteOffset,output.byteLength),resolution,true);
       if (!retainRasters) coveredPixels+=await resident.countLayerCoverage();
       const resolveMs=performance.now()-started;
-      residentQuality={imageData:new ImageData(data,resolution,resolution),coverage,
+      residentQuality={imageData,coverage,
         renderedColorMask:new Uint8Array(coverage.length),writtenTexels,backend:'webgl-resident',
         accumulateMs:residentAccumulateMs,resolveMs,overlayMs:0,totalMs:residentAccumulateMs+resolveMs};
       warnings.push(`Resident GPU quality: ${correctedPixels} rounding-boundary texels corrected; ${retainRasters ? 'calibration retains reference rasters' : 'no per-layer readbacks'}.`);

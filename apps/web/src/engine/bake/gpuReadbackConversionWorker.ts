@@ -1,4 +1,4 @@
-type ConversionMode = 'final' | 'layer' | 'quality';
+type ConversionMode = 'final' | 'layer' | 'resident' | 'quality';
 
 type ConversionRequest = {
   id: number;
@@ -11,7 +11,7 @@ type ConversionRequest = {
 type ConversionResponse =
   | {
       id: number;
-      mode: 'final' | 'layer';
+      mode: 'final' | 'layer' | 'resident';
       imageData: ArrayBuffer;
       coverage: ArrayBuffer;
       coveredPixels: number;
@@ -87,9 +87,11 @@ export async function convertFinalGpuReadbackInWorker(
 export async function convertLayerGpuReadbackInWorker(
   pixels: Uint8Array,
   resolution: number,
+  straightRgba = false,
 ) {
-  const response = await convert('layer', pixels, resolution);
-  if ('error' in response || response.mode !== 'layer') throw new Error('Invalid layer readback.');
+  const mode=straightRgba ? 'resident' : 'layer';
+  const response = await convert(mode, pixels, resolution);
+  if ('error' in response || response.mode !== mode) throw new Error('Invalid layer readback.');
   return {
     imageData: new ImageData(new Uint8ClampedArray(response.imageData), resolution, resolution),
     coverage: new Uint8Array(response.coverage),
