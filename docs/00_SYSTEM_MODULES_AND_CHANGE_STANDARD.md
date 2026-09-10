@@ -1,10 +1,10 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
-> 文档版本：`2.19.7`
+> 文档版本：`2.20.2`
 >
-> 生效日期：`2026-09-09`
+> 生效日期：`2026-09-10`
 >
-> 代码盘点基线：`0f0a0ee + ModelView 复用连接超时修复`
+> 代码盘点基线：`9e69980 + 单视图成功结果自动投影恢复`
 >
 > 基线仓库：`E:\Liclick 3D Texture Modernization`
 >
@@ -12,9 +12,43 @@
 
 ## 1. 文档地位与强制边界
 
+2026-09-10 master/release 集成（M15）：合入已通过 CI #629195 的 master 71216521；保留 release b226dfb 的 Ceph 校验、生产对象存储、数据库与部署配置。仅维护文档存在合并冲突，两侧记录均保留。算法版本与缓存版本沿用 master 各变更卡，无新增 Schema 或资产迁移；发布失败可恢复 b226dfb 对应镜像，保留现有工程与资产。实际发布结果以本次 release 流水线及线上版本核验为准。
+
 2026-09-08 master/release 集成（M15）：合入 master a112655，包括 b374a9f/a0093a3 橡皮材质驻留交接、a7fa3b9 GPT2 提示词和 a112655 远端多视图逐视角生成；完整保留 release f3870f3 的 Ceph 流式 SHA-256 校验、内网 RGW 配置和生产部署基础设施。仅维护文档产生合并冲突，业务代码保持各分支已提交实现。算法版本沿用各变更卡，无新增 Schema 或数据迁移；回退整批镜像时保留 Ceph 修复与生产配置，已有工程/资产不删除。集成本地验证：88 项 Web/14 项 Server 回归、全仓 typecheck、lint（0 errors，15 条既有 warnings）、6 项部署策略、contracts/边界检查与完整 Cloud 构建通过；80 chunks / 3,133,800 bytes，通过原包体门禁，OAuth/资产/重启部署模拟通过。Ceph 前一批 f3870f3 的 CI #627368（含 deploy）已全部成功；本次新增功能的生产部署和真实项目验收以新流水线与维护者实测为准。
 
 变更卡 `CHG-20260908-CEPH-SHA256-READBACK`：M14，协作 M02/M15，`ALG-ASSET-VERIFY-001` v1.1.0。基于 release de1507c 保留效率组内网 RGW/公开浏览器地址分离。缺少附加 checksum 时流式读回验证实际 SHA-256；每进程最多 4 项执行、16 项等待，60 秒预算含排队/HEAD/GET，同用户同资产完成请求合并；前端完成接口等待上限 75 秒，校验完立即返回。完整性失败仍保持 pending，不放宽 verified、ownership、Revision CAS 或 Command 幂等性。线协议 v1/Schema 不变，无迁移；回退会恢复旧 Ceph 拒绝，但保留资产数据。真实 Ceph 与生产体验待验收，详见对应变更卡。
+`CHG-20260910-PROJECTION-EMPTY-DISPLAY`：主模块 M06，协作 M03/M08；`PROJECTION-EMPTY-DISPLAY` v1.0.0。按用户要求恢复有可见投影/UV 时未覆盖区域的深灰斜线预览；单层、stack/array、UV-only 一致。flat 截图按 tile 临时使用模式 0，coverage 截图模式 2，结束或失败恢复视口模式，斜线不进入 GPT 引导图。保留可靠区域裁切和单/多视图投影一致性，不改 CPU/Worker/UV 烘焙公式、分辨率、作者 mask、历史和持久化协议，无迁移；本次仅部署 A100，不推送 master。详见 [变更卡](changes/CHG-20260910-PROJECTION-EMPTY-DISPLAY.md)。
+
+`CHG-20260910-TEXTURE-PROJECTION-PARITY`：主模块 M06，协作 M04/M05/M08；`TEXTURE-PROJECTION-PARITY` v1.0.0。每个 texture-map 单/多视图结果共享原模型 capture-mask、边缘颜色清理、ignoreSourceAlpha、0.18 minimum facing 和 standard visibility；新增图层及显式重新投影使用统一入口判断。组内两张并发/组间串行不改，局部重绘和材质参考生成不纳入。GPU/CPU/Worker/shader/UV/export 复用既有单视图参数契约，无像素公式、分辨率或 Schema 变更；不自动迁移旧多视图、清除橡皮或重写历史资产。108 项回归与真实 WebGL 同相机/同返图六组逐像素一致检查通过。详见 [变更卡](changes/CHG-20260910-TEXTURE-PROJECTION-PARITY.md)。
+
+`CHG-20260910-PROJECTION-RELIABLE-FOOTPRINT`：主模块 M06，协作 M03/M04/M07/M08/M09；`PROJECTION-RELIABLE-FOOTPRINT` v1.0.0。普通投影对原 angle/visibility/facing/image-edge 几何支撑乘积应用 0.98 硬边准入，准入后仍保留作者 opacity/source alpha/mask；surface-locked 重绘不变。单层/直接多层/compact array、GPU UV/CPU loose fallback/预览合成共用阈值。默认未覆盖显示白模；新 flat-target-coverage 捕获用 PNG alpha 传递实际合成覆盖，Worker 按 alpha 补白模，不再通过斜线 RGB 猜缺口。UV-only、底图、上下 UV 与 overlay 顺序纳入覆盖，内孔和原深度/背面/相机/2048保持。UV bake cache v8、UV merge v6、content-aware projection cache v2 不复用旧几何羽化结果；无 Layer/Project Schema/Command/CAS/ownership 改动，不批量重写历史资产。详见 [变更卡](changes/CHG-20260910-PROJECTION-RELIABLE-FOOTPRINT.md)。
+
+`CHG-20260910-GPT-GUIDE-CAPTURE-ISOLATION`：主模块 M03，协作 M04/M06/M08；新增 `CAPTURE-MATERIAL-ISOLATION` v1.0.0。GPT 成对生成先冻结已有纹理截图，再捕获带明暗的 clay/原模型 mask/depth；避免临时白模异步恢复前被无光照截图转为纯白剪影。flat 捕获逐 tile 同步借用/恢复材质与 uniforms，不跨帧占用；源材质中途替换则拒绝混合截图。GPT 输入仍为模型引导图和原材质参考图，完整 2048、原相机/蒙版/Worker 补全和投影裁切不变。GPU 仅捕获生命周期调整，CPU/Worker/shader 公式、UV/export、Schema/Command/CAS/ownership/verified assets 不改，无数据迁移。详见 [变更卡](changes/CHG-20260910-GPT-GUIDE-CAPTURE-ISOLATION.md)。
+
+`CHG-20260910-GPT-MULTIVIEW-PAIRS`：主模块 M04，协作 M03/M05/M06/M12/M15；`GPT-MULTIVIEW-PAIR-SEQUENCE` v1.0.0。GPT 多视图按预设固定相对视角两张一组，组内请求/等待并行，返图按组内固定顺序提交，组间串行。每组仅捕获本组白模，结合此时实际已有纹理生成引导图，保留原 capture 相机/depth/完整模型 mask；发布本组预览后验证实际材质 bindings 和两帧呈现，再开始下一组。新加角度独立生成，继承预设视角仍配对，顶底最后，不重排缩略图、不新增提供方标识。部分失败保留成功结果并停止后续组，取消沿用同一 batchId；最后仅补缝一次。单视图与隐藏远端兼容路径保持。GPU/CPU/Worker/shader/UV/export 像素、分辨率、Project Command/CAS/ownership/verified assets 不改，无 Schema/资产迁移；详见 [变更卡](changes/CHG-20260910-GPT-MULTIVIEW-PAIRS.md)。
+
+2026-09-10 `CHG-20260910-GENERATION-CAMERA-FRAMING`：主模块 M03，协作 M04/M08；新增 `ALG-CAP-007` v1.0.0。单视图与局部重绘生成前复用现有单视图全对象包围盒和 0.88 留边取景，屏幕相机以 240ms 缓动适配；保持选定方向及透视 FOV，正交调整 zoom。仅一次取景计算，动画无图像读回/渲染调用，用户移动相机或取消则中止提交。局部重绘必须按冻结新相机重新捕获作者 UV 蒙版，不回退旧截图。GPU/CPU/Worker/shader、投影/UV/export 仍使用同一序列化相机与原公式，分辨率、QA、Schema、Command/CAS/ownership/资产不变，无数据迁移。详见对应变更卡。
+
+`CHG-20260909-SINGLE-PROJECTION-RESTORE-REVEAL`：M06/M03，协作 M08；PROJECTED-MATERIAL-IDENTITY v1.0.0。A100 实际工程恢复已完成 full 模型/2048 UV/单投影编译，原显示门禁只识别 Stack 名称，遗漏单层工厂返回的 LiclickProjectedLayer，导致无限旋转。统一常驻材质身份，覆盖初次显示、结构复用、UV bootstrap 和临时保留；不接受 Warmup/白模/不完整投影。GPU 仅显示与驻留生命周期变化，shader/CPU/Worker/蒙版/UV/export/分辨率及持久化契约不改，无迁移。详见 [变更卡](changes/CHG-20260909-SINGLE-PROJECTION-RESTORE-REVEAL.md)。
+
+`CHG-20260909-REPAINT-LAYER-SELECTION`：M08/M06，协作 M05/M12；REPAINT-LAYER-SELECTION v1.0.0。普通图层选择不恢复重绘编辑源、不重启 overlay 交接，停用的 progressive compositor 不再因选中 ID 生成新材质依赖。显式橡皮擦目标准备、实际图层显隐/编辑/删除与生图预热保持；迟到蒙版编码重新校验工具。GPU 仅生命周期调度变化，shader/CPU/Worker/蒙版/UV/export、分辨率、Schema/Command/CAS/ownership/verified assets 不变，无迁移。回滚恢复原触发条件即可，详见 [变更卡](changes/CHG-20260909-REPAINT-LAYER-SELECTION.md)。
+
+`CHG-20260909-UV-MERGE-REPAINT-CONSUMPTION`：主模块 M05/M07，协作 M06/M08/M12；`UV-MERGE-SOURCE-CONSUMPTION` v1.0.0、`UV-MERGE-EMPTY-PREVIEW` v1.0.0。合并完成并发布已验证资产后，原子删除本次参与合并的原图层，保留/选中新合并 UV，清理已无其他结果引用的内部重绘目标和被消费的活动重绘会话；不删除历史资产，原快照可撤销。单层/整栈 shader 的未覆盖区域诊断同时考虑仍显示的 UV 底图，不因重绘 live overlay 暂停普通投影绑定而切为白模。像素合成/覆盖、CPU/Worker/UV/export 不变，仅预览空白诊断变化；无 Schema/旧工程自动迁移，Command/CAS/ownership/verified assets 不变。详见 [变更卡](changes/CHG-20260909-UV-MERGE-REPAINT-CONSUMPTION.md)。
+
+同卡补充 `UV-MERGE-RASTER-PARITY` v1.0.0：清晰录像及真实 WebGL 复现 MSAA 下 UV-only 隐式逐采样深度与 live 回贴显式逐片元深度不一致。UV-only 改为显式写几何深度，保留深度测试，不加前向偏移、不禁用抗锯齿。三个斜面内区错误像素 37488 / 36212 / 29764 → 0，前景遮挡穿透 0；不改 CPU/Worker/UV 烘焙/导出和持久化，回滚恢复隐式深度。102 项完整回归通过，详见同卡验证脚本。
+
+`CHG-20260909-SINGLE-VIEW-PROJECTION-LATENCY`：主模块 M04，协作 M05/M06/M12；`SINGLE-VIEW-AUTO-PROJECTION` v1.1.0。单视图不再开启多视图整批预览冻结，图片资产持久化后发布图层即可开始准备视口材质，不等待工程 CAS 保存；多视图冻结及保存验证保持。成功记录变化和任务解锁立即唤醒恢复检查，5 秒定时器仅用于失败重试兜底，in-flight 去重/项目隔离/取消/已删除不复活保持。GPU/CPU/Worker/shader、蒙版/像素/UV/export、分辨率与 Schema 不变，无数据迁移。回滚恢复无条件批冻结并移除事件唤醒；详见 [变更卡](changes/CHG-20260909-SINGLE-VIEW-PROJECTION-LATENCY.md)。
+
+`CHG-20260909-SINGLE-VIEW-AUTO-PROJECTION`：主模块 M04，协作 M05/M06/M12；`SINGLE-VIEW-AUTO-PROJECTION` v1.0.0。单视图成功结果统一使用既有串行投影事务；补齐刷新/重新进入后的后台成功结果回贴，每 5 秒及回到窗口/恢复网络时检查未提交记录，只重试图片/资产，不重新生图。与活动生成互斥，按原 capture 相机回贴，提交回执与图层同次保存；已提交后删除不复活，重复返回不覆盖既有橡皮和可见性。持久化保留 Project Command 幂等、Revision CAS、ownership 和 verified assets；GPU/CPU/Worker/shader、像素/深度/蒙版/UV/export、分辨率不改。复用原 metadata 字段，无 Schema/资产迁移。详见 [变更卡](changes/CHG-20260909-SINGLE-VIEW-AUTO-PROJECTION.md)。
+
+2026-09-09 UI-05 / M05 图层行文案样式：移除行 hover 背景高亮，保留 selected 背景及 active 底线；按钮自身交互、拖拽、待显示诊断和图层逻辑不变。仅样式，无算法/Schema/迁移；回滚恢复行 hover 类即可。
+
+2026-09-09 UI-02 / M01 文件夹文案：创建文件夹输入框的 folderPlaceholder 从“客户概念”改为“文件夹1”（英文对应 Folder 1）。仅替换占位提示，创建/重命名校验和现有文件夹名称不变；无算法、Schema 或资产迁移。回滚恢复该翻译键即可。
+
+`CHG-20260909-GENERATION-LAYER-DELETION`：M05/M04，协作 M08/M12；`GENERATION-LAYER-DELETION` v1.0.0。生图等待阶段独立放开单/多选图层删除和确认清空，输入快照、局部输入准备/启动交接、内容识别填补仍锁定；其他模型/图层修改锁不放开。仅行选择、菜单入口、删除按钮通过全局事件门禁，Delete/Backspace 仅在图层区域获得焦点时放行。保留现有历史、局部重绘双层及 live session 清理；关键保存每次 CAS 尝试从当前图层 store 获取列表，避免生图旧快照恢复删除。GPU/CPU/Worker/shader/UV/export 不改，无 Schema/资产迁移；回滚恢复独立锁与旧保存读取方式。见 [变更卡](changes/CHG-20260909-GENERATION-LAYER-DELETION.md)。
+
+`CHG-20260909-TEXTURE-GPT-ONLY`：主模块 M04 / UI-05，入口策略 `TEXTURE-GENERATION-PROVIDER` v1.0.1。单视图和多视图共同固定 GPT-only 会话值，不提供 setter，也不读取历史 provider；移除 GPT2/远端整行选择 UI。GPT 提示词、参考图、视角排序、取消与回贴不变；局部重绘、历史远端结果和后端接口保持。GPU/CPU/Worker/shader/UV/export 与 Schema/CAS/资产无变化，无迁移。回退恢复 provider setter 和选项行即可；详见 [变更卡](changes/CHG-20260909-TEXTURE-GPT-ONLY.md)。
+
 `CHG-20260909-MODELVIEW-CONNECTION-LIFECYCLE`：主模块 M04，协作 M08/M15；请求生命周期契约 `MODELVIEW-CONNECTION-LIFECYCLE` v1.0.1。共享 ModelView 请求仅对新连接启动 10 秒建连计时，keep-alive 复用连接不再等待不会重发的 connect/secureConnect；HTTPS 新连接仍等待 TLS 握手。总任务超时、取消、证书验证、幂等性、输入输出与持久化不变，结束时清理监听。无 Schema/资产迁移，回退仅还原请求函数。见 [变更卡](changes/CHG-20260909-MODELVIEW-CONNECTION-LIFECYCLE.md)。
 
 CHG-20260909-MASK-TEXTURE-PREPARATION：M06/M09，ALG-PROJ-007 v2.1.9。颜色蒙版与 UV 准备按实际色彩空间复用，去除同一未变蒙版的重复 GPU 上传。首次/内容 revision/角色转换仍上传；WebGL 4K 输入重复 20 次额外上传 20→0，对照输出零差异。像素、shader、分辨率、QA、持久化/导出不变，无迁移。见 [变更卡](changes/CHG-20260909-MASK-TEXTURE-PREPARATION.md)。
@@ -640,6 +674,7 @@ Bake 设置包含 resolution、frontal/rear distance、distance/cage、cage infl
 | `ALG-CAP-004` Depth 捕获 | `(-viewZ-near)/(far-near)` linear-view，RGB packing，alpha=1 |
 | `ALG-CAP-005` Normal 捕获 | 默认 view normal，编码 `n×0.5+0.5` |
 | `ALG-CAP-006` 捕获状态隔离 v1.0.0 | 首次及逐 tile/pass 的 await 前归还共享 renderer/背景；每个同步 draw 重绑捕获 target/clear，保留像素与分辨率 |
+| `CAPTURE-MATERIAL-ISOLATION` v1.0.0 | flat 材质/uniforms 仅在每个同步 tile draw 内借用，逐 tile 恢复；材质身份变化拒绝混合截图，已有纹理在 clay 展示前冻结 |
 | `ALG-GEN-001` 单视图生成 | `1.2.0`；当前相机 Capture + 材质参考 → Generation；GPT2 初始白模与已有贴图补全共用图一几何锁定/图二材质参考模板；结果先生成原捕获尺寸的边缘去污染投影源，再与独立 capture mask/depth 一起创建普通质量合成 projected layer |
 | `ALG-GEN-002` 多视图批次 | `1.2.0`；N 个捕获共享 batch；GPT2 与单视图共用同一材质补全模板；完成层串行 commit，整批结束一次发布新投影栈 |
 | `ALG-GEN-003` 任务身份归一 | clientGenerationId/serverJobId/taskId 合并，避免恢复时重复 running 行 |
@@ -1011,3 +1046,4 @@ M13/M15，`IDENTITY-TELEMETRY` v1.1.0，日聚合 schema v3：来源由后端确
 2026-09-09 release 集成（M15）：合入 master 942417c，保留 release dff6ba6 的 Ceph 完整性验证、生产配置及部署策略。算法版本沿用各变更卡，不新增 Schema 或数据迁移。UV 90% 等待和复杂图层交互峰值仍列为下次优化，未宣称零卡顿。回滚使用上一 release dff6ba6 的前后端同版本镜像，保留生产数据与资产。发布结果以本次 release 流水线及部署核验为准。
 
 2026-09-09 release 增量发布（M15/M04）：同步 master 405f7f51 的 MODELVIEW-CONNECTION-LIFECYCLE v1.0.1 修复，保留 release 8a6d0e21 的生产配置及 Ceph 验证。无新增算法语义或数据迁移；回退前后端至 8a6d0e21 同版本镜像，保留工程和资产。
+2026-09-10 普通模式性能浮条隐藏（M13，UI 展示调整）：普通视口不再挂载 LightweightPerformanceHud，同时移除其独立 rAF 采样。调试开关及 perfLab=1 仍挂载原 PerformanceTestHud，perfLab=0 隐藏。独立性能录制、指标算法、生产渲染、Schema 与持久化不变，无迁移；回退恢复轻量浮条及普通模式挂载即可。

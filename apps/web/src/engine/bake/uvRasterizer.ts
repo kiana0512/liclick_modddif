@@ -1,3 +1,4 @@
+import { reliableProjectionSupport } from '../projection/projectionCoverageContract.mjs';
 import * as THREE from 'three';
 import { getBarycentric, isInsideBarycentric } from './barycentric';
 import { dilateImageData } from './dilation';
@@ -190,7 +191,7 @@ function applyLooseProjectionWeights(
 
   const angleCoverage = smoothstep(NDV_COVERAGE_START, NDV_COVERAGE_END, ndv);
   const coverageEdge = computeImageEdgeFade(imageUv, IMAGE_COVERAGE_EDGE_FADE);
-  const coverage = Math.min(1, sourceAlpha * angleCoverage * (0.35 + 0.65 * coverageEdge));
+  const coverage = Math.min(1, sourceAlpha * reliableProjectionSupport(angleCoverage * (0.35 + 0.65 * coverageEdge)));
   if (coverage < COVERAGE_THRESHOLD) return undefined;
 
   const angleQuality = computeAngleQuality(ndv, strength);

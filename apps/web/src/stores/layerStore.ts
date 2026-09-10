@@ -1,3 +1,4 @@
+import { usesCaptureMaskTextureProjection } from '@/engine/generation/textureProjectionPolicy';
 import { create } from 'zustand';
 import { v4 as uuid } from 'uuid';
 import type { Capture } from '@/types/capture';
@@ -5,6 +6,7 @@ import type { Generation } from '@/types/generation';
 import type { Layer, LayerAdjustments } from '@/types/layer';
 import { markPerformanceEvent } from '@/engine/performance/performanceTimeline';
 import { isContentAwareEraserUnderlay } from '@/engine/paint/eraserTargetPolicy';
+import { prepareUvMergeConsumption } from '@/engine/layers/uvMergeConsumption';
 import { isViewportInteractionBusy } from '@/engine/viewport/viewportInteractionState';
 import { SINGLE_VIEW_MINIMUM_PROJECTION_FACING } from '@/engine/projection/projectionTypes';
 import { useSceneStore } from './sceneStore';
@@ -182,14 +184,6 @@ function normalizeLayer(layer: Layer) {
   };
 }
 
-function isSingleViewTextureGeneration(generation: Generation) {
-  return (
-    generation.mode === 'single' &&
-    generation.metadata.workflow === 'texture-map' &&
-    generation.metadata.multiview !== true
-  );
-}
-
 function getObjectMatrixWorld(generation: Generation) {
   const value = generation.metadata.objectMatrixWorld;
   if (!Array.isArray(value) || value.length !== 16) return undefined;
@@ -257,8 +251,8 @@ export const useLayerStore = create<LayerStore>((set, get) => ({
     return layer;
   },
   addProjectedLayerFromGeneration: (generation, capture, objectId, layerId) => {
-    const singleViewTexture = isSingleViewTextureGeneration(generation);
-    const captureMaskUrl = singleViewTexture ? capture?.maskUrl : undefined;
+    const captureMaskTexture = usesCaptureMaskTextureProjection(generation);
+    const captureMaskUrl = captureMaskTexture ? capture?.maskUrl : undefined;
     const cameraViewLabel =
       typeof generation.metadata.cameraViewLabel === 'string'
         ? generation.metadata.cameraViewLabel.trim()
@@ -275,7 +269,7 @@ export const useLayerStore = create<LayerStore>((set, get) => ({
       objectId: objectId ?? capture?.objectId,
       objectMatrixWorld: getObjectMatrixWorld(generation),
       camera: capture?.camera,
-      // Single-view providers may return an opaque RGB PNG. Persist the exact
+      // Texture providers may return an opaque RGB PNG. Persist the exact
       // capture silhouette instead of asking provider-specific alpha to define
       // the projection footprint.
       maskUrl: captureMaskUrl,
@@ -283,18 +277,17 @@ export const useLayerStore = create<LayerStore>((set, get) => ({
       depthUrl: capture?.depthUrl,
       depthEncoding: capture?.depthEncoding,
       generationId: generation.id,
-      projectionCoverageMode: singleViewTexture
+      projectionCoverageMode: captureMaskTexture
         ? 'capture-mask'
         : generation.metadata.alphaMode === 'geometry-mask-separated'
           ? 'source-alpha-depth'
           : undefined,
-      // Provider PNG alpha is not geometry. Single and multiview projections
-      // now differ only in capture coverage, not in their blend operator.
-      ignoreSourceAlpha: singleViewTexture ? true : undefined,
-      minimumProjectionFacing: singleViewTexture
+      // Single and multiview results share geometry coverage and quality blending.
+      ignoreSourceAlpha: captureMaskTexture ? true : undefined,
+      minimumProjectionFacing: captureMaskTexture
         ? SINGLE_VIEW_MINIMUM_PROJECTION_FACING
         : undefined,
-      projectionVisibilityPolicy: singleViewTexture ? 'standard' : undefined,
+      projectionVisibilityPolicy: captureMaskTexture ? 'standard' : undefined,
       captureId: capture?.id ?? generation.captureId,
       visible: true,
       opacity: 1,
@@ -339,19 +332,10 @@ export const useLayerStore = create<LayerStore>((set, get) => ({
     return layer;
   },
   mergeLayersIntoUvLayer: (input) => {
-    const sourceLayerIdSet = new Set(input.sourceLayerIds);
     let mergedLayer: Layer | undefined;
     set((state) => {
-      const sourceIndexes = state.layers
-        .map((layer, index) => (sourceLayerIdSet.has(layer.id) ? index : -1))
-        .filter((index) => index >= 0);
-      const insertIndex = sourceIndexes.length > 0 ? Math.min(...sourceIndexes) : 0;
+      const { layers: nextLayers, insertIndex } = prepareUvMergeConsumption(state.layers, input);
       const createdAt = new Date().toISOString();
-      const nextLayers = state.layers.map((layer) =>
-        sourceLayerIdSet.has(layer.id) && layer.id !== input.targetUvLayerId
-          ? { ...layer, visible: false, needsRebake: false }
-          : layer,
-      );
 
       if (input.targetUvLayerId) {
         nextLayers.forEach((layer, index) => {
@@ -405,7 +389,7 @@ export const useLayerStore = create<LayerStore>((set, get) => ({
 
       return {
         layers: withOrder(nextLayers),
-        activeProjectedLayerId: nextLayers.find((layer) => layer.visible)?.id,
+        activeProjectedLayerId: mergedLayer?.id,
       };
     });
     return mergedLayer!;

@@ -1,3 +1,4 @@
+import { usesCaptureMaskTextureProjection } from '@/engine/generation/textureProjectionPolicy';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Download, Layers, LoaderCircle, Maximize2, Plus, Sparkles, Square, X } from 'lucide-react';
@@ -11,10 +12,15 @@ import {
   captureCurrentLocalRepaintView,
   captureCurrentNormalPreview,
   captureCurrentView,
-  snapshotCurrentCaptureCamera,
+  frameGenerationCapture,
   withStableClayTargetPresentation,
 } from '@/engine/capture/captureCurrentView';
 import { requestContentAwareRepair } from '@/engine/contentAware';
+import {
+  hasProjectionCommit,
+  needsSingleViewAutoProjection,
+  withProjectionCommit,
+} from '@/engine/generation/singleViewAutoProjection';
 import {
   insertCameraViewByPreviewOrder,
   usesGptTextureGeneration,
@@ -128,6 +134,11 @@ function isTextureSnapshotProgressLabel(label: string) {
 }
 type CameraViewPresetId = 'preset-1' | 'preset-2';
 type CameraViewPresetSelection = CameraViewPresetId | 'custom';
+type GptPairContext = {
+  textureBatchId: string;
+  scheduler: typeof import('@/engine/generation/gptMultiviewPairs');
+};
+type TextureViewBatchResult = { projected: number; layerIds: string[]; error?: string };
 type CameraViewOption = {
   value: ObjectViewPreset;
   labelKey:
@@ -614,6 +625,7 @@ type GeneratePanelProps = {
 export type GeneratePanelTaskState = {
   running: boolean;
   snapshotPreparing: boolean;
+  layerInputsPreparing?: boolean;
 };
 
 export type LocalImageGenerationSettledResult =
@@ -637,7 +649,9 @@ export function GeneratePanel({
   const t = useT();
   const [tab, setTab] = useState<GenerateTab>('multiview');
   const [textureViewMode, setTextureViewMode] = useState<TextureViewMode>('multi');
-  const [singleViewProvider, setSingleViewProvider] = useState<SingleViewProvider>('gpt');
+  // Single/multiview share GPT-only session state. No setter or persisted
+  // provider is accepted; historical remote results remain readable.
+  const [singleViewProvider] = useState<SingleViewProvider>('gpt');
   const [texturePreviewMode, setTexturePreviewMode] = useState<TexturePreviewMode>('multi');
   useEffect(() => {
     if (!openLocalRepaintPanelRequestKey) return;
@@ -683,8 +697,15 @@ export function GeneratePanel({
   const localRepaintPreparationAbortControllerRef = useRef<AbortController>();
   const lastCompletedLocalRepaintGenerationIdRef = useRef<string>();
   const handleLocalRepaintGenerateRef = useRef<() => Promise<boolean>>(async () => false);
+  const pairProgressScopeRef = useRef<{ index: number; count: number }>();
 
   const updateTexturePipelineProgress = useCallback((progress: number, label: string) => {
+    const pair = pairProgressScopeRef.current;
+    if (pair) {
+      progress =
+        20 + (70 * (pair.index + Math.max(0, Math.min(1, (progress - 20) / 70)))) / pair.count;
+      label = `${label} · 第 ${pair.index + 1}/${pair.count} 组`;
+    }
     setTexturePipelineProgress((current) => ({
       active: true,
       progress: Math.max(current?.active ? current.progress : 0, Math.min(100, progress)),
@@ -926,6 +947,8 @@ export function GeneratePanel({
   const generationAbortControllersRef = useRef(new Map<string, AbortController>());
   const texturePipelineAbortControllerRef = useRef<AbortController>();
   const projectedLayerCommitQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const recoverSingleViewProjectionsRef = useRef<() => Promise<void>>();
+  const wakeSingleViewProjectionsRef = useRef<() => void>();
   const criticalProjectSaveQueueRef = useRef<Promise<void>>(Promise.resolve());
   const pairedGenerationPersistenceRef = useRef(new Set<string>());
   const persistPairedMultiviewReferenceRef =
@@ -1007,8 +1030,12 @@ export function GeneratePanel({
   }, [onInteractionLocked, panelTaskRunning, pushToast, setGenerateNotice, snapshotPreparing]);
 
   useEffect(() => {
-    onTaskRunningChange?.({ running: panelTaskRunning, snapshotPreparing });
-  }, [onTaskRunningChange, panelTaskRunning, snapshotPreparing]);
+    onTaskRunningChange?.({
+      running: panelTaskRunning,
+      snapshotPreparing,
+      layerInputsPreparing: Boolean(localRepaintPreparation),
+    });
+  }, [onTaskRunningChange, panelTaskRunning, snapshotPreparing, localRepaintPreparation]);
 
   useEffect(
     () => () => {
@@ -1218,6 +1245,51 @@ export function GeneratePanel({
     },
     [addGeneration, addProjectGeneration, currentProjectId],
   );
+
+  // Normal completion owns its transaction. Also reconcile results restored by
+  // either background poller (including reloads), without depending on the tab
+  // or selected preview. Retry assets only, never resubmit a paid generation.
+  useEffect(() => {
+    if (!currentProjectId) return undefined;
+    let disposed = false;
+    let inFlight = false;
+    let wakePending = false;
+    let timeout: number | undefined;
+    async function recover() {
+      if (disposed) return;
+      if (inFlight) {
+        wakePending = true;
+        return;
+      }
+      if (timeout !== undefined) window.clearTimeout(timeout);
+      inFlight = true;
+      try {
+        await recoverSingleViewProjectionsRef.current?.();
+      } finally {
+        inFlight = false;
+        if (!disposed) timeout = window.setTimeout(() => void recover(), wakePending ? 0 : 5000);
+        wakePending = false;
+      }
+    }
+    const wake = () => void recover();
+    wakeSingleViewProjectionsRef.current = wake;
+    void recover();
+    window.addEventListener('online', recover);
+    window.addEventListener('focus', recover);
+    return () => {
+      disposed = true;
+      if (wakeSingleViewProjectionsRef.current === wake) wakeSingleViewProjectionsRef.current = undefined;
+      if (timeout !== undefined) window.clearTimeout(timeout);
+      window.removeEventListener('online', recover);
+      window.removeEventListener('focus', recover);
+    };
+  }, [currentProjectId]);
+
+  // New terminal results and the foreground pipeline releasing its lock should
+  // not wait for the periodic retry tick. In-flight recovery remains deduped.
+  useEffect(() => {
+    wakeSingleViewProjectionsRef.current?.();
+  }, [generations, workflowSubmissionLocked]);
 
   useEffect(() => {
     if (!currentProjectId || authStatus !== 'authenticated') return undefined;
@@ -2812,12 +2884,103 @@ export function GeneratePanel({
     }
   }
 
+  async function handleGptPairedMultiviewGenerate(
+    materialReference: ReferenceImage,
+    requestedViews: CameraViewItem[],
+    signal?: AbortSignal,
+  ) {
+    if (!captureObjectId || !currentProject) throw new Error('当前模型或工程尚未就绪。');
+    const objectId = captureObjectId;
+    const projectId = currentProject.id;
+    const scheduler = await import('@/engine/generation/gptMultiviewPairs');
+    const pairs = scheduler.planGptViewPairs(requestedViews, selectedCameraViewPreset);
+    const textureBatchId = createId('gpt-paired-multiview');
+    const assertActive = () => {
+      throwIfTexturePipelineCancelled(signal);
+      if (cancelledTextureBatchIdsRef.current.has(textureBatchId)) {
+        throw new Error('用户已终止纹理贴图生成任务。');
+      }
+      if (
+        useProjectStore.getState().currentProjectId !== projectId ||
+        !useSceneStore.getState().importedModels.some((model) => model.objectId === objectId)
+      ) {
+        throw new Error('工程或模型已切换，停止后续视角。');
+      }
+    };
+    let projectedCount = 0;
+    try {
+      await scheduler.runGptViewPairs(pairs, assertActive, async (pair, index) => {
+        pairProgressScopeRef.current = { index, count: pairs.length };
+        setGenerateNotice({
+          tone: 'info',
+          message: `第 ${index + 1}/${pairs.length} 组：${pair.map((view) => view.label).join(' + ')}。本组回贴后再生成下一组。`,
+        });
+        const result = await handleTextureMapMultiviewGenerate(
+          materialReference,
+          [...pair],
+          'multi',
+          signal,
+          { textureBatchId, scheduler },
+        );
+        assertActive();
+        if (!result || result.projected !== pair.length) {
+          throw new Error(
+            result?.error ?? '本组有视角未完成生成或回贴，已保留成功结果并停止后续视角。',
+          );
+        }
+        updateTexturePipelineProgress(87, '准备多视图快照 · 等待本组回贴显示');
+        await scheduler.waitForGptPairPresentation(
+          () => {
+            const liveLayers = useLayerStore.getState().layers;
+            // A user-deleted/hidden result is not resurrected or awaited forever.
+            const required = result.layerIds.filter((id) =>
+              liveLayers.some((layer) => layer.id === id && layer.visible),
+            );
+            if (!required.length) return true;
+            const root = useSceneStore
+              .getState()
+              .importedModels.find((model) => model.objectId === objectId)?.group;
+            return scheduler.hasResidentGptLayers(root, required);
+          },
+          assertActive,
+          waitForBrowserPaint,
+        );
+        projectedCount += result.projected;
+        updateTexturePipelineProgress(90, '多视图回贴完成');
+      });
+    } finally {
+      pairProgressScopeRef.current = undefined;
+    }
+    assertActive();
+    updateTexturePipelineProgress(92, '内容识别补缝');
+    try {
+      await requestContentAwareRepair({
+        source: 'multiview-texture',
+        projectId,
+        objectId,
+        batchId: textureBatchId,
+        silentForeground: true,
+      });
+      updateTexturePipelineProgress(100, '多视图完成');
+    } catch (error) {
+      updateTexturePipelineProgress(100, '纹理完成，补缝未完成');
+      console.warn('[Li3D] Paired multiview repair failed:', error);
+    }
+    setGenerateNotice(undefined);
+    pushToast({
+      tone: 'success',
+      title: t('textureMapGenerated'),
+      description: `已按 ${pairs.length} 组生成并投影 ${projectedCount} 个视角。`,
+    });
+  }
+
   async function handleTextureMapMultiviewGenerate(
     materialReference: ReferenceImage,
     requestedViews: CameraViewItem[] = cameraViews,
     requestedViewMode: TextureViewMode = 'multi',
     signal?: AbortSignal,
-  ) {
+    pairContext?: GptPairContext,
+  ): Promise<TextureViewBatchResult | undefined> {
     throwIfTexturePipelineCancelled(signal);
     if (!captureObjectId) throw new Error(t('importModelFirst'));
     if (requestedViews.length === 0) throw new Error('请先添加至少一个模型视角。');
@@ -2832,11 +2995,15 @@ export function GeneratePanel({
         await requirePersonalLiclickAccount();
       }
     } else {
-      await requirePersonalLiclickAccount();
+      if (!pairContext) await requirePersonalLiclickAccount();
     }
     throwIfTexturePipelineCancelled(signal);
     if (isMultiviewRequest && usesRemoteTextureGeneration) {
       await handleRemoteSequentialMultiviewGenerate(materialReference, requestedViews, signal);
+      return;
+    }
+    if (isMultiviewRequest && !pairContext) {
+      await handleGptPairedMultiviewGenerate(materialReference, requestedViews, signal);
       return;
     }
     const objectId = captureObjectId;
@@ -2850,8 +3017,8 @@ export function GeneratePanel({
     const objectMatrixWorld = getImportedModelMatrixWorld(objectId);
     const shouldInspectExistingSingleViewTexture =
       !isMultiviewRequest && hasVisibleTextureLayerCandidate(objectId);
-    const singleViewCameraSnapshot = shouldInspectExistingSingleViewTexture
-      ? snapshotCurrentCaptureCamera(1)
+    const singleViewCameraSnapshot = !isMultiviewRequest
+      ? await frameGenerationCapture(objectId, 1, requestedViews[0]?.viewDirection, requestedViews[0]?.viewUp, signal)
       : undefined;
     let currentSingleViewEffectUrl: string | undefined;
     if (shouldInspectExistingSingleViewTexture) {
@@ -2870,6 +3037,21 @@ export function GeneratePanel({
       currentSingleViewEffectUrl = currentEffect.colorUrl;
       throwIfTexturePipelineCancelled(signal);
     }
+    const pairCurrentEffects = new Map<string, string>();
+    if (pairContext && hasVisibleTextureLayerCandidate(objectId)) {
+      // Freeze authored colour BEFORE white presentation replaces the resident
+      // material. Clearing that flag later does not synchronously restore it.
+      updateTexturePipelineProgress(20, '准备多视图快照 · 保存已有纹理');
+      for (const view of requestedViews) {
+        throwIfTexturePipelineCancelled(signal);
+        const effect = await captureCurrentColorPreview({
+          objectId, resolution: resolutionToSize[resolution], framing: 'fit-object',
+          colorMode: 'flat-target-coverage', fillRatio: 0.88,
+          viewDirection: view.viewDirection, viewUp: view.viewUp,
+        });
+        pairCurrentEffects.set(view.id, effect.colorUrl);
+      }
+    }
     updateTexturePipelineProgress(24, isMultiviewRequest ? '准备多视角快照' : '准备当前单视图');
     let capturedViews = await getTextureMapMultiviewCaptures(requestedViews, signal, {
       cameraSnapshot: singleViewCameraSnapshot,
@@ -2877,6 +3059,30 @@ export function GeneratePanel({
     throwIfTexturePipelineCancelled(signal);
     if (capturedViews.length === 0) {
       throw new Error(isMultiviewRequest ? '无法捕获多视图模型方向。' : '无法捕获当前单视图。');
+    }
+    const completionViewIds = new Set<string>();
+    if (pairContext && pairCurrentEffects.size > 0) {
+      // Capture only this pair, after the previous pair's resident barrier. GPU
+      // capture/compositing is serial; only the remote jobs run concurrently.
+      for (const view of capturedViews) {
+        throwIfTexturePipelineCancelled(signal);
+        const currentEffectUrl = pairCurrentEffects.get(view.viewId);
+        if (!currentEffectUrl) throw new Error('当前视角的已有纹理截图未准备完成。');
+        const completion = await prepareSingleViewTextureCompletion({
+          currentEffectUrl,
+          clayPreviewUrl: view.capture.colorUrl,
+          objectMaskUrl: view.capture.maskUrl,
+        });
+        if (completion.hasVisibleTexture) {
+          // The input worker intentionally omits a composite for fully covered
+          // views. Still honor every selected angle using its current texture.
+          const guideUrl = completion.imageUrl ??
+            (completion.uncoveredPixelCount === 0 ? currentEffectUrl : undefined);
+          if (!guideUrl) throw new Error('无法准备本组已有纹理补全引导图。');
+          view.capture = { ...view.capture, colorUrl: guideUrl };
+          completionViewIds.add(view.viewId);
+        }
+      }
     }
     let singleViewCompletion: PreparedSingleViewTextureCompletion | undefined;
     let usesRemoteSingleViewInpaint = false;
@@ -2952,15 +3158,16 @@ export function GeneratePanel({
     }));
     updateTexturePipelineProgress(40, '提交纹理任务');
     throwIfTexturePipelineCancelled(signal);
-    setGenerateNotice({
-      tone: 'info',
-      message: isMultiviewRequest
-        ? `正在提交 ${viewCaptures.length} 个多视图纹理贴图任务。`
-        : '正在提交当前单视图纹理贴图任务。',
-    });
+    if (!pairContext)
+      setGenerateNotice({
+        tone: 'info',
+        message: isMultiviewRequest
+          ? `正在提交 ${viewCaptures.length} 个多视图纹理贴图任务。`
+          : '正在提交当前单视图纹理贴图任务。',
+      });
 
     const modelviewClient = usesRemoteSingleView ? createModelviewApiClient() : undefined;
-    const textureBatchId = createId('texture-map-batch');
+    const textureBatchId = pairContext?.textureBatchId ?? createId('texture-map-batch');
     const textureBatchWasCancelled = () => cancelledTextureBatchIdsRef.current.has(textureBatchId);
     const pendingGenerations = viewCaptures.map(({ viewId, cameraView, label, capture }) => {
       const generationId = createId(`texture-map-${viewId}`);
@@ -2976,7 +3183,9 @@ export function GeneratePanel({
       const pendingGeneration: Generation = {
         id: generationId,
         mode: isMultiviewRequest ? 'multiview' : 'single',
-        prompt: texturePrompt,
+        prompt: completionViewIds.has(viewId)
+          ? texturePromptBuilders!.buildTextureMapCompletionPrompt(prompt)
+          : texturePrompt,
         referenceIds: [modelViewReference.id, materialReference.id],
         captureId: capture.id,
         status: 'running',
@@ -3006,7 +3215,7 @@ export function GeneratePanel({
           startedAt: new Date().toISOString(),
           alphaMode: 'pending-guided-foreground-matte',
           singleViewInputMode:
-            singleViewCompletion?.hasVisibleTexture === true
+            singleViewCompletion?.hasVisibleTexture === true || completionViewIds.has(viewId)
               ? 'existing-texture-completion'
               : 'initial-clay',
         },
@@ -3047,21 +3256,51 @@ export function GeneratePanel({
     }
 
     const results = await Promise.allSettled(
-      pendingGenerations.map(async ({ capture, generationId, modelViewReference }) => {
-        if (usesRemoteSingleView && modelviewClient) {
-          const [singleViewDataUrl, materialDataUrl, completionMaskDataUrl] = await Promise.all([
-            urlToDataUrl(capture.colorUrl),
-            urlToDataUrl(materialReference.url),
-            usesRemoteSingleViewInpaint && singleViewCompletion?.completionMaskUrl
-              ? urlToDataUrl(singleViewCompletion.completionMaskUrl)
-              : Promise.resolve(undefined),
-          ]);
+      pendingGenerations.map(
+        async ({ capture, generationId, modelViewReference, pendingGeneration }) => {
           throwIfTexturePipelineCancelled(signal);
-          if (usesRemoteSingleViewInpaint) {
-            if (!completionMaskDataUrl) {
-              throw new Error('远端单视图补全蒙版不可用，请重试。');
+          if (usesRemoteSingleView && modelviewClient) {
+            const [singleViewDataUrl, materialDataUrl, completionMaskDataUrl] = await Promise.all([
+              urlToDataUrl(capture.colorUrl),
+              urlToDataUrl(materialReference.url),
+              usesRemoteSingleViewInpaint && singleViewCompletion?.completionMaskUrl
+                ? urlToDataUrl(singleViewCompletion.completionMaskUrl)
+                : Promise.resolve(undefined),
+            ]);
+            throwIfTexturePipelineCancelled(signal);
+            if (usesRemoteSingleViewInpaint) {
+              if (!completionMaskDataUrl) {
+                throw new Error('远端单视图补全蒙版不可用，请重试。');
+              }
+              return modelviewClient.generateSingleViewInpaint(
+                {
+                  clientGenerationId: generationId,
+                  projectId: currentProject?.id,
+                  prompt: texturePrompt || undefined,
+                  captureId: capture.id,
+                  objectId: object?.id,
+                  image: {
+                    path: `${capture.id}-current-effect.png`,
+                    dataUrl: singleViewDataUrl,
+                  },
+                  materialImage: {
+                    path: `${materialReference.id}-multiview-material.png`,
+                    dataUrl: materialDataUrl,
+                  },
+                  mask: {
+                    path: `${capture.id}-completion-mask.png`,
+                    dataUrl: completionMaskDataUrl,
+                  },
+                  materialReferenceId: materialReference.id,
+                  materialReferenceGroupId: referenceGroupId(materialReference),
+                  materialReferenceName: materialReference.name,
+                  materialReferenceRole: materialReference.referenceRole,
+                  modelViewReferenceId: modelViewReference.id,
+                },
+                { signal },
+              );
             }
-            return modelviewClient.generateSingleViewInpaint(
+            return modelviewClient.generateSingleView(
               {
                 clientGenerationId: generationId,
                 projectId: currentProject?.id,
@@ -3069,16 +3308,12 @@ export function GeneratePanel({
                 captureId: capture.id,
                 objectId: object?.id,
                 image: {
-                  path: `${capture.id}-current-effect.png`,
+                  path: `${capture.id}-white-model.png`,
                   dataUrl: singleViewDataUrl,
                 },
                 materialImage: {
                   path: `${materialReference.id}-multiview-material.png`,
                   dataUrl: materialDataUrl,
-                },
-                mask: {
-                  path: `${capture.id}-completion-mask.png`,
-                  dataUrl: completionMaskDataUrl,
                 },
                 materialReferenceId: materialReference.id,
                 materialReferenceGroupId: referenceGroupId(materialReference),
@@ -3089,38 +3324,15 @@ export function GeneratePanel({
               { signal },
             );
           }
-          return modelviewClient.generateSingleView(
-            {
-              clientGenerationId: generationId,
-              projectId: currentProject?.id,
-              prompt: texturePrompt || undefined,
-              captureId: capture.id,
-              objectId: object?.id,
-              image: {
-                path: `${capture.id}-white-model.png`,
-                dataUrl: singleViewDataUrl,
-              },
-              materialImage: {
-                path: `${materialReference.id}-multiview-material.png`,
-                dataUrl: materialDataUrl,
-              },
-              materialReferenceId: materialReference.id,
-              materialReferenceGroupId: referenceGroupId(materialReference),
-              materialReferenceName: materialReference.name,
-              materialReferenceRole: materialReference.referenceRole,
-              modelViewReferenceId: modelViewReference.id,
-            },
-            { signal },
+          return submitGptTextureView(
+            generationId,
+            pendingGeneration.prompt,
+            modelViewReference,
+            materialReference,
+            capture,
           );
-        }
-        return submitGptTextureView(
-          generationId,
-          texturePrompt,
-          modelViewReference,
-          materialReference,
-          capture,
-        );
-      }),
+        },
+      ),
     );
     if (!textureBatchWasCancelled()) updateTexturePipelineProgress(46, '生成纹理贴图');
 
@@ -3204,81 +3416,90 @@ export function GeneratePanel({
     });
     await saveGenerationStateBestEffort();
 
-    // Generation/network/persistence may finish one view at a time, but a
+    // Multi-view generation/network/persistence may finish one view at a time, but a
     // different projected-layer count requires a different shader and texture
     // array. Keep the last valid viewport material resident throughout the
     // batch and publish the complete stack once. Layer rows and durable project
-    // saves still progress normally.
-    useLayerStore.getState().beginProjectedPreviewBatch();
+    // saves still progress normally. Single-view has no intermediate stack to
+    // hide: publish its durable assets immediately, while the project CAS save
+    // and material preparation continue independently.
+    if (isMultiviewRequest) useLayerStore.getState().beginProjectedPreviewBatch();
     try {
       let completedTextureViewCount = 0;
-      const completionResults = await Promise.allSettled(
-        submittedGenerations.map(async (generation) => {
+      const completeView = async (generation: Generation, ready?: Generation) => {
+        try {
+          throwIfTexturePipelineCancelled(signal);
+          if (textureBatchWasCancelled() || isCancelledGeneration(generation)) {
+            throw new Error('用户已终止纹理贴图生成任务。');
+          }
+          const completed = ready ?? (await waitForLiclickGeneration(generation));
+          syncGeneration(completed);
+          const completedProjectId =
+            typeof completed.metadata.projectId === 'string'
+              ? completed.metadata.projectId
+              : currentProject?.id;
+          if (
+            completedProjectId &&
+            useProjectStore.getState().currentProjectId !== completedProjectId
+          ) {
+            return { generation: completed, projected: false };
+          }
+          const exactCapture = pendingGenerations.find(
+            (pending) =>
+              pending.generationId === completed.id || pending.capture.id === completed.captureId,
+          )?.capture;
           try {
-            if (textureBatchWasCancelled() || isCancelledGeneration(generation)) {
-              throw new Error('用户已终止纹理贴图生成任务。');
-            }
-            const completed = await waitForLiclickGeneration(generation);
-            syncGeneration(completed);
-            const completedProjectId =
-              typeof completed.metadata.projectId === 'string'
-                ? completed.metadata.projectId
-                : currentProject?.id;
-            if (
-              completedProjectId &&
-              useProjectStore.getState().currentProjectId !== completedProjectId
-            ) {
+            const projectedLayer = await addGenerationAsProjectedLayer(completed, {
+              automatic: true,
+              capture: exactCapture,
+            });
+            if (!projectedLayer) {
               return { generation: completed, projected: false };
             }
-            const exactCapture = pendingGenerations.find(
-              (pending) =>
-                pending.generationId === completed.id || pending.capture.id === completed.captureId,
-            )?.capture;
-            try {
-              const projectedLayer = await addGenerationAsProjectedLayer(completed, {
-                automatic: true,
-                capture: exactCapture,
-              });
-              if (!projectedLayer) {
-                return { generation: completed, projected: false };
-              }
-              const completedWithProjection: Generation = {
-                ...completed,
-                metadata: {
-                  ...completed.metadata,
-                  autoProjectExpected: true,
-                  projectedLayerId: projectedLayer.id,
-                  projectionCommittedAt: new Date().toISOString(),
-                  projectionError: undefined,
-                },
-              };
-              syncGeneration(completedWithProjection);
-              return { generation: completedWithProjection, projected: true };
-            } catch (error) {
-              const message =
-                error instanceof Error ? error.message : '生成已完成，但自动投影失败。';
-              const completedWithProjectionError: Generation = {
-                ...completed,
-                metadata: { ...completed.metadata, projectionError: message },
-              };
-              syncGeneration(completedWithProjectionError);
-              console.warn(
-                `[Liclick 3D Texture] ${String(completed.metadata.cameraViewLabel ?? '当前')} view generated but projection is pending:`,
-                message,
-              );
-              return { generation: completedWithProjectionError, projected: false };
-            }
-          } finally {
-            completedTextureViewCount += 1;
-            if (!textureBatchWasCancelled()) {
-              updateTexturePipelineProgress(
-                46 + (completedTextureViewCount / Math.max(1, submittedGenerations.length)) * 40,
-                `纹理生成与投影 ${completedTextureViewCount}/${submittedGenerations.length}`,
-              );
-            }
+            const completedWithProjection: Generation = {
+              ...completed,
+              metadata: {
+                ...completed.metadata,
+                autoProjectExpected: true,
+                projectedLayerId: projectedLayer.id,
+                projectionCommittedAt: new Date().toISOString(),
+                projectionError: undefined,
+              },
+            };
+            syncGeneration(completedWithProjection);
+            return { generation: completedWithProjection, projected: true };
+          } catch (error) {
+            const message = error instanceof Error ? error.message : '生成已完成，但自动投影失败。';
+            const completedWithProjectionError: Generation = {
+              ...completed,
+              metadata: { ...completed.metadata, projectionError: message },
+            };
+            syncGeneration(completedWithProjectionError);
+            console.warn(
+              `[Liclick 3D Texture] ${String(completed.metadata.cameraViewLabel ?? '当前')} view generated but projection is pending:`,
+              message,
+            );
+            return { generation: completedWithProjectionError, projected: false };
           }
-        }),
-      );
+        } finally {
+          completedTextureViewCount += 1;
+          if (!textureBatchWasCancelled()) {
+            updateTexturePipelineProgress(
+              46 + (completedTextureViewCount / Math.max(1, submittedGenerations.length)) * 40,
+              `纹理生成与投影 ${completedTextureViewCount}/${submittedGenerations.length}`,
+            );
+          }
+        }
+      };
+      const completionResults = pairContext
+        ? await pairContext.scheduler.settleGptPairInOrder(
+            submittedGenerations,
+            waitForLiclickGeneration,
+            completeView,
+          )
+        : await Promise.allSettled(
+            submittedGenerations.map((generation) => completeView(generation)),
+          );
       completionResults.forEach((result, index) => {
         const submitted = submittedGenerations[index];
         if (!submitted) return;
@@ -3336,7 +3557,7 @@ export function GeneratePanel({
         }
       }
     } finally {
-      useLayerStore.getState().endProjectedPreviewBatch();
+      if (isMultiviewRequest) useLayerStore.getState().endProjectedPreviewBatch();
     }
     const completedGenerationIds = new Set(completedGenerations.map((generation) => generation.id));
     projectedGenerationCount = useLayerStore
@@ -3345,6 +3566,20 @@ export function GeneratePanel({
         (layer) => layer.generationId && completedGenerationIds.has(layer.generationId),
       ).length;
     await saveGenerationStateBestEffort();
+
+    if (pairContext) {
+      throwIfTexturePipelineCancelled(signal);
+      return {
+        projected: projectedGenerationCount,
+        layerIds: useLayerStore
+          .getState()
+          .layers.filter(
+            (layer) => layer.generationId && completedGenerationIds.has(layer.generationId),
+          )
+          .map((layer) => layer.id),
+        error: failureMessages[0],
+      };
+    }
 
     if (textureBatchWasCancelled()) {
       setGenerateNotice(undefined);
@@ -3379,11 +3614,13 @@ export function GeneratePanel({
     if (completedGenerations.length > 0) {
       setGenerateNotice(undefined);
       pushToast({
-        tone: 'success',
+        tone: projectedGenerationCount === completedGenerations.length ? 'success' : 'warning',
         title: t('textureMapGenerated'),
         description: isMultiviewRequest
           ? `已生成 ${completedGenerations.length}/${pendingGenerations.length} 个多视图纹理贴图，自动投影 ${projectedGenerationCount}/${completedGenerations.length} 个。`
-          : `单视图纹理贴图已生成并自动投影 ${projectedGenerationCount}/${completedGenerations.length} 个。`,
+          : projectedGenerationCount === completedGenerations.length
+            ? '单视图纹理贴图已自动投影并添加到图层。'
+            : '单视图图片已生成，尚未完成回贴的结果将自动重试，请勿重复生图。',
       });
     } else {
       setGenerateNotice({
@@ -3420,11 +3657,12 @@ export function GeneratePanel({
         });
         return false;
       }
-      // Freeze the authored view synchronously at the click boundary. Login,
-      // mask encoding and cold GPU preparation may take several seconds; the
-      // user can keep orbiting without changing any of the three model inputs.
+      // Validate the canonical UV mask before framing. After the short camera
+      // transition all passes share one frozen camera, including after login.
       const captureAspect = 1;
-      const captureCameraSnapshot = snapshotCurrentCaptureCamera(captureAspect);
+      if (!initialMaskState.paintMaskCapture) {
+        throw new Error('蒙版尚未准备好，请稍后重试。');
+      }
       const captureObjectMatrixWorld = getImportedModelMatrixWorld(captureObjectId);
       const objectId = captureObjectId;
       const referenceStateAtSubmission = useReferenceStore.getState();
@@ -3491,8 +3729,9 @@ export function GeneratePanel({
       setSubmissionActive(true);
       setLocalRepaintPreparation((current) => ({
         startedAt: current?.startedAt ?? Date.now(),
-        detail: '正在准备当前视角',
+        detail: '正在调整生成取景',
       }));
+      const captureCameraSnapshot = await frameGenerationCapture(objectId, captureAspect, undefined, undefined, requestAbortController.signal);
       // Keep the previous completed repaint on its resident GPU path while the
       // next request prepares detached browser snapshots.
       useSceneStore.getState().setLocalRepaintGenerationPresentationActive(true);
@@ -3559,11 +3798,11 @@ export function GeneratePanel({
       }));
       const maskCaptureStartedAt = performance.now();
       const currentPaintMaskDataUrl =
-        (await useSceneStore.getState().paintMaskCapture?.({
+        await initialMaskState.paintMaskCapture({
           aspect: captureAspect,
           camera: captureCameraSnapshot.camera,
           resolution: LOCAL_REPAINT_INPUT_RESOLUTION,
-        })) ?? useSceneStore.getState().paintMaskDataUrl;
+        });
       document.body.dataset.localRepaintButton2MaskCaptureMs = (
         performance.now() - maskCaptureStartedAt
       ).toFixed(1);
@@ -4562,7 +4801,11 @@ export function GeneratePanel({
         name: project.name,
         thumbnail: project.thumbnail,
         objects,
-        layers,
+        // Re-read on every CAS attempt: a deletion during upload/retry must
+        // never be overwritten by the generation's earlier layer snapshot.
+        layers: useProjectStore.getState().currentProjectId === targetProjectId
+          ? useLayerStore.getState().layers
+          : layers,
         references,
         generations,
         captures,
@@ -4679,12 +4922,9 @@ export function GeneratePanel({
     const readableResultUrl = generation.resultUrl.startsWith('http')
       ? await urlToDataUrl(generation.resultUrl)
       : generation.resultUrl;
-    const singleViewTexture =
-      generation.mode === 'single' &&
-      generation.metadata.workflow === 'texture-map' &&
-      generation.metadata.multiview !== true;
+    const captureMaskTexture = usesCaptureMaskTextureProjection(generation);
     let projectedResultUrl = readableResultUrl;
-    if (singleViewTexture && generationCapture.maskUrl) {
+    if (captureMaskTexture && generationCapture.maskUrl) {
       try {
         // The panel preview is tightly cropped and cannot be projected without
         // changing camera UVs. Prepare the same cleaned edge colours in the
@@ -4790,19 +5030,33 @@ export function GeneratePanel({
     if (targetProjectId && useProjectStore.getState().currentProjectId !== targetProjectId) {
       return undefined;
     }
+    const latestGeneration = useGenerationStore.getState().generations.find(
+      (item) => item.id === generation.id,
+    );
+    if (
+      options.automatic &&
+      (!latestGeneration || isCancelledGeneration(generation) || latestGeneration.metadata.cancelled === true)
+    ) return undefined;
     const currentExisting = useLayerStore
       .getState()
       .layers.find((layer) => layer.id === layerId || layer.generationId === generation.id);
+    if (options.automatic && !currentExisting && hasProjectionCommit(latestGeneration ?? generation)) {
+      return undefined;
+    }
     // A manual replacement may target a layer that the user deleted while its
     // files were saving. New automatic layers have not entered the store yet,
     // so they can be committed safely only after every asset is durable.
     if (existingLayer && !currentExisting) return undefined;
+    if (currentExisting && options.automatic) {
+      // Another mounted panel may have committed while these assets uploaded.
+      // Keep its image, eraser mask and visibility exactly as the user left them.
+      syncGeneration(withProjectionCommit(generation, currentExisting.id));
+      await saveCriticalProjectState({});
+      return currentExisting;
+    }
     let layer: Layer;
     if (currentExisting) {
-      const singleViewTexture =
-        generation.mode === 'single' &&
-        generation.metadata.workflow === 'texture-map' &&
-        generation.metadata.multiview !== true;
+      const captureMaskTexture = usesCaptureMaskTextureProjection(generation);
       layer = {
         ...currentExisting,
         imageUrl,
@@ -4810,14 +5064,14 @@ export function GeneratePanel({
         maskSpace: maskUrl ? 'projection' : undefined,
         depthUrl,
         camera: persistedGenerationCapture.camera,
-        projectionCoverageMode: singleViewTexture
+        projectionCoverageMode: captureMaskTexture
           ? 'capture-mask'
           : currentExisting.projectionCoverageMode,
-        ignoreSourceAlpha: singleViewTexture ? true : currentExisting.ignoreSourceAlpha,
-        minimumProjectionFacing: singleViewTexture
+        ignoreSourceAlpha: captureMaskTexture ? true : currentExisting.ignoreSourceAlpha,
+        minimumProjectionFacing: captureMaskTexture
           ? SINGLE_VIEW_MINIMUM_PROJECTION_FACING
           : currentExisting.minimumProjectionFacing,
-        projectionVisibilityPolicy: singleViewTexture
+        projectionVisibilityPolicy: captureMaskTexture
           ? 'standard'
           : currentExisting.projectionVisibilityPolicy,
         contentRevision: (currentExisting.contentRevision ?? 0) + 1,
@@ -4846,8 +5100,11 @@ export function GeneratePanel({
     }
     const nextLayers = useLayerStore.getState().layers;
     setProjectLayers(nextLayers);
+    // Commit the receipt in the same save as the layer. Late polling and a
+    // user deleting this layer must not turn a completed operation into a retry.
+    syncGeneration(withProjectionCommit(generation, layer.id));
     try {
-      await saveCriticalProjectState({ layers: nextLayers });
+      await saveCriticalProjectState({});
     } catch (error) {
       console.error('[Liclick 3D Texture] Could not persist projected layer:', error);
       if (!options.automatic) {
@@ -4881,8 +5138,26 @@ export function GeneratePanel({
     const operation = projectedLayerCommitQueueRef.current
       .catch(() => undefined)
       .then(async () => {
+        const latest = useGenerationStore.getState().generations.find(
+          (item) => item.id === generation.id,
+        );
+        if (options.automatic) {
+          if (isCancelledGeneration(generation) || latest?.metadata.cancelled === true) return undefined;
+          const existing = useLayerStore.getState().layers.find(
+            (layer) => layer.generationId === generation.id,
+          );
+          if (!existing && hasProjectionCommit(latest ?? generation)) return undefined;
+        }
         const prepared = await stageGenerationAsProjectedLayer(generation, options);
-        if (!prepared || !prepared.shouldPersist) return prepared?.layer;
+        if (!prepared) return undefined;
+        if (!prepared.shouldPersist) {
+          if (!hasProjectionCommit(latest ?? generation)) {
+            syncGeneration(withProjectionCommit(latest ?? generation, prepared.layer.id));
+            await saveCriticalProjectState({});
+          }
+          return prepared.layer;
+        }
+        if (options.automatic && isCancelledGeneration(generation)) return undefined;
         return persistGenerationAsProjectedLayer(prepared, options);
       });
     projectedLayerCommitQueueRef.current = operation.then(
@@ -4891,6 +5166,30 @@ export function GeneratePanel({
     );
     return operation;
   }
+
+  recoverSingleViewProjectionsRef.current = async () => {
+    if (!currentProjectId || workflowSubmissionLocked || submitLocksRef.current.size > 0) return;
+    const pending = useGenerationStore.getState().generations.filter((generation) =>
+      needsSingleViewAutoProjection(generation, currentProjectId),
+    );
+    for (const generation of pending) {
+      if (
+        useProjectStore.getState().currentProjectId !== currentProjectId ||
+        submitLocksRef.current.size > 0
+      ) return;
+      try {
+        const layer = await addGenerationAsProjectedLayer(generation, { automatic: true });
+        if (layer) dismissToastByDedupeKey(`auto-project:${generation.id}`);
+      } catch (error) {
+        pushToast({
+          tone: 'warning',
+          title: '图片已生成，正在重试自动投影',
+          description: error instanceof Error ? error.message : '请保持网络连接，无需重新生图。',
+          dedupeKey: `auto-project:${generation.id}`,
+        });
+      }
+    }
+  };
 
   async function handleAddProjectedLayer() {
     if (workflowConfigurationLocked) {
@@ -5050,27 +5349,6 @@ export function GeneratePanel({
                 }
               }}
               className="mb-2"
-            />
-          </div>
-        )}
-        {isTextureMapTab && displayedTexturePreviewMode !== 'repaint' && (
-          <div
-            data-single-view-provider={singleViewProvider}
-            className="mb-2 rounded-md border border-white/10 bg-black/20 p-1.5"
-          >
-            <SegmentedControl<SingleViewProvider>
-              value={singleViewProvider}
-              options={[
-                { value: 'gpt', label: 'GPT2', disabled: workflowConfigurationLocked },
-                { value: 'remote', label: '远端', disabled: workflowConfigurationLocked },
-              ]}
-              onChange={(value) => {
-                if (workflowConfigurationLocked) {
-                  notifyWorkflowOperationLocked();
-                  return;
-                }
-                setSingleViewProvider(value);
-              }}
             />
           </div>
         )}
@@ -5265,9 +5543,7 @@ export function GeneratePanel({
                 <span className="text-sm font-semibold text-white/88">
                   {isLocalRepaintTab
                     ? '补充提示词（可选）'
-                    : singleViewProvider === 'remote'
-                      ? '纹理提示词（可选）'
-                      : '纹理提示词'}
+                    : '纹理提示词（可选）'}
                 </span>
                 {isLocalRepaintTab ? (
                   <span className="text-[11px] font-medium text-white/46">
@@ -5293,7 +5569,7 @@ export function GeneratePanel({
               </div>
               <textarea
                 value={prompt}
-                aria-label={isLocalRepaintTab ? '补充提示词（可选）' : '纹理提示词'}
+                aria-label={isLocalRepaintTab ? '补充提示词（可选）' : '纹理提示词（可选）'}
                 data-task-preview-allowed="true"
                 maxLength={
                   isLocalRepaintTab || (isTextureMapTab && singleViewProvider === 'remote')

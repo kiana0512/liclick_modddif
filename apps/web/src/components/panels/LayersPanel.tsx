@@ -488,6 +488,7 @@ const checkerStyle = {
 };
 
 type LayersPanelProps = {
+  deletionLocked?: boolean;
   onLayerDoubleClick?: (layer: Layer) => void;
   onLayerImageEdit?: (layer: Layer) => void;
   onLayerImageReplace?: (layer: Layer, file: File) => void;
@@ -506,6 +507,7 @@ export function LayersPanel({
   onMergeSelectedToUvLayer,
   onMergeIntoSelectedBlankUvLayer,
   mutationLocked = false,
+  deletionLocked = mutationLocked,
   onMutationLocked,
 }: LayersPanelProps = {}) {
   const t = useT();
@@ -584,8 +586,8 @@ export function LayersPanel({
   );
 
   const blockMutation = useCallback(
-    (action: string) => {
-      if (!mutationLocked) return false;
+    (action: string, locked = mutationLocked) => {
+      if (!locked) return false;
       setMenu(undefined);
       onMutationLocked?.(action);
       return true;
@@ -767,7 +769,7 @@ export function LayersPanel({
 
   const deleteSelectedLayers = useCallback(
     (layerIdsToDelete: string[]) => {
-      if (blockMutation('删除图层')) return;
+      if (blockMutation('删除图层', deletionLocked)) return;
       const ids = layerIdsToDelete.filter(
         (id, index) => layerIdsToDelete.indexOf(id) === index && layerIdSet.has(id),
       );
@@ -817,6 +819,7 @@ export function LayersPanel({
     },
     [
       blockMutation,
+      deletionLocked,
       captureHistory,
       deleteLayers,
       describeLayerSelection,
@@ -830,6 +833,8 @@ export function LayersPanel({
       if (event.key !== 'Delete' && event.key !== 'Backspace') return;
       if (event.ctrlKey || event.metaKey || event.altKey) return;
       const target = event.target;
+      if (mutationLocked && (!(target instanceof HTMLElement) ||
+        !target.closest('[data-layer-delete-scope="true"]'))) return;
       if (
         target instanceof HTMLInputElement ||
         target instanceof HTMLTextAreaElement ||
@@ -844,7 +849,7 @@ export function LayersPanel({
     };
     window.addEventListener('keydown', handleDeleteKey);
     return () => window.removeEventListener('keydown', handleDeleteKey);
-  }, [deleteSelectedLayers, selectedLayerIds]);
+  }, [deleteSelectedLayers, selectedLayerIds, mutationLocked]);
 
   function commitRename() {
     if (!renameState) return;
@@ -989,7 +994,7 @@ export function LayersPanel({
   }
 
   return (
-    <div className="space-y-0">
+    <div className="space-y-0" data-layer-delete-scope="true">
       <input
         ref={replaceImageInputRef}
         type="file"
@@ -1213,6 +1218,7 @@ export function LayersPanel({
 }
 
 type LayersPanelActionsProps = {
+  deletionLocked?: boolean;
   onContentAwareRepair?: () => void;
   onMergeVisibleProjectedToUvLayer?: (layerIds: string[]) => void;
   adjustmentsOpen?: boolean;
@@ -1227,6 +1233,7 @@ export function LayersPanelActions({
   adjustmentsOpen = false,
   onToggleAdjustments,
   mutationLocked = false,
+  deletionLocked = mutationLocked,
   onMutationLocked,
 }: LayersPanelActionsProps = {}) {
   const t = useT();
@@ -1241,8 +1248,8 @@ export function LayersPanelActions({
   const pushToast = useToastStore((state) => state.pushToast);
   const [clearConfirmOpen, setClearConfirmOpen] = useState(false);
 
-  function blockMutation(action: string) {
-    if (!mutationLocked) return false;
+  function blockMutation(action: string, locked = mutationLocked) {
+    if (!locked) return false;
     setClearConfirmOpen(false);
     onMutationLocked?.(action);
     return true;
@@ -1277,7 +1284,7 @@ export function LayersPanelActions({
     .map((layer) => layer.id);
 
   function handleClearLayers() {
-    if (blockMutation('清空当前模型图层')) return;
+    if (blockMutation('清空当前模型图层', deletionLocked)) return;
     const latestLayers = useLayerStore.getState().layers;
     const currentLayerIds = latestLayers
       .filter((layer) => !layer.objectId || layer.objectId === selectedObjectId)
@@ -1324,9 +1331,10 @@ export function LayersPanelActions({
       <div className="flex items-center gap-1.5">
         <LayerHeaderButton
           title="一键清空当前模型图层"
+          taskDeletion
           disabled={clearableLayerIds.length === 0}
           onClick={() => {
-            if (blockMutation('清空当前模型图层')) return;
+            if (blockMutation('清空当前模型图层', deletionLocked)) return;
             setClearConfirmOpen(true);
           }}
         >
@@ -1385,6 +1393,7 @@ export function LayersPanelActions({
               role="alertdialog"
               aria-modal="true"
               aria-labelledby="clear-layers-title"
+              data-layer-delete-scope="true"
               aria-describedby="clear-layers-description"
               className="w-full max-w-md overflow-hidden rounded-lg border border-white/16 bg-[#17171f] shadow-[0_24px_70px_rgba(0,0,0,0.62)]"
               onPointerDown={(event) => event.stopPropagation()}
@@ -1409,6 +1418,7 @@ export function LayersPanelActions({
                     type="button"
                     className="h-9 rounded-md px-3 text-sm font-semibold text-white/72 transition hover:bg-white/10 hover:text-white"
                     onClick={() => setClearConfirmOpen(false)}
+                    data-task-layer-delete-allowed="true"
                   >
                     取消
                   </button>
@@ -1416,6 +1426,7 @@ export function LayersPanelActions({
                     type="button"
                     className="h-9 rounded-md bg-rose-500 px-3 text-sm font-semibold text-white transition hover:bg-rose-400"
                     onClick={handleClearLayers}
+                    data-task-layer-delete-allowed="true"
                     autoFocus
                   >
                     全部清空
@@ -1503,7 +1514,7 @@ function LayerRow({
       onDrop={onDrop}
       onDragEnd={onDragEnd}
       className={cn(
-        'group relative flex h-[58px] cursor-pointer items-center gap-2 border-b border-white/30 bg-black/86 px-2 transition [contain-intrinsic-size:58px] [content-visibility:auto] hover:bg-white/[0.06]',
+        'group relative flex h-[58px] cursor-pointer items-center gap-2 border-b border-white/30 bg-black/86 px-2 transition [contain-intrinsic-size:58px] [content-visibility:auto]',
         selected && 'bg-white/[0.22]',
         active && 'after:absolute after:inset-x-0 after:bottom-0 after:h-px after:bg-[#74a7ff]',
         dragging && 'opacity-45',
@@ -1559,6 +1570,7 @@ function LayerRow({
       <button
         type="button"
         onClick={onMenu}
+        data-task-layer-delete-allowed="true"
         className="grid h-8 w-8 shrink-0 place-items-center rounded-full text-white transition hover:bg-white/18"
         aria-label="Layer actions"
       >
@@ -1690,6 +1702,7 @@ function LayerMenu({
     <div
       className="fixed z-[90] max-h-[min(420px,calc(100vh-24px))] w-56 overflow-y-auto rounded-md border border-white/18 bg-[#1f1f20] p-2 text-sm text-white shadow-[0_18px_50px_rgba(0,0,0,0.45)]"
       style={{ left: x, top: y }}
+      data-layer-delete-scope="true"
       onPointerDown={(event) => event.stopPropagation()}
     >
       <div className="px-2 pb-2 text-white/86">{t('thisLayer')}</div>
@@ -1720,7 +1733,7 @@ function LayerMenu({
           >
             {t('mergeIntoSelectedBlankUvLayer')}
           </MenuButton>
-          <MenuButton onClick={() => run(onDelete)} icon={<Trash2 className="h-4 w-4" />}>
+          <MenuButton taskDeletion onClick={() => run(onDelete)} icon={<Trash2 className="h-4 w-4" />}>
             {t('deleteSelectedLayers')}
           </MenuButton>
         </>
@@ -1772,7 +1785,7 @@ function LayerMenu({
           >
             {t('rename')}
           </MenuButton>
-          <MenuButton onClick={() => run(onDelete)} icon={<Trash2 className="h-4 w-4" />}>
+          <MenuButton taskDeletion onClick={() => run(onDelete)} icon={<Trash2 className="h-4 w-4" />}>
             {t('delete')}
           </MenuButton>
         </>
@@ -1782,6 +1795,7 @@ function LayerMenu({
 }
 
 function MenuButton({
+  taskDeletion = false,
   children,
   icon,
   onClick,
@@ -1791,6 +1805,7 @@ function MenuButton({
   icon?: ReactNode;
   onClick: () => void;
   disabled?: boolean;
+  taskDeletion?: boolean;
 }) {
   return (
     <button
@@ -1798,6 +1813,7 @@ function MenuButton({
       onClick={onClick}
       disabled={disabled}
       className="flex h-9 w-full items-center gap-2 rounded px-2 text-left font-medium text-white transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-40"
+      data-task-layer-delete-allowed={taskDeletion ? 'true' : undefined}
     >
       {icon}
       {children}
@@ -1806,6 +1822,7 @@ function MenuButton({
 }
 
 function LayerHeaderButton({
+  taskDeletion = false,
   title,
   children,
   onClick,
@@ -1817,6 +1834,7 @@ function LayerHeaderButton({
   onClick?: () => void;
   disabled?: boolean;
   active?: boolean;
+  taskDeletion?: boolean;
 }) {
   return (
     <button
@@ -1825,6 +1843,7 @@ function LayerHeaderButton({
       disabled={disabled}
       title={title}
       aria-label={title}
+      data-task-layer-delete-allowed={taskDeletion ? 'true' : undefined}
       className={cn(
         'grid h-7 w-7 place-items-center rounded text-white transition hover:bg-white/14 disabled:cursor-not-allowed disabled:opacity-35',
         active && 'bg-liclick-pink/18 text-liclick-pink',

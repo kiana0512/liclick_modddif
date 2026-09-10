@@ -49,6 +49,7 @@ import {
 } from '@/components/panels/GeneratePanel';
 import { LayerAdjustmentsPanel } from '@/components/panels/LayerAdjustmentsPanel';
 import { LayersPanel, LayersPanelActions } from '@/components/panels/LayersPanel';
+import { isGenerationLayerDeletionLocked, isLayerDeletionInteractionTarget } from '@/engine/layers/generationLayerDeletionPolicy';
 import { ObjectTransformPanel } from '@/components/panels/ObjectTransformPanel';
 import { ObjectsPanel, ObjectsPanelActions } from '@/components/panels/ObjectsPanel';
 import { ReferenceImagePicker } from '@/components/panels/ReferenceImagePicker';
@@ -1321,6 +1322,21 @@ export function EditorPage({
     };
   }, [progressiveModelStageSignature, setImportedModelRestoreStage]);
 
+  const retireLocalRepaintSession = useCallback(() => {
+    const sceneState = useSceneStore.getState();
+    localRepaintToolRequestRevisionRef.current += 1;
+    pendingLocalRepaintBackgroundGenerationIdRef.current = undefined;
+    localRepaintGpuPrepareRequestedKeyRef.current = undefined;
+    pendingLocalRepaintActivationRequestRef.current = undefined;
+    setLocalRepaintActivationQueued(false);
+    setLocalRepaintGenerationSettledAwaitingUnlock(false);
+    sceneState.setLocalRepaintProjectionSource(undefined);
+    sceneState.setLocalRepaintPreviewLayer(undefined);
+    sceneState.setLocalRepaintGenerationPresentationActive(false);
+    sceneState.setPaintTool('none');
+    sceneState.clearPaintMask();
+  }, []);
+
   useEffect(() => {
     const activeObjectId = selectedObjectId ?? importedModel?.objectId;
     const nextScope = `${projectId}:${activeObjectId ?? ''}`;
@@ -1337,18 +1353,8 @@ export function EditorPage({
     // The live projection source and mask are renderer-owned session state.
     // They cannot follow a project/model switch even when a legacy layer lacks
     // objectId, otherwise that old image is painted onto every later model.
-    localRepaintToolRequestRevisionRef.current += 1;
-    pendingLocalRepaintBackgroundGenerationIdRef.current = undefined;
-    localRepaintGpuPrepareRequestedKeyRef.current = undefined;
-    pendingLocalRepaintActivationRequestRef.current = undefined;
-    setLocalRepaintActivationQueued(false);
-    setLocalRepaintGenerationSettledAwaitingUnlock(false);
-    sceneState.setLocalRepaintProjectionSource(undefined);
-    sceneState.setLocalRepaintPreviewLayer(undefined);
-    sceneState.setLocalRepaintGenerationPresentationActive(false);
-    sceneState.setPaintTool('none');
-    sceneState.clearPaintMask();
-  }, [importedModel?.objectId, projectId, selectedObjectId]);
+    retireLocalRepaintSession();
+  }, [importedModel?.objectId, projectId, selectedObjectId, retireLocalRepaintSession]);
 
   const setLayers = useLayerStore((state) => state.setLayers);
   const setActiveLayer = useLayerStore((state) => state.setActiveLayer);
@@ -1567,6 +1573,12 @@ export function EditorPage({
   const modelMutationLocked = editorTaskRunning || generationConflictLocked;
   const generationOperationLocked = modelMutationLocked;
   const editorToolsLocked = editorTaskRunning || snapshotPreparationLocked;
+  const layerDeletionLocked = isGenerationLayerDeletionLocked({
+    contentAwareRepairRunning,
+    snapshotPreparing: snapshotPreparationLocked,
+    localInputsPreparing: Boolean(generatePanelTaskState.layerInputsPreparing),
+    localRequestPending: localImageGenerationRequested && !localImageGenerationStoreRunning,
+  });
   const canQueueLocalRepaintActivation =
     (localRepaintGenerationReady || localRepaintGenerationSettledAwaitingUnlock) &&
     (localImageGenerationRunning ||
@@ -1620,11 +1632,12 @@ export function EditorPage({
       const target = event.target as HTMLElement;
       if (!target.closest('button, input, select, textarea, a, label, [role="button"]')) return;
       if (target.closest('[data-task-preview-allowed="true"]')) return;
+      if (!layerDeletionLocked && isLayerDeletionInteractionTarget(target)) return;
       event.preventDefault();
       event.stopPropagation();
       notifyEditorTaskRunning();
     },
-    [editorTaskRunning, notifyEditorTaskRunning],
+    [editorTaskRunning, layerDeletionLocked, notifyEditorTaskRunning],
   );
 
   useEffect(() => {
@@ -1658,7 +1671,9 @@ export function EditorPage({
       }
 
       const blocked =
-        (modelMutationLocked && (event.key === 'Delete' || event.key === 'Backspace')) ||
+        (modelMutationLocked && (event.key === 'Delete' || event.key === 'Backspace') &&
+          (layerDeletionLocked || !(target instanceof HTMLElement) ||
+            !target.closest('[data-layer-delete-scope="true"]'))) ||
         (editorTaskRunning &&
           EDITOR_TASK_LOCKED_SHORTCUTS.some((actionId) => shortcutMatches(event, actionId))) ||
         (snapshotPreparationLocked &&
@@ -1672,7 +1687,7 @@ export function EditorPage({
 
     document.addEventListener('keydown', handleTaskLockedShortcut, true);
     return () => document.removeEventListener('keydown', handleTaskLockedShortcut, true);
-  }, [editorTaskRunning, modelMutationLocked, notifyEditorTaskRunning, snapshotPreparationLocked]);
+  }, [editorTaskRunning, modelMutationLocked, layerDeletionLocked, notifyEditorTaskRunning, snapshotPreparationLocked]);
   const activeBakedTexture = project?.bakedTextures.find(
     (texture) => texture.id === activeLayer?.bakedTextureId,
   );
@@ -5224,13 +5239,14 @@ export function EditorPage({
       }
       setManualBakeProgress({
         title: t('mergeSelectedLayersToUvLayer'),
-        detail: '最终纹理已就绪，正在同步图层眼睛状态',
+        detail: '最终纹理已就绪，正在替换已合并的原图层',
         progress: 0.995,
       });
+      const layersBeforeMerge = useLayerStore.getState().layers;
       const mergedLayer = mergeLayersIntoUvLayer({
         // Every source that actually contributed to this PNG is consumed. A
         // selected repair layer no longer remains as an apparently enabled but
-        // visually disconnected layer after the projected sources are hidden.
+        // visually disconnected layer after the projected sources are removed.
         sourceLayerIds: consumedLayerIds,
         targetUvLayerId: blankUvLayerId,
         imageUrl,
@@ -5241,13 +5257,24 @@ export function EditorPage({
         renderedColor: false,
         renderedColorMaskUrl: undefined,
       });
+      const retainedLayerIds = new Set(useLayerStore.getState().layers.map((layer) => layer.id));
+      const removedLayerIds = new Set(layersBeforeMerge.filter((layer) => !retainedLayerIds.has(layer.id)).map((layer) => layer.id));
+      const sceneState = useSceneStore.getState();
+      const oldPreview = sceneState.localRepaintPreviewLayer;
+      if (
+        removedLayerIds.has(sceneState.localRepaintProjectionSource?.targetLayerId ?? '') ||
+        removedLayerIds.has(oldPreview?.id ?? '') ||
+        removedLayerIds.has(oldPreview?.replacementTargetLayerId ?? '')
+      ) {
+        // Retire the consumed live session as well as its two stored rows.
+        // Otherwise button 3 can keep painting the old hidden destination.
+        retireLocalRepaintSession();
+      }
       document.body.dataset.uvMergeAtomicHandoff = JSON.stringify({
         mergedLayerId: mergedLayer.id,
         mergedVisible: mergedLayer.visible,
         sourceLayerCount: consumedLayerIds.length,
-        hiddenSourceCount: useLayerStore
-          .getState()
-          .layers.filter((layer) => consumedLayerIds.includes(layer.id) && !layer.visible).length,
+        removedSourceCount: removedLayerIds.size,
         previewPrewarmReady,
         previewPrewarmDurationMs,
       });
@@ -7860,6 +7887,7 @@ export function EditorPage({
         mode: 'texture',
         actions: (
           <LayersPanelActions
+            deletionLocked={layerDeletionLocked}
             onContentAwareRepair={handleContentAwareRepairFromToolbar}
             onMergeVisibleProjectedToUvLayer={(layerIds) => void mergeLayersToUvLayer(layerIds)}
             adjustmentsOpen={layerAdjustmentsOpen}
@@ -7876,6 +7904,7 @@ export function EditorPage({
               </div>
             )}
             <LayersPanel
+              deletionLocked={layerDeletionLocked}
               onLayerImageReplace={(layer, file) => void replaceLayerImage(layer, file)}
               onLayerLocalRepaint={(layer) => void openLayerLocalRepaint(layer)}
               onMergeSelectedToUvLayer={(layerIds) => void mergeLayersToUvLayer(layerIds)}

@@ -1,3 +1,4 @@
+import { RELIABLE_PROJECTION_GLSL } from './projectionCoverageContract.mjs';
 import * as THREE from 'three';
 import { loadProjectedTextureWithRetry } from './ProjectedLayerMaterial';
 import { buildProjectionMatrixBundle } from './projectionMath';
@@ -124,6 +125,8 @@ const candidateVertexShader = `
 `;
 
 const candidateFragmentShader = `
+  ${RELIABLE_PROJECTION_GLSL}
+
   precision highp float;
   uniform sampler2D projectedMap;
   uniform sampler2D maskMap;
@@ -402,7 +405,7 @@ const candidateFragmentShader = `
     );
     angleCoverage = mix(angleCoverage, lockedFacingCoverage, surfaceLockedVisibility);
     float depthWeight = mix(0.7, 1.0, visibilityCoverage);
-    float continuousCoverage = clamp(layerOpacity * sourceAlpha * angleCoverage * visibilityCoverage * mix(0.35, 1.0, edgeFade(uv, 0.015)), 0.0, 1.0);
+    float continuousCoverage = clamp(layerOpacity * sourceAlpha * reliableProjectionSupport(angleCoverage * visibilityCoverage * mix(0.35, 1.0, edgeFade(uv, 0.015))), 0.0, 1.0);
     float lockedSurfaceFacing = abs(dot(captureViewVertexNormal, normalize(-captureViewPosition)));
     // Depth already identifies the front-most captured surface. Do not combine
     // it with a per-triangle normal cutoff: when the resident preview takes

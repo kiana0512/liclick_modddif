@@ -17,6 +17,11 @@ const layersPanelSource = readFileSync(
   path.join(root, 'src/components/panels/LayersPanel.tsx'),
   'utf8',
 );
+const layerRowStyles = layersPanelSource.match(/'group relative flex h-\[58px\][\s\S]*?pendingDisplay &&[^\n]+/)?.[0];
+assert.ok(layerRowStyles);
+assert.doesNotMatch(layerRowStyles, /hover:/, 'Layer rows must not highlight on hover.');
+assert.match(layerRowStyles, /selected && 'bg-white\/\[0\.22\]'/);
+assert.match(layerRowStyles, /active && 'after:absolute/);
 const viewportCanvasInteractionSource = readFileSync(
   path.join(root, 'src/engine/viewport/ViewportCanvas.tsx'),
   'utf8',
@@ -115,7 +120,7 @@ assert.match(
 );
 assert.match(
   layerStoreSource,
-  /addProjectedLayerFromGeneration:[\s\S]*?captureMaskUrl = singleViewTexture \? capture\?\.maskUrl : undefined[\s\S]*?maskUrl: captureMaskUrl[\s\S]*?maskSpace: captureMaskUrl \? 'projection' : undefined[\s\S]*?projectionCoverageMode: singleViewTexture[\s\S]*?'capture-mask'[\s\S]*?ignoreSourceAlpha: singleViewTexture \? true : undefined[\s\S]*?projectionVisibilityPolicy: singleViewTexture \? 'standard' : undefined/,
+  /addProjectedLayerFromGeneration:[\s\S]*?captureMaskUrl = captureMaskTexture \? capture\?\.maskUrl : undefined[\s\S]*?maskUrl: captureMaskUrl[\s\S]*?maskSpace: captureMaskUrl \? 'projection' : undefined[\s\S]*?projectionCoverageMode: captureMaskTexture[\s\S]*?'capture-mask'[\s\S]*?ignoreSourceAlpha: captureMaskTexture \? true : undefined[\s\S]*?projectionVisibilityPolicy: captureMaskTexture \? 'standard' : undefined/,
   'New GPT and remote single-view layers must use the capture silhouette while joining ordinary quality composition.',
 );
 assert.match(
@@ -125,7 +130,7 @@ assert.match(
 );
 assert.match(
   layerStoreSource,
-  /minimumProjectionFacing: singleViewTexture[\s\S]*?SINGLE_VIEW_MINIMUM_PROJECTION_FACING/,
+  /minimumProjectionFacing: captureMaskTexture[\s\S]*?SINGLE_VIEW_MINIMUM_PROJECTION_FACING/,
   'Generated single-view layers must reject extreme grazing faces instead of projecting isolated triangle islands.',
 );
 assert.doesNotMatch(
@@ -703,8 +708,8 @@ assert.match(
 );
 assert.match(
   viewportCanvasSource,
-  /const shouldPrewarmPersistedLocalRepaint =\s*isEditableLocalRepaintProjectionLayer\(activePaintLayer\) &&\s*\(paintTool === 'none' \|\| isEditingPersistedLocalRepaint\)/,
-  'A selected persisted local repaint must restore its editing source before the eraser is pressed.',
+  /const shouldPrewarmPersistedLocalRepaint = isEditingPersistedLocalRepaint;/,
+  'Only an explicitly selected eraser target may restore a persisted editing source.',
 );
 const featherPrewarmGuard = viewportCanvasSource.match(
   /useEffect\(\(\) => \{\s*if \(([^\n]+)\) return;\s*(?:\/\/[^\n]*\n\s*)*getFeatheredBrushStamp\(localRepaintBrushSettings\.brushFeather\)/,
@@ -717,15 +722,15 @@ const shouldPrewarmFeather = new Function(
   'paintTool',
   `return !(${featherPrewarmGuard[1]});`,
 );
-assert.equal(shouldPrewarmFeather(true, false, false, 'none'), true, 'Restored results prewarm.');
+assert.equal(shouldPrewarmFeather(true, false, false, 'eraser'), true, 'Eraser targets prewarm before pointer input.');
 assert.equal(shouldPrewarmFeather(false, true, false, 'none'), true, 'Generation prewarms in parallel.');
 assert.equal(shouldPrewarmFeather(false, false, true, 'inpaint'), true, 'Mask authoring prewarms.');
 assert.equal(shouldPrewarmFeather(false, false, false, 'inpaint-apply'), true, 'Apply retains prewarming.');
 assert.equal(shouldPrewarmFeather(false, false, false, 'none'), false, 'Unrelated idle tools do not prewarm.');
 assert.match(
   viewportCanvasSource,
-  /if \(!shouldPrewarmPersistedLocalRepaint \|\| !activePaintLayer\?\.camera\) return;[\s\S]*?currentPaintTool !== 'none' && currentPaintTool !== 'eraser'/,
-  'Persisted local repaint prewarming must stay active while the viewport is idle or erasing.',
+  /if \(!shouldPrewarmPersistedLocalRepaint \|\| !activePaintLayer\?\.camera\) return;[\s\S]*?if \(currentPaintTool !== 'eraser'\) return;/,
+  'A persisted source cannot publish after leaving the eraser, even before effect cleanup.',
 );
 assert.match(
   viewportCanvasSource,
@@ -1772,7 +1777,7 @@ try {
 
   projection.syncProjectedLayerMaterialDisplayState(material, layers);
   assert.equal(material.uniforms.layerOpacity2.value, 1);
-  assert.equal(material.uniforms.showEmptyProjectionHatch.value, 1);
+  assert.equal(material.uniforms.showEmptyProjectionHatch.value, 1, 'visible projections show the viewport-only empty hatch');
   assert.equal(material.uuid, materialId);
 
   assert.equal(

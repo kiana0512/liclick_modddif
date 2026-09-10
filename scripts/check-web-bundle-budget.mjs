@@ -14,7 +14,12 @@ const budgets = [
     // application shell and is counted by the total JavaScript budget below.
     minimumMatchBytes: 100_000,
   },
-  { label: 'editor route', prefix: 'EditorPage-', maxBytes: 495_000 },
+  // Generation framing adds the submission guards and lazy entry (~480 bytes).
+  // Retain both measured allowances when integrating paired generation.
+  // CHG-20260910-GPT-GUIDE-CAPTURE-ISOLATION: per-tile material identity
+  // guard + authored-before-clay sequencing measures 498,829 bytes. Allow
+  // 512 bytes here; retain the existing 3,160,000-byte total and other limits.
+  { label: 'editor route', prefix: 'EditorPage-', maxBytes: 499_024 },
   { label: 'high bake snapshot', prefix: 'bakeHighSnapshot-', maxBytes: 700_000 },
   {
     label: 'shared 3D pipeline',
@@ -30,7 +35,20 @@ const budgets = [
 // CHG-20260909-PROJECTED-ERASER-STORAGE adds 171 bytes over master-73c6e03
 // (3,147,367 -> 3,147,538 with matching Cloud settings). Allow 250 bytes for
 // this correctness fix only; individual chunk and quality limits stay intact.
-const maxTotalJavaScriptBytes = 3_147_750;
+// GPT-only UI and generation-time layer deletion: Cloud 3,147,349 -> 3,148,233
+// (+884 bytes). Allow 1,000 bytes for this feature; per-chunk limits unchanged.
+// Single-view restored-result auto projection adds recovery/commit guards.
+// Candidate Cloud build: 3,150,063 bytes; allow 2,000 bytes of feature growth.
+// Individual chunk limits, image resolution and QA gates remain unchanged.
+// CHG-20260910-GPT-MULTIVIEW-PAIRS: lazy pair scheduler + fresh-capture /
+// resident barriers add 5,191 bytes (3,150,085 -> 3,155,276). Editor adapters
+// measure 497,751 bytes. Grant only this feature's measured payload; preserve
+// the shell/bake/shared limits, output resolution and every QA contract.
+// CHG-20260910-GENERATION-CAMERA-FRAMING: new camera animation/framing feature,
+// measured 3,153,807 bytes, mostly loaded only on generation. Allocate 4,000
+// bytes for this feature; image quality and all other chunk budgets unchanged.
+// Combined feature allowance; final integrated release must be measured again.
+const maxTotalJavaScriptBytes = 3_160_000;
 
 let entries;
 try {

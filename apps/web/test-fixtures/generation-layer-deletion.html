@@ -1,0 +1,32 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Generation layer deletion interaction fixture</title>
+<style>body{background:#16161e;color:white}#root{width:450px}button{color:inherit;background:#333;padding:8px}svg{width:18px;height:18px}</style>
+<div id="root"></div>
+<script type="module">
+import React from 'react';
+import { createRoot } from 'react-dom/client';
+import { LayersPanel, LayersPanelActions } from '/src/components/panels/LayersPanel.tsx';
+import { useLayerStore } from '/src/stores/layerStore.ts';
+import { isLayerDeletionInteractionTarget } from '/src/engine/layers/generationLayerDeletionPolicy.ts';
+let locked = false, blocked = 0;
+const root = createRoot(document.querySelector('#root'));
+const row = (id) => ({ id, name:id, type:'uv', imageUrl:'', visible:true, opacity:1, strength:1,
+  blendMode:'normal', adjustments:{hue:0,saturation:0,lightness:0}, order:0, createdAt:new Date().toISOString() });
+function guard(event) {
+  if (!locked && isLayerDeletionInteractionTarget(event.target)) return;
+  if (!event.target.closest('button, input, select, textarea, a, label, [role="button"]')) return;
+  event.preventDefault(); event.stopPropagation(); blocked++;
+}
+window.testDeletion = {
+  reset(protectedInputs = false) {
+    locked = protectedInputs; blocked = 0;
+    useLayerStore.setState({ layers:[row('first'),row('second'),row('third')], activeProjectedLayerId:'first' });
+    root.render(React.createElement('div', {onClickCapture:guard,onPointerDownCapture:guard},
+      React.createElement(LayersPanelActions,{mutationLocked:true,deletionLocked:locked,onMutationLocked:()=>blocked++}),
+      React.createElement(LayersPanel,{mutationLocked:true,deletionLocked:locked,onMutationLocked:()=>blocked++})));
+  },
+  ids:()=>useLayerStore.getState().layers.map(layer=>layer.id), blocked:()=>blocked,
+};
+window.testDeletion.reset();
+</script>

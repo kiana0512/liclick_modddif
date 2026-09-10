@@ -1057,72 +1057,6 @@ function readStoredManualRepaintReport() {
   }
 }
 
-function LightweightPerformanceHud() {
-  const [sample, setSample] = useState({ fps: 0, p95: 0, max: 0, missedFrames: 0 });
-  useEffect(() => {
-    let frame = 0;
-    let previous = performance.now();
-    let published = previous;
-    const samples: Array<{ at: number; durationMs: number }> = [];
-    const tick = (now: number) => {
-      const duration = now - previous;
-      previous = now;
-      if (duration > 0 && duration < 30_000) {
-        samples.push({ at: now, durationMs: duration });
-        while (samples.length > 0 && (samples[0]?.at ?? now) < now - 5_000) samples.shift();
-      }
-      if (now - published >= 500 && samples.length) {
-        published = now;
-        const recent = samples.map((value) => value.durationMs);
-        const total = recent.reduce((sum, value) => sum + value, 0);
-        const targetMs =
-          percentile(
-            recent.filter((value) => value < 40),
-            0.1,
-          ) || STRICT_60_HZ_FRAME_BUDGET_MS;
-        setSample({
-          fps: total > 0 ? (recent.length * 1_000) / total : 0,
-          p95: percentile(recent, 0.95),
-          max: Math.max(...recent),
-          missedFrames: estimateMissedFrameCount(
-            recent.map((durationMs) => ({ durationMs })),
-            targetMs,
-          ),
-        });
-      }
-      frame = window.requestAnimationFrame(tick);
-    };
-    frame = window.requestAnimationFrame(tick);
-    return () => window.cancelAnimationFrame(frame);
-  }, []);
-  const severe = sample.max >= 50 || sample.missedFrames >= 2 || sample.p95 > 25 || sample.fps < 45;
-  const warning =
-    sample.max >= 22.5 || sample.missedFrames >= 1 || sample.p95 > 18 || sample.fps < 57;
-  return (
-    <div
-      className={`pointer-events-none absolute right-4 top-4 z-[28] grid grid-cols-[auto_auto_auto_auto_auto] items-center gap-4 rounded-md border px-3 py-2 text-white shadow-xl backdrop-blur-md ${severe ? 'border-red-500/70 bg-red-950/78' : warning ? 'border-amber-400/60 bg-black/82' : 'border-emerald-400/45 bg-black/78'}`}
-    >
-      <span
-        className={`text-xs font-semibold ${severe ? 'text-red-300' : warning ? 'text-amber-300' : 'text-emerald-300'}`}
-      >
-        ● {severe ? '严重卡顿' : warning ? '卡顿' : '流畅'}
-      </span>
-      <span className="text-[10px] text-white/50">
-        帧率 <b className="ml-1 font-mono text-xs text-white">{sample.fps.toFixed(0)} FPS</b>
-      </span>
-      <span className="text-[10px] text-white/50">
-        延迟 P95 <b className="ml-1 font-mono text-xs text-white">{sample.p95.toFixed(1)} ms</b>
-      </span>
-      <span className="text-[10px] text-white/50">
-        最大帧 <b className="ml-1 font-mono text-xs text-white">{sample.max.toFixed(1)} ms</b>
-      </span>
-      <span className="text-[10px] text-white/50">
-        近5秒丢帧 <b className="ml-1 font-mono text-xs text-white">{sample.missedFrames}</b>
-      </span>
-    </div>
-  );
-}
-
 function PerformanceTestHud() {
   const [collapsed, setCollapsed] = useState(true);
   const collapsedMetricButtonRef = useRef<HTMLButtonElement>(null);
@@ -7103,9 +7037,10 @@ function SurfacePaintOverlay() {
   const isEditingPersistedLocalRepaint =
     paintTool === 'eraser' && isEditableLocalRepaintProjectionLayer(activePaintLayer);
   const isLocalRepaintApplyMode = paintTool === 'inpaint-apply' || isEditingPersistedLocalRepaint;
-  const shouldPrewarmPersistedLocalRepaint =
-    isEditableLocalRepaintProjectionLayer(activePaintLayer) &&
-    (paintTool === 'none' || isEditingPersistedLocalRepaint);
+  // Restoring a source transfers live renderer ownership; it is not a passive
+  // cache warmup. Ordinary row selection must keep the presented source intact.
+  // Explicit eraser activation still prepares before the first pointer sample.
+  const shouldPrewarmPersistedLocalRepaint = isEditingPersistedLocalRepaint;
 
   useEffect(() => {
     if (!shouldPrewarmPersistedLocalRepaint && !localRepaintGenerationPresentationActive && !isInpaintMode && paintTool !== 'inpaint-apply') return;
@@ -7163,7 +7098,7 @@ function SurfacePaintOverlay() {
       const layerState = useLayerStore.getState();
       if (layerState.activeProjectedLayerId !== activePaintLayer.id) return;
       const currentPaintTool = useSceneStore.getState().paintTool;
-      if (currentPaintTool !== 'none' && currentPaintTool !== 'eraser') return;
+      if (currentPaintTool !== 'eraser') return;
       const targetLayer = layerState.layers.find((layer) => layer.id === targetLayerId);
       useSceneStore.getState().setLocalRepaintProjectionSource({
         imageUrl: sourceUrl,
@@ -8610,7 +8545,13 @@ function SurfacePaintOverlay() {
 
   useEffect(() => {
     syncLocalRepaintGpuOverlayActivity();
-    const unsubscribeLayers = useLayerStore.subscribe(syncLocalRepaintGpuOverlayActivity);
+    const unsubscribeLayers = useLayerStore.subscribe((state, previous) => {
+      if (
+        state.layers !== previous.layers ||
+        (useSceneStore.getState().paintTool === 'eraser' &&
+          state.activeProjectedLayerId !== previous.activeProjectedLayerId)
+      ) syncLocalRepaintGpuOverlayActivity();
+    });
     return unsubscribeLayers;
   }, [
     displayMode,
@@ -15342,7 +15283,7 @@ export function ViewportCanvas({
         </Suspense>
         <CameraController />
       </Canvas>
-      {performanceTestModeEnabled ? <PerformanceTestHud /> : <LightweightPerformanceHud />}
+      {performanceTestModeEnabled && <PerformanceTestHud />}
       {showCaptureFrame && (
         <div
           ref={captureFrameElementRef}

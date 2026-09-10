@@ -66,7 +66,7 @@ try {
     .getState()
     .addProjectedLayerFromGeneration(generation('multi', 'multiview'), capture, capture.objectId);
 
-  for (const single of [firstSingle, secondSingle]) {
+  for (const single of [firstSingle, secondSingle, multiview]) {
     assert.equal(single.projectionCompositeMode, undefined);
     assert.equal(single.projectionCoverageMode, 'capture-mask');
     assert.equal(single.maskUrl, capture.maskUrl);
@@ -77,8 +77,25 @@ try {
     assert.equal(overlay.getProjectedLayerOverlayMode(single), undefined);
   }
   assert.equal(multiview.projectionCompositeMode, undefined);
-  assert.equal(multiview.projectionVisibilityPolicy, undefined);
+  assert.equal(multiview.projectionVisibilityPolicy, 'standard');
   assert.equal(overlay.getProjectedLayerOverlayMode(multiview), undefined);
+
+  const footprint = (layer) => Object.fromEntries([
+    'maskUrl', 'maskSpace', 'depthUrl', 'depthEncoding', 'camera', 'objectMatrixWorld',
+    'projectionCoverageMode', 'ignoreSourceAlpha', 'minimumProjectionFacing',
+    'projectionVisibilityPolicy', 'opacity', 'strength', 'blendMode',
+  ].map((key) => [key, layer[key]]));
+  assert.deepEqual(footprint(multiview), footprint(firstSingle));
+  const { usesCaptureMaskTextureProjection } = await server.ssrLoadModule('/src/engine/generation/textureProjectionPolicy.ts');
+  assert(usesCaptureMaskTextureProjection({ ...generation('pair'), metadata: { workflow: 'texture-map', multiview: true } }));
+  for (const excluded of [
+    { mode: 'multiview', metadata: { workflow: 'liclick' } },
+    { mode: 'inpaint', metadata: { workflow: 'local-repaint' } },
+    { mode: 'normal', metadata: { workflow: 'texture-map' } },
+  ]) assert.equal(usesCaptureMaskTextureProjection(excluded), false);
+  const erasedMulti = { ...multiview, maskUrl: 'memory://eraser', maskSpace: 'uv', opacity: 0.6 };
+  useLayerStore.getState().setLayers(JSON.parse(JSON.stringify([erasedMulti])));
+  assert.deepEqual(footprint(useLayerStore.getState().layers[0]), footprint(erasedMulti), 'reload must preserve authored UV eraser and unified projection');
 
   useLayerStore.getState().setLayers([
     {

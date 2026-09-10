@@ -1,4 +1,4 @@
-import { inferProjectionGapMask } from '../engine/localRepaint/imageUtils';
+import { projectionGapMaskFromAlpha } from '../engine/projection/projectionCoverageContract.mjs';
 
 type GenerationInputWorkerRequest = {
   mode: 'local' | 'single';
@@ -529,7 +529,7 @@ self.onmessage = async (event: MessageEvent<GenerationInputWorkerRequest>) => {
     let texturedPixelCount = 0;
     if (isSingleViewCompletion) {
       const targetMask = readObjectMask(inputMask, width, height);
-      const gapMask = inferProjectionGapMask(currentPixels, targetMask, 1);
+      const gapMask = projectionGapMaskFromAlpha(currentPixels, targetMask);
       for (let index = 0; index < targetMask.data.length; index += 1) {
         if ((targetMask.data[index] ?? 0) === 0) continue;
         objectPixelCount += 1;
