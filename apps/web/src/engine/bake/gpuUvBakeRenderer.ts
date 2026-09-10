@@ -1,3 +1,4 @@
+import { RELIABLE_PROJECTION_GLSL } from '../projection/projectionCoverageContract.mjs';
 import { readRenderTargetPixelsInStripes } from './gpuReadbackStripes';
 import * as THREE from 'three';
 import { loadImageData } from './imageSampler';
@@ -159,6 +160,8 @@ const vertexShader = `
 `;
 
 const fragmentShader = `
+  ${RELIABLE_PROJECTION_GLSL}
+
   uniform sampler2D projectedMap;
   uniform sampler2D maskMap;
   uniform sampler2D depthMap;
@@ -519,7 +522,7 @@ const fragmentShader = `
     if (sourceAlpha < 0.01) discard;
     float angleWeight = computeAngleWeight(visibilityBackedNdv, layerStrength);
     float coverageEdge = computeImageEdgeFade(projectedSampleUv, 0.015);
-    float continuousCoverage = clamp(layerOpacity * sourceAlpha * angleCoverage * visibilityCoverage * projectionFacingCoverage * mix(0.35, 1.0, coverageEdge), 0.0, 1.0);
+    float continuousCoverage = clamp(layerOpacity * sourceAlpha * reliableProjectionSupport(angleCoverage * visibilityCoverage * projectionFacingCoverage * mix(0.35, 1.0, coverageEdge)), 0.0, 1.0);
     float lockedSafetyCoverage = mix(
       smoothstep(
         ${(SURFACE_LOCKED_MIN_SAFE_FACING - 0.08).toFixed(2)},

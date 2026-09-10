@@ -1,6 +1,6 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
-> 文档版本：`2.19.17`
+> 文档版本：`2.20.0`
 >
 > 生效日期：`2026-09-10`
 >
@@ -11,6 +11,8 @@
 > 审计口径：`0a2519d + 607e82f + 2568e40`，不包含错误文档提交 `2bde8c6/e03bab2/d1c5f78`
 
 ## 1. 文档地位与强制边界
+
+`CHG-20260910-PROJECTION-RELIABLE-FOOTPRINT`：主模块 M06，协作 M03/M04/M07/M08/M09；`PROJECTION-RELIABLE-FOOTPRINT` v1.0.0。普通投影对原 angle/visibility/facing/image-edge 几何支撑乘积应用 0.98 硬边准入，准入后仍保留作者 opacity/source alpha/mask；surface-locked 重绘不变。单层/直接多层/compact array、GPU UV/CPU loose fallback/预览合成共用阈值。默认未覆盖显示白模；新 flat-target-coverage 捕获用 PNG alpha 传递实际合成覆盖，Worker 按 alpha 补白模，不再通过斜线 RGB 猜缺口。UV-only、底图、上下 UV 与 overlay 顺序纳入覆盖，内孔和原深度/背面/相机/2048保持。UV bake cache v8、UV merge v6、content-aware projection cache v2 不复用旧几何羽化结果；无 Layer/Project Schema/Command/CAS/ownership 改动，不批量重写历史资产。详见 [变更卡](changes/CHG-20260910-PROJECTION-RELIABLE-FOOTPRINT.md)。
 
 `CHG-20260910-GPT-GUIDE-CAPTURE-ISOLATION`：主模块 M03，协作 M04/M06/M08；新增 `CAPTURE-MATERIAL-ISOLATION` v1.0.0。GPT 成对生成先冻结已有纹理截图，再捕获带明暗的 clay/原模型 mask/depth；避免临时白模异步恢复前被无光照截图转为纯白剪影。flat 捕获逐 tile 同步借用/恢复材质与 uniforms，不跨帧占用；源材质中途替换则拒绝混合截图。GPT 输入仍为模型引导图和原材质参考图，完整 2048、原相机/蒙版/Worker 补全和投影裁切不变。GPU 仅捕获生命周期调整，CPU/Worker/shader 公式、UV/export、Schema/Command/CAS/ownership/verified assets 不改，无数据迁移。详见 [变更卡](changes/CHG-20260910-GPT-GUIDE-CAPTURE-ISOLATION.md)。
 

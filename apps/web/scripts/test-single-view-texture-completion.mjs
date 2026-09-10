@@ -128,7 +128,8 @@ assert.match(
   'the bottom texture CTA must render the shared progress fill and percentage',
 );
 
-assert.match(worker, /inferProjectionGapMask\(currentPixels, targetMask, 1\)/);
+assert.match(worker, /projectionGapMaskFromAlpha\(currentPixels, targetMask\)/);
+assert.doesNotMatch(worker, /inferProjectionGapMask/, 'new captures must not infer coverage from artwork RGB');
 assert.match(worker, /texturedPixelCount >= Math\.max\(64, Math\.round\(objectPixelCount \* 0\.0005\)\)/);
 assert.match(worker, /compositeEdgeRadius = isSingleViewCompletion \? 0/);
 for (const policy of [
@@ -195,7 +196,7 @@ assert.match(workerClient, /completionMaskUrl:[\s\S]*?createRegisteredObjectUrl\
 assert.match(
   await fs.readFile(path.join(root, 'src/engine/capture/captureCurrentView.ts'), 'utf8'),
   /forceEmptyProjectionHatch[\s\S]*?showEmptyProjectionHatch/,
-  'coverage capture must force the renderer-owned hatch independently from viewport UI state',
+  'coverage capture must enable renderer-owned alpha independently from viewport UI state',
 );
 
 // Execute the actual client preparation, including native bitmap arity.

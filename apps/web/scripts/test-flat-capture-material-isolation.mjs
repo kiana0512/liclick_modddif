@@ -60,7 +60,7 @@ async function check(mode = 'success') {
         assert.equal(meshes[0].material, shader, 'resident GPU program must be reused');
         assert.equal(shader.uniforms.previewLightingEnabled.value, 0);
         assert.equal(shader.uniforms.previewExposure.value, 1);
-        assert.equal(shader.uniforms.showEmptyProjectionHatch.value, 1);
+        assert.equal(shader.uniforms.showEmptyProjectionHatch.value, 2);
         assert.equal(helper.visible, false);
         assert(meshes[2].material instanceof THREE.MeshBasicMaterial);
         assert.equal(meshes[2].material.map, map, 'authored texture is not replaced by a silhouette mask');

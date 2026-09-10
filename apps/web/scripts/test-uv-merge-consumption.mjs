@@ -63,7 +63,10 @@ try {
   assert.match(retire, /setLocalRepaintPreviewLayer\(undefined\)/);
   const shader = readFileSync(path.join(root, 'src/engine/projection/ProjectedLayerMaterial.ts'), 'utf8');
   assert.match(shader, /useUvOverlayMap \* step\(0.0001, uvOverlayOpacity\)/);
-  assert.match(shader, /features.useUvOverlayMap\s*\? 'max\(showEmptyProjectionHatch, step\(0.0001, uvOverlayOpacity\)\)'/);
+  assert.match(shader, /float emptyHatch = step\(0.5, showEmptyProjectionHatch\) \* \(1.0 - step\(1.5, showEmptyProjectionHatch\)\)/,
+    'UV presence must not force diagnostic stripes back into normal projection preview.');
+  assert.match(shader, /1.0 - baseTextureAlpha \* surfaceMask/,
+    'UV coverage capture must account for the retained authored base.');
   assert.match(shader.slice(shader.indexOf('const uvOverlayFragmentShader =')), /gl_FragDepthEXT = gl_FragCoord.z;/,
     'UV base must explicitly write the same geometric depth as a live repaint, including MSAA.');
   process.stdout.write('UV merge consumption, shared targets, snapshot restore and UV preview parity passed.\n');

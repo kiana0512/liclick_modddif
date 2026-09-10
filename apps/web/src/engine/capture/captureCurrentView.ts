@@ -463,7 +463,8 @@ function prepareFlatTargetCapture(
             ['wirePreviewEnabled', 0],
           ];
           if (options.forceEmptyProjectionHatch) {
-            uniformOverrides.push(['showEmptyProjectionHatch', 1]);
+            // Mode 2 writes trustworthy coverage into PNG alpha (not RGB hatch).
+            uniformOverrides.push(['showEmptyProjectionHatch', 2]);
           }
           for (const [name, value] of uniformOverrides) {
             const uniform = source.uniforms[name];

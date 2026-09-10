@@ -1,3 +1,4 @@
+import { RELIABLE_PROJECTION_GLSL, PROJECTION_RELIABILITY_CUTOFF } from './projectionCoverageContract.mjs';
 import * as THREE from 'three';
 import type {
   ProjectionLayerDisplayInput,
@@ -360,6 +361,7 @@ function createWhiteMembranePreviewMaterial(_previewLightingInput?: ProjectionPr
 // source mask, capture angle, depth/normal visibility and image-edge fade.
 // Applying another gate would crop strong frontal data around the nose.
 const fragmentShader = `
+  ${RELIABLE_PROJECTION_GLSL}
   ${PROJECTED_RASTER_DEPTH_GLSL}
   uniform sampler2D projectedMap;
   uniform sampler2D baseMap;
@@ -562,7 +564,7 @@ const fragmentShader = `
     float stripe = step(0.5, fract((gl_FragCoord.x - gl_FragCoord.y) * 0.095));
     vec3 hatchColor = mix(vec3(0.012), vec3(0.09), stripe * 0.62);
     return mix(baseSurfaceColor * lighting, hatchColor,
-      max(showEmptyProjectionHatch, useUvOverlayMap * step(0.0001, uvOverlayOpacity)));
+      step(0.5, showEmptyProjectionHatch) * (1.0 - step(1.5, showEmptyProjectionHatch)));
   }
 
   void main() {
@@ -785,7 +787,7 @@ const fragmentShader = `
     );
     angleCoverage = mix(angleCoverage, lockedFacingCoverage, surfaceLockedVisibility);
     float coverageEdge = computeImageEdgeFade(uv, ${IMAGE_COVERAGE_EDGE_FADE.toFixed(3)});
-    float continuousCoverage = clamp(layerOpacity * sourceAlpha * angleCoverage * visibilityCoverage * projectionFacingCoverage * mix(0.35, 1.0, coverageEdge), 0.0, 1.0);
+    float continuousCoverage = clamp(layerOpacity * sourceAlpha * reliableProjectionSupport(angleCoverage * visibilityCoverage * projectionFacingCoverage * mix(0.35, 1.0, coverageEdge)), 0.0, 1.0);
     float lockedSurfaceFacing = abs(dot(captureViewVertexNormal, normalize(-captureViewPosition)));
     // Captured depth is the authoritative visible-surface guard. Applying the
     // fallback normal-angle cutoff as well makes neighbouring triangles on a
@@ -930,7 +932,11 @@ const fragmentShader = `
     float projectedDepthPriority = step(${COVERAGE_THRESHOLD.toFixed(2)}, projectedDepthCoverage);
     gl_FragDepthEXT = projectedRasterDepth(gl_FragCoord.z, projectedDepthPriority);
 
-    gl_FragColor = vec4(clamp(mixedColor, 0.0, 1.0), 1.0);
+    float capturedCoverage = 1.0 - (1.0 - baseTextureAlpha) *
+      (1.0 - projectionAlpha) * (1.0 - uvOverlayAlpha) * (1.0 - topUvOverlayAlpha);
+    float captureAlpha = showEmptyProjectionHatch > 1.5
+      ? step(${PROJECTION_RELIABILITY_CUTOFF.toFixed(2)}, capturedCoverage) : 1.0;
+    gl_FragColor = vec4(clamp(mixedColor, 0.0, 1.0), captureAlpha);
     #include <tonemapping_fragment>
     #include <colorspace_fragment>
   }
@@ -1510,10 +1516,9 @@ function buildStackFragmentShader(
           float continuousCoverage = clamp(
             compactLayerOpacities[layerIndex] *
               sourceAlpha *
-              angleCoverage *
-              visibilityCoverage *
-              projectionFacingCoverage *
-              mix(0.35, 1.0, coverageEdge),
+              reliableProjectionSupport(angleCoverage *
+              visibilityCoverage * projectionFacingCoverage *
+              mix(0.35, 1.0, coverageEdge)),
             0.0,
             1.0
           );
@@ -1671,7 +1676,7 @@ function buildStackFragmentShader(
       float coverage = ${
         layerUsesSurfaceLock(index)
           ? `layerOpacity${index} * sourceAlpha * projectionFacingCoverage * ${layerUsesDepth(index) ? '1.0' : `smoothstep(${(SURFACE_LOCKED_MIN_SAFE_FACING - 0.08).toFixed(2)}, ${(SURFACE_LOCKED_MIN_SAFE_FACING + 0.08).toFixed(2)}, abs(dot(captureViewVertexNormal, normalize(-captureViewPosition))))`} * visibilityCoverage`
-          : `clamp(layerOpacity${index} * sourceAlpha * angleCoverage * visibilityCoverage * projectionFacingCoverage * mix(0.35, 1.0, coverageEdge), 0.0, 1.0)`
+          : `clamp(layerOpacity${index} * sourceAlpha * reliableProjectionSupport(angleCoverage * visibilityCoverage * projectionFacingCoverage * mix(0.35, 1.0, coverageEdge)), 0.0, 1.0)`
       };
       float angleWeight = computeAngleWeight(${layerUsesDepth(index) ? 'abs(ndv)' : 'ndv'}, layerStrength${index});
       float qualityEdge = computeImageEdgeFade(uv, ${IMAGE_QUALITY_EDGE_FADE.toFixed(3)});
@@ -1771,7 +1776,7 @@ function buildStackFragmentShader(
       float coverage = ${
         layerUsesSurfaceLock(index)
           ? `layerOpacity${index} * sourceAlpha * projectionFacingCoverage * ${layerUsesDepth(index) ? '1.0' : `smoothstep(${(SURFACE_LOCKED_MIN_SAFE_FACING - 0.08).toFixed(2)}, ${(SURFACE_LOCKED_MIN_SAFE_FACING + 0.08).toFixed(2)}, abs(dot(captureViewVertexNormal, normalize(-captureViewPosition))))`} * visibilityCoverage`
-          : `clamp(layerOpacity${index} * sourceAlpha * angleCoverage * visibilityCoverage * projectionFacingCoverage * mix(0.35, 1.0, coverageEdge), 0.0, 1.0)`
+          : `clamp(layerOpacity${index} * sourceAlpha * reliableProjectionSupport(angleCoverage * visibilityCoverage * projectionFacingCoverage * mix(0.35, 1.0, coverageEdge)), 0.0, 1.0)`
       };
       float angleWeight = computeAngleWeight(${layerUsesDepth(index) ? 'abs(ndv)' : 'ndv'}, layerStrength${index});
       float qualityEdge = computeImageEdgeFade(uv, ${IMAGE_QUALITY_EDGE_FADE.toFixed(3)});
@@ -1786,6 +1791,7 @@ function buildStackFragmentShader(
         );
         projectedDepthCoverage = max(projectedDepthCoverage, overlayAlpha);
         mixedColor = mix(mixedColor, texel.rgb, overlayAlpha);
+        capturedCoverage = mix(capturedCoverage, 1.0, overlayAlpha);
       }
     }
 `,
@@ -1796,6 +1802,7 @@ function buildStackFragmentShader(
           : `
     if (layerOverlayMode${index} > 0.5 && pendingOverlayAlpha${index} > 0.0001) {
       mixedColor = mix(mixedColor, pendingOverlayColor${index}, pendingOverlayAlpha${index});
+      capturedCoverage = mix(capturedCoverage, 1.0, pendingOverlayAlpha${index});
     }
 `,
       ).join('');
@@ -2037,9 +2044,7 @@ function buildStackFragmentShader(
   vec3 computeProjectionEmptyPreviewColor(vec3 baseSurfaceColor, float lighting) {
     float stripe = step(0.5, fract((gl_FragCoord.x - gl_FragCoord.y) * 0.095));
     vec3 hatchColor = mix(vec3(0.012), vec3(0.09), stripe * 0.62);
-    float emptyHatch = ${features.useUvOverlayMap
-      ? 'max(showEmptyProjectionHatch, step(0.0001, uvOverlayOpacity))'
-      : 'showEmptyProjectionHatch'};
+    float emptyHatch = step(0.5, showEmptyProjectionHatch) * (1.0 - step(1.5, showEmptyProjectionHatch));
     return mix(baseSurfaceColor * lighting, hatchColor, emptyHatch);
   }
 
@@ -2080,6 +2085,7 @@ function buildStackFragmentShader(
     }
   }
 
+  float capturedCoverage;
   vec3 composeBlendBase(vec3 fallbackColor) {
     float candidateCount =
       step(${MIN_BLEND_COVERAGE.toFixed(4)}, topCoverage0) +
@@ -2091,6 +2097,7 @@ function buildStackFragmentShader(
       (1.0 - clamp(topCoverage1, 0.0, 1.0)) *
       (1.0 - clamp(topCoverage2, 0.0, 1.0));
     float projectionMix = smoothstep(0.0, ${COVERAGE_FEATHER_END.toFixed(2)}, coverageConfidence);
+    capturedCoverage = mix(capturedCoverage, 1.0, projectionMix);
     if (candidateCount <= 1.5) return mix(fallbackColor, topColor0, projectionMix);
     float sumSoft = topCoverage0 + topCoverage1 + topCoverage2;
     if (sumSoft <= 0.0001) return fallbackColor;
@@ -2138,6 +2145,7 @@ function buildStackFragmentShader(
   }
 
   ${compactBlendHelpers}
+  ${RELIABLE_PROJECTION_GLSL}
   ${PROJECTED_RASTER_DEPTH_GLSL}
 
   void main() {
@@ -2206,6 +2214,7 @@ function buildStackFragmentShader(
     }
     float renderedColorExposureCompensation = 1.0 / max(previewExposure, 0.0001);
     float projectedDepthCoverage = 0.0;
+    capturedCoverage = ${features.useBaseMap ? 'clamp(baseTexel.a * baseTextureOpacity, 0.0, 1.0)' : '0.0'};
     vec3 emptyDiagnosticColor = computeProjectionEmptyPreviewColor(
       baseColor,
       computeWhiteMembraneLight(normal)
@@ -2227,6 +2236,7 @@ function buildStackFragmentShader(
       renderedColorExposureCompensation,
       uvOverlayRenderedColorWeight
     );
+    capturedCoverage = mix(capturedCoverage, 1.0, uvOverlayAlpha * uvOverlayBelowProjected);
     shadedBase = mix(
       shadedBase,
       uvOverlayDisplayColor,
@@ -2250,7 +2260,8 @@ function buildStackFragmentShader(
     vec3 underlayColor = composeBlendBase(shadedBase);
     loadCompactBlendCandidates(3);
     vec3 mixedColor = composeBlendBase(underlayColor);
-    mixedColor = mixedColor * compactOverlayTransmission + compactOverlayColor;`
+    mixedColor = mixedColor * compactOverlayTransmission + compactOverlayColor;
+    capturedCoverage = 1.0 - (1.0 - capturedCoverage) * compactOverlayTransmission;`
         : `topCoverage0 = 0.0;
     topCoverage1 = 0.0;
     topCoverage2 = 0.0;
@@ -2282,7 +2293,8 @@ function buildStackFragmentShader(
     }
     ${
       features.useUvOverlayMap
-        ? `mixedColor = mix(
+        ? `capturedCoverage = mix(capturedCoverage, 1.0, uvOverlayAlpha * (1.0 - uvOverlayBelowProjected));
+    mixedColor = mix(
       mixedColor,
       uvOverlayDisplayColor,
       uvOverlayAlpha * (1.0 - uvOverlayBelowProjected)
@@ -2301,7 +2313,8 @@ function buildStackFragmentShader(
       renderedColorExposureCompensation,
       topUvOverlayRenderedColor
     );
-    mixedColor = mix(mixedColor, topUvOverlayDisplayColor, topUvOverlayAlpha);`
+    mixedColor = mix(mixedColor, topUvOverlayDisplayColor, topUvOverlayAlpha);
+    capturedCoverage = mix(capturedCoverage, 1.0, topUvOverlayAlpha);`
         : ''
     }
     ${
@@ -2325,7 +2338,9 @@ function buildStackFragmentShader(
         ? 'gl_FragDepth = projectedRasterDepth(gl_FragCoord.z, projectedDepthPriority);'
         : 'gl_FragDepthEXT = projectedRasterDepth(gl_FragCoord.z, projectedDepthPriority);'
     }
-    gl_FragColor = vec4(clamp(mixedColor, 0.0, 1.0), 1.0);
+    float captureAlpha = showEmptyProjectionHatch > 1.5
+      ? step(${PROJECTION_RELIABILITY_CUTOFF.toFixed(2)}, capturedCoverage) : 1.0;
+    gl_FragColor = vec4(clamp(mixedColor, 0.0, 1.0), captureAlpha);
     #include <tonemapping_fragment>
     #include <colorspace_fragment>
   }
@@ -2596,9 +2611,7 @@ export function syncProjectedLayerMaterialDisplayState(
       }
     }
     if (candidate.uniforms.showEmptyProjectionHatch) {
-      candidate.uniforms.showEmptyProjectionHatch.value = layers.some((layer) => layer.visible)
-        ? 1
-        : 0;
+      candidate.uniforms.showEmptyProjectionHatch.value = 0;
     }
     if (candidate.uniforms.normalPreviewEnabled) {
       candidate.uniforms.normalPreviewEnabled.value = normalPreview ? 1 : 0;
@@ -2995,9 +3008,7 @@ function updateSharedPreviewUniforms(
   if (material.uniforms.baseColor)
     material.uniforms.baseColor.value.set(input.baseColor ?? DEFAULT_PREVIEW_COLOR);
   if (material.uniforms.showEmptyProjectionHatch)
-    material.uniforms.showEmptyProjectionHatch.value = input.layers.some((layer) => layer.visible)
-      ? 1
-      : 0;
+    material.uniforms.showEmptyProjectionHatch.value = 0;
   if (material.uniforms.normalPreviewEnabled)
     material.uniforms.normalPreviewEnabled.value = input.normalPreview ? 1 : 0;
   if (material.uniforms.wirePreviewEnabled)
@@ -4042,7 +4053,7 @@ export async function createProjectedLayerMaterial(input: ProjectionLayerInput) 
       uvOverlaySaturationShift: { value: input.uvOverlaySaturation ?? 0 },
       uvOverlayLightnessShift: { value: input.uvOverlayLightness ?? 0 },
       baseColor: { value: new THREE.Color(input.baseColor ?? DEFAULT_PREVIEW_COLOR) },
-      showEmptyProjectionHatch: { value: input.visible ? 1 : 0 },
+      showEmptyProjectionHatch: { value: 0 },
       normalPreviewEnabled: { value: input.normalPreview ? 1 : 0 },
       wirePreviewEnabled: { value: input.wirePreview ? 1 : 0 },
       useBaseMap: { value: input.baseTexture ? 1 : 0 },
@@ -4215,7 +4226,7 @@ export async function createProjectedLayerStackMaterial(
     edgeFeather: { value: input.edgeFeather ?? 0.004 },
     depthBias: { value: input.depthBias ?? 0.025 },
     baseColor: { value: new THREE.Color(input.baseColor ?? DEFAULT_PREVIEW_COLOR) },
-    showEmptyProjectionHatch: { value: input.layers.some((layer) => layer.visible) ? 1 : 0 },
+    showEmptyProjectionHatch: { value: 0 },
     normalPreviewEnabled: { value: input.normalPreview ? 1 : 0 },
     wirePreviewEnabled: { value: input.wirePreview ? 1 : 0 },
     baseMap: { value: input.baseTexture ?? neutralTexture },
@@ -5172,10 +5183,8 @@ const uvOverlayFragmentShader = `
     );
   }
 
-  vec3 computeUvEmptyPreviewColor() {
-    float stripe = step(0.5, fract((gl_FragCoord.x - gl_FragCoord.y) * 0.095));
-    return mix(vec3(0.012), vec3(0.09), stripe * 0.62);
-  }
+  uniform float showEmptyProjectionHatch;
+  vec3 computeUvEmptyPreviewColor() { return baseColor; }
 
   void main() {
     vec3 normal = normalize(vWorldNormal);
@@ -5243,7 +5252,11 @@ const uvOverlayFragmentShader = `
     surfaceColor = mix(litBaseSurface, surfaceColor * lighting, max(overlayAlpha, showEmptyUvChecker * hasUvOverlay));
     vec3 displayColor = mix(surfaceColor, liveOverlayDisplayColor, liveOverlayAlpha);
     gl_FragDepthEXT = gl_FragCoord.z;
-    gl_FragColor = vec4(clamp(displayColor, 0.0, 1.0), 1.0);
+    float capturedCoverage = 1.0 - (1.0 - baseTextureAlpha * surfaceMask) *
+      (1.0 - overlayAlpha) * (1.0 - liveOverlayAlpha);
+    float captureAlpha = showEmptyProjectionHatch > 1.5
+      ? step(${PROJECTION_RELIABILITY_CUTOFF.toFixed(2)}, capturedCoverage) : 1.0;
+    gl_FragColor = vec4(clamp(displayColor, 0.0, 1.0), captureAlpha);
     #include <tonemapping_fragment>
     #include <colorspace_fragment>
   }
@@ -5303,6 +5316,7 @@ export function createUvOverlayPreviewMaterial(input: UvOverlayPreviewMaterialIn
     vertexShader,
     fragmentShader: uvOverlayFragmentShader,
     uniforms: {
+      showEmptyProjectionHatch: { value: 0 },
       baseMap: { value: input.baseTexture ?? neutralTexture },
       baseRenderedColorMaskMap: { value: input.baseRenderedColorMaskTexture ?? neutralTexture },
       uvOverlayMap: { value: input.uvOverlayTexture ?? neutralTexture },
