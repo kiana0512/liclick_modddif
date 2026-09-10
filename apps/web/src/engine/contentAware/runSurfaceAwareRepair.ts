@@ -1,9 +1,8 @@
-import {
-  repairSurfaceTexture,
-  type SurfaceAwareRepairInput,
-  type SurfaceAwareRepairResult,
-  type SurfaceRepairProgress,
-  type SurfaceRepairRegionArray,
+import type {
+  SurfaceAwareRepairInput,
+  SurfaceAwareRepairResult,
+  SurfaceRepairProgress,
+  SurfaceRepairRegionArray,
 } from './surfaceAwareRepair';
 import type {
   SurfaceRepairWorkerRequest,
@@ -65,16 +64,17 @@ function copyInput(
   };
 }
 
-function runOnMainThread(
+async function runOnMainThread(
   copiedInput: SurfaceAwareRepairInput,
   options: RunSurfaceAwareRepairOptions,
 ) {
-  return Promise.resolve().then(() =>
-    repairSurfaceTexture(copiedInput, {
-      signal: options.signal,
-      onProgress: options.onProgress,
-    }),
-  );
+  // Normal editor execution uses the Worker; load the identical compatibility
+  // kernel only when needed instead of adding it to the editor's initial route.
+  const { repairSurfaceTexture } = await import('./surfaceAwareRepair');
+  return repairSurfaceTexture(copiedInput, {
+    signal: options.signal,
+    onProgress: options.onProgress,
+  });
 }
 
 /**
@@ -178,6 +178,7 @@ export function runSurfaceAwareRepair(
       requireCompleteComponents: copiedInput.requireCompleteComponents,
       dominantSourceColorThreshold: copiedInput.dominantSourceColorThreshold,
       lockToDominantSourceRegion: copiedInput.lockToDominantSourceRegion,
+      localBoundaryBlend: copiedInput.localBoundaryBlend,
     };
     const transfer: Transferable[] = [rgbaBuffer, writeMaskBuffer, topologyMaskBuffer];
     if (sourceExclusionBuffer) transfer.push(sourceExclusionBuffer);

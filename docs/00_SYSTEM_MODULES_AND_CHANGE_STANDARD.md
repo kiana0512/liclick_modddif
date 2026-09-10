@@ -1,6 +1,6 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
-> 文档版本：`2.20.3`
+> 文档版本：`2.20.4`
 >
 > 生效日期：`2026-09-10`
 >
@@ -11,6 +11,8 @@
 > 审计口径：`0a2519d + 607e82f + 2568e40`，不包含错误文档提交 `2bde8c6/e03bab2/d1c5f78`
 
 ## 1. 文档地位与强制边界
+
+`CHG-20260910-LOCAL-BOUNDARY-REPAIR`：主模块 M07，协作 M05/M06/M08；`LOCAL-BOUNDARY-REPAIR` v1.0.0。补缝生产策略改为同 UV 区域、有限距离、高置信边界多点颜色过渡，不跨岛借色、不锁整块单色、不使用全图平均色兜底；无可靠来源处保留缺口。CPU 与 Worker 共用算法，兼容主线程按需加载；已有图层/历史、GPU 投影、分辨率、导出合成及 Schema/Command/CAS/ownership 不改，无资产迁移。24 项专项测试、109 项回归和真实浏览器 2K Worker/主线程字节一致验证通过；尚未用用户鱼模型原工程验收。详见 [变更卡](changes/CHG-20260910-LOCAL-BOUNDARY-REPAIR.md)。
 
 `CHG-20260910-FBX-TEMPORARY-UV`：主模块 M07，协作 M05/M06；`FBX-TEMP-UV-EXPORT` v1.0.0。场景/对象 FBX 复用颜色导出的 UV 合并计划、局部重绘蒙版、拓扑修补参数和 source-under 合成，生成临时完整 PNG 后直接嵌入，不发布合并图层或烘焙记录、不消费源图层；层/模型/live revision 变化时拒绝混合快照。修复蒙版 Worker 转移共享缓存 buffer 导致重复处理失败，改为任务私有副本并清理 postMessage 失败回调。GPU/CPU 像素算法和质量门禁、1K–8K 分辨率、Schema/Command/CAS/ownership/verified assets 不变；无资产迁移。真实浏览器 2K 未合并/合并后贴图字节差异 0，两个 FBX 均含可解码 PNG；详见 [变更卡](changes/CHG-20260910-FBX-TEMPORARY-UV.md)。
 

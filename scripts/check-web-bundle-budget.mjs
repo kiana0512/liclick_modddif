@@ -48,7 +48,11 @@ const budgets = [
 // measured 3,153,807 bytes, mostly loaded only on generation. Allocate 4,000
 // bytes for this feature; image quality and all other chunk budgets unchanged.
 // Combined feature allowance; final integrated release must be measured again.
-const maxTotalJavaScriptBytes = 3_160_000;
+// CHG-20260910-LOCAL-BOUNDARY-REPAIR: shared main/Worker interpolation adds
+// 2,662 bytes with matching Cloud settings (3,159,715 -> 3,162,377).
+// Allow 3,000 bytes including release metadata. Lazy compatibility loading
+// reduces the editor to 486,072 bytes; all individual chunk/quality gates stay.
+const maxTotalJavaScriptBytes = 3_163_000;
 
 let entries;
 try {

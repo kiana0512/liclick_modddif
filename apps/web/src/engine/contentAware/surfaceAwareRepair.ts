@@ -11,6 +11,7 @@ export type SurfaceRepairPhase =
   | 'propagating'
   | 'locking-source-region'
   | 'writing'
+  | 'blending'
   | 'bleeding'
   | 'complete';
 
@@ -97,6 +98,10 @@ export interface SurfaceAwareRepairInput {
    * colour stripes.
    */
   lockToDominantSourceRegion?: boolean;
+  /** LOCAL-BOUNDARY-REPAIR v1: bounded, same-region boundary interpolation.
+   * Disables foreign seam donors, dominant single-color locking and global fill.
+   */
+  localBoundaryBlend?: boolean;
 }
 
 export interface SurfaceRepairStats {
@@ -182,6 +187,7 @@ interface NormalizedInput {
   requireCompleteComponents: boolean;
   dominantSourceColorThreshold?: number;
   lockToDominantSourceRegion: boolean;
+  localBoundaryBlend: boolean;
 }
 
 interface SeamAdjacency {
@@ -244,7 +250,7 @@ function normalizeInput(input: SurfaceAwareRepairInput): NormalizedInput {
     topologyMask: input.topologyMask,
     seamLinks: input.seamLinks,
     topologyRegionIds: input.topologyRegionIds,
-    maxSeamCrossings: clampInteger(input.maxSeamCrossings, 255, 0, 255),
+    maxSeamCrossings: input.localBoundaryBlend ? 0 : clampInteger(input.maxSeamCrossings, 255, 0, 255),
     sourcePaddingPixels: clampInteger(input.sourcePaddingPixels, 8, 0, pixelCount),
     maxDistance: clampInteger(input.maxDistance, 128, 0, pixelCount),
     minSourceAlpha: clampInteger(input.minSourceAlpha, 250, 1, 255),
@@ -258,13 +264,14 @@ function normalizeInput(input: SurfaceAwareRepairInput): NormalizedInput {
     coverageSkirtPixels: clampInteger(input.coverageSkirtPixels, 0, 0, 4),
     coverageSkirtMaxInputAlpha: clampInteger(input.coverageSkirtMaxInputAlpha, 0, 0, 255),
     outputBleedPixels: clampInteger(input.outputBleedPixels, 0, 0, 32),
-    fillUnreachableWithGlobalAverage: input.fillUnreachableWithGlobalAverage === true,
+    fillUnreachableWithGlobalAverage: !input.localBoundaryBlend && input.fillUnreachableWithGlobalAverage === true,
     requireCompleteComponents: input.requireCompleteComponents === true,
     dominantSourceColorThreshold:
       input.dominantSourceColorThreshold === undefined
         ? undefined
         : clampInteger(input.dominantSourceColorThreshold, 0, 0, 255),
-    lockToDominantSourceRegion: input.lockToDominantSourceRegion === true,
+    lockToDominantSourceRegion: !input.localBoundaryBlend && input.lockToDominantSourceRegion === true,
+    localBoundaryBlend: input.localBoundaryBlend === true,
   };
 }
 
@@ -734,12 +741,79 @@ function lockGapComponentsToDominantSourceRegion(
 }
 
 /**
+ * Blend only repaired pixels against reliable, fixed boundary colors. Jacobi
+ * updates are independent of scan direction; scratch memory is 3 bytes per
+ * repaired pixel, not another full atlas. Original donor colors gate every
+ * edge, so repeated iterations cannot gradually mix across a material edge.
+ */
+function blendLocalBoundaryColors(
+  input: NormalizedInput,
+  output: Uint8ClampedArray,
+  repairedMask: Uint8Array,
+  owner: Int32Array,
+  queue: Uint32Array,
+  count: number,
+  checkAbort: () => void,
+  report: ReturnType<typeof createProgressReporter>,
+) {
+  if (!input.localBoundaryBlend || count === 0) return;
+  const scratch = new Uint8ClampedArray(count * 3);
+  const iterations = Math.min(64, Math.max(8, input.maxDistance * 2));
+  const colorDistanceLimit = 3 * 48 * 48;
+  for (let iteration = 0; iteration < iterations; iteration += 1) {
+    for (let slot = 0; slot < count; slot += 1) {
+      const index = queue[slot];
+      const offset = index * 4;
+      const sourceOffset = owner[index] * 4;
+      let red = output[offset], green = output[offset + 1], blue = output[offset + 2];
+      let weight = 1;
+      const x = index % input.width, y = Math.floor(index / input.width);
+      for (let direction = 0; direction < 4 && sourceOffset >= 0; direction += 1) {
+        const nx = x + FOUR_NEIGHBOR_X[direction], ny = y + FOUR_NEIGHBOR_Y[direction];
+        if (nx < 0 || ny < 0 || nx >= input.width || ny >= input.height) continue;
+        const neighbor = ny * input.width + nx;
+        if (!input.topologyMask[neighbor] || (input.topologyRegionIds &&
+          input.topologyRegionIds[index] !== input.topologyRegionIds[neighbor])) continue;
+        const repaired = repairedMask[neighbor] === 255;
+        // Only original eligible donors anchor the boundary. Weak/excluded
+        // pixels, unresolved gaps and propagated non-write texels cannot seed it.
+        if (!repaired && (input.writeMask[neighbor] ||
+          (owner[neighbor] !== -2 && owner[neighbor] !== neighbor))) continue;
+        const neighborSource = repaired ? owner[neighbor] : neighbor;
+        if (neighborSource < 0) continue;
+        const anchor = neighborSource * 4;
+        const dr = input.rgba[sourceOffset] - input.rgba[anchor];
+        const dg = input.rgba[sourceOffset + 1] - input.rgba[anchor + 1];
+        const db = input.rgba[sourceOffset + 2] - input.rgba[anchor + 2];
+        if (dr * dr + dg * dg + db * db > colorDistanceLimit) continue;
+        const colors = repaired ? output : input.rgba;
+        const sample = neighbor * 4;
+        red += colors[sample]; green += colors[sample + 1]; blue += colors[sample + 2];
+        weight += 1;
+      }
+      scratch[slot * 3] = red / weight;
+      scratch[slot * 3 + 1] = green / weight;
+      scratch[slot * 3 + 2] = blue / weight;
+      if ((slot & 0x3fff) === 0) checkAbort();
+    }
+    for (let slot = 0; slot < count; slot += 1) {
+      const offset = queue[slot] * 4;
+      output[offset] = scratch[slot * 3];
+      output[offset + 1] = scratch[slot * 3 + 1];
+      output[offset + 2] = scratch[slot * 3 + 2];
+      if ((slot & 0x3fff) === 0) checkAbort();
+    }
+    report('blending', 0.93, 0.05, iteration + 1, iterations, true);
+  }
+}
+
+/**
  * Repairs a UV gap using nearest-source propagation over the supplied model
  * topology. Runtime and memory are O(number of pixels + seam links).
  *
  * The returned image is an independent sparse UV layer, not a flattened source
- * texture. Exact source RGB texels are cloned, so the algorithm introduces no
- * global-average fallback color and cannot sample across disconnected UV space.
+ * texture. Local-boundary mode interpolates nearby same-region colors only;
+ * legacy callers can still explicitly request the historical cloning/fallback.
  */
 export function repairSurfaceTexture(
   rawInput: SurfaceAwareRepairInput,
@@ -751,7 +825,7 @@ export function repairSurfaceTexture(
   const report = createProgressReporter(hooks);
   checkAbort();
 
-  const seams = buildSeamAdjacency(input);
+  const seams = input.maxSeamCrossings === 0 ? undefined : buildSeamAdjacency(input);
   // A bounded seam hop is a donor bridge, not permission to merge complete UV
   // regions into one colour/completeness decision. This lets a fully blank
   // island borrow from one true physical neighbour without letting that colour
@@ -1019,17 +1093,19 @@ export function repairSurfaceTexture(
         queue[tail] = index;
         tail += 1;
         repairedPixels += 1;
-        // Preserve the repaired texel's own UV region as the bleed seed even
-        // when its colour arrived through an explicit cross-island seam link.
-        owner[index] = index;
       }
     }
     if (input.requireCompleteComponents && repairedMask[index] !== 255) {
       repairedMask[index] = 0;
     }
     if ((index & 0x3fff) === 0) checkAbort();
-    report('writing', 0.88, 0.1, index + 1, input.pixelCount);
+    report('writing', 0.88, input.localBoundaryBlend ? 0.05 : 0.1, index + 1, input.pixelCount);
   }
+
+  blendLocalBoundaryColors(input, filledRgba, repairedMask, owner, queue, tail, checkAbort, report);
+  // RGB blending needed the original donors; atlas padding must instead use
+  // each repaired texel's own region (including the legacy cross-seam mode).
+  for (let slot = 0; slot < tail; slot += 1) owner[queue[slot]] = queue[slot];
 
   // Close the one-texel alpha gap that texture filtering can expose between a
   // repaired component and its UV coverage. Unlike atlas RGB bleed, this skirt

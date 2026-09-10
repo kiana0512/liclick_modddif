@@ -67,7 +67,7 @@
     "test:uv-merge-consumption": "node scripts/test-uv-merge-consumption.mjs",
     "test:bake-entry-project": "node scripts/test-bake-entry-project.mjs",
     "test:bake-base-color-selection": "node scripts/test-bake-base-color-selection.mjs",
-    "test:content-aware-repair": "node --test src/engine/contentAware/__tests__/buildRepairMask.test.mjs src/engine/contentAware/__tests__/surfaceAwareRepair.test.mjs",
+    "test:content-aware-repair": "node --test src/engine/contentAware/__tests__/buildRepairMask.test.mjs src/engine/contentAware/__tests__/surfaceAwareRepair.test.mjs src/engine/contentAware/__tests__/localBoundaryBlend.test.mjs",
     "test:generation-polling": "node scripts/test-generation-polling.mjs",
     "test:generation-revision-conflict-recovery": "node scripts/test-generation-revision-conflict-recovery.mjs",
     "test:history-handoff-revision-retry": "node scripts/test-history-handoff-revision-retry.mjs",
