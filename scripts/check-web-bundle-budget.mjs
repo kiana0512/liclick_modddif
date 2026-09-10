@@ -59,7 +59,10 @@ const budgets = [
 // preparation and verified local derived cache measure 3,189,943 bytes
 // (upstream 3,163,384). Allocate 27,000 bytes for this feature, including
 // build metadata; retain all individual chunk and pixel/QA gates.
-const maxTotalJavaScriptBytes = 3_191_000;
+// CHG-20260910-UV-DEFAULT-RESIDENT: strict routing and bounded GPU texture
+// ownership handoff add 2,178 bytes (3,189,943 -> 3,192,121). Allow 3,000
+// bytes for this feature and metadata; keep every per-chunk/quality gate.
+const maxTotalJavaScriptBytes = 3_194_000;
 
 let entries;
 try {

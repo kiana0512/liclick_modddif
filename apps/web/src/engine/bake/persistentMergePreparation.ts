@@ -52,7 +52,7 @@ export async function persistentMergeKey(input:{projectId:string;objectId:string
       }
       layers.push(snapshot);
     }
-    return await hash(textBytes({version:'uv-composition-7/resident-2.2.1/persistent-2',
+    return await hash(textBytes({version:'uv-composition-8/resident-2.2.2/persistent-3',
       userId,projectId:input.projectId,objectId:input.objectId,resolution:input.resolution,
       geometry,layers,options:getMergeUvPostprocessOptions(input.resolution),debug:getDebugUvBakeStatus()}));
   } catch {return undefined;}

@@ -6,7 +6,7 @@ import type { Layer } from '@/types/layer';
  * trusted to match the live layer stack. Version 7 preserves model-clipped
  * repaint alpha; selected historical UV layers still remain authored underlays.
  */
-export const UV_MERGE_COMPOSITION_VERSION = 7;
+export const UV_MERGE_COMPOSITION_VERSION = 8;
 
 export function compositeRenderedColorMaskUnderInPlace(
   frontMask: Uint8Array,
@@ -277,24 +277,15 @@ export function getRgbaAlphaCoverageRatio(
 
 export function getMergeUvPostprocessOptions(resolution: number) {
   const safeResolution = Math.max(1, Math.floor(resolution));
-  const topologyGapPixels = Math.min(
-    8,
-    Math.max(2, Math.ceil(safeResolution / 512)),
-  );
   return {
     // Restore the verified atlas postprocess profile. The two-pixel gutter is
     // outside model UV triangles and retains source alpha for bilinear sampling.
     uvIslandGutterPixels: Math.min(8, Math.max(2, Math.ceil(safeResolution / 512))),
-    // GPU UV rasterization can leave narrow, edge-connected cracks between
-    // adjacent high-poly triangles. Those cracks are not enclosed components,
-    // so the dedicated hole pass cannot see them. Restore a small,
-    // resolution-scaled topology-constrained grow: the bake pipeline applies
-    // half this value as the actual radius, copies straight alpha unchanged,
-    // and may only write texels touched by model UV triangles. This closes the
-    // black hairlines without crossing the real atlas gap between UV islands
-    // or hardening an Overlay transition band.
-    uvCoverageGapPixels: topologyGapPixels,
-    uvInteriorHolePixels: Math.min(3, Math.max(1, Math.ceil(safeResolution / 2048))),
+    // User-requested v8: do not infer/fill uncovered model texels during Merge.
+    // Keep the reference algorithms in code; every Merge/export consumer of
+    // this profile skips both topology growth and enclosed-hole repair.
+    uvCoverageGapPixels: 0,
+    uvInteriorHolePixels: 0,
     // Reconcile only a small geometry-paired seam band.
     uvSeamRepairPixels: Math.min(4, Math.max(2, Math.ceil(safeResolution / 1024))),
   };

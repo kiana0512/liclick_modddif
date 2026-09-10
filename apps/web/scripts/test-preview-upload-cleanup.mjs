@@ -41,7 +41,7 @@ async function run(failure, flipY, fast = false) {
   const onUnhandled = error => unhandled.push(error);
   process.on('unhandledRejection', onUnhandled);
   const scope = {
-    window: { location: { search: fast ? '?perfResidentQuality=1' : '' } },
+    window: { location: { search: fast ? '' : '?perfLab=1&perfResidentQuality=0' } },
     yieldToBrowserTask: async () => { await new Promise(resolve => setImmediate(resolve)); },
     exports: {}, ImageBitmap: Bitmap, document: { body: { dataset: {} } },
     previewTextureReadyRenderers: new WeakMap(), previewTextureUploadPromises: new WeakMap(),

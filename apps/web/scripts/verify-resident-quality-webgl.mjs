@@ -24,6 +24,8 @@ try {
   page.on('console',m=>{if(m.type()==='error')console.error(m.text());});
   await page.goto(`http://127.0.0.1:${server.httpServer.address().port}/__resident_test`);
   console.log(JSON.stringify(await page.evaluate(async()=> (await import('/scripts/resident-quality-browser-fixture.mjs')).run()),null,2));
+  console.log(JSON.stringify(await page.evaluate(async()=> (await import('/scripts/resident-quality-browser-fixture.mjs')).run(128,1)),null,2));
   console.log(JSON.stringify(await page.evaluate(async()=> (await import('/scripts/resident-quality-browser-fixture.mjs')).benchmark()),null,2));
   console.log(JSON.stringify(await page.evaluate(async()=> (await import('/scripts/resident-quality-browser-fixture.mjs')).benchmarkUpload()),null,2));
+  console.log(JSON.stringify(await page.evaluate(async()=> (await import('/scripts/resident-quality-browser-fixture.mjs')).verifyPreparedHandoff()),null,2));
 } finally {await browser?.close();await server.close();}

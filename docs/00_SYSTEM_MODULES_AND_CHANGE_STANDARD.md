@@ -12,6 +12,10 @@
 
 ## 1. 文档地位与强制边界
 
+2026-09-10 用户要求先移除自动补洞：M07 / Merge profile v8，关闭 uvCoverageGapPixels 和 uvInteriorHolePixels，旧算法保留但正常合成不调用；接缝 band/gutter 与 QA 保留。新结果保留未覆盖区，会话键 v12、持久派生键 persistent-3，旧补洞缓存不复用；Project Schema/历史资产不变，无 release 变更。详见 CHG-20260910-UV-DEFAULT-RESIDENT 后续记录。
+
+`CHG-20260910-UV-DEFAULT-RESIDENT`：主模块 M07，协作 M06/M09；ALG-UV-003 v2.1.1、准备策略 v2.2.2、ALG-UV-005 v2.0.5。按用户要求普通投影转 UV 入口统一常驻 GPU，旧 CPU 投影/质量路径只在显式 perfLab 对照中可用，不再失败后静默回退；首轮完整 CPU 校验仍保留。补洞仅枚举有相对拓扑邻点的候选，像素顺序/岛屿门禁不变；最终 PNG 在后台提前上传，仅在相同 Blob 正式保存后移动独占缓存所有权。全分辨率、QA、Command/CAS/ownership/verified assets 保留，无 Project Schema 迁移；8K/超 255 层普通质量合成尚不支持新常驻核时明确失败，不降采样、不走旧算法。GPU/CPU/Worker/shader/export 审计及测试见 [变更卡](changes/CHG-20260910-UV-DEFAULT-RESIDENT.md)。
+
 `CHG-20260910-ADAPTIVE-GAP-DISTANCE`：主模块 M07，协作 M05/M06/M08；`LOCAL-BOUNDARY-REPAIR` v1.1.0。生产补缝从按分辨率计算的初始半径开始，沿同 UV 区域内已选缺口自适应扩大直到填满或无可达边界；不跨未选区域找远处颜色、不跨 UV 岛、不恢复全局平均或单色锁定。本次输入的原始边界索引始终固定，不把新补颜色作为新来源重跑。CPU/Worker 共用算法及取消/节流，仍有不可达区域时显示数量提示。GPU/shader/导出公式及 Schema/CAS/ownership 不改，无资产迁移；详见 [变更卡](changes/CHG-20260910-ADAPTIVE-GAP-DISTANCE.md)。
 
 `CHG-20260910-REPAINT-MERGE-ALPHA`：主模块 M07，协作 M05/M06/M08；`ALG-LR-013` 合并一致性 v1.1.0。UV 合并及模型导出预处理透传图层 ignoreSourceAlpha，原模型裁切版本保留源 alpha 与画笔 mask 的乘积，旧全帧重绘仍按 mask 覆盖；压入 alpha 后清除独立 mask，避免重复相乘。复用既有 CPU/Worker 两种模式，无 shader/分辨率/持久化协议改动。合并版本 7、会话缓存 v10；旧合并资产不自动重写，需撤销合并后重合。详见 [变更卡](changes/CHG-20260910-REPAINT-MERGE-ALPHA.md)。

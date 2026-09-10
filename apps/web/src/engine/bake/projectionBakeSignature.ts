@@ -71,7 +71,7 @@ export function createReusableProjectionBakeSignature(input: {
     )
     .join('|');
   return [
-    'editor-projection-bake-cache-v11',
+    'editor-projection-bake-cache-v12',
     geometryState.join('|'),
     input.purpose,
     stackSignature,

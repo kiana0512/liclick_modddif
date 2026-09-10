@@ -19,7 +19,7 @@ import {
 } from './gpuUvBakeRenderer';
 import { loadImageData } from './imageSampler';
 import { getVisibleProjectedLayerStack } from './layerStackCache';
-import { getDebugGpuProjectedImageUvFlipY, getDebugUvBakeMethod } from './uvBakeDebugControls';
+import { getDebugGpuProjectedImageUvFlipY, getDebugUvBakeMethod, isLegacyUvBakeDiagnosticEnabled } from './uvBakeDebugControls';
 import { rasterizeProjectedLayerToUv } from './uvRasterizer';
 import { reconcileUvSeamsCooperatively } from './uvSeamReconciliation';
 import { createRuntimeProjectionDepth } from '@/engine/projection/createRuntimeProjectionDepth';
@@ -390,6 +390,23 @@ async function sharpenCoveredTexels(imageData: ImageData, coverage?: Uint8Array)
 export async function bakeProjectedLayerToTexture(
   input: BakeProjectedLayerInput,
 ): Promise<BakeProjectedLayerResult> {
+  const layer = useLayerStore.getState().layers.find((item) => item.id === input.layerId);
+  if (!layer || layer.type !== 'projected' || !layer.camera) {
+    throw new Error('Please select a projected layer with a capture camera.');
+  }
+  return bakeVisibleProjectedLayersToTexture({
+    ...input,
+    transientLayers: [{ ...layer, opacity: input.opacity }],
+    method: 'gpu',
+    disableGpuFallback: true,
+  });
+}
+
+/** Retained reference implementation; normal entry points never call this. */
+export async function bakeProjectedLayerToTextureLegacyReference(
+  input: BakeProjectedLayerInput,
+): Promise<BakeProjectedLayerResult> {
+  if (!isLegacyUvBakeDiagnosticEnabled()) throw new Error('Legacy UV bake is restricted to diagnostics.');
   const startedAt = performance.now();
   const importedModel = useSceneStore.getState().importedModel;
   if (!importedModel || importedModel.objectId !== input.objectId) {
@@ -1172,7 +1189,11 @@ async function bakeVisibleProjectedLayersToTextureUnlocked(
     performanceBreakdown.runtimeDepthRegeneratedLayers = regeneratedVisibilityLayerCount;
   }
   performanceBreakdown.runtimeDepthMs = performance.now() - runtimeDepthStartedAt;
-  const bakeMethod = input.method ?? getDebugUvBakeMethod('gpu');
+  const legacyDiagnostic = isLegacyUvBakeDiagnosticEnabled();
+  const bakeMethod = legacyDiagnostic ? input.method ?? getDebugUvBakeMethod('gpu') : 'gpu';
+  if (!legacyDiagnostic && !viewportRenderer) {
+    throw new Error('GPU UV renderer is not ready. Legacy bake is disabled.');
+  }
   if (bakeMethod !== 'cpu' && viewportRenderer) {
     try {
       const renderer = getIsolatedUvBakeRenderer(viewportRenderer);
@@ -1187,8 +1208,7 @@ async function bakeVisibleProjectedLayersToTextureUnlocked(
         // readbacks per layer (colour + quality), although literal overlays never
         // consume the quality map. Keep normal projections on the exact path, but
         // collapse the top contiguous local-repaint overlay run on the GPU and
-        // read it back once. A failed batch automatically falls back to the old
-        // per-layer path, so this optimization never blocks a bake.
+        // read it back once. Legacy fallback is restricted to diagnostics.
         const batchedLiteralLayers = getBatchedLiteralOverlaySuffix(layers);
         const batchedLiteralLayerIds = new Set(batchedLiteralLayers.map((layer) => layer.id));
         const parityLayers = layers.filter((layer) => !batchedLiteralLayerIds.has(layer.id));
@@ -1238,9 +1258,12 @@ async function bakeVisibleProjectedLayersToTextureUnlocked(
             }),
         });
 
-        const residentPolicy = layers.length>=2 && layers.length<=255 && input.resolution<=4096 &&
-          parityLayers.filter(layer=>!getProjectedLayerOverlayMode(layer)).length>=2
+        const normalLayerCount = parityLayers.filter(layer=>!getProjectedLayerOverlayMode(layer)).length;
+        const residentPolicy = layers.length<=255 && input.resolution<=4096 && normalLayerCount>0
           ? residentQualityPolicy(renderer,input.preserveCoverageConfidenceAlpha ?? false) : undefined;
+        if (!legacyDiagnostic && normalLayerCount > 0 && !residentPolicy) {
+          throw new Error('Resident GPU UV currently supports up to 255 layers at 4K. Legacy bake is disabled; resolution was not reduced.');
+        }
         const gpuBake = parityLayers.length
           ? await bakeProjectedLayerRastersWithGpu({...createGpuBakeInput(parityLayers, 0),residentQuality:residentPolicy})
           : emptyGpuBake();
@@ -1257,6 +1280,7 @@ async function bakeVisibleProjectedLayersToTextureUnlocked(
               skipCanvasUpload: true,
             });
           } catch (error) {
+            if (!legacyDiagnostic) throw error;
             literalBatchError = error;
             literalFallbackBake = await bakeProjectedLayerRastersWithGpu(
               createGpuBakeInput(batchedLiteralLayers, literalProgressOffset),
@@ -1801,8 +1825,8 @@ async function bakeVisibleProjectedLayersToTextureUnlocked(
     } catch (error) {
       if(error instanceof Error && error.name==='AbortError') throw error;
       const message = error instanceof Error ? error.message : String(error);
-      if (input.disableGpuFallback) {
-        throw new Error(`GPU bake failed with debug fallback disabled. ${message}`);
+      if (!legacyDiagnostic || input.disableGpuFallback) {
+        throw new Error(`GPU UV bake failed; legacy fallback is disabled. ${message}`);
       }
       gpuFallbackWarnings.push(
         `GPU bake failed; used CPU fallback at the same resolution. ${message}`,

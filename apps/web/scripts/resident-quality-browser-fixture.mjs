@@ -2,8 +2,54 @@ import * as THREE from 'three';
 import { ResidentQualityComposite } from '../src/engine/bake/residentQualityComposite.ts';
 import {createTopK,accumulate,resolveCpu} from 'virtual:resident-cpu-oracle';
 import {uploadPreviewTextureInStripes} from '../src/engine/viewport/previewTextureCache.ts';
+import {registerPreviewTextureRenderer,residentPreviewTextureCache,loadPreviewTexture,prewarmPreviewTextures,releasePreviewTexture} from '../src/engine/viewport/previewTextureCache.ts';
+import {prepareMergePreview,adoptPreparedMergePreview,clearPreparedMergePreview} from '../src/engine/bake/preparedMergePreview.ts';
 
 const check=(value,message)=>{ if(!value) throw new Error(message); };
+export async function verifyPreparedHandoff(resolution=4096) {
+  window.history.replaceState(null,'','?');
+  const renderer=new THREE.WebGLRenderer({antialias:false});document.body.append(renderer.domElement);
+  registerPreviewTextureRenderer(renderer);
+  const canvas=document.createElement('canvas');canvas.width=canvas.height=resolution;
+  const ctx=canvas.getContext('2d');const rgba=new Uint8ClampedArray(resolution*resolution*4);
+  for(let i=0;i<rgba.length;i+=4) rgba.set([i/4%251,Math.floor(i/4/resolution)%253,71,255],i);
+  ctx.putImageData(new ImageData(rgba,resolution,resolution),0,0);
+  const blob=await new Promise(resolve=>canvas.toBlob(resolve,'image/png'));
+  const finalUrl=URL.createObjectURL(blob),referenceUrl=URL.createObjectURL(blob);
+  const target=new THREE.WebGLRenderTarget(resolution,resolution),scene=new THREE.Scene();
+  const camera=new THREE.OrthographicCamera(-1,1,1,-1,0,2);camera.position.z=1;
+  const geometry=new THREE.PlaneGeometry(2,2);let material;
+  const draw=async(texture)=>{
+    material?.dispose();material=new THREE.MeshBasicMaterial({map:texture,toneMapped:false});
+    scene.clear();scene.add(new THREE.Mesh(geometry,material));
+    renderer.setRenderTarget(target);renderer.render(scene,camera);
+    const output=new Uint8Array(resolution*resolution*4);
+    await renderer.readRenderTargetPixelsAsync(target,0,0,resolution,resolution,output);renderer.setRenderTarget(null);return output;
+  };
+  try {
+    const prior=new Set(residentPreviewTextureCache.keys());
+    await prepareMergePreview(blob);
+    const source=[...residentPreviewTextureCache.entries()].find(([url])=>!prior.has(url));
+    check(!!source,'prepared texture missing');
+    const start=performance.now();
+    check(adoptPreparedMergePreview(blob,finalUrl),'prepared GPU handoff rejected');
+    const texture=await loadPreviewTexture(finalUrl);
+    await prewarmPreviewTextures([finalUrl]);
+    const handoffMs=performance.now()-start;
+    check(texture===source[1],'texture was decoded/uploaded again');
+    check(!residentPreviewTextureCache.has(source[0]),'temporary alias retained');
+    const actual=await draw(texture);
+    await prewarmPreviewTextures([referenceUrl]);
+    const expected=await draw(await loadPreviewTexture(referenceUrl));
+    let differences=0;for(let i=0;i<actual.length;i++) if(actual[i]!==expected[i]) differences++;
+    check(differences===0,`handoff pixel differences: ${differences}`);
+    return {resolution,handoffMs,differences,sameGpuTexture:true};
+  } finally {
+    clearPreparedMergePreview();releasePreviewTexture(finalUrl);releasePreviewTexture(referenceUrl);
+    URL.revokeObjectURL(finalUrl);URL.revokeObjectURL(referenceUrl);
+    registerPreviewTextureRenderer(undefined);material?.dispose();geometry.dispose();target.dispose();renderer.dispose();renderer.domElement.remove();
+  }
+}
 export async function run(resolution=128, layerCount=23) {
   const renderer=new THREE.WebGLRenderer({antialias:false});
   const gl=renderer.getContext();
@@ -110,7 +156,7 @@ export async function benchmarkUpload(resolution=4096) {
   const original=window.location.href;
   try {
     for(const enabled of [false,true]) {
-      window.history.replaceState(null,'',`?perfResidentQuality=${enabled?'1':'0'}`);
+      window.history.replaceState(null,'',enabled ? '?' : '?perfLab=1&perfResidentQuality=0');
       const texture=new THREE.Texture(bitmap);texture.flipY=false;texture.generateMipmaps=false;
       texture.minFilter=texture.magFilter=THREE.NearestFilter;
       const material=new THREE.MeshBasicMaterial({map:texture,toneMapped:false});

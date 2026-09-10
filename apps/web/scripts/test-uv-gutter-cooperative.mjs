@@ -26,6 +26,26 @@ new Function('require', 'exports', seamCode)(name => {
 
 let seed = 72913;
 const random = () => ((seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0) / 2 ** 32);
+if (process.env.LI3D_UV_REPAIR_BENCHMARK === '1') {
+  const size=4096, rgba=new Uint8ClampedArray(size*size*4);
+  const topology=new Uint8Array(size*size), coverage=new Uint8Array(size*size), regions=new Uint32Array(size*size);
+  for(let panel=0;panel<6;panel++) {
+    const left=128+(panel%3)*1300,top=128+Math.floor(panel/3)*2000;
+    for(let y=top;y<top+1500;y++) for(let x=left;x<left+700;x++) {
+      const index=y*size+x;topology[index]=1;regions[index]=panel+1;
+      if(x%80===0) continue;
+      coverage[index]=1;rgba.set([100+panel*10,80,50,255],index*4);
+    }
+  }
+  const run=kernel=>{
+    const image={width:size,height:size,data:rgba.slice()}, mask=coverage.slice();
+    const start=performance.now(),count=kernel(image,mask,topology,3,regions);
+    return {image,mask,count,ms:performance.now()-start};
+  };
+  const before=run(oldDilation.fillEnclosedUvCoverageGaps),after=run(nextDilation.fillEnclosedUvCoverageGaps);
+  assert.equal(after.count,before.count);assert.deepEqual(after.image.data,before.image.data);assert.deepEqual(after.mask,before.mask);
+  console.log(JSON.stringify({phase:'4K interior crack repair',beforeMs:before.ms,afterMs:after.ms,filled:after.count,byteDifferences:0}));
+}
 for (let trial = 0; trial < 600; trial++) {
   const width = 1 + Math.floor(random() * 43);
   const height = trial % 7 === 0 ? 1 : 1 + Math.floor(random() * 37);

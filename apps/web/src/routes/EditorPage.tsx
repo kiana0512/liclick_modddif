@@ -67,6 +67,7 @@ import { useWorkspaceLayoutStore } from '@/components/workspace/workspaceLayoutS
 import type { WorkspacePanelDefinition } from '@/components/workspace/workspacePanelTypes';
 import { applyBakedTextureToObject } from '@/engine/bake/applyBakedTexture';
 import { bakeVisibleProjectedLayersToTexture } from '@/engine/bake/bakeProjectedLayerToTexture';
+import { adoptPreparedMergePreview } from '@/engine/bake/preparedMergePreview';
 import { resolveImageAssetUrl } from '@/engine/bake/imageSampler';
 import {
   buildContentAwareRepairMask,
@@ -1698,10 +1699,11 @@ export function EditorPage({
   );
 
   useEffect(() => {
-    if(new URLSearchParams(window.location.search).get('perfResidentQuality')!=='1' || !projectId || serverReadyProjectId!==projectId) return;
+    const params = new URLSearchParams(window.location.search);
+    if((params.get('perfLab')==='1' && params.get('perfResidentQuality')==='0') || generationConflictLocked || !projectId || serverReadyProjectId!==projectId) return;
     return startMergeProjectionPreparation({projectId,resolution:resolutionToSize[resolution],
       canPrepare:()=>!manualBakeRunningRef.current && !contentAwareRepairRunningRef.current});
-  },[projectId,serverReadyProjectId,resolution]);
+  },[projectId,serverReadyProjectId,resolution,generationConflictLocked]);
 
   useEffect(() => {
     // Merge UV can include a local-repaint projection. Load its alpha worker
@@ -5143,6 +5145,7 @@ export function EditorPage({
         progress: 0.985,
       });
       const previewPrewarmStartedAt = performance.now();
+      if (mergedImageBlob) adoptPreparedMergePreview(mergedImageBlob, imageUrl);
       const previewResults = await prewarmPreviewTextures([imageUrl]);
       previewPrewarmDurationMs = performance.now() - previewPrewarmStartedAt;
       previewPrewarmReady =

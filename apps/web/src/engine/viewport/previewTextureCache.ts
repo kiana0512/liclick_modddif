@@ -299,6 +299,28 @@ export function registerPreviewTextureRenderer(renderer: THREE.WebGLRenderer | u
   registeredPreviewRenderer = renderer;
 }
 
+/** Move an exclusively owned, fully uploaded temporary preview after asset save.
+ * No alias: disposal under the temporary URL must never free the published map.
+ */
+export function promotePreparedPreviewTexture(sourceUrl: string, assetUrl: string) {
+  const renderer = registeredPreviewRenderer;
+  const texture = residentPreviewTextureCache.get(sourceUrl);
+  const promise = bakedTextureCache.get(sourceUrl);
+  if (!sourceUrl.startsWith('blob:') || !assetUrl || sourceUrl === assetUrl ||
+    !renderer || renderer.getContext().isContextLost() || !texture || !promise ||
+    !previewTextureReadyRenderers.get(texture)?.has(renderer) ||
+    !(renderer.properties.get(texture) as {__webglTexture?:WebGLTexture}).__webglTexture ||
+    pinnedPreviewTextureCacheKeys.get(sourceUrl) !== 1 ||
+    bakedTextureCache.has(assetUrl) || residentPreviewTextureCache.has(assetUrl)) return false;
+  bakedTextureCache.delete(sourceUrl);
+  residentPreviewTextureCache.delete(sourceUrl);
+  bakedTextureCache.set(assetUrl, promise);
+  residentPreviewTextureCache.set(assetUrl, texture);
+  texture.userData.liclickPreviewSourceUrl = assetUrl;
+  texture.userData.liclickPreviewCacheKey = assetUrl;
+  return true;
+}
+
 /** Hold a cache entry from before decode until its consumer finishes upload. */
 export function retainPreviewTexture(imageUrl: string, options?: PreviewTextureLoadOptions) {
   const cacheKey = getPreviewTextureCacheKey(imageUrl, options);
@@ -445,7 +467,7 @@ export function loadPreviewTexture(imageUrl: string, options?: PreviewTextureLoa
 
 export async function prewarmPreviewTextures(
   imageUrls: string[],
-  options?: { allowWhileInteracting?: boolean; maxSize?: number },
+  options?: { allowWhileInteracting?: boolean; maxSize?: number; shouldCancel?: () => boolean },
 ) {
   const uniqueUrls = [...new Set(imageUrls.filter(Boolean))];
   const releases = uniqueUrls.map((url) => retainPreviewTexture(url, options));
@@ -536,10 +558,11 @@ export function uploadPreviewTextureInStripes(
     }
     const context = renderer.getContext();
     const adaptiveVisibleUpload = usesVisibleRenderer && previewUploadGovernorEnabled();
-    // Candidate Merge path: retain exact stripes and the presentation gate,
+    // Retain exact stripes and the presentation gate,
     // but do not charge a whole display frame for every sub-millisecond upload.
     const batchVisibleStripes = usesVisibleRenderer && typeof window !== 'undefined' &&
-      new URLSearchParams(window.location.search).get('perfResidentQuality') === '1';
+      !(new URLSearchParams(window.location.search).get('perfLab') === '1' &&
+        new URLSearchParams(window.location.search).get('perfResidentQuality') === '0');
     let batchSynchronousMs = 0;
     let presentationRequired = false;
     let uploadBudget = createTextureUploadBudget();

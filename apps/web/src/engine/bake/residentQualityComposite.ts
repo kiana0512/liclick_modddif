@@ -3,17 +3,19 @@ import { resolvePixelCpu } from './qualityBlendCpuPixel';
 import type { QualityBlendWorkerResult } from './qualityBlendWorker';
 import { readRenderTargetPixelsInStripes } from './gpuReadbackStripes';
 import { yieldToBrowserTask } from '@/utils/browserScheduling';
+import { isLegacyUvBakeDiagnosticEnabled } from './uvBakeDebugControls';
 
 const approvals=new WeakMap<THREE.WebGLRenderer,Map<boolean,boolean>>();
 export function residentQualityPolicy(renderer:THREE.WebGLRenderer,preserveAlpha:boolean) {
   const params=new URLSearchParams(window.location.search);
-  if(params.get('perfResidentQuality')!=='1' || params.get('perfQualityCpuGold')==='1') return undefined;
+  if(isLegacyUvBakeDiagnosticEnabled() &&
+    (params.get('perfResidentQuality')==='0' || params.get('perfQualityCpuGold')==='1')) return undefined;
   let modes=approvals.get(renderer);
   if(!modes) {
     modes=new Map();approvals.set(renderer,modes);
     renderer.domElement.addEventListener('webglcontextlost',()=>approvals.delete(renderer),{once:true});
   }
-  if(modes.get(preserveAlpha)===false) return undefined;
+  if(modes.get(preserveAlpha)===false) throw new Error('GPU UV quality validation failed. Legacy bake is disabled.');
   return {preserveAlpha,retainRasters:modes.get(preserveAlpha)!==true || params.get('perfQualityGpuAb')==='1'};
 }
 
@@ -28,6 +30,9 @@ export function verifyResidentQuality(renderer:THREE.WebGLRenderer,preserveAlpha
   const mismatchRatio=byteMismatches/a.length;
   const accepted=a.length===b.length && alphaByteMismatches===0 && maximumByteDelta<=1 && mismatchRatio<=0.00001;
   approvals.get(renderer)?.set(preserveAlpha,accepted);
+  if(!accepted && !isLegacyUvBakeDiagnosticEnabled()) {
+    throw new Error(`GPU UV quality validation failed (${byteMismatches} differing bytes). Legacy bake is disabled.`);
+  }
   const result=accepted ? candidate : reference;
   result.verification={byteMismatches,alphaByteMismatches,maximumByteDelta,mismatchRatio,
     usedCpuOutput:!accepted,acceptedGpuOutput:accepted};

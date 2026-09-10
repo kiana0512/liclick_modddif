@@ -125,6 +125,7 @@ export function startMergeProjectionPreparation(options:{projectId:string;resolu
     void prepareMergeProjection(input,undefined,true).then(prepareFinal).catch(error=>{
       if(error instanceof Error && error.name==='AbortError') return;
       document.body.dataset.uvMergePreparation='unavailable';
+      document.body.dataset.uvMergePreparationError=error instanceof Error ? error.message : String(error);
       // Retry only after an authored change; failed preparation never blocks Merge.
       stableSince=Infinity;
     });

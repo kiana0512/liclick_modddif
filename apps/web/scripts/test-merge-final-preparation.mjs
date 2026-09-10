@@ -7,6 +7,7 @@ const code=ts.transpileModule(source.replace(/^import[^\n]+\n/gm,''),{
 }).outputText;
 let calls=0,encodeCalls=0,pause;
 const scope={exports:{},AbortController:globalThis.AbortController,DOMException,
+  clearPreparedMergePreview:()=>{},prepareMergePreview:async()=>{},
   window:{location:{search:''}},document:{body:{dataset:{}}},performance,
   compositeRgbaUrlUnderWithWebGpu:async(rgba,url,width,height,opacity,signal)=>{
     calls++;assert.equal(width,1);assert.equal(height,1);

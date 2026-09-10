@@ -7,13 +7,16 @@ const textEncoder = new TextEncoder();
 // spending a full second squeezing a temporary 2K/4K repair texture.
 const INTERACTIVE_PNG_COMPRESSION_LEVEL = 3 as const;
 
+const crcTable=Uint32Array.from({length:256},(_,value)=>{
+  let crc=value;
+  for(let bit=0;bit<8;bit++) crc=crc&1 ? 0xedb88320^(crc>>>1) : crc>>>1;
+  return crc>>>0;
+});
+
 function crc32(bytes: Uint8Array) {
   let crc = 0xffffffff;
   for (const byte of bytes) {
-    crc ^= byte;
-    for (let bit = 0; bit < 8; bit += 1) {
-      crc = crc & 1 ? 0xedb88320 ^ (crc >>> 1) : crc >>> 1;
-    }
+    crc = crcTable[(crc ^ byte)&255]^(crc>>>8);
   }
   return (crc ^ 0xffffffff) >>> 0;
 }
