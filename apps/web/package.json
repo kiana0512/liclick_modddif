@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "test:gpt-multiview-pairs": "node scripts/test-gpt-multiview-pairs.mjs",
+    "test:generation-framing": "node scripts/test-generation-framing.mjs",
     "test:projected-material-reveal": "node scripts/test-projected-material-reveal.mjs",
     "test:repaint-layer-selection": "node scripts/test-repaint-layer-selection.mjs",
     "test:preview-upload-cleanup": "node scripts/test-preview-upload-cleanup.mjs",

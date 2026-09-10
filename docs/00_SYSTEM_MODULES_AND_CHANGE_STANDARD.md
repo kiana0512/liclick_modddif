@@ -1,6 +1,6 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
-> 文档版本：`2.19.15`
+> 文档版本：`2.19.16`
 >
 > 生效日期：`2026-09-10`
 >
@@ -13,6 +13,8 @@
 ## 1. 文档地位与强制边界
 
 `CHG-20260910-GPT-MULTIVIEW-PAIRS`：主模块 M04，协作 M03/M05/M06/M12/M15；`GPT-MULTIVIEW-PAIR-SEQUENCE` v1.0.0。GPT 多视图按预设固定相对视角两张一组，组内请求/等待并行，返图按组内固定顺序提交，组间串行。每组仅捕获本组白模，结合此时实际已有纹理生成引导图，保留原 capture 相机/depth/完整模型 mask；发布本组预览后验证实际材质 bindings 和两帧呈现，再开始下一组。新加角度独立生成，继承预设视角仍配对，顶底最后，不重排缩略图、不新增提供方标识。部分失败保留成功结果并停止后续组，取消沿用同一 batchId；最后仅补缝一次。单视图与隐藏远端兼容路径保持。GPU/CPU/Worker/shader/UV/export 像素、分辨率、Project Command/CAS/ownership/verified assets 不改，无 Schema/资产迁移；详见 [变更卡](changes/CHG-20260910-GPT-MULTIVIEW-PAIRS.md)。
+
+2026-09-10 `CHG-20260910-GENERATION-CAMERA-FRAMING`：主模块 M03，协作 M04/M08；新增 `ALG-CAP-007` v1.0.0。单视图与局部重绘生成前复用现有单视图全对象包围盒和 0.88 留边取景，屏幕相机以 240ms 缓动适配；保持选定方向及透视 FOV，正交调整 zoom。仅一次取景计算，动画无图像读回/渲染调用，用户移动相机或取消则中止提交。局部重绘必须按冻结新相机重新捕获作者 UV 蒙版，不回退旧截图。GPU/CPU/Worker/shader、投影/UV/export 仍使用同一序列化相机与原公式，分辨率、QA、Schema、Command/CAS/ownership/资产不变，无数据迁移。详见对应变更卡。
 
 `CHG-20260909-SINGLE-PROJECTION-RESTORE-REVEAL`：M06/M03，协作 M08；PROJECTED-MATERIAL-IDENTITY v1.0.0。A100 实际工程恢复已完成 full 模型/2048 UV/单投影编译，原显示门禁只识别 Stack 名称，遗漏单层工厂返回的 LiclickProjectedLayer，导致无限旋转。统一常驻材质身份，覆盖初次显示、结构复用、UV bootstrap 和临时保留；不接受 Warmup/白模/不完整投影。GPU 仅显示与驻留生命周期变化，shader/CPU/Worker/蒙版/UV/export/分辨率及持久化契约不改，无迁移。详见 [变更卡](changes/CHG-20260909-SINGLE-PROJECTION-RESTORE-REVEAL.md)。
 
@@ -1026,3 +1028,5 @@ M13/M15，`IDENTITY-TELEMETRY` v1.1.0，日聚合 schema v3：来源由后端确
 2026-09-09 CHG-20260909-RESIDENT-MULTILAYER-SUBSETS：M06，ALG-PROJ-007 v2.1.11。至少两层的严格兼容有序子集复用原材质槽位，保留橡皮索引与不兼容回退；单层因真实像素差异明确排除。570 次状态回归、24 组 WebGL 输出零差异；无像素公式、4K、QA、持久化/导出或 Schema 迁移。见对应变更卡。
 
 2026-09-09 CHG-20260909-UV-READBACK-TASK-YIELD：M09/M07，ALG-UV-008 v2.0.2。离屏 8 MiB 读回条间改用既有任务让出，保留可见 renderer 呈现等待；6 次真实 4K 全 RGBA 零差异，隔离阶段均值 175.2→140.4ms，不代表总合成/FPS 收益。无像素、QA、Schema 或资产迁移。见对应变更卡。
+
+2026-09-10 普通模式性能浮条隐藏（M13，UI 展示调整）：普通视口不再挂载 LightweightPerformanceHud，同时移除其独立 rAF 采样。调试开关及 perfLab=1 仍挂载原 PerformanceTestHud，perfLab=0 隐藏。独立性能录制、指标算法、生产渲染、Schema 与持久化不变，无迁移；回退恢复轻量浮条及普通模式挂载即可。

@@ -14,7 +14,9 @@ const budgets = [
     // application shell and is counted by the total JavaScript budget below.
     minimumMatchBytes: 100_000,
   },
-  { label: 'editor route', prefix: 'EditorPage-', maxBytes: 498_000 },
+  // Generation framing adds the submission guards and lazy entry (~480 bytes).
+  // Retain both measured allowances when integrating paired generation.
+  { label: 'editor route', prefix: 'EditorPage-', maxBytes: 498_512 },
   { label: 'high bake snapshot', prefix: 'bakeHighSnapshot-', maxBytes: 700_000 },
   {
     label: 'shared 3D pipeline',
@@ -39,7 +41,11 @@ const budgets = [
 // resident barriers add 5,191 bytes (3,150,085 -> 3,155,276). Editor adapters
 // measure 497,751 bytes. Grant only this feature's measured payload; preserve
 // the shell/bake/shared limits, output resolution and every QA contract.
-const maxTotalJavaScriptBytes = 3_156_000;
+// CHG-20260910-GENERATION-CAMERA-FRAMING: new camera animation/framing feature,
+// measured 3,153,807 bytes, mostly loaded only on generation. Allocate 4,000
+// bytes for this feature; image quality and all other chunk budgets unchanged.
+// Combined feature allowance; final integrated release must be measured again.
+const maxTotalJavaScriptBytes = 3_160_000;
 
 let entries;
 try {
