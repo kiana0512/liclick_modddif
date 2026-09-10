@@ -5,7 +5,7 @@ import {
   type UvRepaintPatch,
 } from './uvRepaintState';
 
-// ALG-LR-UV-PAINT v1.0.0. No stores, source mutation, network or layer ownership.
+// ALG-LR-UV-PAINT v1.1.0. Shared UV pixels intentionally share color/alpha.
 type Tile = { bounds: Rect; surfaces: Array<{ mesh: THREE.Mesh; box: THREE.Box3 }> };
 type Stroke = { before: Map<number, Promise<Uint8Array<ArrayBuffer>>>; changed: Set<number> };
 
@@ -30,14 +30,13 @@ const paintFragment = `
   uniform sampler2D visibleFaces;
   uniform sampler2D visibleDepth;
   uniform vec2 visibilitySize;
-  uniform sampler2D sourceUv;
   uniform vec2 viewportSize;
   uniform vec2 brushFrom;
   uniform vec2 brushTo;
   uniform float brushRadius;
   uniform float feather;
   uniform float erase;
-  void main() {
+  float repaintWeight() {
     vec3 ndc = currentClip.xyz / max(currentClip.w, 1e-20);
     vec2 screenUv = ndc.xy * 0.5 + 0.5;
     // Derivatives must run uniformly across the fragment quad, before discard.
@@ -65,9 +64,7 @@ const paintFragment = `
     float distanceToStroke = length(p - (brushFrom + ab * t)) / max(brushRadius, 0.001);
     if (distanceToStroke >= 1.0) discard;
     float weight = 1.0 - smoothstep(max(0.0, 1.0 - feather), 1.0, distanceToStroke);
-    vec4 source = texture2D(sourceUv, paintUv);
-    if (source.a <= 0.0039) discard;
-    gl_FragColor = vec4(source.rgb, weight * mix(source.a, 1.0, erase));
+    return weight;
   }
 `;
 
@@ -157,7 +154,7 @@ export function createUvRepaintSourceMaterial(source: THREE.ShaderMaterial) {
   return material;
 }
 
-/** Mutable UV RGBA, separate from the immutable capture-source UV. */
+/** Mutable shared UV RGBA, with one winning visible sample per texel/stamp. */
 export class UvRepaint {
   readonly canvas: HTMLCanvasElement;
   readonly texture: THREE.Texture;
@@ -172,6 +169,9 @@ export class UvRepaint {
   private ids = target(1, true);
   private brush: THREE.ShaderMaterial;
   private identity: THREE.ShaderMaterial;
+  private composite: THREE.Mesh;
+  private compositeScene = new THREE.Scene();
+  private sourceTextures: THREE.Texture[] = [];
   private stroke?: Stroke;
   private visibilityKey = '';
   private disposed = false;
@@ -187,9 +187,9 @@ export class UvRepaint {
       throw new Error('当前设备不支持所选 UV 分辨率，未降低输出尺寸。');
     this.renderer = renderer;
     this.resolution = resolution;
-    this.source = target(resolution);
+    this.source = target(resolution, true);
     this.output = target(resolution);
-    // sRGB framebuffer encoding and texture decoding preserve BaseColor bytes
+    // sRGB stamp encoding and texture decoding preserve BaseColor bytes
     // without baking display lighting or losing dark detail to linear RGBA8.
     this.source.texture.colorSpace = THREE.SRGBColorSpace;
     this.output.texture.colorSpace = THREE.SRGBColorSpace;
@@ -206,7 +206,6 @@ export class UvRepaint {
         visibleFaces: { value: this.ids.texture },
         visibleDepth: { value: this.ids.depthTexture },
         visibilitySize: { value: new THREE.Vector2() },
-        sourceUv: { value: this.source.texture },
         viewportSize: { value: new THREE.Vector2() },
         brushFrom: { value: new THREE.Vector2() },
         brushTo: { value: new THREE.Vector2() },
@@ -215,10 +214,10 @@ export class UvRepaint {
         erase: { value: 0 },
       },
       side: THREE.DoubleSide,
-      depthTest: false,
-      depthWrite: false,
-      transparent: true,
-      blending: THREE.CustomBlending,
+      depthTest: true,
+      depthWrite: true,
+      depthFunc: THREE.LessDepth,
+      blending: THREE.NoBlending,
       toneMapped: false,
     });
     this.identity = new THREE.ShaderMaterial({
@@ -230,6 +229,23 @@ export class UvRepaint {
       toneMapped: false,
       blending: THREE.NoBlending,
     });
+    this.composite = new THREE.Mesh(
+      new THREE.PlaneGeometry(2, 2),
+      new THREE.ShaderMaterial({
+        vertexShader: 'void main() { gl_Position = vec4(position.xy, 0.0, 1.0); }',
+        fragmentShader: `uniform sampler2D stampMap; uniform float resolution;
+          void main() { gl_FragColor = texture2D(stampMap, gl_FragCoord.xy / resolution);
+            if (gl_FragColor.a <= 0.0) discard; }`,
+        uniforms: { stampMap: { value: this.source.texture }, resolution: { value: resolution } },
+        depthTest: false,
+        depthWrite: false,
+        transparent: true,
+        blending: THREE.CustomBlending,
+        toneMapped: false,
+      }),
+    );
+    this.composite.frustumCulled = false;
+    this.compositeScene.add(this.composite);
     let faceId = 1;
     try {
       for (const original of meshes) {
@@ -340,6 +356,7 @@ export class UvRepaint {
         owned.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
         owned.setAttribute('repaintFaceId', new THREE.BufferAttribute(ids, 3));
         const mesh = new THREE.Mesh(owned, this.brush);
+        mesh.renderOrder = this.meshes.length;
         mesh.matrixAutoUpdate = false;
         mesh.frustumCulled = false;
         this.meshes.push(mesh);
@@ -400,49 +417,56 @@ export class UvRepaint {
 
   async prepare(material: THREE.ShaderMaterial, camera: THREE.Camera, initial?: CanvasImageSource) {
     this.updateMatrices(camera);
-    const validation = target(this.resolution);
-    const countMaterial = new THREE.ShaderMaterial({
-      vertexShader: vertex,
-      fragmentShader: 'void main() { gl_FragColor = vec4(1.0 / 255.0, 0.0, 0.0, 0.0); }',
-      uniforms: this.brush.uniforms,
-      side: THREE.DoubleSide,
-      depthTest: false,
-      depthWrite: false,
-      transparent: true,
-      blending: THREE.CustomBlending,
-      blendSrc: THREE.OneFactor,
-      blendDst: THREE.OneFactor,
-      toneMapped: false,
-    });
+    // Retain immutable capture uniforms/textures, not a pre-flattened UV source:
+    // overlapping faces may sample different colors in the frozen source image.
+    const captured = THREE.UniformsUtils.clone(material.uniforms);
+    this.sourceTextures = Object.values(captured)
+      .map((uniform) => uniform.value)
+      .filter((value): value is THREE.Texture => value?.isTexture);
+    this.brush.uniforms = { ...captured, ...this.brush.uniforms };
+    this.brush.defines = { ...material.defines };
+    this.brush.vertexShader =
+      material.vertexShader.replace(/void main\(\)\s*\{/, 'void paintSourceVertex() {') +
+      vertex.replace('void main() {', 'void main() { paintSourceVertex();');
+    this.brush.fragmentShader =
+      material.fragmentShader.replace(/void main\(\)\s*\{/, 'void paintSourceFragment() {') +
+      paintFragment +
+      `
+      void main() {
+        float weight = repaintWeight();
+        if (erase > 0.5) gl_FragColor = vec4(0.0, 0.0, 0.0, weight);
+        else {
+          paintSourceFragment();
+          if (gl_FragColor.a <= 0.0039) discard;
+          gl_FragColor.a *= weight;
+        }
+        // Strongest visible brush hit wins; equal weights keep the first stable
+        // mesh/triangle. A separate composite prevents repeated shared-UV erase.
+        gl_FragDepth = 1.0 - weight;
+      }`;
+    this.brush.needsUpdate = true;
     try {
-      isolated(this.renderer, () => {
-        this.meshes.forEach((mesh) => {
-          mesh.material = countMaterial;
-        });
-        this.renderer.setRenderTarget(validation);
-        this.renderer.clear();
-        this.renderer.render(this.scene, camera);
-      });
-      // Full-resolution validation, striped readback; no proxy-resolution approval.
-      for (let y = 0; y < this.resolution; y += UV_REPAINT_TILE_SIZE) {
-        const bytes = await this.read(validation, {
-          x: 0,
-          y,
-          width: this.resolution,
-          height: Math.min(UV_REPAINT_TILE_SIZE, this.resolution - y),
-        });
-        if (this.disposed) throw new Error('UV 绘制准备已取消。');
-        for (let i = 0; i < bytes.length; i += 4)
-          if (bytes[i] > 1)
-            throw new Error(
-              '模型存在重叠 UV，多个表面共用像素；请先展开不重叠 UV。未修改原模型或图层。',
-            );
-      }
-      isolated(this.renderer, () => {
-        this.meshes.forEach((mesh) => {
-          mesh.material = material;
-        });
+      await isolated(this.renderer, () => {
         this.renderer.setRenderTarget(this.source);
+        return this.renderer.compileAsync(this.scene, camera);
+      });
+      if (this.disposed) throw new Error('UV 绘制准备已取消。');
+      await isolated(this.renderer, () => {
+        this.renderer.setRenderTarget(this.output);
+        return this.renderer.compileAsync(this.compositeScene, camera);
+      });
+      if (this.disposed) throw new Error('UV 绘制准备已取消。');
+      await isolated(this.renderer, () => {
+        this.ids.setSize(this.renderer.domElement.width, this.renderer.domElement.height);
+        this.meshes.forEach((mesh) => {
+          mesh.material = this.identity;
+        });
+        this.renderer.setRenderTarget(this.ids);
+        return this.renderer.compileAsync(this.scene, camera);
+      });
+      if (this.disposed) throw new Error('UV 绘制准备已取消。');
+      isolated(this.renderer, () => {
+        this.renderer.setRenderTarget(this.ids);
         this.renderer.clear();
         this.renderer.render(this.scene, camera);
       });
@@ -460,8 +484,6 @@ export class UvRepaint {
         this.write({ x: 0, y: 0, width: this.resolution, height: this.resolution }, flipped);
       }
     } finally {
-      validation.dispose();
-      countMaterial.dispose();
       this.meshes.forEach((mesh) => {
         mesh.material = this.brush;
       });
@@ -555,18 +577,29 @@ export class UvRepaint {
       uniforms.brushRadius.value = input.radius;
       uniforms.feather.value = Math.max(0.0001, Math.min(1, input.feather));
       uniforms.erase.value = Number(input.erase);
-      this.brush.blendEquation = THREE.AddEquation;
-      this.brush.blendSrc = input.erase ? THREE.ZeroFactor : THREE.OneFactor;
-      this.brush.blendDst = input.erase ? THREE.OneFactor : THREE.ZeroFactor;
-      this.brush.blendEquationAlpha = input.erase ? THREE.AddEquation : THREE.MaxEquation;
-      this.brush.blendSrcAlpha = input.erase ? THREE.ZeroFactor : THREE.OneFactor;
-      this.brush.blendDstAlpha = input.erase ? THREE.OneMinusSrcAlphaFactor : THREE.OneFactor;
+      const composite = this.composite.material as THREE.ShaderMaterial;
+      composite.blendEquation = THREE.AddEquation;
+      composite.blendSrc = input.erase ? THREE.ZeroFactor : THREE.OneFactor;
+      composite.blendDst = input.erase ? THREE.OneFactor : THREE.ZeroFactor;
+      composite.blendEquationAlpha = input.erase ? THREE.AddEquation : THREE.MaxEquation;
+      composite.blendSrcAlpha = input.erase ? THREE.ZeroFactor : THREE.OneFactor;
+      composite.blendDstAlpha = input.erase ? THREE.OneMinusSrcAlphaFactor : THREE.OneFactor;
       this.meshes.forEach((mesh) => {
         mesh.material = this.brush;
       });
       for (const [id, tile] of touched) {
         if (!stroke.before.has(id)) stroke.before.set(id, this.read(this.output, tile.bounds));
         stroke.changed.add(id);
+        this.renderer.setRenderTarget(this.source);
+        this.renderer.setScissor(
+          tile.bounds.x,
+          tile.bounds.y,
+          tile.bounds.width,
+          tile.bounds.height,
+        );
+        this.renderer.setScissorTest(true);
+        this.renderer.clear();
+        this.renderer.render(this.scene, input.camera);
         this.renderer.setRenderTarget(this.output);
         this.renderer.setScissor(
           tile.bounds.x,
@@ -575,7 +608,7 @@ export class UvRepaint {
           tile.bounds.height,
         );
         this.renderer.setScissorTest(true);
-        this.renderer.render(this.scene, input.camera);
+        this.renderer.render(this.compositeScene, input.camera);
       }
     });
     return true;
@@ -639,6 +672,10 @@ export class UvRepaint {
       this.ids.dispose();
       this.brush.dispose();
       this.identity.dispose();
+      this.sourceTextures.forEach((texture) => texture.dispose());
+      this.composite.geometry.dispose();
+      (this.composite.material as THREE.ShaderMaterial).dispose();
+      this.compositeScene.clear();
       this.meshes.forEach((mesh) => mesh.geometry.dispose());
       this.scene.clear();
       this.tiles.clear();

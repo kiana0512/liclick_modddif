@@ -91,15 +91,7 @@ export async function run() {
     pixel(engine.canvas, 0.85, 0.5)[3] > 180,
     'rotated camera paints newly visible UV, not old capture coordinates',
   );
-  const overlap = new UvRepaint(renderer, [left, left.clone()], 1024);
-  let rejected = false;
-  try {
-    await overlap.prepare(bake, camera);
-  } catch (error) {
-    rejected = /重叠 UV/.test(error.message);
-  }
-  check(rejected, 'overlap fails closed');
-  overlap.dispose();
+  await (await import('./uv-repaint-overlap-fixture.mjs')).run(renderer);
   for (const problem of ['missing', 'outside', 'degenerate']) {
     const invalid = plane(0, 0, 0, 1);
     if (problem === 'missing') invalid.geometry.deleteAttribute('uv');

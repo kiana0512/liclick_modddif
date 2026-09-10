@@ -134,11 +134,55 @@ try {
     'do not expand native author coverage with legacy export repair',
   );
   const editor = await readFile(new URL('../src/routes/EditorPage.tsx', import.meta.url), 'utf8');
-  assert.match(editor, /await flushLiveUvCommits\(\);[\s\S]*const uvSnapshots = new Map/, 'merge waits for committed UV pixels');
-  assert.match(editor, /getLiveProjectedTextureBlob\(layer.imageUrl\)/, 'merge resolves live pixels');
-  assert.match(editor, /compositeRgbaUrlUnderWithWebGpu\(\s*mergedRgba,\s*uvSourceUrl,/, 'Worker consumes snapshot');
-  assert.match(editor, /urlToImageData\(uvSourceUrl, bakeResolution, bakeResolution\)/, 'CPU consumes same snapshot');
-  assert.match(editor, /temporaryUvSnapshots.forEach\(\(url\) => URL.revokeObjectURL\(url\)\)/, 'merge releases temporary URLs');
+  assert.match(
+    editor,
+    /await flushLiveUvCommits\(\);[\s\S]*const uvSnapshots = new Map/,
+    'merge waits for committed UV pixels',
+  );
+  assert.match(
+    editor,
+    /getLiveProjectedTextureBlob\(layer.imageUrl\)/,
+    'merge resolves live pixels',
+  );
+  assert.match(
+    editor,
+    /compositeRgbaUrlUnderWithWebGpu\(\s*mergedRgba,\s*uvSourceUrl,/,
+    'Worker consumes snapshot',
+  );
+  assert.match(
+    editor,
+    /urlToImageData\(uvSourceUrl, bakeResolution, bakeResolution\)/,
+    'CPU consumes same snapshot',
+  );
+  assert.match(
+    editor,
+    /temporaryUvSnapshots.forEach\(\(url\) => URL.revokeObjectURL\(url\)\)/,
+    'merge releases temporary URLs',
+  );
+  const engine = await readFile(
+    new URL('../src/engine/localRepaint/uvRepaint.ts', import.meta.url),
+    'utf8',
+  );
+  assert.doesNotMatch(
+    engine,
+    /请先展开不重叠 UV|countMaterial/,
+    'shared UV is explicitly permitted',
+  );
+  assert.match(
+    engine,
+    /THREE\.UniformsUtils\.clone\(material\.uniforms\)/,
+    'capture source lifetime is owned by the engine',
+  );
+  assert.match(
+    engine,
+    /gl_FragDepth = 1\.0 - weight/,
+    'strongest visible hit selects shared pixel',
+  );
+  assert.match(
+    engine,
+    /render\(this\.compositeScene, input\.camera\)/,
+    'one composite per texel avoids repeated shared erase',
+  );
   console.log(
     'Native UV: independent RGBA, frozen source, old-layer/selection retention, deletion guard, user settings, save barrier/failure and lazy pipeline passed.',
   );
