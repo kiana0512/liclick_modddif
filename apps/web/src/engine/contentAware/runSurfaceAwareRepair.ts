@@ -179,6 +179,7 @@ export function runSurfaceAwareRepair(
       dominantSourceColorThreshold: copiedInput.dominantSourceColorThreshold,
       lockToDominantSourceRegion: copiedInput.lockToDominantSourceRegion,
       localBoundaryBlend: copiedInput.localBoundaryBlend,
+      adaptiveGapDistance: copiedInput.adaptiveGapDistance,
     };
     const transfer: Transferable[] = [rgbaBuffer, writeMaskBuffer, topologyMaskBuffer];
     if (sourceExclusionBuffer) transfer.push(sourceExclusionBuffer);

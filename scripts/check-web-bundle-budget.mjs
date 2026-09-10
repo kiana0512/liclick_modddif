@@ -52,7 +52,10 @@ const budgets = [
 // 2,662 bytes with matching Cloud settings (3,159,715 -> 3,162,377).
 // Allow 3,000 bytes including release metadata. Lazy compatibility loading
 // reduces the editor to 486,072 bytes; all individual chunk/quality gates stay.
-const maxTotalJavaScriptBytes = 3_163_000;
+// CHG-20260910-ADAPTIVE-GAP-DISTANCE: same Cloud configuration grows 876
+// bytes (3,162,508 -> 3,163,384) for adaptive CPU/Worker traversal and partial
+// result feedback. Allow 1,000 bytes; individual chunks/quality gates unchanged.
+const maxTotalJavaScriptBytes = 3_164_000;
 
 let entries;
 try {

@@ -27,6 +27,7 @@ type SurfacePropagationPolicy = Pick<
   | 'dominantSourceColorThreshold'
   | 'requireCompleteComponents'
   | 'localBoundaryBlend'
+  | 'adaptiveGapDistance'
 >;
 
 export type VisibleSurfaceCompletionPolicy = {
@@ -71,8 +72,8 @@ export function createVisibleSurfaceCompletionPolicy(
       // exclusion again removes the only valid border texel on thin UV islands
       // and turns a reachable gap into a false no-donor component.
       sourcePaddingPixels: 0,
-      // 16 texels at 2K, scaled with output size. Wide/no-evidence gaps stay
-      // open instead of being filled from a distant part of the model.
+      // Start at 16 texels at 2K, then expand inside the selected gap until its
+      // original same-region boundaries cover it. No unrelated donor search.
       maxDistance: Math.max(4, Math.ceil(Math.max(width, height) / 128)),
       minSourceAlpha: 224,
       sourceColorOutlierThreshold: 64,
@@ -85,6 +86,7 @@ export function createVisibleSurfaceCompletionPolicy(
       dominantSourceColorThreshold: 18,
       requireCompleteComponents: false,
       localBoundaryBlend: true,
+      adaptiveGapDistance: true,
     },
   };
 }

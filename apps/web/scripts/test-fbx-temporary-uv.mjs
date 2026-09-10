@@ -14,13 +14,13 @@ try {
   const uv = await server.ssrLoadModule('/src/engine/layers/uvLayerComposition.ts');
   const { resolveBakeUvMergePlan } = await server.ssrLoadModule('/src/features/workflow/selectBakeBaseColor.ts');
   const layer = (id, extra = {}) => ({ id, type: 'projected', visible: true, imageUrl: id, camera: {}, objectId: 'model', opacity: 1, order: 0, ...extra });
-  let layers, scene, resolution, bakeCalls, flattened, encoded, revoked, mutate, invalid, revisions;
+  let layers, scene, resolution, bakeCalls, flattened, encoded, revoked, mutate, invalid, revisions, maskOptions;
   const project = { id: 'project', name: 'fixture' };
   const group = { updateMatrixWorld() {}, traverse(cb) { cb({ matrixWorld: { elements: [1] } }); } };
   const importedModel = { objectId: 'model', group };
   const root = {};
   const reset = (rows) => {
-    layers = rows; scene = { importedModel }; resolution = '2K'; bakeCalls = []; flattened = []; encoded = []; revoked = []; mutate = undefined; invalid = false; revisions = {};
+    layers = rows; scene = { importedModel }; resolution = '2K'; bakeCalls = []; flattened = []; encoded = []; revoked = []; mutate = undefined; invalid = false; revisions = {}; maskOptions = [];
   };
   const dependencies = {
     ...composition, ...uv, resolveBakeUvMergePlan,
@@ -32,7 +32,7 @@ try {
     useSettingsStore: { getState: () => ({ resolution }) },
     getLiveProjectedCanvasState: (url) => revisions[url] === undefined ? undefined : { revision: revisions[url] },
     getVisibleProjectedLayerStack: (rows, id) => rows.filter((l) => l.type === 'projected' && l.visible && l.imageUrl && l.camera && (!l.objectId || l.objectId === id)),
-    createProjectionMaskedImage: async (url) => { if (url === 'fail-mask') throw Error('mask failed'); return `temporary:${url}`; },
+    createProjectionMaskedImage: async (url, mask, options) => { maskOptions.push(options); if (url === 'fail-mask') throw Error('mask failed'); return `temporary:${url}`; },
     revokeRegisteredObjectUrl: (url) => revoked.push(url),
     bakeVisibleProjectedLayersToTexture: async (options) => {
       bakeCalls.push(options); mutate?.(); if (invalid) throw Error('bad source image');
@@ -81,6 +81,13 @@ try {
   reset([layer('local-repaint-projection-a', { maskUrl: 'mask' })]);
   scene.localRepaintPreviewLayer = layer('local-repaint-projection-a', { imageUrl: 'live', maskUrl: 'mask' });
   await run(); assert.equal(bakeCalls[0].transientLayers.length, 1); assert.equal(bakeCalls[0].transientLayers[0].imageUrl, 'temporary:live');
+  for (const target of ['scene', 'object']) for (const ignoreSourceAlpha of [false, true, undefined]) {
+    reset([layer('local-repaint-projection-alpha', { maskUrl: 'mask', ignoreSourceAlpha })]);
+    await run(target);
+    assert.deepEqual(maskOptions, [{ ignoreSourceAlpha: ignoreSourceAlpha ?? true }]);
+    assert.equal(bakeCalls[0].transientLayers[0].ignoreSourceAlpha, false, 'flattened coverage is applied once');
+    assert.equal(bakeCalls[0].transientLayers[0].maskUrl, undefined);
+  }
   for (const change of [() => { layers = [...layers]; }, () => { scene = { ...scene, importedModel: {} }; }, () => { revisions.mask = 2; }]) {
     reset([layer('local-repaint-projection-a', { maskUrl: 'mask' })]); revisions.mask = 1; mutate = change;
     await assert.rejects(run(), /已改变/); assert.equal(revoked.length, 1);
@@ -99,7 +106,7 @@ try {
   const pending = new Map(); let failPost = false;
   const worker = { postMessage(message, transfer) {
     if (failPost) throw Error('post failed');
-    const received = structuredClone(message, { transfer });
+    const received = globalThis.structuredClone(message, { transfer });
     const request = pending.get(message.id); pending.delete(message.id); request.resolve(received.source);
   } };
   const processMask = new Function('getMaskedProjectedWorker', 'maskedProjectedRequests', `let maskedProjectedRequestId = 0; ${maskCode}; return processMaskedProjectedImageInWorker;`)(() => worker, pending);

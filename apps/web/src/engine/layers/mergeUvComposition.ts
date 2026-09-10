@@ -3,10 +3,10 @@ import type { Layer } from '@/types/layer';
 
 /**
  * Increment when a merged UV produced by an older editor can no longer be
- * trusted to match the live layer stack. Version 6 cuts unreliable projection
- * footprints; selected historical UV layers still remain authored underlays.
+ * trusted to match the live layer stack. Version 7 preserves model-clipped
+ * repaint alpha; selected historical UV layers still remain authored underlays.
  */
-export const UV_MERGE_COMPOSITION_VERSION = 6;
+export const UV_MERGE_COMPOSITION_VERSION = 7;
 
 export function compositeRenderedColorMaskUnderInPlace(
   frontMask: Uint8Array,

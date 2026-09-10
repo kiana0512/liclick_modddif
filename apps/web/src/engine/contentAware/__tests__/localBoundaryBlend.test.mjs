@@ -77,6 +77,48 @@ test('blend is deterministic, cancellable, and radius scales without lowering ou
   for (const size of [1024, 2048, 4096, 8192]) {
     const p = createVisibleSurfaceCompletionPolicy(size).propagation;
     assert.equal(p.maxDistance, size / 128); assert.equal(p.localBoundaryBlend, true);
+    assert.equal(p.adaptiveGapDistance, true);
     assert.equal(p.fillUnreachableWithGlobalAverage, false); assert.equal(p.maxSeamCrossings, 0);
   }
+});
+
+test('adaptive distance fills a wide gap from original boundaries without promoting generated donors', () => {
+  const f = fixture(257); pixel(f, 0, [120, 80, 95]); pixel(f, 256, [150, 95, 105]); f.writeMask.fill(255, 1, 256);
+  const original = f.rgba.slice();
+  const bounded = repairSurfaceTexture({ ...f, adaptiveGapDistance: false });
+  assert.equal(bounded.stats.repairedPixels, 32);
+  const progress = [];
+  const result = repairSurfaceTexture(f, { onProgress: p => { if (p.phase === 'propagating') progress.push(p.progress); } });
+  assert.equal(result.stats.repairedPixels, 255); assert.equal(result.stats.unresolvedPixels, 0);
+  assert.equal(result.stats.maxDistanceReached, 128);
+  assert.ok(result.stats.maxDistance >= 128);
+  assert.equal(result.stats.eligibleSourcePixels, 2, 'filled colors never become additional original sources');
+  assert.equal(result.stats.globalFallbackPixels, 0);
+  assert.ok(rgb(result,128)[0] > 120 && rgb(result,128)[0] < 150, 'both boundaries blend at the centre');
+  for(let i=1;i<progress.length;i++) assert.ok(progress[i]>=progress[i-1], 'expansion never resets progress');
+  assert.deepEqual(f.rgba, original);
+});
+
+test('adaptive distance follows a winding selected gap, never jumps an unselected barrier', () => {
+  const f = fixture(41, 5); f.topologyMask.fill(0);
+  const path = [];
+  for(let x=0;x<41;x++) path.push(x);
+  path.push(81);
+  for(let x=40;x>=0;x--) path.push(82+x);
+  path.push(123);
+  for(let x=0;x<41;x++) path.push(164+x);
+  for(const i of path) { f.topologyMask[i]=1; f.writeMask[i]=255; }
+  f.writeMask[0]=0; pixel(f,0,[130,80,95]);
+  const result=repairSurfaceTexture(f);
+  assert.equal(result.stats.repairedPixels,path.length-1);
+  assert.equal(result.stats.maxDistanceReached,path.length-1);
+  assert.equal(result.repairedMask[50],0,'topology hole not filled');
+  f.writeMask[82+20]=0; pixel(f,82+20,[255,255,255],100);
+  const blocked=repairSurfaceTexture(f);
+  assert.equal(blocked.repairedMask[204],0,'cannot cross weak unselected separator to another component');
+  assert.equal(blocked.repairedMask[82+20],0);
+  const disabled=repairSurfaceTexture({...f,maxDistance:0});
+  assert.equal(disabled.stats.repairedPixels,0);
+  let abort=false;
+  assert.throws(()=>repairSurfaceTexture(f,{shouldAbort:()=>abort,onProgress:p=>{if(p.phase==='propagating') abort=true;}}),/cancelled/);
 });

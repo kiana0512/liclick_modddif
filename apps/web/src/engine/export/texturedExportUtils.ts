@@ -760,7 +760,9 @@ async function prepareProjectedLayersForExport(layers: LayerStackLayers) {
       isLocalRepaintProjectionLayer(layer) && layer.maskUrl
         ? {
             ...layer,
-            imageUrl: await createProjectionMaskedImage(layer.imageUrl, layer.maskUrl),
+            imageUrl: await createProjectionMaskedImage(layer.imageUrl, layer.maskUrl, {
+              ignoreSourceAlpha: layer.ignoreSourceAlpha ?? true,
+            }),
             maskUrl: undefined,
             // The mask is now the source alpha; do not bypass it in the export bake.
             ignoreSourceAlpha: false,

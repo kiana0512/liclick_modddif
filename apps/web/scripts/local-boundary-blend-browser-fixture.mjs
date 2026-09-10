@@ -10,7 +10,7 @@ export async function run() {
     const i = y * width + x;
     const red = x < 1024 ? 120 : 150;
     rgba.set([red + y % 4, 80, 95, 255], i * 4);
-    if (x >= 1020 && x <= 1027) { writeMask[i] = 255; rgba[i * 4 + 3] = 0; }
+    if (x >= 960 && x <= 1087) { writeMask[i] = 255; rgba[i * 4 + 3] = 0; }
     if (x > 1800) { topologyRegionIds[i] = 2; rgba.set([230, 175, 30, 255], i * 4); }
     if (x > 1900) { topologyRegionIds[i] = 3; writeMask[i] = 255; rgba[i * 4 + 3] = 0; }
   }
@@ -31,6 +31,8 @@ export async function run() {
   check(mismatches === 0, 'worker/main bytes identical');
   check(main.stats.globalFallbackPixels === 0 && main.stats.sourceRegionLockedComponents === 0, 'no global/single-color fallback');
   check(worker.repairedMask[1950] === 0, 'blank foreign component stays open');
+  check(worker.stats.repairedPixels === 128 * height && worker.stats.maxDistanceReached === 64,
+    'wide gap fills beyond the initial 16px, without borrowing from foreign components');
   const center = (1000 * width + 1024) * 4;
   check(worker.filledRgba[center] > 120 && worker.filledRgba[center] < 150, 'multi-point pink interpolation');
   const blob = await encodeRgbaPngBlob(width, height, worker.filledRgba);

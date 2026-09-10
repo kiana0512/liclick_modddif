@@ -318,7 +318,7 @@ test('a second bounded pass advances from the previous repair result', () => {
   assert.equal(second.repairedMask[11], 0, 'second pass exceeded its bounded layer');
 });
 
-test('local completion leaves distant gaps unresolved instead of extending one color indefinitely', () => {
+test('explicit bounded local completion still stops at the requested distance', () => {
   const width = 320;
   const pixelCount = width;
   const rgba = new Uint8ClampedArray(pixelCount * 4);
@@ -329,6 +329,7 @@ test('local completion leaves distant gaps unresolved instead of extending one c
   writeMask.fill(255, 1);
 
   const policy = createVisibleSurfaceCompletionPolicy(width, 1);
+  policy.propagation.adaptiveGapDistance = false;
   const result = repairSurfaceTexture({
     width,
     height: 1,

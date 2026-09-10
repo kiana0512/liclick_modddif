@@ -98,10 +98,13 @@ export interface SurfaceAwareRepairInput {
    * colour stripes.
    */
   lockToDominantSourceRegion?: boolean;
-  /** LOCAL-BOUNDARY-REPAIR v1: bounded, same-region boundary interpolation.
+  /** LOCAL-BOUNDARY-REPAIR v1.1: same-region boundary interpolation.
    * Disables foreign seam donors, dominant single-color locking and global fill.
    */
   localBoundaryBlend?: boolean;
+  /** Expand beyond maxDistance through the selected gap only, using original
+   * same-region boundary donors. Requires localBoundaryBlend; zero disables. */
+  adaptiveGapDistance?: boolean;
 }
 
 export interface SurfaceRepairStats {
@@ -137,8 +140,8 @@ export interface SurfaceRepairStats {
 
 export interface SurfaceAwareRepairResult {
   /**
-    * A dedicated repair-layer image: transparent outside repairedMask and exact
-   * cloned source texels inside it. This is not a flattened copy of the source UV.
+   * A dedicated repair-layer image: transparent outside repairedMask, with cloned
+   * or locally blended colors inside. This is not a flattened copy of the source UV.
    */
   filledRgba: Uint8ClampedArray<ArrayBuffer>;
   /** Final layer/write alpha: repaired gap pixels plus the optional constrained skirt. */
@@ -188,6 +191,7 @@ interface NormalizedInput {
   dominantSourceColorThreshold?: number;
   lockToDominantSourceRegion: boolean;
   localBoundaryBlend: boolean;
+  adaptiveGapDistance: boolean;
 }
 
 interface SeamAdjacency {
@@ -272,6 +276,7 @@ function normalizeInput(input: SurfaceAwareRepairInput): NormalizedInput {
         : clampInteger(input.dominantSourceColorThreshold, 0, 0, 255),
     lockToDominantSourceRegion: !input.localBoundaryBlend && input.lockToDominantSourceRegion === true,
     localBoundaryBlend: input.localBoundaryBlend === true,
+    adaptiveGapDistance: input.localBoundaryBlend === true && input.adaptiveGapDistance === true,
   };
 }
 
@@ -444,6 +449,7 @@ function isBoundarySource(
     if (
       input.topologyMask[neighbor] !== 0 &&
       owner[neighbor] === -1 &&
+      (!input.adaptiveGapDistance || input.writeMask[neighbor] !== 0) &&
       (!input.topologyRegionIds ||
         input.topologyRegionIds[index] === input.topologyRegionIds[neighbor])
     ) {
@@ -903,7 +909,10 @@ export function repairSurfaceTexture(
   let distance = 0;
   let maxDistanceReached = 0;
   let layerEnd = tail;
-  while (head < tail && distance < input.maxDistance) {
+  let distanceLimit = input.maxDistance;
+  // LOCAL-BOUNDARY-REPAIR v1.1: continue the same BFS frontier, never restart
+  // with synthesized pixels as donors. Each selected gap texel is visited once.
+  while (head < tail && distance < distanceLimit) {
     const currentLayerEnd = layerEnd;
     let addedAtNextDistance = false;
     while (head < currentLayerEnd) {
@@ -922,6 +931,7 @@ export function repairSurfaceTexture(
         if (
           owner[neighbor] !== -1 ||
           input.topologyMask[neighbor] === 0 ||
+          (input.adaptiveGapDistance && input.writeMask[neighbor] === 0) ||
           (input.topologyRegionIds &&
             input.topologyRegionIds[index] !== input.topologyRegionIds[neighbor])
         ) {
@@ -953,7 +963,13 @@ export function repairSurfaceTexture(
     layerEnd = tail;
     distance += 1;
     if (addedAtNextDistance) maxDistanceReached = distance;
-    report('propagating', 0.45, 0.4, distance, Math.max(1, input.maxDistance), true);
+    if (input.adaptiveGapDistance && head < tail && distance >= distanceLimit) {
+      distanceLimit = Math.min(input.pixelCount, distanceLimit * 2);
+    }
+    report('propagating', 0.45, 0.4,
+      input.adaptiveGapDistance ? head : distance,
+      Math.max(1, input.adaptiveGapDistance ? requestedPixels + boundarySourcePixels : input.maxDistance),
+      !input.adaptiveGapDistance);
   }
   if (input.maxDistance === 0 || boundarySourcePixels === 0) {
     report('propagating', 0.45, 0.4, 1, 1, true);
@@ -1238,7 +1254,7 @@ export function repairSurfaceTexture(
     propagatedPixels,
     repairedPixels,
     unresolvedPixels: requestedPixels - repairedPixels,
-    maxDistance: input.maxDistance,
+    maxDistance: distanceLimit,
     maxDistanceReached,
     coverageSkirtPixels: input.coverageSkirtPixels,
     coverageSkirtPixelCount,

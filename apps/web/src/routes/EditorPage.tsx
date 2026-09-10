@@ -440,7 +440,7 @@ function createReusableProjectionBakeSignature(input: {
     )
     .join('|');
   return [
-    'editor-projection-bake-cache-v9',
+    'editor-projection-bake-cache-v10',
     input.purpose,
     stackSignature,
     input.group.matrixWorld.elements.join(','),
@@ -4995,7 +4995,9 @@ export function EditorPage({
         projectedLayers.map(async (layer) =>
           isLocalRepaintProjectionLayer(layer) && layer.maskUrl
             ? { ...layer,
-                imageUrl: await createProjectionMaskedImage(layer.imageUrl, layer.maskUrl),
+                imageUrl: await createProjectionMaskedImage(layer.imageUrl, layer.maskUrl, {
+                  ignoreSourceAlpha: layer.ignoreSourceAlpha ?? true,
+                }),
                 maskUrl: undefined, ignoreSourceAlpha: false }
             : layer,
         ),
@@ -7257,8 +7259,8 @@ export function EditorPage({
             topologyRegionIds: topology.regionIds,
             seamLinks: topology.seamLinks,
             // Complete every reachable hatch-visible texel in one Worker pass.
-            // The queue remains O(N), while topology regions and physical seam
-            // links prevent atlas-space bleeding into unrelated surfaces.
+            // The queue remains O(N); adaptive filling stays inside selected
+            // gaps and same-region original boundaries, never foreign seams.
             ...completionPolicy.propagation,
           },
           {
@@ -7309,9 +7311,10 @@ export function EditorPage({
         options?.taskContext?.markFirstResult({ layerId: repairLayer.id });
         if (!benchmarkOnly && !silentForeground) {
           pushToast({
-            tone: 'success',
+            tone: repair.stats.unresolvedPixels > 0 ? 'warning' : 'success',
             title: t('contentAwareFillComplete'),
-            description: `${t('uvRepairLayerCreated')}: ${repairLayer.name} · ${repair.stats.repairedPixels.toLocaleString()} px`,
+            description: `${t('uvRepairLayerCreated')}: ${repairLayer.name} · ${repair.stats.repairedPixels.toLocaleString()} px` +
+              (repair.stats.unresolvedPixels > 0 ? `；仍有 ${repair.stats.unresolvedPixels.toLocaleString()} px 缺少可靠边界颜色，可使用局部重绘补充。` : ''),
             dedupeKey: `content-aware-repair:${repairLayer.id}`,
           });
         }

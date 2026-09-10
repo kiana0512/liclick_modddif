@@ -820,18 +820,25 @@ export async function createMaskedProjectedImage(imageUrl: string, projectionMas
 
 /**
  * Flattens a projection-space mask into the source alpha before UV baking.
- * A local repaint result is a complete rendered frame, so its source alpha is
- * ignored and the authored brush mask is the only coverage source. Baking that
- * dedicated mask into alpha makes the merge robust if an optional mask texture
- * cannot be loaded by the GPU path. Ordinary generated layers never use this.
+ * ALG-LR-013 merge parity v1.1: preserve model-clipped source alpha when the
+ * layer uses it in the viewport. Legacy full-frame results still ignore alpha.
+ * Flatten the two coverage factors once, then bake with ignoreSourceAlpha=false.
  */
-export async function createProjectionMaskedImage(imageUrl: string, projectionMaskUrl: string) {
+export async function createProjectionMaskedImage(
+  imageUrl: string,
+  projectionMaskUrl: string,
+  options: { ignoreSourceAlpha?: boolean } = {},
+) {
   const [sourceImage, projectionMask] = await Promise.all([
     loadImageData(imageUrl, maxCutoutDimension),
     loadImageData(projectionMaskUrl, maxCutoutDimension, 'local repaint projection mask'),
   ]);
   return imageDataToPngUrl(
-    await processMaskedProjectedImageInWorker(sourceImage, projectionMask, 'projection-alpha-only'),
+    await processMaskedProjectedImageInWorker(
+      sourceImage,
+      projectionMask,
+      options.ignoreSourceAlpha === false ? 'mask-only' : 'projection-alpha-only',
+    ),
   );
 }
 
