@@ -23,6 +23,10 @@ const vertex = `
     gl_Position = mix(currentClip, vec4(uv * 2.0 - 1.0, 0.0, 1.0), uvPass);
   }
 `;
+// Run derivatives before discard. Integer face IDs reject hidden geometry;
+// coplanar adjacent triangles need a subpixel plane-depth comparison because UV
+// and screen texel centres differ. Broad depth tolerances/neighbour IDs would
+// admit hidden rail backs. Keep these notes outside the shipped shader string.
 const paintFragment = `
   varying vec3 faceId;
   varying vec2 paintUv;
@@ -39,18 +43,11 @@ const paintFragment = `
   float repaintWeight() {
     vec3 ndc = currentClip.xyz / max(currentClip.w, 1e-20);
     vec2 screenUv = ndc.xy * 0.5 + 0.5;
-    // Derivatives must run uniformly across the fragment quad, before discard.
     vec2 dx = dFdx(screenUv), dy = dFdy(screenUv);
     vec2 z = vec2(dFdx(ndc.z), dFdy(ndc.z)) * 0.5;
     if (currentClip.w <= 0.0 || any(greaterThan(abs(ndc), vec3(1.0)))) discard;
-    // The integer ID test is intentionally not a fuzzy depth comparison: even
-    // arbitrarily close but occluded geometry must not receive this stroke.
     vec3 front = floor(texture2D(visibleFaces, screenUv).rgb * 255.0 + 0.5);
     if (any(greaterThan(abs(front - faceId), vec3(0.25)))) {
-      // UV texel centres and screen pixel centres differ. Coplanar adjacent
-      // triangles need a subpixel plane-depth test, otherwise their shared
-      // edges become unpainted diagonal seams. Never use a broad world-depth
-      // tolerance or neighbouring IDs (those would admit hidden rail backs).
       float determinant = dx.x * dy.y - dx.y * dy.x;
       if (abs(determinant) < 1e-16 || dot(front, vec3(1.0)) < 0.5) discard;
       vec2 gradient = vec2(z.x * dy.y - z.y * dx.y, dx.x * z.y - dy.x * z.x) / determinant;
@@ -428,6 +425,8 @@ export class UvRepaint {
     this.brush.vertexShader =
       material.vertexShader.replace(/void main\(\)\s*\{/, 'void paintSourceVertex() {') +
       vertex.replace('void main() {', 'void main() { paintSourceVertex();');
+    // Depth selects strongest visible hit; ties retain first stable triangle.
+    // The separate composite applies shared UV erasure exactly once per stamp.
     this.brush.fragmentShader =
       material.fragmentShader.replace(/void main\(\)\s*\{/, 'void paintSourceFragment() {') +
       paintFragment +
@@ -440,8 +439,6 @@ export class UvRepaint {
           if (gl_FragColor.a <= 0.0039) discard;
           gl_FragColor.a *= weight;
         }
-        // Strongest visible brush hit wins; equal weights keep the first stable
-        // mesh/triangle. A separate composite prevents repeated shared-UV erase.
         gl_FragDepth = 1.0 - weight;
       }`;
     this.brush.needsUpdate = true;
