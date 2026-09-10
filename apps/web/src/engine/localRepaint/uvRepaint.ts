@@ -12,13 +12,11 @@ type Stroke = { before: Map<number, Promise<Uint8Array<ArrayBuffer>>>; changed: 
 const vertex = `
   attribute vec3 repaintFaceId;
   varying vec3 faceId;
-  varying vec2 paintUv;
   varying vec4 currentClip;
   uniform mat4 currentViewProjection;
   uniform float uvPass;
   void main() {
     faceId = repaintFaceId;
-    paintUv = uv;
     currentClip = currentViewProjection * modelMatrix * vec4(position, 1.0);
     gl_Position = mix(currentClip, vec4(uv * 2.0 - 1.0, 0.0, 1.0), uvPass);
   }
@@ -29,7 +27,6 @@ const vertex = `
 // admit hidden rail backs. Keep these notes outside the shipped shader string.
 const paintFragment = `
   varying vec3 faceId;
-  varying vec2 paintUv;
   varying vec4 currentClip;
   uniform sampler2D visibleFaces;
   uniform sampler2D visibleDepth;
@@ -135,13 +132,10 @@ export function createUvRepaintSourceMaterial(source: THREE.ShaderMaterial) {
       `
       void main() { capturedVertex(); gl_Position = vec4(uv * 2.0 - 1.0, 0.0, 1.0); }
     `,
-    fragmentShader:
-      source.fragmentShader
-        .replace(/#include <(?:tonemapping|colorspace)_fragment>/g, '')
-        .replace(main, 'void capturedFragment() {') +
-      `
-      void main() { capturedFragment(); }
-    `,
+    fragmentShader: source.fragmentShader.replace(
+      /#include <(?:tonemapping|colorspace)_fragment>/g,
+      '',
+    ),
     side: THREE.DoubleSide,
     depthTest: false,
     depthWrite: false,
