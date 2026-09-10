@@ -11,7 +11,7 @@ import {
   captureCurrentLocalRepaintView,
   captureCurrentNormalPreview,
   captureCurrentView,
-  snapshotCurrentCaptureCamera,
+  frameGenerationCapture,
   withStableClayTargetPresentation,
 } from '@/engine/capture/captureCurrentView';
 import { requestContentAwareRepair } from '@/engine/contentAware';
@@ -2909,8 +2909,8 @@ export function GeneratePanel({
     const objectMatrixWorld = getImportedModelMatrixWorld(objectId);
     const shouldInspectExistingSingleViewTexture =
       !isMultiviewRequest && hasVisibleTextureLayerCandidate(objectId);
-    const singleViewCameraSnapshot = shouldInspectExistingSingleViewTexture
-      ? snapshotCurrentCaptureCamera(1)
+    const singleViewCameraSnapshot = !isMultiviewRequest
+      ? await frameGenerationCapture(objectId, 1, requestedViews[0]?.viewDirection, requestedViews[0]?.viewUp, signal)
       : undefined;
     let currentSingleViewEffectUrl: string | undefined;
     if (shouldInspectExistingSingleViewTexture) {
@@ -3483,11 +3483,12 @@ export function GeneratePanel({
         });
         return false;
       }
-      // Freeze the authored view synchronously at the click boundary. Login,
-      // mask encoding and cold GPU preparation may take several seconds; the
-      // user can keep orbiting without changing any of the three model inputs.
+      // Validate the canonical UV mask before framing. After the short camera
+      // transition all passes share one frozen camera, including after login.
       const captureAspect = 1;
-      const captureCameraSnapshot = snapshotCurrentCaptureCamera(captureAspect);
+      if (!initialMaskState.paintMaskCapture) {
+        throw new Error('蒙版尚未准备好，请稍后重试。');
+      }
       const captureObjectMatrixWorld = getImportedModelMatrixWorld(captureObjectId);
       const objectId = captureObjectId;
       const referenceStateAtSubmission = useReferenceStore.getState();
@@ -3554,8 +3555,9 @@ export function GeneratePanel({
       setSubmissionActive(true);
       setLocalRepaintPreparation((current) => ({
         startedAt: current?.startedAt ?? Date.now(),
-        detail: '正在准备当前视角',
+        detail: '正在调整生成取景',
       }));
+      const captureCameraSnapshot = await frameGenerationCapture(objectId, captureAspect, undefined, undefined, requestAbortController.signal);
       // Keep the previous completed repaint on its resident GPU path while the
       // next request prepares detached browser snapshots.
       useSceneStore.getState().setLocalRepaintGenerationPresentationActive(true);
@@ -3622,11 +3624,11 @@ export function GeneratePanel({
       }));
       const maskCaptureStartedAt = performance.now();
       const currentPaintMaskDataUrl =
-        (await useSceneStore.getState().paintMaskCapture?.({
+        await initialMaskState.paintMaskCapture({
           aspect: captureAspect,
           camera: captureCameraSnapshot.camera,
           resolution: LOCAL_REPAINT_INPUT_RESOLUTION,
-        })) ?? useSceneStore.getState().paintMaskDataUrl;
+        });
       document.body.dataset.localRepaintButton2MaskCaptureMs = (
         performance.now() - maskCaptureStartedAt
       ).toFixed(1);

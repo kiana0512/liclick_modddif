@@ -14,7 +14,8 @@ const budgets = [
     // application shell and is counted by the total JavaScript budget below.
     minimumMatchBytes: 100_000,
   },
-  { label: 'editor route', prefix: 'EditorPage-', maxBytes: 495_000 },
+  // Generation framing adds the submission guards and lazy entry (~480 bytes).
+  { label: 'editor route', prefix: 'EditorPage-', maxBytes: 495_512 },
   { label: 'high bake snapshot', prefix: 'bakeHighSnapshot-', maxBytes: 700_000 },
   {
     label: 'shared 3D pipeline',
@@ -35,7 +36,10 @@ const budgets = [
 // Single-view restored-result auto projection adds recovery/commit guards.
 // Candidate Cloud build: 3,150,063 bytes; allow 2,000 bytes of feature growth.
 // Individual chunk limits, image resolution and QA gates remain unchanged.
-const maxTotalJavaScriptBytes = 3_150_750;
+// CHG-20260910-GENERATION-CAMERA-FRAMING: new camera animation/framing feature,
+// measured 3,153,807 bytes, mostly loaded only on generation. Allocate 4,000
+// bytes for this feature; image quality and all other chunk budgets unchanged.
+const maxTotalJavaScriptBytes = 3_154_750;
 
 let entries;
 try {

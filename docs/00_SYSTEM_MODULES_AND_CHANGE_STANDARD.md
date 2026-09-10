@@ -1,6 +1,6 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
-> 文档版本：`2.19.14`
+> 文档版本：`2.19.15`
 >
 > 生效日期：`2026-09-09`
 >
@@ -11,6 +11,8 @@
 > 审计口径：`0a2519d + 607e82f + 2568e40`，不包含错误文档提交 `2bde8c6/e03bab2/d1c5f78`
 
 ## 1. 文档地位与强制边界
+
+2026-09-10 `CHG-20260910-GENERATION-CAMERA-FRAMING`：主模块 M03，协作 M04/M08；新增 `ALG-CAP-007` v1.0.0。单视图与局部重绘生成前复用现有单视图全对象包围盒和 0.88 留边取景，屏幕相机以 240ms 缓动适配；保持选定方向及透视 FOV，正交调整 zoom。仅一次取景计算，动画无图像读回/渲染调用，用户移动相机或取消则中止提交。局部重绘必须按冻结新相机重新捕获作者 UV 蒙版，不回退旧截图。GPU/CPU/Worker/shader、投影/UV/export 仍使用同一序列化相机与原公式，分辨率、QA、Schema、Command/CAS/ownership/资产不变，无数据迁移。详见对应变更卡。
 
 `CHG-20260909-SINGLE-PROJECTION-RESTORE-REVEAL`：M06/M03，协作 M08；PROJECTED-MATERIAL-IDENTITY v1.0.0。A100 实际工程恢复已完成 full 模型/2048 UV/单投影编译，原显示门禁只识别 Stack 名称，遗漏单层工厂返回的 LiclickProjectedLayer，导致无限旋转。统一常驻材质身份，覆盖初次显示、结构复用、UV bootstrap 和临时保留；不接受 Warmup/白模/不完整投影。GPU 仅显示与驻留生命周期变化，shader/CPU/Worker/蒙版/UV/export/分辨率及持久化契约不改，无迁移。详见 [变更卡](changes/CHG-20260909-SINGLE-PROJECTION-RESTORE-REVEAL.md)。
 

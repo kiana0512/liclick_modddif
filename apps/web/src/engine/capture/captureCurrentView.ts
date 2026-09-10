@@ -73,7 +73,7 @@ function getViewFrame(box: THREE.Box3, viewDirection: THREE.Vector3, sourceUp: T
   };
 }
 
-function getTargetBounds(scene: THREE.Scene, objectId: string) {
+export function getTargetBounds(scene: THREE.Scene, objectId: string) {
   const box = new THREE.Box3();
   let found = false;
   scene.updateMatrixWorld(true);
@@ -141,7 +141,7 @@ function getViewDirection(camera: THREE.Camera, target?: THREE.Vector3) {
   return direction.normalize();
 }
 
-function createFitObjectCamera(
+export function createFitObjectCamera(
   sourceCamera: THREE.Camera,
   box: THREE.Box3,
   aspect: number,
@@ -208,6 +208,11 @@ function createFitObjectCamera(
 
 function vectorFromTuple(tuple?: [number, number, number]) {
   return tuple ? new THREE.Vector3(tuple[0], tuple[1], tuple[2]) : undefined;
+}
+
+/** Load generation-only framing on demand; ordinary captures remain unchanged. */
+export async function frameGenerationCapture(...args: Parameters<typeof import('./generationFraming').frameGenerationCapture>) {
+  return (await import('./generationFraming')).frameGenerationCapture(...args);
 }
 
 async function resolveCaptureCamera(request: CaptureCurrentViewRequest, aspect: number) {

@@ -191,7 +191,7 @@ assert.match(
 );
 assert.match(
   generatePanelSource,
-  /paintMaskCapture\?\.\(\{[\s\S]*resolution: LOCAL_REPAINT_INPUT_RESOLUTION/,
+  /initialMaskState.paintMaskCapture\(\{[\s\S]*resolution: LOCAL_REPAINT_INPUT_RESOLUTION/,
   'the canonical submitted mask must be captured at the same 2K resolution as the current effect',
 );
 assert.doesNotMatch(
