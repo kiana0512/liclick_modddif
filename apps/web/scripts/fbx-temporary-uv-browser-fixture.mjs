@@ -15,7 +15,7 @@ const imageUrl = (paint) => {
   paint(canvas.getContext('2d')); return canvas.toDataURL();
 };
 async function pixels(blob) {
-  const bitmap = await createImageBitmap(blob);
+  const bitmap = await window.createImageBitmap(blob);
   const canvas = document.createElement('canvas'); canvas.width = bitmap.width; canvas.height = bitmap.height;
   const ctx = canvas.getContext('2d'); ctx.drawImage(bitmap, 0, 0); bitmap.close();
   return ctx.getImageData(0, 0, canvas.width, canvas.height);
@@ -28,7 +28,7 @@ export async function run() {
   const material = new THREE.MeshStandardMaterial({ color: '#f4f5f2' });
   // Deliberately undecodable original material source. The working color merge
   // does not consume it and neither may the unmerged FBX path.
-  const original = new Image(); original.src = 'data:text/plain,not-an-image';
+  const original = new window.Image(); original.src = 'data:text/plain,not-an-image';
   material.map = new THREE.Texture(original);
   group.add(new THREE.Mesh(geometry, material)); group.updateMatrixWorld(true);
   const importedModel = { objectId: 'fixture', group, uvSets: ['UV0'], restoreStage: 'full' };
@@ -68,21 +68,21 @@ export async function run() {
   check(mismatches === 0, `manual merge parity: ${mismatches} differing channels`);
   useLayerStore.setState({ layers });
   const downloads = [];
-  const oldClick = HTMLAnchorElement.prototype.click;
-  HTMLAnchorElement.prototype.click = function () { downloads.push(fetch(this.href).then((r) => r.blob())); };
+  const oldClick = window.HTMLAnchorElement.prototype.click;
+  window.HTMLAnchorElement.prototype.click = function () { downloads.push(window.fetch(this.href).then((r) => r.blob())); };
   try { for (const target of ['scene', 'object']) await exportModelFbx({ ...input, target, selectedObjectId: 'fixture' }); }
-  finally { HTMLAnchorElement.prototype.click = oldClick; }
+  finally { window.HTMLAnchorElement.prototype.click = oldClick; }
   check(downloads.length === 2, 'both FBX entries download');
   const sizes = [];
   for (const pending of downloads) {
     const blob = await pending; const bytes = new Uint8Array(await blob.arrayBuffer()); sizes.push(bytes.length);
-    check(new TextDecoder().decode(bytes.slice(0, 18)) === 'Kaydara FBX Binary', 'FBX binary header');
+    check(new window.TextDecoder().decode(bytes.slice(0, 18)) === 'Kaydara FBX Binary', 'FBX binary header');
     const pngHeader = [137, 80, 78, 71, 13, 10, 26, 10];
     const start = bytes.findIndex((_, i) => pngHeader.every((v, j) => bytes[i + j] === v));
     check(start > 0, 'embedded PNG'); let end = start + 8;
     while (end < bytes.length) {
       const length = new DataView(bytes.buffer).getUint32(end);
-      const type = new TextDecoder().decode(bytes.slice(end + 4, end + 8)); end += length + 12;
+      const type = new window.TextDecoder().decode(bytes.slice(end + 4, end + 8)); end += length + 12;
       if (type === 'IEND') break;
     }
     const embedded = await pixels(new Blob([bytes.slice(start, end)], { type: 'image/png' }));

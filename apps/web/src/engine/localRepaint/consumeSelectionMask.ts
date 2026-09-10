@@ -63,7 +63,7 @@ export function getSelectionConsumptionMaterial(source: THREE.ShaderMaterial) {
   )
     throw new Error('Selection consumption requires a literal projected repaint material.');
   const material = new THREE.ShaderMaterial({
-    uniforms: { ...source.uniforms, consumptionStrokeMap: { value: null } },
+    uniforms: { ...source.uniforms, consumptionStrokeMap: { value: null }, consumptionUsesUv: { value: 0 } },
     vertexShader:
       source.vertexShader.replace(entry, 'void repaintVertex() {') +
       `
@@ -76,14 +76,15 @@ export function getSelectionConsumptionMaterial(source: THREE.ShaderMaterial) {
       source.fragmentShader.replace(entry, 'void repaintFragment() {') +
       `
       uniform sampler2D consumptionStrokeMap;
+      uniform float consumptionUsesUv;
       void main() {
-        repaintFragment();
+        if (consumptionUsesUv < 0.5) repaintFragment();
         vec4 capturePosition = objectMatrixDelta * vec4(vWorldPosition, 1.0);
         vec4 clip = projectorMatrix * capturePosition;
         vec2 strokeUv = clip.xy / max(clip.w, 0.0001) * 0.5 + 0.5;
         strokeUv.y = 1.0 - strokeUv.y;
-        float strokeAlpha = texture2D(consumptionStrokeMap, strokeUv).a;
-        float alpha = gl_FragColor.a * step(0.0039, strokeAlpha);
+        float strokeAlpha = texture2D(consumptionStrokeMap, mix(strokeUv, vec2(vUv.x, 1.0 - vUv.y), consumptionUsesUv)).a;
+        float alpha = consumptionUsesUv > 0.5 ? strokeAlpha : gl_FragColor.a * step(0.0039, strokeAlpha);
         if (alpha <= 0.01) discard;
         vec3 normal = normalize(objectNormalDelta * vWorldNormal);
         float front = step(0.0, dot(normal, projectorPosition - capturePosition.xyz));
@@ -115,6 +116,7 @@ export function consumeSelectionMask(input: {
   meshes: THREE.Mesh[];
   material: THREE.ShaderMaterial;
   stroke: HTMLCanvasElement;
+  strokeSpace?: 'projection' | 'uv';
   target: THREE.WebGLRenderTarget;
   inverted: boolean;
 }) {
@@ -127,6 +129,7 @@ export function consumeSelectionMask(input: {
   strokeTexture.minFilter = THREE.LinearFilter;
   strokeTexture.magFilter = THREE.LinearFilter;
   material.uniforms.consumptionStrokeMap.value = strokeTexture;
+  material.uniforms.consumptionUsesUv.value = input.strokeSpace === 'uv' ? 1 : 0;
   material.blendSrc = input.inverted ? THREE.OneMinusDstColorFactor : THREE.ZeroFactor;
   material.blendDst = input.inverted ? THREE.OneFactor : THREE.OneMinusSrcColorFactor;
   const scene = new THREE.Scene();

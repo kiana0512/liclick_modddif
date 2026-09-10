@@ -1,4 +1,5 @@
 import type * as THREE from 'three';
+import { flushLiveUvCommits } from '@/engine/projection/liveProjectedCanvasTextureRegistry';
 import { createBakeReport } from './bakeReport';
 import {
   dilateImageData,
@@ -387,6 +388,7 @@ async function sharpenCoveredTexels(imageData: ImageData, coverage?: Uint8Array)
 export async function bakeProjectedLayerToTexture(
   input: BakeProjectedLayerInput,
 ): Promise<BakeProjectedLayerResult> {
+  await flushLiveUvCommits();
   const startedAt = performance.now();
   const importedModel = useSceneStore.getState().importedModel;
   if (!importedModel || importedModel.objectId !== input.objectId) {
@@ -999,6 +1001,7 @@ async function validateGpuBakeCoverage(input: {
 export async function bakeVisibleProjectedLayersToTexture(
   input: BakeVisibleProjectedLayersInput,
 ): Promise<BakeProjectedLayerResult> {
+  await flushLiveUvCommits();
   const startedAt = performance.now();
   const importedModel = useSceneStore.getState().importedModel;
   if (!importedModel || importedModel.objectId !== input.objectId) {

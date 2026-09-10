@@ -157,7 +157,7 @@ try {
     '/src/engine/viewport/localRepaintResidentHandoff.ts',
   );
   const evaluateRelease = new Function('storedLayers', 'isLocalRepaintBelowMergedUv', 'resident',
-    'isLocalRepaintHandoffForObject', 'previousRoot', 'nextObjectId', `
+    'isLocalRepaintHandoffForObject', 'previousRoot', 'nextObjectId', 'isNativeUvRepaintLayer', `
     const previousLayerId = 'local-repaint-result';
     const previousOverride = { root: previousRoot, layerId: previousLayerId };
     const useLayerStore = { getState: () => ({ layers: storedLayers }) };
@@ -165,8 +165,9 @@ try {
     const promoteLocalRepaintResidentMaskTexture = () => resident;
     ${readyBody[1]}
   `);
+  const { isNativeUvRepaintLayer } = await server.ssrLoadModule('/src/engine/localRepaint/uvRepaintState.ts');
   const canRelease = (layers, policy, resident, previousRoot = { visible: true, userData: {} }, nextObjectId = 'object-a') =>
-    evaluateRelease(layers, policy, resident, isLocalRepaintHandoffForObject, previousRoot, nextObjectId);
+    evaluateRelease(layers, policy, resident, isLocalRepaintHandoffForObject, previousRoot, nextObjectId, isNativeUvRepaintLayer);
   assert.equal(canRelease([merged, persistedRepaint], ordered.isLocalRepaintBelowMergedUv, false), true);
   assert.equal(canRelease([persistedRepaint], ordered.isLocalRepaintBelowMergedUv, false), false);
   assert.equal(canRelease([persistedRepaint], ordered.isLocalRepaintBelowMergedUv, true), true);

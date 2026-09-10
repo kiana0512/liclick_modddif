@@ -40,6 +40,7 @@ let liveMask;
 const runRestore = compile(`return (paintTool, activePaintLayer) => { ${editingFlags}\nreturn (${restoreEffect})(); };`, {
   useLayerStore: layerStore, useSceneStore: { getState: () => sceneState }, selectedObjectId: 'object',
   isEditableLocalRepaintProjectionLayer: (layer) => Boolean(layer?.camera && layer?.maskUrl),
+  isNativeUvRepaintLayer: (layer) => layer.type === 'uv' && layer.id.startsWith('local-repaint-uv-native-v1'),
   getLocalRepaintSeamMode: () => 'enhanced', hasEditableEnhancedLocalRepaintSource: () => true,
   createLocalRepaintSourceKey: (source) => source.imageUrl,
   isLocalRepaintSourceForLayer: (source, layer) => source?.projectionLayerId === layer.id,

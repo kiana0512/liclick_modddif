@@ -1,7 +1,8 @@
 import * as THREE from 'three';
+import { isNativeUvRepaintLayer } from '@/engine/localRepaint/uvRepaintState';
 import { bakeVisibleProjectedLayersToTexture } from '@/engine/bake/bakeProjectedLayerToTexture';
 import { resolveImageAssetUrl } from '@/engine/bake/imageSampler';
-import { getLiveProjectedCanvasState } from '@/engine/projection/liveProjectedCanvasTextureRegistry';
+import { getLiveProjectedCanvasState, flushLiveUvCommits } from '@/engine/projection/liveProjectedCanvasTextureRegistry';
 import { createProjectionMaskedImage } from '@/engine/projection/createMaskedProjectedImage';
 import {
   findExactLayerStackTexture,
@@ -220,6 +221,7 @@ async function repairLocalRepaintUvBlobForExport(
 }
 
 function isRenderedColorUvLayer(layer: ReturnType<typeof findVisibleUvLayers>[number]) {
+  if (isNativeUvRepaintLayer(layer)) return false;
   return Boolean(
     isLocalRepaintUvOverlayLayer(layer) ||
     layer.renderedColor ||
@@ -536,6 +538,7 @@ async function flattenVisibleLayersToBaseColor(
   fallbackColor: [number, number, number],
   root: THREE.Object3D,
 ) {
+  await flushLiveUvCommits();
   if (!importedBaseBlob && !baseBlob && uvLayers.length === 0) return undefined;
   // Export uses the same two-stage stack as the editor: first build the ordinary
   // projected/UV base, then source-over every local-repaint UV patch in authored
@@ -570,7 +573,7 @@ async function flattenVisibleLayersToBaseColor(
   const layerRecords = await Promise.all(
     sourceLayerRecords.map(async ({ layer, blob }) => ({
       layer,
-      blob: isLocalRepaintUvOverlayLayer(layer)
+      blob: isLocalRepaintUvOverlayLayer(layer) && !isNativeUvRepaintLayer(layer)
         ? await repairLocalRepaintUvBlobForExport(blob, root, width, height)
         : blob,
     })),
@@ -936,6 +939,7 @@ export async function prepareTexturedModelExport(
 
 /** FBX-TEMP-UV-EXPORT v1: the color-export merge, without publishing a layer. */
 export async function prepareFbxModelExport(input: ModelExportInput): Promise<PreparedTexturedExport> {
+  await flushLiveUvCommits();
   const root = cloneExportRoot(input);
   const objectId = getTexturedExportObjectId(input);
   const resolution = exportResolutionToSize[useSettingsStore.getState().resolution] ?? 2048;

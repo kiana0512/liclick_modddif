@@ -1,3 +1,4 @@
+import { isNativeUvRepaintLayer } from '@/engine/localRepaint/uvRepaintState';
 import {
   startTransition,
   useCallback,
@@ -87,6 +88,7 @@ import {
   setDebugUvBakeVerbose,
 } from '@/engine/bake/uvBakeDebugControls';
 import {
+  flushLiveUvCommits,
   getLiveProjectedTextureBlob,
   getLiveProjectedTextureSourceState,
   isLiveProjectedCanvasUrl,
@@ -3142,6 +3144,12 @@ export function EditorPage({
       });
     }
     for (const layer of projectForSave.layers) {
+      if (isNativeUvRepaintLayer(layer)) {
+        persistenceTasks.push(async () => {
+          layer.localRepaintSourceUrl = await persistOptionalAsset(layer.localRepaintSourceUrl, 'layers', `${layer.id}-source.png`);
+          layer.localRepaintRawSourceUrl = await persistOptionalAsset(layer.localRepaintRawSourceUrl, 'layers', `${layer.id}-raw-source.png`);
+        });
+      }
       // Canonical layer URLs are resolved by the workspace loader and updated by
       // live editing. The dedicated repaint metadata may still be a stale
       // relative/previous-server URL after reopening an older project.
@@ -3206,6 +3214,7 @@ export function EditorPage({
     // bounded-parallel so a project with many images does not save serially.
     await mapWithConcurrency(persistenceTasks, 3, (task) => task());
     projectForSave.layers.forEach((layer) => {
+      if (isNativeUvRepaintLayer(layer)) return;
       if (!layer.localRepaintSourceUrl && !layer.localRepaintMaskUrl) return;
       layer.localRepaintSourceUrl = layer.imageUrl;
     });
@@ -4966,7 +4975,20 @@ export function EditorPage({
       detail: t('autoBakePreparing'),
       progress: 0.02,
     });
+    const temporaryUvSnapshots: string[] = [];
     try {
+      await flushLiveUvCommits();
+      // Worker/Image decoders cannot open live registry URLs. Freeze committed
+      // RGBA once for this merge without replacing the user's live layer.
+      const uvSnapshots = new Map<string, string>();
+      for (const layer of selectedUvLayers) {
+        if (!isLiveProjectedCanvasUrl(layer.imageUrl)) continue;
+        const blob = await getLiveProjectedTextureBlob(layer.imageUrl);
+        if (!blob) throw new Error('UV 图层像素不可用；已保留原图层，未执行合并。');
+        const url = URL.createObjectURL(blob);
+        temporaryUvSnapshots.push(url);
+        uvSnapshots.set(layer.id, url);
+      }
       // Local repaint masks are editable in-memory canvases. Flatten them into
       // source alpha before UV rasterization so the baked result cannot silently
       // fall back to projecting the complete ComfyUI frame when a mask texture
@@ -5086,11 +5108,12 @@ export function EditorPage({
       }
       for (let index = 0; index < selectedUvLayers.length; index += 1) {
         const layer = selectedUvLayers[index];
+        const uvSourceUrl = uvSnapshots.get(layer.id) ?? layer.imageUrl;
         if (webGpuComposite.enabled) {
           try {
             const result = await compositeRgbaUrlUnderWithWebGpu(
               mergedRgba,
-              layer.imageUrl,
+              uvSourceUrl,
               bakeResolution,
               bakeResolution,
               layer.opacity,
@@ -5123,7 +5146,7 @@ export function EditorPage({
             );
           }
         } else {
-          const source = await urlToImageData(layer.imageUrl, bakeResolution, bakeResolution);
+          const source = await urlToImageData(uvSourceUrl, bakeResolution, bakeResolution);
           compositeRgbaUnderInPlace(mergedRgba, source.data, layer.opacity);
         }
         setManualBakeProgress({
@@ -5308,6 +5331,7 @@ export function EditorPage({
       }
       if (benchmarkOnly || options?.throwOnError) throw error;
     } finally {
+      temporaryUvSnapshots.forEach((url) => URL.revokeObjectURL(url));
       delete document.body.dataset.perfUvBakePhase;
       releaseWebGpuRgbaCompositeResources();
       manualBakeRunningRef.current = false;

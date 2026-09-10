@@ -4,6 +4,8 @@
   "version": "0.1.3",
   "type": "module",
   "scripts": {
+    "test:native-uv-repaint": "node scripts/test-native-uv-repaint.mjs",
+    "check:native-uv-browser": "node scripts/run-uv-repaint-browser.mjs --viewport",
     "test:fbx-temporary-uv": "node scripts/test-fbx-temporary-uv.mjs",
     "test:projection-reliability": "node scripts/test-projection-reliability.mjs",
     "test:flat-capture-material-isolation": "node scripts/test-flat-capture-material-isolation.mjs",

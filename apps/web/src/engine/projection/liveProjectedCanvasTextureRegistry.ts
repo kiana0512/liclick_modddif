@@ -27,6 +27,40 @@ type EncodedPng = {
 
 const liveCanvasTextures = new Map<string, LiveCanvasEntry>();
 const liveImageTextures = new Map<string, LiveImageEntry>();
+const liveUvTargets = new Map<string, THREE.Texture>();
+const pendingUvCommits = new Set<Promise<unknown>>();
+const failedUvCommits = new Map<string, unknown>();
+
+/** GPU-owned sRGB pixels with a committed CPU mirror for assets/export. */
+export function registerLiveUvRenderTarget(id: string, canvas: HTMLCanvasElement, texture: THREE.Texture) {
+  const url = registerLiveProjectedCanvasTexture(id, canvas, THREE.SRGBColorSpace, { flipY: true });
+  liveUvTargets.set(url, texture);
+  failedUvCommits.delete(url);
+  return url;
+}
+
+export function unregisterLiveUvRenderTarget(url: string, texture: THREE.Texture) {
+  if (liveUvTargets.get(url) !== texture) return;
+  liveUvTargets.delete(url);
+  failedUvCommits.delete(url);
+  // Persisted/history consumers can still resolve the committed CPU image.
+  const entry = liveCanvasTextures.get(url);
+  if (entry) entry.texture.needsUpdate = true;
+}
+
+export function trackLiveUvCommit(work: Promise<unknown>, url?: string) {
+  pendingUvCommits.add(work);
+  const owner = url ? liveUvTargets.get(url) : undefined;
+  void work.catch((error) => {
+    if (url && liveUvTargets.get(url) === owner) failedUvCommits.set(url, error);
+  });
+  void work.finally(() => pendingUvCommits.delete(work)).catch(() => undefined);
+}
+
+export async function flushLiveUvCommits() {
+  while (pendingUvCommits.size) await Promise.all([...pendingUvCommits]);
+  if (failedUvCommits.size) throw new Error('UV 笔画读回失败，请重新载入后重试；未导出或保存不完整贴图。');
+}
 
 // WebGL2 allocates immutable storage on the first upload. Resizing the canvas
 // (notably the eraser's 1px bootstrap -> full UV mask) cannot be uploaded into
@@ -85,6 +119,7 @@ export function registerLiveProjectedCanvasTexture(
   options: { flipY?: boolean } = {},
 ) {
   const url = createLiveProjectedCanvasUrl(id);
+  liveUvTargets.delete(url);
   const existing = liveCanvasTextures.get(url);
   if (existing) {
     // A live URL is a stable material binding, not just a cache key. Reopening
@@ -160,6 +195,8 @@ export function getLiveProjectedTexture(
   colorSpace: THREE.ColorSpace = THREE.NoColorSpace,
   options: { flipY?: boolean } = {},
 ) {
+  const uvTarget = liveUvTargets.get(url);
+  if (uvTarget) return uvTarget;
   const entry = liveCanvasTextures.get(url) ?? liveImageTextures.get(url);
   if (!entry) return undefined;
   entry.flipY = options.flipY ?? entry.flipY;
@@ -232,11 +269,15 @@ function getEncodedPng(
 export function getLiveProjectedCanvasBlob(url: string) {
   const entry = liveCanvasTextures.get(url);
   if (!entry) return undefined;
+  if (liveUvTargets.has(url))
+    return flushLiveUvCommits().then(() => getEncodedPng(entry, () => canvasToPngBlob(entry.canvas)));
   return getEncodedPng(entry, () => canvasToPngBlob(entry.canvas));
 }
 
 export function getLiveProjectedTextureBlob(url: string) {
   const canvasEntry = liveCanvasTextures.get(url);
+  if (canvasEntry && liveUvTargets.has(url))
+    return flushLiveUvCommits().then(() => getEncodedPng(canvasEntry, () => canvasToPngBlob(canvasEntry.canvas)));
   if (canvasEntry) return getEncodedPng(canvasEntry, () => canvasToPngBlob(canvasEntry.canvas));
   const imageEntry = liveImageTextures.get(url);
   return imageEntry

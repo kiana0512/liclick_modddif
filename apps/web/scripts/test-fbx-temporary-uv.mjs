@@ -23,6 +23,7 @@ try {
     layers = rows; scene = { importedModel }; resolution = '2K'; bakeCalls = []; flattened = []; encoded = []; revoked = []; mutate = undefined; invalid = false; revisions = {}; maskOptions = [];
   };
   const dependencies = {
+    flushLiveUvCommits: async () => {},
     ...composition, ...uv, resolveBakeUvMergePlan,
     cloneExportRoot: () => root, getTexturedExportObjectId: () => 'model',
     exportResolutionToSize: { '1K': 1024, '2K': 2048, '4K': 4096, '8K': 8192 },

@@ -1,4 +1,5 @@
 import { captureColor } from './captureColor';
+import { flushLiveUvCommits } from '@/engine/projection/liveProjectedCanvasTextureRegistry';
 import { captureDepth } from './captureDepth';
 import { captureMask } from './captureMask';
 import { captureNormal } from './captureNormal';
@@ -616,6 +617,7 @@ export async function captureCurrentLocalRepaintView(
   maskUrl: string,
   options: { archive?: boolean } = {},
 ): Promise<Capture> {
+  await flushLiveUvCommits();
   const size = Math.min(request.resolution, maxCaptureSize);
   const aspect = Number.isFinite(request.aspect) && (request.aspect ?? 0) > 0 ? request.aspect! : 1;
   const width = aspect >= 1 ? size : Math.max(1, Math.round(size * aspect));

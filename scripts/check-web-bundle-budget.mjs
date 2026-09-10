@@ -20,7 +20,9 @@ const budgets = [
   // guard + authored-before-clay sequencing measures 498,829 bytes. Allow
   // 512 bytes here; retain the existing 3,160,000-byte total and other limits.
   { label: 'editor route', prefix: 'EditorPage-', maxBytes: 499_024 },
-  { label: 'high bake snapshot', prefix: 'bakeHighSnapshot-', maxBytes: 700_000 },
+  // CHG-20260910-UV-REPAINT: lazy UV engine/session, shared visibility and
+  // viewport adapters measure ~701,300 bytes here. Allocate 2,000 bytes only.
+  { label: 'high bake snapshot', prefix: 'bakeHighSnapshot-', maxBytes: 702_000 },
   {
     label: 'shared 3D pipeline',
     // Rollup chooses the facade name from the shared module graph. Adding the
@@ -55,7 +57,11 @@ const budgets = [
 // CHG-20260910-ADAPTIVE-GAP-DISTANCE: same Cloud configuration grows 876
 // bytes (3,162,508 -> 3,163,384) for adaptive CPU/Worker traversal and partial
 // result feedback. Allow 1,000 bytes; individual chunks/quality gates unchanged.
-const maxTotalJavaScriptBytes = 3_164_000;
+// CHG-20260910-UV-REPAINT: full-resolution UV painting is a new capability.
+// Matching Cloud builds: 3,163,590 -> 3,185,232 bytes (+21,642). The engine
+// and commit coordinator are lazy; grant 22,000 bytes, keeping every other
+// chunk limit, regression contract and output-resolution gate unchanged.
+const maxTotalJavaScriptBytes = 3_186_000;
 
 let entries;
 try {
