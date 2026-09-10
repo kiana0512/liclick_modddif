@@ -51,3 +51,8 @@ for(const resolution of [512,1024,2048,4096,8192]) {
   assert(options.uvIslandGutterPixels>0,'filter padding is a separate retained operation');
 }
 console.log('Merge v8: automatic topology growth and hole repair disabled at every resolution.');
+const shell=fs.readFileSync(new URL('../src/layouts/EditorShell.tsx',import.meta.url),'utf8');
+assert.match(shell,/\(\['1K', '2K', '4K'\] as const\)\.map/,'editor offers only supported output sizes');
+assert.doesNotMatch(shell,/\['1K', '2K', '4K', '8K'\]/,'8K is no longer selectable');
+const settings=fs.readFileSync(new URL('../src/stores/settingsStore.ts',import.meta.url),'utf8');
+assert.match(settings,/type Resolution = '1K' \| '2K' \| '4K' \| '8K'/,'old project schema is still readable; no silent downsampling migration');
