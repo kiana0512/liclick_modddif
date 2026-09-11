@@ -101,4 +101,86 @@ assert.doesNotMatch(
   'the transient live eraser texture must not rebuild the complete resident projected material',
 );
 
-console.log('layer context-menu policy regression passed');
+// Execute the production row and policy: internal capture/brush coverage must
+// not masquerade as a removable user eraser mask.
+const policyExports = {};
+new Function('exports', ts.transpileModule(eraserPolicySource, {
+  compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
+}).outputText)(policyExports);
+const row = tree.statements.find(n => ts.isFunctionDeclaration(n) && n.name?.text === 'LayerRow');
+assert(row);
+const rowDependencies = {
+  React: { createElement: (type, props, ...children) => ({ type, props, children }) },
+  hasClearableProjectedEraserMask: policyExports.hasClearableProjectedEraserMask,
+  cn: (...parts) => parts.filter(Boolean).join(' '), checkerStyle: {},
+  ...Object.fromEntries(['Eye', 'EyeOff', 'LayerThumbnail', 'SmallLayerToggle',
+    'LayerOpacityGlyph', 'LayerOverlayGlyph', 'LayerBlendGlyph', 'LayerMaskGlyph',
+    'MoreVertical'].map(name => [name, name])),
+};
+const renderRow = new Function(...Object.keys(rowDependencies), ts.transpileModule(row.getText(tree), {
+  compilerOptions: { target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.React },
+}).outputText + '\nreturn LayerRow;')(...Object.values(rowDependencies));
+function hasBadge(layer) {
+  const visit = node => Boolean(node && typeof node === 'object' &&
+    (node.props?.icon?.type === 'LayerMaskGlyph' || node.children?.flat().some(visit)));
+  return visit(renderRow({ layer }));
+}
+const ordinary = { id: 'projected-test', name: '投射贴图 · 当前视角', type: 'projected',
+  imageUrl: 'result.png', visible: true, opacity: 1, blendMode: 'normal' };
+const erased = { ...ordinary, maskUrl: 'keep-mask.png', maskSpace: 'uv', eraserAlgorithmVersion: 1 };
+for (const layer of [ordinary,
+  { ...ordinary, maskUrl: 'capture.png', maskSpace: 'projection' },
+  { ...ordinary, maskUrl: 'capture.png', maskSpace: 'projection', eraserAlgorithmVersion: 1 },
+  { ...ordinary, maskUrl: 'prepared-neutral-mask', maskSpace: 'uv' },
+  { ...erased, role: 'local-repaint-overlay', localRepaintMaskUrl: 'brush.png' },
+  { ...erased, type: 'uv' }, { ...erased, maskUrl: undefined },
+]) assert.equal(hasBadge(layer), false, JSON.stringify(layer));
+assert.equal(hasBadge(erased), true);
+assert.equal(hasBadge(JSON.parse(JSON.stringify(erased))), true, 'Saved eraser masks keep their badge');
+
+// Extract actual store patches, including the deferred refinement patch, so a
+// hard-coded version republished after undo cannot silently restore the badge.
+const viewportTree = ts.createSourceFile('ViewportCanvas.tsx', viewportSource, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+const updates = [];
+function collect(node) {
+  if (ts.isCallExpression(node) && node.expression.getText(viewportTree).endsWith('.updateLayer') &&
+      node.arguments[1] && ts.isObjectLiteralExpression(node.arguments[1])) updates.push(node);
+  ts.forEachChild(node, collect);
+}
+collect(viewportTree);
+function patchBetween(start, end, bindings) {
+  const from = viewportSource.indexOf(start), to = viewportSource.indexOf(end, from);
+  assert(from >= 0 && to > from);
+  const call = updates.find(node => node.getStart(viewportTree) > from && node.getEnd() < to);
+  assert(call, start);
+  const js = ts.transpileModule(`const patch = ${call.arguments[1].getText(viewportTree)};`, {
+    compilerOptions: { target: ts.ScriptTarget.ES2022 },
+  }).outputText;
+  return new Function(...Object.keys(bindings), js + '\nreturn patch;')(...Object.values(bindings));
+}
+assert.match(viewportSource, /const eraserVersionBefore = latestLayer\.eraserAlgorithmVersion;/);
+let state = { ...ordinary, maskUrl: 'capture.png', maskSpace: 'projection' };
+const paintLayer = { layerId: state.id, target: 'projected-mask', assetUrl: 'live-keep-mask' };
+state = { ...state, ...patchBetween('restoreStroke = applyTiles;',
+  'if (projectedEraserCommit ||', { layer: paintLayer, latestLayer: state, ERASER_ALGORITHM_VERSION: 1 }) };
+assert.equal(hasBadge(state), true, 'First committed erase creates a user mask badge');
+function restore(side, before) {
+  state = { ...state, ...patchBetween('const applyTiles = (side:', 'restoreStroke = applyTiles;', {
+    layer: paintLayer, latestLayer: state, side, eraserVersionBefore: before, ERASER_ALGORITHM_VERSION: 1,
+  }) };
+}
+function refine() {
+  state = { ...state, ...patchBetween('projectedEraserBatchesRef.current.delete(batch.layer.layerId);',
+    'publishMs = performance.now()', { batch: { layer: paintLayer }, latestLayer: state, ERASER_ALGORITHM_VERSION: 1 }) };
+}
+restore('before', 1); refine();
+assert.equal(hasBadge(state), true, 'Undoing second stroke retains first erase');
+restore('before', undefined); refine();
+assert.equal(hasBadge(state), false, 'Undo all + delayed refinement must hide the badge');
+assert.equal(hasBadge(JSON.parse(JSON.stringify(state))), false, 'Saving the undone state cannot resurrect the badge');
+restore('after', undefined); refine();
+assert.equal(hasBadge(state), true, 'Redo restores the badge');
+assert.equal(hasBadge({ ...state, maskUrl: undefined, maskSpace: undefined, eraserAlgorithmVersion: undefined }), false,
+  'Clear eraser mask removes the badge');
+
+console.log('layer context-menu and eraser mask indicator regression passed');
