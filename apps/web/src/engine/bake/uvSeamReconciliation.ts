@@ -52,6 +52,26 @@ function positionKey(position: THREE.Vector3) {
   return `${quantize(position.x, 100000)},${quantize(position.y, 100000)},${quantize(position.z, 100000)}`;
 }
 
+function createSeamPositionIds() {
+  type Entry = { x: number; y: number; z: number; id: number; next?: Entry };
+  const buckets = new Map<number, Entry>();
+  let count = 0;
+  const equal = (a: number, b: number) => a === b || (Number.isNaN(a) && Number.isNaN(b));
+  return (position: THREE.Vector3) => {
+    const x = quantize(position.x, 100000), y = quantize(position.y, 100000), z = quantize(position.z, 100000);
+    // Hash only selects a bucket. Compare all original quantized coordinates,
+    // including values outside int32, before assigning the same position ID.
+    const hash = Math.imul(x, 73856093) ^ Math.imul(y, 19349663) ^ Math.imul(z, 83492791);
+    const head = buckets.get(hash);
+    for (let entry = head; entry; entry = entry.next) {
+      if (equal(entry.x, x) && equal(entry.y, y) && equal(entry.z, z)) return entry.id;
+    }
+    const id = count++;
+    buckets.set(hash, { x, y, z, id, next: head });
+    return id;
+  };
+}
+
 function edgeKey(a: THREE.Vector3, b: THREE.Vector3) {
   const aKey = positionKey(a);
   const bKey = positionKey(b);
@@ -104,7 +124,7 @@ export function collectUvSeamPairs(root: THREE.Object3D, includeDiscontinuous = 
 }
 
 function* collectUvSeamPairSteps(root: THREE.Object3D, includeDiscontinuous = false, reuseEndpoints = false) {
-  const groupedEdges = new Map<string, UvSeamEdgeRecord[]>();
+  const groupedEdges = new Map<string | number, UvSeamEdgeRecord[]>();
   root.updateMatrixWorld(true);
 
   const meshes: THREE.Mesh[] = [];
@@ -112,6 +132,11 @@ function* collectUvSeamPairSteps(root: THREE.Object3D, includeDiscontinuous = fa
     if (object.userData.liclickPaintOverlay || object.userData.liclickWireframeOverlay || object.userData.liclickLocalRepaintGpuOverlay) return;
     if (object instanceof THREE.Mesh) meshes.push(object);
   });
+  // Same quantized positions, compact collision-free edge IDs. Keep the string
+  // path if the mesh is too large for exact integer pairing in a JS Number.
+  const radix = meshes.reduce((sum, mesh) => sum + (mesh.geometry.getAttribute('position')?.count ?? 0), 1);
+  const numericKeys = reuseEndpoints && Number.isSafeInteger(radix * radix);
+  const positionId = createSeamPositionIds();
   for (const object of meshes) {
     const geometry = object.geometry;
     const position = geometry.getAttribute('position');
@@ -127,7 +152,7 @@ function* collectUvSeamPairSteps(root: THREE.Object3D, includeDiscontinuous = fa
     // Cache only within this pass: no stale geometry/transform state can survive a bake.
     // Synchronous public callers retain their original endpoint object identities.
     const endpointsByIndex: Array<UvSeamEndpoint | undefined> = [];
-    const endpointKeys = new WeakMap<UvSeamEndpoint, string>();
+    const endpointKeys = new WeakMap<UvSeamEndpoint, string | number>();
     for (let triangle = 0; triangle < triangleCount; triangle += 1) {
       if (triangle % 128 === 0) yield;
       const indices = [0, 1, 2].map((offset) =>
@@ -150,34 +175,42 @@ function* collectUvSeamPairSteps(root: THREE.Object3D, includeDiscontinuous = fa
           uv: new THREE.Vector2(uv.getX(vertexIndex), uv.getY(vertexIndex)),
         };
         if (reuseEndpoints && index) endpointsByIndex[vertexIndex] = endpoint;
-        if (reuseEndpoints) endpointKeys.set(endpoint, positionKey(endpoint.position));
+        if (reuseEndpoints) {
+          endpointKeys.set(endpoint, numericKeys ? positionId(endpoint.position) : positionKey(endpoint.position));
+        }
         return endpoint;
       });
 
       const edgeIndices = [[0, 1, 2], [1, 2, 0], [2, 0, 1]] as const;
       for (const [start, end, inside] of edgeIndices) {
-        const record: UvSeamEdgeRecord = {
-          a: endpoints[start],
-          b: endpoints[end],
-          insideUv: endpoints[inside].uv,
-        };
-        const aKey = reuseEndpoints ? endpointKeys.get(record.a)! : '';
-        const bKey = reuseEndpoints ? endpointKeys.get(record.b)! : '';
-        const key = reuseEndpoints
-          ? (aKey < bKey ? `${aKey}|${bKey}` : `${bKey}|${aKey}`)
-          : edgeKey(record.a.position, record.b.position);
+        const a = endpoints[start], b = endpoints[end], insideUv = endpoints[inside].uv;
+        let record: UvSeamEdgeRecord | undefined;
+        const aKey = reuseEndpoints ? endpointKeys.get(a)! : '';
+        const bKey = reuseEndpoints ? endpointKeys.get(b)! : '';
+        const key = numericKeys
+          ? Math.min(aKey as number, bKey as number) * radix + Math.max(aKey as number, bKey as number)
+          : reuseEndpoints ? (aKey < bKey ? `${aKey}|${bKey}` : `${bKey}|${aKey}`)
+          : edgeKey(a.position, b.position);
         const records = groupedEdges.get(key);
         if (records) {
           // Keep the same first UV-key order and last record per key as the
           // former final Map pass. Interior triangle edges need only one
           // retained record, avoiding a second object graph during pairing.
-          const uvKey = uvEdgeKey(record);
+          // UV-SEAM-REPAIR-PLAN/1.1: shared indexed endpoints already prove UV
+          // equality; avoid quantizing/stringifying the same interior edge.
+          let uvKey: string | undefined;
           const existing = records.length <= 4
-            ? records.findIndex((edge) => uvEdgeKey(edge) === uvKey)
+            ? records.findIndex((edge) =>
+              (edge.a === a && edge.b === b) ||
+              (edge.a === b && edge.b === a) ||
+              uvEdgeKey(edge) === (uvKey ??= uvEdgeKey(record ??= { a, b, insideUv })))
             : -1;
-          if (existing < 0) records.push(record);
-          else records[existing] = record;
-        } else groupedEdges.set(key, [record]);
+          if (existing < 0) records.push(record ?? { a, b, insideUv });
+          else {
+            const previous = records[existing];
+            previous.a = a; previous.b = b; previous.insideUv = insideUv;
+          }
+        } else groupedEdges.set(key, [{ a, b, insideUv }]);
       }
     }
   }

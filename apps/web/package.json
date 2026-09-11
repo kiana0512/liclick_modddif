@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "test:projection-mask-footprint": "node scripts/test-projection-mask-footprint.mjs",
+    "test:uv-postprocess-scheduling": "node scripts/test-uv-postprocess-scheduling.mjs",
     "test:resident-uv-display": "node scripts/test-resident-uv-display.mjs",
     "check:resident-uv-browser": "node scripts/run-resident-uv-browser.mjs",
     "test:shader-template-format": "node scripts/test-shader-template-format.mjs",

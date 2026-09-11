@@ -136,7 +136,8 @@ console.log('GPU source: full-resolution bitmap, no CPU RGBA readback, live timi
     postMessage(message){if(this.failPost)throw Error('post failed');(this.messages??=[]).push(message);}
     terminate(){this.terminated=true;}
   }
-  const env={exports:{},Worker};
+  class ImageData { constructor(data,width,height){Object.assign(this,{data,width,height});} }
+  const env={exports:{},Worker,ImageData};
   const api=new Function(...Object.keys(env),workerJs+';return exports;')(...Object.values(env));
   const source=new Blob(['source'],{type:'image/png'});
   const a=api.prepareSamplingBitmap(source,4096);await Promise.resolve();
@@ -144,6 +145,14 @@ console.log('GPU source: full-resolution bitmap, no CPU RGBA readback, live timi
   assert.equal(message.maxDimension,4096);assert.equal(message.blob,source,'immutable blob decoded in worker, no main-thread bitmap copy');
   worker.onmessage({data:{id:message.id,bitmap:output}});
   assert.equal(await a,output);
+  const pixelRequest=api.prepareSamplingBitmap(source,4096,true);await Promise.resolve();
+  const pixelMessage=worker.messages.at(-1),pixels=new Uint8ClampedArray([1,2,3,4,250,251,252,253]);
+  assert.equal(pixelMessage.pixels,true);
+  worker.onmessage({data:{id:pixelMessage.id,pixels:pixels.buffer,width:2,height:1}});
+  const pixelOutput=await pixelRequest;
+  assert.equal(pixelOutput.width,2);assert.equal(pixelOutput.height,1);
+  assert.deepEqual(pixelOutput.data,pixels);
+  assert.equal(pixelOutput.data.buffer,pixels.buffer,'received owned RGBA is wrapped without a second copy');
   worker.failPost=true;
   await assert.rejects(api.prepareSamplingBitmap(source,1),/post failed/);
   worker.failPost=false;
@@ -194,5 +203,30 @@ console.log('Resident readback Worker: frozen full RGBA, Y orientation, alpha co
     if(mode!=='decode')assert(bitmap.closed);
     assert(canvases.every(canvas=>canvas.width===1 && canvas.height===1));
     if(mode==='post')assert(output.closed,'untransferred output is released');
+  }
+  for(const mode of ['success','read','post']) {
+    const responses=[],canvases=[];
+    const bitmap={width:2,height:1,closed:false,close(){this.closed=true;}};
+    const pixels=new Uint8ClampedArray([1,2,3,4,250,251,252,253]);
+    class OffscreenCanvas {
+      constructor(width,height){Object.assign(this,{width,height});canvases.push(this);}
+      getContext(){return {
+        drawImage(source){assert.equal(source,bitmap);},
+        getImageData(x,y,width,height){assert.deepEqual([x,y,width,height],[0,0,2,1]);if(mode==='read')throw Error(mode);return {data:pixels};},
+      };}
+      transferToImageBitmap(){throw Error('CPU consumer must not create another bitmap');}
+    }
+    const scope={postMessage(message,transfer){
+      if(mode==='post' && message.pixels)throw Error(mode);
+      responses.push(globalThis.structuredClone(message,{transfer}));
+    }};
+    new Function('self','exports','OffscreenCanvas','createImageBitmap',code)(scope,{},OffscreenCanvas,async()=>bitmap);
+    await scope.onmessage({data:{id:7,blob:new Blob(),maxDimension:4096,pixels:true}});
+    assert.equal(responses.length,1);assert.equal(responses[0].id,7);
+    if(mode==='success') {
+      assert.deepEqual([...new Uint8ClampedArray(responses[0].pixels)],[1,2,3,4,250,251,252,253]);
+      assert.equal(pixels.byteLength,0,'transfer releases worker RGBA ownership');
+    } else assert.equal(responses[0].error,mode);
+    assert(bitmap.closed);assert(canvases.every(canvas=>canvas.width===1 && canvas.height===1));
   }
 }

@@ -5,10 +5,10 @@ const read=file=>fs.readFileSync(new URL(file,import.meta.url),'utf8');
 function extract(source,name){const ast=ts.createSourceFile('test.ts',source,ts.ScriptTarget.Latest,true);return ast.statements.find(n=>ts.isFunctionDeclaration(n)&&n.name?.text===name).getText(ast);}
 class Pixels{constructor(data,width,height){this.data=data;this.width=width;this.height=height;}}
 function compile(source,deps={}){const exports={};new Function('exports','ImageData',...Object.keys(deps),ts.transpileModule(source,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS}}).outputText)(exports,Pixels,...Object.values(deps));return exports;}
-const sampler=compile(extract(read('../src/engine/bake/imageSampler.ts'),'sampleImageBilinear')).sampleImageBilinear;
+const sampler=compile(extract(read('../src/engine/bake/bilinearImageSampling.ts'),'sampleImageBilinear')).sampleImageBilinear;
 const load=source=>compile(source,{sampleImageBilinear:sampler}).applyProjectedAlphaMask;
 const old=load(read('fixtures/projected-alpha-mask-v1.ts'));
-const current=load(extract(read('../src/engine/projection/createMaskedProjectedImage.ts'),'applyProjectedAlphaMask'));
+const current=load(extract(read('../src/engine/projection/projectedAlphaMask.ts'),'applyProjectedAlphaMask'));
 let seed=817;const random=()=>seed=(Math.imul(seed,1664525)+1013904223)>>>0;
 for(let test=0;test<400;test++){
   const width=1+random()%130,height=1+random()%99,mw=1+random()%80,mh=1+random()%73;

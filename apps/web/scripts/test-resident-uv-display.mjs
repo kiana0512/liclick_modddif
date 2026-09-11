@@ -185,6 +185,33 @@ const cacheWorkerSource = fs.readFileSync(
   new URL('../src/workers/residentUvCache.worker.ts', import.meta.url),
   'utf8',
 );
+// Compression can lag behind eye gestures. Keep exactly the newest completed
+// buffer while busy; dropping it leaves the current saved project without a UV.
+{
+const clientSource = fs.readFileSync(new URL('../src/engine/projection/ResidentUvCompressedCache.ts', import.meta.url), 'utf8');
+const sent = [], workers = [];
+class CacheWorker {
+  constructor() { workers.push(this); }
+  postMessage(message, transfer = []) { sent.push(globalThis.structuredClone(message, { transfer })); }
+  terminate() {}
+}
+const clientExports = {};
+new Function('Worker', 'document', 'exports', ts.transpileModule(clientSource.replaceAll('import.meta.url', "'file:///cache.ts'"), {
+  compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
+}).outputText)(CacheWorker, { body: { dataset: {} } }, clientExports);
+const client = new clientExports.ResidentUvCompressedCache();
+const image = () => ({ width: 16, height: 16, data: new Uint8ClampedArray(16 * 16 * 4) });
+const a = image(), b = image(), c = image();
+client.offer('a', a); client.offer('b', b); client.offer('c', c);
+assert.deepEqual(sent.map(message => message.key), ['a']);
+assert.equal(a.data.byteLength, 0);
+workers[0].onmessage({ data: { id: sent[0].id, keys: ['a'] } });
+assert.deepEqual(sent.map(message => message.key), ['a', 'c'], 'Only the newest pending completed UV is compressed');
+assert.equal(b.data.byteLength, 1024);
+assert.equal(c.data.byteLength, 0);
+client.offer('d', image()); client.dispose();
+assert.equal(sent.length, 2, 'Disposal clears queued work before resolving in-flight work');
+}
 let cacheReply;
 const cacheWorker = {
   postMessage(value, transfers = []) {
@@ -228,10 +255,10 @@ assert.equal(cacheReply.output, undefined);
 const disk = new Map();
 const previousCaches = globalThis.caches;
 globalThis.caches = { async open() { return {
-  async put(key, response) { disk.set(key, response.clone()); },
-  async match(key) { return disk.get(key)?.clone(); },
-  async keys() { return [...disk.keys()]; },
-  async delete(key) { return disk.delete(key); },
+  async put(key, response) { disk.set(typeof key === 'string' ? key : key.url, response.clone()); },
+  async match(key) { return disk.get(typeof key === 'string' ? key : key.url)?.clone(); },
+  async keys() { return [...disk.keys()].map(key => new Request(key)); },
+  async delete(key) { return disk.delete(typeof key === 'string' ? key : key.url); },
 }; } };
 const freshWorker = () => {
   const worker = { location: { origin: 'https://li3d.test' }, postMessage: cacheWorker.postMessage };
@@ -253,6 +280,20 @@ try {
   assert.deepEqual(new Uint8Array(cacheReply.output, rgba.length), mask);
   await freshWorker().onmessage({ data: { id: 3, type: 'restore', key: 'new-runtime-url', persistentKey: 'b'.repeat(64) } });
   assert.equal(cacheReply.output, undefined, 'Changed source or ownership cannot reuse the saved UV');
+  const activeWorker = freshWorker();
+  await activeWorker.onmessage({ data: { id: 5, type: 'restore', key: 'a', persistentKey } });
+  assert.deepEqual(cacheReply.keys, ['a'], 'F5-restored compressed bytes remain reusable');
+  await activeWorker.onmessage({ data: { id: 6, type: 'activate', key: 'a' } });
+  for (const [index, key] of ['b', 'c', 'd'].entries()) {
+    await activeWorker.onmessage({ data: { id: 10 + index, type: 'store', key, persistentKey: key.repeat(64),
+      resolution: 1024, color: new Uint8Array(rgba.length).fill(index).buffer, mask: new ArrayBuffer(0) } });
+    await activeWorker.onmessage({ data: { id: 20 + index, type: 'activate', key } });
+    await activeWorker.onmessage({ data: { id: 30 + index, type: 'activate', key: 'a' } });
+    assert(disk.has('https://li3d.test/__li3d_internal/resident-uv/' + persistentKey), 'Returning to displayed A must keep its disk snapshot');
+    assert.equal(disk.size, 2, 'Pinning the visible state must not increase disk capacity');
+  }
+  await freshWorker().onmessage({ data: { id: 40, type: 'restore', key: 'F5-after-toggles', persistentKey } });
+  assert.deepEqual(new Uint8Array(cacheReply.output, 0, rgba.length), rgba, 'F5 after A/B/A/C/A recovers exact A without rebaking');
   const key = [...disk.keys()][0], old = disk.get(key);
   disk.set(key, new Response(new Uint8Array([1, 2, 3]), { headers: old.headers }));
   await freshWorker().onmessage({ data: { id: 4, type: 'restore', key: 'new-runtime-url', persistentKey } });

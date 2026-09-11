@@ -29,7 +29,15 @@ const seamCode = ts.transpileModule(await readFile(
   new URL('../src/engine/bake/uvSeamReconciliation.ts', import.meta.url), 'utf8'), {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
 }).outputText;
-new Function('require', 'exports', seamCode)(name => {
+// Exercise the cooperative collector's compact keys directly as well as its
+// resulting repaired pixels. Its public synchronous counterpart stays an oracle.
+new Function('require', 'exports', seamCode + `
+exports.createPositionIds = createSeamPositionIds;
+exports.positionKey = positionKey;
+exports.collectOptimized = (root, include) => {
+  const steps = collectUvSeamPairSteps(root, include, true);
+  let step; do { step = steps.next(); } while (!step.done); return step.value;
+};`)(name => {
   if (name === 'three') return THREE;
   if (name === './uvSeamGeometrySnapshot') return seamSnapshot;
   throw new Error(`Unexpected dependency: ${name}`);
@@ -37,6 +45,25 @@ new Function('require', 'exports', seamCode)(name => {
 
 let seed = 72913;
 const random = () => ((seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0) / 2 ** 32);
+// Deliberately collide the int32 hash while keeping distinct full coordinates.
+// IDs must match the original string equivalence and first-appearance order.
+const positionIds = nextSeams.createPositionIds(), expectedPositionIds = new Map();
+const coordinates = [0, -0, 0.0000049, 0.0000051, 1, -1,
+  2 ** 32 / 100000, -(2 ** 32) / 100000, Infinity, -Infinity, NaN];
+const checkPosition = (position) => {
+  const key = nextSeams.positionKey(position);
+  if (!expectedPositionIds.has(key)) expectedPositionIds.set(key, expectedPositionIds.size);
+  assert.equal(positionIds(position), expectedPositionIds.get(key));
+};
+for (const x of coordinates) for (const y of coordinates) for (const z of coordinates) {
+  checkPosition(new THREE.Vector3(x, y, z));
+  checkPosition(new THREE.Vector3(x, y, z));
+}
+for (let index = 0; index < 1000; index++) {
+  const position = new THREE.Vector3(random() * 1e9, random() * 1e9, random() * 1e9);
+  checkPosition(position); checkPosition(position.clone());
+}
+seed = 72913;
 if (process.env.LI3D_UV_REPAIR_BENCHMARK === '1') {
   const size=4096, rgba=new Uint8ClampedArray(size*size*4);
   const topology=new Uint8Array(size*size), coverage=new Uint8Array(size*size), regions=new Uint32Array(size*size);
@@ -149,6 +176,8 @@ for (let trial = 0; trial < 40; trial++) {
   const result = alignedSeams.reconcileUvSeams(expected, root, expectedMask, options);
   assert.deepEqual(nextSeams.collectUvSeamPairs(root, options.repairMissingCoverage),
     oldSeams.collectUvSeamPairs(root, options.repairMissingCoverage));
+  assert.deepEqual(nextSeams.collectOptimized(root, options.repairMissingCoverage),
+    oldSeams.collectUvSeamPairs(root, options.repairMissingCoverage));
   for (const flag of ['liclickPaintOverlay', 'liclickWireframeOverlay', 'liclickLocalRepaintGpuOverlay']) {
     const helper = mesh.clone();
     helper.userData[flag] = true;
@@ -204,12 +233,22 @@ for (const count of [4, 5, 6, 50]) {
   }
   for (const include of [false, true]) {
     assert.deepEqual(nextSeams.collectUvSeamPairs(root, include), oldSeams.collectUvSeamPairs(root, include));
+    assert.deepEqual(nextSeams.collectOptimized(root, include), oldSeams.collectUvSeamPairs(root, include));
   }
   root.traverse((object) => {
     if (object instanceof THREE.Mesh) { object.geometry.dispose(); object.material.dispose(); }
   });
 }
 console.log('UV seam repeated/non-manifold edge order parity passed.');
+
+// Declared vertex counts beyond exact integer pairing must take the string
+// fallback. The small index buffer keeps this malformed-count fixture bounded.
+{
+  const mesh = new THREE.Mesh(new THREE.BoxGeometry());
+  mesh.geometry.attributes.position.count = 100_000_000;
+  assert.deepEqual(nextSeams.collectOptimized(mesh, true), oldSeams.collectUvSeamPairs(mesh, true));
+  mesh.geometry.dispose(); mesh.material.dispose();
+}
 
 // Reuse must follow exact geometry, including direct edits without needsUpdate.
 const mutableRoot = new THREE.Group();

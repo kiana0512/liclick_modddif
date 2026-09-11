@@ -1,6 +1,6 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
-> 文档版本：`2.20.20`
+> 文档版本：`2.20.25`
 >
 > 生效日期：`2026-09-11`
 >
@@ -13,6 +13,18 @@
 ## 1. 文档地位与强制边界
 
 2026-09-11 M12，协作 M08/M05：`RUNTIME-LAYER-ASSETS/1.0.0` 将临时图层资产持久化收敛到公共工程保存入口；等待 UV 笔画读回、冻结 PNG，上传成功后才提交 Command/CAS，隐藏层同样保存，不修改活动编辑的 live 绑定。服务端拒绝 UV imageUrl 的 live/blob 地址，不能覆盖已有正式 RGBA，也不能以旧贴图掩盖未保存笔画。原生 UV 重绘预览直接消费 RGBA，不要求旧投影蒙版。GPU/CPU/Worker/shader 绘制与合成、分辨率、导出像素及 Project Schema 不变；历史坏引用不自动覆盖，恢复需核验旧 revision/资产后另行授权。测试、迁移和回滚见 [变更卡](changes/CHG-20260911-UV-REPAINT-PERSISTENCE.md)。本次仅本地修复，未推送或部署。
+
+发布范围：经用户授权同步 master/A100，保留 master 的五项状态同步、接缝索引及采样 Worker 优化；最终合并提交须重新通过正式发布门禁。下方本地修复记录为发布前历史状态，不代表已完成部署；不自动修复或覆盖真实工程。
+
+2026-09-11 M07/M09，协作 M06：`PERF-UV-SOURCE-PREPARE-001` v1.3.0 让无需缩放的静态 PNG 的 CPU 像素消费者复用已验证的软件 Canvas Worker 解码；直接转移完整 RGBA，减少主线程画布读取和等帧。原尺寸/PNG header 门禁、JPEG/缩放/live 兼容路径及 192 MiB 缓存不变。GPU/shader、蒙版/Top-K/深灰斜线、QA、导出和持久化语义不变，无 Schema/资产迁移。4K 冻结解码对照零差异，原工程蒙版准备约 0.8→0.47–0.49 秒；完整组合仍约 3.9 秒。验证与回滚见 [状态同步变更卡](changes/CHG-20260911-UV-STATE-SYNC.md)。
+
+2026-09-11 M07，协作 M06/M09：`UV-SEAM-REPAIR-PLAN/1.3` 对量化位置用数字哈希选桶，再比较完整坐标，避免每个顶点创建位置字符串；碰撞不合并不同位置，保留量化、首次 ID 与 donor 顺序。CPU/Worker/GPU/shader 像素、持久化、导出及深灰斜线不改，无 Schema/资产迁移。冻结核、哈希碰撞/大坐标及真实内置工程验收见 [状态同步变更卡](changes/CHG-20260911-UV-STATE-SYNC.md)；首次接缝约 0.75 秒，整次转换仍未达到即时要求。
+
+2026-09-11 M07/M06/M09：`PROJECTED-MASK-WORKER-BOOTSTRAP/1` 将双线性采样和 alpha 蒙版纯计算独立成模块，Worker 不再导入图像 I/O、项目状态及抠图工具。原入口保留重导出，CPU/Worker 共用相同像素公式；GPU/shader、Top-K、深灰斜线、分辨率、QA、持久化和导出语义不改，无资产/Schema 迁移。Worker 产物约 16.6→2.4 KB；仅声明依赖和包体缩减，不把它当作完整转换加速的证据。验证与回滚见 [状态同步变更卡](changes/CHG-20260911-UV-STATE-SYNC.md)。
+
+2026-09-11 M07，协作 M06/M09：`UV-SEAM-REPAIR-PLAN/1.2` 将相同量化位置映射到稠密整数 ID，以有安全整数上界的配对键代替逐边字符串；超界保留旧字符串路径。共享内边只更新最终记录，保留首 UV 键顺序、最后记录与 donor 顺序。冻结核 RGBA/coverage/count、非流形边、精度边界及真实内置工程验证通过，首次接缝约 1.03→0.88 秒；不是完整转换的即时保证。GPU/CPU/Worker 像素、QA、深灰斜线、分辨率、持久化/导出均不变，无格式迁移；细节见 [状态同步变更卡](changes/CHG-20260911-UV-STATE-SYNC.md)。
+
+2026-09-11 M06/M07/M09：`UV-DISPLAY-DERIVED-CACHE/1.1` 在实际呈现确认后保留当前压缩 UV；F5 恢复的校验结果重新进入有界内存缓存，后台压缩忙时只排队最新一个完整结果，磁盘仍最多两个快照。`UV-TOPOLOGY-LOOKAHEAD/1` 将原几何拓扑准备与来源解码重叠；`UV-POSTPROCESS-CANCEL/1` 在接缝/gutter 让出前后终止过期任务；`UV-SEAM-REPAIR-PLAN/1.1` 对相同索引端点直接确认 UV 相等，其他情况保持原量化及顺序。原像素、Top-K、深灰斜线、分辨率、QA、持久资产/Command/CAS/ownership 和导出不改，无资产或磁盘格式迁移。实际内置浏览器 F5 约 6.19→2.64 秒，新组合仍为秒级，不宣称完成即时更新；审计、容量、验证和回滚见 [状态同步变更卡](changes/CHG-20260911-UV-STATE-SYNC.md)。
 
 2026-09-11 M06/M07/M09：按用户最新授权，将普通常驻 UV 的整工程 CPU 对照移入发布/回归验收；运行时采用 `UV-DEVICE-CALIBRATION/1.0.0`，在当前 WebGL context 上以 256²、6 层输入覆盖质量/alpha 字节、Top-K 和舍入，两个 alpha 模式独立校验，失败阻止发布，context loss 后重新校验。`perfQualityGpuAb=1` 仍执行完整工程对照，稀疏 CPU 舍入修正保留；不是信任跨设备持久批准。`UV-QUALITY-READBACK-PACK/1.0.0` 将校验质量 alpha 原字节四合一传输，不降分辨率；CPU 对照不再启动不会采用的第二遍 WebGPU 求解。`PROJECTED-MASK-FOOTPRINT/1.0.0` 只跳过已证明为零的蒙版双线性范围外像素，原采样舍入/透明 RGB 保留。`UV-DISPLAY-BUFFER/1.1.0` 把可见修补底层用显式合并相同规则纳入最终 RGBA，派生 key purpose 升为 resident-uv-display-2，避免显示阶段的额外 alpha 混合白边；深灰斜线 shader 不改。Worker 空闲让出取消零定时器钳制，真实交互暂停保留。完整 GPU/CPU/Worker/Shader/持久化/导出审计、实测与未完成项见 [变更卡](changes/CHG-20260911-RESIDENT-UV-DISPLAY.md)。
 

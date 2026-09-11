@@ -182,6 +182,7 @@ export class ResidentProjectedUvDisplay {
             markSourceLayersBaked: false,
             skipImageEncoding: true,
             skipCanvasUpload: true,
+            checkCancelled: guard,
             onProgress: guard,
           });
       stages.completeBakeMs = performance.now() - bakeStartedAt;
@@ -333,6 +334,7 @@ export class ResidentProjectedUvDisplay {
     const buffer = [...this.cache.values()].find((value) => value.colorTexture === texture);
     if (!buffer) return;
     this.front = buffer;
+    this.compressed.activate(buffer.signature);
     if (this.requested?.signature === buffer.signature)
       finishResidentUvPresentation(this.requested.sourceModel.group);
     // Upload bitmaps have been released; account for actual GPU dimensions,
