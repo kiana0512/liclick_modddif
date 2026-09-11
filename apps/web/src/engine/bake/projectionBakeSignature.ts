@@ -11,6 +11,14 @@ function attributeIdentity(value:object|undefined|null) {
   if(!id) {id=nextAttributeIdentity++;attributeIdentities.set(value,id);}
   return id;
 }
+/** Runtime identity plus upload revision; replacement buffers often restart at version zero. */
+export function projectionAttributeRevision(attribute: THREE.BufferAttribute | THREE.InterleavedBufferAttribute | null | undefined) {
+  if (!attribute) return '';
+  const storage = 'data' in attribute ? attribute.data : attribute;
+  return [attributeIdentity(attribute), attributeIdentity(storage), attributeIdentity(storage.array),
+    attribute.count, attribute.itemSize, attribute.normalized, storage.version,
+    'offset' in attribute ? attribute.offset : 0, 'stride' in storage ? storage.stride : 0].join(':');
+}
 export type ReusableProjectionBakePurpose = 'merge-uv' | 'content-aware-repair';
 
 export type ReusableProjectionBakeEntry = {
@@ -42,10 +50,8 @@ export function createReusableProjectionBakeSignature(input: {
     if(!mesh.isMesh) return;
     const geometry=mesh.geometry;
     geometryState.push([node.uuid,node.visible,node.matrixWorld.elements.join(','),geometry.uuid,
-      `${attributeIdentity(geometry.index)}:${geometry.index?.version}`,...['position','normal','uv'].map(name=>{
-        const attribute=geometry.getAttribute(name);
-        return attribute ? `${attributeIdentity(attribute)}:${attribute.count}:${'version' in attribute ? attribute.version : `${attributeIdentity(attribute.data)}:${attribute.data.version}`}` : '';
-      }),geometry.drawRange.start,geometry.drawRange.count].join(':'));
+      projectionAttributeRevision(geometry.index),...['position','normal','uv'].map(name=>
+        projectionAttributeRevision(geometry.getAttribute(name))),geometry.drawRange.start,geometry.drawRange.count].join(':'));
   });
   const normalizedLayers = [...input.layers].sort(compareProjectedLayersForDeterministicBake);
   // `getProjectedLayerStackSignature` includes every visual layer setting and

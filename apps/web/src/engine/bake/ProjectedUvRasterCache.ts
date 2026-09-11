@@ -24,6 +24,7 @@ export class ProjectedUvRasterCache {
   private protectedKeys = new Set<string>();
   private bytes = 0;
   private disposed = false;
+  private revision = 0;
   private resident?: ResidentQualityComposite;
   private programs = new Map<string, THREE.ShaderMaterial>();
   private resolved?: { key: string; result: GpuLayerRastersBakeOutput; bytes: number };
@@ -55,7 +56,10 @@ export class ProjectedUvRasterCache {
     else this.programs.set(key, material);
   }
   async getResolved(key: string) {
-    return this.resolved?.key === key ? this.copyResolved(this.resolved.result) : undefined;
+    if (this.resolved?.key !== key) return undefined;
+    const revision = this.revision;
+    const result = await this.copyResolved(this.resolved.result);
+    return !this.disposed && revision === this.revision ? result : undefined;
   }
   async retainResolved(key: string, result: GpuLayerRastersBakeOutput) {
     const base = result.residentQuality;
@@ -63,9 +67,9 @@ export class ProjectedUvRasterCache {
     const bytes =
       base.imageData.data.byteLength + base.coverage.byteLength + base.renderedColorMask.byteLength;
     if (bytes > this.budget) return;
-    const scope = this.scope;
+    const revision = this.revision;
     const copy = await this.copyResolved(result);
-    if (this.disposed || scope !== this.scope) return;
+    if (this.disposed || revision !== this.revision) return;
     if (this.resolved) this.bytes -= this.resolved.bytes;
     this.resolved = undefined;
     // Aggregate UV replaces individual rasters within the same hard budget.
@@ -137,6 +141,7 @@ export class ProjectedUvRasterCache {
     return true;
   }
   private clear() {
+    this.revision++;
     this.programs.forEach((material) => material.dispose());
     this.programs.clear();
     this.resident?.dispose();

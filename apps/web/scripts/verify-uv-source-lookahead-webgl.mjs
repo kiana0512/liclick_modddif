@@ -10,6 +10,7 @@ const original=execFileSync('git',['show',`${process.env.LICLICK_SOURCE_REFERENC
 const referenceId=path.join(root,'src/engine/bake/__uv-source-reference.ts').replaceAll('\\','/');
 const cases=process.env.LICLICK_SOURCE_FULL_ALPHA ? [[512,13,true,true],[4096,6,false,true],[512,2,true,true,'image/jpeg'],[512,2,true,true,'image/png',true]] : [[512,13,false],[4096,6,false],[512,13,true]];
 if(process.env.LICLICK_SOURCE_CACHE)cases.push([512,6,true,true,'image/png',false,true],[257,3,true,true,'image/png',false,true]);
+if(process.env.LICLICK_SOURCE_GEOMETRY)cases.length=0;
 const server=await createServer({root,cacheDir:`node_modules/.vite-source-qa-${process.pid}`,logLevel:'error',plugins:[{
   name:'uv-source-reference',resolveId(id){if(id==='virtual:uv-source-reference')return referenceId;},
   load(id){if(id===referenceId)return original;},
@@ -25,6 +26,7 @@ const panel=document.querySelector('pre');
 try { const {run}=await import('/scripts/uv-source-lookahead-browser-fixture.mjs');
 for(const args of ${JSON.stringify(cases)}) {panel.textContent+='\\n计算 '+JSON.stringify(args);const result=await run(...args);await fetch('/__source_report',{method:'POST',body:JSON.stringify(result)});panel.textContent+='\\n'+JSON.stringify(result);}
 ${process.env.LICLICK_SOURCE_CACHE ? "const result=await (await import('/scripts/uv-source-lookahead-browser-fixture.mjs')).runCached();await fetch('/__source_report',{method:'POST',body:JSON.stringify(result)});panel.textContent+='\\n'+JSON.stringify(result);" : ''}
+${process.env.LICLICK_SOURCE_GEOMETRY ? "const result=await (await import('/scripts/uv-raster-cache-identity-fixture.mjs')).run();await fetch('/__source_report',{method:'POST',body:JSON.stringify(result)});panel.textContent+='\\n'+JSON.stringify(result);" : ''}
 panel.textContent+='\\n全部像素对照通过';
 }catch(error){panel.textContent+='\\n失败：'+error;await fetch('/__source_report',{method:'POST',body:JSON.stringify({error:String(error)})});}
 </script>` : '')+'</body></html>');});

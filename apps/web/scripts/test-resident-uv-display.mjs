@@ -196,6 +196,38 @@ await compactCache.retainResolved('base', resolved);
 assert.equal(compactCache.get('a'), undefined);
 assert(compactCache.get('b'));assert(compactCache.get('c'), 'two 5-byte rasters share the 16-byte budget with a 6-byte base');
 compactCache.dispose();
+// A context may disappear while the bounded copy yields; the same scope string
+// after restoration is not proof that a result still belongs to this lifetime.
+{
+  let lose;
+  const owner={domElement:{addEventListener(_name,listener){lose=listener;},removeEventListener(){}}};
+  const guarded=new ProjectedUvRasterCache(64);guarded.prepare(owner,'same-scope',[]);
+  await guarded.retainResolved('a',resolved);
+  const copy=guarded.copyResolved.bind(guarded);
+  let resume;
+  guarded.copyResolved=async result=>{await new Promise(resolve=>{resume=resolve;});return copy(result);};
+  const reading=guarded.getResolved('a');lose();resume();
+  assert.equal(await reading,undefined,'context loss invalidates an in-flight cache copy');
+  const storing=guarded.retainResolved('a',resolved);lose();resume();await storing;
+  assert.equal(await guarded.getResolved('a'),undefined,'late store cannot resurrect a lost-context result');
+  guarded.dispose();
+}
+{
+  const {projectionAttributeRevision}=load('projectionBakeSignature',{
+    './layerStackCache':{},'./uvBakeDebugControls':{},
+  });
+  const uv=new THREE.Float32BufferAttribute([0,0,1,1],2);
+  const first=projectionAttributeRevision(uv);
+  assert.equal(projectionAttributeRevision(uv),first);
+  assert.notEqual(projectionAttributeRevision(uv.clone()),first,'replacement UV at version zero invalidates');
+  uv.array=uv.array.slice();assert.notEqual(projectionAttributeRevision(uv),first,'replacement array invalidates');
+  const buffer=new THREE.InterleavedBuffer(new Float32Array(12),3);
+  const interleaved=new THREE.InterleavedBufferAttribute(buffer,2,0);
+  const packed=projectionAttributeRevision(interleaved);buffer.needsUpdate=true;
+  assert.notEqual(projectionAttributeRevision(interleaved),packed,'interleaved upload revision invalidates');
+  const offset=projectionAttributeRevision(interleaved);interleaved.offset=1;
+  assert.notEqual(projectionAttributeRevision(interleaved),offset,'interleaved offset invalidates');
+}
 const cacheWorkerSource = fs.readFileSync(
   new URL('../src/workers/residentUvCache.worker.ts', import.meta.url),
   'utf8',

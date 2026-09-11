@@ -1,6 +1,7 @@
 import { RELIABLE_PROJECTION_GLSL } from '../projection/projectionCoverageContract.mjs';
 import { readRenderTargetPixelsInStripes } from './gpuReadbackStripes';
 import { QualityAlphaReadback } from './qualityAlphaReadback';
+import { projectionAttributeRevision } from './projectionBakeSignature';
 import { ResidentQualityComposite } from './residentQualityComposite';
 import { createSingleItemLookahead } from './singleItemLookahead';
 import { isLiveProjectedCanvasUrl } from '../projection/liveProjectedCanvasTextureRegistry';
@@ -1633,10 +1634,9 @@ export async function bakeProjectedLayerRastersWithGpu(
   const keys = input.layers.map(layer => JSON.stringify({ ...layer, visible: true, name: '', order: 0 }));
   if (rasterCache) {
     const geometry = meshes.map(({ source }) => [source.uuid, source.matrixWorld.elements,
-      source.geometry.uuid, ...['position', 'normal', 'uv'].map(name => {
-        const attribute = source.geometry.getAttribute(name);
-        return attribute && [attribute.count, (attribute as THREE.BufferAttribute).version];
-      }), source.geometry.index?.version]);
+      source.geometry.uuid, ...['position', 'normal', 'uv'].map(name =>
+        projectionAttributeRevision(source.geometry.getAttribute(name))),
+      projectionAttributeRevision(source.geometry.index), source.geometry.drawRange.start, source.geometry.drawRange.count]);
     rasterCache.prepare(renderer, JSON.stringify([resolution, geometry, input.enableBackfaceCulling,
       input.inputTextureFlipY, input.projectedImageUvFlipY, input.strictDepthCheck,
       input.maximumDepthError, input.minimumOutputCoverage]), keys);
