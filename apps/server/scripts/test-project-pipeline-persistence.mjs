@@ -285,6 +285,24 @@ async function main() {
   const legacy = await createProject(userId, { name: 'Legacy project' });
   assert.equal(Object.hasOwn(legacy.project, 'pipeline'), false);
 
+  const uvLayer = { id: 'native-uv-save-contract', type: 'uv', role: 'local-repaint-overlay',
+    imageUrl: `${projectUrlPrefix}/assets/layers/native-rgba.png`, opacity: 0.7, visible: true };
+  const uvSaved = await saveProject(userId, legacy.project.id, { ...legacy.project, layers: [uvLayer] });
+  for (const imageUrl of ['liclick-live-projected-canvas:native:rgba', 'blob:expired-native']) {
+    for (const id of [uvLayer.id, 'new-unsaved-uv']) {
+      await assert.rejects(() => executeProjectCommand(userId, {
+        schemaVersion: 1, id: `reject-uv-${randomUUID()}`, projectId: legacy.project.id,
+        expectedRevisionId: uvSaved.project.revision.id, issuedAt: new Date().toISOString(),
+        kind: 'replace-project-document', payload: { document: {
+          ...uvSaved.project, layers: [{ ...uvLayer, id, imageUrl }],
+        } },
+      }), /UV layer image is still a runtime image/);
+      const unchanged = await loadProject(userId, legacy.project.id);
+      assert.equal(unchanged.project.revision.id, uvSaved.project.revision.id, 'failed save must not advance CAS');
+      assert.equal(unchanged.project.layers[0].imageUrl, uvLayer.imageUrl, 'do not overwrite last durable RGBA');
+    }
+  }
+
   console.log('project pipeline persistence tests passed');
 }
 

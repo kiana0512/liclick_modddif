@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import ts from 'typescript';
+import { isNativeUvRepaintLayer } from '../src/engine/localRepaint/uvRepaintState.ts';
 
 const source = await readFile(
   new URL('../src/components/panels/LayersPanel.tsx', import.meta.url),
@@ -28,6 +29,27 @@ assert.match(
 // Exercise the real render branches instead of matching one spelling of the
 // fail-closed guard. Simplifying that guard must preserve authored coverage.
 const tree = ts.createSourceFile('LayersPanel.tsx', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+const previewPolicy = tree.statements.find(n => ts.isFunctionDeclaration(n) && n.name?.text === 'isLocalRepaintPreviewLayer');
+const isLegacyPreview = new Function('isLocalRepaintVisibilityLayer', 'isNativeUvRepaintLayer', ts.transpileModule(previewPolicy.getText(tree), {
+  compilerOptions: { target: ts.ScriptTarget.ES2022 },
+}).outputText + '\nreturn isLocalRepaintPreviewLayer;')(layer => layer.role === 'local-repaint-overlay', isNativeUvRepaintLayer);
+const nativeUvLayer = { id: 'local-repaint-uv-native-v1-fixture', type: 'uv', role: 'local-repaint-overlay', imageUrl: 'durable-rgba',
+  localRepaintSourceUrl: 'generation', replacementTargetLayerId: 'draft' };
+assert.equal(isLegacyPreview(nativeUvLayer), false, 'reopened native RGBA must not demand a projection mask');
+assert.equal(isLegacyPreview({ ...nativeUvLayer, type: 'projected' }), true, 'legacy coverage protection remains');
+assert.equal(isLegacyPreview({ ...nativeUvLayer, id: 'legacy-uv-overlay' }), true, 'do not expand old UV mask coverage');
+const enlarged = tree.statements.find(n => ts.isFunctionDeclaration(n) && n.name?.text === 'LayerPreviewImage');
+const renderEnlarged = new Function('React', 'useRef', 'useEffect', 'useProjectedLayerDisplayPreview',
+  'isLocalRepaintPreviewLayer', 'getLocalRepaintPreviewMaskUrl', 'getLiveProjectedTextureSourceState',
+  'getLiveProjectedCanvasState', 'useLayerImageSource',
+  ts.transpileModule(enlarged.getText(tree), { compilerOptions: { target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.React } }).outputText + '\nreturn LayerPreviewImage;')(
+    { createElement: (type, props, ...children) => ({ type, props, children }) }, () => ({ current: null }),
+    () => {}, () => undefined, isLegacyPreview, () => undefined, () => undefined, () => undefined, () => undefined,
+  );
+const nativePreview = renderEnlarged({ layer: nativeUvLayer });
+assert.equal(nativePreview.children[0].type, 'img');
+assert.equal(nativePreview.children[0].props.src, 'durable-rgba');
+assert.equal(nativePreview.children[0].props.style, undefined, 'alpha is not multiplied by a second mask');
 const thumbnail = tree.statements.find(n => ts.isFunctionDeclaration(n) && n.name?.text === 'VisibleLayerThumbnail');
 const maskSource = tree.statements.find(n => ts.isFunctionDeclaration(n) && n.name?.text === 'getLocalRepaintPreviewMaskUrl');
 const renderThumbnail = new Function('React','useRef','useEffect','useProjectedLayerDisplayPreview',

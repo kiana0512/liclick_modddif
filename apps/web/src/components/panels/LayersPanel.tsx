@@ -1,4 +1,5 @@
 import { usePendingProjectionLayers } from '@/engine/projection/projectionDisplayAdmission';
+import { isNativeUvRepaintLayer } from '@/engine/localRepaint/uvRepaintState';
 import {setMergePreparationSelection} from '@/engine/bake/mergeProjectionPreparation';
 import {
   startTransition,
@@ -182,6 +183,9 @@ function useInteractionDeferredLayers() {
 }
 
 function isLocalRepaintPreviewLayer(layer: Layer) {
+  // Native UV repaint already carries authored coverage in its RGBA alpha.
+  // Only legacy projections need an additional screen-space brush mask.
+  if (isNativeUvRepaintLayer(layer)) return false;
   return Boolean(
     layer.replacementTargetLayerId ||
     layer.localRepaintMaskUrl ||

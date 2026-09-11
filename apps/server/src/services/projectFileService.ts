@@ -225,6 +225,13 @@ function sanitizeVolatileLayerAssets(
     const capture = capturesById.get(readString(layer.captureId) ?? '');
     const existingLayer = existingLayersById.get(readString(layer.id) ?? '');
     const nextLayer: Record<string, unknown> = { ...layer };
+    if (nextLayer.type === 'uv' && isVolatileLayerAssetUrl(nextLayer.imageUrl)) {
+      // A previous PNG is not a substitute for newer authored UV paint. Reject
+      // atomically, including when a durable previous revision exists.
+      throw new ProjectSaveConflictError(
+        'UV layer image is still a runtime image. Retry after the painted texture asset has been saved.',
+      );
+    }
     if (isVolatileLayerAssetUrl(nextLayer.maskUrl)) {
       const previousMaskUrl =
         durableUrl(existingLayer?.maskUrl) ??

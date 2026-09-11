@@ -1,6 +1,6 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
-> 文档版本：`2.20.19`
+> 文档版本：`2.20.20`
 >
 > 生效日期：`2026-09-11`
 >
@@ -11,6 +11,8 @@
 > 审计口径：`0a2519d + 607e82f + 2568e40`，不包含错误文档提交 `2bde8c6/e03bab2/d1c5f78`
 
 ## 1. 文档地位与强制边界
+
+2026-09-11 M12，协作 M08/M05：`RUNTIME-LAYER-ASSETS/1.0.0` 将临时图层资产持久化收敛到公共工程保存入口；等待 UV 笔画读回、冻结 PNG，上传成功后才提交 Command/CAS，隐藏层同样保存，不修改活动编辑的 live 绑定。服务端拒绝 UV imageUrl 的 live/blob 地址，不能覆盖已有正式 RGBA，也不能以旧贴图掩盖未保存笔画。原生 UV 重绘预览直接消费 RGBA，不要求旧投影蒙版。GPU/CPU/Worker/shader 绘制与合成、分辨率、导出像素及 Project Schema 不变；历史坏引用不自动覆盖，恢复需核验旧 revision/资产后另行授权。测试、迁移和回滚见 [变更卡](changes/CHG-20260911-UV-REPAINT-PERSISTENCE.md)。本次仅本地修复，未推送或部署。
 
 2026-09-11 M06/M07/M09：按用户最新授权，将普通常驻 UV 的整工程 CPU 对照移入发布/回归验收；运行时采用 `UV-DEVICE-CALIBRATION/1.0.0`，在当前 WebGL context 上以 256²、6 层输入覆盖质量/alpha 字节、Top-K 和舍入，两个 alpha 模式独立校验，失败阻止发布，context loss 后重新校验。`perfQualityGpuAb=1` 仍执行完整工程对照，稀疏 CPU 舍入修正保留；不是信任跨设备持久批准。`UV-QUALITY-READBACK-PACK/1.0.0` 将校验质量 alpha 原字节四合一传输，不降分辨率；CPU 对照不再启动不会采用的第二遍 WebGPU 求解。`PROJECTED-MASK-FOOTPRINT/1.0.0` 只跳过已证明为零的蒙版双线性范围外像素，原采样舍入/透明 RGB 保留。`UV-DISPLAY-BUFFER/1.1.0` 把可见修补底层用显式合并相同规则纳入最终 RGBA，派生 key purpose 升为 resident-uv-display-2，避免显示阶段的额外 alpha 混合白边；深灰斜线 shader 不改。Worker 空闲让出取消零定时器钳制，真实交互暂停保留。完整 GPU/CPU/Worker/Shader/持久化/导出审计、实测与未完成项见 [变更卡](changes/CHG-20260911-RESIDENT-UV-DISPLAY.md)。
 

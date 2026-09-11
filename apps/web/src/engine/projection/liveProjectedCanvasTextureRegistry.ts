@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { registerRuntimeLayerAssetSource } from '@/services/runtimeLayerAssetPersistence';
 
 const LIVE_PROJECTED_CANVAS_PREFIX = 'liclick-live-projected-canvas:';
 
@@ -291,3 +292,9 @@ export function getLiveProjectedTextureSourceState(url: string) {
   const imageEntry = liveImageTextures.get(url);
   return imageEntry ? { source: imageEntry.image, revision: imageEntry.revision } : undefined;
 }
+
+registerRuntimeLayerAssetSource({
+  flush: flushLiveUvCommits,
+  blob: getLiveProjectedTextureBlob,
+  state: getLiveProjectedTextureSourceState,
+});

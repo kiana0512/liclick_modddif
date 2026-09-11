@@ -110,6 +110,61 @@ try {
   );
   registry.unregisterLiveUvRenderTarget(url, texture);
   await registry.flushLiveUvCommits();
+  const { persistRuntimeLayerAssets } = await server.ssrLoadModule(
+    '/src/services/runtimeLayerAssetPersistence.ts',
+  );
+  const rgba = new Blob([new Uint8Array([12, 34, 56, 0, 78, 90, 123, 255])], { type: 'image/png' });
+  const urls = [0, 1].map((i) => registry.registerLiveUvRenderTarget(`save-${i}`, {
+    width: 2, height: 1, toBlob: (done) => done(rgba),
+  }, {}));
+  const snapshot = { ...project, layers: urls.map((imageUrl, i) => ({
+    id: `${UV_REPAINT_LAYER_PREFIX}-${i}`, type: 'uv', role: 'local-repaint-overlay',
+    imageUrl, localRepaintSourceUrl: `original-${i}`, visible: i === 0, opacity: 0.7,
+    objectId: 'model', contentRevision: i,
+  })) };
+  let finishCommit;
+  registry.trackLiveUvCommit(new Promise((done) => { finishCommit = done; }), urls[0]);
+  const stored = new Map();
+  const upload = async (blob, filename) => {
+    const durable = `https://assets.test/${filename}`;
+    stored.set(durable, blob);
+    return durable;
+  };
+  const saving = persistRuntimeLayerAssets(snapshot, upload);
+  await Promise.resolve();
+  assert.equal(stored.size, 0, 'cross-page save also waits for pending GPU readback');
+  finishCommit();
+  const saved = await saving;
+  assert.equal(stored.size, 2, 'hidden UV layers must also be persisted');
+  for (let i = 0; i < 2; i++) {
+    assert.equal(snapshot.layers[i].imageUrl, urls[i], 'live editing binding is untouched');
+    assert.deepEqual({ ...saved.layers[i], imageUrl: urls[i] }, snapshot.layers[i]);
+    assert.deepEqual(await stored.get(saved.layers[i].imageUrl).arrayBuffer(), await rgba.arrayBuffer());
+    assert.equal(saved.layers[i].maskUrl, undefined, 'RGBA needs no extra mask');
+  }
+  const reopened = JSON.parse(JSON.stringify(saved));
+  assert.equal(await persistRuntimeLayerAssets(reopened, () => assert.fail('must not reupload')), reopened);
+  await assert.rejects(persistRuntimeLayerAssets(snapshot, async () => { throw Error('upload failed'); }), /upload failed/);
+  await assert.rejects(persistRuntimeLayerAssets({ ...snapshot, layers: [{ ...snapshot.layers[0],
+    imageUrl: 'liclick-live-projected-canvas:missing-after-refresh',
+  }] }, () => assert.fail('missing pixels must not fall back to raw generation')), /内存已失效/);
+  let racedUrl;
+  racedUrl = registry.registerLiveProjectedCanvasTexture('racing-save', { width: 2, height: 1,
+    toBlob(done) { registry.markLiveProjectedCanvasTextureUpdated(racedUrl); done(rgba); },
+  });
+  await assert.rejects(persistRuntimeLayerAssets({ ...snapshot, layers: [{ ...snapshot.layers[0],
+    imageUrl: racedUrl,
+  }] }, () => assert.fail('mixed paint revision must not upload')), /笔画发生变化/);
+  const temporary = URL.createObjectURL(rgba);
+  try {
+    const blobSaved = await persistRuntimeLayerAssets({ ...snapshot,
+      layers: [{ ...snapshot.layers[0], imageUrl: temporary, maskUrl: temporary }],
+    }, upload);
+    assert.equal(blobSaved.layers[0].imageUrl, blobSaved.layers[0].maskUrl, 'shared URL uploaded once');
+  } finally { URL.revokeObjectURL(temporary); }
+  const apiSource = await readFile(new URL('../src/services/workspaceApiClient.ts', import.meta.url), 'utf8');
+  assert.match(apiSource, /async function saveProjectDirect[\s\S]*?await persistRuntimeLayerAssets[\s\S]*?executeProjectCommand/,
+    'both saveProject and updateLatestProject must persist runtime assets before document CAS');
   const viewport = await readFile(
     new URL('../src/engine/viewport/ViewportCanvas.tsx', import.meta.url),
     'utf8',
