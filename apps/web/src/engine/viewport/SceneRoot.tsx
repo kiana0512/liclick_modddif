@@ -3528,18 +3528,31 @@ const ImportedModel = memo(function ImportedModel({
         stencilBuffer: false,
         generateMipmaps: false,
       });
-      const previousTarget = gl.getRenderTarget();
-      const previousAutoClear = gl.autoClear;
       try {
         if (typeof gl.compileAsync === 'function') {
           await compileForRenderTarget(gl, warmScene, warmCamera, gl.getRenderTarget());
+          if (nextBuild.cancelled || projectedTextureArrayBuildRef.current !== nextBuild) return;
+          // Offscreen output selects a separate program variant in Three.
+          // Link it before the first draw instead of stalling that display frame.
+          await compileForRenderTarget(gl, warmScene, warmCamera, warmTarget);
         }
         if (nextBuild.cancelled || projectedTextureArrayBuildRef.current !== nextBuild) {
           return;
         }
-        gl.autoClear = true;
-        gl.setRenderTarget(warmTarget);
-        gl.render(warmScene, warmCamera);
+        // ALG-PROJ-007: a GPU fence may span several display frames. Return
+        // the framebuffer synchronously so those frames reach the screen.
+        const previousTarget = gl.getRenderTarget();
+        const previousFace = gl.getActiveCubeFace();
+        const previousMip = gl.getActiveMipmapLevel();
+        const previousAutoClear = gl.autoClear;
+        try {
+          gl.autoClear = true;
+          gl.setRenderTarget(warmTarget);
+          gl.render(warmScene, warmCamera);
+        } finally {
+          gl.setRenderTarget(previousTarget, previousFace, previousMip);
+          gl.autoClear = previousAutoClear;
+        }
         const context = gl.getContext();
         if ('fenceSync' in context) {
           const gl2 = context as WebGL2RenderingContext;
@@ -3569,8 +3582,6 @@ const ImportedModel = memo(function ImportedModel({
           performance.now() - startedAt
         ).toFixed(1);
       } finally {
-        gl.setRenderTarget(previousTarget);
-        gl.autoClear = previousAutoClear;
         warmMesh.removeFromParent();
         warmGeometry.dispose();
         warmTarget.dispose();
