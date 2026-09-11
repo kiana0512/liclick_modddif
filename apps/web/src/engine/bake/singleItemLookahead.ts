@@ -1,4 +1,4 @@
-/** One next item may prepare while the caller consumes the current item.
+/** One next item (optionally two) may prepare while the caller consumes the current item.
  * Preparation never owns the caller's GPU renderer. Each resource is either
  * handed to its consumer once or disposed once when the sequence closes.
  */
@@ -7,6 +7,7 @@ export function createSingleItemLookahead<T>(
   load: (index: number) => Promise<T>,
   dispose: (item: T) => void,
   enabled = true,
+  prepareSecond = false,
 ) {
   type Slot = { promise: Promise<T>; claimed: boolean };
   let index = 0, closed = false;
@@ -19,6 +20,7 @@ export function createSingleItemLookahead<T>(
     return { promise, claimed: false };
   };
   let slot: Slot | undefined = enabled && count > 0 ? start(0) : undefined;
+  let following: Slot | undefined = enabled && prepareSecond && count > 1 ? start(1) : undefined;
   return {
     async take() {
       if (closed || index >= count || slot?.claimed) throw new Error('Source closed or already consumed.');
@@ -31,17 +33,21 @@ export function createSingleItemLookahead<T>(
         throw new DOMException('Layer preparation cancelled.', 'AbortError');
       }
       index++;
-      if (enabled && index < count) slot = start(index);
+      if (enabled && index < count) {
+        slot = following ?? start(index);
+        following = prepareSecond && index + 1 < count ? start(index + 1) : undefined;
+      }
       return item;
     },
     async close() {
       if (closed) return;
       closed = true;
-      const pending = slot;
+      const pending = [slot, following];
       slot = undefined;
-      if (pending) await pending.promise.then(item => {
-        if (!pending.claimed) dispose(item);
-      }, () => undefined);
+      following = undefined;
+      await Promise.all(pending.map(entry => entry?.promise.then(item => {
+        if (!entry.claimed) dispose(item);
+      }, () => undefined)));
     },
   };
 }

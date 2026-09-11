@@ -13,22 +13,23 @@ const deferred = () => { let resolve, reject; const promise = new Promise((a,b) 
 
 {
   let liveValue=3;
-  const q=create(1,()=>Promise.resolve(liveValue),()=>{},false);
+  const q=create(1,()=>Promise.resolve(liveValue),()=>{},false,true);
   const snapshot=q.take();liveValue=9;
   assert.equal(await snapshot,3,'live snapshot occurs synchronously during consumption');
   await q.close();
 }
 
-for (const enabled of [false,true]) {
+for (const enabled of [false,true]) for (const prepareSecond of [false,true]) {
   const loaded=[], disposed=[];
-  const q=create(23, async i => { loaded.push(i); return {i}; }, x=>disposed.push(x.i), enabled);
+  const q=create(23, async i => { loaded.push(i); return {i}; }, x=>disposed.push(x.i), enabled, prepareSecond);
+  const ahead=enabled ? prepareSecond ? 2 : 1 : 0;
   await tick();
-  assert.equal(loaded.length, enabled ? 1 : 0);
+  assert.equal(loaded.length, ahead);
   for(let i=0;i<23;i++) {
     const item=await q.take();
     assert.equal(item.i,i);
     await tick();
-    assert.equal(loaded.length,Math.min(23,i+1+(enabled?1:0)), 'only one next item is prepared');
+    assert.equal(loaded.length,Math.min(23,i+1+ahead), 'preparation remains within the selected slot bound');
   }
   await q.close();
   assert.deepEqual(disposed,[], 'handed-off resources belong to consumer');
@@ -63,7 +64,44 @@ for(const claimed of [false,true]) {
   assert.deepEqual(disposed,[1]);
 }
 const gpu=fs.readFileSync(new URL('../src/engine/bake/gpuUvBakeRenderer.ts',import.meta.url),'utf8');
+// Reverse completion and cancellation must not publish out of order, leak a
+// successfully prepared sibling, or dispose a handed-off source twice.
+for (const claimed of [false,true]) for (const failed of [-1,0,1]) {
+  const jobs=[deferred(),deferred()],disposed=[];
+  const q=create(2,i=>jobs[i].promise,x=>disposed.push(x),true,true);
+  const take=claimed?q.take():undefined;
+  const rejected=take?assert.rejects(take):undefined;
+  const closing=q.close();
+  for(const i of [1,0]) {
+    if(i===failed)jobs[i].reject(Error('decode failed'));
+    else jobs[i].resolve(i);
+  }
+  await closing;await rejected;await q.close();
+  assert.deepEqual(disposed.sort(),[0,1].filter(i=>i!==failed));
+}
+{
+  const jobs=[deferred(),deferred(),deferred()],disposed=[];
+  const q=create(3,i=>jobs[i].promise,x=>disposed.push(x),true,true);
+  const first=q.take();jobs[1].resolve(1);jobs[0].resolve(0);
+  assert.equal(await first,0);assert.equal(await q.take(),1);
+  const closing=q.close();jobs[2].resolve(2);await closing;
+  assert.deepEqual(disposed,[2]);
+}
 const tree=ts.createSourceFile('gpu.ts',gpu,ts.ScriptTarget.Latest,true);
+const lookahead=tree.statements.find(node=>ts.isFunctionDeclaration(node)&&node.name?.text==='createLayerTextureLookahead');
+const lookaheadJs=ts.transpileModule(lookahead.getText(tree),{compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText;
+const policy=new Function('createSingleItemLookahead','isLiveProjectedCanvasUrl',`${lookaheadJs};return createLayerTextureLookahead;`)(
+  (...args)=>({enabled:args[3],second:args[3]&&args[4]}),url=>url.startsWith('live:'),
+);
+for(const [resolution,resident,extra,live,second] of [
+  [4096,true,false,false,true],[8192,true,false,false,false],
+  [4096,false,false,false,true],[4096,true,true,false,false],[4096,true,false,true,false],
+]) {
+  const result=policy({resolution,residentQuality:resident?{}:undefined,layers:[{
+    imageUrl:live?'live:image':'image',depthUrl:'depth',normalUrl:extra?'normal':undefined,
+  }]});
+  assert.equal(result.second,second,'extra decode slot respects format size, source count, pipeline and live boundaries');
+}
 const loader=tree.statements.find(node=>ts.isFunctionDeclaration(node)&&node.name?.text==='loadLayerTexturesWithOptions');
 const loaderJs=ts.transpileModule(loader.getText(tree),{compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText;
 for(const fail of [false,true]) {

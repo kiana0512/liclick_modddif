@@ -3,7 +3,8 @@ import {execFileSync} from 'node:child_process';
 import {createRequire} from 'node:module';
 import {createServer} from 'vite';
 const require=createRequire(import.meta.url);
-const {chromium}=require(process.env.LICLICK_TEST_PLAYWRIGHT_MODULE||'playwright');
+const chromium=process.env.LICLICK_SOURCE_IAB ? undefined
+  : require(process.env.LICLICK_TEST_PLAYWRIGHT_MODULE||'playwright').chromium;
 const root=path.resolve(import.meta.dirname,'..');
 const original=execFileSync('git',['show',`${process.env.LICLICK_SOURCE_REFERENCE||'d3800a9'}:apps/web/src/engine/bake/gpuUvBakeRenderer.ts`],{cwd:root,encoding:'utf8'});
 const referenceId=path.join(root,'src/engine/bake/__uv-source-reference.ts').replaceAll('\\','/');

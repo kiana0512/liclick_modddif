@@ -1012,6 +1012,11 @@ function createLayerTextureLookahead(input: GpuLayerStackBakeInput) {
     }),
     textures => disposeLayerTextures(textures.disposableTextures),
     enabled,
+    // Overlap independent decoders. Limit the extra
+    // slot to two inputs at <=4K (at most 128 MiB of prepared source pixels).
+    // Larger/masked+normal stacks retain one-item lookahead.
+    input.resolution <= 4096 && input.layers.every(layer =>
+      [layer.imageUrl, layer.maskUrl, layer.depthUrl, layer.normalUrl].filter(Boolean).length <= 2),
   );
 }
 
