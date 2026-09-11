@@ -1,6 +1,6 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
-> 文档版本：`2.20.29`
+> 文档版本：`2.20.30`
 >
 > 生效日期：`2026-09-11`
 >
@@ -11,6 +11,8 @@
 > 审计口径：`0a2519d + 607e82f + 2568e40`，不包含错误文档提交 `2bde8c6/e03bab2/d1c5f78`
 
 ## 1. 文档地位与强制边界
+
+2026-09-11 M07/M08/M11：合并协议 v10 / final-v3 将原生 UV 重绘纳入合并与 Bake 增量，先保留投影底层，再按作者顺序 source-over 重绘；GPU/CPU/Worker 同步 opacity，等待最新笔画与冻结资产。历史资产、深灰斜线、QA 和持久化协议不改。验证与回滚见 [变更卡](changes/CHG-20260911-NATIVE-UV-MERGE.md)。
 
 2026-09-11 M07，协作 M06/M04/M15：`UV-READBACK-WORKER-BOOTSTRAP/1` 将无外部依赖的读回转换 Worker 随页面内联，确认 ready 后才转移像素；启动失败最多重试一次，转换失败不重放已转移数据。请求发送异常清理、会话隔离和 messageerror 处理避免悬挂及旧 Worker 事件破坏新会话。RGBA/coverage/quality、GPU/CPU/shader、深灰斜线、QA、分辨率、导出和持久化契约不变，无 Schema/资产迁移。未取得用户原始 Worker 的底层错误日志，不能将资源 404 断言为唯一根因；故障注入、真实工程与回滚见 [Worker 恢复变更卡](changes/CHG-20260911-UV-READBACK-WORKER-RECOVERY.md)。
 

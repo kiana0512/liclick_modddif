@@ -15,7 +15,7 @@ let layers=[{id:'a',type:'projected',visible:true,imageUrl:'a',camera:{},order:0
   {id:'b',type:'projected',visible:true,imageUrl:'b',camera:{},order:1}];
 const group={userData:{},revision:1};
 const model={objectId:'object',group};
-const scope={cancelMergeFinalPreparation:()=>{},prepareMergeFinal:async(_signature,_image,underlays)=>{finalInputs.push(underlays);},isFlattenableUvMergeSource:layer=>layer.type==='uv',isContentAwareUvUnderlay:()=>true,compareUvLayersForComposition:()=>0,persistentMergeKey:async()=>undefined,readPersistentMerge:async()=>undefined,writePersistentMerge:async()=>{},exports:{},DOMException,AbortController:globalThis.AbortController,performance:{now:()=>clock},
+const scope={cancelMergeFinalPreparation:()=>{},prepareMergeFinal:async(_signature,_image,underlays)=>{finalInputs.push(underlays);},isFlattenableUvMergeSource:layer=>layer.type==='uv',compareUvMergeSources:()=>0,persistentMergeKey:async()=>undefined,readPersistentMerge:async()=>undefined,writePersistentMerge:async()=>{},exports:{},DOMException,AbortController:globalThis.AbortController,performance:{now:()=>clock},
   document:{visibilityState:'visible',body:{dataset:{}}},
   window:{setInterval:fn=>{tick=fn;return 1;},clearInterval:()=>{tick=undefined;}},
   useLayerStore:{getState:()=>({layers:[...layers,{id:'repair',type:'uv',visible:true,imageUrl:'repair.png',opacity:1}]}),subscribe:fn=>{listener=fn;return ()=>{listener=undefined;};}},
@@ -51,15 +51,15 @@ queued.shift()();await settle();assert.notEqual(scope.document.body.dataset.uvMe
 tick();clock=4000;tick();await settle();assert.equal(calls,3);
 queued.shift()();await settle();assert.equal(scope.document.body.dataset.uvMergePreparation,'ready');
 assert(finalInputs.length>0);
-assert(finalInputs.every(underlays=>underlays.length===0),
-  'visible projection toolbar excludes even visible repair UV layers from its final PNG');
+assert(finalInputs.every(underlays=>underlays.length===1),
+  'visible merge toolbar includes visible authored UV layers');
 const select=api.setMergePreparationSelection('object',[...layers.map(layer=>layer.id),'repair']);
 tick();await settle();
 assert.deepEqual(finalInputs.at(-1).map(layer=>layer.id),['repair'],'selected repair is precomposed under the projection');
 assert.equal(calls,3,'selection of an underlay reuses the same projection result');
-select();tick();await settle();assert.equal(finalInputs.at(-1).length,0,'cleared selection restores toolbar intent');
+select();tick();await settle();assert.equal(finalInputs.at(-1).length,1,'cleared selection restores toolbar intent');
 const other=api.setMergePreparationSelection('another-object',['repair','a']);
-tick();await settle();assert.equal(finalInputs.at(-1).length,0,'another object cannot change the current merge');
+tick();await settle();assert.equal(finalInputs.at(-1).length,1,'another object cannot change the current merge');
 other();
 const single=api.setMergePreparationSelection('object',[layers[0].id],true);
 tick();clock+=250;tick();await settle();assert.equal(calls,4,'single-layer context menu also prewarms');

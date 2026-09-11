@@ -10,8 +10,7 @@ import {useProjectStore} from '@/stores/projectStore';
 import {isViewportInteractionBusy} from '@/engine/viewport/viewportInteractionState';
 import {cancelMergeFinalPreparation,prepareMergeFinal} from './mergeFinalPreparation';
 import {persistentMergeKey,readPersistentMerge,writePersistentMerge} from './persistentMergePreparation';
-import {isFlattenableUvMergeSource,isContentAwareUvUnderlay} from '@/engine/layers/mergeUvComposition';
-import {compareUvLayersForComposition} from '@/engine/layers/uvLayerComposition';
+import {isFlattenableUvMergeSource,compareUvMergeSources} from '@/engine/layers/mergeUvComposition';
 import {isResidentUvManaged} from '@/engine/projection/residentUvPresentation';
 
 type Request={projectId:string;objectId:string;resolution:UvBakeResolution;group:THREE.Group;layers:Layer[]};
@@ -117,9 +116,7 @@ export function startMergeProjectionPreparation(options:{projectId:string;resolu
       (selectedIds ? selectedIds.has(layer.id) : layer.visible));
     const layers=candidates.filter(layer=>layer.type==='projected' && layer.imageUrl && layer.camera);
     if(!layers.length) return;
-    const underlays=selectedIds ? candidates.filter(isFlattenableUvMergeSource).sort((a,b)=>
-      Number(isContentAwareUvUnderlay(a))-Number(isContentAwareUvUnderlay(b)) ||
-      compareUvLayersForComposition(a,b,'top-to-bottom')) : [];
+    const underlays=candidates.filter(isFlattenableUvMergeSource).sort(compareUvMergeSources);
     const input={...options,objectId:model.objectId,group:model.group,layers};
     const next=mergePreparationSignature(input);
     const prepareFinal=(result:BakeProjectedLayerResult)=>{

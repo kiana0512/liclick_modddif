@@ -1,12 +1,14 @@
 import * as THREE from 'three';
 import type { Layer } from '@/types/layer';
+import { isNativeUvRepaintLayer } from '@/engine/localRepaint/uvRepaintState';
+import { compareUvLayersForComposition } from './uvLayerComposition';
 
 /**
  * Increment when a merged UV produced by an older editor can no longer be
- * trusted to match the live layer stack. Version 9 aligns topology and seam
- * coordinates with the GPU texel extent. Historical UV assets remain authored underlays.
+ * trusted to match the live layer stack. Version 10 includes native UV repaint
+ * above projections. Historical UV assets remain authored underlays.
  */
-export const UV_MERGE_COMPOSITION_VERSION = 9;
+export const UV_MERGE_COMPOSITION_VERSION = 10;
 
 export function compositeRenderedColorMaskUnderInPlace(
   frontMask: Uint8Array,
@@ -209,8 +211,18 @@ export function isFlattenableUvMergeSource(
   return Boolean(
     layer.type === 'uv' &&
       layer.imageUrl &&
-      (isContentAwareUvUnderlay(layer) || layer.role === 'merged-uv'),
+      (isContentAwareUvUnderlay(layer) || layer.role === 'merged-uv' || isNativeUvRepaintLayer(layer)),
   );
+}
+
+/** Underlays go behind projection first; native repaint then covers that result
+ * bottom-to-top, exactly as the viewport's authored UV overlay stack. */
+export function compareUvMergeSources(left: Layer, right: Layer) {
+  const over = Number(isNativeUvRepaintLayer(left)) - Number(isNativeUvRepaintLayer(right));
+  if (over) return over;
+  if (isNativeUvRepaintLayer(left)) return compareUvLayersForComposition(left, right, 'bottom-to-top');
+  return Number(isContentAwareUvUnderlay(left)) - Number(isContentAwareUvUnderlay(right)) ||
+    compareUvLayersForComposition(left, right, 'top-to-bottom');
 }
 
 /**
@@ -218,19 +230,21 @@ export function isFlattenableUvMergeSource(
  * The operation is intentionally in-place so a 4K/8K merge does not allocate
  * another full-size RGBA result for every selected layer.
  */
-export function compositeRgbaUnderInPlace(
-  front: Uint8Array | Uint8ClampedArray,
+export function compositeRgbaUnderInPlace<T extends Uint8Array | Uint8ClampedArray>(
+  front: T,
   underlay: Uint8Array | Uint8ClampedArray,
   opacity = 1,
+  frontOpacity = 1,
 ) {
   if (front.length !== underlay.length || front.length % 4 !== 0) {
     throw new RangeError('RGBA buffers must have the same four-channel length.');
   }
   const layerOpacity = Math.max(0, Math.min(1, opacity));
-  if (layerOpacity <= 0) return front;
+  const sourceOpacity = Math.max(0, Math.min(1, frontOpacity));
+  if (layerOpacity <= 0 && sourceOpacity === 1) return front;
 
   for (let offset = 0; offset < front.length; offset += 4) {
-    const frontAlpha = front[offset + 3] / 255;
+    const frontAlpha = (front[offset + 3] / 255) * sourceOpacity;
     const underlayAlpha = (underlay[offset + 3] / 255) * layerOpacity;
     const visibleUnderlayAlpha = underlayAlpha * (1 - frontAlpha);
     const outputAlpha = frontAlpha + visibleUnderlayAlpha;

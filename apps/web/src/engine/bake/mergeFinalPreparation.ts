@@ -1,4 +1,5 @@
 import type {Layer} from '@/types/layer';
+import {isNativeUvRepaintLayer} from '@/engine/localRepaint/uvRepaintState';
 import {compositeRgbaUrlUnderWithWebGpu} from '@/engine/performance/webGpuRgbaComposite';
 import {encodeRgbaPngBlob} from '@/utils/encodeRgbaPng';
 import {clearPreparedMergePreview, prepareMergePreview} from './preparedMergePreview';
@@ -8,7 +9,7 @@ import {waitForViewportInteractionIdle} from '@/engine/viewport/viewportInteract
 
 let ready:{key:string;blob:Blob}|undefined;
 let pending:{key:string;controller:AbortController;promise:Promise<void>}|undefined;
-const keyFor=(signature:string,layers:Layer[])=>signature+'|uv-final-v2|'+JSON.stringify([
+const keyFor=(signature:string,layers:Layer[])=>signature+'|uv-final-v3|'+JSON.stringify([
   layers,layers.map(layer=>getLiveProjectedTextureSourceState(layer.imageUrl)?.revision),
 ]);
 export function cancelMergeFinalPreparation(clear=false) {
@@ -84,7 +85,7 @@ export async function prepareMergeFinal(signature:string,imageData:ImageData,lay
         sourceUrl=URL.createObjectURL(blob);snapshots.push(sourceUrl);
       }
       const result=await compositeRgbaUrlUnderWithWebGpu(rgba,sourceUrl,
-        imageData.width,imageData.height,layer.opacity,signal);
+        imageData.width,imageData.height,layer.opacity,signal,isNativeUvRepaintLayer(layer));
       rgba=result.data;
     }
     guard();

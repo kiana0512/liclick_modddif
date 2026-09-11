@@ -1280,7 +1280,7 @@ export function LayersPanelActions({
   const visibleProjectedLayerIds = layers
     .filter(
       (layer) =>
-        layer.type === 'projected' &&
+        (layer.type === 'projected' || isFlattenableUvMergeSource(layer)) &&
         layer.visible &&
         layer.imageUrl &&
         (!layer.objectId || layer.objectId === selectedObjectId),

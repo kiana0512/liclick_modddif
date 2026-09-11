@@ -126,7 +126,7 @@ import { getBoundingBoxForObject } from '@/engine/scene/boundingBoxUtils';
 import {
   compositeRgbaUnderInPlace,
   getRgbaAlphaCoverageRatio,
-  isContentAwareUvUnderlay,
+  compareUvMergeSources,
   isFlattenableUvMergeSource,
   UV_MERGE_COMPOSITION_VERSION,
 } from '@/engine/layers/mergeUvComposition';
@@ -135,7 +135,6 @@ import {
   releaseWebGpuRgbaCompositeResources,
   type WebGpuRgbaCompositeMetrics,
 } from '@/engine/performance/webGpuRgbaComposite';
-import { compareUvLayersForComposition } from '@/engine/layers/uvLayerComposition';
 import {
   applyAlphaFromMask,
   blobToDataUrl,
@@ -4856,15 +4855,7 @@ export function EditorPage({
     const selectedUvLayers = [
       ...(baseUvLayer ? [baseUvLayer] : []),
       ...selectedUvSourceLayers,
-    ].sort((left, right) => {
-      // Repair is always a sparse underlay, irrespective of incidental list
-      // order. Ordinary merged UV color stays above it, while new projection
-      // pixels remain the front-most authored result.
-      const underlayOrder =
-        Number(isContentAwareUvUnderlay(left)) - Number(isContentAwareUvUnderlay(right));
-      if (underlayOrder !== 0) return underlayOrder;
-      return compareUvLayersForComposition(left, right, 'top-to-bottom');
-    });
+    ].sort(compareUvMergeSources);
     const projectedLayerIds = projectedLayers.map((layer) => layer.id);
     const selectedUvLayerIds = selectedUvSourceLayers.map((layer) => layer.id);
     const consumedLayerIds = [...projectedLayerIds, ...selectedUvLayerIds];
@@ -5036,6 +5027,7 @@ export function EditorPage({
               bakeResolution,
               layer.opacity,
               options?.taskContext?.signal,
+              isNativeUvRepaintLayer(layer),
             );
             const metrics: WebGpuRgbaCompositeMetrics = result.metrics;
             mergedRgba = result.data;
@@ -5065,7 +5057,9 @@ export function EditorPage({
           }
         } else {
           const source = await urlToImageData(uvSourceUrl, bakeResolution, bakeResolution);
-          compositeRgbaUnderInPlace(mergedRgba, source.data, layer.opacity);
+          mergedRgba = isNativeUvRepaintLayer(layer)
+            ? compositeRgbaUnderInPlace(source.data, mergedRgba, 1, layer.opacity)
+            : compositeRgbaUnderInPlace(mergedRgba, source.data, layer.opacity);
         }
         setManualBakeProgress({
           title: t('mergeSelectedLayersToUvLayer'),

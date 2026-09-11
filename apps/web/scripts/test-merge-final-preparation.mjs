@@ -6,7 +6,9 @@ const code=ts.transpileModule(source.replace(/^import[^\n]+\n/gm,''),{
   compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS},
 }).outputText;
 let calls=0,encodeCalls=0,pause,previewPause,liveRevision=1,yields=0,idleChecks=0,clock=0,snapshots=0,released=0;
+const overFlags=[];
 const scope={exports:{},AbortController:globalThis.AbortController,DOMException,
+  isNativeUvRepaintLayer:layer=>layer.id?.startsWith('local-repaint-uv-native-v1'),
   flushLiveUvCommits:async()=>{},isLiveProjectedCanvasUrl:url=>url==='live-native',
   getLiveProjectedTextureBlob:async()=>new Blob(['committed-uv']),
   URL:{createObjectURL:()=>{snapshots++;return '2';},revokeObjectURL:()=>{released++;}},
@@ -15,7 +17,8 @@ const scope={exports:{},AbortController:globalThis.AbortController,DOMException,
   getLiveProjectedTextureSourceState:url=>url==='2'?{revision:liveRevision}:undefined,
   clearPreparedMergePreview:()=>{},prepareMergePreview:async()=>{if(previewPause)await previewPause;},
   window:{location:{search:''}},document:{body:{dataset:{}}},performance:{now:()=>clock+=5},
-  compositeRgbaUrlUnderWithWebGpu:async(rgba,url,width,height,opacity,signal)=>{
+  compositeRgbaUrlUnderWithWebGpu:async(rgba,url,width,height,opacity,signal,sourceOver)=>{
+    overFlags.push(sourceOver);
     calls++;assert.equal(width,1);assert.equal(height,1);
     if(pause) await pause;
     if(signal.aborted) throw new DOMException('cancelled','AbortError');
@@ -87,4 +90,7 @@ assert.equal(large.length,8*1048576,'shared source buffer remains owned by prepa
 await api.prepareMergeFinal('native',image,[{imageUrl:'live-native',opacity:1}]);
 assert.equal(new Uint8Array(await api.getPreparedMergePng('native',[{imageUrl:'live-native',opacity:1}]).arrayBuffer())[0],8);
 assert.equal(snapshots,1);assert.equal(released,1,'native UV Worker snapshot released');
+await api.prepareMergeFinal('native-over',image,[{id:'local-repaint-uv-native-v1-test',imageUrl:'live-native',opacity:0.5}]);
+assert.equal(overFlags.at(-1),true,'prepared native repaint must cover projection, not sit below it');
+assert(overFlags.slice(0,-1).every(flag=>!flag),'existing underlay composition is unchanged');
 console.log('Final Merge preparation: ordered underlays, immutable inputs, deduplication, exact cache keys, bounded copy scheduling, native UV snapshots and stale-result cancellation passed.');
