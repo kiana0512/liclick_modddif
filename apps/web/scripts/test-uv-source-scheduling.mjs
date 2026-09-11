@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import './test-readback-worker-lifecycle.mjs';
 import fs from 'node:fs';
 import { setImmediate } from 'node:timers';
 import ts from 'typescript';

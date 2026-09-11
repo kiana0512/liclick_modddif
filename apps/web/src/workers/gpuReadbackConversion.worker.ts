@@ -25,7 +25,7 @@ type ConversionResponse =
 
 const scope = self as unknown as {
   onmessage: ((event: MessageEvent<ConversionRequest>) => void) | null;
-  postMessage(message: ConversionResponse, transfer?: Transferable[]): void;
+  postMessage(message: ConversionResponse | { ready: 1 }, transfer?: Transferable[]): void;
 };
 
 function convertQuality(request: ConversionRequest) {
@@ -120,3 +120,5 @@ scope.onmessage = (event) => {
     });
   }
 };
+
+scope.postMessage({ ready: 1 });
