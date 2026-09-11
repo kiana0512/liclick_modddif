@@ -37,16 +37,18 @@ fixture = fixture.slice(0,start) + String.raw`
     originalBoundingBox:object.originalBoundingBox,childMeshCount:object.childMeshCount,warnings:[],restoreStage:'full'};
 ` + fixture.slice(end);
 fixture = fixture.replace("resolution: '1K'", "resolution: '4K'");
-if(process.env.LICLICK_UV_RELOAD_TEST)fixture=fixture.replace("  const project=await", "  const {useAuthStore}=await import('/src/stores/authStore.ts');useAuthStore.setState({user:{id:'isolated-uv-cache-owner'}});\n  const project=await");
-fixture += String.raw`
-  await new Promise(resolve=>setTimeout(resolve,1500));
-  const center=new THREE.Vector3().fromArray(object.boundingBox.center);
-  runtime.controls.target.copy(center);runtime.camera.position.copy(center).add(new THREE.Vector3(4,1.5,5));runtime.camera.lookAt(center);runtime.controls.update();
+fixture = fixture.replace('  useProjectStore.setState', `  const firstStartedAt=performance.now();
   const original=project.layers.map(layer=>({...layer,visible:layer.type==='projected'||layer.role==='content-aware-underlay'}));
   useLayerStore.setState({layers:original});
+  useProjectStore.setState`);
+if(process.env.LICLICK_UV_RELOAD_TEST)fixture=fixture.replace("  const project=await", "  const {useAuthStore}=await import('/src/stores/authStore.ts');useAuthStore.setState({user:{id:'isolated-uv-cache-owner'}});\n  const project=await");
+fixture += String.raw`
+  const center=new THREE.Vector3().fromArray(object.boundingBox.center);
+  runtime.controls.target.copy(center);runtime.camera.position.copy(center).add(new THREE.Vector3(4,1.5,5));runtime.camera.lookAt(center);runtime.controls.update();
   await until(()=>document.body.dataset.residentUvProjectionStatus==='ready','full UV buffer');await tick();await tick();
   const {waitForResidentUvPresentation}=await import('/src/engine/projection/residentUvPresentation.ts');
   await waitForResidentUvPresentation(runtime.scene,object.id);
+  const first={ms:performance.now()-firstStartedAt,stages:JSON.parse(document.body.dataset.residentUvProjectionStages)};
   const pixels=()=>{runtime.gl.setRenderTarget(null);runtime.gl.render(runtime.scene,runtime.camera);
     const gl=runtime.gl.getContext(),rgba=new Uint8Array(gl.drawingBufferWidth*gl.drawingBufferHeight*4);
     gl.readPixels(0,0,gl.drawingBufferWidth,gl.drawingBufferHeight,gl.RGBA,gl.UNSIGNED_BYTE,rgba);return rgba;};
@@ -61,7 +63,7 @@ fixture += String.raw`
     const rgba=new Uint8Array(texture.image.width*texture.image.height*4);gl.readPixels(0,0,texture.image.width,texture.image.height,gl.RGBA,gl.UNSIGNED_BYTE,rgba);
     gl.bindFramebuffer(gl.FRAMEBUFFER,previous);gl.deleteFramebuffer(frame);return rgba;};
   const initialGpu=texturePixels(initialUniforms.uvOverlayOpacity>0?'uvOverlayMap':'baseMap');
-  window.projectUvFixture={async toggle(id,visible){
+  window.projectUvFixture={first,async toggle(id,visible){
     const revision=document.body.dataset.residentUvProjectionRevision,start=performance.now();
     useLayerStore.setState({layers:useLayerStore.getState().layers.map(layer=>layer.id===id?{...layer,visible}:layer)});
     await until(()=>document.body.dataset.residentUvProjectionRevision!==revision && document.body.dataset.residentUvProjectionStatus==='ready','toggle');await tick();
@@ -97,6 +99,7 @@ fixture += String.raw`
     localId:original.find(layer=>layer.id.startsWith('local-repaint-')).id};
 }
 `;
+if(process.env.LICLICK_UV_TOP_VIEW)fixture=fixture.replace('new THREE.Vector3(4,1.5,5)','new THREE.Vector3(0,5,2)');
 const server=await createServer({root,configFile:false,resolve:{alias:{'@':root+'/src'}},server:{host:'127.0.0.1',port:0,hmr:false,watch:{ignored:['**/*']}},
   cacheDir:'node_modules/.vite-project-uv-qa',optimizeDeps:{entries:['scripts/uv-repaint-viewport-fixture.mjs']},plugins:[{
     name:'read-only-project-uv',configureServer(s){
@@ -104,6 +107,8 @@ const server=await createServer({root,configFile:false,resolve:{alias:{'@':root+
       s.middlewares.use('/__asset/',async(req,res)=>{try{
         const file=path.resolve(assetRoot,decodeURIComponent(req.url.split('?')[0]).replace(/^\//,''));
         if(!file.startsWith(assetRoot+path.sep)){res.statusCode=403;res.end();return;}
+        if(file.endsWith('.png'))res.setHeader('Content-Type','image/png');
+        else if(/\.jpe?g$/i.test(file))res.setHeader('Content-Type','image/jpeg');
         res.end(await readFile(file));
       }catch{res.statusCode=404;res.end();}});
       s.middlewares.use('/__fixture',(_,res)=>{res.setHeader('Content-Type','text/html');res.end('<!doctype html><title>Read-only model UV comparison</title>');});
@@ -114,7 +119,7 @@ const browser=await chromium.launch({channel:'msedge',headless:true});
 try{
   const page=await browser.newPage({viewport:{width:1100,height:900}});const errors=[];
   page.on('pageerror',error=>errors.push(error.message));
-  await page.goto(server.resolvedUrls.local[0]+'__fixture');
+  await page.goto(server.resolvedUrls.local[0]+'__fixture'+(process.env.LICLICK_UV_FULL_QA?'?perfQualityGpuAb=1':''));
   const setup=()=>page.evaluate(async()=>{
     const originalDigest=crypto.subtle.digest.bind(crypto.subtle);window.fixtureCacheKeys=[];
     crypto.subtle.digest=async(algorithm,data)=>{if(data.byteLength<100000&&new Uint8Array(data.buffer??data,data.byteOffset??0,1)[0]===123){try{const value=JSON.parse(new globalThis.TextDecoder().decode(data));if(value.purpose)window.fixtureCacheKeys.push(value);}catch{/* Non-JSON digests are unrelated to cache identity. */}}return originalDigest(algorithm,data);};
@@ -125,6 +130,7 @@ try{
   await setup();
   const prefix=path.join(tmpdir(),process.env.LICLICK_UV_BASELINE?'li3d-baseline-uv':'li3d-real-uv');
   await page.screenshot({path:prefix+'-resident.png'});
+  console.log('first UV presentation',await page.evaluate(()=>window.projectUvFixture.first));
   if(process.env.LICLICK_UV_RELOAD_TEST){
     await page.waitForFunction(()=>!!document.body.dataset.residentUvCacheWrite,{},{timeout:60000});
     console.log('disk write',await page.evaluate(()=>document.body.dataset.residentUvCacheWrite));
@@ -143,6 +149,9 @@ try{
   for(const type of ['localId','normalId']) for(const visible of [false,true]) timing.push({type,visible,...await page.evaluate(async({type,visible})=>window.projectUvFixture.toggle(window.projectUvFixture[type],visible),{type,visible})});
   const comparison=await page.evaluate(()=>window.projectUvFixture.manual());
   await page.screenshot({path:prefix+'-manual.png'});
-  const result={errors,timing,comparison};await writeFile(prefix+'.json',JSON.stringify(result,null,2));console.log(JSON.stringify(result));assert.deepEqual(errors,[]);
+  const first=await page.evaluate(()=>window.projectUvFixture.first);
+  const result={errors,first,timing,comparison};await writeFile(prefix+'.json',JSON.stringify(result,null,2));console.log(JSON.stringify({errors,first,timing,comparison:{gpuChanged:comparison.gpuChanged,changed:comparison.changed}}));assert.deepEqual(errors,[]);
+  assert.equal(comparison.gpuChanged,0,'Resident final UV must match explicit merge RGBA');
+  assert.equal(comparison.changed,0,'Resident and merged UV must render identical pixels');
   }
 }finally{await browser.close();await server.close();}

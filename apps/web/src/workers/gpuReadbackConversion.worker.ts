@@ -9,6 +9,7 @@ type ConversionRequest = {
   pixels: ArrayBuffer;
   resolution: number;
   outputAlpha?: 'opaque-viewport' | 'transparent';
+  packedQuality?: boolean;
 };
 
 type ConversionResponse =
@@ -29,12 +30,16 @@ const scope = self as unknown as {
 
 function convertQuality(request: ConversionRequest) {
   const pixels = new Uint8Array(request.pixels);
+  const stride = request.packedQuality ? 1 : 4;
+  if (pixels.length !== request.resolution * request.resolution * stride) {
+    throw new Error('Invalid quality readback byte length.');
+  }
   const quality = new Float32Array(request.resolution * request.resolution);
-  const rowLength = request.resolution * 4;
+  const rowLength = request.resolution * stride;
   for (let y = 0; y < request.resolution; y += 1) {
     const sourceStart = (request.resolution - 1 - y) * rowLength;
     for (let x = 0; x < request.resolution; x += 1) {
-      quality[y * request.resolution + x] = pixels[sourceStart + x * 4 + 3] / 255;
+      quality[y * request.resolution + x] = pixels[sourceStart + x * stride + stride - 1] / 255;
     }
   }
   return quality.buffer;

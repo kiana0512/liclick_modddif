@@ -1,5 +1,6 @@
 import { RELIABLE_PROJECTION_GLSL } from '../projection/projectionCoverageContract.mjs';
 import { readRenderTargetPixelsInStripes } from './gpuReadbackStripes';
+import { QualityAlphaReadback } from './qualityAlphaReadback';
 import { ResidentQualityComposite } from './residentQualityComposite';
 import { createSingleItemLookahead } from './singleItemLookahead';
 import { isLiveProjectedCanvasUrl } from '../projection/liveProjectedCanvasTextureRegistry';
@@ -22,7 +23,6 @@ import { yieldToBrowserTask } from '@/utils/browserScheduling';
 import {
   convertFinalGpuReadbackInWorker,
   convertLayerGpuReadbackInWorker,
-  convertQualityGpuReadbackInWorker,
 } from './gpuReadbackConversionWorker';
 
 const NDV_HARD_REJECT = -0.35;
@@ -1486,15 +1486,6 @@ async function readRenderTargetToLayerImageData(
   return convertLayerGpuReadbackInWorker(pixels, resolution);
 }
 
-async function readRenderTargetAlphaToFloat(
-  renderer: THREE.WebGLRenderer,
-  target: THREE.WebGLRenderTarget,
-  resolution: number,
-) {
-  const pixels = await readRenderTargetPixelsInStripes(renderer, target, resolution);
-  return convertQualityGpuReadbackInWorker(pixels, resolution);
-}
-
 type RendererStateSnapshot = {
   target: THREE.WebGLRenderTarget | null;
   clearColor: THREE.Color;
@@ -1634,6 +1625,7 @@ export async function bakeProjectedLayerRastersWithGpu(
   }
   let colorTarget = createPostprocessTarget(resolution);
   let qualityTarget = createPostprocessTarget(resolution);
+  const qualityReadback = new QualityAlphaReadback(renderer, resolution);
   const cached = keys.map((key, i) => cacheable[i] ? rasterCache?.get(key) : undefined);
   if (rasterCache) {
     document.body.dataset.residentUvRasterHits = String(cached.filter(Boolean).length);
@@ -1686,7 +1678,7 @@ export async function bakeProjectedLayerRastersWithGpu(
         if (retainLayerRaster) {
           const [raster, quality] = await Promise.all([
             readRenderTargetToLayerImageData(renderer, hit.color, resolution),
-            readRenderTargetAlphaToFloat(renderer, hit.quality, resolution),
+            qualityReadback.read(hit.quality),
           ]);
           rasters.push({ layer, imageData: raster.imageData, coverage: raster.coverage, quality, coveredPixels: raster.coveredPixels });
           coveredPixels += raster.coveredPixels;
@@ -1759,7 +1751,7 @@ export async function bakeProjectedLayerRastersWithGpu(
       renderer.setClearColor(0x000000, 0);
       renderer.clear(true, true, true);
       renderer.render(bakeScene.scene, camera);
-      const qualityPromise = retainLayerRaster ? readRenderTargetAlphaToFloat(renderer, qualityTarget, resolution) : undefined;
+      const qualityPromise = retainLayerRaster ? qualityReadback.read(qualityTarget) : undefined;
       if (resident && !isOverlay) {
         const started = performance.now();
         resident.push(colorTarget.texture,qualityTarget.texture);
@@ -1842,6 +1834,7 @@ export async function bakeProjectedLayerRastersWithGpu(
     restoreRendererState(renderer, previousState);
     colorTarget.dispose();
     qualityTarget.dispose();
+    qualityReadback.dispose();
     await sources.close();
   }
 }

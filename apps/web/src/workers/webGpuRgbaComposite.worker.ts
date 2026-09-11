@@ -1,4 +1,5 @@
 import { encodeRgbaPngBytesChunked } from '@/utils/encodeRgbaPngCore';
+import { yieldWorkerTask } from '@/utils/workerScheduling';
 
 export {};
 
@@ -193,7 +194,7 @@ const shaderSource = `
 `;
 
 function wait(durationMs = 0) {
-  return new Promise<void>((resolve) => setTimeout(resolve, durationMs));
+  return yieldWorkerTask(durationMs);
 }
 
 async function yieldGpuBudget() {

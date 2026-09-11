@@ -4963,7 +4963,11 @@ export function EditorPage({
       const bakeResult =
         layersToBake.length > 0 && !projectionBakeCacheHit
           ? await prepareMergeProjection({projectId:project.id,objectId,group:currentImportedModel.group,
-              layers:projectedLayers,resolution:bakeResolution},updateManualBakeProgress,preparedFinalHit)
+              layers:projectedLayers,resolution:bakeResolution},(progress) => setManualBakeProgress({
+                title: t('mergeSelectedLayersToUvLayer'),
+                detail: getBakeProgressDetail(progress),
+                progress: progress.progress,
+              }),preparedFinalHit)
           : undefined;
       // A joined projection job may have finished its final preparation while
       // we awaited it. Reuse/join that exact result instead of encoding again.

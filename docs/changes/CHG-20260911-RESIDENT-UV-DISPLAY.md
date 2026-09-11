@@ -36,6 +36,26 @@ Worker overlay 对 source RGBA、原 base RGBA、quality、rendered-mask 完全�
 
 ## 持久化、导出、迁移与回滚
 
+### 2026-09-11：首次转换与白边后续修复
+
+本轮最终本地回归 120 项全部通过，包含新增蒙版支撑范围逐像素对照；独立 WebGL 质量打包读回及 DPR=2 状态恢复检查通过。新局部重绘显隐组合约 1189ms，普通投影组合约 2933ms，重复已有组合约 48ms，后续仍需降低新组合等待。
+
+主模块 M06/M07，协作 M09/M15。用户明确要求在 WebGL 正确性已验收后移除每次整工程 CPU 对照，优先减少首次和新显隐组合的延迟。
+
+- `UV-DEVICE-CALIBRATION/1.0.0` 在实际 renderer/context 上用 256×256、6 层有限输入检验 Top-K、0–255 alpha/quality、字节反预乘及两种输出 alpha 模式；通过后普通计算不再读回每层完整 4K RGBA/quality 给 CPU 重做。设备小样本不是对所有输入的数学证明，完整工程 CPU/GPU 对照仍作为回归/发布验收，以 `perfQualityGpuAb=1` 强制运行；GPU 不确定舍入仍精确 CPU 修正。失败阻止结果发布，context loss 重新校验，不持久保存设备“通过”标记。记录本次实际 WebGL 首次校验约 161–171ms。
+- CPU 对照请求原来还启动一遍结果不会采用的 WebGPU 求解。现在 `forceCpuOutput` 仅生成 CPU gold，常驻 WebGL 对照门禁保持；原候选 WebGPU 在其真实调用入口保留校验。原实现/新实现 CPU RGBA、coverage 一致，并断言不再分配该无效 GPU 工作的 buffers。
+- `UV-QUALITY-READBACK-PACK/1.0.0` 将原质量目标每个 alpha 字节按四字节一组装入 RGBA 目标，减少 75% 质量传输字节，恢复时仍输出完整分辨率 Float32 QA 数据。16/512/4096 GPU 逐值一致、状态恢复和损坏长度拒绝通过；单次 4K 质量读回约 174→108ms。正常通过设备校验后已不需要整层读回，此项主要加速显式完整 QA/兼容入口。
+- `PROJECTED-MASK-FOOTPRINT/1.0.0` 首次按 mask 的非零 RGB×alpha 支撑计算保守双线性范围，范围外直接得到原本就为零的覆盖；有效区沿用原 sampler，不改分辨率、像素坐标、羽化、作者 alpha 或隐藏 RGB。CPU 和 masked Worker 共用同一函数。800 组冻结旧核对照及真实 4K 工程通过，原工程蒙版准备约 2.4s→0.57s。PNG 中间格式改为临时 Canvas 的候选无明确收益，已撤回，未增加该候选的运行时缓存预算。
+- Worker 的空闲让出使用 scheduler/MessageChannel，避免连续 `setTimeout(0)` 的定时器下限；交互保护的真实延时不改。底层 RGBA 合成原公式与 QA 不变。
+- `UV-DISPLAY-BUFFER/1.1.0` 将可见 content-aware UV underlay 在生成最终显示 RGBA 时按显式 Merge 的 source-under 规则合成，显示只消费最终 atlas，避免二次 alpha 组合导致岛边白线。底层进入请求/持久身份，rendered-color mask 按新增 albedo 覆盖修正归属；未修改 ProjectedLayerMaterial 的深灰斜线或颜色。正面、俯视原工程对照：最终 4K RGBA 差异 0，截图差异 0。非零 rendered-color 混合工程仍需单独扩大验收。
+- 手动“合并 UV”进度标题改为对应合并动作；此前显示“自动烘焙 BaseColor”造成误解，不表示新增或移除了后台自动烘焙。
+
+本次普通路径首次完整显示约 17.6→6.2s（20 个投影/旧局部重绘来源，原模型、4K，同机单次样本）；新显隐组合仍有秒级等待，未达到用户即时要求。夹具修正为首次挂载就带全部来源，去掉原先人为等待 1500ms，分别记录首次、显隐、F5 与 CPU full-QA，不能和旧夹具加载数字直接混比。不要将几十毫秒的已有状态命中当成任意新状态速度。
+
+最终 F5 持久缓存复测：同一只读原工程夹具约 2192ms，来源摘要校验与无损恢复约 560ms，最终纹理上传约 94ms；maskPreparationMs=0，未重算投影。原始加载和刷新页面运行于独立测试浏览器，不能将此数字当作用户所有网络/设备的稳定保证。俯视 4K full-QA 的 GPU RGB/alpha 差异为 0，实际最终 UV 与手动 Merge RGBA/整帧差异均为 0，浏览器无异常。上一集成提交 e784659 的 pipeline 629901 全部 8 项通过；本次提交还须执行正式 prepush 并确认新流水线。
+
+GPU 光栅/shader、CPU blend、Worker Top-K、完整分辨率与源资产不变；只有派生显示组成方式变化。persistent purpose 从 resident-uv-display-1 升为 resident-uv-display-2，旧派生快照失效一次，不重写历史合并 PNG、Project Schema、Command/CAS/ownership 或 verified assets。PNG/FBX 显式导出继续原生产入口，mask 支撑优化共用相同原像素函数。回滚须同时恢复显示底层绑定与 purpose；若恢复运行时全工程校验，移除设备轻校验调用即可，保持完整 QA 分支。逐层贡献持久化和任意新组合的增量重算仍未完成，不宣称已经实现。
+
 拓扑缓存同时校验实际序列化 UV 三角形，捕获未设置 `needsUpdate` 的 UV / index 修改；发生变化时页内结果和 Worker key 一起失效。辅助网格不参与身份计算。此项避免更新后补边继续使用旧岛边界，属于 v9 派生缓存正确性修复，不更改源资产。
 
 刷新验证保持实际源字节 SHA-256 身份：同一几何共享字节范围只哈希一次，同 URL 的源文件去重，并以最多三个并发请求校验来源，减少逐层串行网络等待。摘要内容、账号隔离及失效规则不变，不依赖 URL 相同就信任内容未变。
@@ -51,6 +71,8 @@ Worker overlay 对 source RGBA、原 base RGBA、quality、rendered-mask 完全�
 回滚本变更恢复上一版本显示协调入口；GPU 标记生成与 CPU 消费必须一起回滚，不能混用两种内部标记。清除内存派生缓存即可，不重写项目或已有 PNG。
 
 ## 验证记录
+
+- 后续实验未采纳：完整 coverage/topology 相等时缓存有序 gutter donor 地址，4K 隔离命中可由约 184ms 降至 38–47ms，但冷计算增加建表成本；原工程显隐会改变覆盖，阶段约 358–362ms，未优于原方案。进一步只检查拓扑边界与岛外 coverage 的候选仍不能有效命中，原工程阶段约 483–522ms、总切换约 2.1/4.2 秒，故两版生产改动均已撤回。保留本地实验记录，不把隔离命中收益当作用户工程的优化成果；后续优先减少逐层来源准备、投影及完整 RGBA 往返。
 
 - 已推送集成提交 `b683157f4f98f54aa7efe4f33fe4b89c1e680acf`，正式发布包体 3,211,881 / 3,222,000 bytes；pipeline #629898 的 lint 阶段发现新增浏览器夹具中的全局引用和空 catch，非包体失败。修正为明确的 window/globalThis 引用并解释诊断 catch；不跳过测试或放宽 ESLint。M15 `RELEASE-PREPUSH/1.0.1` 将 CI 原 lint 命令纳入每次推送前入口，避免普通构建通过却遗漏 lint。下一轮 gutter 地址复用尚未发布。
 

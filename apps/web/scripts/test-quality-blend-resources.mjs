@@ -14,7 +14,7 @@ const overlayCode = ts.transpileModule(overlaySource.slice(overlaySource.indexOf
 const sharedOverlayAlpha = new Function(`${overlayCode}; return getProjectionOverlayAlpha;`)();
 function load(source, device) {
   const code = ts.transpileModule(source.slice(source.indexOf('const TOP_K')), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
-  return new Function('resolvePixelCpu','getProjectionOverlayAlpha','self', `${code}; return {createTopK, resolveCpu, resolveGpu, applyOverlays, shader};`)(sharedResolve,sharedOverlayAlpha,{ navigator: { gpu: device ? { requestAdapter: async () => ({ requestDevice: async () => device }) } : undefined } });
+  return new Function('resolvePixelCpu','getProjectionOverlayAlpha','self','yieldWorkerTask', `${code}; return {createTopK, resolveCpu, resolveGpu, applyOverlays, shader, run};`)(sharedResolve,sharedOverlayAlpha,{ navigator: { gpu: device ? { requestAdapter: async () => ({ requestDevice: async () => device }) } : undefined } },()=>Promise.resolve());
 }
 const old = load(frozen), next = load(current);
 assert.equal(next.shader, old.shader, 'production shader is unchanged');
@@ -99,3 +99,11 @@ const failed = mockDevice(3);
 await assert.rejects(load(current, failed.device).resolveGpu(next.createTopK(10), false), /allocation failure/);
 assert(failed.buffers.every(x => x.destroyed), 'partial allocation is released');
 console.log('Quality blend: 240 CPU parity cases, full/partial GPU tile byte parity and resource lifetime passed.');
+{
+  const request={resolution:16,preserveCoverageConfidenceAlpha:true,forceCpuOutput:true,verify:false,interactive:false,overlays:[],
+    layers:[{color:new Uint8ClampedArray(16*16*4).fill(155).buffer,quality:new Float32Array(16*16).fill(.7).buffer}]};
+  const former=mockDevice(),candidate=mockDevice();
+  const a=await load(frozen,former.device).run(request),b=await load(current,candidate.device).run(request);
+  assert.deepEqual(b.output,a.output);assert.deepEqual(b.coverage,a.coverage);
+  assert(former.buffers.length>0);assert.equal(candidate.buffers.length,0,'CPU reference must not dispatch an unused second GPU resolve');
+}

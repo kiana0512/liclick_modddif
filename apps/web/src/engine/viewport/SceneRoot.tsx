@@ -2583,6 +2583,7 @@ const ImportedModel = memo(function ImportedModel({
   const progressiveBackgroundSignature = [
     importedObjectId, importedModel.group.uuid, resolution,
     layerStackPreviewSignature(allPreviewProjectedLayers),
+    uvLayerStackPreviewSignature(visibleContentAwareUvUnderlayLayers),
     ...allPreviewProjectedLayers.map(layer => [layer.normalUrl, layer.maskSpace,
       liveProjectedMaskRevisionSignature(layer.maskUrl),
       liveProjectedMaskRevisionSignature(layer.imageUrl)].join(':')),
@@ -2630,6 +2631,7 @@ const ImportedModel = memo(function ImportedModel({
       renderer: gl,
       sourceModel: importedModel,
       sourceLayers: allPreviewProjectedLayers,
+      underlayLayers: [...visibleContentAwareUvUnderlayLayers].sort((a, b) => compareUvLayersForComposition(a, b, 'top-to-bottom')),
       resolution: RESOLUTION_TO_SIZE[resolution],
       onReady: (result) => {
         setProgressiveProjectedPreview(result);
@@ -2646,6 +2648,7 @@ const ImportedModel = memo(function ImportedModel({
   }, [
     allPreviewProjectedLayers,
     gl,
+    visibleContentAwareUvUnderlayLayers,
     canUseProgressiveUvFallback,
     importedModel,
     importedObjectId,
@@ -4303,8 +4306,8 @@ const ImportedModel = memo(function ImportedModel({
             // overlay texels must reveal that repair. The empty-UV checker is
             // only a diagnostic fallback; drawing it here hid valid repairs
             // immediately after projected layers were merged.
-            showEmptyUvChecker: !loadedContentAwareUnderlayTexture &&
-              (!progressiveBaseOnly || !(loadedUvTexture && uvOverlayOpacity > 0)),
+            showEmptyUvChecker: progressiveBaseOnly && !(loadedUvTexture && uvOverlayOpacity > 0)
+              ? true : (!loadedContentAwareUnderlayTexture || contentAwareUnderlayOpacity <= 0) && !progressiveBaseOnly,
             ...(loadedUvTexture
               ? {
                   uvOverlayTexture: loadedUvTexture,
@@ -4350,6 +4353,8 @@ const ImportedModel = memo(function ImportedModel({
                   // A completed projection atlas has the same display semantics
                   // as a merged UV row, including partial alpha at island edges.
                   uvOverlayTexture: progressivePreviewBase.colorTexture,
+                  // This atlas already contains the repair, exactly like a merged UV row.
+                  baseTextureOpacity: 0,
                   uvOverlayOpacity: 1,
                   uvOverlayRenderedColor: false,
                   uvOverlayRenderedColorMaskTexture: progressivePreviewBase.renderedColorMaskTexture,
@@ -4358,8 +4363,8 @@ const ImportedModel = memo(function ImportedModel({
                   baseTexture: progressivePreviewBase.colorTexture,
                   baseTextureOpacity: 1,
                   baseRenderedColorMaskTexture: progressivePreviewBase.renderedColorMaskTexture,
-                  uvBaseUnderlayTexture: loadedContentAwareUnderlayTexture ?? bakedTexture,
-                  uvBaseUnderlayOpacity: loadedContentAwareUnderlayTexture ? contentAwareUnderlayOpacity : 1,
+                  uvBaseUnderlayTexture: bakedTexture,
+                  uvBaseUnderlayOpacity: bakedTexture ? 1 : 0,
                   uvOverlayBelowBase: Number.isFinite(visibleMergedUvBoundaryOrder),
                 }
               : {}),

@@ -6,6 +6,7 @@ type ConversionRequest = {
   pixels: ArrayBuffer;
   resolution: number;
   outputAlpha?: 'opaque-viewport' | 'transparent';
+  packedQuality?: boolean;
 };
 
 type ConversionResponse =
@@ -55,6 +56,7 @@ function convert(
   pixels: Uint8Array,
   resolution: number,
   outputAlpha?: 'opaque-viewport' | 'transparent',
+  packedQuality?: boolean,
 ) {
   const id = nextRequestId++;
   const buffer =
@@ -63,7 +65,7 @@ function convert(
     pixels.byteLength === pixels.buffer.byteLength
       ? pixels.buffer
       : pixels.slice().buffer;
-  const message: ConversionRequest = { id, mode, pixels: buffer, resolution, outputAlpha };
+  const message: ConversionRequest = { id, mode, pixels: buffer, resolution, outputAlpha, packedQuality };
   return new Promise<ConversionResponse>((resolve, reject) => {
     pending.set(id, { resolve, reject });
     getWorker().postMessage(message, [buffer]);
@@ -102,8 +104,9 @@ export async function convertLayerGpuReadbackInWorker(
 export async function convertQualityGpuReadbackInWorker(
   pixels: Uint8Array,
   resolution: number,
+  packedQuality = false,
 ) {
-  const response = await convert('quality', pixels, resolution);
+  const response = await convert('quality', pixels, resolution, undefined, packedQuality);
   if ('error' in response || response.mode !== 'quality') throw new Error('Invalid quality readback.');
   return new Float32Array(response.quality);
 }

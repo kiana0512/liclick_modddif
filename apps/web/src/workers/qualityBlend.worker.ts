@@ -1,4 +1,5 @@
 import { resolvePixelCpu } from '../engine/bake/qualityBlendCpuPixel';
+import { yieldWorkerTask } from '../utils/workerScheduling';
 import {
   getProjectionOverlayAlpha,
   type ProjectedOverlayMode,
@@ -178,7 +179,7 @@ function createTopK(pixelCount: number): TopK {
 }
 
 async function yieldWorkerBudget() {
-  await new Promise<void>((resolve) => setTimeout(resolve, interactive ? 8 : 0));
+  await yieldWorkerTask(interactive ? 8 : 0);
 }
 
 async function accumulate(topK: TopK, request: BlendRequest) {
@@ -514,7 +515,7 @@ async function run(request: BlendRequest) {
   let backend: 'webgpu-worker' | 'cpu-worker' = 'cpu-worker';
   let output = cpu?.output;
   let verification: Verification | undefined;
-  try {
+  if (!request.forceCpuOutput) try {
     const gpu = await resolveGpu(topK, request.preserveCoverageConfidenceAlpha);
     if (gpu) {
       backend = 'webgpu-worker';

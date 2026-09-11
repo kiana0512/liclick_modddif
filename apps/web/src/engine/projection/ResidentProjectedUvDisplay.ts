@@ -29,12 +29,13 @@ type Request = {
   renderer: THREE.WebGLRenderer;
   sourceModel: ModelLoadResult;
   sourceLayers: Layer[];
+  underlayLayers?: Layer[];
   resolution: UvBakeResolution;
   onReady: (result: ProjectedPreviewComposite) => void;
   onError: (error: unknown) => void;
 };
 
-/** UV-DISPLAY-BUFFER/1.0.0. The display owns derived UV buffers, never layers/assets.
+/** UV-DISPLAY-BUFFER/1.1.0. The display owns derived UV buffers, never layers/assets.
  * Use the same resident Top-K and exact postprocess path as explicit UV merge.
  * Keep the front buffer until its replacement has uploaded and been bound.
  */
@@ -104,6 +105,7 @@ export class ResidentProjectedUvDisplay {
       if (cancelled()) throw new DOMException('UV display superseded.', 'AbortError');
     };
     const startedAt = performance.now();
+    const stages: Record<string, number> = {};
     const created: THREE.Texture[] = [];
     const transientSources: string[] = [];
     let sourcesClosed = false;
@@ -117,8 +119,8 @@ export class ResidentProjectedUvDisplay {
         .then(({ persistentMergeKey }) => persistentMergeKey({
           projectId: request.projectId!, objectId: request.sourceModel.objectId,
           resolution: request.resolution, group: request.sourceModel.group,
-          layers: request.sourceLayers.filter(layer => layer.visible && layer.opacity > 0),
-          purpose: 'resident-uv-display-1',
+          layers: [...request.sourceLayers, ...(request.underlayLayers ?? [])].filter(layer => layer.visible && layer.opacity > 0),
+          purpose: 'resident-uv-display-2',
         })).catch(() => undefined) : Promise.resolve(undefined);
       if (!restored && !this.front) {
         persistentKey = await keyPromise;
@@ -126,10 +128,12 @@ export class ResidentProjectedUvDisplay {
         restored = await this.compressed.restore(request.signature, persistentKey);
       }
       guard();
+      stages.cacheLookupMs = performance.now() - startedAt;
       const { bakeVisibleProjectedLayersToTexture } =
         await import('@/engine/bake/bakeProjectedLayerToTexture');
       guard();
       let sourceLayers = request.sourceLayers.filter(layer => layer.visible && layer.opacity > 0);
+      const prepareStartedAt = performance.now();
       if (!restored) {
         const [{ prepareMergeProjectionLayers }, { createProjectionMaskedImage }] = await Promise.all([
           import('@/engine/bake/prepareMergeProjectionLayers'), import('./createMaskedProjectedImage'),
@@ -153,6 +157,8 @@ export class ResidentProjectedUvDisplay {
         });
         guard();
       }
+      stages.maskPreparationMs = performance.now() - prepareStartedAt;
+      const bakeStartedAt = performance.now();
       const result = restored
         ? {
             ...restored,
@@ -178,22 +184,9 @@ export class ResidentProjectedUvDisplay {
             skipCanvasUpload: true,
             onProgress: guard,
           });
+      stages.completeBakeMs = performance.now() - bakeStartedAt;
       guard();
       if (!result.imageData) throw new Error('UV display calculation returned no pixels.');
-      const bitmap = await createImageBitmap(result.imageData, {
-        imageOrientation: 'flipY',
-        premultiplyAlpha: 'none',
-      });
-      if (cancelled()) {
-        bitmap.close();
-        guard();
-      }
-      const colorTexture = await createWorkerBackedPreviewTexture(bitmap);
-      created.push(colorTexture);
-      guard();
-      // Establish the sparse base sampler profile before the stripe upload.
-      // Changing it after upload reallocates a worker-owned DataTexture with no CPU pixels.
-      markSparseAlphaBaseTexture(colorTexture);
       const mask = result.renderedColorMask;
       let hasRenderedColor = false;
       if (mask) {
@@ -212,6 +205,47 @@ export class ResidentProjectedUvDisplay {
         }
         for (let i = words.length * 4; i < mask.length; i++) hasRenderedColor ||= mask[i] !== 0;
       }
+      const underlayStartedAt = performance.now();
+      if (!restored && request.underlayLayers?.length) {
+        const { compositeRgbaUrlUnderWithWebGpu } = await import('@/engine/performance/webGpuRgbaComposite');
+        for (const layer of request.underlayLayers) {
+          guard();
+          const rgba = result.imageData.data;
+          // Preserve rendered-color attribution when albedo underneath adds coverage.
+          const alpha = mask && hasRenderedColor ? new Uint8Array(mask.length) : undefined;
+          if (alpha) for (let start = 0; start < alpha.length; start += 262144) {
+            for (let i = start; i < Math.min(start + 262144, alpha.length); i++) alpha[i] = rgba[i * 4 + 3];
+            await yieldToBrowserTask(); guard();
+          }
+          const combined = await compositeRgbaUrlUnderWithWebGpu(rgba, layer.imageUrl,
+            request.resolution, request.resolution, layer.opacity);
+          guard();
+          result.imageData = new ImageData(combined.data, request.resolution, request.resolution);
+          if (alpha && mask) for (let start = 0; start < alpha.length; start += 262144) {
+            for (let i = start; i < Math.min(start + 262144, alpha.length); i++) {
+              const coverage = combined.data[i * 4 + 3];
+              mask[i] = coverage ? Math.round(mask[i] * alpha[i] / coverage) : 0;
+            }
+            await yieldToBrowserTask(); guard();
+          }
+        }
+      }
+      stages.underlayCompositeMs = performance.now() - underlayStartedAt;
+      const uploadStartedAt = performance.now();
+      const bitmap = await createImageBitmap(result.imageData, {
+        imageOrientation: 'flipY',
+        premultiplyAlpha: 'none',
+      });
+      if (cancelled()) {
+        bitmap.close();
+        guard();
+      }
+      const colorTexture = await createWorkerBackedPreviewTexture(bitmap);
+      created.push(colorTexture);
+      guard();
+      // Establish the sparse base sampler profile before the stripe upload.
+      // Changing it after upload reallocates a worker-owned DataTexture with no CPU pixels.
+      markSparseAlphaBaseTexture(colorTexture);
       let renderedColorMaskTexture: THREE.Texture;
       if (mask && hasRenderedColor) {
         const rgba = new Uint8ClampedArray(mask.length * 4);
@@ -262,11 +296,12 @@ export class ResidentProjectedUvDisplay {
       };
       this.cache.set(request.signature, buffer);
       created.length = 0;
+      stages.displayUploadMs = performance.now() - uploadStartedAt;
       document.body.dataset.residentUvProjectionDurationMs = (
         performance.now() - startedAt
       ).toFixed(1);
       document.body.dataset.residentUvProjectionStages = JSON.stringify(
-        result.report.performanceBreakdown,
+        { ...result.report.performanceBreakdown, ...stages },
       );
       request.onReady(buffer);
       if (!restored) {

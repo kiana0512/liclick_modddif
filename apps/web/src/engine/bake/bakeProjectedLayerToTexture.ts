@@ -44,6 +44,7 @@ import { waitForBrowserPaint, yieldToBrowserTask } from '@/utils/browserScheduli
 import { usesUnlitRenderedColor } from '@/engine/viewport/renderedLayerColor';
 import { blendProjectedRastersInWorker } from './qualityBlendWorker';
 import { residentQualityPolicy, verifyResidentQuality } from './residentQualityComposite';
+import { calibrateResidentQuality } from './residentQualityCalibration';
 import {
   getBatchedLiteralOverlaySuffix,
   isLocalRepaintProjectedLayer,
@@ -1265,6 +1266,11 @@ async function bakeVisibleProjectedLayersToTextureUnlocked(
         });
 
         const normalLayerCount = parityLayers.filter(layer=>!getProjectedLayerOverlayMode(layer)).length;
+        if (layers.length<=255 && input.resolution<=4096 && normalLayerCount>0) {
+          const calibrationStartedAt=performance.now();
+          await calibrateResidentQuality(renderer,input.preserveCoverageConfidenceAlpha ?? false);
+          performanceBreakdown.qualityDeviceCalibrationMs=performance.now()-calibrationStartedAt;
+        }
         const residentPolicy = layers.length<=255 && input.resolution<=4096 && normalLayerCount>0
           ? residentQualityPolicy(renderer,input.preserveCoverageConfidenceAlpha ?? false) : undefined;
         if (!legacyDiagnostic && normalLayerCount > 0 && !residentPolicy) {
@@ -1387,9 +1393,11 @@ async function bakeVisibleProjectedLayersToTextureUnlocked(
         }
         let residentBase=gpuBake.residentQuality;
         if(residentBase && residentPolicy?.retainRasters) {
+          const referenceStartedAt=performance.now();
           const reference=await blendProjectedRastersInWorker(normalRasters,input.resolution,
             input.preserveCoverageConfidenceAlpha ?? false,[],true);
           residentBase=verifyResidentQuality(renderer,input.preserveCoverageConfidenceAlpha ?? false,residentBase,reference);
+          performanceBreakdown.qualityFullReferenceMs=performance.now()-referenceStartedAt;
         }
         const blendOverlays = [
             ...overlayRasters.map((raster) => ({
