@@ -2,7 +2,7 @@
 
 import {
   applyProjectedAlphaMask,
-} from './createMaskedProjectedImage';
+} from './projectedAlphaMask';
 
 type SerializedImageData = {
   width: number;

@@ -38,7 +38,7 @@ GPU 光栅与 Top-K/shader 像素、CPU blend/接缝/gutter donor、Worker 源 m
 
 ## CI 期间继续优化首次接缝
 
-`1715111ba8c5ef122df1d791060de8071f7dadf1` 已推送 master；正式检查 3,220,484 / 3,222,000 bytes，剩余 1516 bytes。pipeline 629981 跟踪中；记录这些数据不代表其后的算法修改已经推送或 CI 通过。
+`1715111ba8c5ef122df1d791060de8071f7dadf1` 已推送 master；正式检查 3,220,484 / 3,222,000 bytes，剩余 1516 bytes。pipeline 629981 全部 8 项通过（2026-09-11 16:17 GMT+8）；记录这些数据不代表其后的算法修改已经推送或 CI 通过。
 
 M07 / `UV-SEAM-REPAIR-PLAN/1.2` 保持原世界位置量化，按首次出现映射整数 ID，以 `minId * radix + maxId` 无碰撞配对；radix 是全部位置元素数量加一，radix² 必须是安全整数，否则用原字符串键。Map 首次插入顺序不改。已共享的同 UV 内边原位更新 a/b/insideUv，避免每个三角形边再分配记录；记录只在本次遍历内持有，配对和 donor 消费仍在遍历完成后发生。
 
@@ -47,3 +47,12 @@ GPU/CPU/Worker/shader 像素公式和分辨率不改；显式合并、常驻 UV�
 新增对优化内部 collector 的逐边深比较，覆盖变换/非索引、重复位置但不同 UV、非流形顺序和超安全整数边界回退；原 600 gutter、500 repair、40 transformed-mesh RGBA/coverage/count 对照通过，构建和相关 lint 通过。隔离 256×256 分段球冷处理三次旧 384.6/316.1/314.5ms，新 239.2/150.7/176.7ms，完整输出差异 0。内置原工程首次接缝两次约 880.9/878.7ms，对比上一版约 1026ms；明确可见且聚焦的复测为 895ms，整次新局部组合 4862ms、普通组合 2443ms、F5 2526ms。总时间受来源准备和并发界面工作影响，不能把局部 CPU 收益宣称为所有组合已无感。
 
 一次新构建后仍捕获相同 Three isReady 异常，已取得编译轮询栈；加入临时生命周期诊断后的同页三次 F5 为 2281/2477/2508ms，未复现。临时诊断已经从源码移除，不作为生产修复提交，该异常保持待定位。
+
+## 蒙版 Worker 依赖裁剪
+
+M07，协作 M06/M09；`PROJECTED-MASK-WORKER-BOOTSTRAP/1`。将原 sampleImageBilinear、applyProjectedAlphaMask 原样移入纯计算模块，旧 imageSampler/createMaskedProjectedImage 保留 API 重导出。蒙版 Worker 只依赖纯函数，避免引入图像加载、项目状态和无关抠图代码。无新增依赖；Worker 构建产物 16,618→2,365 bytes。普通本地 JS 合计 3,206,618 bytes，正式发布另以最终 HEAD 的 verify:prepush 为准。
+
+冻结核 800 组不同尺寸、稀疏/完整 mask、两种源 alpha 策略逐字节一致；投影显隐回归和相关 lint、构建通过。内置同一原工程可见聚焦测试：初始恢复 2497.5ms、新局部组合 4101ms（mask 704.4ms、seam 864.1ms）、普通组合 2348.2ms、缓存返回约 31ms、F5 2509.2ms；连续开关最终状态稳定。首次仍捕获已记录的 isReady 异常，后续 F5 无异常，不能宣称首次渲染 QA 完全通过或这项裁剪单独使整体加速。
+
+CPU/Worker 共用原采样及蒙版公式；GPU/shader、接缝/Top-K、深灰斜线和输出分辨率不变；显式合并/导出继续原入口；持久资产、Command/CAS/ownership/verified assets 不改，无 Schema 或磁盘格式迁移。回滚同时恢复两个调用方的 imports 与原函数位置，不修改任何已保存的图层或缓存。
+`n纯模块裁剪后完整 web 回归 121 项通过。
