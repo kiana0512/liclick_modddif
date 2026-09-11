@@ -10,55 +10,55 @@ type Tile = { bounds: Rect; surfaces: Array<{ mesh: THREE.Mesh; box: THREE.Box3 
 type Stroke = { before: Map<number, Promise<Uint8Array<ArrayBuffer>>>; changed: Set<number> };
 
 const vertex = `
-  attribute float repaintFaceId;
-  flat varying float faceId;
-  varying vec4 currentClip;
-  uniform mat4 currentViewProjection;
-  uniform float uvPass;
-  void main() {
-    faceId = repaintFaceId;
-    currentClip = currentViewProjection * modelMatrix * vec4(position, 1.0);
-    gl_Position = mix(currentClip, vec4(uv * 2.0 - 1.0, 0.0, 1.0), uvPass);
-  }
+attribute float repaintFaceId;
+flat varying float faceId;
+varying vec4 currentClip;
+uniform mat4 currentViewProjection;
+uniform float uvPass;
+void main() {
+faceId=repaintFaceId;
+currentClip=currentViewProjection*modelMatrix*vec4(position,1.0);
+gl_Position=mix(currentClip,vec4(uv*2.0-1.0,0.0,1.0),uvPass);
+}
 `;
 // Screen-space derivatives avoid ill-conditioned inversion on tiny UV triangles.
 // Use a conservative local footprint for curved faces, but reject depth breaks
 // between the nearest face and neighbouring samples (rail/hole boundaries).
 // Float rounding allowance is 2e-6; immutable source occlusion still applies.
 const paintFragment = `
-  flat varying float faceId;
-  varying vec4 currentClip;
-  uniform sampler2D visibleFaces;
-  uniform vec2 visibilitySize;
-  uniform vec2 viewportSize, brushFrom, brushTo;
-  uniform float brushRadius, feather, erase;
-  float frontLimit(vec2 pixel, vec4 anchor, vec2 centre) {
-    vec4 front = texture2D(visibleFaces, (pixel + 0.5) / visibilitySize);
-    float bend = dot(abs(front.zw - anchor.zw), vec2(1.0));
-    float delta = front.y - anchor.y - dot(anchor.zw, pixel - centre);
-    if (front.x < 0.5 || abs(delta) > bend + 0.000002) return -1.0;
-    return front.y + dot(abs(front.zw), vec2(0.5));
-  }
-  float repaintWeight() {
-    vec3 ndc = currentClip.xyz / max(currentClip.w, 1e-20);
-    vec2 screenUv = ndc.xy * 0.5 + 0.5;
-    if (currentClip.w <= 0.0 || any(greaterThan(abs(ndc), vec3(1.0)))) discard;
-    vec4 front = texture2D(visibleFaces, screenUv);
-    if (front.x < 0.5) discard;
-    if (abs(front.x - faceId) > 0.5) {
-      vec2 pixel = floor(screenUv * visibilitySize - 0.5);
-      vec2 centre = floor(screenUv * visibilitySize);
-      float limit = max(max(frontLimit(pixel, front, centre), frontLimit(pixel + vec2(1.0, 0.0), front, centre)),
-        max(frontLimit(pixel + vec2(0.0, 1.0), front, centre), frontLimit(pixel + 1.0, front, centre)));
-      if (ndc.z * 0.5 + 0.5 > limit + 0.000002) discard;
-    }
-    vec2 p = vec2(screenUv.x, 1.0 - screenUv.y) * viewportSize;
-    vec2 ab = brushTo - brushFrom;
-    float t = clamp(dot(p - brushFrom, ab) / max(dot(ab, ab), 0.0001), 0.0, 1.0);
-    float distanceToStroke = length(p - (brushFrom + ab * t)) / max(brushRadius, 0.001);
-    if (distanceToStroke >= 1.0) discard;
-    return 1.0 - smoothstep(max(0.0, 1.0 - feather), 1.0, distanceToStroke);
-  }
+flat varying float faceId;
+varying vec4 currentClip;
+uniform sampler2D visibleFaces;
+uniform vec2 visibilitySize;
+uniform vec2 viewportSize,brushFrom,brushTo;
+uniform float brushRadius,feather,erase;
+float frontLimit(vec2 pixel,vec4 anchor,vec2 centre){
+vec4 front=texture2D(visibleFaces,(pixel+0.5)/visibilitySize);
+float bend=dot(abs(front.zw-anchor.zw),vec2(1.0));
+float delta=front.y-anchor.y-dot(anchor.zw,pixel-centre);
+if(front.x<0.5||abs(delta)>bend+0.000002)return-1.0;
+return front.y+dot(abs(front.zw),vec2(0.5));
+}
+float repaintWeight(){
+vec3 ndc=currentClip.xyz/max(currentClip.w,1e-20);
+vec2 screenUv=ndc.xy*0.5+0.5;
+if(currentClip.w<=0.0||any(greaterThan(abs(ndc),vec3(1.0))))discard;
+vec4 front=texture2D(visibleFaces,screenUv);
+if(front.x<0.5)discard;
+if(abs(front.x-faceId)>0.5){
+vec2 pixel=floor(screenUv*visibilitySize-0.5);
+vec2 centre=floor(screenUv*visibilitySize);
+float limit=max(max(frontLimit(pixel,front,centre),frontLimit(pixel+vec2(1.0,0.0),front,centre)),
+max(frontLimit(pixel+vec2(0.0,1.0),front,centre),frontLimit(pixel+1.0,front,centre)));
+if(ndc.z*0.5+0.5>limit+0.000002)discard;
+}
+vec2 p=vec2(screenUv.x,1.0-screenUv.y)*viewportSize;
+vec2 ab=brushTo-brushFrom;
+float t=clamp(dot(p-brushFrom,ab)/max(dot(ab,ab),0.0001),0.0,1.0);
+float distanceToStroke=length(p-(brushFrom+ab*t))/max(brushRadius,0.001);
+if(distanceToStroke>=1.0)discard;
+return 1.0-smoothstep(max(0.0,1.0-feather),1.0,distanceToStroke);
+}
 `;
 
 function target(size: number, depthBuffer = false) {
