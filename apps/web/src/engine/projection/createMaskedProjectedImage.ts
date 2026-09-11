@@ -1,4 +1,6 @@
-import { loadImageData, sampleImageBilinear } from '@/engine/bake/imageSampler';
+import { loadImageData } from '@/engine/bake/imageSampler';
+import { applyProjectedAlphaMask } from './projectedAlphaMask';
+export { applyProjectedAlphaMask } from './projectedAlphaMask';
 import { createRegisteredObjectUrl } from '@/utils/blobUrlRegistry';
 import { removeEdgeConnectedNeutralBackground } from '@/engine/localRepaint/resultPreviewUtils';
 
@@ -609,39 +611,6 @@ async function imageDataToPngUrl(imageData: ImageData) {
   return createRegisteredObjectUrl(blob);
 }
 
-export function applyProjectedAlphaMask(
-  image: ImageData,
-  mask: ImageData,
-  options: { ignoreSourceAlpha?: boolean } = {},
-) {
-  const output = new ImageData(new Uint8ClampedArray(image.data), image.width, image.height);
-  for (let y = 0; y < image.height; y += 1) {
-    const v = image.height <= 1 ? 0 : y / (image.height - 1);
-    for (let x = 0; x < image.width; x += 1) {
-      const u = image.width <= 1 ? 0 : x / (image.width - 1);
-      const sourceOffset = (y * image.width + x) * 4;
-      const maskSample = sampleImageBilinear(mask, u, v);
-      const maskLuminance = maskSample[0] * 0.299 + maskSample[1] * 0.587 + maskSample[2] * 0.114;
-      const maskCoverage = (maskLuminance / 255) * (maskSample[3] / 255);
-      // Local repaint and other explicitly mask-authored projections use the
-      // camera/brush mask as their only coverage authority. Generated-image
-      // alpha may have already been damaged by an earlier dark-background
-      // heuristic, so it must not be allowed to punch new holes in the model.
-      const sourceAlpha = options.ignoreSourceAlpha
-        ? 255
-        : output.data[sourceOffset + 3];
-      const nextAlpha = Math.round(sourceAlpha * maskCoverage);
-      output.data[sourceOffset + 3] = nextAlpha;
-      if (nextAlpha <= 0 && !options.ignoreSourceAlpha) {
-        output.data[sourceOffset] = 0;
-        output.data[sourceOffset + 1] = 0;
-        output.data[sourceOffset + 2] = 0;
-      }
-    }
-  }
-  return output;
-}
-
 type PixelBounds = {
   x: number;
   y: number;
@@ -779,25 +748,32 @@ function processMaskedProjectedImageInWorker(
     return Promise.resolve(mask ? applyProjectedAlphaMask(source, mask) : source);
   }
   const id = ++maskedProjectedRequestId;
-  const sourceBuffer = source.data.buffer as ArrayBuffer;
+  // imageSampler lends cached pixels. Transfer only task-owned copies or the
+  // next export/merge of this same repaint receives a detached cache entry.
+  const sourceBuffer = source.data.slice().buffer as ArrayBuffer;
   const transfer: Transferable[] = [sourceBuffer];
   let maskPayload: { width: number; height: number; data: ArrayBuffer } | undefined;
   if (mask) {
-    const maskBuffer = mask.data.buffer as ArrayBuffer;
+    const maskBuffer = mask.data.slice().buffer as ArrayBuffer;
     maskPayload = { width: mask.width, height: mask.height, data: maskBuffer };
     transfer.push(maskBuffer);
   }
   return new Promise<ImageData>((resolve, reject) => {
     maskedProjectedRequests.set(id, { resolve, reject });
-    worker.postMessage(
-      {
-        id,
-        source: { width: source.width, height: source.height, data: sourceBuffer },
-        mask: maskPayload,
-        mode,
-      },
-      transfer,
-    );
+    try {
+      worker.postMessage(
+        {
+          id,
+          source: { width: source.width, height: source.height, data: sourceBuffer },
+          mask: maskPayload,
+          mode,
+        },
+        transfer,
+      );
+    } catch (error) {
+      maskedProjectedRequests.delete(id);
+      reject(error);
+    }
   });
 }
 
@@ -813,18 +789,25 @@ export async function createMaskedProjectedImage(imageUrl: string, projectionMas
 
 /**
  * Flattens a projection-space mask into the source alpha before UV baking.
- * A local repaint result is a complete rendered frame, so its source alpha is
- * ignored and the authored brush mask is the only coverage source. Baking that
- * dedicated mask into alpha makes the merge robust if an optional mask texture
- * cannot be loaded by the GPU path. Ordinary generated layers never use this.
+ * ALG-LR-013 merge parity v1.1: preserve model-clipped source alpha when the
+ * layer uses it in the viewport. Legacy full-frame results still ignore alpha.
+ * Flatten the two coverage factors once, then bake with ignoreSourceAlpha=false.
  */
-export async function createProjectionMaskedImage(imageUrl: string, projectionMaskUrl: string) {
+export async function createProjectionMaskedImage(
+  imageUrl: string,
+  projectionMaskUrl: string,
+  options: { ignoreSourceAlpha?: boolean } = {},
+) {
   const [sourceImage, projectionMask] = await Promise.all([
     loadImageData(imageUrl, maxCutoutDimension),
     loadImageData(projectionMaskUrl, maxCutoutDimension, 'local repaint projection mask'),
   ]);
   return imageDataToPngUrl(
-    await processMaskedProjectedImageInWorker(sourceImage, projectionMask, 'projection-alpha-only'),
+    await processMaskedProjectedImageInWorker(
+      sourceImage,
+      projectionMask,
+      options.ignoreSourceAlpha === false ? 'mask-only' : 'projection-alpha-only',
+    ),
   );
 }
 

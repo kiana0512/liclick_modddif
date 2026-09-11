@@ -545,7 +545,7 @@ assert.match(
 );
 assert.match(
   sceneRootSource,
-  /const alreadyPresentsWhiteMembrane = hasPresentedMaterial && presentsOnlyWhiteMembrane;\s*if \(showWhiteMembrane && alreadyPresentsWhiteMembrane\) \{[\s\S]*?revealInitialMaterialPresentation\(\);[\s\S]*?return;[\s\S]*?\}\s*if \(\s*!showWhiteMembrane &&\s*hasResidentProjectedMaterial/,
+  /const alreadyPresentsWhiteMembrane = hasPresentedMaterial && presentsOnlyWhiteMembrane;\s*if \(showWhiteMembrane && alreadyPresentsWhiteMembrane\) \{[\s\S]*?revealInitialMaterialPresentation\(\);[\s\S]*?return;[\s\S]*?\}\s*if \(\s*!showWhiteMembrane &&\s*!canUseProgressivePreviewBase &&\s*hasResidentProjectedMaterial/,
   'PBR changes must publish the current Group before reusing the resident white or projected material.',
 );
 assert.match(
@@ -565,8 +565,18 @@ assert.doesNotMatch(
 );
 assert.match(
   sceneRootSource,
-  /const authoritativeResidentUvTexture =\s*authoritativeOrdinaryUvLayers\.length > 0\s*\?[\s\S]*?authoritativeExactUvTexture \?\? loadedUvTexture \?\? authoritativeProxyUvTexture[\s\S]*?: undefined/,
-  'A late projected-material publication must not resurrect a resident UV texture whose eye is closed.',
+  /const authoritativeResidentUvTexture =\s*hasLowerRepaintUv\s*\? loadedUvTexture\s*:\s*authoritativeOrdinaryUvLayers\.length > 0\s*\?[\s\S]*?authoritativeExactUvTexture \?\? loadedUvTexture \?\? authoritativeProxyUvTexture[\s\S]*?: undefined/,
+  'A late material publication must preserve lower repaint UVs without resurrecting hidden ordinary UVs.',
+);
+assert.match(
+  sceneRootSource,
+  /const hasLowerRepaintUv = authoritativeLocalRepaintUvLayers\.some\([\s\S]*?layer\.id !== liveTopUvLayer\?\.id/,
+  'Only visible repaint rows outside the dedicated top sampler can keep the lower UV sampler enabled.',
+);
+assert.match(
+  sceneRootSource,
+  /if \(isLiveProjectedCanvasUrl\(imageUrl\)\) return undefined/,
+  'Borrowed UV render targets must bypass the ordinary image decode/upload/cache lifecycle.',
 );
 assert.match(
   sceneRootSource,
@@ -590,7 +600,7 @@ assert.match(
 );
 assert.match(
   sceneRootSource,
-  /if \(\s*!showWhiteMembrane &&\s*hasResidentProjectedMaterial &&\s*committedProjectedMaterialStructureRef\.current === projectedMaterialStructureKey\s*\) \{[\s\S]*?revealInitialMaterialPresentation\(\);[\s\S]*?return;/,
+  /if \(\s*!showWhiteMembrane &&\s*!canUseProgressivePreviewBase &&\s*hasResidentProjectedMaterial &&\s*committedProjectedMaterialStructureRef\.current === projectedMaterialStructureKey\s*\) \{[\s\S]*?revealInitialMaterialPresentation\(\);[\s\S]*?return;/,
   'A restored single projected layer must publish its resident Group before the material fast path returns.',
 );
 assert.match(
@@ -1518,6 +1528,42 @@ try {
   }
   assert.equal(projection.updateProjectedLayerStackMaterial(material, subsetInput), true);
   console.log('Resident subset reuse passed: 570 transitions, eraser slot ownership, single/structural rejection and unchanged inputs/shader.');
+  const { RetainedProjectedMaterials } = await server.ssrLoadModule(
+    '/src/engine/projection/retainedProjectedMaterials.ts',
+  );
+  const retained = new RetainedProjectedMaterials();
+  const singleInput = { ...subsetInput, layers: [layers[0]] };
+  const singleMaterial = await projection.createProjectedLayerStackMaterial(singleInput);
+  assert(singleMaterial);
+  // Full -> single -> canonical white -> single -> ordered multi subsets.
+  // Keeping the distinct single shader must not evict the uploaded full stack.
+  retained.retain(material);
+  retained.retain(singleMaterial);
+  for (let cycle = 0; cycle < 10; cycle++) {
+    assert.equal(retained.take(singleInput), singleMaterial);
+    assert.equal(retained.take(singleInput), undefined, 'Attached materials leave cache ownership.');
+    retained.retain(singleMaterial);
+    for (let count = 2; count <= layers.length; count++) {
+      assert.equal(retained.take({ ...subsetInput, layers: layers.slice(0, count) }), material);
+      retained.retain(material);
+    }
+  }
+  assert.equal(material.version, originalVersion);
+  assert.equal(retained.take(subsetInput), material);
+  const replacementSingle = await projection.createProjectedLayerStackMaterial(singleInput);
+  retained.retain(replacementSingle);
+  assert.equal(retained.take(singleInput), replacementSingle, 'Only the latest detached single is retained.');
+  retained.retain(replacementSingle);
+  assert.equal(retained.take({
+    ...singleInput, layers: [{ ...layers[0], imageUrl: 'memory://changed-source' }],
+  }), undefined, 'Source changes must rebuild rather than reveal stale pixels.');
+  assert.equal(retained.take(singleInput), undefined, 'Incompatible revisions are evicted.');
+  const disposableSingle = await projection.createProjectedLayerStackMaterial(singleInput);
+  retained.retain(disposableSingle);
+  retained.dispose();
+  assert.equal(retained.take(singleInput), undefined, 'Model teardown empties retained resources.');
+  retained.dispose();
+  console.log('Retained visibility lifecycle passed: 60 single/multi restores, exclusive ownership, replacement, invalidation and teardown.');
   assert.equal(material.uniforms.uvOverlayBelowProjected.value, 1);
   assert.deepEqual(
     state.bindings.map((binding) => binding.layerId),

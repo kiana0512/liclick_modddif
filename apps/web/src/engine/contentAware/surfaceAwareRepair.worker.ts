@@ -29,6 +29,8 @@ export interface SurfaceRepairWorkerRequest {
   requireCompleteComponents?: boolean;
   dominantSourceColorThreshold?: number;
   lockToDominantSourceRegion?: boolean;
+  localBoundaryBlend?: boolean;
+  adaptiveGapDistance?: boolean;
 }
 
 export type SurfaceRepairWorkerResponse =
@@ -81,6 +83,8 @@ workerScope.onmessage = (event) => {
       requireCompleteComponents: request.requireCompleteComponents,
       dominantSourceColorThreshold: request.dominantSourceColorThreshold,
       lockToDominantSourceRegion: request.lockToDominantSourceRegion,
+      localBoundaryBlend: request.localBoundaryBlend,
+      adaptiveGapDistance: request.adaptiveGapDistance,
     };
     const result = repairSurfaceTexture(input, {
       onProgress: (progress) => workerScope.postMessage({ kind: 'progress', progress }),

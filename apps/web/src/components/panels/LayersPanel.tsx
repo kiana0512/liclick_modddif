@@ -1,4 +1,6 @@
 import { usePendingProjectionLayers } from '@/engine/projection/projectionDisplayAdmission';
+import { isNativeUvRepaintLayer } from '@/engine/localRepaint/uvRepaintState';
+import {setMergePreparationSelection} from '@/engine/bake/mergeProjectionPreparation';
 import {
   startTransition,
   useCallback,
@@ -181,6 +183,9 @@ function useInteractionDeferredLayers() {
 }
 
 function isLocalRepaintPreviewLayer(layer: Layer) {
+  // Native UV repaint already carries authored coverage in its RGBA alpha.
+  // Only legacy projections need an additional screen-space brush mask.
+  if (isNativeUvRepaintLayer(layer)) return false;
   return Boolean(
     layer.replacementTargetLayerId ||
     layer.localRepaintMaskUrl ||
@@ -542,6 +547,9 @@ export function LayersPanel({
   const [selectedLayerIds, setSelectedLayerIds] = useState<string[]>(() =>
     activeProjectedLayerId ? [activeProjectedLayerId] : [],
   );
+  useEffect(() => setMergePreparationSelection(selectedObjectId,
+    menu && !selectedLayerIds.includes(menu.layerId) ? [menu.layerId] : selectedLayerIds,
+    Boolean(menu)), [selectedObjectId, selectedLayerIds, menu]);
   const [lastSelectedLayerId, setLastSelectedLayerId] = useState<string | undefined>(
     activeProjectedLayerId,
   );
@@ -1272,7 +1280,7 @@ export function LayersPanelActions({
   const visibleProjectedLayerIds = layers
     .filter(
       (layer) =>
-        layer.type === 'projected' &&
+        (layer.type === 'projected' || isFlattenableUvMergeSource(layer)) &&
         layer.visible &&
         layer.imageUrl &&
         (!layer.objectId || layer.objectId === selectedObjectId),
@@ -1480,7 +1488,8 @@ function LayerRow({
   onDrop: DragEventHandler<HTMLDivElement>;
   onDragEnd: () => void;
 }) {
-  const hasMask = Boolean(layer.maskUrl);
+  // LAYER-ERASER-MASK-INDICATOR v1.0.0: capture/repaint masks are not eraser edits.
+  const hasMask = hasClearableProjectedEraserMask(layer);
   const modeLabel =
     layer.blendMode === 'overlay' ? 'Overlay above other layers' : 'Blend with other layers';
   const opacityLabel = `Layer opacity ${Math.round(layer.opacity * 100)}%. Drag up or down to adjust.`;
@@ -1560,7 +1569,7 @@ function LayerRow({
           {hasMask ? (
             <SmallLayerToggle
               active
-              label="Has mask"
+              label="橡皮擦蒙版"
               onClick={onAdjustClick}
               icon={<LayerMaskGlyph />}
             />

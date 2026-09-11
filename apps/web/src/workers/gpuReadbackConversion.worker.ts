@@ -5,16 +5,17 @@ const UNPROJECTED_TEXTURE_FILL: [number, number, number] = [8, 9, 13];
 
 type ConversionRequest = {
   id: number;
-  mode: 'final' | 'layer' | 'quality';
+  mode: 'final' | 'layer' | 'resident' | 'quality';
   pixels: ArrayBuffer;
   resolution: number;
   outputAlpha?: 'opaque-viewport' | 'transparent';
+  packedQuality?: boolean;
 };
 
 type ConversionResponse =
   | {
       id: number;
-      mode: 'final' | 'layer';
+      mode: 'final' | 'layer' | 'resident';
       imageData: ArrayBuffer;
       coverage: ArrayBuffer;
       coveredPixels: number;
@@ -24,17 +25,21 @@ type ConversionResponse =
 
 const scope = self as unknown as {
   onmessage: ((event: MessageEvent<ConversionRequest>) => void) | null;
-  postMessage(message: ConversionResponse, transfer?: Transferable[]): void;
+  postMessage(message: ConversionResponse | { ready: 1 }, transfer?: Transferable[]): void;
 };
 
 function convertQuality(request: ConversionRequest) {
   const pixels = new Uint8Array(request.pixels);
+  const stride = request.packedQuality ? 1 : 4;
+  if (pixels.length !== request.resolution * request.resolution * stride) {
+    throw new Error('Invalid quality readback byte length.');
+  }
   const quality = new Float32Array(request.resolution * request.resolution);
-  const rowLength = request.resolution * 4;
+  const rowLength = request.resolution * stride;
   for (let y = 0; y < request.resolution; y += 1) {
     const sourceStart = (request.resolution - 1 - y) * rowLength;
     for (let x = 0; x < request.resolution; x += 1) {
-      quality[y * request.resolution + x] = pixels[sourceStart + x * 4 + 3] / 255;
+      quality[y * request.resolution + x] = pixels[sourceStart + x * stride + stride - 1] / 255;
     }
   }
   return quality.buffer;
@@ -49,6 +54,13 @@ function convertColor(request: ConversionRequest) {
   for (let y = 0; y < request.resolution; y += 1) {
     const sourceStart = (request.resolution - 1 - y) * rowLength;
     const targetStart = y * rowLength;
+    if(request.mode==='resident') {
+      imageData.set(pixels.subarray(sourceStart,sourceStart+rowLength),targetStart);
+      for(let x=0;x<request.resolution;x++) if(pixels[sourceStart+x*4+3]>0) {
+        coverage[y*request.resolution+x]=1;coveredPixels++;
+      }
+      continue;
+    }
     for (let x = 0; x < request.resolution; x += 1) {
       const pixelIndex = y * request.resolution + x;
       const sourceOffset = sourceStart + x * 4;
@@ -108,3 +120,5 @@ scope.onmessage = (event) => {
     });
   }
 };
+
+scope.postMessage({ ready: 1 });

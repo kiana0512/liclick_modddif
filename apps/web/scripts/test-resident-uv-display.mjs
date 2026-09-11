@@ -1,0 +1,446 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import ts from 'typescript';
+import * as THREE from 'three';
+
+const load = (file, dependencies) => {
+  const source = fs.readFileSync(new URL(`../src/engine/bake/${file}.ts`, import.meta.url), 'utf8');
+  const js = ts.transpileModule(source, {
+    compilerOptions: {
+      target: ts.ScriptTarget.ES2022,
+      module: ts.ModuleKind.CommonJS,
+    },
+  }).outputText;
+  const exports = {};
+  new Function('require', 'exports', js)((name) => {
+    if (name in dependencies) return dependencies[name];
+    throw Error(`Unexpected dependency: ${name}`);
+  }, exports);
+  return exports;
+};
+const { resolvePixelCpu } = load('qualityBlendCpuPixel', {});
+let sentinels,
+  packed,
+  calls = 0;
+const { ResidentQualityComposite } = load('residentQualityComposite', {
+  three: THREE,
+  './qualityBlendCpuPixel': {
+    resolvePixelCpu(...args) {
+      calls++;
+      return resolvePixelCpu(...args);
+    },
+  },
+  './gpuReadbackStripes': { readRenderTargetPixelsInStripes: async () => sentinels.slice() },
+  '@/utils/browserScheduling': { yieldToBrowserTask: async () => {} },
+  './uvBakeDebugControls': { isLegacyUvBakeDiagnosticEnabled: () => false },
+});
+for (const preserveAlpha of [false, true])
+  for (const runMarkers of [false, true]) {
+    const resolution = 64,
+      count = resolution * resolution;
+    packed = new Uint32Array(count * 4);
+    sentinels = new Uint8Array(count * 4);
+    for (let i = 0; i < count; i++) {
+      // Long identical runs plus every-byte changes exercise both reuse and invalidation.
+      const k = i < 2048 ? 19 : i;
+      packed.set(
+        [
+          ((k * 71) & 0xffffff) | (201 << 24),
+          ((k * 179) & 0xffffff) | (143 << 24),
+          ((k * 991) & 0xffffff) | (87 << 24),
+          (k * 137) & 0xffffff,
+        ],
+        i * 4,
+      );
+      sentinels.set([runMarkers && i > 0 && i < 2048 ? 254 : 255, 0, 255, 0], i * 4);
+    }
+    const reference = new Uint8ClampedArray(count * 4);
+    const top = {
+      colors: [0, 0, 0].map(() => new Uint32Array(1)),
+      coverages: [0, 0, 0].map(() => new Float32Array(1)),
+      qualities: [0, 0, 0].map(() => new Float32Array(1)),
+      coverage: new Uint8Array([1]),
+      writtenTexels: 1,
+    };
+    for (let i = 0; i < count; i++) {
+      for (let slot = 0; slot < 3; slot++) {
+        const color = packed[i * 4 + slot],
+          coverage = (color >>> 24) / 255;
+        top.colors[slot][0] = color & 0xffffff;
+        top.coverages[slot][0] = coverage;
+        top.qualities[slot][0] = Math.max(
+          Math.fround(((packed[i * 4 + 3] >>> (slot * 8)) & 255) / 255),
+          coverage * 0.08,
+        );
+      }
+      resolvePixelCpu(top, 0, preserveAlpha, reference.subarray(i * 4, i * 4 + 4));
+    }
+    const instance = Object.create(ResidentQualityComposite.prototype);
+    Object.assign(instance, {
+      resolution,
+      current: 0,
+      targets: [{ texture: {} }],
+      gatherMaterial: { uniforms: { previousCandidates: {}, coordinates: {} } },
+      mesh: {},
+      scene: {},
+      camera: {},
+      resolve: () => ({}),
+      withTarget: (_, callback) => callback(),
+      renderer: {
+        capabilities: { maxTextureSize: 256 },
+        render() {},
+        async readRenderTargetPixelsAsync(_target, _x, _y, _w, _h, bytes) {
+          const destination = new Uint32Array(bytes.buffer);
+          let count = 0;
+          for (let i = 0; i < sentinels.length; i += 4)
+            if (sentinels[i] === 255) {
+              destination.set(packed.subarray(i, i + 4), count * 4);
+              count++;
+            }
+        },
+      },
+    });
+    calls = 0;
+    const result = await instance.readCorrected(preserveAlpha);
+    assert.deepEqual(result.output, reference, 'Sparse correction must remain byte-exact');
+    assert.equal(calls, 2049, 'Identical candidate tuples reuse the exact CPU result');
+    assert.equal(result.correctedPixels, count);
+  }
+
+const { ProjectedUvRasterCache } = load('ProjectedUvRasterCache', {
+  three: THREE,
+  './residentQualityComposite': { ResidentQualityComposite },
+  '@/utils/browserScheduling': { yieldToBrowserTask: async () => {} },
+});
+const cache = new ProjectedUvRasterCache(16);
+const renderer = { domElement: { addEventListener() {}, removeEventListener() {} } };
+let disposed = 0;
+const entry = () => ({
+  color: {
+    width: 1,
+    height: 1,
+    dispose() {
+      disposed++;
+    },
+  },
+  quality: {
+    texture: { format: THREE.RGBAFormat },
+    dispose() {
+      disposed++;
+    },
+  },
+  sourceSize: {},
+});
+cache.prepare(renderer, 'mesh-1/1K', ['a', 'b']);
+const a = entry(),
+  b = entry();
+assert(cache.take('a', a));
+assert(cache.take('b', b));
+assert.equal(cache.get('a'), a);
+assert.equal(cache.take('c', entry()), false, 'Active inputs cannot be evicted mid-composition');
+cache.prepare(renderer, 'mesh-1/1K', ['a', 'c']);
+assert(cache.take('c', entry()));
+assert.equal(disposed, 2);
+assert.equal(cache.get('b'), undefined);
+cache.prepare(renderer, 'mesh-2/1K', ['a']);
+assert.equal(cache.get('a'), undefined, 'Geometry changes invalidate derived rasters');
+assert.equal(disposed, 6);
+cache.dispose();
+globalThis.ImageData ??= class {
+  constructor(data, width, height) {
+    Object.assign(this, { data, width, height });
+  }
+};
+const aggregateCache = new ProjectedUvRasterCache(16);
+aggregateCache.prepare(renderer, 'scope', ['a', 'b']);
+aggregateCache.take('a', entry());
+aggregateCache.take('b', entry());
+const resolved = {
+  rasters: [],
+  warnings: [],
+  residentQuality: {
+    imageData: new ImageData(new Uint8ClampedArray([91, 72, 33, 255]), 1, 1),
+    coverage: new Uint8Array([1]),
+    renderedColorMask: new Uint8Array([0]),
+    writtenTexels: 1,
+    backend: 'webgl-resident',
+    accumulateMs: 12,
+    resolveMs: 13,
+    totalMs: 25,
+  },
+};
+await aggregateCache.retainResolved('normal-stack', resolved);
+assert.equal(aggregateCache.get('a'), undefined, 'Aggregate storage shares the raster byte budget');
+resolved.residentQuality.imageData.data.fill(0);
+const firstBase = await aggregateCache.getResolved('normal-stack');
+assert.deepEqual([...firstBase.residentQuality.imageData.data], [91, 72, 33, 255]);
+firstBase.residentQuality.imageData.data.fill(3);
+assert.equal(
+  (await aggregateCache.getResolved('normal-stack')).residentQuality.imageData.data[0],
+  91,
+  'Overlay mutation/transfer cannot corrupt the cached normal UV',
+);
+aggregateCache.prepare(renderer, 'changed-geometry', []);
+assert.equal(await aggregateCache.getResolved('normal-stack'), undefined);
+aggregateCache.dispose();
+const compactCache = new ProjectedUvRasterCache(16);
+compactCache.prepare(renderer, 'compact', ['a', 'b', 'c']);
+const compactEntry = () => {
+  const value = entry(); value.quality.texture.format = THREE.RedFormat; return value;
+};
+assert(compactCache.take('a', compactEntry()));
+assert(compactCache.take('b', compactEntry()));
+assert(compactCache.take('c', compactEntry()), 'R8 quality is charged one byte per full-resolution texel');
+assert.equal(compactCache.take('d', compactEntry()), false);
+await compactCache.retainResolved('base', resolved);
+assert.equal(compactCache.get('a'), undefined);
+assert(compactCache.get('b'));assert(compactCache.get('c'), 'two 5-byte rasters share the 16-byte budget with a 6-byte base');
+compactCache.dispose();
+// A context may disappear while the bounded copy yields; the same scope string
+// after restoration is not proof that a result still belongs to this lifetime.
+{
+  let lose;
+  const owner={domElement:{addEventListener(_name,listener){lose=listener;},removeEventListener(){}}};
+  const guarded=new ProjectedUvRasterCache(64);guarded.prepare(owner,'same-scope',[]);
+  await guarded.retainResolved('a',resolved);
+  const copy=guarded.copyResolved.bind(guarded);
+  let resume;
+  guarded.copyResolved=async result=>{await new Promise(resolve=>{resume=resolve;});return copy(result);};
+  const reading=guarded.getResolved('a');lose();resume();
+  assert.equal(await reading,undefined,'context loss invalidates an in-flight cache copy');
+  const storing=guarded.retainResolved('a',resolved);lose();resume();await storing;
+  assert.equal(await guarded.getResolved('a'),undefined,'late store cannot resurrect a lost-context result');
+  guarded.dispose();
+}
+{
+  const {projectionAttributeRevision}=load('projectionBakeSignature',{
+    './layerStackCache':{},'./uvBakeDebugControls':{},
+  });
+  const uv=new THREE.Float32BufferAttribute([0,0,1,1],2);
+  const first=projectionAttributeRevision(uv);
+  assert.equal(projectionAttributeRevision(uv),first);
+  assert.notEqual(projectionAttributeRevision(uv.clone()),first,'replacement UV at version zero invalidates');
+  uv.array=uv.array.slice();assert.notEqual(projectionAttributeRevision(uv),first,'replacement array invalidates');
+  const buffer=new THREE.InterleavedBuffer(new Float32Array(12),3);
+  const interleaved=new THREE.InterleavedBufferAttribute(buffer,2,0);
+  const packed=projectionAttributeRevision(interleaved);buffer.needsUpdate=true;
+  assert.notEqual(projectionAttributeRevision(interleaved),packed,'interleaved upload revision invalidates');
+  const offset=projectionAttributeRevision(interleaved);interleaved.offset=1;
+  assert.notEqual(projectionAttributeRevision(interleaved),offset,'interleaved offset invalidates');
+}
+const cacheWorkerSource = fs.readFileSync(
+  new URL('../src/workers/residentUvCache.worker.ts', import.meta.url),
+  'utf8',
+);
+// Compression can lag behind eye gestures. Keep exactly the newest completed
+// buffer while busy; dropping it leaves the current saved project without a UV.
+{
+const clientSource = fs.readFileSync(new URL('../src/engine/projection/ResidentUvCompressedCache.ts', import.meta.url), 'utf8');
+const sent = [], workers = [];
+class CacheWorker {
+  constructor() { workers.push(this); }
+  postMessage(message, transfer = []) { sent.push(globalThis.structuredClone(message, { transfer })); }
+  terminate() {}
+}
+const clientExports = {};
+new Function('Worker', 'document', 'exports', ts.transpileModule(clientSource.replaceAll('import.meta.url', "'file:///cache.ts'"), {
+  compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
+}).outputText)(CacheWorker, { body: { dataset: {} } }, clientExports);
+const client = new clientExports.ResidentUvCompressedCache();
+const image = () => ({ width: 16, height: 16, data: new Uint8ClampedArray(16 * 16 * 4) });
+const a = image(), b = image(), c = image();
+client.offer('a', a); client.offer('b', b); client.offer('c', c);
+assert.deepEqual(sent.map(message => message.key), ['a']);
+assert.equal(a.data.byteLength, 0);
+workers[0].onmessage({ data: { id: sent[0].id, keys: ['a'] } });
+assert.deepEqual(sent.map(message => message.key), ['a', 'c'], 'Only the newest pending completed UV is compressed');
+assert.equal(b.data.byteLength, 1024);
+assert.equal(c.data.byteLength, 0);
+client.offer('d', image()); client.dispose();
+assert.equal(sent.length, 2, 'Disposal clears queued work before resolving in-flight work');
+}
+let cacheReply;
+const cacheWorker = {
+  postMessage(value, transfers = []) {
+    cacheReply = globalThis.structuredClone(value, { transfer: transfers });
+  },
+};
+new Function(
+  'self',
+  'exports',
+  ts.transpileModule(cacheWorkerSource, {
+    compilerOptions: {
+      target: ts.ScriptTarget.ES2022,
+      module: ts.ModuleKind.CommonJS,
+    },
+  }).outputText,
+)(cacheWorker, {});
+const hiddenColor = Uint8Array.from({ length: 16 * 16 * 4 }, (_, i) => (i * 73) % 256);
+const exactMask = Uint8Array.from({ length: 16 * 16 }, (_, i) => i % 3);
+await cacheWorker.onmessage({
+  data: {
+    id: 1,
+    type: 'store',
+    key: 'a',
+    resolution: 16,
+    color: hiddenColor.buffer,
+    mask: exactMask.buffer,
+  },
+});
+assert.deepEqual(cacheReply.keys, ['a']);
+await cacheWorker.onmessage({ data: { id: 2, type: 'restore', key: 'a' } });
+assert.deepEqual(
+  new Uint8Array(cacheReply.output, 0, hiddenColor.length),
+  hiddenColor,
+  'Deflate preserves even transparent RGB bytes',
+);
+assert.deepEqual(new Uint8Array(cacheReply.output, hiddenColor.length), exactMask);
+await cacheWorker.onmessage({ data: { id: 3, type: 'restore', key: 'missing' } });
+assert.equal(cacheReply.output, undefined);
+// A fresh worker has no in-memory keys: F5 must recover exact RGBA and mask,
+// while another input/account digest and corrupt bytes must miss.
+const disk = new Map();
+const previousCaches = globalThis.caches;
+globalThis.caches = { async open() { return {
+  async put(key, response) { disk.set(typeof key === 'string' ? key : key.url, response.clone()); },
+  async match(key) { return disk.get(typeof key === 'string' ? key : key.url)?.clone(); },
+  async keys() { return [...disk.keys()].map(key => new Request(key)); },
+  async delete(key) { return disk.delete(typeof key === 'string' ? key : key.url); },
+}; } };
+const freshWorker = () => {
+  const worker = { location: { origin: 'https://li3d.test' }, postMessage: cacheWorker.postMessage };
+  new Function('self', 'exports', ts.transpileModule(cacheWorkerSource, {
+    compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
+  }).outputText)(worker, {});
+  return worker;
+};
+try {
+  const rgba = new Uint8Array(1024 ** 2 * 4).fill(71);
+  const mask = new Uint8Array(1024 ** 2).fill(3);
+  rgba[3] = 0; rgba[0] = 219;
+  const persistentKey = 'a'.repeat(64);
+  await freshWorker().onmessage({ data: { id: 1, type: 'store', key: 'runtime-a', persistentKey,
+    resolution: 1024, color: rgba.buffer, mask: mask.buffer } });
+  assert.equal(disk.size, 1);
+  await freshWorker().onmessage({ data: { id: 2, type: 'restore', key: 'new-runtime-url', persistentKey } });
+  assert.deepEqual(new Uint8Array(cacheReply.output, 0, rgba.length), rgba);
+  assert.deepEqual(new Uint8Array(cacheReply.output, rgba.length), mask);
+  await freshWorker().onmessage({ data: { id: 3, type: 'restore', key: 'new-runtime-url', persistentKey: 'b'.repeat(64) } });
+  assert.equal(cacheReply.output, undefined, 'Changed source or ownership cannot reuse the saved UV');
+  const activeWorker = freshWorker();
+  await activeWorker.onmessage({ data: { id: 5, type: 'restore', key: 'a', persistentKey } });
+  assert.deepEqual(cacheReply.keys, ['a'], 'F5-restored compressed bytes remain reusable');
+  await activeWorker.onmessage({ data: { id: 6, type: 'activate', key: 'a' } });
+  for (const [index, key] of ['b', 'c', 'd'].entries()) {
+    await activeWorker.onmessage({ data: { id: 10 + index, type: 'store', key, persistentKey: key.repeat(64),
+      resolution: 1024, color: new Uint8Array(rgba.length).fill(index).buffer, mask: new ArrayBuffer(0) } });
+    await activeWorker.onmessage({ data: { id: 20 + index, type: 'activate', key } });
+    await activeWorker.onmessage({ data: { id: 30 + index, type: 'activate', key: 'a' } });
+    assert(disk.has('https://li3d.test/__li3d_internal/resident-uv/' + persistentKey), 'Returning to displayed A must keep its disk snapshot');
+    assert.equal(disk.size, 2, 'Pinning the visible state must not increase disk capacity');
+  }
+  await freshWorker().onmessage({ data: { id: 40, type: 'restore', key: 'F5-after-toggles', persistentKey } });
+  assert.deepEqual(new Uint8Array(cacheReply.output, 0, rgba.length), rgba, 'F5 after A/B/A/C/A recovers exact A without rebaking');
+  const key = [...disk.keys()][0], old = disk.get(key);
+  disk.set(key, new Response(new Uint8Array([1, 2, 3]), { headers: old.headers }));
+  await freshWorker().onmessage({ data: { id: 4, type: 'restore', key: 'new-runtime-url', persistentKey } });
+  assert.equal(cacheReply.output, undefined, 'Corrupt derived UV is rejected');
+} finally { globalThis.caches = previousCaches; }
+const oldWindow = globalThis.window, oldFetch = globalThis.fetch;
+let userId = 'owner-a', sourceByte = 17;
+globalThis.window = { caches: {} };
+globalThis.fetch = async () => new Response(new Uint8Array([sourceByte]));
+try {
+  const { persistentMergeKey } = load('persistentMergePreparation', {
+    '@/stores/authStore': { useAuthStore: { getState: () => ({ user: userId ? { id: userId } : undefined }) } },
+    './uvBakeDebugControls': { getDebugUvBakeStatus: () => ({}) },
+    '@/engine/layers/mergeUvComposition': { getMergeUvPostprocessOptions: () => ({}) },
+  });
+  const group = new THREE.Group(); group.add(new THREE.Mesh(new THREE.PlaneGeometry()));
+  const input = { projectId: 'p', objectId: 'o', resolution: 1024, group,
+    purpose: 'resident-uv-display-1', layers: [{ id: 'a', imageUrl: '/verified.png', visible: true, order: 0 }] };
+  const first = await persistentMergeKey(input);
+  assert.match(first, /^[a-f0-9]{64}$/);
+  assert.equal(await persistentMergeKey(input), first);
+  const helper = new THREE.Mesh(new THREE.PlaneGeometry()); helper.userData.liclickPaintOverlay = true;
+  group.add(helper);
+  assert.equal(await persistentMergeKey(input), first, 'Display-only helper meshes do not invalidate saved UV');
+  sourceByte++; assert.notEqual(await persistentMergeKey(input), first, 'Changed bytes at the same URL invalidate UV');
+  sourceByte--; userId = 'owner-b'; assert.notEqual(await persistentMergeKey(input), first);
+  userId = 'owner-a'; group.children[0].geometry.attributes.uv.array[0] += .1;
+  assert.notEqual(await persistentMergeKey(input), first, 'Unversioned geometry edits invalidate UV');
+  userId = ''; assert.equal(await persistentMergeKey(input), undefined);
+} finally { globalThis.window = oldWindow; globalThis.fetch = oldFetch; }
+let paints = 0,
+  finish;
+const presentation = load('../projection/residentUvPresentation', {
+  '@/utils/browserScheduling': {
+    async waitForBrowserPaint() {
+      paints++;
+      if (paints === 2) finish?.();
+    },
+  },
+});
+const scene = new THREE.Group(),
+  object = new THREE.Group();
+scene.add(object);
+presentation.markResidentUvPending(object, 'a');
+finish = () => presentation.finishResidentUvPresentation(object);
+await presentation.waitForResidentUvPresentation(scene, 'a');
+assert.equal(paints, 2, 'Capture waits until the UV buffer has actually been bound');
+presentation.markResidentUvPending(object, 'a', new Error('UV failed'));
+await assert.rejects(presentation.waitForResidentUvPresentation(scene, 'a'), /UV failed/);
+await presentation.waitForResidentUvPresentation(scene, 'other-object');
+// Exercise both page and Worker cache identity after direct UV edits, without
+// needsUpdate. A page-only invalidation would still return the old Worker mask.
+{
+  const source = fs.readFileSync(new URL('../src/engine/bake/webGpuUvTopologyRaster.ts', import.meta.url), 'utf8')
+    .replace(/import\.meta\.url/g, "'https://fixture.invalid/module.js'");
+  const js = ts.transpileModule(source, {compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS}}).outputText;
+  const requests = [];
+  class RasterWorker {
+    postMessage(request) {
+      requests.push(request);
+      globalThis.queueMicrotask(() => this.onmessage({data:{type:'result',id:request.id,
+        mask:new Uint8Array(request.width * request.height).buffer,
+        backend:'offscreen-canvas-worker',gpuAccepted:false,mismatchedPixels:0,
+        rawMismatchedPixels:0,maximumDifference:0,gpuMs:0,cpuGoldMs:0,totalMs:0}}));
+    }
+    terminate() {}
+  }
+  const exports = {};
+  new Function('require','exports','Worker','window',js)(
+    name => name === './uvSeamGeometrySnapshot' ? load('uvSeamGeometrySnapshot',{})
+      : ({recordWebGpuProductionDispatch(){}}), exports, RasterWorker,
+    {setTimeout,location:{search:''}},
+  );
+  const root = new THREE.Group();
+  const mesh = new THREE.Mesh(new THREE.PlaneGeometry(1,1)); root.add(mesh);
+  const uv = mesh.geometry.getAttribute('uv');
+  let vertexReads = 0;
+  const getX = uv.getX.bind(uv);
+  uv.getX = index => {vertexReads++;return getX(index);};
+  const first = await exports.rasterizeUvTopologyMaskWithWebGpu(root,8,8);
+  assert.ok(vertexReads > 0);
+  vertexReads = 0;
+  assert.equal((await exports.rasterizeUvTopologyMaskWithWebGpu(root,8,8)).mask,first.mask);
+  assert.equal(requests.length,1,'unchanged topology reuses its mask');
+  assert.equal(vertexReads,0,'unchanged source bytes never re-expand UV triangles');
+  mesh.position.x=2;
+  assert.equal((await exports.rasterizeUvTopologyMaskWithWebGpu(root,8,8)).mask,first.mask,'model placement cannot change UV topology');
+  uv.array[0] += 0.125;
+  assert.notEqual(await exports.rasterizeUvTopologyMaskWithWebGpu(root,8,8),first);
+  assert.equal(requests.length,2);
+  assert.notEqual(requests[0].cacheKey,requests[1].cacheKey,'Worker also receives a new geometry revision');
+  const overlay = new THREE.Mesh(new THREE.PlaneGeometry(1,1));
+  overlay.userData.liclickPaintOverlay = true; root.add(overlay);
+  await exports.rasterizeUvTopologyMaskWithWebGpu(root,8,8);
+  assert.equal(requests.length,2,'paint helpers cannot change the model topology');
+  mesh.geometry.index.array[0] = mesh.geometry.index.array[1];
+  await exports.rasterizeUvTopologyMaskWithWebGpu(root,8,8);
+  assert.equal(requests.length,3,'unversioned index edits also invalidate');
+  exports.terminateWebGpuUvTopologyRasterWorker();
+}
+console.log(
+  'Resident UV: exact rounding, duplicate candidate reuse, bounded ownership and geometry invalidation passed.',
+);

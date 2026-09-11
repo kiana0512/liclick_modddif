@@ -2714,6 +2714,9 @@ export function syncProjectedLayerLiveEraserPreviewInObject(
       visited.add(material);
       if (!(material instanceof THREE.ShaderMaterial)) continue;
       if (material.userData[LIVE_LOCAL_REPAINT_OVERLAY_MATERIAL_FLAG]) continue;
+      // The UV display coordinator publishes a complete texture/uniform pair.
+      // Projection-only visibility callbacks must not clear or replace its base.
+      if (material.userData.liclickResidentUvProjectionLayers) continue;
       const state = material.userData[PROJECTED_LAYER_STACK_STATE_KEY] as
         | ProjectedLayerMaterialState
         | undefined;
@@ -2887,6 +2890,7 @@ export function syncProjectedLayerResidentTextureVisibilityInObject(
         !material.uniforms.baseTextureOpacity
       )
         continue;
+      if (material.userData.liclickResidentUvProjectionLayers) continue;
       if (
         input.uvOverlayTexture &&
         material.uniforms.uvOverlayMap &&
@@ -5184,6 +5188,11 @@ const uvOverlayFragmentShader = `
   }
 
   uniform float showEmptyProjectionHatch;
+  uniform sampler2D uvBaseUnderlayMap;
+  uniform float uvBaseUnderlayOpacity;
+  uniform float uvOverlayBelowBase;
+  uniform float normalPreviewEnabled;
+  uniform float wirePreviewEnabled;
   vec3 computeUvEmptyPreviewColor() {
     float stripe = step(0.5, fract((gl_FragCoord.x - gl_FragCoord.y) * 0.095));
     vec3 hatchColor = mix(vec3(0.012), vec3(0.09), stripe * 0.62);
@@ -5200,6 +5209,18 @@ const uvOverlayFragmentShader = `
         useLiveUvOverlayMap * step(0.0001, liveUvOverlayOpacity)
       )
     );
+    if (normalPreviewEnabled > 0.5) {
+      gl_FragDepthEXT = gl_FragCoord.z;
+      gl_FragColor = vec4(normalize(mat3(viewMatrix) * normal) * 0.5 + 0.5, 1.0);
+      return;
+    }
+    if (wirePreviewEnabled > 0.5) {
+      gl_FragDepthEXT = gl_FragCoord.z;
+      gl_FragColor = vec4(clamp(baseColor * computeWhiteMembraneLight(normal), 0.0, 1.0), 1.0);
+      #include <tonemapping_fragment>
+      #include <colorspace_fragment>
+      return;
+    }
     float lambert = mix(computeWhiteMembraneLight(normal), computePreviewLight(normal), hasAnyColor);
     vec4 baseTexel = texture2D(baseMap, vUv);
     float baseRenderedColor = texture2D(baseRenderedColorMaskMap, vUv).r * useBaseRenderedColorMaskMap;
@@ -5221,6 +5242,27 @@ const uvOverlayFragmentShader = `
       liveUvOverlaySaturationShift,
       liveUvOverlayLightnessShift
     );
+    // A merged UV row below projections and the sparse repair remain UV samples.
+    // Composite them underneath the completed projection buffer, never as projections.
+    if (uvOverlayBelowBase > 0.5) {
+      float belowAlpha = overlayTexel.a * useUvOverlayMap * uvOverlayOpacity;
+      float a = baseTexel.a + belowAlpha * (1.0 - baseTexel.a);
+      baseTexel.rgb = (baseTexel.rgb * baseTexel.a + overlayTexel.rgb * belowAlpha *
+        (1.0 - baseTexel.a)) / max(a, 0.000001);
+      baseRenderedColor = (baseRenderedColor * baseTexel.a + overlayRenderedColor * belowAlpha *
+        (1.0 - baseTexel.a)) / max(a, 0.000001);
+      baseTexel.a = a;
+      overlayTexel.a = 0.0;
+    }
+    if (uvBaseUnderlayOpacity > 0.0) {
+      vec4 underlay = texture2D(uvBaseUnderlayMap, vUv);
+      float belowAlpha = underlay.a * uvBaseUnderlayOpacity;
+      float a = baseTexel.a + belowAlpha * (1.0 - baseTexel.a);
+      baseTexel.rgb = (baseTexel.rgb * baseTexel.a + underlay.rgb * belowAlpha *
+        (1.0 - baseTexel.a)) / max(a, 0.000001);
+      baseRenderedColor *= baseTexel.a / max(a, 0.000001);
+      baseTexel.a = a;
+    }
     vec4 surfaceMaskTexel = texture2D(surfaceMaskMap, vec2(vUv.x, 1.0 - vUv.y));
     float baseTextureAlpha = useBaseMap * baseTexel.a * baseTextureOpacity;
     vec3 baseSurface = mix(baseColor, baseTexel.rgb, baseTextureAlpha);
@@ -5259,6 +5301,13 @@ const uvOverlayFragmentShader = `
     gl_FragDepthEXT = gl_FragCoord.z;
     float capturedCoverage = 1.0 - (1.0 - baseTextureAlpha * surfaceMask) *
       (1.0 - overlayAlpha) * (1.0 - liveOverlayAlpha);
+    // A sparse repair base disables the overlay checker to reveal valid base
+    // pixels. It must not turn texels missing from *both* maps into white clay.
+    // Keep every covered fragment and both capture modes unchanged.
+    if (showEmptyUvChecker < 0.5 && hasAnyColor > 0.5 && capturedCoverage == 0.0 &&
+        showEmptyProjectionHatch > 0.5 && showEmptyProjectionHatch < 1.5) {
+      displayColor = computeUvEmptyPreviewColor();
+    }
     float captureAlpha = showEmptyProjectionHatch > 1.5
       ? step(${PROJECTION_RELIABILITY_CUTOFF.toFixed(2)}, capturedCoverage) : 1.0;
     gl_FragColor = vec4(clamp(displayColor, 0.0, 1.0), captureAlpha);
@@ -5268,6 +5317,10 @@ const uvOverlayFragmentShader = `
 `;
 
 export type UvOverlayPreviewMaterialInput = {
+  retainUvForGeometryPreview?: boolean;
+  uvBaseUnderlayTexture?: THREE.Texture;
+  uvBaseUnderlayOpacity?: number;
+  uvOverlayBelowBase?: boolean;
   displayMode: string;
   selected: boolean;
   uvOverlayTexture?: THREE.Texture;
@@ -5293,8 +5346,8 @@ export type UvOverlayPreviewMaterialInput = {
 };
 
 export function createUvOverlayPreviewMaterial(input: UvOverlayPreviewMaterialInput) {
-  if (input.displayMode === 'normal') return markGeneratedMaterial(new THREE.MeshNormalMaterial());
-  if (input.displayMode === 'wire') {
+  if (input.displayMode === 'normal' && !input.retainUvForGeometryPreview) return markGeneratedMaterial(new THREE.MeshNormalMaterial());
+  if (input.displayMode === 'wire' && !input.retainUvForGeometryPreview) {
     return markGeneratedMaterial(
       new THREE.MeshStandardMaterial({
         color: DEFAULT_WIRE_COLOR,
@@ -5321,6 +5374,11 @@ export function createUvOverlayPreviewMaterial(input: UvOverlayPreviewMaterialIn
     vertexShader,
     fragmentShader: uvOverlayFragmentShader,
     uniforms: {
+      uvBaseUnderlayMap: { value: input.uvBaseUnderlayTexture ?? neutralTexture },
+      uvBaseUnderlayOpacity: { value: input.uvBaseUnderlayTexture ? input.uvBaseUnderlayOpacity ?? 1 : 0 },
+      uvOverlayBelowBase: { value: input.uvOverlayBelowBase ? 1 : 0 },
+      normalPreviewEnabled: { value: input.displayMode === 'normal' ? 1 : 0 },
+      wirePreviewEnabled: { value: input.displayMode === 'wire' ? 1 : 0 },
       showEmptyProjectionHatch: { value: 1 },
       baseMap: { value: input.baseTexture ?? neutralTexture },
       baseRenderedColorMaskMap: { value: input.baseRenderedColorMaskTexture ?? neutralTexture },
@@ -5375,7 +5433,7 @@ export function updateUvOverlayPreviewMaterial(
 ) {
   if (!(material instanceof THREE.ShaderMaterial)) return false;
   if (!material.userData[UV_OVERLAY_PREVIEW_MATERIAL_FLAG]) return false;
-  if (input.displayMode === 'normal' || input.displayMode === 'wire') return false;
+  if ((input.displayMode === 'normal' || input.displayMode === 'wire') && !input.retainUvForGeometryPreview) return false;
   const neutralTexture = (
     material.userData[DISPOSABLE_TEXTURES_KEY] as THREE.Texture[] | undefined
   )?.[0];
@@ -5387,6 +5445,11 @@ export function updateUvOverlayPreviewMaterial(
   if (input.baseTexture) prepareExistingBaseTexture(input.baseTexture);
   const previewLighting = getPreviewLighting(input.previewLighting);
   const uniforms = material.uniforms;
+  uniforms.uvBaseUnderlayMap.value = input.uvBaseUnderlayTexture ?? neutralTexture;
+  uniforms.uvBaseUnderlayOpacity.value = input.uvBaseUnderlayTexture ? input.uvBaseUnderlayOpacity ?? 1 : 0;
+  uniforms.uvOverlayBelowBase.value = input.uvOverlayBelowBase ? 1 : 0;
+  uniforms.normalPreviewEnabled.value = input.displayMode === 'normal' ? 1 : 0;
+  uniforms.wirePreviewEnabled.value = input.displayMode === 'wire' ? 1 : 0;
   uniforms.baseMap.value = input.baseTexture ?? neutralTexture;
   uniforms.baseRenderedColorMaskMap.value = input.baseRenderedColorMaskTexture ?? neutralTexture;
   uniforms.uvOverlayMap.value = input.uvOverlayTexture ?? neutralTexture;

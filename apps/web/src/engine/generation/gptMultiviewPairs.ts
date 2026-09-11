@@ -97,6 +97,8 @@ export function hasResidentGptLayers(root: Object3D | undefined, required: reado
     const material = (child as Mesh).material;
     for (const entry of (Array.isArray(material) ? material : [material]) as Material[]) {
       found = true;
+      const uvIds = entry.userData.liclickResidentUvProjectionLayers as string[] | undefined;
+      if (entry.name === 'LiclickUvOverlayPreview' && uvIds && required.every(id => uvIds.includes(id))) continue;
       const state = entry.userData.liclickProjectedLayerStackState as
         | { bindings?: Array<{ layerId?: string }> }
         | undefined;

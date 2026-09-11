@@ -1,4 +1,5 @@
 import { encodeRgbaPngBytesChunked } from '@/utils/encodeRgbaPngCore';
+import { yieldWorkerTask } from '@/utils/workerScheduling';
 
 export {};
 
@@ -74,6 +75,8 @@ type CompositeRequest = {
   width?: number;
   height?: number;
   opacity: number;
+  sourceOver?: boolean;
+  frontOpacity?: number;
   verify: boolean;
   interactive: boolean;
   interactiveChunkBytes: number;
@@ -149,6 +152,7 @@ const shaderSource = `
     pixelCount: u32,
     opacity: f32,
     workgroupsPerRow: u32,
+    frontOpacity: f32,
   };
 
   @group(0) @binding(0) var<storage, read_write> frontPixels: array<u32>;
@@ -170,7 +174,7 @@ const shaderSource = `
     let index = params.firstPixel + localIndex;
     let front = frontPixels[index];
     let underlay = underlayPixels[index];
-    let frontAlpha = f32(byteAt(front, 24u)) / 255.0;
+    let frontAlpha = (f32(byteAt(front, 24u)) / 255.0) * params.frontOpacity;
     let underlayAlpha = (f32(byteAt(underlay, 24u)) / 255.0) * params.opacity;
     let visibleUnderlayAlpha = underlayAlpha * (1.0 - frontAlpha);
     let outputAlpha = frontAlpha + visibleUnderlayAlpha;
@@ -193,7 +197,7 @@ const shaderSource = `
 `;
 
 function wait(durationMs = 0) {
-  return new Promise<void>((resolve) => setTimeout(resolve, durationMs));
+  return yieldWorkerTask(durationMs);
 }
 
 async function yieldGpuBudget() {
@@ -264,7 +268,7 @@ function getResources(device: GpuDevice, byteLength: number) {
       usage: GPU_BUFFER_USAGE_STORAGE | GPU_BUFFER_USAGE_COPY_DST,
     }),
     params: device.createBuffer({
-      size: 16,
+      size: 32,
       usage: GPU_BUFFER_USAGE_UNIFORM | GPU_BUFFER_USAGE_COPY_DST,
     }),
     readback: device.createBuffer({
@@ -311,12 +315,13 @@ async function computeInBudgetedChunks(
     const pixelCount = Math.min(activeChunkBytes(request) / 4, totalPixels - firstPixel);
     const totalWorkgroups = Math.ceil(pixelCount / WORKGROUP_SIZE);
     const workgroupsPerRow = Math.min(256, totalWorkgroups);
-    const params = new ArrayBuffer(16);
+    const params = new ArrayBuffer(32);
     new Uint32Array(params)[0] = firstPixel;
     new Uint32Array(params)[1] = pixelCount;
     new Float32Array(params)[2] = opacity;
     new Uint32Array(params)[3] = workgroupsPerRow;
-    device.queue.writeBuffer(target.params, 0, params, 0, 16);
+    new Float32Array(params)[4] = request.frontOpacity ?? 1;
+    device.queue.writeBuffer(target.params, 0, params, 0, 32);
     const encoder = device.createCommandEncoder();
     const pass = encoder.beginComputePass();
     pass.setPipeline(target.pipeline);
@@ -358,11 +363,11 @@ async function copyToReadbackInBudgetedChunks(
   return output;
 }
 
-function compositeOnCpu(frontBuffer: ArrayBuffer, underlayBuffer: ArrayBuffer, opacity: number) {
+function compositeOnCpu(frontBuffer: ArrayBuffer, underlayBuffer: ArrayBuffer, opacity: number, frontOpacity = 1) {
   const front = new Uint8ClampedArray(frontBuffer);
   const underlay = new Uint8ClampedArray(underlayBuffer);
   for (let offset = 0; offset < front.length; offset += 4) {
-    const frontAlpha = front[offset + 3] / 255;
+    const frontAlpha = (front[offset + 3] / 255) * frontOpacity;
     const underlayAlpha = (underlay[offset + 3] / 255) * opacity;
     const visibleUnderlayAlpha = underlayAlpha * (1 - frontAlpha);
     const outputAlpha = frontAlpha + visibleUnderlayAlpha;
@@ -404,7 +409,7 @@ async function compositeOnCpuBudgeted(
     throwIfCancelled(request);
     const endOffset = Math.min(front.length, firstOffset + sliceBytes);
     for (let offset = firstOffset; offset < endOffset; offset += 4) {
-      const frontAlpha = front[offset + 3] / 255;
+      const frontAlpha = (front[offset + 3] / 255) * (request.frontOpacity ?? 1);
       const underlayAlpha = (underlay[offset + 3] / 255) * opacity;
       const visibleUnderlayAlpha = underlayAlpha * (1 - frontAlpha);
       const outputAlpha = frontAlpha + visibleUnderlayAlpha;
@@ -443,7 +448,7 @@ async function loadUnderlayInWorker(request: CompositeRequest) {
   if (!response.ok) throw new Error(`Could not load UV underlay (${response.status}).`);
   const bitmap = await createImageBitmap(await response.blob());
   try {
-    const rowsPerSlice = Math.max(1, Math.floor((1 * 1024 * 1024) / (request.width * 4)));
+    const rowsPerSlice = Math.min(request.height, Math.max(1, Math.floor((1 * 1024 * 1024) / (request.width * 4))));
     const canvas = new OffscreenCanvas(request.width, rowsPerSlice);
     const context = canvas.getContext('2d', { alpha: true, willReadFrequently: true });
     if (!context) throw new Error('Could not create UV underlay worker canvas.');
@@ -512,7 +517,7 @@ async function runComposite(rawRequest: CompositeRequest) {
   }
   const device = await getDevice();
   if (!device) {
-    const output = compositeOnCpu(request.front, request.underlay, request.opacity);
+    const output = compositeOnCpu(request.front, request.underlay, request.opacity, request.frontOpacity);
     return {
       output,
       metrics: {
@@ -557,7 +562,7 @@ async function runComposite(rawRequest: CompositeRequest) {
     destroyResources();
     devicePromise = undefined;
     const cpuStartedAt = performance.now();
-    const output = compositeOnCpu(request.front, request.underlay, request.opacity);
+    const output = compositeOnCpu(request.front, request.underlay, request.opacity, request.frontOpacity);
     return {
       output,
       metrics: {
@@ -578,7 +583,7 @@ function verifyGpuOutput(
   gpuOutput: ArrayBuffer,
 ): { output: ArrayBuffer; verification?: CompositeVerification } {
   if (!request.verify) return { output: gpuOutput };
-  const cpuOutput = compositeOnCpu(request.front.slice(0), request.underlay, request.opacity);
+  const cpuOutput = compositeOnCpu(request.front.slice(0), request.underlay, request.opacity, request.frontOpacity);
   const expected = new Uint8ClampedArray(cpuOutput);
   const actual = new Uint8ClampedArray(gpuOutput);
   let byteMismatches = 0;
@@ -632,6 +637,11 @@ scope.onmessage = (event) => {
         ...request,
         underlay: await loadUnderlayInWorker(request),
       };
+      if (request.sourceOver) {
+        [normalizedRequest.front, normalizedRequest.underlay] = [normalizedRequest.underlay, normalizedRequest.front];
+        normalizedRequest.frontOpacity = request.opacity;
+        normalizedRequest.opacity = 1;
+      }
       const result = await runComposite(normalizedRequest);
       const verified =
         result.metrics.backend === 'webgpu-worker'

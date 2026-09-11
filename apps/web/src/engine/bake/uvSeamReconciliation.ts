@@ -1,4 +1,6 @@
 import * as THREE from 'three';
+import { matchesUvSeamGeometry, snapshotUvSeamGeometry,
+  type UvSeamGeometrySnapshot } from './uvSeamGeometrySnapshot';
 
 export type UvSeamEndpoint = {
   position: THREE.Vector3;
@@ -14,12 +16,60 @@ export type UvSeamEdgeRecord = {
 
 type PixelPoint = { x: number; y: number };
 
+type SeamPlan = {
+  snapshot: UvSeamGeometrySnapshot;
+  includeDiscontinuous: boolean;
+  pairs: Array<[UvSeamEdgeRecord, UvSeamEdgeRecord]>;
+};
+let seamPlanCache = new WeakMap<THREE.Object3D, SeamPlan>();
+// Ordered donor addresses are independent of layer content. Keep one bounded
+// plan, including repeated addresses: later repairs may read earlier repairs.
+type RepairPlan = { snapshot: UvSeamGeometrySnapshot; key: string; chunks: Uint32Array[];
+  count: number; seamPairs: number };
+let repairPlanCache = new WeakMap<THREE.Object3D, RepairPlan>();
+const REPAIR_CHUNK_WORDS = 32768;
+const MAX_REPAIR_WORDS = 64 * 1024 * 1024 / 4;
+
+function* getReusableSeamPairs(root: THREE.Object3D, includeDiscontinuous: boolean) {
+  const cached = seamPlanCache.get(root);
+  if (cached?.includeDiscontinuous === includeDiscontinuous &&
+    (yield* matchesUvSeamGeometry(root, cached.snapshot))) return cached.pairs;
+  const snapshot = yield* snapshotUvSeamGeometry(root);
+  const pairs = yield* collectUvSeamPairSteps(root, includeDiscontinuous, true);
+  // Do not cache mixed geometry if the model changed while the cooperative
+  // traversal was yielding. Pair objects remain private to this consumer.
+  if (snapshot && pairs.length <= 100000 && (yield* matchesUvSeamGeometry(root, snapshot))) {
+    seamPlanCache = new WeakMap([[root, { snapshot, includeDiscontinuous, pairs }]]);
+  } else seamPlanCache.delete(root);
+  return pairs;
+}
+
 function quantize(value: number, scale: number) {
   return Math.round(value * scale);
 }
 
 function positionKey(position: THREE.Vector3) {
   return `${quantize(position.x, 100000)},${quantize(position.y, 100000)},${quantize(position.z, 100000)}`;
+}
+
+function createSeamPositionIds() {
+  type Entry = { x: number; y: number; z: number; id: number; next?: Entry };
+  const buckets = new Map<number, Entry>();
+  let count = 0;
+  const equal = (a: number, b: number) => a === b || (Number.isNaN(a) && Number.isNaN(b));
+  return (position: THREE.Vector3) => {
+    const x = quantize(position.x, 100000), y = quantize(position.y, 100000), z = quantize(position.z, 100000);
+    // Hash only selects a bucket. Compare all original quantized coordinates,
+    // including values outside int32, before assigning the same position ID.
+    const hash = Math.imul(x, 73856093) ^ Math.imul(y, 19349663) ^ Math.imul(z, 83492791);
+    const head = buckets.get(hash);
+    for (let entry = head; entry; entry = entry.next) {
+      if (equal(entry.x, x) && equal(entry.y, y) && equal(entry.z, z)) return entry.id;
+    }
+    const id = count++;
+    buckets.set(hash, { x, y, z, id, next: head });
+    return id;
+  };
 }
 
 function edgeKey(a: THREE.Vector3, b: THREE.Vector3) {
@@ -35,7 +85,8 @@ function uvEdgeKey(edge: UvSeamEdgeRecord) {
 }
 
 function toPixel(uv: THREE.Vector2, width: number, height: number): PixelPoint {
-  return { x: uv.x * (width - 1), y: (1 - uv.y) * (height - 1) };
+  // UV-PIXEL-SPACE/1: window coordinates; pixelIndex selects the containing texel.
+  return { x: uv.x * width, y: (1 - uv.y) * height };
 }
 
 function inwardPixelNormal(edgeStart: PixelPoint, edgeEnd: PixelPoint, inside: PixelPoint) {
@@ -73,11 +124,19 @@ export function collectUvSeamPairs(root: THREE.Object3D, includeDiscontinuous = 
 }
 
 function* collectUvSeamPairSteps(root: THREE.Object3D, includeDiscontinuous = false, reuseEndpoints = false) {
-  const groupedEdges = new Map<string, UvSeamEdgeRecord[]>();
+  const groupedEdges = new Map<string | number, UvSeamEdgeRecord[]>();
   root.updateMatrixWorld(true);
 
   const meshes: THREE.Mesh[] = [];
-  root.traverse((object) => { if (object instanceof THREE.Mesh) meshes.push(object); });
+  root.traverse((object) => {
+    if (object.userData.liclickPaintOverlay || object.userData.liclickWireframeOverlay || object.userData.liclickLocalRepaintGpuOverlay) return;
+    if (object instanceof THREE.Mesh) meshes.push(object);
+  });
+  // Same quantized positions, compact collision-free edge IDs. Keep the string
+  // path if the mesh is too large for exact integer pairing in a JS Number.
+  const radix = meshes.reduce((sum, mesh) => sum + (mesh.geometry.getAttribute('position')?.count ?? 0), 1);
+  const numericKeys = reuseEndpoints && Number.isSafeInteger(radix * radix);
+  const positionId = createSeamPositionIds();
   for (const object of meshes) {
     const geometry = object.geometry;
     const position = geometry.getAttribute('position');
@@ -93,7 +152,7 @@ function* collectUvSeamPairSteps(root: THREE.Object3D, includeDiscontinuous = fa
     // Cache only within this pass: no stale geometry/transform state can survive a bake.
     // Synchronous public callers retain their original endpoint object identities.
     const endpointsByIndex: Array<UvSeamEndpoint | undefined> = [];
-    const endpointKeys = new WeakMap<UvSeamEndpoint, string>();
+    const endpointKeys = new WeakMap<UvSeamEndpoint, string | number>();
     for (let triangle = 0; triangle < triangleCount; triangle += 1) {
       if (triangle % 128 === 0) yield;
       const indices = [0, 1, 2].map((offset) =>
@@ -116,34 +175,42 @@ function* collectUvSeamPairSteps(root: THREE.Object3D, includeDiscontinuous = fa
           uv: new THREE.Vector2(uv.getX(vertexIndex), uv.getY(vertexIndex)),
         };
         if (reuseEndpoints && index) endpointsByIndex[vertexIndex] = endpoint;
-        if (reuseEndpoints) endpointKeys.set(endpoint, positionKey(endpoint.position));
+        if (reuseEndpoints) {
+          endpointKeys.set(endpoint, numericKeys ? positionId(endpoint.position) : positionKey(endpoint.position));
+        }
         return endpoint;
       });
 
       const edgeIndices = [[0, 1, 2], [1, 2, 0], [2, 0, 1]] as const;
       for (const [start, end, inside] of edgeIndices) {
-        const record: UvSeamEdgeRecord = {
-          a: endpoints[start],
-          b: endpoints[end],
-          insideUv: endpoints[inside].uv,
-        };
-        const aKey = reuseEndpoints ? endpointKeys.get(record.a)! : '';
-        const bKey = reuseEndpoints ? endpointKeys.get(record.b)! : '';
-        const key = reuseEndpoints
-          ? (aKey < bKey ? `${aKey}|${bKey}` : `${bKey}|${aKey}`)
-          : edgeKey(record.a.position, record.b.position);
+        const a = endpoints[start], b = endpoints[end], insideUv = endpoints[inside].uv;
+        let record: UvSeamEdgeRecord | undefined;
+        const aKey = reuseEndpoints ? endpointKeys.get(a)! : '';
+        const bKey = reuseEndpoints ? endpointKeys.get(b)! : '';
+        const key = numericKeys
+          ? Math.min(aKey as number, bKey as number) * radix + Math.max(aKey as number, bKey as number)
+          : reuseEndpoints ? (aKey < bKey ? `${aKey}|${bKey}` : `${bKey}|${aKey}`)
+          : edgeKey(a.position, b.position);
         const records = groupedEdges.get(key);
         if (records) {
           // Keep the same first UV-key order and last record per key as the
           // former final Map pass. Interior triangle edges need only one
           // retained record, avoiding a second object graph during pairing.
-          const uvKey = uvEdgeKey(record);
+          // UV-SEAM-REPAIR-PLAN/1.1: shared indexed endpoints already prove UV
+          // equality; avoid quantizing/stringifying the same interior edge.
+          let uvKey: string | undefined;
           const existing = records.length <= 4
-            ? records.findIndex((edge) => uvEdgeKey(edge) === uvKey)
+            ? records.findIndex((edge) =>
+              (edge.a === a && edge.b === b) ||
+              (edge.a === b && edge.b === a) ||
+              uvEdgeKey(edge) === (uvKey ??= uvEdgeKey(record ??= { a, b, insideUv })))
             : -1;
-          if (existing < 0) records.push(record);
-          else records[existing] = record;
-        } else groupedEdges.set(key, [record]);
+          if (existing < 0) records.push(record ?? { a, b, insideUv });
+          else {
+            const previous = records[existing];
+            previous.a = a; previous.b = b; previous.insideUv = insideUv;
+          }
+        } else groupedEdges.set(key, [{ a, b, insideUv }]);
       }
     }
   }
@@ -171,8 +238,8 @@ function* collectUvSeamPairSteps(root: THREE.Object3D, includeDiscontinuous = fa
 }
 
 function pixelIndex(point: PixelPoint, width: number, height: number) {
-  const x = Math.max(0, Math.min(width - 1, Math.round(point.x)));
-  const y = Math.max(0, Math.min(height - 1, Math.round(point.y)));
+  const x = Math.max(0, Math.min(width - 1, Math.floor(point.x)));
+  const y = Math.max(0, Math.min(height - 1, Math.floor(point.y)));
   return y * width + x;
 }
 
@@ -207,13 +274,44 @@ function* reconcileUvSeamSteps(
   options: { repairMissingCoverage?: boolean; bandPixels?: number } = {},
 ) {
   const { width, height, data } = imageData;
-  const source = new Uint8ClampedArray(data);
-  const seamPairs = yield* collectUvSeamPairSteps(root, Boolean(options.repairMissingCoverage), true);
+  // Missing-coverage repair has always updated both arrays after each donor
+  // transfer, so its working source is exactly data. Averaging still needs the
+  // immutable original. Avoid the redundant 64 MiB copy for a 4K Merge.
+  const source = options.repairMissingCoverage ? data : new Uint8ClampedArray(data);
   const bandPixels = Math.max(
     2,
     Math.min(32, options.bandPixels ?? Math.round(Math.max(width, height) / 1024)),
   );
   let adjustedPixels = 0;
+  const repairKey = `${width}:${height}:${bandPixels}`;
+  const cached = options.repairMissingCoverage ? repairPlanCache.get(root) : undefined;
+  if (typeof document !== 'undefined') document.body.dataset.residentUvSeamPlanHit = '0';
+  if (cached?.key === repairKey && (yield* matchesUvSeamGeometry(root, cached.snapshot))) {
+    if (typeof document !== 'undefined') document.body.dataset.residentUvSeamPlanHit = '1';
+    let remaining = cached.count;
+    for (const chunk of cached.chunks) {
+      const length = Math.min(remaining, chunk.length);
+      for (let index = 0; index < length; index += 2) {
+        if ((index & 8191) === 0) yield;
+        const first = chunk[index], second = chunk[index + 1];
+        const firstCovered = Boolean(coverage[first] && data[first * 4 + 3]);
+        const secondCovered = Boolean(coverage[second] && data[second * 4 + 3]);
+        if (firstCovered === secondCovered) continue;
+        const donor = (firstCovered ? first : second) * 4;
+        const target = firstCovered ? second : first;
+        for (let channel = 0; channel < 4; channel++) data[target * 4 + channel] = data[donor + channel];
+        coverage[target] = 1;
+        adjustedPixels++;
+      }
+      remaining -= length;
+    }
+    return { seamPairs: cached.seamPairs, adjustedPixels, bandPixels };
+  }
+  const snapshot = options.repairMissingCoverage ? yield* snapshotUvSeamGeometry(root) : undefined;
+  const chunks: Uint32Array[] = [];
+  let addressCount = 0;
+  let cacheable = Boolean(snapshot);
+  const seamPairs = yield* getReusableSeamPairs(root, Boolean(options.repairMissingCoverage));
 
   for (const [first, second] of seamPairs) {
     const firstStart = toPixel(first.a.uv, width, height);
@@ -256,6 +354,17 @@ function* reconcileUvSeamSteps(
         };
         const firstIndex = pixelIndex(firstPoint, width, height);
         const secondIndex = pixelIndex(secondPoint, width, height);
+        if (cacheable) {
+          if (addressCount === MAX_REPAIR_WORDS) { cacheable = false; chunks.length = 0; }
+          else {
+            const offset = addressCount % REPAIR_CHUNK_WORDS;
+            if (offset === 0) chunks.push(new Uint32Array(REPAIR_CHUNK_WORDS));
+            const chunk = chunks[chunks.length - 1];
+            chunk[offset] = firstIndex;
+            chunk[offset + 1] = secondIndex;
+            addressCount += 2;
+          }
+        }
         const firstOffset = firstIndex * 4;
         const secondOffset = secondIndex * 4;
         const firstCovered = Boolean(coverage[firstIndex] && source[firstOffset + 3]);
@@ -270,7 +379,6 @@ function* reconcileUvSeamSteps(
             // Let a repaired seam become a source for another geometrically
             // connected UV edge later in this pass. This closes fragmented
             // high-poly islands without leaking across unrelated atlas space.
-            source[targetOffset + channel] = source[sourceOffset + channel];
           }
           coverage[targetIndex] = 1;
           adjustedPixels += 1;
@@ -298,5 +406,15 @@ function* reconcileUvSeamSteps(
     }
   }
 
+  if (cacheable && snapshot && (yield* matchesUvSeamGeometry(root, snapshot))) {
+    repairPlanCache = new WeakMap([[root, { snapshot, key: repairKey, chunks,
+      count: addressCount, seamPairs: seamPairs.length }]]);
+    // The compact repair plan supersedes the large edge object graph.
+    seamPlanCache.delete(root);
+  } else if (options.repairMissingCoverage) repairPlanCache.delete(root);
+  if (typeof document !== 'undefined') {
+    document.body.dataset.residentUvSeamPlanWords = String(addressCount);
+    document.body.dataset.residentUvSeamPlanCached = String(repairPlanCache.has(root));
+  }
   return { seamPairs: seamPairs.length, adjustedPixels, bandPixels };
 }

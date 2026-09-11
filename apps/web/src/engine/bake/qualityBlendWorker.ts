@@ -37,7 +37,7 @@ export type QualityBlendWorkerResult = {
   coverage: Uint8Array<ArrayBuffer>;
   renderedColorMask: Uint8Array<ArrayBuffer>;
   writtenTexels: number;
-  backend: 'webgpu-worker' | 'cpu-worker';
+  backend: 'webgpu-worker' | 'cpu-worker' | 'webgl-resident';
   accumulateMs: number;
   resolveMs: number;
   overlayMs: number;
@@ -46,6 +46,7 @@ export type QualityBlendWorkerResult = {
 };
 
 type BlendRequest = {
+  resolvedBase?: { output: ArrayBuffer; coverage: ArrayBuffer; writtenTexels: number };
   type: 'blend';
   id: number;
   resolution: number;
@@ -70,7 +71,7 @@ type WorkerResponse =
       coverage: ArrayBuffer;
       renderedColorMask: ArrayBuffer;
       writtenTexels: number;
-      backend: 'webgpu-worker' | 'cpu-worker';
+      backend: 'webgpu-worker' | 'cpu-worker' | 'webgl-resident';
       accumulateMs: number;
       resolveMs: number;
       overlayMs: number;
@@ -208,6 +209,8 @@ export function blendProjectedRastersInWorker(
   resolution: number,
   preserveCoverageConfidenceAlpha: boolean,
   overlays: QualityBlendWorkerOverlay[] = [],
+  forceCpuReference = false,
+  resolvedBase?: QualityBlendWorkerResult,
 ) {
   const id = nextRequestId++;
   const transfers: Transferable[] = [];
@@ -249,13 +252,19 @@ export function blendProjectedRastersInWorker(
     verify:
       typeof window !== 'undefined' &&
       new URLSearchParams(window.location.search).get('perfQualityGpuAb') === '1',
-    forceCpuOutput:
+    forceCpuOutput: forceCpuReference || (
       typeof window !== 'undefined' &&
-      new URLSearchParams(window.location.search).get('perfQualityCpuGold') === '1',
+      new URLSearchParams(window.location.search).get('perfQualityCpuGold') === '1'),
     interactive: isInteractionProtected(),
     layers: workerLayers,
     overlays: workerOverlays,
   };
+  if(resolvedBase) {
+    const output=transferableBuffer(resolvedBase.imageData.data);
+    const coverage=resolvedBase.coverage.buffer;
+    request.resolvedBase={output,coverage,writtenTexels:resolvedBase.writtenTexels};
+    transfers.push(output,coverage);
+  }
   return new Promise<QualityBlendWorkerResult>((resolve, reject) => {
     pending.set(id, { resolution, resolve, reject });
     maintainInteractionHeartbeat();

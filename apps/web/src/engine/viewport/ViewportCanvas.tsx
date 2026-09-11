@@ -16,6 +16,9 @@ import * as THREE from 'three';
 import { useDragInteractionStore } from '@/stores/dragInteractionStore';
 import { useEditorHistoryStore } from '@/stores/editorHistoryStore';
 import { paintHistoryBoundary } from '@/engine/paint/paintHistoryBoundary';
+import type { UvRepaint } from '@/engine/localRepaint/uvRepaint';
+import { isNativeUvRepaintLayer, UV_REPAINT_LAYER_PREFIX } from '@/engine/localRepaint/uvRepaintState';
+import type { NativeUvRepaintSession } from '@/engine/localRepaint/uvRepaintSession';
 import { stageRefinedStrokeHistory } from '@/engine/paint/refineStrokeHistory';
 import { useLayerStore } from '@/stores/layerStore';
 import { performanceScenarioOccludingUvIds, performanceScenarioVisibleBindings } from '@/engine/performance/performanceScenarioLayers';
@@ -38,6 +41,8 @@ import {
   markLiveProjectedCanvasTextureUpdated,
   registerLiveProjectedCanvasTexture,
   registerLiveProjectedImageTexture,
+  flushLiveUvCommits,
+  unregisterLiveUvRenderTarget,
 } from '@/engine/projection/liveProjectedCanvasTextureRegistry';
 import { buildProjectionMatrixBundle } from '@/engine/projection/projectionMath';
 import { createRuntimeProjectionDepth } from '@/engine/projection/createRuntimeProjectionDepth';
@@ -4352,6 +4357,7 @@ type PaintStrokeDraft = {
   localRepaintHistoryBefore?: HTMLCanvasElement;
   localRepaintHistoryBeforeHasContent?: boolean;
   localRepaintSelectionStroke?: CanvasRenderingContext2D;
+  nativeRepaintErase?: boolean;
   inpaintHistoryBefore?: InpaintMaskHistoryState;
   inpaintHistoryModel?: SurfacePaintTarget;
 };
@@ -4470,6 +4476,8 @@ function resampleClientPath(
 }
 
 type LocalRepaintCompositeState = {
+  nativeUv?: NativeUvRepaintSession;
+  useNativeUv?: boolean;
   sourceKey: string;
   layerId: string;
   maskUrl: string;
@@ -6148,7 +6156,11 @@ function isMatchingLocalRepaintProjectionLayer(
   source: LocalRepaintProjectionSource,
   objectId: string,
 ) {
-  if (!isLocalRepaintProjectionLayer(layer)) return false;
+  if (!isLocalRepaintProjectionLayer(layer) && !isNativeUvRepaintLayer(layer)) return false;
+  if (isNativeUvRepaintLayer(layer) && !source.projectionLayerId && source.generationId) {
+    // The session target may become the UV result itself when reopening it.
+    return layer.generationId === source.generationId && layer.objectId === (source.objectId ?? objectId);
+  }
   if (source.projectionLayerId) {
     return (
       layer.id === source.projectionLayerId &&
@@ -6851,6 +6863,7 @@ function SurfacePaintOverlay() {
   }>();
   const [localRepaintAssetsRevision, setLocalRepaintAssetsRevision] = useState(0);
   const localRepaintCompositeRef = useRef<LocalRepaintCompositeState>();
+  const nativeUvOwnersRef = useRef(new Map<string, UvRepaint>());
   const localRepaintGpuOverlayRef = useRef<LocalRepaintGpuOverlayState>();
   const localRepaintResidentMaskOverrideRef = useRef<{
     root: THREE.Object3D;
@@ -7036,7 +7049,11 @@ function SurfacePaintOverlay() {
   const isInpaintMode = paintTool === 'inpaint-add' || paintTool === 'inpaint-subtract';
   const isEditingPersistedLocalRepaint =
     paintTool === 'eraser' && isEditableLocalRepaintProjectionLayer(activePaintLayer);
-  const isLocalRepaintApplyMode = paintTool === 'inpaint-apply' || isEditingPersistedLocalRepaint;
+  const isEditingNativeRepaint = paintTool === 'eraser' && Boolean(
+    activePaintLayer && isNativeUvRepaintLayer(activePaintLayer) &&
+    localRepaintCompositeRef.current?.nativeUv && localRepaintCompositeRef.current.layerId === activePaintLayer.id,
+  );
+  const isLocalRepaintApplyMode = paintTool === 'inpaint-apply' || isEditingPersistedLocalRepaint || isEditingNativeRepaint;
   // Restoring a source transfers live renderer ownership; it is not a passive
   // cache warmup. Ordinary row selection must keep the presented source intact.
   // Explicit eraser activation still prepares before the first pointer sample.
@@ -9443,6 +9460,7 @@ function SurfacePaintOverlay() {
 
   useEffect(() => {
     localRepaintProjectedPublishDisposedRef.current = false;
+    const nativeOwnersMap = nativeUvOwnersRef.current;
     return () => {
       localRepaintProjectedPublishDisposedRef.current = true;
       if (textureUpdateFrameRef.current !== undefined)
@@ -9465,6 +9483,16 @@ function SurfacePaintOverlay() {
       localRepaintUvCommitRevisionRef.current += 1;
       localRepaintProjectedPublishRequestsRef.current.clear();
       localRepaintProjectedPublishRevisionsRef.current.clear();
+      const nativeOwners = [...nativeOwnersMap];
+      nativeOwnersMap.clear();
+      localRepaintCompositeRef.current = undefined;
+      // History/readback finishes before retiring this viewport's GPU owners.
+      void flushLiveUvCommits().finally(() => {
+        for (const [url, engine] of nativeOwners) {
+          unregisterLiveUvRenderTarget(url, engine.texture);
+          engine.dispose(true); engine.releaseOutput();
+        }
+      }).catch(() => undefined);
       clearLocalRepaintGpuOverlay();
       clearLocalRepaintResidentMaskOverride();
       useSceneStore.getState().setLocalRepaintPreviewLayer(undefined);
@@ -9514,6 +9542,7 @@ function SurfacePaintOverlay() {
     const previousOverride = localRepaintResidentMaskOverrideRef.current;
     const nextObjectId = source?.objectId ?? selectedObjectId;
     const releasePreviousPreview = async () => {
+      await flushLiveUvCommits();
       if (!previousOverlay && !previousOverride) return true;
       const previousLayerId = previousOverride?.layerId ?? previousOverlay?.layerId;
       const previousRoot = previousOverride?.root ?? previousOverlay?.root.parent;
@@ -9533,6 +9562,7 @@ function SurfacePaintOverlay() {
               : undefined);
           return (
             !layer ||
+            isNativeUvRepaintLayer(layer) ||
             !layer.visible ||
             previousRoot?.visible === false ||
             !isLocalRepaintHandoffForObject(previousObjectId, nextObjectId) ||
@@ -9583,6 +9613,7 @@ function SurfacePaintOverlay() {
         clearLocalRepaintGpuOverlay();
         clearLocalRepaintResidentMaskOverride();
         localRepaintSourceImageRef.current = undefined;
+        localRepaintCompositeRef.current?.nativeUv?.engine.dispose(true);
         localRepaintCompositeRef.current = undefined;
         localRepaintRuntimeDepthRef.current = undefined;
         setLocalRepaintAssetsRevision(0);
@@ -9730,6 +9761,7 @@ function SurfacePaintOverlay() {
         // The existing material and visible result stay resident while the new
         // mask is decoded. Swap only the mutable mask/composite after every new
         // asset is ready, avoiding a blank frame and a redundant shader rebuild.
+        localRepaintCompositeRef.current?.nativeUv?.engine.dispose(true);
         localRepaintCompositeRef.current = undefined;
         setLocalRepaintAssetsRevision((revision) => revision + 1);
         // Do not enable button 3 yet. The effect below publishes its empty
@@ -10353,6 +10385,7 @@ function SurfacePaintOverlay() {
       const existingLayer = currentLayers.find((item) =>
         isMatchingLocalRepaintProjectionLayer(item, localRepaintSource, model.objectId),
       );
+      const useNativeUv = !existingLayer || isNativeUvRepaintLayer(existingLayer);
       // A persisted eraser session is bound to one exact projected row. If that
       // row disappeared or selection advanced, do not silently create or reuse
       // another repaint layer with similar generation/target metadata.
@@ -10379,12 +10412,12 @@ function SurfacePaintOverlay() {
         existingLayer?.id ??
         (composite?.sourceKey === sourceKey
           ? composite.layerId
-          : createId(LOCAL_REPAINT_PROJECTION_LAYER_ID_PREFIX));
+          : createId(useNativeUv ? UV_REPAINT_LAYER_PREFIX : LOCAL_REPAINT_PROJECTION_LAYER_ID_PREFIX));
       // Authored coverage is the editable source of truth. The feathered
       // display mask is only a compatibility fallback for older project rows
       // that predate the dedicated local-repaint mask field.
       const savedMaskUrls = [existingLayer?.localRepaintMaskUrl, existingLayer?.maskUrl].filter(
-        (url, index, urls): url is string => Boolean(url) && urls.indexOf(url) === index,
+        (url, index, urls): url is string => !useNativeUv && Boolean(url) && urls.indexOf(url) === index,
       );
       // Live repaint masks use a stable registry URL derived from layerId. Read
       // the old canvas before createLocalRepaintComposite registers the new one
@@ -10468,7 +10501,9 @@ function SurfacePaintOverlay() {
         }
       }
       if (!composite) return undefined;
+      composite.useNativeUv = useNativeUv;
       updateLocalRepaintProjectionMatrix(composite, model, localRepaintSource);
+      if (useNativeUv) return composite;
       const projectedLayer: Layer = {
         ...existingLayer,
         id: layerId,
@@ -11050,7 +11085,7 @@ function SurfacePaintOverlay() {
           (layer) => layer.id === liveMaskComposite.layerId && layer.visible,
         );
         if (
-          residentLayer &&
+          residentLayer && !composite.useNativeUv &&
           (residentLayer.maskUrl !== liveMaskComposite.blendMaskUrl ||
             residentLayer.localRepaintMaskUrl !== liveMaskComposite.maskUrl)
         ) {
@@ -11171,7 +11206,7 @@ function SurfacePaintOverlay() {
         // first stroke publishes a row. Waiting for that nonexistent binding
         // burned the entire 10s deadline before compiling the exact overlay.
         // Existing rows and ordered previews still require resident preparation.
-        const requiresResidentMaterial = shouldWaitForLocalRepaintResidentMaterial(
+        const requiresResidentMaterial = !composite.useNativeUv && shouldWaitForLocalRepaintResidentMaterial(
           useLayerStore.getState().layers,
           useSceneStore.getState().localRepaintPreviewLayer,
           composite.layerId,
@@ -11203,6 +11238,30 @@ function SurfacePaintOverlay() {
         );
         if (!readyOverlay) {
           throw new Error('局部重绘实时覆盖层未能完成。');
+        }
+        if (composite.useNativeUv && !composite.nativeUv) {
+          reportLocalRepaintPrewarmProgress(0.9, '准备 UV 颜色与可见面绘制');
+          const { createNativeUvRepaintSession } = await import('@/engine/localRepaint/uvRepaintSession');
+          if (cancelled) return;
+          const image = preparedAssets.image;
+          if (!preparedAssets.allowedMaskImage) throw new Error('缺少冻结的作者蒙版，未启用无限制 UV 绘制。');
+          const falloff = await createLocalRepaintFalloffCanvasAsync(
+            preparedAssets.allowedMaskImage, image.naturalWidth || image.width, image.naturalHeight || image.height,
+          );
+          if (cancelled) return;
+          const saved = useLayerStore.getState().layers.find((layer) => layer.id === composite.layerId);
+          const initial = saved?.imageUrl ? (getLiveProjectedCanvasState(saved.imageUrl)?.canvas ?? await loadImageElement(saved.imageUrl)) : undefined;
+          const native = await createNativeUvRepaintSession({
+            renderer: gl, meshes: getPaintableSurfaceCache(model.group).positionedMeshes, camera,
+            resolution: UV_TEXTURE_RESOLUTION[useSettingsStore.getState().resolution], sourceMaterial: readyOverlay.material,
+            image, falloff, initial, source, objectId: model.objectId, layerId: composite.layerId,
+            cancelled: () => cancelled || localRepaintCompositeRef.current !== composite || Boolean(saved && !useLayerStore.getState().layers.some((layer) => layer.id === saved.id)),
+          });
+          if (!native) return;
+          const previousOwner = nativeUvOwnersRef.current.get(native.assetUrl);
+          if (previousOwner && previousOwner !== native.engine) { previousOwner.dispose(true); previousOwner.releaseOutput(); }
+          nativeUvOwnersRef.current.set(native.assetUrl, native.engine);
+          composite.nativeUv = native;
         }
         if (ensureLiveLocalRepaintComposite(model, source) !== composite) {
           throw new Error('局部重绘图层在就绪发布前失去绑定。');
@@ -11237,6 +11296,7 @@ function SurfacePaintOverlay() {
         }
       } catch (error) {
         console.warn('[Liclick 3D Texture] Local repaint GPU prewarm failed:', error);
+        composite.nativeUv?.engine.dispose(true);
         document.body.dataset.localRepaintGpuErrorGeneration = source.generationId ?? '';
         document.body.dataset.localRepaintGpuErrorTarget = source.targetLayerId ?? '';
         publishLocalRepaintInteractiveState({
@@ -11295,10 +11355,12 @@ function SurfacePaintOverlay() {
     };
   }, [
     bindLocalRepaintResidentMaskOverride,
+    camera,
     ensureLiveLocalRepaintComposite,
     ensureLocalRepaintGpuOverlay,
     getTargetModel,
     gl,
+    invalidate,
     localRepaintAssetsRevision,
     localRepaintProjectionSource,
     promoteLocalRepaintResidentMaskTexture,
@@ -11627,6 +11689,15 @@ function SurfacePaintOverlay() {
         const erasesLocalRepaint = strokePaintTool === 'inpaint-apply-erase';
         const draft = strokeDraftRef.current;
         const composite = draft?.localRepaintComposite;
+        if (composite?.nativeUv && draft) {
+          const rect = gl.domElement.getBoundingClientRect();
+          if (composite.nativeUv.engine.stamp({
+            camera, from: lastSampleRef.current?.screenUv, to: result.screenUv,
+            viewport: new THREE.Vector2(rect.width, rect.height), radius: result.screenBrushRadiusPx * pressureSizeScale,
+            feather: (erasesLocalRepaint && paintTool === 'eraser' ? (paintToolSettings.eraserFeather ?? 50) : localRepaintBrushSettings.brushFeather) / 100,
+            erase: erasesLocalRepaint,
+          })) { draft.bounds = { x: 0, y: 0, width: 1, height: 1 }; invalidate(); }
+        } else {
         const surfaceFacesProjector =
           composite &&
           result.hit.object instanceof THREE.Mesh &&
@@ -11755,6 +11826,7 @@ function SurfacePaintOverlay() {
           // closes the intermittent thumbnail-only update race.
           invalidate();
         }
+        }
       }
 
       lastUvRef.current?.copy(result.uv);
@@ -11794,6 +11866,7 @@ function SurfacePaintOverlay() {
       ensurePaintPreviewOverlayForMesh,
       getStrokeSourceUv,
       getUvPaintLayer,
+      gl.domElement,
       hasLocalRepaintSourceContent,
       hideInpaintMaskPresentation,
       localRepaintBrushSettings.brushFeather,
@@ -11937,8 +12010,9 @@ function SurfacePaintOverlay() {
         historyTileKeys: target === 'paint' ? new Set<string>() : undefined,
         localRepaintSource,
         localRepaintComposite,
+        nativeRepaintErase: strokePaintTool === 'inpaint-apply-erase',
         localRepaintHistoryBefore:
-          localRepaintComposite && target === 'apply-local-repaint'
+          localRepaintComposite && !localRepaintComposite.nativeUv && target === 'apply-local-repaint'
             ? copyCanvasRect(localRepaintComposite.maskCanvas, {
                 x: 0,
                 y: 0,
@@ -11952,6 +12026,7 @@ function SurfacePaintOverlay() {
           target === 'mask' && layer ? getInpaintMaskHistoryCheckpoint(layer) : undefined,
         inpaintHistoryModel: target === 'mask' ? result.model : undefined,
       };
+      if (target === 'apply-local-repaint') localRepaintComposite?.nativeUv?.engine.begin();
       if (
         strokePaintTool === 'inpaint-apply' &&
         localRepaintComposite &&
@@ -12104,6 +12179,7 @@ function SurfacePaintOverlay() {
       // A reloaded layer is never allowed to publish its live runtime canvas
       // until the durable mask has been copied into it. Otherwise one early
       // eraser gesture can replace the stored mask with an empty canvas.
+      if (composite.nativeUv) return;
       if (composite.restoredMaskUrl && !composite.restoredMaskReady) return;
       const commitRevision = localRepaintUvCommitRevisionRef.current + 1;
       localRepaintUvCommitRevisionRef.current = commitRevision;
@@ -12825,7 +12901,8 @@ function SurfacePaintOverlay() {
             ? { imageUrl: batch.layer.assetUrl }
             : { maskUrl: batch.layer.assetUrl, maskSpace: 'uv' as const }),
           contentRevision: (latestLayer.contentRevision ?? 0) + 1,
-          eraserAlgorithmVersion: ERASER_ALGORITHM_VERSION,
+          // Refinement changes pixels, not whether history has an applied erase.
+          eraserAlgorithmVersion: latestLayer.eraserAlgorithmVersion,
           isBaked: false,
           needsRebake: batch.layer.target === 'projected-mask',
         });
@@ -12966,6 +13043,7 @@ function SurfacePaintOverlay() {
     const draft = strokeDraftRef.current;
     const layer = draft?.layer;
     const localRepaintSource = draft?.localRepaintSource ?? localRepaintProjectionSource;
+    if (draft?.localRepaintComposite?.nativeUv) return;
     if (!draft?.bounds) {
       if (layer && !(draft?.paintOperation === 'eraser' && layer.target === 'projected-mask'))
         endLiveEraserPreview(layer);
@@ -13105,6 +13183,7 @@ function SurfacePaintOverlay() {
           finishProjectedPreview();
           return;
         }
+        const eraserVersionBefore = latestLayer.eraserAlgorithmVersion;
         const historyBeforeStartedAt = performance.now();
         // The preview commit still uses the exact union canvas, while history
         // stores only tiles reached by an actual stamp segment. UV seams can
@@ -13250,6 +13329,8 @@ function SurfacePaintOverlay() {
               ? { imageUrl: layer.assetUrl }
               : { maskUrl: layer.assetUrl, maskSpace: 'uv' as const }),
             contentRevision: (latestLayer.contentRevision ?? 0) + 1,
+            eraserAlgorithmVersion:
+              side === 'before' ? eraserVersionBefore : ERASER_ALGORITHM_VERSION,
             isBaked: false,
             needsRebake: layer.target === 'projected-mask',
           });
@@ -13463,6 +13544,7 @@ function SurfacePaintOverlay() {
             meshes: overlay.meshes,
             material: overlay.material,
             stroke,
+            strokeSpace: composite.nativeUv ? 'uv' : 'projection',
             target: layer.accumulatedMaskTarget,
             inverted: layer.maskInverted,
           });
@@ -13523,6 +13605,7 @@ function SurfacePaintOverlay() {
     const draft = strokeDraftRef.current;
     strokeDraftRef.current = undefined;
     if (!draft?.bounds) {
+      if (draft?.localRepaintComposite?.nativeUv) void draft.localRepaintComposite.nativeUv.engine.end();
       const unused = draft?.localRepaintSelectionStroke?.canvas;
       if (unused) unused.width = unused.height = 0;
       return;
@@ -13531,6 +13614,20 @@ function SurfacePaintOverlay() {
     if (draft.target === 'apply-local-repaint') {
       const composite = draft.localRepaintComposite;
       const source = draft.localRepaintSource;
+      const native = composite?.nativeUv;
+      if (native && composite && source) {
+        const model = getTargetModel();
+        native.commitStroke({
+          erase: Boolean(draft.nativeRepaintErase), invalidate,
+          owner: () => nativeUvOwnersRef.current.get(native.assetUrl),
+          consume: model && draft.localRepaintSelectionStroke ? (coverage) => {
+            if (draft.localRepaintSelectionStroke) draft.localRepaintSelectionStroke.canvas.width = 0;
+            draft.localRepaintSelectionStroke = coverage.getContext('2d') ?? undefined;
+            return consumeRepaintStrokeSelection(draft, model);
+          } : undefined,
+        });
+        return;
+      }
       const beforeCanvas = draft.localRepaintHistoryBefore;
       const model = getTargetModel();
       if (!composite || !source || !beforeCanvas || !model) return;
@@ -14786,7 +14883,8 @@ function SurfacePaintOverlay() {
         isLocalRepaintApplyMode &&
         (event.button === 2 ||
           penEraserContact ||
-          (isEditingPersistedLocalRepaint && event.button === 0));
+          (isEditingPersistedLocalRepaint && event.button === 0) ||
+          (isEditingNativeRepaint && event.button === 0));
       const isPaintButton =
         event.button === 0 || penEraserContact || rightMaskEraseContact || localRepaintEraseContact;
       const strokeCanvasRect = canvas.getBoundingClientRect();
@@ -15066,6 +15164,7 @@ function SurfacePaintOverlay() {
     gl,
     hasLocalRepaintSourceContent,
     invalidate,
+    isEditingNativeRepaint,
     isEditingPersistedLocalRepaint,
     isInpaintMode,
     isLocalRepaintApplyMode,

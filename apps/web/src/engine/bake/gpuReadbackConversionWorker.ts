@@ -1,4 +1,6 @@
-type ConversionMode = 'final' | 'layer' | 'quality';
+import ReadbackWorker from '../../workers/gpuReadbackConversion.worker?worker&inline';
+
+type ConversionMode = 'final' | 'layer' | 'resident' | 'quality';
 
 type ConversionRequest = {
   id: number;
@@ -6,12 +8,13 @@ type ConversionRequest = {
   pixels: ArrayBuffer;
   resolution: number;
   outputAlpha?: 'opaque-viewport' | 'transparent';
+  packedQuality?: boolean;
 };
 
 type ConversionResponse =
   | {
       id: number;
-      mode: 'final' | 'layer';
+      mode: 'final' | 'layer' | 'resident';
       imageData: ArrayBuffer;
       coverage: ArrayBuffer;
       coveredPixels: number;
@@ -24,38 +27,86 @@ type PendingConversion = {
   reject: (error: Error) => void;
 };
 
-let worker: Worker | undefined;
-let nextRequestId = 1;
-const pending = new Map<number, PendingConversion>();
+type WorkerSession = {
+  instance: Worker;
+  ready: Promise<void>;
+  pending: Map<number, PendingConversion>;
+  error?: Error;
+};
 
-function getWorker() {
-  if (worker) return worker;
-  worker = new Worker(new URL('../../workers/gpuReadbackConversion.worker.ts', import.meta.url), {
-    type: 'module',
-  });
-  worker.onmessage = (event: MessageEvent<ConversionResponse>) => {
-    const request = pending.get(event.data.id);
+let session: WorkerSession | undefined;
+let nextRequestId = 1;
+
+function createSession() {
+  // Keep this small import-free kernel with the page, including across deployments.
+  const instance = new ReadbackWorker();
+  let resolveReady!: () => void;
+  let rejectReady!: (error: Error) => void;
+  let started = false;
+  const current: WorkerSession = {
+    instance,
+    ready: new Promise<void>((resolve, reject) => {
+      resolveReady = resolve;
+      rejectReady = reject;
+    }),
+    pending: new Map(),
+  };
+  const fail = (error: Error) => {
+    if (current.error) return;
+    current.error = error;
+    clearTimeout(timeout);
+    rejectReady(error);
+    current.pending.forEach((request) => request.reject(error));
+    current.pending.clear();
+    instance.terminate();
+    if (session === current) session = undefined;
+  };
+  const timeout = setTimeout(() => fail(new Error('GPU readback Worker 启动超时。')), 5000);
+  instance.onmessage = (event: MessageEvent<ConversionResponse | { ready: 1 }>) => {
+    if (current.error) return;
+    if ('ready' in event.data) {
+      started = true;
+      clearTimeout(timeout);
+      resolveReady();
+      return;
+    }
+    const request = current.pending.get(event.data.id);
     if (!request) return;
-    pending.delete(event.data.id);
+    current.pending.delete(event.data.id);
     if ('error' in event.data) request.reject(new Error(event.data.error));
     else request.resolve(event.data);
   };
-  worker.onerror = (event) => {
-    const error = new Error(event.message || 'GPU readback conversion worker failed.');
-    pending.forEach((request) => request.reject(error));
-    pending.clear();
-    worker?.terminate();
-    worker = undefined;
+  instance.onerror = (event) => {
+    event.preventDefault();
+    fail(new Error(`GPU readback Worker ${started ? '转换' : '启动'}失败：${event.message || '浏览器终止了 Worker'}`));
   };
-  return worker;
+  instance.onmessageerror = () => fail(new Error('GPU readback Worker 返回数据无法读取。'));
+  return current;
 }
 
-function convert(
+async function getReadySession() {
+  // Retry bootstrap only; no pixel buffer has been transferred at this point.
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      const current = session ?? (session = createSession());
+      await current.ready;
+      if (current.error) throw current.error;
+      return current;
+    } catch (error) {
+      if (attempt === 1) throw error;
+    }
+  }
+}
+
+async function convert(
   mode: ConversionMode,
   pixels: Uint8Array,
   resolution: number,
   outputAlpha?: 'opaque-viewport' | 'transparent',
+  packedQuality?: boolean,
 ) {
+  const current = await getReadySession();
+  if (current.error) throw current.error;
   const id = nextRequestId++;
   const buffer =
     pixels.buffer instanceof ArrayBuffer &&
@@ -63,10 +114,15 @@ function convert(
     pixels.byteLength === pixels.buffer.byteLength
       ? pixels.buffer
       : pixels.slice().buffer;
-  const message: ConversionRequest = { id, mode, pixels: buffer, resolution, outputAlpha };
+  const message: ConversionRequest = { id, mode, pixels: buffer, resolution, outputAlpha, packedQuality };
   return new Promise<ConversionResponse>((resolve, reject) => {
-    pending.set(id, { resolve, reject });
-    getWorker().postMessage(message, [buffer]);
+    current.pending.set(id, { resolve, reject });
+    try {
+      current.instance.postMessage(message, [buffer]);
+    } catch (error) {
+      current.pending.delete(id);
+      reject(error instanceof Error ? error : new Error(String(error)));
+    }
   });
 }
 
@@ -87,9 +143,11 @@ export async function convertFinalGpuReadbackInWorker(
 export async function convertLayerGpuReadbackInWorker(
   pixels: Uint8Array,
   resolution: number,
+  straightRgba = false,
 ) {
-  const response = await convert('layer', pixels, resolution);
-  if ('error' in response || response.mode !== 'layer') throw new Error('Invalid layer readback.');
+  const mode=straightRgba ? 'resident' : 'layer';
+  const response = await convert(mode, pixels, resolution);
+  if ('error' in response || response.mode !== mode) throw new Error('Invalid layer readback.');
   return {
     imageData: new ImageData(new Uint8ClampedArray(response.imageData), resolution, resolution),
     coverage: new Uint8Array(response.coverage),
@@ -100,8 +158,9 @@ export async function convertLayerGpuReadbackInWorker(
 export async function convertQualityGpuReadbackInWorker(
   pixels: Uint8Array,
   resolution: number,
+  packedQuality = false,
 ) {
-  const response = await convert('quality', pixels, resolution);
+  const response = await convert('quality', pixels, resolution, undefined, packedQuality);
   if ('error' in response || response.mode !== 'quality') throw new Error('Invalid quality readback.');
   return new Float32Array(response.quality);
 }

@@ -1,7 +1,15 @@
 import assert from 'node:assert/strict';
-import test from 'node:test';
+import test, { after } from 'node:test';
 import * as THREE from 'three';
-import {
+import { createServer } from 'vite';
+import { fileURLToPath } from 'node:url';
+const server = await createServer({
+  root: fileURLToPath(new URL('../../../../', import.meta.url)),
+  logLevel: 'silent',
+  server: { middlewareMode: true, watch: { ignored: () => true } },
+});
+after(() => server.close());
+const {
   getLiveProjectedCanvasState,
   getLiveProjectedCanvasTexture,
   getLiveProjectedTexture,
@@ -10,7 +18,7 @@ import {
   markLiveProjectedCanvasTextureUpdated,
   registerLiveProjectedCanvasTexture,
   registerLiveProjectedImageTexture,
-} from '../liveProjectedCanvasTextureRegistry.ts';
+} = await server.ssrLoadModule('/src/engine/projection/liveProjectedCanvasTextureRegistry.ts');
 
 test('repeated reads of a multi-layer live stack do not dirty unchanged GPU sources', () => {
   const entries = Array.from({ length: 8 }, (_, layer) => {

@@ -274,6 +274,19 @@ function getWorkerBitmapId(texture: THREE.Texture) {
   return typeof value === 'number' ? value : undefined;
 }
 
+/** Derived UV buffers can be recomputed after context loss. Once uploaded, keep
+ * only their GPU allocation instead of duplicating every cached state in a Worker.
+ * Authored/global cached previews must retain their upload source.
+ */
+export function releaseTransientPreviewUploadSource(renderer: THREE.WebGLRenderer, texture: THREE.Texture) {
+  const id = getWorkerBitmapId(texture);
+  if (id === undefined) return;
+  if (texture.userData.liclickPreviewCacheKey || !previewTextureReadyRenderers.get(texture)?.has(renderer))
+    throw new Error('Only uploaded, exclusively owned transient previews may release their source.');
+  releaseWorkerBitmap(id);
+  delete texture.userData.liclickPreviewWorkerBitmapId;
+}
+
 function markPreviewUploadStep(step: string) {
   if (
     document.body.dataset.perfSimulatedViewportInteraction === '1' ||
@@ -297,6 +310,28 @@ function previewUploadGovernorEnabled() {
 
 export function registerPreviewTextureRenderer(renderer: THREE.WebGLRenderer | undefined) {
   registeredPreviewRenderer = renderer;
+}
+
+/** Move an exclusively owned, fully uploaded temporary preview after asset save.
+ * No alias: disposal under the temporary URL must never free the published map.
+ */
+export function promotePreparedPreviewTexture(sourceUrl: string, assetUrl: string) {
+  const renderer = registeredPreviewRenderer;
+  const texture = residentPreviewTextureCache.get(sourceUrl);
+  const promise = bakedTextureCache.get(sourceUrl);
+  if (!sourceUrl.startsWith('blob:') || !assetUrl || sourceUrl === assetUrl ||
+    !renderer || renderer.getContext().isContextLost() || !texture || !promise ||
+    !previewTextureReadyRenderers.get(texture)?.has(renderer) ||
+    !(renderer.properties.get(texture) as {__webglTexture?:WebGLTexture}).__webglTexture ||
+    pinnedPreviewTextureCacheKeys.get(sourceUrl) !== 1 ||
+    bakedTextureCache.has(assetUrl) || residentPreviewTextureCache.has(assetUrl)) return false;
+  bakedTextureCache.delete(sourceUrl);
+  residentPreviewTextureCache.delete(sourceUrl);
+  bakedTextureCache.set(assetUrl, promise);
+  residentPreviewTextureCache.set(assetUrl, texture);
+  texture.userData.liclickPreviewSourceUrl = assetUrl;
+  texture.userData.liclickPreviewCacheKey = assetUrl;
+  return true;
 }
 
 /** Hold a cache entry from before decode until its consumer finishes upload. */
@@ -445,7 +480,7 @@ export function loadPreviewTexture(imageUrl: string, options?: PreviewTextureLoa
 
 export async function prewarmPreviewTextures(
   imageUrls: string[],
-  options?: { allowWhileInteracting?: boolean; maxSize?: number },
+  options?: { allowWhileInteracting?: boolean; maxSize?: number; shouldCancel?: () => boolean },
 ) {
   const uniqueUrls = [...new Set(imageUrls.filter(Boolean))];
   const releases = uniqueUrls.map((url) => retainPreviewTexture(url, options));
@@ -536,6 +571,13 @@ export function uploadPreviewTextureInStripes(
     }
     const context = renderer.getContext();
     const adaptiveVisibleUpload = usesVisibleRenderer && previewUploadGovernorEnabled();
+    // Retain exact stripes and the presentation gate,
+    // but do not charge a whole display frame for every sub-millisecond upload.
+    const batchVisibleStripes = usesVisibleRenderer && typeof window !== 'undefined' &&
+      !(new URLSearchParams(window.location.search).get('perfLab') === '1' &&
+        new URLSearchParams(window.location.search).get('perfResidentQuality') === '0');
+    let batchSynchronousMs = 0;
+    let presentationRequired = false;
     let uploadBudget = createTextureUploadBudget();
     const frameMonitor = adaptiveVisibleUpload ? startFrameIntervalMonitor() : undefined;
     const startedAt = performance.now();
@@ -612,10 +654,12 @@ export function uploadPreviewTextureInStripes(
             : undefined;
         void pendingStripe?.catch(() => undefined);
         markPreviewUploadStep(`${uploadPhasePrefix}-yield`);
-        if (usesVisibleRenderer) {
+        if (usesVisibleRenderer && (!batchVisibleStripes || batchSynchronousMs >= 4 || presentationRequired)) {
           // The visible context must yield through presentation because R3F
           // owns the same GL state and command stream.
           await waitForBrowserPaint();
+          batchSynchronousMs = 0;
+          presentationRequired = false;
         } else {
           // The detached renderer has independent GL state. A macrotask yield
           // lets pointer/rAF work run without adding a mandatory 16.7ms wait to
@@ -664,6 +708,7 @@ export function uploadPreviewTextureInStripes(
             stripe,
           );
           stripeSubmitMs = performance.now() - stripeStartedAt;
+          batchSynchronousMs += stripeSubmitMs;
           maximumStripeMs = Math.max(maximumStripeMs, stripeSubmitMs);
           stripeCount += 1;
           submittedSinceFlush += 1;
@@ -688,6 +733,8 @@ export function uploadPreviewTextureInStripes(
         }
         if (adaptiveVisibleUpload && frameMonitor) {
           const frameSample = frameMonitor.readAndReset();
+          presentationRequired = frameSample.sampleCount > 0 &&
+            frameSample.maximumMs > frameSample.targetMs * 1.5;
           uploadBudget = updateTextureUploadBudget(uploadBudget, {
             frameMaximumMs: frameSample.maximumMs,
             frameSampleCount: frameSample.sampleCount,

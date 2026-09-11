@@ -1,12 +1,14 @@
 import * as THREE from 'three';
 import type { Layer } from '@/types/layer';
+import { isNativeUvRepaintLayer } from '@/engine/localRepaint/uvRepaintState';
+import { compareUvLayersForComposition } from './uvLayerComposition';
 
 /**
  * Increment when a merged UV produced by an older editor can no longer be
- * trusted to match the live layer stack. Version 6 cuts unreliable projection
- * footprints; selected historical UV layers still remain authored underlays.
+ * trusted to match the live layer stack. Version 10 includes native UV repaint
+ * above projections. Historical UV assets remain authored underlays.
  */
-export const UV_MERGE_COMPOSITION_VERSION = 6;
+export const UV_MERGE_COMPOSITION_VERSION = 10;
 
 export function compositeRenderedColorMaskUnderInPlace(
   frontMask: Uint8Array,
@@ -127,12 +129,12 @@ export async function bakePbrPreviewLightingIntoUv(input: {
       const i0 = index ? index.getX(triangle * 3) : triangle * 3;
       const i1 = index ? index.getX(triangle * 3 + 1) : triangle * 3 + 1;
       const i2 = index ? index.getX(triangle * 3 + 2) : triangle * 3 + 2;
-      const x0 = uv.getX(i0) * (width - 1);
-      const y0 = (1 - uv.getY(i0)) * (height - 1);
-      const x1 = uv.getX(i1) * (width - 1);
-      const y1 = (1 - uv.getY(i1)) * (height - 1);
-      const x2 = uv.getX(i2) * (width - 1);
-      const y2 = (1 - uv.getY(i2)) * (height - 1);
+      const x0 = uv.getX(i0) * width;
+      const y0 = (1 - uv.getY(i0)) * height;
+      const x1 = uv.getX(i1) * width;
+      const y1 = (1 - uv.getY(i1)) * height;
+      const x2 = uv.getX(i2) * width;
+      const y2 = (1 - uv.getY(i2)) * height;
       const denominator = (y1 - y2) * (x0 - x2) + (x2 - x1) * (y0 - y2);
       if (Math.abs(denominator) <= 1e-8) continue;
       const minX = Math.max(0, Math.floor(Math.min(x0, x1, x2)));
@@ -209,8 +211,18 @@ export function isFlattenableUvMergeSource(
   return Boolean(
     layer.type === 'uv' &&
       layer.imageUrl &&
-      (isContentAwareUvUnderlay(layer) || layer.role === 'merged-uv'),
+      (isContentAwareUvUnderlay(layer) || layer.role === 'merged-uv' || isNativeUvRepaintLayer(layer)),
   );
+}
+
+/** Underlays go behind projection first; native repaint then covers that result
+ * bottom-to-top, exactly as the viewport's authored UV overlay stack. */
+export function compareUvMergeSources(left: Layer, right: Layer) {
+  const over = Number(isNativeUvRepaintLayer(left)) - Number(isNativeUvRepaintLayer(right));
+  if (over) return over;
+  if (isNativeUvRepaintLayer(left)) return compareUvLayersForComposition(left, right, 'bottom-to-top');
+  return Number(isContentAwareUvUnderlay(left)) - Number(isContentAwareUvUnderlay(right)) ||
+    compareUvLayersForComposition(left, right, 'top-to-bottom');
 }
 
 /**
@@ -218,19 +230,21 @@ export function isFlattenableUvMergeSource(
  * The operation is intentionally in-place so a 4K/8K merge does not allocate
  * another full-size RGBA result for every selected layer.
  */
-export function compositeRgbaUnderInPlace(
-  front: Uint8Array | Uint8ClampedArray,
+export function compositeRgbaUnderInPlace<T extends Uint8Array | Uint8ClampedArray>(
+  front: T,
   underlay: Uint8Array | Uint8ClampedArray,
   opacity = 1,
+  frontOpacity = 1,
 ) {
   if (front.length !== underlay.length || front.length % 4 !== 0) {
     throw new RangeError('RGBA buffers must have the same four-channel length.');
   }
   const layerOpacity = Math.max(0, Math.min(1, opacity));
-  if (layerOpacity <= 0) return front;
+  const sourceOpacity = Math.max(0, Math.min(1, frontOpacity));
+  if (layerOpacity <= 0 && sourceOpacity === 1) return front;
 
   for (let offset = 0; offset < front.length; offset += 4) {
-    const frontAlpha = front[offset + 3] / 255;
+    const frontAlpha = (front[offset + 3] / 255) * sourceOpacity;
     const underlayAlpha = (underlay[offset + 3] / 255) * layerOpacity;
     const visibleUnderlayAlpha = underlayAlpha * (1 - frontAlpha);
     const outputAlpha = frontAlpha + visibleUnderlayAlpha;
@@ -277,24 +291,15 @@ export function getRgbaAlphaCoverageRatio(
 
 export function getMergeUvPostprocessOptions(resolution: number) {
   const safeResolution = Math.max(1, Math.floor(resolution));
-  const topologyGapPixels = Math.min(
-    8,
-    Math.max(2, Math.ceil(safeResolution / 512)),
-  );
   return {
     // Restore the verified atlas postprocess profile. The two-pixel gutter is
     // outside model UV triangles and retains source alpha for bilinear sampling.
     uvIslandGutterPixels: Math.min(8, Math.max(2, Math.ceil(safeResolution / 512))),
-    // GPU UV rasterization can leave narrow, edge-connected cracks between
-    // adjacent high-poly triangles. Those cracks are not enclosed components,
-    // so the dedicated hole pass cannot see them. Restore a small,
-    // resolution-scaled topology-constrained grow: the bake pipeline applies
-    // half this value as the actual radius, copies straight alpha unchanged,
-    // and may only write texels touched by model UV triangles. This closes the
-    // black hairlines without crossing the real atlas gap between UV islands
-    // or hardening an Overlay transition band.
-    uvCoverageGapPixels: topologyGapPixels,
-    uvInteriorHolePixels: Math.min(3, Math.max(1, Math.ceil(safeResolution / 2048))),
+    // User-requested v8: do not infer/fill uncovered model texels during Merge.
+    // Keep the reference algorithms in code; every Merge/export consumer of
+    // this profile skips both topology growth and enclosed-hole repair.
+    uvCoverageGapPixels: 0,
+    uvInteriorHolePixels: 0,
     // Reconcile only a small geometry-paired seam band.
     uvSeamRepairPixels: Math.min(4, Math.max(2, Math.ceil(safeResolution / 1024))),
   };

@@ -2,7 +2,7 @@ import { zlibSync } from 'fflate';
 import * as THREE from 'three';
 import type { ModelExportInput } from './exportTypes';
 import { downloadBlob, getExportFilename } from './exportUtils';
-import { EXPORT_BASECOLOR_MATERIAL_NAME, prepareTexturedModelExport } from './texturedExportUtils';
+import { EXPORT_BASECOLOR_MATERIAL_NAME, prepareFbxModelExport } from './texturedExportUtils';
 
 type FbxMeshRecord = {
   geometryId: number;
@@ -868,33 +868,17 @@ function createFbxBinary(input: {
   return concatBytes(chunks);
 }
 
-async function createPngTextureData(blob: Blob) {
-  const bitmap = await createImageBitmap(blob);
-  const canvas = document.createElement('canvas');
-  canvas.width = bitmap.width;
-  canvas.height = bitmap.height;
-  const context = canvas.getContext('2d');
-  if (!context) {
-    bitmap.close();
-    return new Uint8Array(await blob.arrayBuffer());
-  }
-  context.clearRect(0, 0, canvas.width, canvas.height);
-  context.drawImage(bitmap, 0, 0);
-  bitmap.close();
-  const pngBlob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/png'));
-  return pngBlob ? new Uint8Array(await pngBlob.arrayBuffer()) : new Uint8Array(await blob.arrayBuffer());
-}
-
 export async function exportModelFbx(input: ModelExportInput) {
   // FBX importers do not consistently preserve the alpha semantics of an
   // embedded base-color PNG. In Blender, transparent and feathered UV texels
   // were interpreted against the material color and exposed the sparse bake as
   // stripes and speckles. Export the same opaque final composition used by the
   // viewport, OBJ and GLB paths so the embedded texture is self-contained.
-  const { root, textureBlob, textureFilename, averageColor } = await prepareTexturedModelExport(input);
+  const { root, textureBlob, averageColor } = await prepareFbxModelExport(input);
   const fbxFilename = getExportFilename(input.project.name, input.target, 'fbx');
-  if (textureBlob && textureFilename) {
-    const textureData = await createPngTextureData(textureBlob);
+  if (textureBlob) {
+    // The temporary merge already encoded PNG; embed its bytes directly.
+    const textureData = new Uint8Array(await textureBlob.arrayBuffer());
     const fbx = createFbxBinary({ root, textureData, averageColor });
     downloadBlob(new Blob([fbx], { type: 'application/octet-stream' }), fbxFilename);
     return;

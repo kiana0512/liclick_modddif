@@ -318,7 +318,7 @@ test('a second bounded pass advances from the previous repair result', () => {
   assert.equal(second.repairedMask[11], 0, 'second pass exceeded its bounded layer');
 });
 
-test('visible-surface completion fills a deep reachable gap in one linear pass', () => {
+test('explicit bounded local completion still stops at the requested distance', () => {
   const width = 320;
   const pixelCount = width;
   const rgba = new Uint8ClampedArray(pixelCount * 4);
@@ -329,6 +329,7 @@ test('visible-surface completion fills a deep reachable gap in one linear pass',
   writeMask.fill(255, 1);
 
   const policy = createVisibleSurfaceCompletionPolicy(width, 1);
+  policy.propagation.adaptiveGapDistance = false;
   const result = repairSurfaceTexture({
     width,
     height: 1,
@@ -339,15 +340,14 @@ test('visible-surface completion fills a deep reachable gap in one linear pass',
     ...policy.propagation,
   });
 
-  assert.equal(policy.propagation.maxDistance, pixelCount);
-  assert.equal(result.stats.repairedPixels, pixelCount - 1);
-  assert.equal(result.stats.unresolvedPixels, 0);
+  assert.equal(policy.propagation.maxDistance, 4);
+  assert.equal(result.stats.repairedPixels, 4);
+  assert.equal(result.stats.unresolvedPixels, pixelCount - 5);
   assert.equal(result.stats.globalFallbackPixels, 0);
-  assert.equal(result.repairedMask.at(-1), 255, 'the deepest hatch-visible texel stayed open');
-  assert.deepEqual(getRgb(result, pixelCount - 1), [146, 92, 43]);
+  assert.equal(result.repairedMask.at(-1), 0, 'distant color must not cover the deepest gap');
 });
 
-test('visible-surface completion never exposes hatch for a component with no local donor', () => {
+test('local completion never uses the global average for a component without a donor', () => {
   const width = 8;
   const rgba = new Uint8ClampedArray(width * 4);
   const writeMask = new Uint8Array(width);
@@ -367,13 +367,12 @@ test('visible-surface completion never exposes hatch for a component with no loc
     ...policy.propagation,
   });
 
-  assert.equal(result.stats.repairedPixels, width - 1);
-  assert.equal(result.stats.unresolvedPixels, 0);
-  assert.equal(result.stats.globalFallbackPixels, 4);
-  assert.deepEqual(result.stats.globalFallbackColor, [180, 112, 52]);
+  assert.equal(result.stats.repairedPixels, 3);
+  assert.equal(result.stats.unresolvedPixels, 4);
+  assert.equal(result.stats.globalFallbackPixels, 0);
   for (let index = 4; index < width; index += 1) {
-    assert.equal(result.repairedMask[index], 255);
-    assert.deepEqual(getRgb(result, index), [180, 112, 52]);
+    assert.equal(result.repairedMask[index], 0);
+    assert.equal(result.filledRgba[index * 4 + 3], 0);
   }
 });
 

@@ -43,4 +43,21 @@ assert.equal((viewport.match(/ignoreSourceAlpha: (?:localRepaintSource|source).i
 assert.match(viewport,/ignoreSourceAlpha: activePaintLayer.ignoreSourceAlpha/);
 assert.match(read('engine/bake/bakeProjectedLayerToTexture.ts'),/ignoreSourceAlpha: layer.ignoreSourceAlpha \?\? localRepaint/);
 assert.match(read('engine/bake/uvRasterizer.ts'),/ignoreSourceAlpha \? 1 : color\[3\] \/ 255/);
+// Both flattening entry points must retain the viewport's authored alpha rule.
+for (const path of ['engine/bake/prepareMergeProjectionLayers.ts', 'engine/export/texturedExportUtils.ts']) {
+  assert.match(read(path), /(?:createProjectionMaskedImage|maskImage)\(layer.imageUrl, layer.maskUrl,\s*\{\s*ignoreSourceAlpha: layer.ignoreSourceAlpha \?\? true/);
+}
+assert.match(read('engine/bake/mergeProjectionPreparation.ts'), /prepareMergeProjectionLayers\(input.layers\)/);
+assert.match(read('engine/projection/ResidentProjectedUvDisplay.ts'), /prepareMergeProjectionLayers\(sourceLayers/);
+const maskModule = read('engine/projection/createMaskedProjectedImage.ts');
+const maskAst = ts.createSourceFile('mask.ts', maskModule, ts.ScriptTarget.Latest, true);
+const wrapperJs = ts.transpileModule(maskAst.statements.find(node => node.name?.text === 'createProjectionMaskedImage').getText(maskAst), { compilerOptions: { module: ts.ModuleKind.CommonJS } }).outputText;
+for (const ignoreSourceAlpha of [false, true, undefined]) {
+  const modes = [], scope = {};
+  new Function('exports', 'loadImageData', 'imageDataToPngUrl', 'processMaskedProjectedImageInWorker', 'maxCutoutDimension', wrapperJs)(
+    scope, async () => color, value => value, async (_source, _mask, mode) => { modes.push(mode); return color; }, 4096,
+  );
+  await scope.createProjectionMaskedImage('source', 'mask', { ignoreSourceAlpha });
+  assert.deepEqual(modes, [ignoreSourceAlpha === false ? 'mask-only' : 'projection-alpha-only']);
+}
 console.log('Model silhouette clip: 2px outside/hole boundaries, RGB preservation, frame alignment, thin geometry, failure and projection/save/restore contracts passed.');

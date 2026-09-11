@@ -40,6 +40,7 @@ let liveMask;
 const runRestore = compile(`return (paintTool, activePaintLayer) => { ${editingFlags}\nreturn (${restoreEffect})(); };`, {
   useLayerStore: layerStore, useSceneStore: { getState: () => sceneState }, selectedObjectId: 'object',
   isEditableLocalRepaintProjectionLayer: (layer) => Boolean(layer?.camera && layer?.maskUrl),
+  isNativeUvRepaintLayer: (layer) => layer.type === 'uv' && layer.id.startsWith('local-repaint-uv-native-v1'),
   getLocalRepaintSeamMode: () => 'enhanced', hasEditableEnhancedLocalRepaintSource: () => true,
   createLocalRepaintSourceKey: (source) => source.imageUrl,
   isLocalRepaintSourceForLayer: (source, layer) => source?.projectionLayerId === layer.id,
@@ -135,8 +136,8 @@ for (let i = 0; i < 100; i++) {
   assert.equal(next.progressiveBackgroundInputs, first.progressiveBackgroundInputs);
 }
 const enabled = render(layerA.id, true);
-assert.deepEqual(enabled.activeProjectedPreviewInputs, [inputs[0]]);
-assert.deepEqual(enabled.progressiveBackgroundInputs, [inputs[1]], 'Do not change enabled compositor semantics');
+assert.deepEqual(enabled.activeProjectedPreviewInputs, []);
+assert.deepEqual(enabled.progressiveBackgroundInputs, inputs, 'Selection must leave every layer in the resident UV buffer');
 assert.notEqual(render(layerA.id, false, [...inputs]).progressiveBackgroundInputs, first.progressiveBackgroundInputs,
   'Real stack changes still invalidate material inputs');
 console.log('Repaint layer selection passed: 400 source-stable selections, 100 presentation-stable selections, 100 material-stable selections; eraser ownership, stale completion, visibility, edits, deletion and cleanup preserved.');

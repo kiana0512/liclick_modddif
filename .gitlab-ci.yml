@@ -5,6 +5,8 @@ stages:
   - deploy
 
 variables:
+  # CI-SOURCE-RETRY/1: retry transient Runner DNS/fetch failures before scripts.
+  GET_SOURCES_ATTEMPTS: '3'
   # Keep both pnpm packages and Prisma engine downloads inside the project so
   # GitLab's project-scoped cache can actually restore them on the next job.
   PNPM_STORE_DIR: '$CI_PROJECT_DIR/.pnpm-store'

@@ -107,8 +107,8 @@ const shaderSource = `
   @vertex
   fn vertexMain(@location(0) uv: vec2<f32>) -> @builtin(position) vec4<f32> {
     let pixel = vec2<f32>(
-      uv.x * max(0.0, rasterSize.width - 1.0),
-      (1.0 - uv.y) * max(0.0, rasterSize.height - 1.0)
+      uv.x * rasterSize.width,
+      (1.0 - uv.y) * rasterSize.height
     );
     let clip = vec2<f32>(
       pixel.x / rasterSize.width * 2.0 - 1.0,
@@ -192,12 +192,12 @@ function rasterizeCanvasGold(
   if (!context) throw new Error('Could not create Worker Canvas2D topology gold raster.');
   context.fillStyle = '#ffffff';
   for (let offset = 0; offset < triangles.length; offset += 6) {
-    const x0 = triangles[offset] * (width - 1);
-    const y0 = (1 - triangles[offset + 1]) * (height - 1);
-    const x1 = triangles[offset + 2] * (width - 1);
-    const y1 = (1 - triangles[offset + 3]) * (height - 1);
-    const x2 = triangles[offset + 4] * (width - 1);
-    const y2 = (1 - triangles[offset + 5]) * (height - 1);
+    const x0 = triangles[offset] * width;
+    const y0 = (1 - triangles[offset + 1]) * height;
+    const x1 = triangles[offset + 2] * width;
+    const y1 = (1 - triangles[offset + 3]) * height;
+    const x2 = triangles[offset + 4] * width;
+    const y2 = (1 - triangles[offset + 5]) * height;
     if (![x0, y0, x1, y1, x2, y2].every(Number.isFinite)) continue;
     context.beginPath();
     context.moveTo(x0, y0);

@@ -20,7 +20,7 @@ const finalGate = scene.slice(scene.indexOf('      const presentsProjectedMateri
   scene.indexOf('      if (lastProjectedTransformRef.current)', scene.indexOf('      const presentsProjectedMaterial = meshes.some')));
 const residentGate = scene.slice(scene.indexOf('    let hasResidentProjectedMaterial = false;'),
   scene.indexOf('    let cancelled = false;', scene.indexOf('    let hasResidentProjectedMaterial = false;')));
-const runFinal = compile(`return (meshes, visible, showWhiteMembrane = false) => {
+const runFinal = compile(`return (meshes, visible, showWhiteMembrane = false, progressiveBaseOnly = false) => {
   let revealed = false;
   const authoritativeDisplayLayers = [{visible}];
   const committedProjectedMaterialStructureRef = {current:''};
@@ -33,6 +33,7 @@ const runResident = compile(`return (group, committed) => {
   let revealed = false;
   const importedModel = {group};
   const showWhiteMembrane = false;
+  const canUseProgressivePreviewBase = false;
   const committedProjectedMaterialStructureRef = {current:committed};
   const projectedMaterialStructureKey = 'same-structure';
   const revealInitialMaterialPresentation = () => { revealed = true; };
@@ -64,6 +65,7 @@ for (const name of ['LiclickProjectedLayerStackWarmup:1', 'LiclickProjectedLayer
 }
 const bootstrap = {material:{name:'bootstrap', userData:{liclickExactProjectedBootstrap:true}}};
 assert.equal(runFinal([bootstrap], true).revealed, true, 'Exact bootstrap remains eligible');
-assert.equal((scene.match(/isResidentProjectedMaterial\(material\)/g) ?? []).length, 5,
+const retainedMaterials = read('engine/projection/retainedProjectedMaterials.ts');
+assert.equal(((scene + retainedMaterials).match(/isResidentProjectedMaterial\(material\)/g) ?? []).length, 5,
   'Reveal, fast reuse, UV bootstrap and retained-material paths share one identity contract');
 console.log('Projected material reveal passed: single/stack, resident reuse, material arrays, stale structure, bootstrap and placeholder rejection.');

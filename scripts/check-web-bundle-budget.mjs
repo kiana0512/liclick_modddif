@@ -20,7 +20,12 @@ const budgets = [
   // guard + authored-before-clay sequencing measures 498,829 bytes. Allow
   // 512 bytes here; retain the existing 3,160,000-byte total and other limits.
   { label: 'editor route', prefix: 'EditorPage-', maxBytes: 499_024 },
-  { label: 'high bake snapshot', prefix: 'bakeHighSnapshot-', maxBytes: 700_000 },
+  // CHG-20260910-UV-REPAINT: lazy UV engine/session, shared visibility and
+  // viewport adapters measured ~701,300 bytes before integration. The merged
+  // resident graph measures 702,997; allow 3,500 bytes including release metadata.
+  // UV coexistence + upstream resident-material/warmup integration: measured
+  // 703,681 bytes. Allocate 500 bytes; keep all other per-chunk limits.
+  { label: 'high bake snapshot', prefix: 'bakeHighSnapshot-', maxBytes: 704_000 },
   {
     label: 'shared 3D pipeline',
     // Rollup chooses the facade name from the shared module graph. Adding the
@@ -48,7 +53,36 @@ const budgets = [
 // measured 3,153,807 bytes, mostly loaded only on generation. Allocate 4,000
 // bytes for this feature; image quality and all other chunk budgets unchanged.
 // Combined feature allowance; final integrated release must be measured again.
-const maxTotalJavaScriptBytes = 3_160_000;
+// CHG-20260910-LOCAL-BOUNDARY-REPAIR: shared main/Worker interpolation adds
+// 2,662 bytes with matching Cloud settings (3,159,715 -> 3,162,377).
+// Allow 3,000 bytes including release metadata. Lazy compatibility loading
+// reduces the editor to 486,072 bytes; all individual chunk/quality gates stay.
+// CHG-20260910-ADAPTIVE-GAP-DISTANCE: same Cloud configuration grows 876
+// bytes (3,162,508 -> 3,163,384) for adaptive CPU/Worker traversal and partial
+// result feedback. Allow 1,000 bytes; individual chunks/quality gates unchanged.
+// CHG-20260910-UV-REPAINT: full-resolution UV painting is a new capability.
+// Matching Cloud builds: 3,163,590 -> 3,185,232 bytes (+21,642). The engine
+// and commit coordinator are lazy; grant 22,000 bytes, keeping every other
+// chunk limit, regression contract and output-resolution gate unchanged.
+// CHG-20260910-UV-RESIDENT-QUALITY: exact resident GPU quality kernel,
+// preparation and verified local derived cache measure 3,189,943 bytes
+// (upstream 3,163,384). Allocate 27,000 bytes for this feature, including
+// build metadata; retain all individual chunk and pixel/QA gates.
+// CHG-20260910-UV-DEFAULT-RESIDENT: strict routing and bounded GPU texture
+// ownership handoff add 2,178 bytes (3,189,943 -> 3,192,121). Allow 3,000
+// bytes for this feature and metadata; keep every per-chunk/quality gate.
+// PERF-UV-SOURCE-PREPARE-001 v1.2.0: exact bitmap source handoff, selection
+// preparation keys, background PNG decode and exact readback Worker handoff
+// measure ~3.1 KiB over 3,193,980. Allow 4,000 bytes for these changes;
+// all per-chunk/QA gates remain.
+// Integration with a2eef53: 3,219,936 bytes including the live-UV background
+// snapshot bridge. Add 1,000 bytes to combined allowances for this adapter and
+// release metadata; every pixel/QA gate and other chunk limit stays unchanged.
+// CHG-20260911-UV-REPAINT-COEXISTENCE integrated with master 6fc08a1:
+// immutable Cloud/performance-lab build 3,221,585 vs last A100 3,220,941
+// (+644 bytes). Allocate 1,000 bytes including metadata, not an open-ended
+// exemption. Shader/output resolution, browser regressions and QA stay enabled.
+const maxTotalJavaScriptBytes = 3_222_000;
 
 let entries;
 try {
@@ -87,6 +121,7 @@ for (const budget of budgets) {
     );
     continue;
   }
+  console.log(`${budget.label}: ${matches[0].bytes} / ${budget.maxBytes} bytes; remaining ${budget.maxBytes - matches[0].bytes} (${matches[0].name})`);
   if (matches[0].bytes > budget.maxBytes) {
     failures.push(
       `${budget.label}: ${matches[0].bytes} bytes exceeds ${budget.maxBytes} (${matches[0].name})`,
@@ -95,6 +130,7 @@ for (const budget of budgets) {
 }
 
 const totalJavaScriptBytes = scripts.reduce((total, script) => total + script.bytes, 0);
+console.log(`total JavaScript: ${totalJavaScriptBytes} / ${maxTotalJavaScriptBytes} bytes; remaining ${maxTotalJavaScriptBytes - totalJavaScriptBytes}`);
 if (totalJavaScriptBytes > maxTotalJavaScriptBytes) {
   failures.push(
     `total JavaScript: ${totalJavaScriptBytes} bytes exceeds ${maxTotalJavaScriptBytes}`,

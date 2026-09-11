@@ -1,4 +1,5 @@
 import type { BakedTexture } from '@/engine/bake/uvBakeTypes';
+import { isNativeUvRepaintLayer } from '@/engine/localRepaint/uvRepaintState';
 import { isLocalRepaintProjectedLayer } from '@/engine/bake/projectedOverlayComposition';
 import {
   isContentAwareUvUnderlay,
@@ -110,7 +111,7 @@ function findVisibleContentAwareUvLayerIdsForBake(
       (layer) =>
         layer.visible &&
         Boolean(layer.imageUrl) &&
-        isContentAwareUvUnderlay(layer) &&
+        (isContentAwareUvUnderlay(layer) || isNativeUvRepaintLayer(layer)) &&
         (!layer.objectId || layer.objectId === objectId),
     )
     .map((layer) => layer.id);

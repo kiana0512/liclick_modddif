@@ -11,6 +11,7 @@ import { getProjectApiBase } from '@/platform/projectApiBase';
 import { isCloudBuild } from '@/platform/runtimeCapabilities';
 import { createId } from '@/utils/id';
 import { getWorkspaceApiBase } from './workspaceApiBase';
+import { persistRuntimeLayerAssets } from './runtimeLayerAssetPersistence';
 
 const workspaceApiBase = getProjectApiBase();
 const generationWorkspaceApiBase = getWorkspaceApiBase(import.meta.env.VITE_LICLICK_WORKSPACE_API);
@@ -374,6 +375,9 @@ export async function moveProject(
 }
 
 async function saveProjectDirect(project: Project) {
+  project = await persistRuntimeLayerAssets(project, async (blob, filename) =>
+    (await saveBlobAsset({ projectId: project.id, category: 'layers', blob, filename })).asset.url,
+  );
   if (isCloudBuild) {
     const document = {
       ...project,

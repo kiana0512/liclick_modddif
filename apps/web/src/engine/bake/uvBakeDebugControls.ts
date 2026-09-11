@@ -11,6 +11,12 @@ const VERBOSE_KEY = 'liclick-debug-uv-bake';
 const COVERAGE_VALIDATION_KEY = 'liclick-debug-gpu-coverage-validation';
 const GPU_PROJECTED_IMAGE_UV_FLIP_Y_KEY = 'liclick-debug-gpu-projected-image-uv-flip-y';
 
+/** Legacy implementations are available only to the explicit diagnostic lab. */
+export function isLegacyUvBakeDiagnosticEnabled() {
+  return typeof window !== 'undefined' &&
+    new URLSearchParams(window.location.search).get('perfLab') === '1';
+}
+
 function getStorage() {
   try {
     return window.localStorage;
@@ -32,6 +38,7 @@ function clearExpiredMethod(storage: Storage) {
 }
 
 export function getDebugUvBakeMethod(fallback: UvBakeDebugMethod = DEFAULT_UV_BAKE_METHOD): UvBakeDebugMethod {
+  if (!isLegacyUvBakeDiagnosticEnabled()) return 'gpu';
   const storage = getStorage();
   if (!storage) return fallback;
   clearExpiredMethod(storage);

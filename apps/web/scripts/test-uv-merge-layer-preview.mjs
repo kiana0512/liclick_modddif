@@ -15,8 +15,13 @@ const layersPanelSource = readFileSync(
 
 assert.match(
   sceneRootSource,
-  /const visibleUvContentChanged = objectUvLayers\.some[\s\S]*?previousLayer\.imageUrl !== layer\.imageUrl[\s\S]*?if \(\s*reopenedUvLayer \|\|\s*reopenedProjectedLayer \|\|\s*visibleUvContentChanged \|\|\s*visibleProjectedContentChanged\s*\)[\s\S]*?setUvVisibilityRenderRevision/,
+  /const visibleUvContentChanged = objectUvLayers\.some[\s\S]*?previousLayer\.imageUrl !== layer\.imageUrl[\s\S]*?if \(\s*reopenedUvLayer \|\|[\s\S]*?reopenedProjectedLayer \|\|\s*visibleUvContentChanged \|\|\s*visibleProjectedContentChanged\s*\)[\s\S]*?setUvVisibilityRenderRevision/,
   'Publishing a merged UV must force one material reconciliation without a page refresh.',
+);
+assert.match(
+  sceneRootSource,
+  /objectUvLayers\.some\(\(layer\) =>\s*\(hasLowerRepaintUv \|\| isRenderedLocalRepaintLayer\(layer\)\) &&\s*previousLayerVisibilityById\.get\(layer\.id\) !== layer\.visible/,
+  'Mixed UV composites and repaint sampler reassignment must reconcile on both eye directions.',
 );
 
 assert.match(

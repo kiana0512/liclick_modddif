@@ -79,7 +79,7 @@ async function check(mode = 'success', coverage = true) {
     }
     return 'encoded-authored-2048';
   };
-  const run = new Function('THREE', 'renderSceneToPngUrl', `${compiled}\nreturn captureFlatTarget;`)(THREE, render);
+  const run = new Function('THREE', 'renderSceneToPngUrl', 'waitForResidentUvPresentation', `${compiled}\nreturn captureFlatTarget;`)(THREE, render, async () => {});
   const task = run({ scene, objectId: 'target', resolution: 2048 }, { width: 2048, height: 2048 }, { forceEmptyProjectionHatch: coverage });
   if (mode === 'replacement') await assert.rejects(task, /模型材质在截图期间发生变化/);
   else if (mode === 'render-error') await assert.rejects(task, /controlled render failure/);

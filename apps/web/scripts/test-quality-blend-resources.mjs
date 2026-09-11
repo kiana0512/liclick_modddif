@@ -4,9 +4,17 @@ import ts from 'typescript';
 import { createHash } from 'node:crypto';
 const current = fs.readFileSync(new URL('../src/workers/qualityBlend.worker.ts', import.meta.url), 'utf8');
 const frozen = fs.readFileSync(new URL('./fixtures/quality-blend-0ee7b0b.ts', import.meta.url), 'utf8');
+const pixelSource=fs.readFileSync(new URL('../src/engine/bake/qualityBlendCpuPixel.ts', import.meta.url),'utf8');
+const pixelCode=ts.transpileModule(pixelSource.replace('export function','function'),{compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText;
+const sharedResolve=new Function(pixelCode+';return resolvePixelCpu;')();
+const overlaySource = fs.readFileSync(new URL('../src/engine/bake/projectedOverlayComposition.ts', import.meta.url), 'utf8');
+const overlayCode = ts.transpileModule(overlaySource.slice(overlaySource.indexOf('export function getProjectionOverlayAlpha')).replace('export function', 'function'), {
+  compilerOptions: { target: ts.ScriptTarget.ES2022 },
+}).outputText;
+const sharedOverlayAlpha = new Function(`${overlayCode}; return getProjectionOverlayAlpha;`)();
 function load(source, device) {
   const code = ts.transpileModule(source.slice(source.indexOf('const TOP_K')), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
-  return new Function('self', `${code}; return {createTopK, resolveCpu, resolveGpu, shader};`)({ navigator: { gpu: device ? { requestAdapter: async () => ({ requestDevice: async () => device }) } : undefined } });
+  return new Function('resolvePixelCpu','getProjectionOverlayAlpha','self','yieldWorkerTask', `${code}; return {createTopK, resolveCpu, resolveGpu, applyOverlays, shader, run};`)(sharedResolve,sharedOverlayAlpha,{ navigator: { gpu: device ? { requestAdapter: async () => ({ requestDevice: async () => device }) } : undefined } },()=>Promise.resolve());
 }
 const old = load(frozen), next = load(current);
 assert.equal(next.shader, old.shader, 'production shader is unchanged');
@@ -24,6 +32,50 @@ for (let test = 0; test < 120; test++) {
   }
   for (const alpha of [false, true]) assert.deepEqual(await next.resolveCpu(top, alpha), await old.resolveCpu(top, alpha));
 }
+for (const mode of ['literal', 'feathered']) for (const renderedColor of [false, true]) {
+  const count = 4096, color = new Uint8ClampedArray(count * 4), quality = new Float32Array(count);
+  const base = new Uint8ClampedArray(count * 4), mask = new Uint8Array(count), coverage = new Uint8Array(count);
+  for (let i = 0; i < count; i++) {
+    color.set(i < 2048 ? [83, 171, 23, 157] : [random() % 256, random() % 256, random() % 256, random() % 256], i * 4);
+    base.set(i < 2048 ? [103, 93, 19, 139] : [random() % 256, random() % 256, random() % 256, random() % 256], i * 4);
+    quality[i] = i < 2048 ? .11 : random() / 0xffffffff;
+    mask[i] = i < 2048 ? 51 : random() % 256;
+    coverage[i] = i % 2;
+  }
+  const overlays = [{ color: color.buffer, quality: quality.buffer, overlayMode: mode, renderedColor }];
+  const oldBytes = base.slice(), newBytes = base.slice(), oldMask = mask.slice(), newMask = mask.slice();
+  const oldCoverage = coverage.slice(), newCoverage = coverage.slice();
+  assert.equal(await old.applyOverlays(oldBytes, oldCoverage, oldMask, overlays),
+    await next.applyOverlays(newBytes, newCoverage, newMask, overlays));
+  assert.deepEqual(newBytes, oldBytes);
+  assert.deepEqual(newMask, oldMask);
+  assert.deepEqual(newCoverage, oldCoverage);
+}
+// Exhaust all source byte/alpha pairs on transparent and opaque destinations.
+// Mixed overlay modes, rendered masks and repeated pixels must retain the
+// frozen implementation's bytes and coverage, including feather thresholds.
+for (const mode of ['literal', 'feathered']) for (const renderedColor of [false, true]) {
+  const count = 256 * 256 * 2;
+  const color = new Uint8ClampedArray(count * 4), base = color.slice();
+  const quality = new Float32Array(count), mask = new Uint8Array(count);
+  const coverage = new Uint8Array(count);
+  for (let i = 0; i < count; i++) {
+    const value = i & 255, alpha = (i >>> 8) & 255;
+    color.set([value, 255 - value, (value * 17) & 255, alpha], i * 4);
+    base.set([31, 127, 251, i < 65536 ? 0 : 255], i * 4);
+    quality[i] = [0, .0001, .02, .11, .5, 1][i % 6];
+    mask[i] = value;
+    coverage[i] = i % 2;
+  }
+  const overlays = [{ color: color.buffer, quality: quality.buffer, overlayMode: mode, renderedColor }];
+  const a = base.slice(), b = base.slice(), am = mask.slice(), bm = mask.slice();
+  const ac = coverage.slice(), bc = coverage.slice();
+  assert.equal(await next.applyOverlays(b, bc, bm, overlays), await old.applyOverlays(a, ac, am, overlays));
+  assert.deepEqual(b, a, `${mode}/${renderedColor}: identity RGB and fractional alpha`);
+  assert.deepEqual(bm, am, 'rendered-color coverage remains exact');
+  assert.deepEqual(bc, ac, 'coverage tags remain exact');
+}
+
 function mockDevice(failAt = 0) {
   const buffers = [], trace = [];
   let group, copy;
@@ -72,3 +124,11 @@ const failed = mockDevice(3);
 await assert.rejects(load(current, failed.device).resolveGpu(next.createTopK(10), false), /allocation failure/);
 assert(failed.buffers.every(x => x.destroyed), 'partial allocation is released');
 console.log('Quality blend: 240 CPU parity cases, full/partial GPU tile byte parity and resource lifetime passed.');
+{
+  const request={resolution:16,preserveCoverageConfidenceAlpha:true,forceCpuOutput:true,verify:false,interactive:false,overlays:[],
+    layers:[{color:new Uint8ClampedArray(16*16*4).fill(155).buffer,quality:new Float32Array(16*16).fill(.7).buffer}]};
+  const former=mockDevice(),candidate=mockDevice();
+  const a=await load(frozen,former.device).run(request),b=await load(current,candidate.device).run(request);
+  assert.deepEqual(b.output,a.output);assert.deepEqual(b.coverage,a.coverage);
+  assert(former.buffers.length>0);assert.equal(candidate.buffers.length,0,'CPU reference must not dispatch an unused second GPU resolve');
+}

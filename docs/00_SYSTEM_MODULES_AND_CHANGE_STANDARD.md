@@ -1,8 +1,8 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
-> 文档版本：`2.20.2`
+> 文档版本：`2.20.33`
 >
-> 生效日期：`2026-09-10`
+> 生效日期：`2026-09-11`
 >
 > 代码盘点基线：`9e69980 + 单视图成功结果自动投影恢复`
 >
@@ -12,11 +12,99 @@
 
 ## 1. 文档地位与强制边界
 
+2026-09-11 master/release 集成（M15，CLOUD-DEPLOYMENT v1.0.0）：本次发布合入 master c0bef7f，保留 release d58e414 的生产资源、Nginx、Ceph 完整性校验及对象存储配置。仅维护文档发生冲突，双方记录均保留；业务算法和缓存版本沿用对应变更卡，无新增 Schema 或资产迁移。最终 release 提交须通过正式包体检查及 CI，部署结果以上线 SHA 与健康检查为准。失败时将 server/web/db-push 一同恢复至 d58e414 镜像，保留数据库、工程、对象资产和 PVC。
+
 2026-09-10 master/release 集成（M15）：合入已通过 CI #629195 的 master 71216521；保留 release b226dfb 的 Ceph 校验、生产对象存储、数据库与部署配置。仅维护文档存在合并冲突，两侧记录均保留。算法版本与缓存版本沿用 master 各变更卡，无新增 Schema 或资产迁移；发布失败可恢复 b226dfb 对应镜像，保留现有工程与资产。实际发布结果以本次 release 流水线及线上版本核验为准。
 
 2026-09-08 master/release 集成（M15）：合入 master a112655，包括 b374a9f/a0093a3 橡皮材质驻留交接、a7fa3b9 GPT2 提示词和 a112655 远端多视图逐视角生成；完整保留 release f3870f3 的 Ceph 流式 SHA-256 校验、内网 RGW 配置和生产部署基础设施。仅维护文档产生合并冲突，业务代码保持各分支已提交实现。算法版本沿用各变更卡，无新增 Schema 或数据迁移；回退整批镜像时保留 Ceph 修复与生产配置，已有工程/资产不删除。集成本地验证：88 项 Web/14 项 Server 回归、全仓 typecheck、lint（0 errors，15 条既有 warnings）、6 项部署策略、contracts/边界检查与完整 Cloud 构建通过；80 chunks / 3,133,800 bytes，通过原包体门禁，OAuth/资产/重启部署模拟通过。Ceph 前一批 f3870f3 的 CI #627368（含 deploy）已全部成功；本次新增功能的生产部署和真实项目验收以新流水线与维护者实测为准。
 
 变更卡 `CHG-20260908-CEPH-SHA256-READBACK`：M14，协作 M02/M15，`ALG-ASSET-VERIFY-001` v1.1.0。基于 release de1507c 保留效率组内网 RGW/公开浏览器地址分离。缺少附加 checksum 时流式读回验证实际 SHA-256；每进程最多 4 项执行、16 项等待，60 秒预算含排队/HEAD/GET，同用户同资产完成请求合并；前端完成接口等待上限 75 秒，校验完立即返回。完整性失败仍保持 pending，不放宽 verified、ownership、Revision CAS 或 Command 幂等性。线协议 v1/Schema 不变，无迁移；回退会恢复旧 Ceph 拒绝，但保留资产数据。真实 Ceph 与生产体验待验收，详见对应变更卡。
+2026-09-11 M07：`UV-RASTER-CACHE-IDENTITY/2` 将逐层 GPU 缓存与外层合成签名统一到属性/底层数组身份、交错布局及上传版本，补齐 drawRange；缓存复制/保留以生命周期 revision 防止 context loss 后复活。内置冻结回归复现旧核更换同版本 UV 后 524288 字节错误，新核零差异。像素算法、分辨率、QA、持久格式不变，无资产迁移。收尾验证、未完成性能项与回滚见 [变更卡](changes/CHG-20260911-UV-CACHE-IDENTITY.md)。
+
+2026-09-11 M07/M09：`UV-QUALITY-R8/1` 将偶数尺寸 WebGL2 私有权重目标改为 R8，GPU 累积、读回和设备校验同时支持 R/alpha 两种布局；精度、像素、Top-K、QA、深灰斜线与持久格式不变。4K 逐层缓存名义容量 128→80MiB，固定 256MiB 预算多保留一层；六组冻结对照及连续切换 hash 完全相同，尚无显著端到端加速。详见 [变更卡](changes/CHG-20260911-UV-QUALITY-R8.md)。
+
+2026-09-11 M08：`ALG-LR-UV-PAINT` v1.1.3 将同一笔刷跨多个瓦片的重复模型绘制合成一次；先捕获全部首次触及瓦片的撤销像素，仅在原触及瓦片写回。完整分辨率、可见性/共享 UV/羽化/擦除 shader、保存与导出协议不变。4K 32 万面冻结对照四阶段零差异，合成测试模型绘制 409→17 次，最大帧间隔约 100–184→17ms；不是原工程 FPS 保证。审计、验证、限制和回滚见 [变更卡](changes/CHG-20260911-UV-BRUSH-RASTER-BATCH.md)。
+
+2026-09-11 M07/M08/M11：合并协议 v10 / final-v3 将原生 UV 重绘纳入合并与 Bake 增量，先保留投影底层，再按作者顺序 source-over 重绘；GPU/CPU/Worker 同步 opacity，等待最新笔画与冻结资产。历史资产、深灰斜线、QA 和持久化协议不改。验证与回滚见 [变更卡](changes/CHG-20260911-NATIVE-UV-MERGE.md)。
+
+2026-09-11 M07，协作 M06/M04/M15：`UV-READBACK-WORKER-BOOTSTRAP/1` 将无外部依赖的读回转换 Worker 随页面内联，确认 ready 后才转移像素；启动失败最多重试一次，转换失败不重放已转移数据。请求发送异常清理、会话隔离和 messageerror 处理避免悬挂及旧 Worker 事件破坏新会话。RGBA/coverage/quality、GPU/CPU/shader、深灰斜线、QA、分辨率、导出和持久化契约不变，无 Schema/资产迁移。未取得用户原始 Worker 的底层错误日志，不能将资源 404 断言为唯一根因；故障注入、真实工程与回滚见 [Worker 恢复变更卡](changes/CHG-20260911-UV-READBACK-WORKER-RECOVERY.md)。
+
+2026-09-11 M07，协作 M06/M09：`PERF-UV-SOURCE-PREPARE-001` v1.4.0 对静态、最多两个来源且输出不超过 4K 的投影栈，最多提前准备两层，与当前 GPU 工作重叠；其他栈保持一个槽，live 仍在消费时同步快照。保持原层顺序、完整像素、分辨率、QA、深灰斜线和缓存预算；额外一个解码层的输出上限为 128 MiB，浏览器解码 scratch 属瞬时开销，不宣称内存总峰值不变。持久化/导出及 Schema 不变，无资产迁移。对照、实测、限制与回滚见 [状态同步变更卡](changes/CHG-20260911-UV-STATE-SYNC.md)。
+
+2026-09-11 M07，协作 M06/M09：`UV-OVERLAY-IDENTITY/1` 对底色贡献为零的 overlay 直接保留来源 RGB 字节；`UV-RASTER-SPECIALIZATION/1` 将内部权重光栅的无用 RGB 运算和权重为零的捕获法线比较移除，按 shader defines 保留编译程序。完整颜色/alpha/Top-K、半透明混合、深灰斜线、分辨率、QA 和持久化/导出契约保持；无资产/Schema 迁移。冻结对照与 121 项回归通过，原工程新组合仍约 1.4–2.1 秒，尚未达到即时更新。证据及回滚见 [状态同步变更卡](changes/CHG-20260911-UV-STATE-SYNC.md)。
+
+2026-09-11 M15：`CI-SOURCE-RETRY/1` 将 Runner 拉取源码的尝试上限设为 3。流水线 630025 的 build 在取源码阶段因 DNS 解析失败退出，尚未执行构建/包体检查；本改动仅容忍临时取源码失败，不掩盖持续网络故障，不重复部署脚本、不放宽质量/包体门禁。无运行时算法、Schema 或资产变化；诊断、验证与回滚见 [变更卡](changes/CHG-20260911-CI-SOURCE-RETRY.md)。
+
+2026-09-11 M12，协作 M08/M05：`RUNTIME-LAYER-ASSETS/1.0.0` 将临时图层资产持久化收敛到公共工程保存入口；等待 UV 笔画读回、冻结 PNG，上传成功后才提交 Command/CAS，隐藏层同样保存，不修改活动编辑的 live 绑定。服务端拒绝 UV imageUrl 的 live/blob 地址，不能覆盖已有正式 RGBA，也不能以旧贴图掩盖未保存笔画。原生 UV 重绘预览直接消费 RGBA，不要求旧投影蒙版。GPU/CPU/Worker/shader 绘制与合成、分辨率、导出像素及 Project Schema 不变；历史坏引用不自动覆盖，恢复需核验旧 revision/资产后另行授权。测试、迁移和回滚见 [变更卡](changes/CHG-20260911-UV-REPAINT-PERSISTENCE.md)。本次仅本地修复，未推送或部署。
+
+发布范围：经用户授权同步 master/A100，保留 master 的五项状态同步、接缝索引及采样 Worker 优化；最终合并提交须重新通过正式发布门禁。下方本地修复记录为发布前历史状态，不代表已完成部署；不自动修复或覆盖真实工程。
+
+2026-09-11 M07/M09，协作 M06：`PERF-UV-SOURCE-PREPARE-001` v1.3.0 让无需缩放的静态 PNG 的 CPU 像素消费者复用已验证的软件 Canvas Worker 解码；直接转移完整 RGBA，减少主线程画布读取和等帧。原尺寸/PNG header 门禁、JPEG/缩放/live 兼容路径及 192 MiB 缓存不变。GPU/shader、蒙版/Top-K/深灰斜线、QA、导出和持久化语义不变，无 Schema/资产迁移。4K 冻结解码对照零差异，原工程蒙版准备约 0.8→0.47–0.49 秒；完整组合仍约 3.9 秒。验证与回滚见 [状态同步变更卡](changes/CHG-20260911-UV-STATE-SYNC.md)。
+
+2026-09-11 M07，协作 M06/M09：`UV-SEAM-REPAIR-PLAN/1.3` 对量化位置用数字哈希选桶，再比较完整坐标，避免每个顶点创建位置字符串；碰撞不合并不同位置，保留量化、首次 ID 与 donor 顺序。CPU/Worker/GPU/shader 像素、持久化、导出及深灰斜线不改，无 Schema/资产迁移。冻结核、哈希碰撞/大坐标及真实内置工程验收见 [状态同步变更卡](changes/CHG-20260911-UV-STATE-SYNC.md)；首次接缝约 0.75 秒，整次转换仍未达到即时要求。
+
+2026-09-11 M07/M06/M09：`PROJECTED-MASK-WORKER-BOOTSTRAP/1` 将双线性采样和 alpha 蒙版纯计算独立成模块，Worker 不再导入图像 I/O、项目状态及抠图工具。原入口保留重导出，CPU/Worker 共用相同像素公式；GPU/shader、Top-K、深灰斜线、分辨率、QA、持久化和导出语义不改，无资产/Schema 迁移。Worker 产物约 16.6→2.4 KB；仅声明依赖和包体缩减，不把它当作完整转换加速的证据。验证与回滚见 [状态同步变更卡](changes/CHG-20260911-UV-STATE-SYNC.md)。
+
+2026-09-11 M07，协作 M06/M09：`UV-SEAM-REPAIR-PLAN/1.2` 将相同量化位置映射到稠密整数 ID，以有安全整数上界的配对键代替逐边字符串；超界保留旧字符串路径。共享内边只更新最终记录，保留首 UV 键顺序、最后记录与 donor 顺序。冻结核 RGBA/coverage/count、非流形边、精度边界及真实内置工程验证通过，首次接缝约 1.03→0.88 秒；不是完整转换的即时保证。GPU/CPU/Worker 像素、QA、深灰斜线、分辨率、持久化/导出均不变，无格式迁移；细节见 [状态同步变更卡](changes/CHG-20260911-UV-STATE-SYNC.md)。
+
+2026-09-11 M06/M07/M09：`UV-DISPLAY-DERIVED-CACHE/1.1` 在实际呈现确认后保留当前压缩 UV；F5 恢复的校验结果重新进入有界内存缓存，后台压缩忙时只排队最新一个完整结果，磁盘仍最多两个快照。`UV-TOPOLOGY-LOOKAHEAD/1` 将原几何拓扑准备与来源解码重叠；`UV-POSTPROCESS-CANCEL/1` 在接缝/gutter 让出前后终止过期任务；`UV-SEAM-REPAIR-PLAN/1.1` 对相同索引端点直接确认 UV 相等，其他情况保持原量化及顺序。原像素、Top-K、深灰斜线、分辨率、QA、持久资产/Command/CAS/ownership 和导出不改，无资产或磁盘格式迁移。实际内置浏览器 F5 约 6.19→2.64 秒，新组合仍为秒级，不宣称完成即时更新；审计、容量、验证和回滚见 [状态同步变更卡](changes/CHG-20260911-UV-STATE-SYNC.md)。
+
+2026-09-11 M06/M07/M09：按用户最新授权，将普通常驻 UV 的整工程 CPU 对照移入发布/回归验收；运行时采用 `UV-DEVICE-CALIBRATION/1.0.0`，在当前 WebGL context 上以 256²、6 层输入覆盖质量/alpha 字节、Top-K 和舍入，两个 alpha 模式独立校验，失败阻止发布，context loss 后重新校验。`perfQualityGpuAb=1` 仍执行完整工程对照，稀疏 CPU 舍入修正保留；不是信任跨设备持久批准。`UV-QUALITY-READBACK-PACK/1.0.0` 将校验质量 alpha 原字节四合一传输，不降分辨率；CPU 对照不再启动不会采用的第二遍 WebGPU 求解。`PROJECTED-MASK-FOOTPRINT/1.0.0` 只跳过已证明为零的蒙版双线性范围外像素，原采样舍入/透明 RGB 保留。`UV-DISPLAY-BUFFER/1.1.0` 把可见修补底层用显式合并相同规则纳入最终 RGBA，派生 key purpose 升为 resident-uv-display-2，避免显示阶段的额外 alpha 混合白边；深灰斜线 shader 不改。Worker 空闲让出取消零定时器钳制，真实交互暂停保留。完整 GPU/CPU/Worker/Shader/持久化/导出审计、实测与未完成项见 [变更卡](changes/CHG-20260911-RESIDENT-UV-DISPLAY.md)。
+
+2026-09-11 M09/M07/M06：`ALG-UV-008` v2.0.3 在独立烘焙 renderer 内以最多两条 8 MiB 读回重叠 GPU 等待，可见 renderer 保留串行呈现边界；错误先排空在途读取再释放目标。`UV-TOPOLOGY-SOURCE-CACHE/1.1.0` 按原始 UV/index 字节校验单个有界快照，未变化不重复展开三角形，实际编辑仍使页内和 Worker 缓存同时失效；首次展开按 4ms 预算让出，不逐固定顶点数强制等定时器。CPU/GPU/Worker/shader 像素、Top-K、完整分辨率、QA、导出与持久资产不改，无 Schema 或资产迁移；回滚仅恢复读回/准备调度。实测及仍未达到即时更新的限制见 [常驻 UV 显示变更卡](changes/CHG-20260911-RESIDENT-UV-DISPLAY.md)。
+
+2026-09-11 M07/M06/M09/M11：`UV-PIXEL-SPACE/1.0.0` 对齐 GPU 投影与补边/接缝坐标。UV 映射到完整像素边界范围，不能按 resolution−1 缩小；拓扑 CPU / Worker / WebGPU、CPU 诊断光栅及 PBR 法线烘焙同步，接缝用 floor 定位包含 texel。Merge / bake protocol 9、会话 v13、persistent-4；不降低分辨率、不恢复自动补洞、不重写历史资产，原 QA 保留。实际工程及边界回归、迁移/回滚见 [变更卡](changes/CHG-20260911-RESIDENT-UV-DISPLAY.md)。
+
+2026-09-11 M06/M07/M09：`UV-DISPLAY-DERIVED-CACHE/1` 为常驻 UV 增加浏览器刷新恢复的无损派生缓存。按账号/工程/对象、实际模型与来源字节、参数、分辨率和版本校验，保存 RGBA 与 rendered-color mask；损坏或不匹配重新计算。它不替代 Cloud verified assets 或改变 Command/CAS/ownership，不表示逐层贡献持久化已经完成。显隐验收必须测量点击到模型实际绑定新 UV 的时间，并对照正确合成像素；已有状态命中约 30ms 不能代表新组合即时更新。格式、容量、回滚及未完成项见 [变更卡](changes/CHG-20260911-RESIDENT-UV-DISPLAY.md)。
+
+2026-09-11 M06，协作 M03/M07/M08：`UV-DISPLAY-BUFFER/1.0.0`。投影只作为计算输入，正常视口常驻全分辨率 UV；选择图层和相机交互不重算投影，显隐/内容变化通过现有常驻 Top-K、校正与后处理生成新 UV，上传完成后整体切换。等待时保留上一完整 UV，不叠加新投影作为过渡。派生 UV 和逐层光栅有界缓存，不能为了毫秒指标降低分辨率或跳过 QA。GPU 校正内部标记 `RESIDENT-ROUNDING-RUNS/2` 对完全相同整数候选的相邻 texel 复用精确 CPU 校正；Worker 覆盖混合复用完全相同输入的结果，像素公式不改。普通投影、局部重绘、UV 底层、截图交接、保存/导出及资源失效审计见 [常驻 UV 显示变更卡](changes/CHG-20260911-RESIDENT-UV-DISPLAY.md)。缓存命中与冷计算必须分别测量，不得将常驻 UV 帧率作为所有图层更新已达到毫秒级的证据。
+
+2026-09-11 M05/UI-09，协作 M08：`LAYER-ERASER-MASK-INDICATOR` v1.0.0。图层蒙版图标复用可清除投影橡皮蒙版判定，不再把生成时的 projection capture-mask 或局部重绘 coverage 当成橡皮编辑。笔画撤销/重做恢复已有 eraserAlgorithmVersion，后台精修保留当前历史状态，避免全部撤销后图标重现。GPU/CPU/Worker/shader 像素、投影轮廓、UV/export 与分辨率不变；沿用原 Layer 可选字段、CAS/ownership/verified assets，无 Schema 或存量资产迁移。范围、测试和回滚见 [蒙版图标变更卡](changes/CHG-20260911-ERASER-MASK-INDICATOR.md)。本次仅本地修改，未推送或部署。
+
+2026-09-11 M08：`ALG-LR-UV-PAINT` v1.1.2 / UV_REPAINT_VERSION=4，修复 HiDPI 下局部 UV 笔画分块坐标重复缩放。source/output 两遍 scissor 共用物理 UV 像素适配，保持实际屏幕 DPR、分辨率、可见性和遮挡公式不变。GPU 写入与 CPU 脏瓦片读回、历史和保存一致；Worker/合并/PNG/FBX 消费同一 RGBA，无独立算法改动。旧 v1 图层及已存资产不改写，缺失笔画需重新绘制，无 Schema/CAS/ownership 迁移。DPR 1/1.25/1.5/2 完整像素对照与原模型复测通过，范围、证据和回滚见 [HiDPI 变更卡](changes/CHG-20260911-UV-REPAINT-HIDPI.md)。
+
+### 每次 CI/CD 推送前的强制包体检查
+
+2026-09-11 用户明确要求：每次推送触发 CI/CD 前，必须先处理并通过正式发布包体检查。M15/M13，`RELEASE-PREPUSH/1.0.0`。
+
+1. 先提交准备推送的修改，再运行 `pnpm verify:prepush`。该入口直接读取 `.gitlab-ci.yml` 的 build 变量和命令，带齐 Cloud 模式、性能实验室开关、完整 Git SHA、分支 release ID、版本和构建时间；执行正式构建、云产物检查、全部包体预算及云部署模拟。
+2. 普通 `pnpm --filter @liclick/web build` 和没有正式元数据的包体检查不能代替上述流程。失败时必须缩减实际产物并重新检查；禁止为性能补丁提高预算、跳过检查、删除诊断/QA，或降低输出分辨率。
+3. 检查通过后才能 `git push`。合入远端、修改代码/依赖/构建配置、变更提交后，必须针对最终提交重新运行。记录最终 SHA、各受限 chunk 和总字节数，并跟踪远端流水线到结果，不能把“已触发”表述为“CI 通过”。
+4. 本次失败实例：`6fc08a1` / pipeline `629782` 的 verify 全过、build 阶段包体失败，正式 JS 为 **3,221,231 bytes**，超过 **3,221,000 bytes** 上限 **231 bytes**；普通本地构建为 3,220,729 bytes，少计 502 bytes 发布差异。`3e68405` 同样在 build 阶段失败。以后须读取失败日志确认原因，不能仅凭历史经验认定故障。
+
+此入口不会推送或部署，也不会安装 Git hook；上述规则适用于每次人工或代理推送。构建格式策略 `SHADER-TEMPLATE-FORMAT/1.0.0` 在发布时移除投影着色器模板缩进，保留源文件可读性与计算语义。持续优化必须记录总量和各 chunk 余量，优先去重、不可达代码清理与按需加载；拆包不能冒充总量减少，平均 FPS 不能替代交互延迟验收。验证记录、后续准则及回滚见 [正式发布包体变更卡](changes/CHG-20260911-CI-RELEASE-BUDGET.md)。
+
+2026-09-11 M08/M03：`UV-REPAINT-PREVIEW-BINDING` v1.0.0，修复新旧局部 UV 重绘层不能共存。普通 UV 预览入口同步借用 live registry 的 GPU/Canvas 纹理，禁止将内存 URL 交给静态解码/上传/LRU；最终材质校验保留下方重绘层所在的 UV sampler，不再按“无普通 UV”清零；重绘显隐变化触发 sampler 重新分配。GPU 笔画像素算法仍为 ALG-LR-UV-PAINT v1.1.1 / UV_REPAINT_VERSION=3，CPU/Worker/Shader 混合公式、PNG/合并/FBX、持久 RGBA/Schema/CAS/ownership 不改，无资产迁移。真实 React/WebGL 两层独立显隐、擦除/撤销、三层合成通过；用户原工程及 A100 尚未验收。本次仅本地修复，详见 [变更卡](changes/CHG-20260911-UV-REPAINT-COEXISTENCE.md)。
+
+2026-09-11 M08：`ALG-LR-UV-PAINT` v1.1.1 / UV_REPAINT_VERSION=3，修复局部 UV 重绘细分曲面漏点。可见性由 UV 导数反求深度改为屏幕浮点 face/depth/slope 缓冲及局部连续深度足迹；跨护栏/孔洞深度断层不参与邻域放宽，整数面 ID 使用 flat 插值。小视口的可见性长边至少 1024，输出尺寸不改。保留来源 alpha/作者遮罩、共享 UV 取色与一次擦除、脏瓦片历史及保存/导出 barrier，不恢复自动补洞，不修改单视图。已有 RGBA 不自动补写，旧 v1 图层可读；回滚 984fb1d，无资产/Schema 迁移。显存开销、有限栅格边界及验证见 [白点修复变更卡](changes/CHG-20260911-UV-REPAINT-VISIBILITY.md)。本次为本地修复，未推送或部署。
+
+2026-09-10 M08：`ALG-LR-UV-PAINT` v1.1.0 / UV_REPAINT_VERSION=2，经用户确认，重叠 UV 允许共享颜色和透明度，不再整模型拒绝。不预先压平返图颜色：冻结来源纹理/作者遮罩与相机，在当前可见笔刷命中时逐表面取色；共享 texel 由最强笔刷覆盖获胜，相同权重按固定几何顺序，单次合成避免重叠面重复擦除。缺失/退化/越界 UV 校验、遮挡、源 alpha 与轮廓约束保留。原 RGBA 层协议与 v1 ID 可读，GPU 结果经原脏瓦片读回交给 CPU/Worker/保存/合并/FBX，不自动展开或迁移旧图层。回滚恢复上一发布（共享 UV 新笔画将再次被拒绝，已保存像素仍可读）。详见 [共享 UV 变更卡](changes/CHG-20260910-SHARED-UV-REPAINT.md)。
+
+2026-09-10 发布确认（M07/M08/UI）：用户明确接受去掉 8K 与合并时不自动补洞。贴图工作台输出菜单仅保留 1K/2K/4K，普通投影合成沿用最高 4K/255层门禁和 Merge profile v8；旧 8K 项目类型/资产保留，不静默重采样或重写，需用户手动改选支持的输出。非贴图工作台的远端 UV 处理工具不改。已授权将 UV 重绘与已验证 master 优化一并推送 master、部署 A100，详见 CHG-20260910-UV-REPAINT 发布记录。
+
+`CHG-20260910-UV-REPAINT`：主模块 M08，协作 M03/M05/M07/M11/M12；新增 `ALG-LR-UV-PAINT` v1.0.0。新局部返图冻结来源并准备原分辨率 UV 颜色，当前视口最前可见面决定 UV 笔画覆盖；不锁起笔部件，大笔刷允许同时绘制孔洞里可见后板，不穿透遮挡。新层保存独立 BaseColor RGBA，脏瓦片历史与选区消费共同撤销，PNG/FBX/合并等待读回；原投影重绘兼容保留，单视图及其 UV 预缓存不改，不迁移旧资产。Cloud verified assets / Command / CAS / ownership 保持。110 项回归及真实 Edge WebGL/React 视口夹具通过；复杂用户原工程、8K 内存压力与 A100 验收尚未执行。本次仅本地实现，详见 [变更卡](changes/CHG-20260910-UV-REPAINT.md)。
+
+2026-09-10 M07 / PERF-UV-SOURCE-PREPARE-001 v1.2.0：静态 PNG 源解码/相同软件 Canvas 转换移入 Worker，交付 ImageBitmap，删除完整 CPU RGBA 读回及第二张 Canvas；JPEG 候选对照失败，保留原兼容入口。后台按真实多选/右键意图准备有序 UV 底层，前台加入相同 PNG/GPU 准备任务；最终会话键 v2 包含 live revision。常驻 readback 的 Y 翻转/完整 RGBA/coverage 交 Worker，舍入扫描与私有复制有界让出并避让交互。完整 4K 对照零像素差异，新夹具0 longtask，最大帧间隔33–50ms；不能宣称原工程零卡顿/所有入口毫秒级。GPU/CPU/Worker/shader/persistence/export 审计、公开案例适用边界、测试及回滚见 CHG-20260910-UV-DEFAULT-RESIDENT v1.2.0 记录。持久 RGBA/Project Schema/资产/CAS 不变，release 不动。
+
+2026-09-10 M07 / PERF-UV-SOURCE-PREPARE-001 v1.1.0：GPU 栈以一层 lookahead 重叠源准备与计算，live 源保持消费时同步快照；删除逐纹理固定等帧，保留 4ms 预算、分条上传与交互让出。异常排空在途资源并保护借用 bitmap。真实 WebGL 4K/6层冻结旧核对照 RGBA/coverage/count 零差异，阶段约 1223–1609→851–1044ms；非完整 Merge。GPU/CPU/Worker/shader 像素和 QA、导出、持久化/缓存不变，无数据迁移；回滚只恢复调度。见 CHG-20260910-UV-DEFAULT-RESIDENT 后续记录。
+
+2026-09-10 用户要求先移除自动补洞：M07 / Merge profile v8，关闭 uvCoverageGapPixels 和 uvInteriorHolePixels，旧算法保留但正常合成不调用；接缝 band/gutter 与 QA 保留。新结果保留未覆盖区，会话键 v12、持久派生键 persistent-3，旧补洞缓存不复用；Project Schema/历史资产不变，无 release 变更。详见 CHG-20260910-UV-DEFAULT-RESIDENT 后续记录。
+
+`CHG-20260910-UV-DEFAULT-RESIDENT`：主模块 M07，协作 M06/M09；ALG-UV-003 v2.1.1、准备策略 v2.2.2、ALG-UV-005 v2.0.5。按用户要求普通投影转 UV 入口统一常驻 GPU，旧 CPU 投影/质量路径只在显式 perfLab 对照中可用，不再失败后静默回退；首轮完整 CPU 校验仍保留。补洞仅枚举有相对拓扑邻点的候选，像素顺序/岛屿门禁不变；最终 PNG 在后台提前上传，仅在相同 Blob 正式保存后移动独占缓存所有权。全分辨率、QA、Command/CAS/ownership/verified assets 保留，无 Project Schema 迁移；8K/超 255 层普通质量合成尚不支持新常驻核时明确失败，不降采样、不走旧算法。GPU/CPU/Worker/shader/export 审计及测试见 [变更卡](changes/CHG-20260910-UV-DEFAULT-RESIDENT.md)。
+
+`CHG-20260910-ADAPTIVE-GAP-DISTANCE`：主模块 M07，协作 M05/M06/M08；`LOCAL-BOUNDARY-REPAIR` v1.1.0。生产补缝从按分辨率计算的初始半径开始，沿同 UV 区域内已选缺口自适应扩大直到填满或无可达边界；不跨未选区域找远处颜色、不跨 UV 岛、不恢复全局平均或单色锁定。本次输入的原始边界索引始终固定，不把新补颜色作为新来源重跑。CPU/Worker 共用算法及取消/节流，仍有不可达区域时显示数量提示。GPU/shader/导出公式及 Schema/CAS/ownership 不改，无资产迁移；详见 [变更卡](changes/CHG-20260910-ADAPTIVE-GAP-DISTANCE.md)。
+
+`CHG-20260910-REPAINT-MERGE-ALPHA`：主模块 M07，协作 M05/M06/M08；`ALG-LR-013` 合并一致性 v1.1.0。UV 合并及模型导出预处理透传图层 ignoreSourceAlpha，原模型裁切版本保留源 alpha 与画笔 mask 的乘积，旧全帧重绘仍按 mask 覆盖；压入 alpha 后清除独立 mask，避免重复相乘。复用既有 CPU/Worker 两种模式，无 shader/分辨率/持久化协议改动。合并版本 7、会话缓存 v10；旧合并资产不自动重写，需撤销合并后重合。详见 [变更卡](changes/CHG-20260910-REPAINT-MERGE-ALPHA.md)。
+
+`CHG-20260910-LOCAL-BOUNDARY-REPAIR`：主模块 M07，协作 M05/M06/M08；`LOCAL-BOUNDARY-REPAIR` v1.0.0。补缝生产策略改为同 UV 区域、有限距离、高置信边界多点颜色过渡，不跨岛借色、不锁整块单色、不使用全图平均色兜底；无可靠来源处保留缺口。CPU 与 Worker 共用算法，兼容主线程按需加载；已有图层/历史、GPU 投影、分辨率、导出合成及 Schema/Command/CAS/ownership 不改，无资产迁移。24 项专项测试、109 项回归和真实浏览器 2K Worker/主线程字节一致验证通过；尚未用用户鱼模型原工程验收。详见 [变更卡](changes/CHG-20260910-LOCAL-BOUNDARY-REPAIR.md)。
+
+`CHG-20260910-FBX-TEMPORARY-UV`：主模块 M07，协作 M05/M06；`FBX-TEMP-UV-EXPORT` v1.0.0。场景/对象 FBX 复用颜色导出的 UV 合并计划、局部重绘蒙版、拓扑修补参数和 source-under 合成，生成临时完整 PNG 后直接嵌入，不发布合并图层或烘焙记录、不消费源图层；层/模型/live revision 变化时拒绝混合快照。修复蒙版 Worker 转移共享缓存 buffer 导致重复处理失败，改为任务私有副本并清理 postMessage 失败回调。GPU/CPU 像素算法和质量门禁、1K–8K 分辨率、Schema/Command/CAS/ownership/verified assets 不变；无资产迁移。真实浏览器 2K 未合并/合并后贴图字节差异 0，两个 FBX 均含可解码 PNG；详见 [变更卡](changes/CHG-20260910-FBX-TEMPORARY-UV.md)。
+2026-09-10 候选验收：M07 / ALG-UV-003 v2.1.0，普通投影 GPU 常驻 Top-3，稀疏舍入校正，保留实际 CPU 校准门禁、完整 4K、overlay/补缝/持久化。仅 perfResidentQuality=1 启用，完整 Merge 耗时尚待真实工程验收；不代表已达到毫秒级。见 [变更卡](changes/CHG-20260910-UV-RESIDENT-QUALITY.md)。
+
+同卡补充：M07 / ALG-UV-005 v2.0.4 等价移除 gutter pending Map/二次遍历、未使用的 seamLinks 和透明接缝整图复制；按实际几何字节与矩阵有界复用接缝关系。冻结核与拓扑对照通过，隔离 4K gutter 中位约 1296→260ms，接缝关系复用约 7.5ms；不是完整 Merge 时间。GPU/Worker/shader、像素、QA、Schema/CAS/ownership/verified assets 与持久缓存键不变，无数据迁移；回滚仅恢复后处理实现。
+
+同次实测发现并修复 M06 / UV-MERGE-EMPTY-FALLBACK v1.0.0：UV-only 存在 sparse repair 底图且两层完全未覆盖时，普通显示恢复深灰斜线，避免 Merge 后变白模。96 组真实 WebGL 对照保留所有有效 RGBA 与 capture mode=0/2，无额外 pass/采样/读回；UV/export/CPU/Worker/持久像素与缓存键不变，无迁移。见 [变更卡](changes/CHG-20260910-UV-MERGE-EMPTY-FALLBACK.md)。
+
 `CHG-20260910-PROJECTION-EMPTY-DISPLAY`：主模块 M06，协作 M03/M08；`PROJECTION-EMPTY-DISPLAY` v1.0.0。按用户要求恢复有可见投影/UV 时未覆盖区域的深灰斜线预览；单层、stack/array、UV-only 一致。flat 截图按 tile 临时使用模式 0，coverage 截图模式 2，结束或失败恢复视口模式，斜线不进入 GPT 引导图。保留可靠区域裁切和单/多视图投影一致性，不改 CPU/Worker/UV 烘焙公式、分辨率、作者 mask、历史和持久化协议，无迁移；本次仅部署 A100，不推送 master。详见 [变更卡](changes/CHG-20260910-PROJECTION-EMPTY-DISPLAY.md)。
 
 `CHG-20260910-TEXTURE-PROJECTION-PARITY`：主模块 M06，协作 M04/M05/M08；`TEXTURE-PROJECTION-PARITY` v1.0.0。每个 texture-map 单/多视图结果共享原模型 capture-mask、边缘颜色清理、ignoreSourceAlpha、0.18 minimum facing 和 standard visibility；新增图层及显式重新投影使用统一入口判断。组内两张并发/组间串行不改，局部重绘和材质参考生成不纳入。GPU/CPU/Worker/shader/UV/export 复用既有单视图参数契约，无像素公式、分辨率或 Schema 变更；不自动迁移旧多视图、清除橡皮或重写历史资产。108 项回归与真实 WebGL 同相机/同返图六组逐像素一致检查通过。详见 [变更卡](changes/CHG-20260910-TEXTURE-PROJECTION-PARITY.md)。
@@ -880,6 +968,8 @@ M15 / CLOUD-DEPLOYMENT v1.0.0（2026-09-03）：正常合并 release 部署历�
 
 | 版本 | 日期 | 基线 | 变更 |
 | --- | --- | --- | --- |
+| `2.20.8` | 2026-09-10 | `5e5f7c3 + 发布确认` | 用户确认移除贴图工作台 8K 选项及保留无自动补洞合并；旧项目不降采样，授权 master/A100 发布 |
+| `2.20.7` | 2026-09-10 | `20b0912a + 本地待提交` | 局部重绘 UV 可见面绘制、稀疏 RGBA 历史与保存/导出/合并一致性；单视图不改。见 CHG-20260910-UV-REPAINT |
 | `2.0.0` | 2026-08-26 | `2568e405` | 从 Modernization 基线重新审计；彻底移除旧本地组件架构；重建 Cloud 保存、图层、投影、UV v4、局部重绘 v14/v5、生产 UV/拓扑/Bake 与维护规则 |
 | `2.1.0` | 2026-08-26 | `待提交` | `ALG-LR-002` 对齐 ModelView GGUF 三业务输入：新增可选提示词，只提交白模与材质多视图两张图片，移除远端 viewport/seed 字段；本地 mask、flat reference、depth、接缝融合和回贴规则保持不变 |
 | `2.1.1` | 2026-08-26 | `本次发布提交` | 固化 `PERF-LAB-ENTRY/1.1.0`：`perfLab=1` 同时启用性能 HUD 与默认单模型 100 图层基准，显式 `perfScenario` 仍可覆盖；补齐 URL 导航保留和云端测试说明 |
@@ -1040,6 +1130,10 @@ M13/M15，`IDENTITY-TELEMETRY` v1.1.0，日聚合 schema v3：来源由后端确
 2026-09-09 CHG-20260909-PREVIEW-UPLOAD-CLEANUP：M06/M07/M13/M15，ALG-PROJ-007 v2.1.10。分条预览上传取消/异常清理涵盖分配、当前与在途位图及帧监测器；90 组故障注入覆盖资源归零、原图所有权和 GL 状态。安全压缩遍历 3→4，原门禁与诊断保留。像素、4K、QA、Schema、持久化和导出不变，无迁移。
 
 2026-09-09 CHG-20260909-RESIDENT-MULTILAYER-SUBSETS：M06，ALG-PROJ-007 v2.1.11。至少两层的严格兼容有序子集复用原材质槽位，保留橡皮索引与不兼容回退；单层因真实像素差异明确排除。570 次状态回归、24 组 WebGL 输出零差异；无像素公式、4K、QA、持久化/导出或 Schema 迁移。见对应变更卡。
+
+2026-09-11 CHG-20260911-PROJECTED-VISIBILITY-RESIDENCY：M06，ALG-PROJ-007 v2.1.12。模型内分别保留已有单层/多层材质，减少白模逐层恢复时重复上传、编译与发布；沿用严格兼容判断和独立单层公式，失配与卸载清理。新增 60 次恢复及所有权/失配回归。GPU 资源持有期变化，CPU/Worker/shader/UV/export 像素与 4K、QA、持久化、Schema 不变，无迁移；回滚方式见对应变更卡。
+
+2026-09-11 CHG-20260911-VIEWPORT-WARMUP-PRESENTATION：M06/M03，ALG-PROJ-007 v2.1.13。投影预热同步提交后立即还原 framebuffer/cube/mip/autoClear，避免跨 GPU fence 等待时视口帧写入离屏目标。实际预热回调的三帧等待与取消/错误清理回归旧失败、新通过。GPU/CPU/Worker/shader/UV/export 计算与分辨率、QA、持久化、Schema 不变，无迁移；范围与回滚见对应变更卡。
 
 2026-09-09 CHG-20260909-UV-READBACK-TASK-YIELD：M09/M07，ALG-UV-008 v2.0.2。离屏 8 MiB 读回条间改用既有任务让出，保留可见 renderer 呈现等待；6 次真实 4K 全 RGBA 零差异，隔离阶段均值 175.2→140.4ms，不代表总合成/FPS 收益。无像素、QA、Schema 或资产迁移。见对应变更卡。
 

@@ -80,6 +80,7 @@ const uploads = new Map();
 const releasedBitmaps = new Set();
 const cleanups = [];
 const published = [];
+const liveTextures = new Map();
 const scope = {
   THREE, document: { body: { dataset: {} } },
   window: { setTimeout },
@@ -90,6 +91,8 @@ const scope = {
   useThree: () => ({ gl: {} }),
   useEffect: (callback) => cleanups.push(callback()),
   getReadyResidentPreviewTexture: () => undefined,
+  isLiveProjectedCanvasUrl: (url) => url?.startsWith('liclick-live-projected-canvas:') ?? false,
+  getLiveProjectedTexture: (url) => liveTextures.get(url),
   uploadPreviewTextureInStripes: (_renderer, texture) => new Promise((resolve) => uploads.set(texture.userData.liclickPreviewWorkerBitmapId, resolve)),
 };
 const runtime = ts.transpileModule(`${cacheRuntime}\n${hookRuntime}`, {
@@ -139,3 +142,28 @@ assert.equal((await bulk).filter((result) => result.status === 'fulfilled').leng
 assert.equal(api.pinnedPreviewTextureCacheKeys.size, 0);
 assert.equal(api.bakedTextureCache.size, 24);
 stdout.write('Preview cache concurrency passed: 26 overlapping exact loads, cancellation, shared leases and bounded cleanup.\n');
+
+const liveUrl = 'liclick-live-projected-canvas:old-repaint:rgba';
+const borrowed = new THREE.Texture();
+let disposed = false;
+borrowed.addEventListener('dispose', () => { disposed = true; });
+liveTextures.set(liveUrl, borrowed);
+const decodeCount = decodes.size;
+const uploadCount = uploads.size;
+const liveState = api.useLoadedPreviewTextureState(liveUrl);
+assert.equal(liveState.texture, borrowed, 'Lower repaint borrows its exact existing texture synchronously');
+assert.equal(liveState.ready, true);
+assert.equal(cleanups.at(-1), undefined, 'Consumer does not acquire disposal ownership');
+assert.equal(api.bakedTextureCache.has(liveUrl), false);
+assert.equal(api.pinnedPreviewTextureCacheKeys.has(liveUrl), false);
+const committedCanvasTexture = new THREE.CanvasTexture();
+liveTextures.set(liveUrl, committedCanvasTexture);
+assert.equal(api.useLoadedPreviewTextureState(liveUrl).texture, committedCanvasTexture,
+  'Same URL resolves the new owner or committed Canvas after GPU release');
+liveTextures.delete(liveUrl);
+assert.equal(api.useLoadedPreviewTextureState(liveUrl).ready, false,
+  'An unavailable live owner cannot publish an unrelated ready texture');
+assert.equal(decodes.size, decodeCount, 'Custom URLs never reach image decoding, including missing owners');
+assert.equal(uploads.size, uploadCount, 'Borrowed render targets never enter ordinary texture upload');
+assert.equal(disposed, false, 'Static cache must not dispose borrowed GPU textures');
+stdout.write('Live UV borrowing passed: synchronous binding, owner replacement, no decode/upload/cache/disposal.\n');

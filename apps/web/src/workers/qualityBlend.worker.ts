@@ -1,3 +1,5 @@
+import { resolvePixelCpu } from '../engine/bake/qualityBlendCpuPixel';
+import { yieldWorkerTask } from '../utils/workerScheduling';
 import {
   getProjectionOverlayAlpha,
   type ProjectedOverlayMode,
@@ -30,6 +32,7 @@ const SRGB_BYTE_TO_LINEAR = Array.from({ length: 256 }, (_, value) => {
 });
 
 type BlendRequest = {
+  resolvedBase?: { output: ArrayBuffer; coverage: ArrayBuffer; writtenTexels: number };
   type: 'blend';
   id: number;
   resolution: number;
@@ -70,7 +73,7 @@ type WorkerResponse =
       coverage: ArrayBuffer;
       renderedColorMask: ArrayBuffer;
       writtenTexels: number;
-      backend: 'webgpu-worker' | 'cpu-worker';
+      backend: 'webgpu-worker' | 'cpu-worker' | 'webgl-resident';
       accumulateMs: number;
       resolveMs: number;
       overlayMs: number;
@@ -155,11 +158,6 @@ function clampByte(value: number) {
   return Math.max(0, Math.min(255, Math.round(value)));
 }
 
-function smoothstep(edge0: number, edge1: number, value: number) {
-  const t = Math.max(0, Math.min(1, (value - edge0) / Math.max(edge1 - edge0, 0.000001)));
-  return t * t * (3 - 2 * t);
-}
-
 function linearToSrgbByte(value: number) {
   const color = Math.max(0, Math.min(1, value));
   const srgb = color <= 0.0031308 ? color * 12.92 : 1.055 * color ** (1 / 2.4) - 0.055;
@@ -181,7 +179,7 @@ function createTopK(pixelCount: number): TopK {
 }
 
 async function yieldWorkerBudget() {
-  await new Promise<void>((resolve) => setTimeout(resolve, interactive ? 8 : 0));
+  await yieldWorkerTask(interactive ? 8 : 0);
 }
 
 async function accumulate(topK: TopK, request: BlendRequest) {
@@ -219,94 +217,6 @@ async function accumulate(topK: TopK, request: BlendRequest) {
   }
 }
 
-function resolvePixelCpu(topK: TopK, pixelIndex: number, preserveAlpha: boolean, output: Uint8ClampedArray) {
-  if (!topK.coverage[pixelIndex]) return false;
-  const offset = pixelIndex * 4;
-  let candidateCount = 0;
-  let remaining = 1;
-  const coverages = [0, 0, 0];
-  const qualities = [0, 0, 0];
-  const colors = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
-  for (let slot = 0; slot < TOP_K; slot += 1) {
-    const coverage = topK.coverages[slot][pixelIndex];
-    coverages[slot] = coverage;
-    qualities[slot] = topK.qualities[slot][pixelIndex];
-    remaining *= 1 - Math.max(0, Math.min(1, coverage));
-    if (coverage > COVERAGE_THRESHOLD) candidateCount += 1;
-    const packed = topK.colors[slot][pixelIndex];
-    colors[slot][0] = SRGB_BYTE_TO_LINEAR[packed & 255];
-    colors[slot][1] = SRGB_BYTE_TO_LINEAR[(packed >>> 8) & 255];
-    colors[slot][2] = SRGB_BYTE_TO_LINEAR[(packed >>> 16) & 255];
-  }
-  const alpha = preserveAlpha ? clampByte((1 - remaining) * 255) : 255;
-  if (candidateCount === 1) {
-    const packed = topK.colors[0][pixelIndex];
-    output[offset] = packed & 255;
-    output[offset + 1] = (packed >>> 8) & 255;
-    output[offset + 2] = (packed >>> 16) & 255;
-    output[offset + 3] = alpha;
-    return true;
-  }
-  let totalQuality = 0;
-  let baseRed = 0;
-  let baseGreen = 0;
-  let baseBlue = 0;
-  for (let slot = 0; slot < TOP_K; slot += 1) {
-    const quality = qualities[slot];
-    if (quality <= 0) continue;
-    totalQuality += quality;
-    baseRed += colors[slot][0] * quality;
-    baseGreen += colors[slot][1] * quality;
-    baseBlue += colors[slot][2] * quality;
-  }
-  if (totalQuality > 0) {
-    baseRed /= totalQuality;
-    baseGreen /= totalQuality;
-    baseBlue /= totalQuality;
-    for (let slot = 0; slot < TOP_K; slot += 1) {
-      if (qualities[slot] <= 0) continue;
-      const diff = Math.hypot(
-        colors[slot][0] - baseRed,
-        colors[slot][1] - baseGreen,
-        colors[slot][2] - baseBlue,
-      );
-      const consistency = Math.exp(
-        -(diff * diff) / (COLOR_CONSISTENCY_SIGMA * COLOR_CONSISTENCY_SIGMA),
-      );
-      qualities[slot] *= 0.35 + 0.65 * consistency;
-    }
-  }
-  let sumStrong = 0;
-  let sumSoft = 0;
-  for (let slot = 0; slot < TOP_K; slot += 1) {
-    sumStrong += Math.max(0, qualities[slot]) ** BLEND_POWER;
-    sumSoft += Math.max(0, coverages[slot]);
-  }
-  if (sumSoft <= 0.000001) return false;
-  let finalRed = 0;
-  let finalGreen = 0;
-  let finalBlue = 0;
-  for (let slot = 0; slot < TOP_K; slot += 1) {
-    const quality = Math.max(0, qualities[slot]);
-    const coverage = Math.max(0, coverages[slot]);
-    if (coverage <= 0) continue;
-    const strongWeight = quality ** BLEND_POWER / Math.max(sumStrong, 0.000001);
-    const softWeight = coverage / sumSoft;
-    const weight = strongWeight * (1 - RESIDUAL_MIX) + softWeight * RESIDUAL_MIX;
-    finalRed += colors[slot][0] * weight;
-    finalGreen += colors[slot][1] * weight;
-    finalBlue += colors[slot][2] * weight;
-  }
-  const dominance =
-    smoothstep(DOMINANCE_BLEND_START, DOMINANCE_BLEND_END, qualities[0] / Math.max(qualities[1], 0.000001)) *
-    smoothstep(DOMINANCE_MARGIN_START, DOMINANCE_MARGIN_END, qualities[0] - qualities[1]);
-  output[offset] = linearToSrgbByte(finalRed * (1 - dominance) + colors[0][0] * dominance);
-  output[offset + 1] = linearToSrgbByte(finalGreen * (1 - dominance) + colors[0][1] * dominance);
-  output[offset + 2] = linearToSrgbByte(finalBlue * (1 - dominance) + colors[0][2] * dominance);
-  output[offset + 3] = alpha;
-  return true;
-}
-
 async function resolveCpu(topK: TopK, preserveAlpha: boolean) {
   const output = new Uint8ClampedArray(topK.coverage.length * 4);
   let writtenTexels = 0;
@@ -327,6 +237,10 @@ async function applyOverlays(
   for (const overlay of overlays) {
     const imageData = new Uint8ClampedArray(overlay.color);
     const qualityMap = new Float32Array(overlay.quality);
+    const sourceWords = new Uint32Array(overlay.color);
+    const outputWords = new Uint32Array(output.buffer, output.byteOffset, output.length / 4);
+    let previousSource = -1, previousBase = -1, previousQuality = -1, previousMask = -1;
+    let previousResult = 0, previousResultMask = 0;
     for (let pixelIndex = 0, offset = 0; offset < imageData.length; pixelIndex += 1, offset += 4) {
       const layerCoverage = imageData[offset + 3] / 255;
       if (
@@ -335,6 +249,14 @@ async function applyOverlays(
       ) {
         continue;
       }
+      const sourceWord = sourceWords[pixelIndex], baseWord = outputWords[pixelIndex];
+      const quality = overlay.overlayMode === 'literal' ? 0 : qualityMap[pixelIndex];
+      const mask = renderedColorMask[pixelIndex];
+      if (sourceWord === previousSource && baseWord === previousBase &&
+          quality === previousQuality && mask === previousMask) {
+        outputWords[pixelIndex] = previousResult;
+        renderedColorMask[pixelIndex] = previousResultMask;
+      } else {
       const alpha = getProjectionOverlayAlpha(
         layerCoverage,
         overlay.overlayMode === 'literal' ? 0 : qualityMap[pixelIndex],
@@ -345,21 +267,30 @@ async function applyOverlays(
       const outputAlpha = alpha + baseAlpha * (1 - alpha);
       if (outputAlpha <= 0.0001) continue;
       const retainedBaseAlpha = baseAlpha * (1 - alpha);
-      output[offset] = linearToSrgbByte(
-        (SRGB_BYTE_TO_LINEAR[output[offset]] * retainedBaseAlpha +
-          SRGB_BYTE_TO_LINEAR[imageData[offset]] * alpha) /
-          outputAlpha,
-      );
-      output[offset + 1] = linearToSrgbByte(
-        (SRGB_BYTE_TO_LINEAR[output[offset + 1]] * retainedBaseAlpha +
-          SRGB_BYTE_TO_LINEAR[imageData[offset + 1]] * alpha) /
-          outputAlpha,
-      );
-      output[offset + 2] = linearToSrgbByte(
-        (SRGB_BYTE_TO_LINEAR[output[offset + 2]] * retainedBaseAlpha +
-          SRGB_BYTE_TO_LINEAR[imageData[offset + 2]] * alpha) /
-          outputAlpha,
-      );
+      // UV-OVERLAY-IDENTITY/1: no base contribution means the canonical
+      // sRGB -> linear -> sRGB round trip returns the source bytes unchanged.
+      // Keep fractional coverage/mask composition below, including feathering.
+      if (retainedBaseAlpha === 0) {
+        output[offset] = imageData[offset];
+        output[offset + 1] = imageData[offset + 1];
+        output[offset + 2] = imageData[offset + 2];
+      } else {
+        output[offset] = linearToSrgbByte(
+          (SRGB_BYTE_TO_LINEAR[output[offset]] * retainedBaseAlpha +
+            SRGB_BYTE_TO_LINEAR[imageData[offset]] * alpha) /
+            outputAlpha,
+        );
+        output[offset + 1] = linearToSrgbByte(
+          (SRGB_BYTE_TO_LINEAR[output[offset + 1]] * retainedBaseAlpha +
+            SRGB_BYTE_TO_LINEAR[imageData[offset + 1]] * alpha) /
+            outputAlpha,
+        );
+        output[offset + 2] = linearToSrgbByte(
+          (SRGB_BYTE_TO_LINEAR[output[offset + 2]] * retainedBaseAlpha +
+            SRGB_BYTE_TO_LINEAR[imageData[offset + 2]] * alpha) /
+            outputAlpha,
+        );
+      }
       output[offset + 3] = Math.round(outputAlpha * 255);
       // Store rendered-color contribution as premultiplied coverage. This is
       // the exact information the viewport needs after a display-color local
@@ -369,6 +300,10 @@ async function applyOverlays(
         Math.max(0, Math.min(1, retainedRenderedCoverage + (overlay.renderedColor ? alpha : 0))) *
           255,
       );
+      previousSource = sourceWord; previousBase = baseWord;
+      previousQuality = quality; previousMask = mask;
+      previousResult = outputWords[pixelIndex]; previousResultMask = renderedColorMask[pixelIndex];
+      }
       if (!coverage[pixelIndex]) {
         coverage[pixelIndex] = 1;
         addedCoverage += 1;
@@ -560,6 +495,17 @@ function verify(cpu: Uint8ClampedArray, gpu: Uint8ClampedArray): Verification {
 async function run(request: BlendRequest) {
   interactive = request.interactive;
   const startedAt = performance.now();
+  if(request.resolvedBase) {
+    const output=new Uint8ClampedArray(request.resolvedBase.output);
+    const coverage=new Uint8Array(request.resolvedBase.coverage);
+    const count=request.resolution*request.resolution;
+    if(request.layers.length || output.length!==count*4 || coverage.length!==count) throw new Error('Invalid resident quality base.');
+    const renderedColorMask=new Uint8Array(count);
+    const added=await applyOverlays(output,coverage,renderedColorMask,request.overlays);
+    const overlayMs=performance.now()-startedAt;
+    return {output,coverage,renderedColorMask,writtenTexels:request.resolvedBase.writtenTexels+added,
+      backend:'webgl-resident' as const,accumulateMs:0,resolveMs:0,overlayMs,totalMs:overlayMs,verification:undefined};
+  }
   const topK = createTopK(request.resolution * request.resolution);
   const accumulateStartedAt = performance.now();
   await accumulate(topK, request);
@@ -578,7 +524,7 @@ async function run(request: BlendRequest) {
   let backend: 'webgpu-worker' | 'cpu-worker' = 'cpu-worker';
   let output = cpu?.output;
   let verification: Verification | undefined;
-  try {
+  if (!request.forceCpuOutput) try {
     const gpu = await resolveGpu(topK, request.preserveCoverageConfidenceAlpha);
     if (gpu) {
       backend = 'webgpu-worker';

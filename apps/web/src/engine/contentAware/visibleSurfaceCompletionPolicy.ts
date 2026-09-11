@@ -26,6 +26,8 @@ type SurfacePropagationPolicy = Pick<
   | 'lockToDominantSourceRegion'
   | 'dominantSourceColorThreshold'
   | 'requireCompleteComponents'
+  | 'localBoundaryBlend'
+  | 'adaptiveGapDistance'
 >;
 
 export type VisibleSurfaceCompletionPolicy = {
@@ -34,9 +36,9 @@ export type VisibleSurfaceCompletionPolicy = {
 };
 
 /**
- * Completes every reachable low-confidence texel in the model's strict UV
- * coverage plus the conservative half-pixel texture-sampling footprint. Empty
- * atlas space outside that bounded footprint is never selected.
+ * Selects low-confidence texels inside the model's UV sampling footprint,
+ * repairing only those with reliable nearby same-region color evidence.
+ * Empty atlas space outside that footprint is never selected.
  */
 export function createVisibleSurfaceCompletionPolicy(
   width: number,
@@ -63,32 +65,28 @@ export function createVisibleSurfaceCompletionPolicy(
       minimumComponentSpan: Math.max(4, Math.round(12 * Math.sqrt(megapixelScale))),
     },
     propagation: {
-      // Only one verified physical seam may provide a donor. Never cascade
-      // through an arbitrary chain of UV islands.
-      maxSeamCrossings: 1,
+      // Do not borrow a material from another island (e.g. outer skin into
+      // an untextured mouth). Each side of a UV seam uses its own local border.
+      maxSeamCrossings: 0,
       // The mask has already rejected weak projection fringe. Padding the source
       // exclusion again removes the only valid border texel on thin UV islands
       // and turns a reachable gap into a false no-donor component.
       sourcePaddingPixels: 0,
-      // The queue is linear and stops when no reachable texels remain, so a
-      // pixel-count upper bound guarantees completion without adding work past
-      // the actual topology diameter. A fixed 64/128px radius left the centre
-      // of large visible gaps transparent.
-      maxDistance: pixelCount,
-      minSourceAlpha: 64,
+      // Start at 16 texels at 2K, then expand inside the selected gap until its
+      // original same-region boundaries cover it. No unrelated donor search.
+      maxDistance: Math.max(4, Math.ceil(Math.max(width, height) / 128)),
+      minSourceAlpha: 224,
       sourceColorOutlierThreshold: 64,
       connectivity: 4,
       coverageSkirtPixels: 1,
       coverageSkirtMaxInputAlpha: EMPTY_PROJECTION_MAX_VISIBLE_ALPHA,
       outputBleedPixels: 4,
-      // Gap selection is already restricted to strict visible UV coverage. If a
-      // selected component has no local/seam donor, use the authored-source mean
-      // as a final opaque fallback so the viewport never exposes hatch/alpha.
-      // Empty atlas space remains outside writeMask and is never painted.
-      fillUnreachableWithGlobalAverage: true,
-      lockToDominantSourceRegion: true,
+      fillUnreachableWithGlobalAverage: false,
+      lockToDominantSourceRegion: false,
       dominantSourceColorThreshold: 18,
       requireCompleteComponents: false,
+      localBoundaryBlend: true,
+      adaptiveGapDistance: true,
     },
   };
 }

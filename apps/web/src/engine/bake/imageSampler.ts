@@ -111,11 +111,14 @@ function describeUrlKind(url: string) {
   return 'relative URL';
 }
 
+export function loadImageData(url: string, maxDimension?: number, label?: string): Promise<ImageData>;
+export function loadImageData(url: string, maxDimension: number, label: string, bitmap: true): Promise<ImageBitmap>;
 export async function loadImageData(
   url: string,
   maxDimension = Number.POSITIVE_INFINITY,
   label = 'projected layer image',
-): Promise<ImageData> {
+  bitmap = false,
+): Promise<ImageData | ImageBitmap> {
   const liveTextureState = getLiveProjectedTextureSourceState(url);
   const resolvedUrl = liveTextureState
     ? `${url}#${liveTextureState.revision}`
@@ -125,7 +128,27 @@ export async function loadImageData(
   const cached = imageDataCache.get(cacheKey);
   if (cached) {
     cached.usedAt = performance.now();
-    return cached.imageData;
+    return bitmap ? createImageBitmap(cached.imageData) : cached.imageData;
+  }
+  let fetchedSource:Blob|undefined;
+  if(!liveTextureState && typeof Worker!=='undefined' && typeof OffscreenCanvas!=='undefined') {
+    const blob=fetchedSource=await urlToBlob(resolvedUrl);
+    // Static production PNG sources can decode entirely off-thread.
+    // Other formats retain the existing HTML image compatibility path.
+    if(blob.type==='image/png') {
+      const header=await blob.slice(0,24).arrayBuffer();
+      const bytes=new DataView(header);
+      // Bitmap-vs-HTMLImage resize filters differ at fractional ratios.
+      // Only transfer unchanged-size PNG sources; scaling keeps its exact path.
+      if(header.byteLength===24 && bytes.getUint32(0)===0x89504e47 && bytes.getUint32(4)===0x0d0a1a0a &&
+        bytes.getUint32(8)===13 && bytes.getUint32(12)===0x49484452 &&
+        bytes.getUint32(16)>0 && bytes.getUint32(20)>0 && Math.max(bytes.getUint32(16),bytes.getUint32(20))<=maxDimension) {
+        const {prepareSamplingBitmap}=await import('./prepareSamplingBitmap');
+        const prepared=await prepareSamplingBitmap(blob,maxDimension,!bitmap);
+        if(prepared instanceof ImageData) rememberImageData(cacheKey,prepared);
+        return prepared;
+      }
+    }
   }
   let source: CanvasImageSource;
   let sourceWidth: number;
@@ -145,8 +168,8 @@ export async function loadImageData(
     image.decoding = 'async';
     let fetchedObjectUrl: string | undefined;
     try {
-      if (/^https?:/i.test(resolvedUrl)) {
-        fetchedObjectUrl = URL.createObjectURL(await urlToBlob(resolvedUrl));
+      if (fetchedSource || /^https?:/i.test(resolvedUrl)) {
+        fetchedObjectUrl = URL.createObjectURL(fetchedSource ?? await urlToBlob(resolvedUrl));
         image.src = fetchedObjectUrl;
       } else {
         image.crossOrigin = 'anonymous';
@@ -187,6 +210,12 @@ export async function loadImageData(
   context.imageSmoothingEnabled = true;
   context.imageSmoothingQuality = 'high';
   context.drawImage(source, 0, 0, canvas.width, canvas.height);
+  // GPU inputs need the rendered sampling image, not a full CPU readback and
+  // a second canvas upload. Keep the same draw/resize/alpha conversion above.
+  if (bitmap) {
+    try { return await createImageBitmap(canvas); }
+    finally { canvas.width = canvas.height = 1; }
+  }
   const imageData = liveTextureState || canvas.width * canvas.height <= 262144
     ? context.getImageData(0, 0, canvas.width, canvas.height)
     : await readStaticSamplingCanvas(context, canvas.width, canvas.height);
@@ -225,60 +254,7 @@ export function sampleImageNearest(image: ImageData, u: number, v: number): Imag
   ];
 }
 
-export function sampleImageBilinear(image: ImageData, u: number, v: number): ImageSample {
-  const clampedU = Math.min(1, Math.max(0, u));
-  const clampedV = Math.min(1, Math.max(0, v));
-  const sourceX = clampedU * (image.width - 1);
-  const sourceY = clampedV * (image.height - 1);
-  const x0 = Math.max(0, Math.min(image.width - 1, Math.floor(sourceX)));
-  const y0 = Math.max(0, Math.min(image.height - 1, Math.floor(sourceY)));
-  const x1 = Math.max(0, Math.min(image.width - 1, x0 + 1));
-  const y1 = Math.max(0, Math.min(image.height - 1, y0 + 1));
-  const tx = sourceX - x0;
-  const ty = sourceY - y0;
-  const data = image.data;
-  const offset00 = (y0 * image.width + x0) * 4;
-  const offset10 = (y0 * image.width + x1) * 4;
-  const offset01 = (y1 * image.width + x0) * 4;
-  const offset11 = (y1 * image.width + x1) * 4;
-  const weight00 = (1 - tx) * (1 - ty);
-  const weight10 = tx * (1 - ty);
-  const weight01 = (1 - tx) * ty;
-  const weight11 = tx * ty;
-  const alpha00 = (data[offset00 + 3] / 255) * weight00;
-  const alpha10 = (data[offset10 + 3] / 255) * weight10;
-  const alpha01 = (data[offset01 + 3] / 255) * weight01;
-  const alpha11 = (data[offset11 + 3] / 255) * weight11;
-  let red = 0;
-  let green = 0;
-  let blue = 0;
-  const alpha = alpha00 + alpha10 + alpha01 + alpha11;
-
-  if (alpha <= 0.00001) return [0, 0, 0, 0];
-
-  red +=
-    data[offset00] * alpha00 +
-    data[offset10] * alpha10 +
-    data[offset01] * alpha01 +
-    data[offset11] * alpha11;
-  green +=
-    data[offset00 + 1] * alpha00 +
-    data[offset10 + 1] * alpha10 +
-    data[offset01 + 1] * alpha01 +
-    data[offset11 + 1] * alpha11;
-  blue +=
-    data[offset00 + 2] * alpha00 +
-    data[offset10 + 2] * alpha10 +
-    data[offset01 + 2] * alpha01 +
-    data[offset11 + 2] * alpha11;
-
-  return [
-    Math.round(red / alpha),
-    Math.round(green / alpha),
-    Math.round(blue / alpha),
-    Math.round(alpha * 255),
-  ];
-}
+export { sampleImageBilinear } from './bilinearImageSampling';
 
 /** Bilinear RGB sampling for mask-authored projections whose source alpha is not coverage. */
 export function sampleImageBilinearIgnoringAlpha(
