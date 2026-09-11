@@ -1528,6 +1528,42 @@ try {
   }
   assert.equal(projection.updateProjectedLayerStackMaterial(material, subsetInput), true);
   console.log('Resident subset reuse passed: 570 transitions, eraser slot ownership, single/structural rejection and unchanged inputs/shader.');
+  const { RetainedProjectedMaterials } = await server.ssrLoadModule(
+    '/src/engine/projection/retainedProjectedMaterials.ts',
+  );
+  const retained = new RetainedProjectedMaterials();
+  const singleInput = { ...subsetInput, layers: [layers[0]] };
+  const singleMaterial = await projection.createProjectedLayerStackMaterial(singleInput);
+  assert(singleMaterial);
+  // Full -> single -> canonical white -> single -> ordered multi subsets.
+  // Keeping the distinct single shader must not evict the uploaded full stack.
+  retained.retain(material);
+  retained.retain(singleMaterial);
+  for (let cycle = 0; cycle < 10; cycle++) {
+    assert.equal(retained.take(singleInput), singleMaterial);
+    assert.equal(retained.take(singleInput), undefined, 'Attached materials leave cache ownership.');
+    retained.retain(singleMaterial);
+    for (let count = 2; count <= layers.length; count++) {
+      assert.equal(retained.take({ ...subsetInput, layers: layers.slice(0, count) }), material);
+      retained.retain(material);
+    }
+  }
+  assert.equal(material.version, originalVersion);
+  assert.equal(retained.take(subsetInput), material);
+  const replacementSingle = await projection.createProjectedLayerStackMaterial(singleInput);
+  retained.retain(replacementSingle);
+  assert.equal(retained.take(singleInput), replacementSingle, 'Only the latest detached single is retained.');
+  retained.retain(replacementSingle);
+  assert.equal(retained.take({
+    ...singleInput, layers: [{ ...layers[0], imageUrl: 'memory://changed-source' }],
+  }), undefined, 'Source changes must rebuild rather than reveal stale pixels.');
+  assert.equal(retained.take(singleInput), undefined, 'Incompatible revisions are evicted.');
+  const disposableSingle = await projection.createProjectedLayerStackMaterial(singleInput);
+  retained.retain(disposableSingle);
+  retained.dispose();
+  assert.equal(retained.take(singleInput), undefined, 'Model teardown empties retained resources.');
+  retained.dispose();
+  console.log('Retained visibility lifecycle passed: 60 single/multi restores, exclusive ownership, replacement, invalidation and teardown.');
   assert.equal(material.uniforms.uvOverlayBelowProjected.value, 1);
   assert.deepEqual(
     state.bindings.map((binding) => binding.layerId),

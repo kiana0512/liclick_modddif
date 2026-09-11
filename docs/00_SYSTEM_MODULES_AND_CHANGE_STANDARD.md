@@ -1069,6 +1069,10 @@ M13/M15，`IDENTITY-TELEMETRY` v1.1.0，日聚合 schema v3：来源由后端确
 
 2026-09-09 CHG-20260909-RESIDENT-MULTILAYER-SUBSETS：M06，ALG-PROJ-007 v2.1.11。至少两层的严格兼容有序子集复用原材质槽位，保留橡皮索引与不兼容回退；单层因真实像素差异明确排除。570 次状态回归、24 组 WebGL 输出零差异；无像素公式、4K、QA、持久化/导出或 Schema 迁移。见对应变更卡。
 
+2026-09-11 CHG-20260911-PROJECTED-VISIBILITY-RESIDENCY：M06，ALG-PROJ-007 v2.1.12。模型内分别保留已有单层/多层材质，减少白模逐层恢复时重复上传、编译与发布；沿用严格兼容判断和独立单层公式，失配与卸载清理。新增 60 次恢复及所有权/失配回归。GPU 资源持有期变化，CPU/Worker/shader/UV/export 像素与 4K、QA、持久化、Schema 不变，无迁移；回滚方式见对应变更卡。
+
+2026-09-11 CHG-20260911-VIEWPORT-WARMUP-PRESENTATION：M06/M03，ALG-PROJ-007 v2.1.13。投影预热同步提交后立即还原 framebuffer/cube/mip/autoClear，避免跨 GPU fence 等待时视口帧写入离屏目标。实际预热回调的三帧等待与取消/错误清理回归旧失败、新通过。GPU/CPU/Worker/shader/UV/export 计算与分辨率、QA、持久化、Schema 不变，无迁移；范围与回滚见对应变更卡。
+
 2026-09-09 CHG-20260909-UV-READBACK-TASK-YIELD：M09/M07，ALG-UV-008 v2.0.2。离屏 8 MiB 读回条间改用既有任务让出，保留可见 renderer 呈现等待；6 次真实 4K 全 RGBA 零差异，隔离阶段均值 175.2→140.4ms，不代表总合成/FPS 收益。无像素、QA、Schema 或资产迁移。见对应变更卡。
 
 2026-09-10 普通模式性能浮条隐藏（M13，UI 展示调整）：普通视口不再挂载 LightweightPerformanceHud，同时移除其独立 rAF 采样。调试开关及 perfLab=1 仍挂载原 PerformanceTestHud，perfLab=0 隐藏。独立性能录制、指标算法、生产渲染、Schema 与持久化不变，无迁移；回退恢复轻量浮条及普通模式挂载即可。
