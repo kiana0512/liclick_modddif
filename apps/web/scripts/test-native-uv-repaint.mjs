@@ -223,7 +223,7 @@ try {
   assert.ok(scissorBody, 'UV tile scissor must have one physical-pixel adapter');
   const setUvScissor = new Function('renderer', 'bounds', scissorBody);
   assert.equal(
-    (engine.match(/setUvScissor\(this\.renderer, tile\.bounds\)/g) ?? []).length,
+    (engine.match(/setUvScissor\(this\.renderer, (?:tile\.bounds|bounds)\)/g) ?? []).length,
     2,
     'both source and output passes use the same adapter',
   );

@@ -53,12 +53,16 @@ export async function run() {
       renderer.render = (scene, view) => {
         if ([engine.source, engine.output].includes(renderer.getRenderTarget())) {
           const [x, y, width, height] = gl.getParameter(gl.SCISSOR_BOX);
+          const sourcePass = renderer.getRenderTarget() === engine.source;
           check(
             gl.isEnabled(gl.SCISSOR_TEST) &&
               x % 256 === 0 &&
               y % 256 === 0 &&
-              width === Math.min(256, size - x) &&
-              height === Math.min(256, size - y),
+              (sourcePass
+                ? width > 0 && height > 0 && x + width <= size && y + height <= size &&
+                  ((x + width) % 256 === 0 || x + width === size) &&
+                  ((y + height) % 256 === 0 || y + height === size)
+                : width === Math.min(256, size - x) && height === Math.min(256, size - y)),
             `DPR ${dpr}: UV scissor is not physical tile bounds: ${[x, y, width, height]}`,
           );
           passes++;

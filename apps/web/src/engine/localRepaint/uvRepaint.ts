@@ -5,7 +5,7 @@ import {
   type UvRepaintPatch,
 } from './uvRepaintState';
 
-// ALG-LR-UV-PAINT v1.1.2. Shared UV pixels intentionally share color/alpha.
+// ALG-LR-UV-PAINT v1.1.3. Shared UV pixels intentionally share color/alpha.
 type Tile = { bounds: Rect; surfaces: Array<{ mesh: THREE.Mesh; box: THREE.Box3 }> };
 type Stroke = { before: Map<number, Promise<Uint8Array<ArrayBuffer>>>; changed: Set<number> };
 
@@ -592,13 +592,26 @@ export class UvRepaint {
       this.meshes.forEach((mesh) => {
         mesh.material = this.brush;
       });
+      // Capture undo before any output writes. Rasterize geometry once for the
+      // stamp, even when its surface spans many atlas tiles. Only the original
+      // touched tiles are composited; gaps inside this scratch rectangle never
+      // enter the authored output or its history.
+      const bounds = { ...touched[0][1].bounds };
       for (const [id, tile] of touched) {
         if (!stroke.before.has(id)) stroke.before.set(id, this.read(this.output, tile.bounds));
         stroke.changed.add(id);
-        this.renderer.setRenderTarget(this.source);
-        setUvScissor(this.renderer, tile.bounds);
-        this.renderer.clear();
-        this.renderer.render(this.scene, input.camera);
+        const right = Math.max(bounds.x + bounds.width, tile.bounds.x + tile.bounds.width);
+        const bottom = Math.max(bounds.y + bounds.height, tile.bounds.y + tile.bounds.height);
+        bounds.x = Math.min(bounds.x, tile.bounds.x);
+        bounds.y = Math.min(bounds.y, tile.bounds.y);
+        bounds.width = right - bounds.x;
+        bounds.height = bottom - bounds.y;
+      }
+      this.renderer.setRenderTarget(this.source);
+      setUvScissor(this.renderer, bounds);
+      this.renderer.clear();
+      this.renderer.render(this.scene, input.camera);
+      for (const [, tile] of touched) {
         this.renderer.setRenderTarget(this.output);
         setUvScissor(this.renderer, tile.bounds);
         this.renderer.render(this.compositeScene, input.camera);
