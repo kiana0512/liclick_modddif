@@ -267,21 +267,30 @@ async function applyOverlays(
       const outputAlpha = alpha + baseAlpha * (1 - alpha);
       if (outputAlpha <= 0.0001) continue;
       const retainedBaseAlpha = baseAlpha * (1 - alpha);
-      output[offset] = linearToSrgbByte(
-        (SRGB_BYTE_TO_LINEAR[output[offset]] * retainedBaseAlpha +
-          SRGB_BYTE_TO_LINEAR[imageData[offset]] * alpha) /
-          outputAlpha,
-      );
-      output[offset + 1] = linearToSrgbByte(
-        (SRGB_BYTE_TO_LINEAR[output[offset + 1]] * retainedBaseAlpha +
-          SRGB_BYTE_TO_LINEAR[imageData[offset + 1]] * alpha) /
-          outputAlpha,
-      );
-      output[offset + 2] = linearToSrgbByte(
-        (SRGB_BYTE_TO_LINEAR[output[offset + 2]] * retainedBaseAlpha +
-          SRGB_BYTE_TO_LINEAR[imageData[offset + 2]] * alpha) /
-          outputAlpha,
-      );
+      // UV-OVERLAY-IDENTITY/1: no base contribution means the canonical
+      // sRGB -> linear -> sRGB round trip returns the source bytes unchanged.
+      // Keep fractional coverage/mask composition below, including feathering.
+      if (retainedBaseAlpha === 0) {
+        output[offset] = imageData[offset];
+        output[offset + 1] = imageData[offset + 1];
+        output[offset + 2] = imageData[offset + 2];
+      } else {
+        output[offset] = linearToSrgbByte(
+          (SRGB_BYTE_TO_LINEAR[output[offset]] * retainedBaseAlpha +
+            SRGB_BYTE_TO_LINEAR[imageData[offset]] * alpha) /
+            outputAlpha,
+        );
+        output[offset + 1] = linearToSrgbByte(
+          (SRGB_BYTE_TO_LINEAR[output[offset + 1]] * retainedBaseAlpha +
+            SRGB_BYTE_TO_LINEAR[imageData[offset + 1]] * alpha) /
+            outputAlpha,
+        );
+        output[offset + 2] = linearToSrgbByte(
+          (SRGB_BYTE_TO_LINEAR[output[offset + 2]] * retainedBaseAlpha +
+            SRGB_BYTE_TO_LINEAR[imageData[offset + 2]] * alpha) /
+            outputAlpha,
+        );
+      }
       output[offset + 3] = Math.round(outputAlpha * 255);
       // Store rendered-color contribution as premultiplied coverage. This is
       // the exact information the viewport needs after a display-color local

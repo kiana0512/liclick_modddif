@@ -46,7 +46,7 @@ export class ProjectedUvRasterCache {
     return entry;
   }
   releaseMaterial(material: THREE.ShaderMaterial) {
-    const key = `${material.blending}:${material.depthTest}:${material.transparent}`;
+    const key = `${material.blending}:${material.depthTest}:${material.transparent}:${JSON.stringify(material.defines)}`;
     if (this.disposed || this.programs.has(key)) material.dispose();
     else this.programs.set(key, material);
   }

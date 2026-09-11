@@ -78,3 +78,16 @@ M07/M09，协作 M06；`PERF-UV-SOURCE-PREPARE-001` v1.3.0。原 PNG header/尺�
 内置原工程两轮可见且聚焦：首次新局部组合 3913/3930ms，mask 490.5/468.3ms；上一版约 4194ms、mask 845.5ms。普通新组合 2269/2384ms，已计算状态约 31–32ms；第一轮 F5 2428ms。连续开关恢复全部原显隐并等待 Saved，最终版本稳定，无该轮捕获的页面异常。仍未达到即时新组合，未证明未覆盖设备/所有原始 PNG 色彩配置均相同；已记录的偶发 isReady 仍待单独定位。
 
 GPU/CPU/Worker/shader 共用原像素公式；CPU 消费者（蒙版、UV/导出等）只改变准备位置，alpha 舍入、Top-K、接缝、深灰斜线、全分辨率和 QA 保留。持久资产及 Project Command/CAS/ownership/verified assets 不变，无 Schema/存量资产/磁盘格式迁移。回滚同时恢复 imageSampler 的 bitmap-only 入口及 Worker 像素消息分支，已保存的结果无需重写。
+
+## 2026-09-11：删除无贡献的颜色与法线计算
+
+M07，协作 M06/M09；`UV-OVERLAY-IDENTITY/1`、`UV-RASTER-SPECIALIZATION/1`。优先验收没有缓存过的图层组合到最终 UV 发布，F5 约 2.4 秒已获用户接受，不能用恢复缓存的 32ms 代替新组合性能。
+
+- Worker overlay：底层贡献为零（来源 alpha 为 1 或底层 alpha 为 0）时直接写来源 RGB，保留原 fractional alpha、renderedColorMask、coverage、顺序及其他像素的完整线性混合。去掉三次恒等的 sRGB 往返运算。
+- GPU：仅内部 quality-alpha 光栅启用无 RGB 输出的 shader 分支；忽略来源 alpha 时不再为该分支采样无用颜色。其他公开光栅入口仍输出原 RGB。surface-locked/无 normal check 时，原法线一致性权重已经为零，直接保留 depth visibility。深度九点采样、几何裁切、Top-K/舍入、半透明边缘和三角面顺序保持。
+- 编译资源：程序保留键增加 defines，防止颜色与权重变体互相挤掉已编译程序；原 256MiB 光栅缓存预算不变。
+- 对照：`test-quality-blend-resources.mjs` 增加 524288 像素的来源字节/alpha 穷举组合，对照冻结核的完整 RGBA、coverage、rendered mask/count；既有 240 组 CPU resolve/资源用例通过。
+- 内置浏览器：运行 `node apps/web/scripts/serve-uv-raster-specialization-qa.mjs`，打开输出的 `__raster_qa` 地址。需本地有冻结提交 `5b8dcde`。48 组 mode/source-alpha/mask/surface-locked/normal-check 对照零差异；4K 权重 alpha 零差异。10 次光栅+读回，预热后旧 96.2/104.8ms，新 91.7/92.2ms；首轮受初始化影响，不当成稳定加速比例。该夹具不是原工程整体性能。
+- 原工程 4K：第一种新局部组合 3946ms，普通基底已复用时其他新局部组合 1469/1390ms，新普通投影组合 2080/2122/2040ms，恢复完整缓存约 31–32ms。连续开关最终稳定、恢复原显隐，无本轮捕获的异常；F5 2387ms。计时止于协调器发布最终 UV，未当成 GPU fence/屏幕呈现精确计时。完整回归 121 项及构建/相关 lint 通过。
+- 限制：整体还没有大幅提速。普通新组合仍只有一个全尺寸光栅命中，其他 12 层重新计算；每层 color+quality 4K 为 128MiB，96MiB 普通聚合结果共用预算，不能直接堆显存。源准备、读回/后处理和上传仍需后续优化。已记录偶发 isReady 问题未宣称解决。
+- 对应面审计：CPU/Worker 质量核和 GPU 量化规则不变；质量中间目标 RGB 变为零但消费者仅读取 alpha，最终颜色/导出无变化。深灰斜线 shader 不改；RGBA/Top-K、QA、分辨率、Project Command/CAS/ownership/verified assets 不变。无 Schema/资产或磁盘缓存迁移。回滚恢复三个运行时文件及程序保留键，已保存资产无需重写。

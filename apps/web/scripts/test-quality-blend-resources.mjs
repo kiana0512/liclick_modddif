@@ -51,6 +51,31 @@ for (const mode of ['literal', 'feathered']) for (const renderedColor of [false,
   assert.deepEqual(newMask, oldMask);
   assert.deepEqual(newCoverage, oldCoverage);
 }
+// Exhaust all source byte/alpha pairs on transparent and opaque destinations.
+// Mixed overlay modes, rendered masks and repeated pixels must retain the
+// frozen implementation's bytes and coverage, including feather thresholds.
+for (const mode of ['literal', 'feathered']) for (const renderedColor of [false, true]) {
+  const count = 256 * 256 * 2;
+  const color = new Uint8ClampedArray(count * 4), base = color.slice();
+  const quality = new Float32Array(count), mask = new Uint8Array(count);
+  const coverage = new Uint8Array(count);
+  for (let i = 0; i < count; i++) {
+    const value = i & 255, alpha = (i >>> 8) & 255;
+    color.set([value, 255 - value, (value * 17) & 255, alpha], i * 4);
+    base.set([31, 127, 251, i < 65536 ? 0 : 255], i * 4);
+    quality[i] = [0, .0001, .02, .11, .5, 1][i % 6];
+    mask[i] = value;
+    coverage[i] = i % 2;
+  }
+  const overlays = [{ color: color.buffer, quality: quality.buffer, overlayMode: mode, renderedColor }];
+  const a = base.slice(), b = base.slice(), am = mask.slice(), bm = mask.slice();
+  const ac = coverage.slice(), bc = coverage.slice();
+  assert.equal(await next.applyOverlays(b, bc, bm, overlays), await old.applyOverlays(a, ac, am, overlays));
+  assert.deepEqual(b, a, `${mode}/${renderedColor}: identity RGB and fractional alpha`);
+  assert.deepEqual(bm, am, 'rendered-color coverage remains exact');
+  assert.deepEqual(bc, ac, 'coverage tags remain exact');
+}
+
 function mockDevice(failAt = 0) {
   const buffers = [], trace = [];
   let group, copy;

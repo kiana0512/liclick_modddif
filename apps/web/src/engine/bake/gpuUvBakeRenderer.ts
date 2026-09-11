@@ -281,6 +281,9 @@ const fragmentShader = `
       1.0 - smoothstep(depthTolerance * 0.75, depthTolerance * 1.75, depthError),
       useDepthCheck
     );
+    #if UV_RASTER_SKIP_NORMAL == 1
+      return depthVisibility;
+    #else
     vec3 capturedFaceNormal = normalTexel.rgb * 2.0 - 1.0;
     float normalAgreement = dot(projectedFaceNormal, normalize(capturedFaceNormal));
     float normalVisibility = step(0.25, length(capturedFaceNormal)) * smoothstep(
@@ -292,6 +295,7 @@ const fragmentShader = `
     // normal rejection would expose adjacent triangles as alternating strips.
     float normalCheckWeight = useNormalCheck * (1.0 - surfaceLockedVisibility);
     return depthVisibility * mix(1.0, normalVisibility, normalCheckWeight);
+    #endif
   }
 
   float computeAngleWeight(float ndv, float strength) {
@@ -528,8 +532,13 @@ const fragmentShader = `
     angleCoverage = mix(angleCoverage, lockedFacingCoverage, surfaceLockedVisibility);
     if (strictDepthCheck > 0.5 && useDepthCheck > 0.5 && visibilityCoverage < 0.5) discard;
     float depthWeight = mix(0.7, 1.0, visibilityCoverage);
-    vec4 texel = sampleProjectedCleanBilinear(projectedMap, projectedSampleUv);
-    texel.rgb = applyHsvAdjustments(texel.rgb);
+    #if UV_RASTER_QUALITY_ONLY == 1
+      vec4 texel = ignoreSourceAlpha > 0.5 ? vec4(0.0, 0.0, 0.0, 1.0)
+        : sampleProjectedCleanBilinear(projectedMap, projectedSampleUv);
+    #else
+      vec4 texel = sampleProjectedCleanBilinear(projectedMap, projectedSampleUv);
+      texel.rgb = applyHsvAdjustments(texel.rgb);
+    #endif
     float sourceAlpha = mix(texel.a, 1.0, ignoreSourceAlpha) * maskCoverage;
     if (sourceAlpha < 0.01) discard;
     float angleWeight = computeAngleWeight(visibilityBackedNdv, layerStrength);
@@ -567,7 +576,11 @@ const fragmentShader = `
       return;
     }
 
-    gl_FragColor = vec4(texel.rgb, writeAlpha);
+    #if UV_RASTER_QUALITY_ONLY == 1
+      gl_FragColor = vec4(0.0, 0.0, 0.0, writeAlpha);
+    #else
+      gl_FragColor = vec4(texel.rgb, writeAlpha);
+    #endif
   }
 `;
 
@@ -1071,6 +1084,7 @@ function createLayerMaterial(input: {
   strictDepthCheck?: boolean;
   maximumDepthError?: number;
   minimumOutputCoverage?: number;
+  qualityOnly?: boolean;
 }) {
   if (!input.layer.camera) throw new Error('Projected layer has no capture camera.');
   const objectMatrixDelta = createObjectMatrixDelta(input.group, input.layer);
@@ -1084,10 +1098,17 @@ function createLayerMaterial(input: {
       ? input.textures.normalTexture.image
       : input.textures.depthTexture.image
   ) as { width?: number; height?: number };
+  // UV-RASTER-SPECIALIZATION/1: alpha-only private targets do not consume RGB;
+  // surface-locked/no-normal inputs give captured-normal agreement zero weight.
   return new THREE.ShaderMaterial({
     name: `LiclickGpuUvBake:${input.layer.id}`,
     vertexShader,
     fragmentShader,
+    defines: {
+      UV_RASTER_QUALITY_ONLY: input.qualityOnly ? 1 : 0,
+      UV_RASTER_SKIP_NORMAL: !input.textures.useNormalCheck ||
+        input.layer.projectionVisibilityPolicy === 'surface-locked-v1' ? 1 : 0,
+    },
     uniforms: {
       projectedMap: { value: input.textures.projectedTexture },
       maskMap: { value: input.textures.maskTexture },
@@ -1737,6 +1758,7 @@ export async function bakeProjectedLayerRastersWithGpu(
         textures,
         enableBackfaceCulling: input.enableBackfaceCulling,
         compositeMode: 'quality-alpha',
+        qualityOnly: true,
         projectedImageUvFlipY: input.projectedImageUvFlipY ?? false,
         strictDepthCheck: input.strictDepthCheck,
         maximumDepthError: input.maximumDepthError,
