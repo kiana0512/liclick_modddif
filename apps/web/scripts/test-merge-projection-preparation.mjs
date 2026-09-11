@@ -8,7 +8,7 @@ const code=ts.transpileModule(source.replace(/^import[^\n]+\n/gm,'').replace("co
 class Pixels {
   constructor(data,width=1,height=1){this.data=data;this.width=width;this.height=height;}
 }
-let calls=0,tick,listener,clock=0;
+let calls=0,tick,listener,clock=0,managed=false;
 const queued=[];
 const finalInputs=[];
 let layers=[{id:'a',type:'projected',visible:true,imageUrl:'a',camera:{},order:0},
@@ -25,7 +25,7 @@ const scope={cancelMergeFinalPreparation:()=>{},prepareMergeFinal:async(_signatu
   createReusableProjectionBakeSignature:input=>JSON.stringify({...input,canPrepare:undefined}),
   cloneProjectionBakeImageData:image=>new Pixels(image.data.slice()),
   getMergeUvPostprocessOptions:()=>({uvIslandGutterPixels:2,uvInteriorHolePixels:1,uvCoverageGapPixels:1,uvSeamRepairPixels:2}),
-  isLocalRepaintProjectedLayer:()=>false,createProjectionMaskedImage:()=>{throw Error('unexpected mask');},
+  prepareMergeProjectionLayers:async layers=>layers,isResidentUvManaged:()=>managed,
   bakeVisibleProjectedLayersToTexture:async input=>{
     calls++;assert.equal(input.commitToProject,false);assert.equal(input.markSourceLayersBaked,false);
     input.onProgress({});
@@ -64,6 +64,11 @@ other();
 const single=api.setMergePreparationSelection('object',[layers[0].id],true);
 tick();clock+=250;tick();await settle();assert.equal(calls,4,'single-layer context menu also prewarms');
 queued.shift()();await settle();single();
+managed=true;
+const priorCalls=calls;
+layers=layers.map(layer=>({...layer,opacity:0.3}));listener({layers},{layers:[]});
+tick();clock+=2000;tick();await settle();
+assert.equal(calls,priorCalls,'Resident UV display must not enqueue a competing speculative merge');
 stop();assert.equal(tick,undefined);assert.equal(listener,undefined);
 assert.equal(scope.document.body.dataset.uvMergePreparation,undefined);
 console.log('Merge preparation: deduplication, immutable full-resolution results, edit invalidation, stale-result rejection and teardown passed.');

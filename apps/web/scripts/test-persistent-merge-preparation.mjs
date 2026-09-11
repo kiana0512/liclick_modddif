@@ -10,17 +10,23 @@ const cache={match:async req=>stored.get(req.url)?.clone(),put:async(req,res)=>s
   keys:async()=>[...stored.keys()].map(url=>new Request(url)),delete:async req=>stored.delete(req.url)};
 class Pixels {constructor(data,width,height){this.data=data;this.width=width;this.height=height;}}
 let user='user-a';
+let activeFetches=0,peakFetches=0;
+const fetched=[];
 const scope={exports:{},crypto:globalThis.crypto,window:{caches:{}},caches:{open:async()=>cache},
   location:{origin:'https://test.invalid'},Request,Response,TextEncoder,TextDecoder:globalThis.TextDecoder,ImageData:Pixels,
   document:{createElement:()=>({})},useAuthStore:{getState:()=>({user:{id:user}})},
   getDebugUvBakeStatus:()=>({}),getMergeUvPostprocessOptions:()=>({gutter:8}),
-  fetch:async()=>new Response(new Uint8Array([9,8,7,6])),
+  fetch:async(url)=>{
+    fetched.push(url);activeFetches++;peakFetches=Math.max(peakFetches,activeFetches);
+    await new Promise(resolve=>setTimeout(resolve,1));
+    activeFetches--;return new Response(new Uint8Array([9,8,7,6]));
+  },
 };
 const api=new Function(...Object.keys(scope),code+';return exports;')(...Object.values(scope));
 const makeGroup=()=>{
   const attributes={position:{array:new Float32Array([0,1,2]),itemSize:3,normalized:false,count:1},
     uv:{array:new Float32Array([0,1]),itemSize:2,normalized:false,count:1}};
-  const mesh={uuid:Math.random().toString(),isMesh:true,visible:true,matrixWorld:{elements:[1]},
+  const mesh={uuid:Math.random().toString(),isMesh:true,userData:{},visible:true,matrixWorld:{elements:[1]},
     geometry:{getAttribute:name=>attributes[name],index:null,drawRange:{start:0,count:1},groups:[]}};
   return {attributes,mesh,group:{updateMatrixWorld(){},traverse:fn=>fn(mesh)}};
 };
@@ -29,6 +35,11 @@ const input={projectId:'project',objectId:'object',resolution:512,group:a.group,
   layers:[{id:'layer',order:0,imageUrl:'blob:old'}]};
 const key=await api.persistentMergeKey(input);
 assert.ok(key);
+fetched.length=0;peakFetches=0;
+const manyLayers=Array.from({length:9},(_,i)=>({id:`layer-${i}`,order:i,imageUrl:`blob:source-${i%7}`}));
+assert.ok(await api.persistentMergeKey({...input,layers:manyLayers}));
+assert.equal(fetched.length,7,'shared source assets are verified only once per key');
+assert.equal(peakFetches,3,'source verification overlaps network waits within a fixed memory bound');
 assert.equal(await api.persistentMergeKey({...input,group:b.group,layers:[{...input.layers[0],imageUrl:'blob:new'}]}),key,
   'reload UUIDs and blob URLs do not invalidate identical geometry/source bytes');
 b.attributes.uv.array[0]=0.5;

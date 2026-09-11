@@ -236,6 +236,10 @@ async function applyOverlays(
   for (const overlay of overlays) {
     const imageData = new Uint8ClampedArray(overlay.color);
     const qualityMap = new Float32Array(overlay.quality);
+    const sourceWords = new Uint32Array(overlay.color);
+    const outputWords = new Uint32Array(output.buffer, output.byteOffset, output.length / 4);
+    let previousSource = -1, previousBase = -1, previousQuality = -1, previousMask = -1;
+    let previousResult = 0, previousResultMask = 0;
     for (let pixelIndex = 0, offset = 0; offset < imageData.length; pixelIndex += 1, offset += 4) {
       const layerCoverage = imageData[offset + 3] / 255;
       if (
@@ -244,6 +248,14 @@ async function applyOverlays(
       ) {
         continue;
       }
+      const sourceWord = sourceWords[pixelIndex], baseWord = outputWords[pixelIndex];
+      const quality = overlay.overlayMode === 'literal' ? 0 : qualityMap[pixelIndex];
+      const mask = renderedColorMask[pixelIndex];
+      if (sourceWord === previousSource && baseWord === previousBase &&
+          quality === previousQuality && mask === previousMask) {
+        outputWords[pixelIndex] = previousResult;
+        renderedColorMask[pixelIndex] = previousResultMask;
+      } else {
       const alpha = getProjectionOverlayAlpha(
         layerCoverage,
         overlay.overlayMode === 'literal' ? 0 : qualityMap[pixelIndex],
@@ -278,6 +290,10 @@ async function applyOverlays(
         Math.max(0, Math.min(1, retainedRenderedCoverage + (overlay.renderedColor ? alpha : 0))) *
           255,
       );
+      previousSource = sourceWord; previousBase = baseWord;
+      previousQuality = quality; previousMask = mask;
+      previousResult = outputWords[pixelIndex]; previousResultMask = renderedColorMask[pixelIndex];
+      }
       if (!coverage[pixelIndex]) {
         coverage[pixelIndex] = 1;
         addedCoverage += 1;

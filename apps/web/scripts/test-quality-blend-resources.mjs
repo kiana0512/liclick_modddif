@@ -7,9 +7,14 @@ const frozen = fs.readFileSync(new URL('./fixtures/quality-blend-0ee7b0b.ts', im
 const pixelSource=fs.readFileSync(new URL('../src/engine/bake/qualityBlendCpuPixel.ts', import.meta.url),'utf8');
 const pixelCode=ts.transpileModule(pixelSource.replace('export function','function'),{compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText;
 const sharedResolve=new Function(pixelCode+';return resolvePixelCpu;')();
+const overlaySource = fs.readFileSync(new URL('../src/engine/bake/projectedOverlayComposition.ts', import.meta.url), 'utf8');
+const overlayCode = ts.transpileModule(overlaySource.slice(overlaySource.indexOf('export function getProjectionOverlayAlpha')).replace('export function', 'function'), {
+  compilerOptions: { target: ts.ScriptTarget.ES2022 },
+}).outputText;
+const sharedOverlayAlpha = new Function(`${overlayCode}; return getProjectionOverlayAlpha;`)();
 function load(source, device) {
   const code = ts.transpileModule(source.slice(source.indexOf('const TOP_K')), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
-  return new Function('resolvePixelCpu','self', `${code}; return {createTopK, resolveCpu, resolveGpu, shader};`)(sharedResolve,{ navigator: { gpu: device ? { requestAdapter: async () => ({ requestDevice: async () => device }) } : undefined } });
+  return new Function('resolvePixelCpu','getProjectionOverlayAlpha','self', `${code}; return {createTopK, resolveCpu, resolveGpu, applyOverlays, shader};`)(sharedResolve,sharedOverlayAlpha,{ navigator: { gpu: device ? { requestAdapter: async () => ({ requestDevice: async () => device }) } : undefined } });
 }
 const old = load(frozen), next = load(current);
 assert.equal(next.shader, old.shader, 'production shader is unchanged');
@@ -26,6 +31,25 @@ for (let test = 0; test < 120; test++) {
     }
   }
   for (const alpha of [false, true]) assert.deepEqual(await next.resolveCpu(top, alpha), await old.resolveCpu(top, alpha));
+}
+for (const mode of ['literal', 'feathered']) for (const renderedColor of [false, true]) {
+  const count = 4096, color = new Uint8ClampedArray(count * 4), quality = new Float32Array(count);
+  const base = new Uint8ClampedArray(count * 4), mask = new Uint8Array(count), coverage = new Uint8Array(count);
+  for (let i = 0; i < count; i++) {
+    color.set(i < 2048 ? [83, 171, 23, 157] : [random() % 256, random() % 256, random() % 256, random() % 256], i * 4);
+    base.set(i < 2048 ? [103, 93, 19, 139] : [random() % 256, random() % 256, random() % 256, random() % 256], i * 4);
+    quality[i] = i < 2048 ? .11 : random() / 0xffffffff;
+    mask[i] = i < 2048 ? 51 : random() % 256;
+    coverage[i] = i % 2;
+  }
+  const overlays = [{ color: color.buffer, quality: quality.buffer, overlayMode: mode, renderedColor }];
+  const oldBytes = base.slice(), newBytes = base.slice(), oldMask = mask.slice(), newMask = mask.slice();
+  const oldCoverage = coverage.slice(), newCoverage = coverage.slice();
+  assert.equal(await old.applyOverlays(oldBytes, oldCoverage, oldMask, overlays),
+    await next.applyOverlays(newBytes, newCoverage, newMask, overlays));
+  assert.deepEqual(newBytes, oldBytes);
+  assert.deepEqual(newMask, oldMask);
+  assert.deepEqual(newCoverage, oldCoverage);
 }
 function mockDevice(failAt = 0) {
   const buffers = [], trace = [];

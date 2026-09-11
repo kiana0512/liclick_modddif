@@ -9,51 +9,66 @@ const hash=async(bytes:Uint8Array<ArrayBuffer>)=>Array.from(new Uint8Array(await
 const textBytes=(value:unknown)=>new TextEncoder().encode(JSON.stringify(value));
 
 /** Hash actual geometry and source bytes: runtime UUIDs and blob URLs are not identity. */
-export async function persistentMergeKey(input:{projectId:string;objectId:string;resolution:UvBakeResolution;group:THREE.Group;layers:Layer[]}) {
+export async function persistentMergeKey(input:{projectId:string;objectId:string;resolution:UvBakeResolution;group:THREE.Group;layers:Layer[];purpose?:string}) {
   const userId=useAuthStore.getState().user?.id;
   if(!userId || !globalThis.crypto?.subtle || !('caches' in window)) return undefined;
   try {
     input.group.updateMatrixWorld(true);
     const nodes:THREE.Object3D[]=[];input.group.traverse(node=>nodes.push(node));
     const geometry=[];
+    const geometryDigests=new WeakMap<ArrayBufferLike,Map<string,string>>();
     for(const node of nodes) {
       const mesh=node as THREE.Mesh;
-      const record:unknown[]=[node.visible,node.matrixWorld.elements];
+      if(node.userData.liclickPaintOverlay || node.userData.liclickWireframeOverlay || node.userData.liclickLocalRepaintGpuOverlay) continue;
+      const record:unknown[]=[node.visible,[...node.matrixWorld.elements]];
       if(mesh.isMesh) {
         if((mesh as THREE.SkinnedMesh).isSkinnedMesh) return undefined;
         for(const name of ['position','normal','uv','index']) {
           const attribute=name==='index' ? mesh.geometry.index : mesh.geometry.getAttribute(name);
           if(!attribute) {record.push(null);continue;}
           const array='data' in attribute ? attribute.data.array : attribute.array;
-          const bytes=new Uint8Array(array.buffer,array.byteOffset,array.byteLength).slice();
+          let spans=geometryDigests.get(array.buffer);
+          if(!spans) {spans=new Map();geometryDigests.set(array.buffer,spans);}
+          const span=`${array.byteOffset}:${array.byteLength}`;
+          let digest=spans.get(span);
+          if(!digest) {
+            digest=await hash(new Uint8Array(array.buffer,array.byteOffset,array.byteLength).slice());
+            spans.set(span,digest);
+          }
           record.push([name,attribute.itemSize,attribute.normalized,attribute.count,
-            'data' in attribute ? [attribute.offset,attribute.data.stride] : null,await hash(bytes)]);
+            'data' in attribute ? [attribute.offset,attribute.data.stride] : null,digest]);
         }
         record.push(mesh.geometry.drawRange,mesh.geometry.groups);
       }
       geometry.push(record);
     }
-    const assets=new Map<string,Promise<string>>();
-    const layers=[];
-    for(const layer of [...input.layers].sort((a,b)=>b.order-a.order || a.id.localeCompare(b.id))) {
-      const snapshot={...layer};
+    const assets=new Map<string,string>();
+    const layers=[...input.layers].sort((a,b)=>b.order-a.order || a.id.localeCompare(b.id)).map(layer=>({...layer}));
+    for(const layer of layers) {
       for(const key of ['imageUrl','maskUrl','depthUrl','normalUrl'] as const) {
         const url=layer[key];if(!url) continue;
         if(!/^(https?:|blob:|data:|\/)/.test(url)) return undefined;
-        let digest=assets.get(url);
-        if(!digest) {
-          digest=fetch(url).then(async response=>{
-            if(!response.ok) throw new Error('Merge source unavailable.');
-            return hash(new Uint8Array(await response.arrayBuffer()));
-          });
-          assets.set(url,digest);
-        }
-        snapshot[key]=await digest;
+        assets.set(url,'');
       }
-      layers.push(snapshot);
     }
-    return await hash(textBytes({version:'uv-composition-8/resident-2.2.2/persistent-3',
-      userId,projectId:input.projectId,objectId:input.objectId,resolution:input.resolution,
+    // Verify source bytes concurrently, but bound decoded response memory. This
+    // preserves the exact cache key while avoiding one network round trip per layer.
+    const urls=[...assets.keys()];let next=0;
+    await Promise.all(Array.from({length:Math.min(3,urls.length)},async()=>{
+      while(next<urls.length) {
+        const url=urls[next++];
+        const response=await fetch(url);
+        if(!response.ok) throw new Error('Merge source unavailable.');
+        assets.set(url,await hash(new Uint8Array(await response.arrayBuffer())));
+      }
+    }));
+    for(const layer of layers) {
+      for(const key of ['imageUrl','maskUrl','depthUrl','normalUrl'] as const) {
+        const url=layer[key];if(url) layer[key]=assets.get(url)!;
+      }
+    }
+    return await hash(textBytes({version:'uv-composition-9/resident-2.2.2/persistent-4',
+      purpose:input.purpose,userId,projectId:input.projectId,objectId:input.objectId,resolution:input.resolution,
       geometry,layers,options:getMergeUvPostprocessOptions(input.resolution),debug:getDebugUvBakeStatus()}));
   } catch {return undefined;}
 }

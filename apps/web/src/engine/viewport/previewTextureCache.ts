@@ -274,6 +274,19 @@ function getWorkerBitmapId(texture: THREE.Texture) {
   return typeof value === 'number' ? value : undefined;
 }
 
+/** Derived UV buffers can be recomputed after context loss. Once uploaded, keep
+ * only their GPU allocation instead of duplicating every cached state in a Worker.
+ * Authored/global cached previews must retain their upload source.
+ */
+export function releaseTransientPreviewUploadSource(renderer: THREE.WebGLRenderer, texture: THREE.Texture) {
+  const id = getWorkerBitmapId(texture);
+  if (id === undefined) return;
+  if (texture.userData.liclickPreviewCacheKey || !previewTextureReadyRenderers.get(texture)?.has(renderer))
+    throw new Error('Only uploaded, exclusively owned transient previews may release their source.');
+  releaseWorkerBitmap(id);
+  delete texture.userData.liclickPreviewWorkerBitmapId;
+}
+
 function markPreviewUploadStep(step: string) {
   if (
     document.body.dataset.perfSimulatedViewportInteraction === '1' ||

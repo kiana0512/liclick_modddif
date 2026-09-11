@@ -8,6 +8,7 @@ const bake = fs.readFileSync(new URL('../src/engine/bake/bakeProjectedLayerToTex
 const cleanup = bake.slice(bake.indexOf('async function fillTransparentTexelsForViewport'), bake.indexOf('function clampByte'));
 let paints = 0;
 const next = new Function('waitForBrowserPaint', `const UNPROJECTED_TEXTURE_FILL=[8,9,13], MIN_TRANSPARENT_OUTPUT_ALPHA=8, BAKE_PIXELS_PER_YIELD=32768;
+const isViewportInteractionBusy = () => false, yieldToBrowserTask = waitForBrowserPaint;
 ${ts.transpileModule(cleanup, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText}
 return {fillTransparentTexelsForViewport, clearWeakTransparentTexels};`)(
   () => new Promise((resolve) => setImmediate(() => { paints++; resolve(); })),

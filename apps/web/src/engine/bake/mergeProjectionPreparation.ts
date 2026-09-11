@@ -3,8 +3,7 @@ import type {Layer} from '@/types/layer';
 import type {BakeProgress,BakeProjectedLayerResult,UvBakeResolution} from './uvBakeTypes';
 import {createReusableProjectionBakeSignature,cloneProjectionBakeImageData} from './projectionBakeSignature';
 import {getMergeUvPostprocessOptions} from '@/engine/layers/mergeUvComposition';
-import {createProjectionMaskedImage} from '@/engine/projection/createMaskedProjectedImage';
-import {isLocalRepaintProjectedLayer} from './projectedOverlayComposition';
+import {prepareMergeProjectionLayers} from './prepareMergeProjectionLayers';
 import {useSceneStore} from '@/stores/sceneStore';
 import {useLayerStore} from '@/stores/layerStore';
 import {useProjectStore} from '@/stores/projectStore';
@@ -13,6 +12,7 @@ import {cancelMergeFinalPreparation,prepareMergeFinal} from './mergeFinalPrepara
 import {persistentMergeKey,readPersistentMerge,writePersistentMerge} from './persistentMergePreparation';
 import {isFlattenableUvMergeSource,isContentAwareUvUnderlay} from '@/engine/layers/mergeUvComposition';
 import {compareUvLayersForComposition} from '@/engine/layers/uvLayerComposition';
+import {isResidentUvManaged} from '@/engine/projection/residentUvPresentation';
 
 type Request={projectId:string;objectId:string;resolution:UvBakeResolution;group:THREE.Group;layers:Layer[]};
 type Job={signature:string;controller:AbortController;promise:Promise<BakeProjectedLayerResult>};
@@ -65,12 +65,7 @@ export function prepareMergeProjection(input:Request,onProgress?:(progress:BakeP
       document.body.dataset.uvMergePreparationRead='disk-hit';
       return restored;
     }
-    const layers=await Promise.all(input.layers.map(async layer=>
-      isLocalRepaintProjectedLayer(layer) && layer.maskUrl ? {...layer,
-        imageUrl:await createProjectionMaskedImage(layer.imageUrl, layer.maskUrl, {
-          ignoreSourceAlpha: layer.ignoreSourceAlpha ?? true,
-        }),
-        maskUrl:undefined,ignoreSourceAlpha:false} : layer));
+    const layers=await prepareMergeProjectionLayers(input.layers);
     guard();
     const {bakeVisibleProjectedLayersToTexture}=await import('./bakeProjectedLayerToTexture');
     guard();
@@ -108,6 +103,10 @@ export function startMergeProjectionPreparation(options:{projectId:string;resolu
   const tick=()=>{
     if(stopped) return;
     const model=useSceneStore.getState().importedModel;
+    // The viewport already maintains this derived UV. A second speculative bake
+    // competes for the same serial queue after every eye click. Explicit merge
+    // still calls prepareMergeProjection and retains all validation/persistence.
+    if (model && isResidentUvManaged(model.group)) return;
     if(!model || useProjectStore.getState().getCurrentProject()?.id!==options.projectId ||
       model.group.userData.liclickRestorePlaceholder || !options.canPrepare() ||
       document.visibilityState!=='visible' || isViewportInteractionBusy(500)) return;

@@ -19,30 +19,44 @@ export async function readRenderTargetPixelsInStripes(
   let maximumStripeMs = 0;
   const startedAt = performance.now();
   const usesVisibleRenderer = renderer.domElement.isConnected;
-  for (let y = 0; y < resolution; y += rowsPerStripe) {
-    if (y > 0) {
+  // Pipeline only the isolated bake context. The onscreen renderer keeps its
+  // original one-stripe paint boundary; private work holds at most 16 MiB of PBOs.
+  const depth = usesVisibleRenderer ? 1 : 2;
+  const pending: Array<Promise<{ error?: unknown }>> = [];
+  let nextY = 0;
+  const submit = () => {
+    const y = nextY;
+    nextY += rowsPerStripe;
+    const rowCount = Math.min(rowsPerStripe, resolution - y);
+    const offset = y * resolution * 4;
+    const stripe = pixels.subarray(offset, offset + resolution * rowCount * 4);
+    const stripeStartedAt = performance.now();
+    // Observe failures immediately, including a later stripe failing first.
+    // Drain outstanding reads before releasing their target on any failure.
+    const task = (async () => {
+      try {
+        await renderer.readRenderTargetPixelsAsync(target, 0, y, resolution, rowCount, stripe);
+        maximumStripeMs = Math.max(maximumStripeMs, performance.now() - stripeStartedAt);
+        return {};
+      } catch (error) { return { error }; }
+    })();
+    pending.push(task);
+  };
+  try {
+    while (nextY < resolution && pending.length < depth) submit();
+    while (pending.length) {
+      const completed = await pending.shift()!;
+      if ('error' in completed) throw completed.error;
+      if (nextY >= resolution && !pending.length) break;
       if (usesVisibleRenderer) {
         await waitForBrowserPaint();
       } else {
         await yieldToBrowserTask();
       }
+      if (nextY < resolution) submit();
     }
-    const rowCount = Math.min(rowsPerStripe, resolution - y);
-    // Read directly into this stripe's final destination. A separate buffer
-    // plus pixels.set copied another full RGBA atlas on the main thread per
-    // readback (64 MiB at 4K), without changing a single output byte.
-    const offset = y * resolution * 4;
-    const stripe = pixels.subarray(offset, offset + resolution * rowCount * 4);
-    const stripeStartedAt = performance.now();
-    await renderer.readRenderTargetPixelsAsync(
-      target,
-      0,
-      y,
-      resolution,
-      rowCount,
-      stripe,
-    );
-    maximumStripeMs = Math.max(maximumStripeMs, performance.now() - stripeStartedAt);
+  } finally {
+    await Promise.all(pending);
   }
   if (typeof document !== 'undefined') {
     document.body.dataset.uvBakeReadbackStripeRows = String(rowsPerStripe);

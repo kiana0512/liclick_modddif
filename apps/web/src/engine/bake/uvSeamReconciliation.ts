@@ -22,6 +22,13 @@ type SeamPlan = {
   pairs: Array<[UvSeamEdgeRecord, UvSeamEdgeRecord]>;
 };
 let seamPlanCache = new WeakMap<THREE.Object3D, SeamPlan>();
+// Ordered donor addresses are independent of layer content. Keep one bounded
+// plan, including repeated addresses: later repairs may read earlier repairs.
+type RepairPlan = { snapshot: UvSeamGeometrySnapshot; key: string; chunks: Uint32Array[];
+  count: number; seamPairs: number };
+let repairPlanCache = new WeakMap<THREE.Object3D, RepairPlan>();
+const REPAIR_CHUNK_WORDS = 32768;
+const MAX_REPAIR_WORDS = 64 * 1024 * 1024 / 4;
 
 function* getReusableSeamPairs(root: THREE.Object3D, includeDiscontinuous: boolean) {
   const cached = seamPlanCache.get(root);
@@ -58,7 +65,8 @@ function uvEdgeKey(edge: UvSeamEdgeRecord) {
 }
 
 function toPixel(uv: THREE.Vector2, width: number, height: number): PixelPoint {
-  return { x: uv.x * (width - 1), y: (1 - uv.y) * (height - 1) };
+  // UV-PIXEL-SPACE/1: window coordinates; pixelIndex selects the containing texel.
+  return { x: uv.x * width, y: (1 - uv.y) * height };
 }
 
 function inwardPixelNormal(edgeStart: PixelPoint, edgeEnd: PixelPoint, inside: PixelPoint) {
@@ -100,7 +108,10 @@ function* collectUvSeamPairSteps(root: THREE.Object3D, includeDiscontinuous = fa
   root.updateMatrixWorld(true);
 
   const meshes: THREE.Mesh[] = [];
-  root.traverse((object) => { if (object instanceof THREE.Mesh) meshes.push(object); });
+  root.traverse((object) => {
+    if (object.userData.liclickPaintOverlay || object.userData.liclickWireframeOverlay || object.userData.liclickLocalRepaintGpuOverlay) return;
+    if (object instanceof THREE.Mesh) meshes.push(object);
+  });
   for (const object of meshes) {
     const geometry = object.geometry;
     const position = geometry.getAttribute('position');
@@ -194,8 +205,8 @@ function* collectUvSeamPairSteps(root: THREE.Object3D, includeDiscontinuous = fa
 }
 
 function pixelIndex(point: PixelPoint, width: number, height: number) {
-  const x = Math.max(0, Math.min(width - 1, Math.round(point.x)));
-  const y = Math.max(0, Math.min(height - 1, Math.round(point.y)));
+  const x = Math.max(0, Math.min(width - 1, Math.floor(point.x)));
+  const y = Math.max(0, Math.min(height - 1, Math.floor(point.y)));
   return y * width + x;
 }
 
@@ -230,7 +241,6 @@ function* reconcileUvSeamSteps(
   options: { repairMissingCoverage?: boolean; bandPixels?: number } = {},
 ) {
   const { width, height, data } = imageData;
-  const seamPairs = yield* getReusableSeamPairs(root, Boolean(options.repairMissingCoverage));
   // Missing-coverage repair has always updated both arrays after each donor
   // transfer, so its working source is exactly data. Averaging still needs the
   // immutable original. Avoid the redundant 64 MiB copy for a 4K Merge.
@@ -240,6 +250,35 @@ function* reconcileUvSeamSteps(
     Math.min(32, options.bandPixels ?? Math.round(Math.max(width, height) / 1024)),
   );
   let adjustedPixels = 0;
+  const repairKey = `${width}:${height}:${bandPixels}`;
+  const cached = options.repairMissingCoverage ? repairPlanCache.get(root) : undefined;
+  if (typeof document !== 'undefined') document.body.dataset.residentUvSeamPlanHit = '0';
+  if (cached?.key === repairKey && (yield* matchesUvSeamGeometry(root, cached.snapshot))) {
+    if (typeof document !== 'undefined') document.body.dataset.residentUvSeamPlanHit = '1';
+    let remaining = cached.count;
+    for (const chunk of cached.chunks) {
+      const length = Math.min(remaining, chunk.length);
+      for (let index = 0; index < length; index += 2) {
+        if ((index & 8191) === 0) yield;
+        const first = chunk[index], second = chunk[index + 1];
+        const firstCovered = Boolean(coverage[first] && data[first * 4 + 3]);
+        const secondCovered = Boolean(coverage[second] && data[second * 4 + 3]);
+        if (firstCovered === secondCovered) continue;
+        const donor = (firstCovered ? first : second) * 4;
+        const target = firstCovered ? second : first;
+        for (let channel = 0; channel < 4; channel++) data[target * 4 + channel] = data[donor + channel];
+        coverage[target] = 1;
+        adjustedPixels++;
+      }
+      remaining -= length;
+    }
+    return { seamPairs: cached.seamPairs, adjustedPixels, bandPixels };
+  }
+  const snapshot = options.repairMissingCoverage ? yield* snapshotUvSeamGeometry(root) : undefined;
+  const chunks: Uint32Array[] = [];
+  let addressCount = 0;
+  let cacheable = Boolean(snapshot);
+  const seamPairs = yield* getReusableSeamPairs(root, Boolean(options.repairMissingCoverage));
 
   for (const [first, second] of seamPairs) {
     const firstStart = toPixel(first.a.uv, width, height);
@@ -282,6 +321,17 @@ function* reconcileUvSeamSteps(
         };
         const firstIndex = pixelIndex(firstPoint, width, height);
         const secondIndex = pixelIndex(secondPoint, width, height);
+        if (cacheable) {
+          if (addressCount === MAX_REPAIR_WORDS) { cacheable = false; chunks.length = 0; }
+          else {
+            const offset = addressCount % REPAIR_CHUNK_WORDS;
+            if (offset === 0) chunks.push(new Uint32Array(REPAIR_CHUNK_WORDS));
+            const chunk = chunks[chunks.length - 1];
+            chunk[offset] = firstIndex;
+            chunk[offset + 1] = secondIndex;
+            addressCount += 2;
+          }
+        }
         const firstOffset = firstIndex * 4;
         const secondOffset = secondIndex * 4;
         const firstCovered = Boolean(coverage[firstIndex] && source[firstOffset + 3]);
@@ -323,5 +373,15 @@ function* reconcileUvSeamSteps(
     }
   }
 
+  if (cacheable && snapshot && (yield* matchesUvSeamGeometry(root, snapshot))) {
+    repairPlanCache = new WeakMap([[root, { snapshot, key: repairKey, chunks,
+      count: addressCount, seamPairs: seamPairs.length }]]);
+    // The compact repair plan supersedes the large edge object graph.
+    seamPlanCache.delete(root);
+  } else if (options.repairMissingCoverage) repairPlanCache.delete(root);
+  if (typeof document !== 'undefined') {
+    document.body.dataset.residentUvSeamPlanWords = String(addressCount);
+    document.body.dataset.residentUvSeamPlanCached = String(repairPlanCache.has(root));
+  }
   return { seamPairs: seamPairs.length, adjustedPixels, bandPixels };
 }

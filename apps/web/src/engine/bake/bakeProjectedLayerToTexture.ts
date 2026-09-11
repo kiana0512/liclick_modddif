@@ -40,7 +40,7 @@ import type { Layer } from '@/types/layer';
 import { createRegisteredObjectUrl } from '@/utils/blobUrlRegistry';
 import { encodeRgbaPngBlob } from '@/utils/encodeRgbaPng';
 import { createId } from '@/utils/id';
-import { waitForBrowserPaint } from '@/utils/browserScheduling';
+import { waitForBrowserPaint, yieldToBrowserTask } from '@/utils/browserScheduling';
 import { usesUnlitRenderedColor } from '@/engine/viewport/renderedLayerColor';
 import { blendProjectedRastersInWorker } from './qualityBlendWorker';
 import { residentQualityPolicy, verifyResidentQuality } from './residentQualityComposite';
@@ -311,26 +311,28 @@ async function fillTransparentTexelsForViewport(imageData: ImageData) {
 
 async function clearWeakTransparentTexels(imageData: ImageData, coverage?: Uint8Array) {
   let sliceStartedAt = performance.now();
-  for (let offset = 0; offset < imageData.data.length; offset += 4) {
-    if (offset > 0 && offset % (BAKE_PIXELS_PER_YIELD * 4) === 0 &&
-        performance.now() - sliceStartedAt >= 8) {
-      await waitForBrowserPaint();
+  const data = imageData.data;
+  const words = data.byteOffset % 4 === 0 ? new Uint32Array(data.buffer, data.byteOffset, data.length / 4) : undefined;
+  for (let first = 0; first < data.length; first += BAKE_PIXELS_PER_YIELD * 4) {
+    if (performance.now() - sliceStartedAt >= 4) {
+      await (isViewportInteractionBusy() ? waitForBrowserPaint() : yieldToBrowserTask());
       sliceStartedAt = performance.now();
     }
+    const end = Math.min(first + BAKE_PIXELS_PER_YIELD * 4, data.length);
+    for (let offset = first; offset < end; offset += 4) {
     if (imageData.data[offset + 3] > MIN_TRANSPARENT_OUTPUT_ALPHA) continue;
     const pixelIndex = offset / 4;
     // `padUvIslandGutters(..., 'rgb-only')` marks filter-only gutter texels
     // with coverage value 2. Keep their hidden RGB while alpha remains zero.
     if (imageData.data[offset + 3] === 0 && coverage?.[pixelIndex] === 2) continue;
-    imageData.data[offset] = 0;
-    imageData.data[offset + 1] = 0;
-    imageData.data[offset + 2] = 0;
-    imageData.data[offset + 3] = 0;
+    if (words) words[pixelIndex] = 0;
+    else data.fill(0, offset, offset + 4);
     // Keep the logical coverage mask in lockstep with the exported alpha.
     // Otherwise an alpha<=8 edge sample is treated as a valid wall/donor by
     // the UV-hole pass and is only erased afterwards, leaving 1px cracks in
     // the final PNG even though coverage still says that texel is occupied.
     if (coverage) coverage[pixelIndex] = 0;
+    }
   }
 }
 
@@ -1030,7 +1032,7 @@ async function bakeVisibleProjectedLayersToTextureUnlocked(
 ): Promise<BakeProjectedLayerResult> {
   await flushLiveUvCommits();
   const startedAt = performance.now();
-  const importedModel = useSceneStore.getState().importedModel;
+  const importedModel = input.sourceModel ?? useSceneStore.getState().importedModel;
   if (!importedModel || importedModel.objectId !== input.objectId) {
     throw new Error('Please import a model first.');
   }
@@ -1230,6 +1232,7 @@ async function bakeVisibleProjectedLayersToTextureUnlocked(
         ): Parameters<typeof bakeProjectedLayerRastersWithGpu>[0] => ({
           renderer,
           group: importedModel.group,
+          rasterCache: input.rasterCache,
           layers: bakeLayers,
           resolution: input.resolution,
           enableBackfaceCulling: input.enableBackfaceCulling,
@@ -1451,7 +1454,7 @@ async function bakeVisibleProjectedLayersToTextureUnlocked(
         markUvBakePerformancePhase('seam-reconcile');
         if (input.outputAlpha !== 'transparent' || input.repairMissingUvSeams) {
           const seamResult = await reconcileUvSeamsCooperatively(
-            waitForBrowserPaint,
+            () => isViewportInteractionBusy() ? waitForBrowserPaint() : yieldToBrowserTask(),
             composite,
             importedModel.group,
             qualityCoverage,
@@ -1506,7 +1509,7 @@ async function bakeVisibleProjectedLayersToTextureUnlocked(
                 topology.mask,
                 input.uvIslandGutterPixels ?? 0,
                 input.outputAlpha === 'transparent',
-                waitForBrowserPaint,
+                () => isViewportInteractionBusy() ? waitForBrowserPaint() : yieldToBrowserTask(),
               )
             : await padUvIslandGuttersCooperatively(
                 composite,
@@ -1514,7 +1517,7 @@ async function bakeVisibleProjectedLayersToTextureUnlocked(
                 importedModel.group,
                 input.uvIslandGutterPixels ?? 0,
                 input.outputAlpha === 'transparent',
-                waitForBrowserPaint,
+                () => isViewportInteractionBusy() ? waitForBrowserPaint() : yieldToBrowserTask(),
               );
           if (paddedPixels > 0) {
             warnings.push(`UV-island gutter padding added ${paddedPixels} filter-only texels.`);

@@ -545,7 +545,7 @@ assert.match(
 );
 assert.match(
   sceneRootSource,
-  /const alreadyPresentsWhiteMembrane = hasPresentedMaterial && presentsOnlyWhiteMembrane;\s*if \(showWhiteMembrane && alreadyPresentsWhiteMembrane\) \{[\s\S]*?revealInitialMaterialPresentation\(\);[\s\S]*?return;[\s\S]*?\}\s*if \(\s*!showWhiteMembrane &&\s*hasResidentProjectedMaterial/,
+  /const alreadyPresentsWhiteMembrane = hasPresentedMaterial && presentsOnlyWhiteMembrane;\s*if \(showWhiteMembrane && alreadyPresentsWhiteMembrane\) \{[\s\S]*?revealInitialMaterialPresentation\(\);[\s\S]*?return;[\s\S]*?\}\s*if \(\s*!showWhiteMembrane &&\s*!canUseProgressivePreviewBase &&\s*hasResidentProjectedMaterial/,
   'PBR changes must publish the current Group before reusing the resident white or projected material.',
 );
 assert.match(
@@ -600,7 +600,7 @@ assert.match(
 );
 assert.match(
   sceneRootSource,
-  /if \(\s*!showWhiteMembrane &&\s*hasResidentProjectedMaterial &&\s*committedProjectedMaterialStructureRef\.current === projectedMaterialStructureKey\s*\) \{[\s\S]*?revealInitialMaterialPresentation\(\);[\s\S]*?return;/,
+  /if \(\s*!showWhiteMembrane &&\s*!canUseProgressivePreviewBase &&\s*hasResidentProjectedMaterial &&\s*committedProjectedMaterialStructureRef\.current === projectedMaterialStructureKey\s*\) \{[\s\S]*?revealInitialMaterialPresentation\(\);[\s\S]*?return;/,
   'A restored single projected layer must publish its resident Group before the material fast path returns.',
 );
 assert.match(

@@ -1,5 +1,6 @@
 import { captureColor } from './captureColor';
 import { flushLiveUvCommits } from '@/engine/projection/liveProjectedCanvasTextureRegistry';
+import { waitForResidentUvPresentation } from '@/engine/projection/residentUvPresentation';
 import { captureDepth } from './captureDepth';
 import { captureMask } from './captureMask';
 import { captureNormal } from './captureNormal';
@@ -502,16 +503,22 @@ async function captureFlatTarget(
   encodedSize?: { width: number; height: number },
   options: { forceEmptyProjectionHatch?: boolean } = {},
 ) {
+  await waitForResidentUvPresentation(passRequest.scene, passRequest.objectId);
   // CAPTURE-MATERIAL-ISOLATION v1.0.0: never retain presentation mutations
   // across a browser-paint yield. Reject an interrupted snapshot rather than
   // encode tiles from different material generations into one GPT guide.
   const sourceMaterials = new Map<THREE.Mesh, THREE.Material[]>();
+  const sourceUvMaps = new Map<THREE.Material, unknown[]>();
   passRequest.scene.traverse((object) => {
     if (object instanceof THREE.Mesh && object.userData.liclickObjectId === passRequest.objectId) {
       sourceMaterials.set(
         object,
         Array.isArray(object.material) ? [...object.material] : [object.material],
       );
+      for (const material of sourceMaterials.get(object)!) {
+        if (material instanceof THREE.ShaderMaterial && material.userData.liclickResidentUvProjectionLayers)
+          sourceUvMaps.set(material, ['baseMap', 'uvOverlayMap', 'liveUvOverlayMap'].map(name => material.uniforms[name]?.value));
+      }
     }
   });
   const prepareScene = () => {
@@ -522,6 +529,12 @@ async function captureFlatTarget(
         current.some((material, index) => material !== expected[index])
       ) {
         throw new Error('模型材质在截图期间发生变化，请等待预览稳定后重试。');
+      }
+      for (const material of current) {
+        if (sourceUvMaps.has(material) && material instanceof THREE.ShaderMaterial &&
+            sourceUvMaps.get(material)!.some((texture, index) =>
+              texture !== material.uniforms[['baseMap', 'uvOverlayMap', 'liveUvOverlayMap'][index]]?.value))
+          throw new Error('UV 预览在截图期间发生变化，请重试。');
       }
     }
     return prepareFlatTargetCapture(passRequest, options);

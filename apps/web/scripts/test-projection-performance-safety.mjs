@@ -67,6 +67,7 @@ assert.equal(isProjectedUniformBudgetSafe(14, 1024), true);
 assert.equal(isProjectedUniformBudgetSafe(14, 256), false, 'limits follow the actual device');
 const evaluateWarm = new Function('stage', 'visible', 'selected', 'isProjectedUniformBudgetSafe', `
   const importedModel = { restoreStage: stage }, workspaceVisible = visible;
+  const residentUvDisplayEnabled = false;
   const gl = { compileAsync() {}, capabilities: { maxFragmentUniforms: 1024 } }, projectedProgramWarmupInputs = [{}, {}];
   const projectedProgramWarmupSignature = 'test';
   return !(${gate.expression.getText(sceneAst)});

@@ -3,10 +3,10 @@ import type { Layer } from '@/types/layer';
 
 /**
  * Increment when a merged UV produced by an older editor can no longer be
- * trusted to match the live layer stack. Version 7 preserves model-clipped
- * repaint alpha; selected historical UV layers still remain authored underlays.
+ * trusted to match the live layer stack. Version 9 aligns topology and seam
+ * coordinates with the GPU texel extent. Historical UV assets remain authored underlays.
  */
-export const UV_MERGE_COMPOSITION_VERSION = 8;
+export const UV_MERGE_COMPOSITION_VERSION = 9;
 
 export function compositeRenderedColorMaskUnderInPlace(
   frontMask: Uint8Array,
@@ -127,12 +127,12 @@ export async function bakePbrPreviewLightingIntoUv(input: {
       const i0 = index ? index.getX(triangle * 3) : triangle * 3;
       const i1 = index ? index.getX(triangle * 3 + 1) : triangle * 3 + 1;
       const i2 = index ? index.getX(triangle * 3 + 2) : triangle * 3 + 2;
-      const x0 = uv.getX(i0) * (width - 1);
-      const y0 = (1 - uv.getY(i0)) * (height - 1);
-      const x1 = uv.getX(i1) * (width - 1);
-      const y1 = (1 - uv.getY(i1)) * (height - 1);
-      const x2 = uv.getX(i2) * (width - 1);
-      const y2 = (1 - uv.getY(i2)) * (height - 1);
+      const x0 = uv.getX(i0) * width;
+      const y0 = (1 - uv.getY(i0)) * height;
+      const x1 = uv.getX(i1) * width;
+      const y1 = (1 - uv.getY(i1)) * height;
+      const x2 = uv.getX(i2) * width;
+      const y2 = (1 - uv.getY(i2)) * height;
       const denominator = (y1 - y2) * (x0 - x2) + (x2 - x1) * (y0 - y2);
       if (Math.abs(denominator) <= 1e-8) continue;
       const minX = Math.max(0, Math.floor(Math.min(x0, x1, x2)));

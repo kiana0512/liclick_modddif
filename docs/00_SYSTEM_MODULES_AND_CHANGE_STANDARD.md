@@ -1,6 +1,6 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
-> 文档版本：`2.20.12`
+> 文档版本：`2.20.16`
 >
 > 生效日期：`2026-09-11`
 >
@@ -11,6 +11,14 @@
 > 审计口径：`0a2519d + 607e82f + 2568e40`，不包含错误文档提交 `2bde8c6/e03bab2/d1c5f78`
 
 ## 1. 文档地位与强制边界
+
+2026-09-11 M09/M07/M06：`ALG-UV-008` v2.0.3 在独立烘焙 renderer 内以最多两条 8 MiB 读回重叠 GPU 等待，可见 renderer 保留串行呈现边界；错误先排空在途读取再释放目标。`UV-TOPOLOGY-SOURCE-CACHE/1.1.0` 按原始 UV/index 字节校验单个有界快照，未变化不重复展开三角形，实际编辑仍使页内和 Worker 缓存同时失效；首次展开按 4ms 预算让出，不逐固定顶点数强制等定时器。CPU/GPU/Worker/shader 像素、Top-K、完整分辨率、QA、导出与持久资产不改，无 Schema 或资产迁移；回滚仅恢复读回/准备调度。实测及仍未达到即时更新的限制见 [常驻 UV 显示变更卡](changes/CHG-20260911-RESIDENT-UV-DISPLAY.md)。
+
+2026-09-11 M07/M06/M09/M11：`UV-PIXEL-SPACE/1.0.0` 对齐 GPU 投影与补边/接缝坐标。UV 映射到完整像素边界范围，不能按 resolution−1 缩小；拓扑 CPU / Worker / WebGPU、CPU 诊断光栅及 PBR 法线烘焙同步，接缝用 floor 定位包含 texel。Merge / bake protocol 9、会话 v13、persistent-4；不降低分辨率、不恢复自动补洞、不重写历史资产，原 QA 保留。实际工程及边界回归、迁移/回滚见 [变更卡](changes/CHG-20260911-RESIDENT-UV-DISPLAY.md)。
+
+2026-09-11 M06/M07/M09：`UV-DISPLAY-DERIVED-CACHE/1` 为常驻 UV 增加浏览器刷新恢复的无损派生缓存。按账号/工程/对象、实际模型与来源字节、参数、分辨率和版本校验，保存 RGBA 与 rendered-color mask；损坏或不匹配重新计算。它不替代 Cloud verified assets 或改变 Command/CAS/ownership，不表示逐层贡献持久化已经完成。显隐验收必须测量点击到模型实际绑定新 UV 的时间，并对照正确合成像素；已有状态命中约 30ms 不能代表新组合即时更新。格式、容量、回滚及未完成项见 [变更卡](changes/CHG-20260911-RESIDENT-UV-DISPLAY.md)。
+
+2026-09-11 M06，协作 M03/M07/M08：`UV-DISPLAY-BUFFER/1.0.0`。投影只作为计算输入，正常视口常驻全分辨率 UV；选择图层和相机交互不重算投影，显隐/内容变化通过现有常驻 Top-K、校正与后处理生成新 UV，上传完成后整体切换。等待时保留上一完整 UV，不叠加新投影作为过渡。派生 UV 和逐层光栅有界缓存，不能为了毫秒指标降低分辨率或跳过 QA。GPU 校正内部标记 `RESIDENT-ROUNDING-RUNS/2` 对完全相同整数候选的相邻 texel 复用精确 CPU 校正；Worker 覆盖混合复用完全相同输入的结果，像素公式不改。普通投影、局部重绘、UV 底层、截图交接、保存/导出及资源失效审计见 [常驻 UV 显示变更卡](changes/CHG-20260911-RESIDENT-UV-DISPLAY.md)。缓存命中与冷计算必须分别测量，不得将常驻 UV 帧率作为所有图层更新已达到毫秒级的证据。
 
 ### 每次 CI/CD 推送前的强制包体检查
 

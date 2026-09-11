@@ -1,4 +1,6 @@
 import type { Layer } from '@/types/layer';
+import type { ModelLoadResult } from '@/engine/loaders/modelImportTypes';
+import type { ProjectedUvRasterCache } from './ProjectedUvRasterCache';
 
 export type UvBakeResolution = 512 | 1024 | 2048 | 4096 | 8192;
 export type GpuUvCompositeMode =
@@ -74,6 +76,10 @@ export interface BakeProjectedLayerInput {
 }
 
 export interface BakeVisibleProjectedLayersInput {
+  /** Renderer-owned display calculation for this exact model, independent of selection. */
+  sourceModel?: ModelLoadResult;
+  /** Optional renderer-owned cache; never persisted or used as authoritative output. */
+  rasterCache?: ProjectedUvRasterCache;
   objectId: string;
   layerIds?: string[];
   transientLayers?: Layer[];

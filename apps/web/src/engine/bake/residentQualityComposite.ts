@@ -114,8 +114,13 @@ float stepExact(float lo,float hi,float value) {
   return t*t*(3.0-2.0*t);
 }
 void main() {
-  uvec4 packed=texelFetch(previousCandidates,ivec2(gl_FragCoord.xy),0);
+  ivec2 position=ivec2(gl_FragCoord.xy);
+  uvec4 packed=texelFetch(previousCandidates,position,0);
   if ((packed.x >> 24u)==0u) { result=vec4(0.0); return; }
+  ivec2 previousPosition=position.x>0 ? position-ivec2(1,0) :
+    ivec2(textureSize(previousCandidates,0).x-1,position.y-1);
+  bool repeated=position.x+position.y>0 && all(equal(packed,texelFetch(previousCandidates,previousPosition,0)));
+  vec4 correctionMarker=vec4(repeated ? 254.0/255.0 : 1.0,0,1,0);
   uvec3 qs=uvec3(packed.w,packed.w >> 8u,packed.w >> 16u)&255u;
   vec4 a=score(packed.x,qs.x), b=score(packed.y,qs.y), c=score(packed.z,qs.z);
   vec3 coverage=vec3(a.w,b.w,c.w);
@@ -123,7 +128,7 @@ void main() {
   float alpha=floor(rawAlpha+0.5);
   bool uncertainAlpha=abs(fract(rawAlpha)-0.5)<0.01;
   if ((packed.y >> 24u)==0u) {
-    result=markUncertain && uncertainAlpha ? vec4(1,0,1,0) : vec4(vec3(rgb(packed.x)),alpha)/255.0;
+    result=markUncertain && uncertainAlpha ? correctionMarker : vec4(vec3(rgb(packed.x)),alpha)/255.0;
     return;
   }
   vec3 ca=linearColor(packed.x), cb=linearColor(packed.y), cc=linearColor(packed.z);
@@ -141,7 +146,7 @@ void main() {
   bool uncertain=uncertainAlpha || any(lessThan(abs(fract(bytes)-vec3(0.5)),vec3(0.01)));
   // This internal sentinel never leaves readCorrected(): only rounding-boundary
   // candidates are gathered for the canonical double-precision CPU resolver.
-  result=markUncertain && uncertain ? vec4(1,0,1,0) : vec4(floor(bytes+0.5),alpha)/255.0;
+  result=markUncertain && uncertain ? correctionMarker : vec4(floor(bytes+0.5),alpha)/255.0;
 }
 `;
 const gatherShader = `${common}
@@ -351,19 +356,43 @@ export class ResidentQualityComposite {
         qualities:[new Float32Array(1),new Float32Array(1),new Float32Array(1)],
         coverage:new Uint8Array([1]),writtenTexels:1};
       const pixel=new Uint8ClampedArray(4);
+      const pixelWord = new Uint32Array(pixel.buffer);
+      const outputWords = new Uint32Array(output.buffer, output.byteOffset, output.length / 4);
+      const repeatedMarker = new Uint32Array(new Uint8Array([254, 0, 255, 0]).buffer)[0];
+      const previous = new Uint32Array(4);
+      let lastYield = performance.now();
+      let correctedPixels = 0;
       for(let i=0;i<indices.length;i+=1) {
-        for(let slot=0;slot<3;slot+=1) {
-          const color=selected[i*4+slot], coverage=(color>>>24)/255;
-          const quality=(selected[i*4+3]>>>(slot*8))&255;
-          top.colors[slot][0]=color&0xffffff;
-          top.coverages[slot][0]=coverage;
-          top.qualities[slot][0]=Math.max(Math.fround(quality/255),coverage*0.08);
+        const offset = i * 4;
+        if (i === 0 || selected[offset] !== previous[0] || selected[offset + 1] !== previous[1] ||
+            selected[offset + 2] !== previous[2] || selected[offset + 3] !== previous[3]) {
+          for(let slot=0;slot<3;slot+=1) {
+            const color=selected[offset+slot], coverage=(color>>>24)/255;
+            const quality=(selected[offset+3]>>>(slot*8))&255;
+            top.colors[slot][0]=color&0xffffff;
+            top.coverages[slot][0]=coverage;
+            top.qualities[slot][0]=Math.max(Math.fround(quality/255),coverage*0.08);
+          }
+          resolvePixelCpu(top,0,preserveAlpha,pixel);
+          previous.set(selected.subarray(offset, offset + 4));
         }
-        resolvePixelCpu(top,0,preserveAlpha,pixel);
-        output.set(pixel,indices[i]*4);
-        if(i>0 && i%4096===0) await yieldToBrowserTask();
+        // 254 marks an adjacent texel with the identical integer candidate tuple.
+        // Correct its run without gathering duplicate candidates across the bus.
+        let destination = indices[i];
+        let more = true;
+        do {
+          const first = destination++;
+          const limit = Math.min(outputWords.length, first + 65536);
+          while (destination < limit && outputWords[destination] === repeatedMarker) destination++;
+          more = destination < outputWords.length && outputWords[destination] === repeatedMarker;
+          outputWords.fill(pixelWord[0], first, destination);
+          correctedPixels += destination - first;
+          if(performance.now() - lastYield >= 4) {
+            await yieldToBrowserTask(); lastYield = performance.now();
+          }
+        } while(more);
       }
-      return {output,correctedPixels:indices.length};
+      return {output,correctedPixels};
     } finally {texture.dispose();target.dispose();}
   }
 

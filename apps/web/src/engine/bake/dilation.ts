@@ -98,7 +98,10 @@ function* rasterizeUvTopologyMaskSteps(
   context.fillStyle = '#ffffff';
 
   const meshes: THREE.Mesh[] = [];
-  root.traverse((object) => { if (object instanceof THREE.Mesh) meshes.push(object); });
+  root.traverse((object) => {
+    if (object.userData.liclickPaintOverlay || object.userData.liclickWireframeOverlay || object.userData.liclickLocalRepaintGpuOverlay) return;
+    if (object instanceof THREE.Mesh) meshes.push(object);
+  });
   for (const object of meshes) {
     const geometry = object.geometry;
     const uv = geometry.getAttribute('uv');
@@ -111,8 +114,10 @@ function* rasterizeUvTopologyMaskSteps(
         index ? index.getX(triangle * 3 + offset) : triangle * 3 + offset,
       );
       const points = vertexIndices.map((vertexIndex) => ({
-        x: uv.getX(vertexIndex) * (width - 1),
-        y: (1 - uv.getY(vertexIndex)) * (height - 1),
+        // UV coordinates describe texel edges, not the centres of endpoint pixels.
+        // Match the UV raster vertex shader; shrinking by one leaves an unpadded fringe.
+        x: uv.getX(vertexIndex) * width,
+        y: (1 - uv.getY(vertexIndex)) * height,
       }));
       if (points.some((point) => !Number.isFinite(point.x) || !Number.isFinite(point.y))) continue;
       context.beginPath();

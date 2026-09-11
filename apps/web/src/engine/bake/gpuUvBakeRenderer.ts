@@ -54,6 +54,7 @@ const SURFACE_LOCKED_VISIBILITY_FEATHER = 0.05;
 const gpuUvSeamPairCache = new WeakMap<THREE.Object3D, ReturnType<typeof collectUvSeamPairs>>();
 
 type GpuLayerStackBakeInput = {
+  rasterCache?: import('./ProjectedUvRasterCache').ProjectedUvRasterCache;
   residentQuality?: { preserveAlpha: boolean; retainRasters: boolean };
   renderer: THREE.WebGLRenderer;
   group: THREE.Group;
@@ -1032,6 +1033,7 @@ function collectPreparedMeshes(group: THREE.Group, warnings: string[]) {
   group.updateMatrixWorld(true);
   group.traverse((child) => {
     if (!(child instanceof THREE.Mesh)) return;
+    if (child.userData.liclickPaintOverlay || child.userData.liclickWireframeOverlay || child.userData.liclickLocalRepaintGpuOverlay) return;
     const position = child.geometry.getAttribute('position');
     const uv = child.geometry.getAttribute('uv');
     if (!position || !uv) {
@@ -1605,13 +1607,42 @@ export async function bakeProjectedLayerRastersWithGpu(
   const totalTriangles = totalTrianglesPerLayer * input.layers.length;
   if (totalTriangles <= 0) throw new Error('No UV triangles were available for GPU baking.');
 
-  const colorTarget = createPostprocessTarget(resolution);
-  const qualityTarget = createPostprocessTarget(resolution);
-  const resident = input.residentQuality ? new ResidentQualityComposite(renderer,resolution) : undefined;
-  const retainRasters = !resident || input.residentQuality!.retainRasters;
+  const retainRasters = !input.residentQuality || input.residentQuality.retainRasters;
   let residentAccumulateMs = 0;
   let sourcePreparationWaitMs=0,textureUploadMs=0,layerReadbackWaitMs=0;
-  const sources=createLayerTextureLookahead(input);
+  const rasterCache = input.rasterCache;
+  const keys = input.layers.map(layer => JSON.stringify({ ...layer, visible: true, name: '', order: 0 }));
+  if (rasterCache) {
+    const geometry = meshes.map(({ source }) => [source.uuid, source.matrixWorld.elements,
+      source.geometry.uuid, ...['position', 'normal', 'uv'].map(name => {
+        const attribute = source.geometry.getAttribute(name);
+        return attribute && [attribute.count, (attribute as THREE.BufferAttribute).version];
+      }), source.geometry.index?.version]);
+    rasterCache.prepare(renderer, JSON.stringify([resolution, geometry, input.enableBackfaceCulling,
+      input.inputTextureFlipY, input.projectedImageUvFlipY, input.strictDepthCheck,
+      input.maximumDepthError, input.minimumOutputCoverage]), keys);
+  }
+  // Mutable brush sources must be sampled again, even when their URL is stable.
+  const cacheable = input.layers.map(layer => !getProjectedLayerOverlayMode(layer) &&
+    ![layer.imageUrl, layer.maskUrl, layer.depthUrl, layer.normalUrl].some(url => url && isLiveProjectedCanvasUrl(url)));
+  const resolvedKey = input.residentQuality && cacheable.every(Boolean)
+    ? JSON.stringify([keys, input.residentQuality.preserveAlpha]) : undefined;
+  if (rasterCache && resolvedKey && !retainRasters) {
+    const resolved = await rasterCache.getResolved(resolvedKey);
+    document.body.dataset.residentUvNormalBaseHit = String(Boolean(resolved));
+    if (resolved) return resolved;
+  }
+  let colorTarget = createPostprocessTarget(resolution);
+  let qualityTarget = createPostprocessTarget(resolution);
+  const cached = keys.map((key, i) => cacheable[i] ? rasterCache?.get(key) : undefined);
+  if (rasterCache) {
+    document.body.dataset.residentUvRasterHits = String(cached.filter(Boolean).length);
+    document.body.dataset.residentUvRasterMisses = String(cached.filter(value => !value).length);
+  }
+  const resident = input.residentQuality
+    ? rasterCache?.getResident(renderer, resolution) ?? new ResidentQualityComposite(renderer,resolution)
+    : undefined;
+  const sources=createLayerTextureLookahead({ ...input, layers: input.layers.filter((_, i) => !cached[i]) });
   let activeTextures: THREE.Texture[] = [];
   const activeMaterials: THREE.Material[] = [];
   let previousState = captureRendererState(renderer);
@@ -1643,6 +1674,27 @@ export async function bakeProjectedLayerRastersWithGpu(
     for (const [layerIndex, layer] of input.layers.entries()) {
       const isOverlay=!!getProjectedLayerOverlayMode(layer);
       const retainLayerRaster=retainRasters || isOverlay;
+      const hit = cached[layerIndex];
+      if (hit) {
+        reportProgress(layer, layerIndex, true);
+        sourceSizes.push(hit.sourceSize);
+        if (resident) {
+          const start = performance.now();
+          resident.push(hit.color.texture, hit.quality.texture);
+          residentAccumulateMs += performance.now() - start;
+        }
+        if (retainLayerRaster) {
+          const [raster, quality] = await Promise.all([
+            readRenderTargetToLayerImageData(renderer, hit.color, resolution),
+            readRenderTargetAlphaToFloat(renderer, hit.quality, resolution),
+          ]);
+          rasters.push({ layer, imageData: raster.imageData, coverage: raster.coverage, quality, coveredPixels: raster.coveredPixels });
+          coveredPixels += raster.coveredPixels;
+        }
+        processedTriangles += totalTrianglesPerLayer;
+        previousState = captureRendererState(renderer);
+        continue;
+      }
       input.onProgress?.({
         phase: 'loading-assets',
         progress: 0.04 + (layerIndex / input.layers.length) * 0.78,
@@ -1720,8 +1772,10 @@ export async function bakeProjectedLayerRastersWithGpu(
       const [layerRaster, quality] = await Promise.all([layerRasterPromise, qualityPromise]);
       layerReadbackWaitMs+=performance.now()-readbackStartedAt;
       previousState = captureRendererState(renderer);
-      coverageMaterial.dispose();
-      qualityMaterial.dispose();
+      if (rasterCache) {
+        rasterCache.releaseMaterial(coverageMaterial);
+        rasterCache.releaseMaterial(qualityMaterial);
+      } else { coverageMaterial.dispose(); qualityMaterial.dispose(); }
       activeMaterials.length=0;
 
       disposeLayerTextures(textures.disposableTextures);
@@ -1734,6 +1788,13 @@ export async function bakeProjectedLayerRastersWithGpu(
         coveredPixels: layerRaster.coveredPixels,
       });
       coveredPixels += layerRaster?.coveredPixels ?? 0;
+      if (cacheable[layerIndex] && rasterCache?.take(keys[layerIndex], {
+        color: colorTarget, quality: qualityTarget, sourceSize: textures.sourceSizes,
+      })) {
+        // Transfer target ownership; later layers must never overwrite cached UVs.
+        colorTarget = createPostprocessTarget(resolution);
+        qualityTarget = createPostprocessTarget(resolution);
+      }
       processedTriangles += totalTrianglesPerLayer;
       reportProgress(layer, layerIndex, true);
       // React Three Fiber owns this renderer. Never yield to its animation frame
@@ -1761,7 +1822,7 @@ export async function bakeProjectedLayerRastersWithGpu(
     warnings.push(
       'GPU UV uses quantized sampling; CPU raster is diagnostic-only.',
     );
-    return {
+    const result = {
       residentQuality,
       sourcePreparationWaitMs,textureUploadMs,layerReadbackWaitMs,
       rasters,
@@ -1772,8 +1833,10 @@ export async function bakeProjectedLayerRastersWithGpu(
       skippedPixels: resolution * resolution * input.layers.length - coveredPixels,
       warnings,
     };
+    if (rasterCache && resolvedKey) await rasterCache.retainResolved(resolvedKey, result);
+    return result;
   } finally {
-    resident?.dispose();
+    if (!rasterCache) resident?.dispose();
     activeMaterials.forEach(material=>material.dispose());
     disposeLayerTextures(activeTextures);
     restoreRendererState(renderer, previousState);
@@ -1880,7 +1943,8 @@ export async function bakeProjectedLayerStackWithGpu(
       renderer.render(bakeScene.scene, camera);
       processedTriangles += totalTrianglesPerLayer;
       reportProgress(layer, layerIndex, true);
-      material.dispose();
+      if (input.rasterCache) input.rasterCache.releaseMaterial(material);
+      else material.dispose();
       activeMaterial=undefined;
       disposeLayerTextures(textures.disposableTextures);
       activeTextures=[];

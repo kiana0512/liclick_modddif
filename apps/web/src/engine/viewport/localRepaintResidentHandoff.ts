@@ -33,6 +33,9 @@ export function isLocalRepaintLayerResident(group: THREE.Object3D, layerId: stri
     ready &&=
       materials.length > 0 &&
       materials.every((material) => {
+        const uvIds = material.userData.liclickResidentUvProjectionLayers as string[] | undefined;
+        if (material.name === 'LiclickUvOverlayPreview' && uvIds?.includes(layerId) &&
+            material.userData.liclickDisposedMaterial !== true) return true;
         const state = material.userData.liclickProjectedLayerStackState as
           | { bindings?: Array<{ layerId?: string }> }
           | undefined;

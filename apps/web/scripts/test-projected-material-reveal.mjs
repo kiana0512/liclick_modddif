@@ -20,7 +20,7 @@ const finalGate = scene.slice(scene.indexOf('      const presentsProjectedMateri
   scene.indexOf('      if (lastProjectedTransformRef.current)', scene.indexOf('      const presentsProjectedMaterial = meshes.some')));
 const residentGate = scene.slice(scene.indexOf('    let hasResidentProjectedMaterial = false;'),
   scene.indexOf('    let cancelled = false;', scene.indexOf('    let hasResidentProjectedMaterial = false;')));
-const runFinal = compile(`return (meshes, visible, showWhiteMembrane = false) => {
+const runFinal = compile(`return (meshes, visible, showWhiteMembrane = false, progressiveBaseOnly = false) => {
   let revealed = false;
   const authoritativeDisplayLayers = [{visible}];
   const committedProjectedMaterialStructureRef = {current:''};
@@ -33,6 +33,7 @@ const runResident = compile(`return (group, committed) => {
   let revealed = false;
   const importedModel = {group};
   const showWhiteMembrane = false;
+  const canUseProgressivePreviewBase = false;
   const committedProjectedMaterialStructureRef = {current:committed};
   const projectedMaterialStructureKey = 'same-structure';
   const revealInitialMaterialPresentation = () => { revealed = true; };

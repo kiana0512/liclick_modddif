@@ -1,5 +1,6 @@
 import type * as THREE from 'three';
 import { recordWebGpuProductionDispatch } from '@/engine/performance/gpuComputeBackend';
+import { snapshotUvSeamGeometry, matchesUvSeamGeometry, type UvSeamGeometrySnapshot } from './uvSeamGeometrySnapshot';
 
 export type WebGpuUvTopologyRasterResult = {
   mask: Uint8Array<ArrayBuffer>;
@@ -49,7 +50,10 @@ type PendingRaster = {
 let worker: Worker | undefined;
 let nextRequestId = 1;
 const pending = new Map<number, PendingRaster>();
-const trianglesByRoot = new WeakMap<THREE.Object3D, Promise<Float32Array<ArrayBuffer>>>();
+const trianglesByRoot = new WeakMap<THREE.Object3D, Float32Array<ArrayBuffer>>();
+const revisionByRoot = new WeakMap<THREE.Object3D, number>();
+let nextGeometryRevision = 1;
+let sourceSnapshot: { root: WeakRef<THREE.Object3D>; value: UvSeamGeometrySnapshot } | undefined;
 const resultByRoot = new WeakMap<
   THREE.Object3D,
   Map<string, Promise<WebGpuUvTopologyRasterResult>>
@@ -100,8 +104,22 @@ function yieldMainThread() {
 }
 
 async function serializeUvTriangles(root: THREE.Object3D) {
-  const cached = trianglesByRoot.get(root);
-  if (cached) return cached;
+  const previous = trianglesByRoot.get(root);
+  const run = async <T>(steps: Generator<void, T>) => {
+    let start = performance.now();
+    let step = steps.next();
+    while (!step.done) {
+      if (performance.now() - start >= 4) { await yieldMainThread(); start = performance.now(); }
+      step = steps.next();
+    }
+    return step.value;
+  };
+  if (previous && sourceSnapshot?.root.deref() === root &&
+      await run(matchesUvSeamGeometry(root, sourceSnapshot.value, true))) return previous;
+  // A single bounded source snapshot, rather than re-expanding every triangle
+  // on every layer toggle. Actual unversioned UV/index edits still invalidate.
+  sourceSnapshot = undefined;
+  const snapshot = await run(snapshotUvSeamGeometry(root, true));
   const promise = (async () => {
     const geometries: Array<{
       uv: THREE.BufferAttribute | THREE.InterleavedBufferAttribute;
@@ -112,6 +130,7 @@ async function serializeUvTriangles(root: THREE.Object3D) {
     root.traverse((object) => {
       const mesh = object as THREE.Mesh;
       if (!mesh.isMesh || !mesh.geometry) return;
+      if (object.userData.liclickPaintOverlay || object.userData.liclickWireframeOverlay || object.userData.liclickLocalRepaintGpuOverlay) return;
       const uv = mesh.geometry.getAttribute('uv');
       if (!uv) return;
       const index = mesh.geometry.getIndex();
@@ -123,6 +142,7 @@ async function serializeUvTriangles(root: THREE.Object3D) {
     const triangles = new Float32Array(triangleCount * 3 * 2);
     let outputOffset = 0;
     let verticesSinceYield = 0;
+    let sliceStarted = performance.now();
     for (const geometry of geometries) {
       for (let triangle = 0; triangle < geometry.triangleCount; triangle += 1) {
         for (let corner = 0; corner < 3; corner += 1) {
@@ -138,14 +158,37 @@ async function serializeUvTriangles(root: THREE.Object3D) {
         // the actual topology raster remains a single Worker WebGPU pass.
         if (verticesSinceYield >= 8_192) {
           verticesSinceYield = 0;
-          await yieldMainThread();
+          if (performance.now() - sliceStarted >= 4) {
+            await yieldMainThread();
+            sliceStarted = performance.now();
+          }
         }
       }
     }
     return triangles;
   })();
-  trianglesByRoot.set(root, promise);
-  return promise;
+  const triangles = await promise;
+  if (snapshot && await run(matchesUvSeamGeometry(root, snapshot, true))) sourceSnapshot = {root:new WeakRef(root), value:snapshot};
+  else if (snapshot) throw new Error('UV geometry changed during topology preparation.');
+  if (previous?.length === triangles.length) {
+    const currentBits = new Uint32Array(triangles.buffer);
+    const previousBits = new Uint32Array(previous.buffer);
+    let equal = true;
+    for (let start = 0; equal && start < currentBits.length; start += 65536) {
+      const end = Math.min(start + 65536, currentBits.length);
+      for (let i = start; i < end; i++) {
+        if (currentBits[i] !== previousBits[i]) { equal = false; break; }
+      }
+      if (end < currentBits.length) await yieldMainThread();
+    }
+    if (equal) return previous;
+  }
+  // UV arrays can change without needsUpdate. Both the page and Worker caches
+  // must invalidate from actual serialized triangles, including helper removal.
+  trianglesByRoot.set(root, triangles);
+  resultByRoot.delete(root);
+  revisionByRoot.set(root, nextGeometryRevision++);
+  return triangles;
 }
 
 /**
@@ -154,11 +197,14 @@ async function serializeUvTriangles(root: THREE.Object3D) {
  * raster inside the Worker. A mismatch publishes the gold mask, never the GPU
  * candidate, so enabling this path cannot change UV repair quality.
  */
-export function rasterizeUvTopologyMaskWithWebGpu(
+export async function rasterizeUvTopologyMaskWithWebGpu(
   root: THREE.Object3D,
   width: number,
   height: number,
 ) {
+  const serializeStartedAt = performance.now();
+  const triangles = await serializeUvTriangles(root);
+  const serializeMs = performance.now() - serializeStartedAt;
   let cache = resultByRoot.get(root);
   if (!cache) {
     cache = new Map();
@@ -167,16 +213,13 @@ export function rasterizeUvTopologyMaskWithWebGpu(
   const preferWebGpu =
     typeof window === 'undefined' ||
     new URLSearchParams(window.location.search).get('webGpuUvTopology') !== '0';
-  const cacheKey = `${root.uuid}:${width}x${height}:pixel-center:${preferWebGpu ? 'gpu' : 'compat'}`;
+  const cacheKey = `${root.uuid}:${revisionByRoot.get(root)}:${width}x${height}:pixel-center-uv-extent-v2:${preferWebGpu ? 'gpu' : 'compat'}`;
   const cached = cache.get(cacheKey);
-  if (cached) return cached;
+  if (cached) return cached.then(result => ({...result, serializeMs, gpuMs:0, cpuGoldMs:0, totalMs:serializeMs}));
   const promise = (async () => {
     if (typeof Worker === 'undefined' || typeof window === 'undefined') {
       throw new Error('Worker WebGPU UV topology raster is unavailable.');
     }
-    const serializeStartedAt = performance.now();
-    const triangles = await serializeUvTriangles(root);
-    const serializeMs = performance.now() - serializeStartedAt;
     if (triangles.length === 0) throw new Error('The model has no UV triangles.');
     const id = nextRequestId++;
     const request: RasterRequest = {
@@ -203,6 +246,7 @@ export function rasterizeUvTopologyMaskWithWebGpu(
 }
 
 export function terminateWebGpuUvTopologyRasterWorker() {
+  sourceSnapshot = undefined;
   failAllPending('WebGPU UV topology worker was terminated.');
   worker?.terminate();
   worker = undefined;

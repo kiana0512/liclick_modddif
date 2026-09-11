@@ -77,8 +77,8 @@ function getAttributeTuple2(attribute: THREE.BufferAttribute | THREE.Interleaved
 
 function uvToPixel(uv: { x: number; y: number }, resolution: number) {
   return {
-    x: uv.x * (resolution - 1),
-    y: (1 - uv.y) * (resolution - 1),
+    x: uv.x * resolution,
+    y: (1 - uv.y) * resolution,
   };
 }
 
@@ -462,6 +462,7 @@ export async function rasterizeProjectedLayerToUv(input: RasterizeInput): Promis
 
   const meshes: THREE.Mesh[] = [];
   input.group.traverse((child) => {
+    if (child.userData.liclickPaintOverlay || child.userData.liclickWireframeOverlay || child.userData.liclickLocalRepaintGpuOverlay) return;
     if (child instanceof THREE.Mesh) meshes.push(child);
   });
   if (shouldDebugUvBake()) {

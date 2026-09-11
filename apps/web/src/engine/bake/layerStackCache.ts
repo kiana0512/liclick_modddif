@@ -4,7 +4,7 @@ import type { Layer } from '@/types/layer';
 import { getLiveProjectedTextureSourceState } from '@/engine/projection/liveProjectedCanvasTextureRegistry';
 
 const MIN_REUSABLE_LAYER_STACK_COVERAGE_RATIO = 0.001;
-const UV_BAKE_PROTOCOL_VERSION = 8; // Reliable projection footprint; never reuse feathered rasters.
+const UV_BAKE_PROTOCOL_VERSION = 9; // UV pixel-extent topology/seams; do not reuse shrunken-atlas output.
 const inFlightLayerStackBakes = new Map<string, Promise<BakedTexture | undefined>>();
 
 export function getVisibleProjectedLayerStack(layers: Layer[], objectId: string) {

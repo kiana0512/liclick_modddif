@@ -14,6 +14,17 @@ import {
 } from '../src/engine/bake/dilation.ts';
 
 const nextSeams = {};
+// Keep the frozen donor/iteration oracle. The v9 contract intentionally changes
+// only atlas coordinates to WebGL's pixel extent and containing-texel indexing.
+const alignedSeams = {};
+const alignedReference = (await readFile(new URL('./fixtures/uv-seam-b3431cb.ts', import.meta.url), 'utf8'))
+  .replace('uv.x * (width - 1)', 'uv.x * width')
+  .replace('(1 - uv.y) * (height - 1)', '(1 - uv.y) * height')
+  .replace('Math.round(point.x)', 'Math.floor(point.x)')
+  .replace('Math.round(point.y)', 'Math.floor(point.y)');
+new Function('require', 'exports', ts.transpileModule(alignedReference, {
+  compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
+}).outputText)(name => { if(name==='three')return THREE;throw Error(name); }, alignedSeams);
 const seamCode = ts.transpileModule(await readFile(
   new URL('../src/engine/bake/uvSeamReconciliation.ts', import.meta.url), 'utf8'), {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
@@ -135,9 +146,15 @@ for (let trial = 0; trial < 40; trial++) {
   const coverage = Uint8Array.from({ length: 64 * 64 }, () => random() < 0.3 ? 0 : 1);
   const options = { repairMissingCoverage: trial % 2 === 0, bandPixels: trial % 8 };
   const expected = { width: 64, height: 64, data: data.slice() }, expectedMask = coverage.slice();
-  const result = oldSeams.reconcileUvSeams(expected, root, expectedMask, options);
+  const result = alignedSeams.reconcileUvSeams(expected, root, expectedMask, options);
   assert.deepEqual(nextSeams.collectUvSeamPairs(root, options.repairMissingCoverage),
     oldSeams.collectUvSeamPairs(root, options.repairMissingCoverage));
+  for (const flag of ['liclickPaintOverlay', 'liclickWireframeOverlay', 'liclickLocalRepaintGpuOverlay']) {
+    const helper = mesh.clone();
+    helper.userData[flag] = true;
+    helper.position.x = 0.2;
+    root.add(helper);
+  }
   for (const cooperative of [false, true]) {
     const actual = { width: 64, height: 64, data: data.slice() }, mask = coverage.slice();
     const args = [actual, root, mask, options];
@@ -199,6 +216,15 @@ const mutableRoot = new THREE.Group();
 const mutableMesh = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1));
 mutableRoot.add(mutableMesh);
 const drain = generator => { let step; do { step = generator.next(); } while (!step.done); return step.value; };
+const sharedRoot = new THREE.Group();
+const sharedGeometry = new THREE.BoxGeometry();
+sharedRoot.add(new THREE.Mesh(sharedGeometry), new THREE.Mesh(sharedGeometry));
+const sharedSnapshot = drain(seamSnapshot.snapshotUvSeamGeometry(sharedRoot));
+assert.equal(sharedSnapshot.buffers.length, 4, 'Display meshes sharing geometry retain each byte span once');
+assert(drain(seamSnapshot.matchesUvSeamGeometry(sharedRoot, sharedSnapshot)));
+sharedGeometry.attributes.uv.setX(0, 0.123);
+assert(!drain(seamSnapshot.matchesUvSeamGeometry(sharedRoot, sharedSnapshot)), 'Shared UV direct edits still invalidate');
+sharedGeometry.dispose();
 const changes = [
   () => mutableMesh.geometry.attributes.uv.setX(0, 0.37),
   () => mutableMesh.geometry.attributes.position.setY(0, 0.13),
@@ -219,7 +245,7 @@ for (const change of changes) {
     const mask = Uint8Array.from({ length: 64 * 64 }, () => random() < 0.3 ? 0 : 1);
     const expected = { width: 64, height: 64, data: bytes.slice() }, expectedMask = mask.slice();
     const actual = { width: 64, height: 64, data: bytes }, options = { repairMissingCoverage: true };
-    const count = oldSeams.reconcileUvSeams(expected, mutableRoot, expectedMask, options);
+    const count = alignedSeams.reconcileUvSeams(expected, mutableRoot, expectedMask, options);
     assert.deepEqual(nextSeams.reconcileUvSeams(actual, mutableRoot, mask, options), count);
     assert.deepEqual(actual.data, expected.data);
     assert.deepEqual(mask, expectedMask);
