@@ -52,6 +52,26 @@ function positionKey(position: THREE.Vector3) {
   return `${quantize(position.x, 100000)},${quantize(position.y, 100000)},${quantize(position.z, 100000)}`;
 }
 
+function createSeamPositionIds() {
+  type Entry = { x: number; y: number; z: number; id: number; next?: Entry };
+  const buckets = new Map<number, Entry>();
+  let count = 0;
+  const equal = (a: number, b: number) => a === b || (Number.isNaN(a) && Number.isNaN(b));
+  return (position: THREE.Vector3) => {
+    const x = quantize(position.x, 100000), y = quantize(position.y, 100000), z = quantize(position.z, 100000);
+    // Hash only selects a bucket. Compare all original quantized coordinates,
+    // including values outside int32, before assigning the same position ID.
+    const hash = Math.imul(x, 73856093) ^ Math.imul(y, 19349663) ^ Math.imul(z, 83492791);
+    const head = buckets.get(hash);
+    for (let entry = head; entry; entry = entry.next) {
+      if (equal(entry.x, x) && equal(entry.y, y) && equal(entry.z, z)) return entry.id;
+    }
+    const id = count++;
+    buckets.set(hash, { x, y, z, id, next: head });
+    return id;
+  };
+}
+
 function edgeKey(a: THREE.Vector3, b: THREE.Vector3) {
   const aKey = positionKey(a);
   const bKey = positionKey(b);
@@ -116,7 +136,7 @@ function* collectUvSeamPairSteps(root: THREE.Object3D, includeDiscontinuous = fa
   // path if the mesh is too large for exact integer pairing in a JS Number.
   const radix = meshes.reduce((sum, mesh) => sum + (mesh.geometry.getAttribute('position')?.count ?? 0), 1);
   const numericKeys = reuseEndpoints && Number.isSafeInteger(radix * radix);
-  const positionIds = new Map<string, number>();
+  const positionId = createSeamPositionIds();
   for (const object of meshes) {
     const geometry = object.geometry;
     const position = geometry.getAttribute('position');
@@ -156,9 +176,7 @@ function* collectUvSeamPairSteps(root: THREE.Object3D, includeDiscontinuous = fa
         };
         if (reuseEndpoints && index) endpointsByIndex[vertexIndex] = endpoint;
         if (reuseEndpoints) {
-          const key = positionKey(endpoint.position);
-          if (numericKeys && !positionIds.has(key)) positionIds.set(key, positionIds.size);
-          endpointKeys.set(endpoint, numericKeys ? positionIds.get(key)! : key);
+          endpointKeys.set(endpoint, numericKeys ? positionId(endpoint.position) : positionKey(endpoint.position));
         }
         return endpoint;
       });

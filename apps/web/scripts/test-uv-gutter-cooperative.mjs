@@ -32,6 +32,8 @@ const seamCode = ts.transpileModule(await readFile(
 // Exercise the cooperative collector's compact keys directly as well as its
 // resulting repaired pixels. Its public synchronous counterpart stays an oracle.
 new Function('require', 'exports', seamCode + `
+exports.createPositionIds = createSeamPositionIds;
+exports.positionKey = positionKey;
 exports.collectOptimized = (root, include) => {
   const steps = collectUvSeamPairSteps(root, include, true);
   let step; do { step = steps.next(); } while (!step.done); return step.value;
@@ -43,6 +45,25 @@ exports.collectOptimized = (root, include) => {
 
 let seed = 72913;
 const random = () => ((seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0) / 2 ** 32);
+// Deliberately collide the int32 hash while keeping distinct full coordinates.
+// IDs must match the original string equivalence and first-appearance order.
+const positionIds = nextSeams.createPositionIds(), expectedPositionIds = new Map();
+const coordinates = [0, -0, 0.0000049, 0.0000051, 1, -1,
+  2 ** 32 / 100000, -(2 ** 32) / 100000, Infinity, -Infinity, NaN];
+const checkPosition = (position) => {
+  const key = nextSeams.positionKey(position);
+  if (!expectedPositionIds.has(key)) expectedPositionIds.set(key, expectedPositionIds.size);
+  assert.equal(positionIds(position), expectedPositionIds.get(key));
+};
+for (const x of coordinates) for (const y of coordinates) for (const z of coordinates) {
+  checkPosition(new THREE.Vector3(x, y, z));
+  checkPosition(new THREE.Vector3(x, y, z));
+}
+for (let index = 0; index < 1000; index++) {
+  const position = new THREE.Vector3(random() * 1e9, random() * 1e9, random() * 1e9);
+  checkPosition(position); checkPosition(position.clone());
+}
+seed = 72913;
 if (process.env.LI3D_UV_REPAIR_BENCHMARK === '1') {
   const size=4096, rgba=new Uint8ClampedArray(size*size*4);
   const topology=new Uint8Array(size*size), coverage=new Uint8Array(size*size), regions=new Uint32Array(size*size);
