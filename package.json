@@ -6,6 +6,7 @@
   "description": "Liclick 3D Texture - Web AI 3D texture studio foundation.",
   "packageManager": "pnpm@9.15.4",
   "scripts": {
+    "verify:prepush": "node scripts/verify-prepush.mjs",
     "dev": "corepack pnpm run dev:raw",
     "dev:raw": "corepack pnpm --parallel --filter @liclick/server --filter @liclick/web dev",
     "dev:web": "corepack pnpm --filter @liclick/web dev",

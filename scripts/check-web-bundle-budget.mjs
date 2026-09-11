@@ -115,6 +115,7 @@ for (const budget of budgets) {
     );
     continue;
   }
+  console.log(`${budget.label}: ${matches[0].bytes} / ${budget.maxBytes} bytes; remaining ${budget.maxBytes - matches[0].bytes} (${matches[0].name})`);
   if (matches[0].bytes > budget.maxBytes) {
     failures.push(
       `${budget.label}: ${matches[0].bytes} bytes exceeds ${budget.maxBytes} (${matches[0].name})`,
@@ -123,6 +124,7 @@ for (const budget of budgets) {
 }
 
 const totalJavaScriptBytes = scripts.reduce((total, script) => total + script.bytes, 0);
+console.log(`total JavaScript: ${totalJavaScriptBytes} / ${maxTotalJavaScriptBytes} bytes; remaining ${maxTotalJavaScriptBytes - totalJavaScriptBytes}`);
 if (totalJavaScriptBytes > maxTotalJavaScriptBytes) {
   failures.push(
     `total JavaScript: ${totalJavaScriptBytes} bytes exceeds ${maxTotalJavaScriptBytes}`,
