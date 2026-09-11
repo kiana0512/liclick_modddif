@@ -163,6 +163,37 @@ try {
     new URL('../src/engine/localRepaint/uvRepaint.ts', import.meta.url),
     'utf8',
   );
+  // Exercise the production coordinate adapter in CI without a GPU.
+  const scissorBody = engine.match(/function setUvScissor\([^)]*\)\s*\{([\s\S]*?)\n\}/)?.[1];
+  assert.ok(scissorBody, 'UV tile scissor must have one physical-pixel adapter');
+  const setUvScissor = new Function('renderer', 'bounds', scissorBody);
+  assert.equal(
+    (engine.match(/setUvScissor\(this\.renderer, tile\.bounds\)/g) ?? []).length,
+    2,
+    'both source and output passes use the same adapter',
+  );
+  for (const dpr of [1, 1.25, 1.5, 2]) {
+    for (const bounds of [
+      { x: 256, y: 768, width: 256, height: 256 },
+      { x: 512, y: 512, width: 128, height: 128 },
+    ]) {
+      let physical, enabled;
+      setUvScissor(
+        {
+          getPixelRatio: () => dpr,
+          setScissor: (...values) => {
+            physical = values.map((v) => Math.round(v * dpr));
+          },
+          setScissorTest: (value) => {
+            enabled = value;
+          },
+        },
+        bounds,
+      );
+      assert.deepEqual(physical, [bounds.x, bounds.y, bounds.width, bounds.height]);
+      assert.equal(enabled, true);
+    }
+  }
   assert.doesNotMatch(
     engine,
     /请先展开不重叠 UV|countMaterial/,
