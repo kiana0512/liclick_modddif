@@ -188,7 +188,7 @@ const cacheWorkerSource = fs.readFileSync(
 let cacheReply;
 const cacheWorker = {
   postMessage(value, transfers = []) {
-    cacheReply = structuredClone(value, { transfer: transfers });
+    cacheReply = globalThis.structuredClone(value, { transfer: transfers });
   },
 };
 new Function(
@@ -313,7 +313,7 @@ await presentation.waitForResidentUvPresentation(scene, 'other-object');
   class RasterWorker {
     postMessage(request) {
       requests.push(request);
-      queueMicrotask(() => this.onmessage({data:{type:'result',id:request.id,
+      globalThis.queueMicrotask(() => this.onmessage({data:{type:'result',id:request.id,
         mask:new Uint8Array(request.width * request.height).buffer,
         backend:'offscreen-canvas-worker',gpuAccepted:false,mismatchedPixels:0,
         rawMismatchedPixels:0,maximumDifference:0,gpuMs:0,cpuGoldMs:0,totalMs:0}}));

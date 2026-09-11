@@ -52,6 +52,8 @@ Worker overlay 对 source RGBA、原 base RGBA、quality、rendered-mask 完全�
 
 ## 验证记录
 
+- 已推送集成提交 `b683157f4f98f54aa7efe4f33fe4b89c1e680acf`，正式发布包体 3,211,881 / 3,222,000 bytes；pipeline #629898 的 lint 阶段发现新增浏览器夹具中的全局引用和空 catch，非包体失败。修正为明确的 window/globalThis 引用并解释诊断 catch；不跳过测试或放宽 ESLint。M15 `RELEASE-PREPUSH/1.0.1` 将 CI 原 lint 命令纳入每次推送前入口，避免普通构建通过却遗漏 lint。下一轮 gutter 地址复用尚未发布。
+
 - 新增 `test:resident-uv-display`：真实 CPU resolver 对照、重复候选重用、光栅内存预算、所有权与几何失效；Worker overlay 对照冻结旧实现，包含 literal/feathered、透明度、rendered mask 与 coverage。
 - `check:resident-uv-browser`：真实 React/WebGL，五层普通/重绘投影逐层关闭、从白模逐层恢复、重复状态像素一致、每种状态非空且可区分。旋转/缩放/平移期间绑定同一 UV，UV revision 不增长、投影材质构建数为零。通过 `LICLICK_UV_TEST_RESOLUTION=4K` 检查完整 4K；测试明确区分缓存与冷计算。
 - 原生 UV 重绘浏览器回归已通过绘制/擦除/撤销、两层与三层独立显隐、merged UV 底图、PNG、FBX、重新打开以及 4K 曲面可见性检查。

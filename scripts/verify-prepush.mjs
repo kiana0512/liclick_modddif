@@ -31,7 +31,7 @@ for (const [key, value] of Object.entries(ci.build.variables)) {
   });
 }
 console.log(`正式发布推送前检查：${branch} / ${sha}`);
-for (const command of ci.build.script) {
+for (const command of [...ci.lint.script, ...ci.build.script]) {
   if (!/^corepack pnpm [\w :./-]+$/.test(command)) {
     throw new Error(`CI 构建命令发生变化，请同步检查入口：${command}`);
   }

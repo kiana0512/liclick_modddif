@@ -117,8 +117,8 @@ try{
   await page.goto(server.resolvedUrls.local[0]+'__fixture');
   const setup=()=>page.evaluate(async()=>{
     const originalDigest=crypto.subtle.digest.bind(crypto.subtle);window.fixtureCacheKeys=[];
-    crypto.subtle.digest=async(algorithm,data)=>{if(data.byteLength<100000&&new Uint8Array(data.buffer??data,data.byteOffset??0,1)[0]===123){try{const value=JSON.parse(new TextDecoder().decode(data));if(value.purpose)window.fixtureCacheKeys.push(value);}catch{}}return originalDigest(algorithm,data);};
-    const original=createImageBitmap;window.createImageBitmap=(...args)=>{
+    crypto.subtle.digest=async(algorithm,data)=>{if(data.byteLength<100000&&new Uint8Array(data.buffer??data,data.byteOffset??0,1)[0]===123){try{const value=JSON.parse(new globalThis.TextDecoder().decode(data));if(value.purpose)window.fixtureCacheKeys.push(value);}catch{/* Non-JSON digests are unrelated to cache identity. */}}return originalDigest(algorithm,data);};
+    const original=window.createImageBitmap;window.createImageBitmap=(...args)=>{
     if(args[0] instanceof ImageData&&args[0].width===4096&&args[1]?.imageOrientation==='flipY')window.fixtureLastUv=args[0].data.slice();
     return original(...args);
   };const module=await import('/__project-fixture.mjs');await module.setup();});
@@ -129,7 +129,7 @@ try{
     await page.waitForFunction(()=>!!document.body.dataset.residentUvCacheWrite,{},{timeout:60000});
     console.log('disk write',await page.evaluate(()=>document.body.dataset.residentUvCacheWrite));
     const before=await page.evaluate(()=>window.fixtureCacheKeys);
-    const diskBefore=await page.evaluate(async()=>{const cache=await caches.open('li3d-resident-uv-display-v1');return Promise.all((await cache.keys()).map(async key=>({url:key.url,headers:Object.fromEntries((await cache.match(key)).headers)})));});
+    const diskBefore=await page.evaluate(async()=>{const cache=await window.caches.open('li3d-resident-uv-display-v1');return Promise.all((await cache.keys()).map(async key=>({url:key.url,headers:Object.fromEntries((await cache.match(key)).headers)})));});
     const started=Date.now();await page.reload();await setup();
     const stages=await page.evaluate(()=>JSON.parse(document.body.dataset.residentUvProjectionStages));
     const after=await page.evaluate(()=>window.fixtureCacheKeys);

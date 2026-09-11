@@ -205,8 +205,8 @@ try {
       const f = window.toggleFixture,
         start = performance.now();
       f.set(count);
-      await new Promise(requestAnimationFrame);
-      await new Promise(requestAnimationFrame);
+      await new Promise(window.requestAnimationFrame);
+      await new Promise(window.requestAnimationFrame);
       const early = f.pixels(),
         earlyState = f.state(),
         earlyMs = performance.now() - start;
