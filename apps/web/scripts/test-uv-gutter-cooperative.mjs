@@ -29,7 +29,13 @@ const seamCode = ts.transpileModule(await readFile(
   new URL('../src/engine/bake/uvSeamReconciliation.ts', import.meta.url), 'utf8'), {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
 }).outputText;
-new Function('require', 'exports', seamCode)(name => {
+// Exercise the cooperative collector's compact keys directly as well as its
+// resulting repaired pixels. Its public synchronous counterpart stays an oracle.
+new Function('require', 'exports', seamCode + `
+exports.collectOptimized = (root, include) => {
+  const steps = collectUvSeamPairSteps(root, include, true);
+  let step; do { step = steps.next(); } while (!step.done); return step.value;
+};`)(name => {
   if (name === 'three') return THREE;
   if (name === './uvSeamGeometrySnapshot') return seamSnapshot;
   throw new Error(`Unexpected dependency: ${name}`);
@@ -149,6 +155,8 @@ for (let trial = 0; trial < 40; trial++) {
   const result = alignedSeams.reconcileUvSeams(expected, root, expectedMask, options);
   assert.deepEqual(nextSeams.collectUvSeamPairs(root, options.repairMissingCoverage),
     oldSeams.collectUvSeamPairs(root, options.repairMissingCoverage));
+  assert.deepEqual(nextSeams.collectOptimized(root, options.repairMissingCoverage),
+    oldSeams.collectUvSeamPairs(root, options.repairMissingCoverage));
   for (const flag of ['liclickPaintOverlay', 'liclickWireframeOverlay', 'liclickLocalRepaintGpuOverlay']) {
     const helper = mesh.clone();
     helper.userData[flag] = true;
@@ -204,12 +212,22 @@ for (const count of [4, 5, 6, 50]) {
   }
   for (const include of [false, true]) {
     assert.deepEqual(nextSeams.collectUvSeamPairs(root, include), oldSeams.collectUvSeamPairs(root, include));
+    assert.deepEqual(nextSeams.collectOptimized(root, include), oldSeams.collectUvSeamPairs(root, include));
   }
   root.traverse((object) => {
     if (object instanceof THREE.Mesh) { object.geometry.dispose(); object.material.dispose(); }
   });
 }
 console.log('UV seam repeated/non-manifold edge order parity passed.');
+
+// Declared vertex counts beyond exact integer pairing must take the string
+// fallback. The small index buffer keeps this malformed-count fixture bounded.
+{
+  const mesh = new THREE.Mesh(new THREE.BoxGeometry());
+  mesh.geometry.attributes.position.count = 100_000_000;
+  assert.deepEqual(nextSeams.collectOptimized(mesh, true), oldSeams.collectUvSeamPairs(mesh, true));
+  mesh.geometry.dispose(); mesh.material.dispose();
+}
 
 // Reuse must follow exact geometry, including direct edits without needsUpdate.
 const mutableRoot = new THREE.Group();
