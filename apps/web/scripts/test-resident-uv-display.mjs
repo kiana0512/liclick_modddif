@@ -108,6 +108,7 @@ for (const preserveAlpha of [false, true])
   }
 
 const { ProjectedUvRasterCache } = load('ProjectedUvRasterCache', {
+  three: THREE,
   './residentQualityComposite': { ResidentQualityComposite },
   '@/utils/browserScheduling': { yieldToBrowserTask: async () => {} },
 });
@@ -123,6 +124,7 @@ const entry = () => ({
     },
   },
   quality: {
+    texture: { format: THREE.RGBAFormat },
     dispose() {
       disposed++;
     },
@@ -181,6 +183,19 @@ assert.equal(
 aggregateCache.prepare(renderer, 'changed-geometry', []);
 assert.equal(await aggregateCache.getResolved('normal-stack'), undefined);
 aggregateCache.dispose();
+const compactCache = new ProjectedUvRasterCache(16);
+compactCache.prepare(renderer, 'compact', ['a', 'b', 'c']);
+const compactEntry = () => {
+  const value = entry(); value.quality.texture.format = THREE.RedFormat; return value;
+};
+assert(compactCache.take('a', compactEntry()));
+assert(compactCache.take('b', compactEntry()));
+assert(compactCache.take('c', compactEntry()), 'R8 quality is charged one byte per full-resolution texel');
+assert.equal(compactCache.take('d', compactEntry()), false);
+await compactCache.retainResolved('base', resolved);
+assert.equal(compactCache.get('a'), undefined);
+assert(compactCache.get('b'));assert(compactCache.get('c'), 'two 5-byte rasters share the 16-byte budget with a 6-byte base');
+compactCache.dispose();
 const cacheWorkerSource = fs.readFileSync(
   new URL('../src/workers/residentUvCache.worker.ts', import.meta.url),
   'utf8',

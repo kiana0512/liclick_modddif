@@ -28,15 +28,19 @@ export class QualityAlphaReadback {
       this.material = new THREE.RawShaderMaterial({
         glslVersion: THREE.GLSL3, depthTest: false, depthWrite: false,
         blending: THREE.NoBlending, toneMapped: false,
-        uniforms: { source: { value: source.texture }, width: { value: resolution } },
+        uniforms: { source: { value: source.texture }, width: { value: resolution }, redChannel: { value: false } },
         vertexShader: `in vec3 position;
 void main() { gl_Position = vec4(position, 1.0); }`,
         fragmentShader: `precision highp float;
 precision highp int;
 uniform sampler2D source;
 uniform int width;
+uniform bool redChannel;
 out vec4 outColor;
-float alphaAt(int i) { return texelFetch(source, ivec2(i % width, i / width), 0).a; }
+float alphaAt(int i) {
+  vec4 value = texelFetch(source, ivec2(i % width, i / width), 0);
+  return redChannel ? value.r : value.a;
+}
 void main() {
   int i = (int(gl_FragCoord.y) * (width / 2) + int(gl_FragCoord.x)) * 4;
   outColor = vec4(alphaAt(i), alphaAt(i + 1), alphaAt(i + 2), alphaAt(i + 3));
@@ -48,6 +52,7 @@ void main() {
       this.mesh.frustumCulled = false;
     }
     this.material!.uniforms.source.value = source.texture;
+    this.material!.uniforms.redChannel.value = source.texture.format === THREE.RedFormat;
     const target = renderer.getRenderTarget();
     const face = renderer.getActiveCubeFace(), mip = renderer.getActiveMipmapLevel();
     const viewport = renderer.getViewport(new THREE.Vector4());

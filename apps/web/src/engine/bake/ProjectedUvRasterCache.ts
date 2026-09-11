@@ -1,4 +1,5 @@
 import type * as THREE from 'three';
+import { RedFormat } from 'three';
 import type { GpuLayerSourceSize, GpuLayerRastersBakeOutput } from './gpuUvBakeRenderer';
 import { ResidentQualityComposite } from './residentQualityComposite';
 import { yieldToBrowserTask } from '@/utils/browserScheduling';
@@ -8,6 +9,9 @@ type Entry = {
   quality: THREE.WebGLRenderTarget;
   sourceSize: GpuLayerSourceSize;
 };
+
+const entryBytes = (entry: Entry) => entry.color.width * entry.color.height *
+  (entry.quality.texture.format === RedFormat ? 5 : 8);
 
 /** Derived, renderer-local full-resolution UV rasters. Never stores project assets.
  * Visibility changes reuse the exact quantized color/quality targets; all pixel
@@ -67,7 +71,7 @@ export class ProjectedUvRasterCache {
     // Aggregate UV replaces individual rasters within the same hard budget.
     for (const [oldKey, old] of this.entries) {
       if (this.bytes + bytes <= this.budget) break;
-      this.bytes -= old.color.width * old.color.height * 8;
+      this.bytes -= entryBytes(old);
       old.color.dispose();
       old.quality.dispose();
       this.entries.delete(oldKey);
@@ -117,12 +121,12 @@ export class ProjectedUvRasterCache {
     return this.resident;
   }
   take(key: string, entry: Entry) {
-    const bytes = entry.color.width * entry.color.height * 8;
+    const bytes = entryBytes(entry);
     if (this.disposed || bytes > this.budget || this.entries.has(key)) return false;
     for (const [oldKey, old] of this.entries) {
       if (this.bytes + bytes <= this.budget) break;
       if (this.protectedKeys.has(oldKey)) continue;
-      this.bytes -= old.color.width * old.color.height * 8;
+      this.bytes -= entryBytes(old);
       old.color.dispose();
       old.quality.dispose();
       this.entries.delete(oldKey);

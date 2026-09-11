@@ -577,7 +577,7 @@ const fragmentShader = `
     }
 
     #if UV_RASTER_QUALITY_ONLY == 1
-      gl_FragColor = vec4(0.0, 0.0, 0.0, writeAlpha);
+      gl_FragColor = vec4(writeAlpha);
     #else
       gl_FragColor = vec4(texel.rgb, writeAlpha);
     #endif
@@ -1171,7 +1171,9 @@ function createLayerMaterial(input: {
     depthTest: input.compositeMode === 'quality-depth',
     depthWrite: input.compositeMode === 'quality-depth',
     depthFunc: THREE.LessDepth,
-    premultipliedAlpha: false,
+    // Weight in red must use the original alpha source-over factors (ONE,
+    // ONE_MINUS_SRC_ALPHA), not multiply itself by alpha a second time.
+    premultipliedAlpha: Boolean(input.qualityOnly),
     transparent: input.compositeMode !== 'quality-depth',
     toneMapped: false,
     side: THREE.DoubleSide,
@@ -1195,11 +1197,11 @@ function createBakeScene(meshes: PreparedMesh[]) {
   return { scene, bakeMeshes };
 }
 
-function createPostprocessTarget(resolution: number) {
+function createPostprocessTarget(resolution: number, format: THREE.PixelFormat = THREE.RGBAFormat) {
   const target = new THREE.WebGLRenderTarget(resolution, resolution, {
     depthBuffer: false,
     stencilBuffer: false,
-    format: THREE.RGBAFormat,
+    format,
     type: THREE.UnsignedByteType,
     minFilter: THREE.NearestFilter,
     magFilter: THREE.NearestFilter,
@@ -1650,7 +1652,11 @@ export async function bakeProjectedLayerRastersWithGpu(
     if (resolved) return resolved;
   }
   let colorTarget = createPostprocessTarget(resolution);
-  let qualityTarget = createPostprocessTarget(resolution);
+  // UV-QUALITY-R8/1: private weights consume one original byte, not four.
+  // Odd/legacy readback paths retain their existing RGBA layout.
+  const qualityFormat = renderer.capabilities.isWebGL2 && resolution % 2 === 0
+    ? THREE.RedFormat : THREE.RGBAFormat;
+  let qualityTarget = createPostprocessTarget(resolution, qualityFormat);
   const qualityReadback = new QualityAlphaReadback(renderer, resolution);
   const cached = keys.map((key, i) => cacheable[i] ? rasterCache?.get(key) : undefined);
   if (rasterCache) {
@@ -1812,7 +1818,7 @@ export async function bakeProjectedLayerRastersWithGpu(
       })) {
         // Transfer target ownership; later layers must never overwrite cached UVs.
         colorTarget = createPostprocessTarget(resolution);
-        qualityTarget = createPostprocessTarget(resolution);
+        qualityTarget = createPostprocessTarget(resolution, qualityFormat);
       }
       processedTriangles += totalTrianglesPerLayer;
       reportProgress(layer, layerIndex, true);

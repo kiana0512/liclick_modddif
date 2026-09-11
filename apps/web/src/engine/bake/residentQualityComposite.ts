@@ -61,6 +61,7 @@ uvec3 rgb(uint value) { return uvec3(value, value >> 8u, value >> 16u) & 255u; }
 const accumulateShader = `${common}
 uniform sampler2D layerColor;
 uniform sampler2D layerQuality;
+uniform bool qualityIsRed;
 uniform sampler2D unpremultiplyTable;
 layout(location=0) out uvec4 result;
 void main() {
@@ -70,7 +71,8 @@ void main() {
   uvec4 color = uvec4(floor(texelFetch(layerColor, p, 0) * 255.0 + 0.5));
   if (color.a>0u) { result.w+=0x01000000u; selected.w=result.w; }
   if (color.a <= 5u) return;
-  uint quality = uint(floor(texelFetch(layerQuality, p, 0).a * 255.0 + 0.5));
+  vec4 qualityTexel = texelFetch(layerQuality, p, 0);
+  uint quality = uint(floor((qualityIsRed ? qualityTexel.r : qualityTexel.a) * 255.0 + 0.5));
   // Preserve JavaScript double rounding: 38 byte pairs differ from exact
   // integer division at half-integer ties (for example RGB=11, alpha=66).
   uvec3 straight=uvec3(
@@ -255,7 +257,7 @@ export class ResidentQualityComposite {
       depthTest: false, depthWrite: false, blending: THREE.NoBlending, toneMapped: false,
       uniforms: {
         previousCandidates:{value:null}, scoreTable:{value:this.scoreTexture},
-        layerColor:{value:null}, layerQuality:{value:null},
+        layerColor:{value:null}, layerQuality:{value:null}, qualityIsRed:{value:false},
         linearTable:{value:this.linearTexture}, preserveAlpha:{value:false},
         markUncertain:{value:false}, coordinates:{value:null}, resolution:{value:resolution},
         counts:{value:null},firstCount:{value:true},
@@ -307,6 +309,7 @@ export class ResidentQualityComposite {
     this.accumulateMaterial.uniforms.previousCandidates.value=this.targets[this.current].texture;
     this.accumulateMaterial.uniforms.layerColor.value=color;
     this.accumulateMaterial.uniforms.layerQuality.value=quality;
+    this.accumulateMaterial.uniforms.qualityIsRed.value=quality.format===THREE.RedFormat;
     this.mesh.material=this.accumulateMaterial;
     this.withTarget(this.targets[next],() => this.renderer.render(this.scene,this.camera));
     this.current=next;

@@ -5,7 +5,7 @@ import { convertLayerGpuReadbackInWorker } from './gpuReadbackConversionWorker';
 
 const pending = new WeakMap<THREE.WebGLRenderer, Map<boolean, Promise<void>>>();
 
-/** UV-DEVICE-CALIBRATION/1.0.0. Validate the actual renderer, never trust a
+/** UV-DEVICE-CALIBRATION/1.1.0. Validate both R8/RGBA on the actual renderer; never trust a
  * persisted adapter name. Full-project CPU/GPU comparisons remain release QA.
  */
 export async function calibrateResidentQuality(renderer: THREE.WebGLRenderer, preserveAlpha: boolean) {
@@ -26,7 +26,8 @@ export async function calibrateResidentQuality(renderer: THREE.WebGLRenderer, pr
       const layers = [];
       try {
         for (let layer = 0; layer < 6; layer++) {
-          const rgba = new Uint8Array(count * 4), scores = new Uint8Array(count * 4);
+          const red = layer % 2 === 0;
+          const rgba = new Uint8Array(count * 4), scores = new Uint8Array(count * (red ? 1 : 4));
           const color = new Uint8ClampedArray(count * 4), quality = new Float32Array(count);
           for (let i = 0; i < count; i++) {
             const alpha = layer === 0 ? i & 255 : (i * (layer * 2 + 1) + layer * 31) & 255;
@@ -38,10 +39,10 @@ export async function calibrateResidentQuality(renderer: THREE.WebGLRenderer, pr
               color[target + c] = alpha ? Math.min(255, Math.round(value / (alpha / 255))) : 0;
             }
             rgba[offset + 3] = color[target + 3] = alpha;
-            scores[offset + 3] = q; quality[target / 4] = q / 255;
+            scores[red ? i : offset + 3] = q; quality[target / 4] = q / 255;
           }
           const image = new THREE.DataTexture(rgba, resolution, resolution);
-          const score = new THREE.DataTexture(scores, resolution, resolution);
+          const score = new THREE.DataTexture(scores, resolution, resolution, red ? THREE.RedFormat : THREE.RGBAFormat);
           image.needsUpdate = score.needsUpdate = true;
           textures.push(image, score); composite.push(image, score);
           layers.push({ color, quality });
