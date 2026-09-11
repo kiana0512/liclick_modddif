@@ -65,4 +65,16 @@ M07 / `UV-SEAM-REPAIR-PLAN/1.3`：以量化后的完整世界坐标生成位置 
 
 补充强制哈希碰撞、大坐标、量化边界、正负零与非有限值和重复位置验证，保留原随机用例种子；600 gutter、500 repair、40 transformed-mesh、非流形与几何失效对照通过。隔离同一球模型三轮旧 158.6/137.6/125.7ms、新 122.4/113.1/105.4ms，完整 RGBA/coverage/count 一致。内置原工程可见聚焦：首次接缝 749.2ms、新局部组合 4193.6ms、普通组合 2291.1ms、F5 2609.9ms、已算状态约 31ms；连续开关最终稳定，该轮异常为空。仅局部阶段下降，不宣称总转换显著缩短或 isReady 已修复。
 
-拒绝候选：蒙版在 Worker 编码 PNG 的 1/97/512/4096 尺寸、两种 alpha 模式完整解码 RGBA 对照差异 0，但真实原工程整次仍约 4147ms（原约 4190ms，波动不足以证明收益），已恢复原正式编码路径。临时早期 compileAsync 生命周期诊断未复现问题，也已移除。
+拒绝候选：蒙版在 Worker 编码 PNG 的 1/97/512/4096 尺寸、两种 alpha 模式完整解码 RGBA 对照差异 0，但真实原工程整次仍约 4147ms（原约 4190ms，波动不足以证明收益），已恢复原正式编码路径。早期 compileAsync 生命周期诊断尝试未获得有效定位证据，没有生产诊断补丁。
+
+`bdfa20af0e2649361e3281c088bdb267c9854c30` 已通过正式 prepush 并推送 master；总 JS 3,207,419 / 3,222,000，余量 14,581 bytes，受限 chunk 全部通过。
+
+## 首次静态 PNG 像素读取
+
+M07/M09，协作 M06；`PERF-UV-SOURCE-PREPARE-001` v1.3.0。原 PNG header/尺寸校验通过后，CPU ImageData 请求也交给原软件 Canvas 采样 Worker；完整 RGBA 在 Worker 读出后转移所有权，主线程直接包装 ImageData 并进入原 192 MiB 缓存。GPU ImageBitmap 消费模式不变。JPEG、需要缩放的 PNG、live 来源保留原路径；不是把有差异的 Bitmap 缩放当成等价实现。
+
+真实内置浏览器对 bdfa20a 冻结加载器逐字节对照：1/97/512/4096 尺寸 PNG、非方图、缩放 PNG、JPEG 全部尺寸和 RGBA 相同。4K 67,108,864 字节差异 0，旧 458.4ms、新 249.4ms；1px 的首次 Worker 启动反而较慢（11.2→18.6ms），不宣称所有小图也有收益。新增客户端转移包装、Worker 完整尺寸/字节、读取/发送错误和资源释放回归；原 live 同步快照/源解码/bitmap 与 CPU 合成断言保留。完整 web 回归 121 项通过，构建与相关 lint 通过。
+
+内置原工程两轮可见且聚焦：首次新局部组合 3913/3930ms，mask 490.5/468.3ms；上一版约 4194ms、mask 845.5ms。普通新组合 2269/2384ms，已计算状态约 31–32ms；第一轮 F5 2428ms。连续开关恢复全部原显隐并等待 Saved，最终版本稳定，无该轮捕获的页面异常。仍未达到即时新组合，未证明未覆盖设备/所有原始 PNG 色彩配置均相同；已记录的偶发 isReady 仍待单独定位。
+
+GPU/CPU/Worker/shader 共用原像素公式；CPU 消费者（蒙版、UV/导出等）只改变准备位置，alpha 舍入、Top-K、接缝、深灰斜线、全分辨率和 QA 保留。持久资产及 Project Command/CAS/ownership/verified assets 不变，无 Schema/存量资产/磁盘格式迁移。回滚同时恢复 imageSampler 的 bitmap-only 入口及 Worker 像素消息分支，已保存的结果无需重写。

@@ -131,7 +131,7 @@ export async function loadImageData(
     return bitmap ? createImageBitmap(cached.imageData) : cached.imageData;
   }
   let fetchedSource:Blob|undefined;
-  if(bitmap && !liveTextureState && typeof Worker!=='undefined' && typeof OffscreenCanvas!=='undefined') {
+  if(!liveTextureState && typeof Worker!=='undefined' && typeof OffscreenCanvas!=='undefined') {
     const blob=fetchedSource=await urlToBlob(resolvedUrl);
     // Static production PNG sources can decode entirely off-thread.
     // Other formats retain the existing HTML image compatibility path.
@@ -144,7 +144,9 @@ export async function loadImageData(
         bytes.getUint32(8)===13 && bytes.getUint32(12)===0x49484452 &&
         bytes.getUint32(16)>0 && bytes.getUint32(20)>0 && Math.max(bytes.getUint32(16),bytes.getUint32(20))<=maxDimension) {
         const {prepareSamplingBitmap}=await import('./prepareSamplingBitmap');
-        return prepareSamplingBitmap(blob,maxDimension);
+        const prepared=await prepareSamplingBitmap(blob,maxDimension,!bitmap);
+        if(prepared instanceof ImageData) rememberImageData(cacheKey,prepared);
+        return prepared;
       }
     }
   }
