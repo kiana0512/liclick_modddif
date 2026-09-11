@@ -171,9 +171,14 @@ function* collectUvSeamPairSteps(root: THREE.Object3D, includeDiscontinuous = fa
           // Keep the same first UV-key order and last record per key as the
           // former final Map pass. Interior triangle edges need only one
           // retained record, avoiding a second object graph during pairing.
-          const uvKey = uvEdgeKey(record);
+          // UV-SEAM-REPAIR-PLAN/1.1: shared indexed endpoints already prove UV
+          // equality; avoid quantizing/stringifying the same interior edge.
+          let uvKey: string | undefined;
           const existing = records.length <= 4
-            ? records.findIndex((edge) => uvEdgeKey(edge) === uvKey)
+            ? records.findIndex((edge) =>
+              (edge.a === record.a && edge.b === record.b) ||
+              (edge.a === record.b && edge.b === record.a) ||
+              uvEdgeKey(edge) === (uvKey ??= uvEdgeKey(record)))
             : -1;
           if (existing < 0) records.push(record);
           else records[existing] = record;

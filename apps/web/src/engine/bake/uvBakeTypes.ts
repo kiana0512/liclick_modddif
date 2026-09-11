@@ -133,6 +133,8 @@ export interface BakeVisibleProjectedLayersInput {
   skipCanvasUpload?: boolean;
   /** Skip CPU seam/dilation passes when a transparent GPU overlay is already final. */
   skipCpuPostprocess?: boolean;
+  /** Throws when a derived display request has been superseded; never persisted. */
+  checkCancelled?: () => void;
   onProgress?: (progress: BakeProgress) => void;
 }
 

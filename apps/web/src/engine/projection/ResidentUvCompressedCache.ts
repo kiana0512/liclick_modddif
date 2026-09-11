@@ -3,6 +3,8 @@ export class ResidentUvCompressedCache {
   private worker?: Worker;
   private disabled = false;
   private encoding = false;
+  private activeKey?: string;
+  private queued?: { key: string; image: ImageData; mask?: Uint8Array; persistentKey?: string };
   private nextId = 0;
   private known = new Set<string>();
   private pending = new Map<
@@ -72,7 +74,7 @@ export class ResidentUvCompressedCache {
   }
   /** Ownership of the completed CPU arrays transfers only after texture upload. */
   offer(key: string, image: ImageData, mask?: Uint8Array, persistentKey?: string) {
-    if (this.encoding || this.known.has(key)) return;
+    if (this.known.has(key)) return;
     const worker = this.getWorker();
     if (!worker) return;
     // Only transfer complete owned buffers; callers with slices keep their data.
@@ -82,12 +84,16 @@ export class ResidentUvCompressedCache {
       (mask && (mask.byteOffset || mask.byteLength !== mask.buffer.byteLength))
     )
       return;
+    if (this.encoding) { this.queued = { key, image, mask, persistentKey }; return; }
     const id = ++this.nextId;
     const color = image.data.buffer,
       maskBuffer = mask?.buffer ?? new ArrayBuffer(0);
     this.encoding = true;
     this.pending.set(id, () => {
       this.encoding = false;
+      const queued = this.queued;
+      this.queued = undefined;
+      if (queued) this.offer(queued.key, queued.image, queued.mask, queued.persistentKey);
     });
     try {
       worker.postMessage(
@@ -99,8 +105,15 @@ export class ResidentUvCompressedCache {
       this.pending.delete(id);
     }
   }
+  activate(key: string) {
+    if (this.activeKey === key) return;
+    this.activeKey = key;
+    try { this.getWorker()?.postMessage({ id: ++this.nextId, type: 'activate', key }); }
+    catch { /* Optional disk retention never blocks the presented GPU buffer. */ }
+  }
   dispose() {
     this.disabled = true;
+    this.queued = undefined;
     this.worker?.terminate();
     this.worker = undefined;
     this.pending.forEach((resolve) => resolve({}));

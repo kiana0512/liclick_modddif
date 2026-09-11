@@ -1031,7 +1031,9 @@ export async function bakeVisibleProjectedLayersToTexture(input: BakeVisibleProj
 async function bakeVisibleProjectedLayersToTextureUnlocked(
   input: BakeVisibleProjectedLayersInput,
 ): Promise<BakeProjectedLayerResult> {
+  input.checkCancelled?.();
   await flushLiveUvCommits();
+  input.checkCancelled?.();
   const startedAt = performance.now();
   const importedModel = input.sourceModel ?? useSceneStore.getState().importedModel;
   if (!importedModel || importedModel.objectId !== input.objectId) {
@@ -1079,6 +1081,11 @@ async function bakeVisibleProjectedLayersToTextureUnlocked(
   });
   if (layers.length === 0) throw new Error('No visible projected layers to bake.');
   const performanceBreakdown: Record<string, number> = {};
+  const yieldPostprocess = async () => {
+    input.checkCancelled?.();
+    await (isViewportInteractionBusy() ? waitForBrowserPaint() : yieldToBrowserTask());
+    input.checkCancelled?.();
+  };
   let uvGutterTopologyPromise:
     | Promise<WebGpuUvTopologyRasterResult | undefined>
     | undefined;
@@ -1126,6 +1133,9 @@ async function bakeVisibleProjectedLayersToTextureUnlocked(
       });
     return uvGutterTopologyPromise;
   };
+  // UV-TOPOLOGY-LOOKAHEAD/1: geometry-only work can overlap source decoding and
+  // projection. The same validated mask is awaited at its original consumer.
+  void getUvGutterTopology();
   const dilationPixels = getUvDilationPixels(input.resolution, input.dilationPixels);
   input.onProgress?.({
     phase: 'loading-assets',
@@ -1450,6 +1460,7 @@ async function bakeVisibleProjectedLayersToTextureUnlocked(
         );
 
         const qualityResolveStartedAt = performance.now();
+        input.checkCancelled?.();
         markUvBakePerformancePhase('quality-resolve');
         if (input.outputAlpha === 'transparent') {
           await clearWeakTransparentTexels(composite, qualityCoverage);
@@ -1462,7 +1473,7 @@ async function bakeVisibleProjectedLayersToTextureUnlocked(
         markUvBakePerformancePhase('seam-reconcile');
         if (input.outputAlpha !== 'transparent' || input.repairMissingUvSeams) {
           const seamResult = await reconcileUvSeamsCooperatively(
-            () => isViewportInteractionBusy() ? waitForBrowserPaint() : yieldToBrowserTask(),
+            yieldPostprocess,
             composite,
             importedModel.group,
             qualityCoverage,
@@ -1478,6 +1489,7 @@ async function bakeVisibleProjectedLayersToTextureUnlocked(
           }
         }
         performanceBreakdown.seamReconcileMs = performance.now() - seamStartedAt;
+        input.checkCancelled?.();
         const coverageRepairStartedAt = performance.now();
         markUvBakePerformancePhase('coverage-repair');
         if ((input.uvCoverageGapPixels ?? 0) > 0) {
@@ -1510,6 +1522,7 @@ async function bakeVisibleProjectedLayersToTextureUnlocked(
         markUvBakePerformancePhase('gutter');
         if ((input.uvIslandGutterPixels ?? 0) > 0) {
           const topology = await getUvGutterTopology();
+          input.checkCancelled?.();
           const paddedPixels = topology
             ? await padUvIslandGuttersWithTopologyCooperatively(
                 composite,
@@ -1517,7 +1530,7 @@ async function bakeVisibleProjectedLayersToTextureUnlocked(
                 topology.mask,
                 input.uvIslandGutterPixels ?? 0,
                 input.outputAlpha === 'transparent',
-                () => isViewportInteractionBusy() ? waitForBrowserPaint() : yieldToBrowserTask(),
+                yieldPostprocess,
               )
             : await padUvIslandGuttersCooperatively(
                 composite,
@@ -1525,13 +1538,14 @@ async function bakeVisibleProjectedLayersToTextureUnlocked(
                 importedModel.group,
                 input.uvIslandGutterPixels ?? 0,
                 input.outputAlpha === 'transparent',
-                () => isViewportInteractionBusy() ? waitForBrowserPaint() : yieldToBrowserTask(),
+                yieldPostprocess,
               );
           if (paddedPixels > 0) {
             warnings.push(`UV-island gutter padding added ${paddedPixels} filter-only texels.`);
           }
         }
         performanceBreakdown.gutterMs = performance.now() - gutterStartedAt;
+        input.checkCancelled?.();
         const finalizeStartedAt = performance.now();
         markUvBakePerformancePhase('finalize-cleanup');
         if (input.outputAlpha !== 'transparent') await fillTransparentTexelsForViewport(composite);

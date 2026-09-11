@@ -1,9 +1,9 @@
 /// <reference lib="webworker" />
 
-const entries = new Map<
-  string,
-  { bytes: Uint8Array<ArrayBuffer>; resolution: number; maskLength: number }
->();
+type Entry = { bytes: Uint8Array<ArrayBuffer>; resolution: number; maskLength: number; persistentKey?: string };
+const entries = new Map<string, Entry>();
+let activeKey: string | undefined;
+let diskWrites = Promise.resolve<string | undefined>(undefined);
 const budget = 256 * 1024 * 1024;
 let retained = 0;
 const diskCache = 'li3d-resident-uv-display-v1';
@@ -24,7 +24,18 @@ async function readDisk(key: string, miss: (reason: string) => void) {
     return { bytes, resolution, maskLength };
   } catch { miss('storage-unavailable'); }
 }
-async function writeDisk(key: string, entry: { bytes: Uint8Array<ArrayBuffer>; resolution: number; maskLength: number }) {
+function remember(key: string, entry: Entry) {
+  const previous = entries.get(key);
+  if (previous) { retained -= previous.bytes.byteLength; entries.delete(key); }
+  for (const [oldest, old] of entries) {
+    if (retained + entry.bytes.byteLength <= budget) break;
+    if (oldest === activeKey) continue;
+    retained -= old.bytes.byteLength; entries.delete(oldest);
+  }
+  if (retained + entry.bytes.byteLength > budget) return;
+  entries.set(key, entry); retained += entry.bytes.byteLength;
+}
+async function writeDisk(key: string, entry: Entry) {
   try {
     const cache = await caches.open(diskCache);
     await cache.put(diskRequest(key), new Response(entry.bytes, { headers: {
@@ -33,13 +44,31 @@ async function writeDisk(key: string, entry: { bytes: Uint8Array<ArrayBuffer>; r
     } }));
     // Two full-resolution snapshots bound disk storage independently of the memory LRU.
     const keys = await cache.keys();
-    for (const old of keys.slice(0, Math.max(0, keys.length - 2))) await cache.delete(old);
+    // UV-DISPLAY-DERIVED-CACHE/1.1: pin the actually presented snapshot. A late
+    // background write must not evict the state to which the user just returned.
+    const pinned = entries.get(activeKey ?? '')?.persistentKey;
+    const removable = keys.filter(old => old.url !== diskRequest(key) && old.url !== diskRequest(pinned ?? ''));
+    for (const old of removable.slice(0, Math.max(0, keys.length - 2))) await cache.delete(old);
     return `saved:${keys.length}`;
   } catch (error) { return error instanceof Error ? error.name : 'storage-unavailable'; }
+}
+function persist(entry: Entry, presentedKey?: string) {
+  const key = entry.persistentKey;
+  if (!validDiskKey(key)) return Promise.resolve(undefined);
+  const result = diskWrites.then(() => presentedKey && presentedKey !== activeKey ? undefined : writeDisk(key, entry));
+  diskWrites = result.catch(() => undefined);
+  return result;
 }
 self.onmessage = async ({ data }) => {
   const { id, key, type } = data;
   try {
+    if (type === 'activate') {
+      activeKey = key;
+      const entry = entries.get(key);
+      const diskWrite = entry ? await persist(entry, key) : undefined;
+      self.postMessage({ id, diskWrite });
+      return;
+    }
     if (type === 'store') {
       let diskWrite: string | undefined;
       const color = new Uint8Array(data.color),
@@ -55,30 +84,21 @@ self.onmessage = async ({ data }) => {
         await new Response(source.pipeThrough(new CompressionStream('deflate'))).arrayBuffer(),
       );
       if (bytes.byteLength <= budget) {
-        const previous = entries.get(key);
-        if (previous) {
-          retained -= previous.bytes.byteLength;
-          entries.delete(key);
-        }
-        while (retained + bytes.byteLength > budget && entries.size) {
-          const oldest = entries.keys().next().value!;
-          retained -= entries.get(oldest)!.bytes.byteLength;
-          entries.delete(oldest);
-        }
-        const entry = { bytes, resolution: data.resolution, maskLength: mask.length };
-        entries.set(key, entry);
-        retained += bytes.byteLength;
-        if (validDiskKey(data.persistentKey)) diskWrite = await writeDisk(data.persistentKey, entry);
+        const entry = { bytes, resolution: data.resolution, maskLength: mask.length,
+          persistentKey: validDiskKey(data.persistentKey) ? data.persistentKey : undefined };
+        remember(key, entry);
+        diskWrite = await persist(entry);
       }
       self.postMessage({ id, keys: [...entries.keys()], retained, diskWrite });
     } else {
       let miss = 'memory-miss';
-      const entry = entries.get(key) ?? (validDiskKey(data.persistentKey) ? await readDisk(data.persistentKey, reason => { miss = reason; }) : undefined);
+      const existing = entries.get(key);
+      const entry: Entry | undefined = existing ?? (validDiskKey(data.persistentKey) ? await readDisk(data.persistentKey, reason => { miss = reason; }) : undefined);
       if (!entry) {
         self.postMessage({ id, miss });
         return;
       }
-      if (entries.has(key)) { entries.delete(key); entries.set(key, entry); }
+      if (!existing && validDiskKey(data.persistentKey)) entry.persistentKey = data.persistentKey;
       const source = new ReadableStream<BufferSource>({
         start(controller) {
           controller.enqueue(entry.bytes);
@@ -90,7 +110,8 @@ self.onmessage = async ({ data }) => {
       ).arrayBuffer();
       if (output.byteLength !== entry.resolution ** 2 * 4 + entry.maskLength)
         throw new Error('Invalid cached UV length');
-      self.postMessage({ id, output, resolution: entry.resolution, maskLength: entry.maskLength }, [
+      remember(key, entry);
+      self.postMessage({ id, output, resolution: entry.resolution, maskLength: entry.maskLength, keys: [...entries.keys()] }, [
         output,
       ]);
     }
