@@ -1,6 +1,6 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
-> 文档版本：`2.20.12`
+> 文档版本：`2.20.13`
 >
 > 生效日期：`2026-09-11`
 >
@@ -11,6 +11,8 @@
 > 审计口径：`0a2519d + 607e82f + 2568e40`，不包含错误文档提交 `2bde8c6/e03bab2/d1c5f78`
 
 ## 1. 文档地位与强制边界
+
+2026-09-11 M08：`ALG-LR-UV-PAINT` v1.1.2 / UV_REPAINT_VERSION=4，修复 HiDPI 下局部 UV 笔画分块坐标重复缩放。source/output 两遍 scissor 共用物理 UV 像素适配，保持实际屏幕 DPR、分辨率、可见性和遮挡公式不变。GPU 写入与 CPU 脏瓦片读回、历史和保存一致；Worker/合并/PNG/FBX 消费同一 RGBA，无独立算法改动。旧 v1 图层及已存资产不改写，缺失笔画需重新绘制，无 Schema/CAS/ownership 迁移。DPR 1/1.25/1.5/2 完整像素对照与原模型复测通过，范围、证据和回滚见 [HiDPI 变更卡](changes/CHG-20260911-UV-REPAINT-HIDPI.md)。
 
 ### 每次 CI/CD 推送前的强制包体检查
 

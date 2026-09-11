@@ -1,6 +1,6 @@
 import type { Layer } from '@/types/layer';
 
-export const UV_REPAINT_VERSION = 3;
+export const UV_REPAINT_VERSION = 4;
 export const UV_REPAINT_TILE_SIZE = 256;
 export const UV_REPAINT_LAYER_PREFIX = 'local-repaint-uv-native-v1';
 export function isNativeUvRepaintLayer(layer: Pick<Layer, 'id' | 'type'>) {

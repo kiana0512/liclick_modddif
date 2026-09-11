@@ -5,7 +5,7 @@ import {
   type UvRepaintPatch,
 } from './uvRepaintState';
 
-// ALG-LR-UV-PAINT v1.1.1. Shared UV pixels intentionally share color/alpha.
+// ALG-LR-UV-PAINT v1.1.2. Shared UV pixels intentionally share color/alpha.
 type Tile = { bounds: Rect; surfaces: Array<{ mesh: THREE.Mesh; box: THREE.Box3 }> };
 type Stroke = { before: Map<number, Promise<Uint8Array<ArrayBuffer>>>; changed: Set<number> };
 
@@ -70,6 +70,13 @@ function target(size: number, depthBuffer = false) {
     generateMipmaps: false,
     colorSpace: THREE.NoColorSpace,
   });
+}
+
+/** Three's renderer setter applies DPR even offscreen; bounds are UV texels. */
+function setUvScissor(renderer: THREE.WebGLRenderer, bounds: Rect) {
+  const dpr = renderer.getPixelRatio();
+  renderer.setScissor(bounds.x / dpr, bounds.y / dpr, bounds.width / dpr, bounds.height / dpr);
+  renderer.setScissorTest(true);
 }
 
 /** Render-state isolation is shared by all passes, including exceptional exits. */
@@ -589,23 +596,11 @@ export class UvRepaint {
         if (!stroke.before.has(id)) stroke.before.set(id, this.read(this.output, tile.bounds));
         stroke.changed.add(id);
         this.renderer.setRenderTarget(this.source);
-        this.renderer.setScissor(
-          tile.bounds.x,
-          tile.bounds.y,
-          tile.bounds.width,
-          tile.bounds.height,
-        );
-        this.renderer.setScissorTest(true);
+        setUvScissor(this.renderer, tile.bounds);
         this.renderer.clear();
         this.renderer.render(this.scene, input.camera);
         this.renderer.setRenderTarget(this.output);
-        this.renderer.setScissor(
-          tile.bounds.x,
-          tile.bounds.y,
-          tile.bounds.width,
-          tile.bounds.height,
-        );
-        this.renderer.setScissorTest(true);
+        setUvScissor(this.renderer, tile.bounds);
         this.renderer.render(this.compositeScene, input.camera);
       }
     });

@@ -27,7 +27,8 @@ await server.listen();
 const browser = await playwright.chromium.launch({ channel: 'msedge', headless: true });
 const errors = [];
 try {
-  const page = await browser.newPage();
+  const dpr = Number(process.argv.find((arg) => arg.startsWith('--dpr='))?.split('=')[1] ?? 1);
+  const page = await browser.newPage({ deviceScaleFactor: dpr });
   for (const path of ['**/api/local-settings', '**/api/identity/status', '**/__li3d_eraser_perf'])
     await page.route(path, (route) => route.fulfill({ json: {} }));
   page.on('response', (response) => {
@@ -38,6 +39,13 @@ try {
     if (message.type() === 'error') errors.push(message.text());
   });
   await page.goto(`${server.resolvedUrls.local[0]}__fixture`);
+  console.log(
+    JSON.stringify(
+      await page.evaluate(async () =>
+        (await import('/scripts/uv-repaint-hidpi-fixture.mjs')).run(),
+      ),
+    ),
+  );
   const result = await page.evaluate(async () =>
     (await import('/scripts/uv-repaint-browser-fixture.mjs')).run(),
   );
@@ -134,7 +142,14 @@ try {
     const restoredBoth = await page.evaluate(() => window.uvFixture.pixels());
     if (!restoredBoth.every((pixel, i) => same(pixel, both[i])))
       throw Error('Restoring visibility did not restore both layers');
-    console.log(JSON.stringify({ coexistence: 'two native UV layers / independent visibility', both, oldOnly, newOnly }));
+    console.log(
+      JSON.stringify({
+        coexistence: 'two native UV layers / independent visibility',
+        both,
+        oldOnly,
+        newOnly,
+      }),
+    );
     await page.evaluate(() => window.uvFixture.nextLayer('fixture-gen-third', '#2244dd'));
     await page.mouse.click(box.x + box.width / 2 - 100, box.y + box.height / 2);
     await page.mouse.move(20, 20);
@@ -145,7 +160,9 @@ try {
     const three = await page.evaluate(() => window.uvFixture.pixels([0, 100, -100]));
     if (!same(three[0], both[0]) || !same(three[1], both[1]))
       throw Error(`Three-layer compositor changed earlier patches: ${JSON.stringify(three)}`);
-    console.log(JSON.stringify({ coexistence: 'three native UV layers / lower-layer composite', three }));
+    console.log(
+      JSON.stringify({ coexistence: 'three native UV layers / lower-layer composite', three }),
+    );
     await page.evaluate(() => window.uvFixture.addBase());
     await page.waitForFunction(async () => {
       const pixels = await window.uvFixture.pixels([0, 100, -100, 50]);
@@ -156,7 +173,9 @@ try {
       throw Error(`Ordinary UV base suppressed lower repaint layers: ${JSON.stringify(mixed)}`);
     await page.evaluate(() => window.uvFixture.visibility('fixture-base', false));
     await page.waitForFunction(async () => (await window.uvFixture.pixels([50]))[0][0] < 100);
-    console.log(JSON.stringify({ coexistence: 'merged UV base / hide base without losing repaint', mixed }));
+    console.log(
+      JSON.stringify({ coexistence: 'merged UV base / hide base without losing repaint', mixed }),
+    );
     await page.evaluate(() => window.uvFixture.close());
   }
   if (errors.length) throw Error(errors.join('\n'));
