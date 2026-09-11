@@ -1484,7 +1484,8 @@ function LayerRow({
   onDrop: DragEventHandler<HTMLDivElement>;
   onDragEnd: () => void;
 }) {
-  const hasMask = Boolean(layer.maskUrl);
+  // LAYER-ERASER-MASK-INDICATOR v1.0.0: capture/repaint masks are not eraser edits.
+  const hasMask = hasClearableProjectedEraserMask(layer);
   const modeLabel =
     layer.blendMode === 'overlay' ? 'Overlay above other layers' : 'Blend with other layers';
   const opacityLabel = `Layer opacity ${Math.round(layer.opacity * 100)}%. Drag up or down to adjust.`;
@@ -1564,7 +1565,7 @@ function LayerRow({
           {hasMask ? (
             <SmallLayerToggle
               active
-              label="Has mask"
+              label="橡皮擦蒙版"
               onClick={onAdjustClick}
               icon={<LayerMaskGlyph />}
             />

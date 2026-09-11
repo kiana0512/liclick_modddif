@@ -1,6 +1,6 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
-> 文档版本：`2.20.17`
+> 文档版本：`2.20.18`
 >
 > 生效日期：`2026-09-11`
 >
@@ -19,6 +19,8 @@
 2026-09-11 M06/M07/M09：`UV-DISPLAY-DERIVED-CACHE/1` 为常驻 UV 增加浏览器刷新恢复的无损派生缓存。按账号/工程/对象、实际模型与来源字节、参数、分辨率和版本校验，保存 RGBA 与 rendered-color mask；损坏或不匹配重新计算。它不替代 Cloud verified assets 或改变 Command/CAS/ownership，不表示逐层贡献持久化已经完成。显隐验收必须测量点击到模型实际绑定新 UV 的时间，并对照正确合成像素；已有状态命中约 30ms 不能代表新组合即时更新。格式、容量、回滚及未完成项见 [变更卡](changes/CHG-20260911-RESIDENT-UV-DISPLAY.md)。
 
 2026-09-11 M06，协作 M03/M07/M08：`UV-DISPLAY-BUFFER/1.0.0`。投影只作为计算输入，正常视口常驻全分辨率 UV；选择图层和相机交互不重算投影，显隐/内容变化通过现有常驻 Top-K、校正与后处理生成新 UV，上传完成后整体切换。等待时保留上一完整 UV，不叠加新投影作为过渡。派生 UV 和逐层光栅有界缓存，不能为了毫秒指标降低分辨率或跳过 QA。GPU 校正内部标记 `RESIDENT-ROUNDING-RUNS/2` 对完全相同整数候选的相邻 texel 复用精确 CPU 校正；Worker 覆盖混合复用完全相同输入的结果，像素公式不改。普通投影、局部重绘、UV 底层、截图交接、保存/导出及资源失效审计见 [常驻 UV 显示变更卡](changes/CHG-20260911-RESIDENT-UV-DISPLAY.md)。缓存命中与冷计算必须分别测量，不得将常驻 UV 帧率作为所有图层更新已达到毫秒级的证据。
+
+2026-09-11 M05/UI-09，协作 M08：`LAYER-ERASER-MASK-INDICATOR` v1.0.0。图层蒙版图标复用可清除投影橡皮蒙版判定，不再把生成时的 projection capture-mask 或局部重绘 coverage 当成橡皮编辑。笔画撤销/重做恢复已有 eraserAlgorithmVersion，后台精修保留当前历史状态，避免全部撤销后图标重现。GPU/CPU/Worker/shader 像素、投影轮廓、UV/export 与分辨率不变；沿用原 Layer 可选字段、CAS/ownership/verified assets，无 Schema 或存量资产迁移。范围、测试和回滚见 [蒙版图标变更卡](changes/CHG-20260911-ERASER-MASK-INDICATOR.md)。本次仅本地修改，未推送或部署。
 
 2026-09-11 M08：`ALG-LR-UV-PAINT` v1.1.2 / UV_REPAINT_VERSION=4，修复 HiDPI 下局部 UV 笔画分块坐标重复缩放。source/output 两遍 scissor 共用物理 UV 像素适配，保持实际屏幕 DPR、分辨率、可见性和遮挡公式不变。GPU 写入与 CPU 脏瓦片读回、历史和保存一致；Worker/合并/PNG/FBX 消费同一 RGBA，无独立算法改动。旧 v1 图层及已存资产不改写，缺失笔画需重新绘制，无 Schema/CAS/ownership 迁移。DPR 1/1.25/1.5/2 完整像素对照与原模型复测通过，范围、证据和回滚见 [HiDPI 变更卡](changes/CHG-20260911-UV-REPAINT-HIDPI.md)。
 

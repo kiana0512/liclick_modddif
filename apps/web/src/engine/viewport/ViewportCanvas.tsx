@@ -12901,7 +12901,8 @@ function SurfacePaintOverlay() {
             ? { imageUrl: batch.layer.assetUrl }
             : { maskUrl: batch.layer.assetUrl, maskSpace: 'uv' as const }),
           contentRevision: (latestLayer.contentRevision ?? 0) + 1,
-          eraserAlgorithmVersion: ERASER_ALGORITHM_VERSION,
+          // Refinement changes pixels, not whether history has an applied erase.
+          eraserAlgorithmVersion: latestLayer.eraserAlgorithmVersion,
           isBaked: false,
           needsRebake: batch.layer.target === 'projected-mask',
         });
@@ -13182,6 +13183,7 @@ function SurfacePaintOverlay() {
           finishProjectedPreview();
           return;
         }
+        const eraserVersionBefore = latestLayer.eraserAlgorithmVersion;
         const historyBeforeStartedAt = performance.now();
         // The preview commit still uses the exact union canvas, while history
         // stores only tiles reached by an actual stamp segment. UV seams can
@@ -13327,6 +13329,8 @@ function SurfacePaintOverlay() {
               ? { imageUrl: layer.assetUrl }
               : { maskUrl: layer.assetUrl, maskSpace: 'uv' as const }),
             contentRevision: (latestLayer.contentRevision ?? 0) + 1,
+            eraserAlgorithmVersion:
+              side === 'before' ? eraserVersionBefore : ERASER_ALGORITHM_VERSION,
             isBaked: false,
             needsRebake: layer.target === 'projected-mask',
           });

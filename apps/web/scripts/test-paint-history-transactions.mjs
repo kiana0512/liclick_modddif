@@ -324,6 +324,8 @@ try {
     marked = [];
   let cancelled = 0, promoted = 0;
   const bindings = {
+    eraserVersionBefore: undefined,
+    ERASER_ALGORITHM_VERSION: 1,
     projectedEraserBatchesRef: { current: new Map() },
     projectedEraserCommit: { model: { group: {} } },
     layer,
@@ -360,10 +362,12 @@ try {
     'A reopened runtime for the same layer is neutralized too',
   );
   assert.equal(layers[0].maskUrl, 'live:base');
+  assert.equal(layers[0].eraserAlgorithmVersion, undefined, 'Undo first erase restores its pre-stroke marker');
   assert.ok(uploaded.includes(layer.paintTexture) && uploaded.includes(layer.liveResultTexture));
   assert.ok(marked.includes('live:base') && marked.includes('live:preview'));
   restore('after');
   assert.equal(base.value * live.value, 0);
+  assert.equal(layers[0].eraserAlgorithmVersion, 1, 'Redo restores the eraser marker together with pixels');
   assert.equal(cancelled, 2);
   assert.equal(promoted, 2, 'Undo and redo both promote the restored full-resolution mask');
 
