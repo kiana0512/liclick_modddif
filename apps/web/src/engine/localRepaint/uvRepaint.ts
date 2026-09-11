@@ -5,56 +5,60 @@ import {
   type UvRepaintPatch,
 } from './uvRepaintState';
 
-// ALG-LR-UV-PAINT v1.1.0. Shared UV pixels intentionally share color/alpha.
+// ALG-LR-UV-PAINT v1.1.1. Shared UV pixels intentionally share color/alpha.
 type Tile = { bounds: Rect; surfaces: Array<{ mesh: THREE.Mesh; box: THREE.Box3 }> };
 type Stroke = { before: Map<number, Promise<Uint8Array<ArrayBuffer>>>; changed: Set<number> };
 
 const vertex = `
-  attribute vec3 repaintFaceId;
-  varying vec3 faceId;
-  varying vec4 currentClip;
-  uniform mat4 currentViewProjection;
-  uniform float uvPass;
-  void main() {
-    faceId = repaintFaceId;
-    currentClip = currentViewProjection * modelMatrix * vec4(position, 1.0);
-    gl_Position = mix(currentClip, vec4(uv * 2.0 - 1.0, 0.0, 1.0), uvPass);
-  }
+attribute float repaintFaceId;
+flat varying float faceId;
+varying vec4 currentClip;
+uniform mat4 currentViewProjection;
+uniform float uvPass;
+void main() {
+faceId=repaintFaceId;
+currentClip=currentViewProjection*modelMatrix*vec4(position,1.0);
+gl_Position=mix(currentClip,vec4(uv*2.0-1.0,0.0,1.0),uvPass);
+}
 `;
-// Run derivatives before discard. Integer face IDs reject hidden geometry;
-// coplanar adjacent triangles need a subpixel plane-depth comparison because UV
-// and screen texel centres differ. Broad depth tolerances/neighbour IDs would
-// admit hidden rail backs. Keep these notes outside the shipped shader string.
+// Screen-space derivatives avoid ill-conditioned inversion on tiny UV triangles.
+// Use a conservative local footprint for curved faces, but reject depth breaks
+// between the nearest face and neighbouring samples (rail/hole boundaries).
+// Float rounding allowance is 2e-6; immutable source occlusion still applies.
 const paintFragment = `
-  varying vec3 faceId;
-  varying vec4 currentClip;
-  uniform sampler2D visibleFaces;
-  uniform sampler2D visibleDepth;
-  uniform vec2 visibilitySize;
-  uniform vec2 viewportSize, brushFrom, brushTo;
-  uniform float brushRadius, feather, erase;
-  float repaintWeight() {
-    vec3 ndc = currentClip.xyz / max(currentClip.w, 1e-20);
-    vec2 screenUv = ndc.xy * 0.5 + 0.5;
-    vec2 dx = dFdx(screenUv), dy = dFdy(screenUv);
-    vec2 z = vec2(dFdx(ndc.z), dFdy(ndc.z)) * 0.5;
-    if (currentClip.w <= 0.0 || any(greaterThan(abs(ndc), vec3(1.0)))) discard;
-    vec3 front = floor(texture2D(visibleFaces, screenUv).rgb * 255.0 + 0.5);
-    if (any(greaterThan(abs(front - faceId), vec3(0.25)))) {
-      float determinant = dx.x * dy.y - dx.y * dy.x;
-      if (abs(determinant) < 1e-16 || dot(front, vec3(1.0)) < 0.5) discard;
-      vec2 gradient = vec2(z.x * dy.y - z.y * dx.y, dx.x * z.y - dy.x * z.x) / determinant;
-      vec2 centre = (floor(screenUv * visibilitySize) + 0.5) / visibilitySize;
-      float expected = ndc.z * 0.5 + 0.5 + dot(gradient, centre - screenUv);
-      if (abs(texture2D(visibleDepth, screenUv).r - expected) > 0.000001) discard;
-    }
-    vec2 p = vec2(screenUv.x, 1.0 - screenUv.y) * viewportSize;
-    vec2 ab = brushTo - brushFrom;
-    float t = clamp(dot(p - brushFrom, ab) / max(dot(ab, ab), 0.0001), 0.0, 1.0);
-    float distanceToStroke = length(p - (brushFrom + ab * t)) / max(brushRadius, 0.001);
-    if (distanceToStroke >= 1.0) discard;
-    return 1.0 - smoothstep(max(0.0, 1.0 - feather), 1.0, distanceToStroke);
-  }
+flat varying float faceId;
+varying vec4 currentClip;
+uniform sampler2D visibleFaces;
+uniform vec2 visibilitySize;
+uniform vec2 viewportSize,brushFrom,brushTo;
+uniform float brushRadius,feather,erase;
+float frontLimit(vec2 pixel,vec4 anchor,vec2 centre){
+vec4 front=texture2D(visibleFaces,(pixel+0.5)/visibilitySize);
+float bend=dot(abs(front.zw-anchor.zw),vec2(1.0));
+float delta=front.y-anchor.y-dot(anchor.zw,pixel-centre);
+if(front.x<0.5||abs(delta)>bend+0.000002)return-1.0;
+return front.y+dot(abs(front.zw),vec2(0.5));
+}
+float repaintWeight(){
+vec3 ndc=currentClip.xyz/max(currentClip.w,1e-20);
+vec2 screenUv=ndc.xy*0.5+0.5;
+if(currentClip.w<=0.0||any(greaterThan(abs(ndc),vec3(1.0))))discard;
+vec4 front=texture2D(visibleFaces,screenUv);
+if(front.x<0.5)discard;
+if(abs(front.x-faceId)>0.5){
+vec2 pixel=floor(screenUv*visibilitySize-0.5);
+vec2 centre=floor(screenUv*visibilitySize);
+float limit=max(max(frontLimit(pixel,front,centre),frontLimit(pixel+vec2(1.0,0.0),front,centre)),
+max(frontLimit(pixel+vec2(0.0,1.0),front,centre),frontLimit(pixel+1.0,front,centre)));
+if(ndc.z*0.5+0.5>limit+0.000002)discard;
+}
+vec2 p=vec2(screenUv.x,1.0-screenUv.y)*viewportSize;
+vec2 ab=brushTo-brushFrom;
+float t=clamp(dot(p-brushFrom,ab)/max(dot(ab,ab),0.0001),0.0,1.0);
+float distanceToStroke=length(p-(brushFrom+ab*t))/max(brushRadius,0.001);
+if(distanceToStroke>=1.0)discard;
+return 1.0-smoothstep(max(0.0,1.0-feather),1.0,distanceToStroke);
+}
 `;
 
 function target(size: number, depthBuffer = false) {
@@ -171,6 +175,8 @@ export class UvRepaint {
       resolution > renderer.capabilities.maxTextureSize
     )
       throw new Error('当前设备不支持所选 UV 分辨率，未降低输出尺寸。');
+    if (!renderer.extensions.has('EXT_color_buffer_float'))
+      throw new Error('当前设备不支持 UV 重绘浮点可见性缓冲，未修改图层。');
     this.renderer = renderer;
     this.resolution = resolution;
     this.source = target(resolution, true);
@@ -179,7 +185,7 @@ export class UvRepaint {
     // without baking display lighting or losing dark detail to linear RGBA8.
     this.source.texture.colorSpace = THREE.SRGBColorSpace;
     this.output.texture.colorSpace = THREE.SRGBColorSpace;
-    this.ids.depthTexture = new THREE.DepthTexture(1, 1, THREE.UnsignedIntType);
+    this.ids.texture.type = THREE.FloatType;
     this.texture = this.output.texture;
     this.canvas = document.createElement('canvas');
     this.canvas.width = this.canvas.height = resolution;
@@ -190,7 +196,6 @@ export class UvRepaint {
       uniforms: {
         ...common,
         visibleFaces: { value: this.ids.texture },
-        visibleDepth: { value: this.ids.depthTexture },
         visibilitySize: { value: new THREE.Vector2() },
         viewportSize: { value: new THREE.Vector2() },
         brushFrom: { value: new THREE.Vector2() },
@@ -209,7 +214,9 @@ export class UvRepaint {
     this.identity = new THREE.ShaderMaterial({
       vertexShader: vertex,
       fragmentShader:
-        'varying vec3 faceId; void main() { gl_FragColor = vec4(faceId / 255.0, 1.0); }',
+        `flat varying float faceId; void main() {
+          gl_FragColor = vec4(faceId,
+            gl_FragCoord.z, dFdx(gl_FragCoord.z), dFdy(gl_FragCoord.z)); }`,
       uniforms: { currentViewProjection: common.currentViewProjection, uvPass: { value: 0 } },
       side: THREE.DoubleSide,
       toneMapped: false,
@@ -252,7 +259,7 @@ export class UvRepaint {
         const vertices = new Float32Array(vertexCount * 3),
           normals = new Float32Array(vertexCount * 3);
         const uvs = new Float32Array(vertexCount * 2),
-          ids = new Float32Array(vertexCount * 3);
+          ids = new Float32Array(vertexCount);
         const normal = geometry.getAttribute('normal');
         const box = new THREE.Box3(),
           p = new THREE.Vector3();
@@ -284,9 +291,7 @@ export class UvRepaint {
             normals[xyz + 2] = normal?.getZ(k) ?? 1;
             uvs[st] = u;
             uvs[st + 1] = v;
-            ids[xyz] = faceId & 255;
-            ids[xyz + 1] = (faceId >> 8) & 255;
-            ids[xyz + 2] = (faceId >> 16) & 255;
+            ids[vertex] = faceId;
             minU = Math.min(minU, u);
             maxU = Math.max(maxU, u);
             minV = Math.min(minV, v);
@@ -340,7 +345,7 @@ export class UvRepaint {
         owned.setAttribute('position', new THREE.BufferAttribute(vertices, 3));
         owned.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
         owned.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
-        owned.setAttribute('repaintFaceId', new THREE.BufferAttribute(ids, 3));
+        owned.setAttribute('repaintFaceId', new THREE.BufferAttribute(ids, 1));
         const mesh = new THREE.Mesh(owned, this.brush);
         mesh.renderOrder = this.meshes.length;
         mesh.matrixAutoUpdate = false;
@@ -401,6 +406,14 @@ export class UvRepaint {
     });
   }
 
+  private visibilitySize() {
+    const { width, height } = this.renderer.domElement;
+    // Small windows must not turn fine surface curvature into UV pinholes.
+    // Keep aspect ratio; this does not change output texture resolution.
+    const scale = Math.max(1, 1024 / Math.max(1, width, height));
+    return [Math.ceil(width * scale), Math.ceil(height * scale)] as const;
+  }
+
   async prepare(material: THREE.ShaderMaterial, camera: THREE.Camera, initial?: CanvasImageSource) {
     this.updateMatrices(camera);
     // Retain immutable capture uniforms/textures, not a pre-flattened UV source:
@@ -443,7 +456,7 @@ export class UvRepaint {
       });
       if (this.disposed) throw new Error('UV 绘制准备已取消。');
       await isolated(this.renderer, () => {
-        this.ids.setSize(this.renderer.domElement.width, this.renderer.domElement.height);
+        this.ids.setSize(...this.visibilitySize());
         this.meshes.forEach((mesh) => {
           mesh.material = this.identity;
         });
@@ -537,8 +550,7 @@ export class UvRepaint {
     };
     const touched = [...this.tiles].filter(([, tile]) => this.intersects(tile, matrix, rect, size));
     if (!touched.length) return false;
-    const width = this.renderer.domElement.width,
-      height = this.renderer.domElement.height;
+    const [width, height] = this.visibilitySize();
     const key = [
       width,
       height,

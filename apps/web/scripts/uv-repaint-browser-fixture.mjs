@@ -92,6 +92,7 @@ export async function run() {
     'rotated camera paints newly visible UV, not old capture coordinates',
   );
   await (await import('./uv-repaint-overlap-fixture.mjs')).run(renderer);
+  const visibility = await (await import('./uv-repaint-visibility-fixture.mjs')).run(renderer);
   for (const problem of ['missing', 'outside', 'degenerate']) {
     const invalid = plane(0, 0, 0, 1);
     if (problem === 'missing') invalid.geometry.deleteAttribute('uv');
@@ -272,6 +273,7 @@ export async function run() {
   renderer.dispose();
   return {
     passed: true,
+    ...visibility,
     checks:
       'visible/occluded/disjoint/large brush/camera rotation/undo/redo/erase/invalid UV/source alpha/author mask/sRGB/production shader',
     patches: first.length,
