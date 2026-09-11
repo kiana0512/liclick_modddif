@@ -565,8 +565,18 @@ assert.doesNotMatch(
 );
 assert.match(
   sceneRootSource,
-  /const authoritativeResidentUvTexture =\s*authoritativeOrdinaryUvLayers\.length > 0\s*\?[\s\S]*?authoritativeExactUvTexture \?\? loadedUvTexture \?\? authoritativeProxyUvTexture[\s\S]*?: undefined/,
-  'A late projected-material publication must not resurrect a resident UV texture whose eye is closed.',
+  /const authoritativeResidentUvTexture =\s*hasLowerRepaintUv\s*\? loadedUvTexture\s*:\s*authoritativeOrdinaryUvLayers\.length > 0\s*\?[\s\S]*?authoritativeExactUvTexture \?\? loadedUvTexture \?\? authoritativeProxyUvTexture[\s\S]*?: undefined/,
+  'A late material publication must preserve lower repaint UVs without resurrecting hidden ordinary UVs.',
+);
+assert.match(
+  sceneRootSource,
+  /const hasLowerRepaintUv = authoritativeLocalRepaintUvLayers\.some\([\s\S]*?layer\.id !== liveTopUvLayer\?\.id/,
+  'Only visible repaint rows outside the dedicated top sampler can keep the lower UV sampler enabled.',
+);
+assert.match(
+  sceneRootSource,
+  /if \(isLiveProjectedCanvasUrl\(imageUrl\)\) return undefined/,
+  'Borrowed UV render targets must bypass the ordinary image decode/upload/cache lifecycle.',
 );
 assert.match(
   sceneRootSource,

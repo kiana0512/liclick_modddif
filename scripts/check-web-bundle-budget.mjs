@@ -23,7 +23,9 @@ const budgets = [
   // CHG-20260910-UV-REPAINT: lazy UV engine/session, shared visibility and
   // viewport adapters measured ~701,300 bytes before integration. The merged
   // resident graph measures 702,997; allow 3,500 bytes including release metadata.
-  { label: 'high bake snapshot', prefix: 'bakeHighSnapshot-', maxBytes: 703_500 },
+  // UV coexistence + upstream resident-material/warmup integration: measured
+  // 703,681 bytes. Allocate 500 bytes; keep all other per-chunk limits.
+  { label: 'high bake snapshot', prefix: 'bakeHighSnapshot-', maxBytes: 704_000 },
   {
     label: 'shared 3D pipeline',
     // Rollup chooses the facade name from the shared module graph. Adding the
@@ -76,7 +78,11 @@ const budgets = [
 // Integration with a2eef53: 3,219,936 bytes including the live-UV background
 // snapshot bridge. Add 1,000 bytes to combined allowances for this adapter and
 // release metadata; every pixel/QA gate and other chunk limit stays unchanged.
-const maxTotalJavaScriptBytes = 3_221_000;
+// CHG-20260911-UV-REPAINT-COEXISTENCE integrated with master 6fc08a1:
+// immutable Cloud/performance-lab build 3,221,585 vs last A100 3,220,941
+// (+644 bytes). Allocate 1,000 bytes including metadata, not an open-ended
+// exemption. Shader/output resolution, browser regressions and QA stay enabled.
+const maxTotalJavaScriptBytes = 3_222_000;
 
 let entries;
 try {

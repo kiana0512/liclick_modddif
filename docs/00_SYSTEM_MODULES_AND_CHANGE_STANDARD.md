@@ -1,6 +1,6 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
-> 文档版本：`2.20.11`
+> 文档版本：`2.20.12`
 >
 > 生效日期：`2026-09-11`
 >
@@ -22,6 +22,8 @@
 4. 本次失败实例：`6fc08a1` / pipeline `629782` 的 verify 全过、build 阶段包体失败，正式 JS 为 **3,221,231 bytes**，超过 **3,221,000 bytes** 上限 **231 bytes**；普通本地构建为 3,220,729 bytes，少计 502 bytes 发布差异。`3e68405` 同样在 build 阶段失败。以后须读取失败日志确认原因，不能仅凭历史经验认定故障。
 
 此入口不会推送或部署，也不会安装 Git hook；上述规则适用于每次人工或代理推送。构建格式策略 `SHADER-TEMPLATE-FORMAT/1.0.0` 在发布时移除投影着色器模板缩进，保留源文件可读性与计算语义。持续优化必须记录总量和各 chunk 余量，优先去重、不可达代码清理与按需加载；拆包不能冒充总量减少，平均 FPS 不能替代交互延迟验收。验证记录、后续准则及回滚见 [正式发布包体变更卡](changes/CHG-20260911-CI-RELEASE-BUDGET.md)。
+
+2026-09-11 M08/M03：`UV-REPAINT-PREVIEW-BINDING` v1.0.0，修复新旧局部 UV 重绘层不能共存。普通 UV 预览入口同步借用 live registry 的 GPU/Canvas 纹理，禁止将内存 URL 交给静态解码/上传/LRU；最终材质校验保留下方重绘层所在的 UV sampler，不再按“无普通 UV”清零；重绘显隐变化触发 sampler 重新分配。GPU 笔画像素算法仍为 ALG-LR-UV-PAINT v1.1.1 / UV_REPAINT_VERSION=3，CPU/Worker/Shader 混合公式、PNG/合并/FBX、持久 RGBA/Schema/CAS/ownership 不改，无资产迁移。真实 React/WebGL 两层独立显隐、擦除/撤销、三层合成通过；用户原工程及 A100 尚未验收。本次仅本地修复，详见 [变更卡](changes/CHG-20260911-UV-REPAINT-COEXISTENCE.md)。
 
 2026-09-11 M08：`ALG-LR-UV-PAINT` v1.1.1 / UV_REPAINT_VERSION=3，修复局部 UV 重绘细分曲面漏点。可见性由 UV 导数反求深度改为屏幕浮点 face/depth/slope 缓冲及局部连续深度足迹；跨护栏/孔洞深度断层不参与邻域放宽，整数面 ID 使用 flat 插值。小视口的可见性长边至少 1024，输出尺寸不改。保留来源 alpha/作者遮罩、共享 UV 取色与一次擦除、脏瓦片历史及保存/导出 barrier，不恢复自动补洞，不修改单视图。已有 RGBA 不自动补写，旧 v1 图层可读；回滚 984fb1d，无资产/Schema 迁移。显存开销、有限栅格边界及验证见 [白点修复变更卡](changes/CHG-20260911-UV-REPAINT-VISIBILITY.md)。本次为本地修复，未推送或部署。
 
