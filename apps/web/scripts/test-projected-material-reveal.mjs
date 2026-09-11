@@ -64,6 +64,7 @@ for (const name of ['LiclickProjectedLayerStackWarmup:1', 'LiclickProjectedLayer
 }
 const bootstrap = {material:{name:'bootstrap', userData:{liclickExactProjectedBootstrap:true}}};
 assert.equal(runFinal([bootstrap], true).revealed, true, 'Exact bootstrap remains eligible');
-assert.equal((scene.match(/isResidentProjectedMaterial\(material\)/g) ?? []).length, 5,
+const retainedMaterials = read('engine/projection/retainedProjectedMaterials.ts');
+assert.equal(((scene + retainedMaterials).match(/isResidentProjectedMaterial\(material\)/g) ?? []).length, 5,
   'Reveal, fast reuse, UV bootstrap and retained-material paths share one identity contract');
 console.log('Projected material reveal passed: single/stack, resident reuse, material arrays, stale structure, bootstrap and placeholder rejection.');

@@ -3,6 +3,7 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import * as THREE from 'three';
 import { compileForRenderTarget } from '@/engine/projection/compileForRenderTarget';
 import { isResidentProjectedMaterial } from '@/engine/projection/projectedMaterialIdentity';
+import { RetainedProjectedMaterials } from '@/engine/projection/retainedProjectedMaterials';
 import { isProjectedUniformBudgetSafe } from '@/engine/projection/projectedUniformBudget';
 import { projectionDisplayCapacity, publishPendingProjectionLayers } from '@/engine/projection/projectionDisplayAdmission';
 import { useShallow } from 'zustand/react/shallow';
@@ -1535,7 +1536,10 @@ const ImportedModel = memo(function ImportedModel({
   // or empty-layer views temporarily present the canonical white membrane. This
   // makes those views exact MeshStandardMaterial renders without paying a rebuild
   // when the user opens an eye again.
-  const residentProjectedMaterialRef = useRef<THREE.ShaderMaterial>();
+  // Group identity defines the GPU resource lifetime, even though construction is empty.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const retainedProjectedMaterials = useMemo(() => new RetainedProjectedMaterials(), [importedModel.group]);
+  useEffect(() => () => retainedProjectedMaterials.dispose(), [retainedProjectedMaterials]);
   const projectedProgramWarmupRef = useRef<{
     signature: string;
     material: THREE.ShaderMaterial;
@@ -4256,49 +4260,12 @@ const ImportedModel = memo(function ImportedModel({
       let sharedTextureArrayBuildSignature = '';
       let materialChanged = false;
       const disposedPreviousMaterials = new Set<THREE.Material | THREE.Material[]>();
-      const retainProjectedMaterialForReuse = (material: THREE.Material | THREE.Material[]) => {
-        if (
-          !(material instanceof THREE.ShaderMaterial) ||
-          !isResidentProjectedMaterial(material)
-        )
-          return false;
-        const alreadyResident = residentProjectedMaterialRef.current;
-        if (!alreadyResident) {
-          residentProjectedMaterialRef.current = material;
-        } else if (alreadyResident !== material) {
-          disposeGeneratedMaterialTree(material);
-        }
-        return true;
-      };
       const disposeUnlessRetained = (material: THREE.Material | THREE.Material[]) => {
-        if (!retainProjectedMaterialForReuse(material)) {
-          disposeGeneratedMaterialTree(material);
-        }
+        retainedProjectedMaterials.retain(material);
       };
       const bypassMaterial = bypassProjectedMaterial
         ? createDisplayModeMaterial(displayMode, selected, undefined, previewLighting)
         : undefined;
-
-      const residentProjectedMaterial = residentProjectedMaterialRef.current;
-      if (projectedLayerInput && residentProjectedMaterial) {
-        const residentInput: ProjectionLayerStackInput = {
-          ...projectedLayerInput,
-          ...(loadedUvTexture ? { uvOverlayTexture: loadedUvTexture } : {}),
-          uvOverlayRenderedColor: directUvRenderedColor,
-          ...(directUvRenderedColorMaskTexture
-            ? { uvOverlayRenderedColorMaskTexture: directUvRenderedColorMaskTexture }
-            : {}),
-          ...topUvProjectedOverlayInput,
-        };
-        if (updateProjectedLayerStackMaterial(residentProjectedMaterial, residentInput)) {
-          sharedProjectedMaterial = residentProjectedMaterial;
-          sharedProjectedMaterialRequested = true;
-          reusedResidentProjectedMaterial = true;
-        } else {
-          disposeGeneratedMaterialTree(residentProjectedMaterial);
-        }
-        residentProjectedMaterialRef.current = undefined;
-      }
 
       for (const child of meshes) {
         // Color in the texture workspace is owned exclusively by the layer
@@ -4453,7 +4420,9 @@ const ImportedModel = memo(function ImportedModel({
               : {}),
             ...topUvProjectedOverlayInput,
           };
-          try {
+          sharedProjectedMaterial = retainedProjectedMaterials.take(projectedMaterialInput);
+          reusedResidentProjectedMaterial = Boolean(sharedProjectedMaterial);
+          if (!sharedProjectedMaterial) try {
             if (useProjectedTextureArrayMaterial) {
               usingSharedTextureArrayBuild = true;
               const textureArrayBuildSignature = [
@@ -4747,7 +4716,7 @@ const ImportedModel = memo(function ImportedModel({
           !disposedPreviousMaterials.has(previousMaterial)
         ) {
           disposedPreviousMaterials.add(previousMaterial);
-          disposeGeneratedMaterialTree(previousMaterial);
+          disposeUnlessRetained(previousMaterial);
         }
       }
       if (materialChanged) {
@@ -5120,6 +5089,7 @@ const ImportedModel = memo(function ImportedModel({
   }, [
     camera,
     canPreviewProjectedLayers,
+    retainedProjectedMaterials,
     displayMode,
     directUvLayer,
     directUvRenderedColor,
