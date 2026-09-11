@@ -129,6 +129,54 @@ export async function setup() {
   await tick();
   await tick();
   window.uvFixture = {
+    async nextLayer(generationId = 'fixture-gen-second', color = '#22bb44') {
+      const frozen = useSceneStore.getState().localRepaintProjectionSource;
+      useSceneStore.getState().setPaintTool('none');
+      source.getContext('2d').fillStyle = color;
+      source.getContext('2d').fillRect(0, 0, 128, 128);
+      useSceneStore.getState().setLocalRepaintProjectionSource({
+        ...frozen,
+        generationId,
+        imageUrl: source.toDataURL(),
+      });
+      await until(
+        () => document.body.dataset.localRepaintGpuReadyGeneration === generationId,
+        'second UV preparation',
+      );
+      useSceneStore.getState().setLocalRepaintBrushSettings({ brushSize: 6, brushFeather: 0 });
+      useSceneStore.getState().setPaintTool('inpaint-apply');
+      await tick();
+      await tick();
+    },
+    visibility(id, visible) {
+      useLayerStore.getState().setLayerVisibility([id], visible);
+    },
+    addBase() {
+      const canvas = document.createElement('canvas');
+      canvas.width = canvas.height = 128;
+      canvas.getContext('2d').fillStyle = '#887744';
+      canvas.getContext('2d').fillRect(0, 0, 128, 128);
+      const layers = useLayerStore.getState().layers;
+      useLayerStore.setState({ layers: [...layers, {
+        ...layers[0], id: 'fixture-base', role: 'merged-uv',
+        order: layers.length, imageUrl: canvas.toDataURL(),
+      }] });
+    },
+    async pixels(offsets = [0, 100]) {
+      await flushLiveUvCommits();
+      for (let i = 0; i < 12; i++) await tick();
+      runtime.gl.render(runtime.scene, runtime.camera);
+      const gl = runtime.gl.getContext();
+      const canvas = runtime.gl.domElement;
+      return offsets.map((offset) => {
+        const pixel = new Uint8Array(4);
+        gl.readPixels(
+          Math.round(canvas.width / 2 + offset * canvas.width / canvas.clientWidth),
+          Math.round(canvas.height / 2), 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, pixel,
+        );
+        return [...pixel];
+      });
+    },
     async state() {
       await flushLiveUvCommits();
       const layer = useLayerStore

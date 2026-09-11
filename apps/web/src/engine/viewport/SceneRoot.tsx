@@ -32,6 +32,8 @@ import {
 import {
   getLiveProjectedCanvasState,
   getLiveProjectedCanvasTexture,
+  getLiveProjectedTexture,
+  isLiveProjectedCanvasUrl,
 } from '@/engine/projection/liveProjectedCanvasTextureRegistry';
 import {
   getLiveSurfacePaintPreview,
@@ -536,6 +538,10 @@ function useLoadedPreviewTextureState(
     : '';
 
   useEffect(() => {
+    // UV-REPAINT-PREVIEW-BINDING v1.0.0: live outputs borrow their repaint owner,
+    // not the static cache. Their URLs are not decodable image addresses.
+    // Never upload/dispose a render target through the static cache.
+    if (isLiveProjectedCanvasUrl(imageUrl)) return undefined;
     if (!imageUrl) {
       if (!options?.preserveWhenEmpty) setLoadedState(undefined);
       return undefined;
@@ -580,9 +586,12 @@ function useLoadedPreviewTextureState(
   // cache before the layer eye is committed. Read that cache synchronously on
   // the first render of the new URL instead of waiting one extra React effect
   // turn; that turn used to expose the reserved white sampler.
-  const residentTexture = getReadyResidentPreviewTexture(imageUrl, gl, {
-    maxSize: options?.maxSize,
-  });
+  const liveTexture = imageUrl
+    ? getLiveProjectedTexture(imageUrl, options?.colorSpace ?? THREE.SRGBColorSpace)
+    : undefined;
+  const residentTexture =
+    liveTexture ??
+    getReadyResidentPreviewTexture(imageUrl, gl, { maxSize: options?.maxSize });
   const state = residentTexture ? { key: requestKey, texture: residentTexture } : loadedState;
   const texture = state?.texture;
   if (texture && options?.colorSpace) texture.colorSpace = options.colorSpace;
@@ -2104,6 +2113,9 @@ const ImportedModel = memo(function ImportedModel({
           ? residentUvPresentationCacheRef.current.get(visibleUvKey)
           : undefined;
       const residentUvTexture = residentSingleUvTexture ?? residentCompositeUvTexture;
+      // With multiple repaint rows, the lower rows occupy the ordinary UV
+      // sampler too. Their exact composite is owned by the React presentation.
+      const hasLowerRepaintUv = visibleLocalRepaintUvLayers.length > 1;
       let requiresMaterialReconciliation = false;
       if (
         visibleOrdinaryUvLayers.length > 0 &&
@@ -2116,20 +2128,26 @@ const ImportedModel = memo(function ImportedModel({
       const uvMaterialUpdated = syncProjectedLayerResidentTextureVisibilityInObject(
         importedModel.group,
         {
-          ...(residentUvTexture ? { uvOverlayTexture: residentUvTexture } : {}),
+          ...(residentUvTexture && !hasLowerRepaintUv
+            ? { uvOverlayTexture: residentUvTexture }
+            : {}),
           // A composed editing stack must stay unlit when it contains any layer
           // other than the final merged UV. The direct single-layer path below
           // preserves PBR for role=merged-uv.
-          uvOverlayRenderedColor: visibleOrdinaryUvLayers.some(usesUnlitRenderedColor),
+          uvOverlayRenderedColor: hasLowerRepaintUv
+            ? uvPresentationRef.current.renderedColor
+            : visibleOrdinaryUvLayers.some(usesUnlitRenderedColor),
           ...(contentAwareTexture ? { baseTexture: contentAwareTexture } : {}),
-          ...(residentUvTexture
-            ? {
-                uvOverlayOpacity:
-                  visibleOrdinaryUvLayers.length === 1 ? visibleOrdinaryUvLayers[0].opacity : 1,
-              }
-            : visibleOrdinaryUvLayers.length === 0
-              ? { uvOverlayOpacity: 0 }
-              : {}),
+          ...(hasLowerRepaintUv
+            ? {}
+            : residentUvTexture
+              ? {
+                  uvOverlayOpacity:
+                    visibleOrdinaryUvLayers.length === 1 ? visibleOrdinaryUvLayers[0].opacity : 1,
+                }
+              : visibleOrdinaryUvLayers.length === 0
+                ? { uvOverlayOpacity: 0 }
+                : {}),
           uvOverlayBelowProjected: Number.isFinite(currentMergedUvBoundaryOrder),
           topUvOverlayOpacity: visibleLocalRepaintUvLayers[0]?.opacity ?? 0,
           // A multi-layer repair presentation is composed asynchronously below.
@@ -2159,6 +2177,12 @@ const ImportedModel = memo(function ImportedModel({
       const hasVisibleProjectedContribution = displayLayers.some((layer) => layer.visible);
       if (
         reopenedUvLayer ||
+        // Repaint routing and mixed lower composites need an exact rebind on
+        // either eye direction; a uniform cannot remove one composite member.
+        objectUvLayers.some((layer) =>
+          (hasLowerRepaintUv || isRenderedLocalRepaintLayer(layer)) &&
+          previousLayerVisibilityById.get(layer.id) !== layer.visible,
+        ) ||
         reopenedProjectedLayer ||
         visibleUvContentChanged ||
         visibleProjectedContentChanged
@@ -2875,8 +2899,10 @@ const ImportedModel = memo(function ImportedModel({
   );
   // A single UV layer is already a finished UV-space texture. Sample it directly
   // and adjust it with shader uniforms instead of rebuilding a full-resolution canvas.
+  // A resident ordinary base alone cannot represent additional lower repaint rows.
   const directUvLayer =
-    residentDirectUvLayer ?? (nonLiveUvLayers.length === 1 ? nonLiveUvLayers[0] : undefined);
+    (nonLiveUvLayers.some(isRenderedLocalRepaintLayer) ? undefined : residentDirectUvLayer) ??
+    (nonLiveUvLayers.length === 1 ? nonLiveUvLayers[0] : undefined);
   const compositedUvLayers = directUvLayer
     ? nonLiveUvLayers.filter((layer) => layer.id !== directUvLayer.id)
     : nonLiveUvLayers;
@@ -4867,6 +4893,9 @@ const ImportedModel = memo(function ImportedModel({
           layer.visible &&
           (layer.role === 'local-repaint-overlay' || layer.role === 'local-repaint-draft'),
       );
+      const hasLowerRepaintUv = authoritativeLocalRepaintUvLayers.some(
+        (layer) => layer.id !== liveTopUvLayer?.id,
+      );
       const authoritativeOrdinaryUvKey = residentUvVisibilityKey(authoritativeOrdinaryUvLayers);
       const authoritativeExactUvTexture =
         authoritativeOrdinaryUvLayers.length === 1
@@ -4889,9 +4918,11 @@ const ImportedModel = memo(function ImportedModel({
       // UV row is authoritatively hidden. The old fallback resurrected the
       // merged UV at opacity 1 when an async projected material published late.
       const authoritativeResidentUvTexture =
-        authoritativeOrdinaryUvLayers.length > 0
-          ? (authoritativeExactUvTexture ?? loadedUvTexture ?? authoritativeProxyUvTexture)
-          : undefined;
+        hasLowerRepaintUv
+          ? loadedUvTexture
+          : authoritativeOrdinaryUvLayers.length > 0
+            ? (authoritativeExactUvTexture ?? loadedUvTexture ?? authoritativeProxyUvTexture)
+            : undefined;
       const authoritativeUvTextureSource = authoritativeExactUvTexture
         ? 'exact'
         : loadedUvTexture
@@ -4921,16 +4952,20 @@ const ImportedModel = memo(function ImportedModel({
         ...(authoritativeResidentUvTexture
           ? { uvOverlayTexture: authoritativeResidentUvTexture }
           : {}),
-        uvOverlayRenderedColor: authoritativeOrdinaryUvLayers.some(usesUnlitRenderedColor),
+        uvOverlayRenderedColor: hasLowerRepaintUv
+          ? directUvRenderedColor
+          : authoritativeOrdinaryUvLayers.some(usesUnlitRenderedColor),
         ...(authoritativeContentAwareTexture
           ? { baseTexture: authoritativeContentAwareTexture }
           : {}),
         ...(authoritativeResidentUvTexture
           ? {
               uvOverlayOpacity:
-                authoritativeOrdinaryUvLayers.length === 1
-                  ? authoritativeOrdinaryUvLayers[0].opacity
-                  : 1,
+                hasLowerRepaintUv
+                  ? uvOverlayOpacity
+                  : authoritativeOrdinaryUvLayers.length === 1
+                    ? authoritativeOrdinaryUvLayers[0].opacity
+                    : 1,
             }
           : authoritativeOrdinaryUvLayers.length === 0
             ? { uvOverlayOpacity: 0 }
