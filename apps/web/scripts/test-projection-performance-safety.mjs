@@ -62,6 +62,24 @@ const uniformBudgetJs = ts.transpileModule(uniformBudgetSource, {
 const budgetExports = {};
 new Function('exports', uniformBudgetJs)(budgetExports);
 const { isProjectedUniformBudgetSafe } = budgetExports;
+// The GPU eraser refactor shares the direct-stack budget gate. Execute both
+// consumers so the renamed predicate cannot accidentally drop either limit.
+const budgetGateNames = ['directProjectedStackSafe', 'canUseDirectVisibleStackAfterArrayFailure', 'canUseExactProjectedEraserStack'];
+const budgetGateNodes = findNodes(node => ts.isVariableDeclaration(node) && budgetGateNames.includes(node.name.getText(sceneAst)));
+assert.equal(budgetGateNodes.length, 3);
+const evaluateStackBudget = new Function('samplers', 'uniforms', 'failed', 'armed', 'arrays', 'isProjectedUniformBudgetSafe', `
+  const directProjectedSamplerBudget = {withinBudget:samplers}, gl = {capabilities:{maxFragmentUniforms:uniforms}};
+  const previewProjectionInputs = Array(14), textureArrayCompositionFallbackRequired = failed;
+  const projectedEraserArmed = armed, useProjectedTextureArrays = arrays;
+  ${budgetGateNodes.map(node => `const ${node.getText(sceneAst)};`).join('\n')}
+  return [canUseDirectVisibleStackAfterArrayFailure, canUseExactProjectedEraserStack];
+`);
+for (const samplers of [false,true]) for (const uniforms of [256,1024]) for (const failed of [false,true])
+for (const armed of [false,true]) for (const arrays of [false,true]) {
+  const direct = samplers && isProjectedUniformBudgetSafe(14,uniforms);
+  assert.deepEqual(evaluateStackBudget(samplers,uniforms,failed,armed,arrays,isProjectedUniformBudgetSafe),
+    [failed && direct, armed && ((arrays && !failed) || direct)]);
+}
 assert.equal(isProjectedUniformBudgetSafe(34, 1024), false, 'reported 34-layer shader must not reach the driver');
 assert.equal(isProjectedUniformBudgetSafe(14, 1024), true);
 assert.equal(isProjectedUniformBudgetSafe(14, 256), false, 'limits follow the actual device');
@@ -279,7 +297,7 @@ assert.match(
 );
 assert.match(
   sceneRootSource,
-  /canUseDirectVisibleStackAfterArrayFailure[\s\S]*?textureArrayCompositionFallbackRequired && directProjectedSamplerBudget\.withinBudget/,
+  /canUseDirectVisibleStackAfterArrayFailure[\s\S]*?textureArrayCompositionFallbackRequired && directProjectedStackSafe/,
   'an array failure must use the complete direct stack whenever the GPU can carry it',
 );
 assert.doesNotMatch(
