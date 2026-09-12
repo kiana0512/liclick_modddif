@@ -78,7 +78,7 @@ const optionExports = {};
 new Function('exports', optionsJs)(optionExports);
 const submitScope = { createLiclickApiClient: () => ({ generateTextureSingleView: (request) => request }),
   currentProject: { id: 'project' }, objects: [], resolution: '4K', imageSize: 'auto', imageModel: 'gpt-image-2.5-flare',
-  aspectRatio: 'auto', textureGptQuality: 'max',
+  aspectRatio: 'auto', textureGptQuality: 'max', textureGptModel: 'gpt-image-2.5-flare',
   getGptTextureRequestParameters: optionExports.getGptTextureRequestParameters };
 const submit = new Function(...Object.keys(submitScope), `${submitJs}; return submitGptTextureView;`)(...Object.values(submitScope));
 const guide = { id: 'guide' }, material = { id: 'material' }, capture = { objectId: 'object' };

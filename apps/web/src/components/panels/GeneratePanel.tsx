@@ -374,15 +374,15 @@ function CameraViewThumbnail({
 }) {
   const normalUrl = preview?.normalUrl;
   return (
-    <span className="relative grid h-full w-full place-items-center overflow-hidden rounded-[inherit] bg-[#303033]">
+    <span className="gen-preview-shell">
       {normalUrl ? (
         <img src={normalUrl} alt="" className="h-full w-full object-contain mix-blend-screen" />
       ) : (
-        <span className="absolute inset-0 bg-[radial-gradient(circle_at_45%_34%,rgba(255,255,255,0.16),transparent_30%),linear-gradient(135deg,rgba(82,255,163,0.18),rgba(71,126,255,0.2))]" />
+        <span className="gen-preview-gradient" />
       )}
       {loading && (
         <span className="absolute inset-0 grid place-items-center bg-black/24">
-          <span className="h-5 w-5 animate-spin rounded-full border-2 border-white/18 border-t-white/72" />
+          <span className="gen-preview-spinner" />
         </span>
       )}
     </span>
@@ -5392,7 +5392,7 @@ export function GeneratePanel({
           ? 'true'
           : 'false'
       }
-      className={`bg-[#0c0c15]/98 p-2 shadow-[0_-16px_42px_rgba(0,0,0,0.68)] backdrop-blur-xl ${
+      className={`gen-action-surface ${
         canCancelGeneration ? 'grid grid-cols-[1fr_52px] gap-2' : ''
       }`}
     >
@@ -5409,7 +5409,7 @@ export function GeneratePanel({
         />
       )}
       <Button
-        className={`relative h-12 w-full overflow-hidden text-base ${
+        className={`gen-action-button ${
           textureActionProgress ? 'disabled:opacity-100' : ''
         }`}
         variant="primary"
@@ -5541,7 +5541,7 @@ export function GeneratePanel({
             )}
           </div>
         )}
-        <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-md border border-white/10 bg-black/24">
+        <div className="gen-preview-body">
           {displayedTexturePreviewMode !== 'multi' && (
             <div className="generate-preview-adaptive relative shrink-0 overflow-hidden bg-[#1b1b1b]">
               {displayedPreviewGeneration?.resultUrl ? (
@@ -5571,11 +5571,11 @@ export function GeneratePanel({
                 <div className="h-full w-full bg-[#1b1b1b]" />
               )}
               {displayedPreviewGeneration?.resultUrl && (
-                <div className="absolute right-2 top-2 flex gap-1 rounded-md border border-white/10 bg-black/68 p-1 shadow-xl backdrop-blur-sm">
+                <div className="gen-preview-actions">
                   {isTextureMapGeneration(displayedPreviewGeneration) && (
                     <button
                       type="button"
-                      className="grid h-8 w-8 shrink-0 place-items-center rounded-md text-white transition hover:bg-liclick-pink/90"
+                      className="gen-preview-apply"
                       title={t('addAsProjectedLayer')}
                       aria-label={t('addAsProjectedLayer')}
                       onClick={handleAddProjectedLayer}
@@ -5585,7 +5585,7 @@ export function GeneratePanel({
                   )}
                   <button
                     type="button"
-                    className="grid h-8 w-8 shrink-0 place-items-center rounded-md text-white transition hover:bg-white/12"
+                    className="gen-preview-tool"
                     title={t('downloadImage')}
                     aria-label={t('downloadImage')}
                     onClick={() => void handleDownloadGenerationImage()}
@@ -5595,7 +5595,7 @@ export function GeneratePanel({
                   <button
                     type="button"
                     data-task-preview-allowed="true"
-                    className="grid h-8 w-8 shrink-0 place-items-center rounded-md text-white transition hover:bg-white/12"
+                  className="gen-preview-tool"
                     title={t('view')}
                     aria-label={t('view')}
                     onClick={() => setPreviewImageOpen(true)}
@@ -5620,7 +5620,7 @@ export function GeneratePanel({
                   </div>
                 )}
               {displayedPreviewFailed && !displayedPreviewIsGenerating && (
-                <div className="absolute inset-0 grid place-items-center bg-rose-950/28 px-4 text-center text-white">
+                <div className="gen-preview-error">
                   <div className="grid gap-1">
                     <div className="text-sm font-semibold">
                       {displayedPreviewCancelled ? '已终止' : '最近一次生成失败'}
@@ -5641,7 +5641,7 @@ export function GeneratePanel({
             </div>
           )}
 
-          <div className="generate-content-adaptive scrollbar-none flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain px-2.5 pt-2.5">
+          <div className="generate-content-adaptive scrollbar-none gen-content-scroll">
             {isTextureMapTab && texturePreviewMode === 'multi' && (
               <section className="generate-multiview-adaptive order-1 grid shrink-0 content-start gap-2">
                 <div
@@ -5666,7 +5666,7 @@ export function GeneratePanel({
                         type="button"
                         role="tab"
                         aria-selected={selected}
-                        className={`generate-camera-preset min-h-10 min-w-0 rounded-md px-1.5 py-1 text-[10px] font-semibold leading-3 transition focus:outline-none focus-visible:ring-2 focus-visible:ring-liclick-pink/35 ${
+                        className={`generate-camera-preset gen-camera-preset ${
                           selected
                             ? 'bg-white text-[#17131f] shadow-sm'
                             : 'bg-[#10101b] text-white/62 hover:bg-white/[0.065] hover:text-white'
@@ -5675,7 +5675,7 @@ export function GeneratePanel({
                       >
                         <span className="block truncate">{option.title}</span>
                         <span
-                          className={`mt-0.5 block truncate text-[9px] font-normal ${
+                          className={`gen-camera-caption ${
                             selected ? 'text-[#17131f]/58' : 'text-white/38'
                           }`}
                         >
@@ -5705,7 +5705,7 @@ export function GeneratePanel({
                       </button>
                       <button
                         type="button"
-                        className="absolute right-1 top-1 grid h-6 w-6 place-items-center rounded-full bg-black/72 text-white/72 opacity-0 shadow transition hover:bg-red-500 hover:text-white group-hover:opacity-100 focus:opacity-100"
+                        className="gen-camera-remove"
                         title={`删除${view.label}视角`}
                         aria-label={`删除${view.label}视角`}
                         onClick={() => handleDeleteCameraView(view.id)}
@@ -5716,7 +5716,7 @@ export function GeneratePanel({
                   ))}
                   <button
                     type="button"
-                    className="generate-camera-card-adaptive group grid place-items-center overflow-hidden rounded-lg bg-[#303033] text-liclick-pink transition hover:bg-[#3a3a3e] focus:outline-none focus:ring-2 focus:ring-liclick-pink/30"
+                    className="generate-camera-card-adaptive group gen-camera-add"
                     title={t('addCameraView')}
                     aria-label={t('addCameraView')}
                     onClick={handleAddCurrentCameraView}
@@ -5746,7 +5746,7 @@ export function GeneratePanel({
                     data-prompt-polish="true"
                     disabled={promptPolishing || workflowConfigurationLocked || !prompt.trim()}
                     onClick={() => void handlePromptPolish()}
-                    className="grid h-7 w-7 shrink-0 place-items-center rounded-md border border-white/16 bg-white/6 text-white/76 transition hover:border-liclick-pink/55 hover:bg-liclick-pink/12 hover:text-white focus:outline-none focus:ring-2 focus:ring-liclick-pink/40 disabled:cursor-not-allowed disabled:opacity-35"
+                    className="gen-prompt-polish"
                   >
                     {promptPolishing ? (
                       <LoaderCircle className="h-4 w-4 animate-spin" />
@@ -5779,7 +5779,7 @@ export function GeneratePanel({
                       : { liclickPrompt: event.target.value },
                   );
                 }}
-                className="generate-prompt-adaptive w-full resize-none rounded-md border border-white/18 bg-black/34 p-2.5 text-[13px] leading-5 text-white outline-none transition placeholder:text-white/38 focus:border-liclick-pink"
+                className="generate-prompt-adaptive gen-prompt-input"
               />
             </section>
 
@@ -5807,7 +5807,7 @@ export function GeneratePanel({
               <div
                 role={generateNotice.tone === 'error' ? 'alert' : 'status'}
                 aria-live="polite"
-                className={`order-4 shrink-0 rounded-md border px-2.5 py-2 text-xs leading-5 ${
+                className={`gen-status-box ${
                   generateNotice.tone === 'error'
                     ? 'border-rose-300/32 bg-rose-400/12 text-rose-50'
                     : generateNotice.tone === 'warning'
@@ -5826,7 +5826,7 @@ export function GeneratePanel({
         generatePanelExpanded &&
         createPortal(
           <div
-            className={`pointer-events-auto fixed bottom-4 left-4 z-[90] hidden overflow-hidden rounded-lg lg:block ${
+            className={`gen-action-dock ${
               dockDensity === 'normal' ? 'w-[312px]' : 'w-[292px]'
             }`}
           >
@@ -5843,9 +5843,9 @@ export function GeneratePanel({
         createPortal(
           <div
             data-task-preview-allowed="true"
-            className="fixed inset-0 z-[140] grid place-items-center bg-black/62 px-4 backdrop-blur-sm"
+            className="gen-cancel-backdrop"
           >
-            <div className="w-full max-w-[420px] rounded-lg border border-white/16 bg-[#151520] p-4 text-white shadow-2xl">
+            <div className="gen-cancel-dialog">
               <div className="mb-3 flex items-start justify-between gap-3">
                 <div>
                   <div className="text-sm font-semibold text-liclick-pink">终止莉刻生图</div>
@@ -5853,7 +5853,7 @@ export function GeneratePanel({
                 </div>
                 <button
                   type="button"
-                  className="grid h-8 w-8 place-items-center rounded-md text-white/70 transition hover:bg-white/10 hover:text-white"
+                  className="gen-cancel-close"
                   onClick={() => {
                     setCancelConfirmGeneration(undefined);
                     setCancelTextureSnapshotConfirmOpen(false);
@@ -5930,14 +5930,14 @@ export function GeneratePanel({
         createPortal(
           <button
             type="button"
-            className="fixed inset-0 z-[135] grid cursor-zoom-out place-items-center bg-black/72 p-4 backdrop-blur-sm"
+            className="gen-zoom-backdrop"
             onClick={() => setPreviewImageOpen(false)}
             aria-label={t('close')}
           >
             <img
               src={previewResultUrl ?? displayedPreviewGeneration.resultUrl}
               alt=""
-              className="max-h-[92vh] max-w-[94vw] rounded-md border border-white/16 bg-[#181818] object-contain shadow-2xl"
+              className="gen-zoom-image"
               style={checkerBackgroundStyle}
               draggable={false}
             />

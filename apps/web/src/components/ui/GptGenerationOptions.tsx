@@ -67,7 +67,7 @@ export function GptGenerationOptions({ model, quality, disabled, onModelChange, 
       aria-expanded={open === kind && !disabled}
       disabled={disabled}
       onClick={(event) => { trigger.current = event.currentTarget; setOpen(open === kind ? null : kind); }}
-      className="flex h-9 min-w-0 items-center justify-between gap-1 rounded-md border border-white/16 bg-[#181824] px-2 text-xs text-white outline-none focus-visible:border-liclick-pink disabled:opacity-40"
+      className="gen-options-trigger"
     >
       <span className="truncate">{kind === 'model'
         ? GPT_TEXTURE_MODELS.find((item) => item.value === model)?.label
@@ -78,7 +78,7 @@ export function GptGenerationOptions({ model, quality, disabled, onModelChange, 
       ref={popup}
       role="menu"
       aria-label={open === 'model' ? '选择模型' : '选择质量'}
-      className="fixed z-[200] overflow-y-auto rounded-xl border border-white/16 bg-[#181824] p-2 text-sm text-white shadow-2xl"
+      className="gen-options-popup"
       onBlur={(event) => {
         if (!event.currentTarget.contains(event.relatedTarget) && !root.current?.contains(event.relatedTarget)) setOpen(null);
       }}
@@ -102,7 +102,7 @@ export function GptGenerationOptions({ model, quality, disabled, onModelChange, 
           setOpen(null);
           trigger.current?.focus();
         }}
-        className={`flex w-full items-center justify-between rounded-lg px-3 py-2.5 text-left outline-none hover:bg-white/10 focus-visible:bg-white/10 ${selected === item.value ? 'bg-white/10 text-liclick-pink' : ''}`}
+        className={`gen-options-item ${selected === item.value ? 'bg-white/10 text-liclick-pink' : ''}`}
       >
         {open === 'model' ? modelLabel(item.value, item.label) : item.label}
         <span aria-hidden="true">{selected === item.value ? '✓' : ''}</span>
