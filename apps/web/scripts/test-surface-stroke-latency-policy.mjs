@@ -3,6 +3,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createServer } from 'vite';
+import ts from 'typescript';
+import * as THREE from 'three';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const server = await createServer({
@@ -33,8 +35,8 @@ try {
       isMaskStroke: false,
       isProjectedLayerEraser: true,
     }),
-    true,
-    'Projected-layer erasing must collapse raw pointer samples like mask painting.',
+    false,
+    'Projected-layer erasing needs intermediate UV hits, not just the final circle.',
   );
   assert.equal(
     shouldCollapseSurfaceStrokeToLatestSample({
@@ -110,6 +112,41 @@ try {
     path.join(root, 'src/engine/viewport/ViewportCanvas.tsx'),
     'utf8',
   );
+  // Execute the production resampler, not a reimplementation. A fast drag
+  // over many triangles must still leave overlapping brush stamps even when
+  // getStrokeSourceUv correctly refuses to connect different UV triangles.
+  const ast = ts.createSourceFile('ViewportCanvas.tsx', viewportSource,
+    ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  const resampler = ast.statements.find(node =>
+    ts.isFunctionDeclaration(node) && node.name?.text === 'resampleClientPath');
+  assert(resampler);
+  const resample = new Function('THREE', ts.transpileModule(resampler.getText(ast), {
+    compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
+  }).outputText + '\nreturn resampleClientPath;')(THREE);
+  const start = { x: 0, y: 0, pressure: 0.2 };
+  const end = { x: 180, y: 0, pressure: 1 };
+  const radius = 10;
+  const strokeSamples = resample(start, [end], 96, radius * 0.4).samples;
+  assert(strokeSamples.length > 1);
+  assert(strokeSamples.length <= 96);
+  assert.deepEqual(strokeSamples.at(-1), end);
+  let previous = start;
+  for (const point of strokeSamples) {
+    assert(Math.hypot(point.x - previous.x, point.y - previous.y) <= radius * 0.4 + 1e-8);
+    assert(point.pressure >= previous.pressure && point.pressure <= 1);
+    previous = point;
+  }
+  const curved = resample(start, [
+    { x: 80, y: 0, pressure: 0.5 }, { x: 80, y: 80, pressure: 1 },
+  ], 96, 4).samples;
+  assert(curved.some(point => point.x === 80 && point.y === 0),
+    'Coalesced bends must not be replaced by the diagonal between frame endpoints.');
+  assert.equal(resample(start, [{ ...end, x: 10000 }], 96, 3).samples.length, 96,
+    'Pathological input must retain the existing per-frame work bound.');
+  assert.deepEqual(resample(start, [start], 96, 3).samples, [start]);
+  assert.deepEqual(resample(undefined, [], 96, 3).samples, []);
+  assert.match(viewportSource, /return sameFace \? previous\.uv : undefined;/,
+    'Do not connect UV strokes across different triangles to hide the sampling bug.');
   assert.match(
     viewportSource,
     /const isProjectedLayerEraser\s*=\s*[\s\S]*?getEraserTargetPolicy\(activePaintLayer\)\.kind === 'projected-mask'/,

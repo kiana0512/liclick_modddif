@@ -231,6 +231,14 @@ export function getLiveProjectedCanvasState(url: string) {
   return entry ? { canvas: entry.canvas, revision: entry.revision } : undefined;
 }
 
+/** Only the exact transient canvas owner may release a renderer-only binding. */
+export function releaseLiveProjectedCanvasTexture(url: string, canvas: HTMLCanvasElement) {
+  const entry = liveCanvasTextures.get(url);
+  if (!entry || entry.canvas !== canvas || liveUvTargets.has(url)) return;
+  entry.texture.dispose();
+  liveCanvasTextures.delete(url);
+}
+
 function canvasToPngBlob(canvas: HTMLCanvasElement) {
   return new Promise<Blob>((resolve, reject) => {
     canvas.toBlob((blob) => {

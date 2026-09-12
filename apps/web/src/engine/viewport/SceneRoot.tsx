@@ -2662,7 +2662,7 @@ const ImportedModel = memo(function ImportedModel({
         (isSharedViewportInteractionBusy(180) ||
           interaction.pointerDown ||
           performance.now() - interaction.lastMovedAt < 140);
-      if (!isInteracting) compositor.step();
+      compositor.step(isInteracting);
       if (compositor.hasPendingWork(progressiveBackgroundSignature)) {
         driveTimer = window.setTimeout(drive, backgrounded ? 250 : 50);
       }
@@ -3200,7 +3200,7 @@ const ImportedModel = memo(function ImportedModel({
     // Interaction owns the frame budget. Even a single compositor operation can
     // enqueue enough GPU work to surface as a later wheel/drag hitch, so suspend
     // the background queue completely until the viewport has settled.
-    if (!isInteracting) projectedPreviewCompositorRef.current?.step();
+    projectedPreviewCompositorRef.current?.step(isInteracting);
     if (stableVisibleProjectedLayers.length === 0) {
       lastProjectedTransformRef.current = undefined;
       return;

@@ -423,9 +423,11 @@ try {
   assert.notEqual(await persistentMergeKey(input), first, 'Unversioned geometry edits invalidate UV');
   userId = ''; assert.equal(await persistentMergeKey(input), undefined);
 } finally { globalThis.window = oldWindow; globalThis.fetch = oldFetch; }
+let maskRevision = 1;
 let paints = 0,
   finish;
 const presentation = load('../projection/residentUvPresentation', {
+  './liveProjectedCanvasTextureRegistry': { getLiveProjectedCanvasState: () => ({ revision: maskRevision }) },
   '@/utils/browserScheduling': {
     async waitForBrowserPaint() {
       paints++;
@@ -440,6 +442,13 @@ presentation.markResidentUvPending(object, 'a');
 finish = () => presentation.finishResidentUvPresentation(object);
 await presentation.waitForResidentUvPresentation(scene, 'a');
 assert.equal(paints, 2, 'Capture waits until the UV buffer has actually been bound');
+presentation.finishResidentUvPresentation(object, [{ layerId: 'layer', url: 'mask', revision: 1 }]);
+assert(presentation.isResidentUvMaskPresented(object, 'layer', 'mask'));
+assert(!presentation.isResidentUvMaskPresented(object, 'other', 'mask'));
+maskRevision++;
+assert(!presentation.isResidentUvMaskPresented(object, 'layer', 'mask'), 'An old UV cannot acknowledge a newer eraser revision');
+presentation.markResidentUvPending(object, 'a');
+assert(!presentation.isResidentUvMaskPresented(object, 'layer', 'mask'));
 presentation.markResidentUvPending(object, 'a', new Error('UV failed'));
 await assert.rejects(presentation.waitForResidentUvPresentation(scene, 'a'), /UV failed/);
 await presentation.waitForResidentUvPresentation(scene, 'other-object');

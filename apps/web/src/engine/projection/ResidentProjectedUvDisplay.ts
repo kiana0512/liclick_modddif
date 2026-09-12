@@ -14,7 +14,9 @@ import { markSparseAlphaBaseTexture } from './ProjectedLayerMaterial';
 import { ProjectedUvRasterCache } from '@/engine/bake/ProjectedUvRasterCache';
 import { markResidentUvPending, finishResidentUvPresentation, releaseResidentUvManagement } from './residentUvPresentation';
 import { ResidentUvCompressedCache } from './ResidentUvCompressedCache';
-import { isLiveProjectedCanvasUrl } from './liveProjectedCanvasTextureRegistry';
+import { isLiveProjectedCanvasUrl, registerLiveProjectedCanvasTexture, releaseLiveProjectedCanvasTexture, getLiveProjectedCanvasState } from './liveProjectedCanvasTextureRegistry';
+import type { ResidentUvMaskBinding } from './residentUvPresentation';
+import { getEraserUvDraft } from '@/engine/paint/eraserUvDraft';
 import { getRegisteredObjectUrlBlob, revokeRegisteredObjectUrl } from '@/utils/blobUrlRegistry';
 
 export type ProjectedPreviewComposite = {
@@ -23,6 +25,8 @@ export type ProjectedPreviewComposite = {
   colorTexture: THREE.Texture;
   renderedColorMaskTexture: THREE.Texture;
   layerIds: string[];
+  interactive?: boolean;
+  maskBindings?: ResidentUvMaskBinding[];
 };
 type Request = {
   projectId?: string;
@@ -88,24 +92,50 @@ export class ResidentProjectedUvDisplay {
     }
   }
 
-  step() {
-    const request = this.requested;
+  step(interactiveOnly = false) {
+    const original = this.requested;
     if (
       this.active ||
-      !request ||
+      !original ||
       this.disposed ||
-      this.cache.has(request.signature) ||
-      request.renderer.getContext().isContextLost() ||
+      original.renderer.getContext().isContextLost() ||
       performance.now() < this.retryAt
     )
       return;
+    const candidate = getEraserUvDraft();
+    const draft = candidate?.owner.target === 'projected-mask' &&
+      candidate.owner.objectId === original.sourceModel.objectId &&
+      original.sourceLayers.some(layer => layer.id === candidate.owner.layerId && layer.visible && layer.opacity > 0)
+      ? candidate : undefined;
+    draft?.flush();
+    const interactive = Boolean(draft && draft.revision > 0);
+    if (interactiveOnly && !interactive) return;
+    const key = interactive ? `${original.signature}:eraser:${draft!.id}:${draft!.revision}` : original.signature;
+    const cached = this.cache.get(key);
+    if (cached) {
+      // Cancellation/failed commits may leave the authored signature unchanged.
+      // Restore its cached buffer instead of leaving an abandoned draft visible.
+      if (!interactive && this.front?.interactive) original.onReady(cached);
+      return;
+    }
+    const snapshot = interactive ? draft!.snapshot() : undefined;
+    const snapshotUrl = snapshot ? registerLiveProjectedCanvasTexture(key, snapshot) : undefined;
+    const request = snapshotUrl ? { ...original, projectId: undefined,
+      sourceLayers: original.sourceLayers.map(layer => layer.id === draft!.owner.layerId
+        ? { ...layer, maskUrl: snapshotUrl, maskSpace: 'uv' as const } : layer),
+    } : original;
+    if (interactive) markResidentUvPending(original.sourceModel.group, original.sourceModel.objectId);
     this.active = true;
     const revision = this.revision;
-    const cancelled = () => this.disposed || revision !== this.revision;
+    const cancelled = () => this.disposed || revision !== this.revision ||
+      (interactive && getEraserUvDraft() !== draft);
     const guard = () => {
       if (cancelled()) throw new DOMException('UV display superseded.', 'AbortError');
     };
     const startedAt = performance.now();
+    const maskBindings = request.sourceLayers.flatMap(layer => layer.maskUrl ? [{
+      layerId: layer.id, url: layer.maskUrl, revision: getLiveProjectedCanvasState(layer.maskUrl)?.revision,
+    }] : []);
     const stages: Record<string, number> = {};
     const created: THREE.Texture[] = [];
     const transientSources: string[] = [];
@@ -113,7 +143,7 @@ export class ResidentProjectedUvDisplay {
     document.body.dataset.residentUvProjectionStatus = 'computing';
     void (async () => {
       let persistentKey: string | undefined;
-      let restored = await this.compressed.restore(request.signature);
+      let restored = interactive ? undefined : await this.compressed.restore(request.signature);
       // Only the first presentation consults disk synchronously. Subsequent eye
       // changes must not wait for source hashing before GPU recomposition.
       const keyPromise = !restored && request.projectId ? import('@/engine/bake/persistentMergePreparation')
@@ -123,7 +153,7 @@ export class ResidentProjectedUvDisplay {
           layers: [...request.sourceLayers, ...(request.underlayLayers ?? [])].filter(layer => layer.visible && layer.opacity > 0),
           purpose: 'resident-uv-display-2',
         })).catch(() => undefined) : Promise.resolve(undefined);
-      if (!restored && !this.front) {
+      if (!interactive && !restored && !this.front) {
         persistentKey = await keyPromise;
         guard();
         restored = await this.compressed.restore(request.signature, persistentKey);
@@ -281,11 +311,13 @@ export class ResidentProjectedUvDisplay {
         resolution: request.resolution,
         colorTexture,
         renderedColorMaskTexture,
+        interactive,
+        maskBindings,
         layerIds: request.sourceLayers
           .filter((layer) => layer.visible && layer.opacity > 0)
           .map((layer) => layer.id),
       };
-      this.cache.set(request.signature, buffer);
+      this.cache.set(key, buffer);
       created.length = 0;
       stages.displayUploadMs = performance.now() - uploadStartedAt;
       document.body.dataset.residentUvProjectionDurationMs = (
@@ -295,7 +327,7 @@ export class ResidentProjectedUvDisplay {
         { ...result.report.performanceBreakdown, ...stages },
       );
       request.onReady(buffer);
-      if (!restored) {
+      if (!interactive && !restored) {
         void keyPromise.then(key => {
           if (!cancelled()) this.compressed.offer(request.signature, result.imageData!, result.renderedColorMask, key);
         });
@@ -317,6 +349,13 @@ export class ResidentProjectedUvDisplay {
         sourcesClosed = true;
         transientSources.forEach(revokeRegisteredObjectUrl);
         this.active = false;
+        if (snapshot && snapshotUrl) {
+          releaseLiveProjectedCanvasTexture(snapshotUrl, snapshot);
+          snapshot.width = snapshot.height = 1;
+        }
+        // Latest-wins queue: finish one immutable snapshot instead of repeatedly
+        // cancelling it on mousemove. A newer gesture revision runs next.
+        if (interactive && !cancelled()) queueMicrotask(() => this.step(true));
       });
   }
 
@@ -333,15 +372,23 @@ export class ResidentProjectedUvDisplay {
     const buffer = [...this.cache.values()].find((value) => value.colorTexture === texture);
     if (!buffer) return;
     this.front = buffer;
-    this.compressed.activate(buffer.signature);
-    if (this.requested?.signature === buffer.signature)
-      finishResidentUvPresentation(this.requested.sourceModel.group);
+    if (!buffer.interactive) this.compressed.activate(buffer.signature);
+    if (!buffer.interactive && this.requested?.signature === buffer.signature)
+      finishResidentUvPresentation(this.requested.sourceModel.group, buffer.maskBindings);
     // Upload bitmaps have been released; account for actual GPU dimensions,
     // including the single-pixel mask used by ordinary BaseColor stacks.
     const size = (value: ProjectedPreviewComposite) =>
       value.resolution ** 2 * 4 +
       value.renderedColorMaskTexture.image.width * value.renderedColorMaskTexture.image.height;
     let bytes = [...this.cache.values()].reduce((total, value) => total + size(value), 0);
+    for (const [key, value] of this.cache) {
+      if (value.interactive && value !== this.front) {
+        bytes -= size(value);
+        value.colorTexture.dispose(); value.renderedColorMaskTexture.dispose();
+        this.cache.delete(key);
+        continue;
+      }
+    }
     for (const [key, value] of this.cache) {
       if (bytes <= 512 * 1024 * 1024 && this.cache.size <= 32) break;
       if (value === this.front || key === this.requested?.signature) continue;

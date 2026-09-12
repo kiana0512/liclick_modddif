@@ -78,7 +78,7 @@ try {
   );
   assert.match(
     sceneRootSource,
-    /compositor\.request\(\{[\s\S]*?const drive = \(\) => \{[\s\S]*?compositor\.step\(\)[\s\S]*?queueMicrotask\(drive\)/,
+    /compositor\.request\(\{[\s\S]*?const drive = \(\) => \{[\s\S]*?compositor\.step\(isInteracting\)[\s\S]*?queueMicrotask\(drive\)/,
     'Resident UV computation must start from an algorithm task instead of waiting for useFrame.',
   );
   assert.match(

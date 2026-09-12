@@ -1,15 +1,24 @@
 import type { Object3D } from 'three';
 import { waitForBrowserPaint } from '@/utils/browserScheduling';
+import { getLiveProjectedCanvasState } from './liveProjectedCanvasTextureRegistry';
 
 const pending = new WeakMap<Object3D, { objectId: string; error?: unknown }>();
 const managed = new WeakSet<Object3D>();
+export type ResidentUvMaskBinding = { layerId: string; url: string; revision?: number };
+const masks = new WeakMap<Object3D, ResidentUvMaskBinding[]>();
+export function isResidentUvMaskPresented(root: Object3D, layerId: string, url: string) {
+  return !pending.has(root) && Boolean(masks.get(root)?.some(binding =>
+    binding.layerId === layerId && binding.url === url &&
+    binding.revision === getLiveProjectedCanvasState(url)?.revision));
+}
 export function isResidentUvManaged(root: Object3D) { return managed.has(root); }
-export function releaseResidentUvManagement(root: Object3D) { managed.delete(root); pending.delete(root); }
+export function releaseResidentUvManagement(root: Object3D) { managed.delete(root); pending.delete(root); masks.delete(root); }
 export function markResidentUvPending(root: Object3D, objectId: string, error?: unknown) {
   managed.add(root);
   pending.set(root, { objectId, error });
 }
-export function finishResidentUvPresentation(root: Object3D) {
+export function finishResidentUvPresentation(root: Object3D, bindings?: ResidentUvMaskBinding[]) {
+  if (bindings) masks.set(root, bindings);
   pending.delete(root);
 }
 

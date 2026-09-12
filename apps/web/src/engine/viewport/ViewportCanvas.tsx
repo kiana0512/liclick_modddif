@@ -1,5 +1,7 @@
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { Bvh } from '@react-three/drei';
+import { beginEraserUvDraft, getEraserUvDraft, clearEraserUvDraft, applyEraserUvPatch } from '@/engine/paint/eraserUvDraft';
+import { isResidentUvManaged, isResidentUvMaskPresented } from '@/engine/projection/residentUvPresentation';
 import {
   memo,
   Suspense,
@@ -5963,6 +5965,7 @@ function hasInpaintProjectionCameraChanged(layer: UvPaintLayer, camera: THREE.Ca
 
 function disposeUvPaintLayer(layer?: UvPaintLayer) {
   if (!layer) return;
+  clearEraserUvDraft(layer);
   endLiveEraserPreview(layer);
   layer.overlayMeshes.forEach((mesh) => mesh.removeFromParent());
   layer.paintPreviewMaterial.dispose();
@@ -6654,6 +6657,7 @@ function recordPaintStrokeDirtyRegion(
   const keys = draft.historyTileKeys ?? new Set<string>();
   for (const key of getPaintHistoryTileKeys(layer, bounds)) keys.add(key);
   draft.historyTileKeys = keys;
+  if (draft.paintOperation === 'eraser') getEraserUvDraft(layer)?.update(layer.paintPreviewCanvas, draft.bounds);
 }
 
 function ensurePaintBackingCanvasInitialized(layer: UvPaintLayer) {
@@ -6749,6 +6753,7 @@ function promoteProjectedEraserMaskToResidentMaterial(
     layer.pendingBaseImage
   )
     return false;
+  if (isResidentUvManaged(root)) return isResidentUvMaskPresented(root, layer.layerId, layer.assetUrl);
   const result = syncProjectedLayerResidentMaskTextureInObject(
     root,
     layer.layerId,
@@ -6767,6 +6772,7 @@ function promoteProjectedEraserMaskToResidentMaterial(
 
 function endLiveEraserPreview(layer: UvPaintLayer) {
   layer.liveEraserPreviewActive = false;
+  if (layer.pendingPaintCommits === 0 && !getEraserUvDraft(layer)?.drawing) clearEraserUvDraft(layer);
   const root = layer.liveEraserPreviewRoot;
   if (
     shouldRetainProjectedEraserPreview({
@@ -12048,6 +12054,10 @@ function SurfacePaintOverlay() {
         if (!layer) return;
         if (strokePaintTool === 'eraser') {
           beginLiveEraserPreview(layer, result.model.group);
+          if (layer.isReady && layer.target === 'projected-mask') {
+            ensurePaintBackingCanvasInitialized(layer);
+            beginEraserUvDraft(layer);
+          }
           invalidate();
         }
         if (strokePaintTool !== 'eraser') endLiveEraserPreview(layer);
@@ -13121,6 +13131,10 @@ function SurfacePaintOverlay() {
     const localRepaintSource = draft?.localRepaintSource ?? localRepaintProjectionSource;
     if (draft?.localRepaintComposite?.nativeUv) return;
     if (!draft?.bounds) {
+      if (layer) {
+        getEraserUvDraft(layer)?.finishStroke();
+        if (layer.pendingPaintCommits === 0) clearEraserUvDraft(layer);
+      }
       if (layer && !(draft?.paintOperation === 'eraser' && layer.target === 'projected-mask'))
         endLiveEraserPreview(layer);
       return;
@@ -13173,6 +13187,7 @@ function SurfacePaintOverlay() {
       // repaint. Detach it now so another stroke can start while the source UV
       // image is still decoding in the background.
       const previewBounds = draft.bounds;
+      getEraserUvDraft(layer)?.finishStroke();
       const paintPreviewCommit = copyCanvasRect(layer.paintPreviewCanvas, previewBounds);
       layer.paintPreviewContext.clearRect(
         previewBounds.x,
@@ -13287,33 +13302,8 @@ function SurfacePaintOverlay() {
           layer.paintCanvas.height,
         );
         const applyStroke = (context: CanvasRenderingContext2D) => {
-          context.save();
-          context.globalCompositeOperation =
-            draft.paintOperation === 'eraser' ? 'destination-out' : 'source-over';
-          context.drawImage(
-            paintPreviewCommit,
-            0,
-            0,
-            paintPreviewCommit.width,
-            paintPreviewCommit.height,
-            paintBounds.x,
-            paintBounds.y,
-            paintBounds.width,
-            paintBounds.height,
-          );
-          context.restore();
-          if (draft.paintOperation === 'eraser' && layer.target === 'projected-mask') {
-            // Store projection masks as opaque grayscale instead of transparent
-            // white. Transparent mask edges interpolate both RGB and alpha, and
-            // the projection shader multiplies the two, producing a dark fringe.
-            // Filling black behind the result preserves the exact same coverage
-            // while keeping alpha at one, so linear filtering has no seam.
-            context.save();
-            context.globalCompositeOperation = 'destination-over';
-            context.fillStyle = '#000000';
-            context.fillRect(paintBounds.x, paintBounds.y, paintBounds.width, paintBounds.height);
-            context.restore();
-          }
+          applyEraserUvPatch(context, paintPreviewCommit, paintBounds,
+            layer.target === 'projected-mask', draft.paintOperation === 'eraser');
         };
         const applyStartedAt = performance.now();
         applyStroke(layer.paintContext);
@@ -13345,6 +13335,7 @@ function SurfacePaintOverlay() {
           },
         };
         const applyTiles = (side: 'before' | 'after') => {
+          clearEraserUvDraft(layer);
           historyStroke.applied = side === 'after';
           const remaining = [
             ...(projectedEraserBatchesRef.current.get(layer.layerId)?.strokes ?? []),
@@ -13524,6 +13515,7 @@ function SurfacePaintOverlay() {
         })
         .finally(() => {
           layer.pendingPaintCommits = Math.max(0, layer.pendingPaintCommits - 1);
+          if (layer.pendingPaintCommits === 0 && !getEraserUvDraft(layer)?.drawing) clearEraserUvDraft(layer);
           if (layer.pendingPaintCommits === 0 && !layer.liveEraserPreviewActive) {
             endLiveEraserPreview(layer);
           }

@@ -4,7 +4,10 @@ export function shouldCollapseSurfaceStrokeToLatestSample(input: {
   isMaskStroke: boolean;
   isProjectedLayerEraser: boolean;
 }) {
-  return input.isMaskStroke || input.isProjectedLayerEraser;
+  // Only camera-space masks can fill a whole path from its final hit. Ordinary
+  // projected-layer erasing writes UV stamps and deliberately breaks segments
+  // at triangle boundaries; collapsing those hits leaves isolated circles.
+  return input.isMaskStroke && !input.isProjectedLayerEraser;
 }
 
 export function shouldDeferSurfaceStrokeCommit(input: {

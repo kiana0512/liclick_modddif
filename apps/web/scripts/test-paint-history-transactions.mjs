@@ -324,6 +324,7 @@ try {
     marked = [];
   let cancelled = 0, promoted = 0;
   const bindings = {
+    clearEraserUvDraft(owner) { assert.equal(owner, layer, 'Undo clears only its own interactive UV draft'); },
     eraserVersionBefore: undefined,
     ERASER_ALGORITHM_VERSION: 1,
     projectedEraserBatchesRef: { current: new Map() },
