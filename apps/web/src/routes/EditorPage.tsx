@@ -4,7 +4,6 @@ import {prepareMergeProjection,startMergeProjectionPreparation,mergePreparationS
 import {getPreparedMergePng,awaitPreparedMergePng,reuseUnchangedMergePng} from '@/engine/bake/mergeFinalPreparation';
 import {compareProjectedLayersForDeterministicBake,createReusableProjectionBakeSignature,cloneProjectionBakeImageData,type ReusableProjectionBakeEntry,type ReusableProjectionBakePurpose} from '@/engine/bake/projectionBakeSignature';
 import {
-  startTransition,
   useCallback,
   useEffect,
   useMemo,

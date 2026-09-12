@@ -4,6 +4,7 @@ import type { ModelLoadResult } from '@/engine/loaders/modelImportTypes';
 import type { UvBakeResolution } from '@/engine/bake/uvBakeTypes';
 import { getMergeUvPostprocessOptions } from '@/engine/layers/mergeUvComposition';
 import {
+  createWorkerBackedMaskPreviewTexture,
   createWorkerBackedPreviewTexture,
   uploadPreviewTextureInStripes,
   releaseTransientPreviewUploadSource,
@@ -249,27 +250,11 @@ export class ResidentProjectedUvDisplay {
       markSparseAlphaBaseTexture(colorTexture);
       let renderedColorMaskTexture: THREE.Texture;
       if (mask && hasRenderedColor) {
-        const rgba = new Uint8ClampedArray(mask.length * 4);
-        for (let first = 0; first < mask.length; first += 262144) {
-          guard();
-          for (let i = first; i < Math.min(first + 262144, mask.length); i++) {
-            rgba[i * 4] = mask[i];
-            rgba[i * 4 + 3] = 255;
-          }
-          await yieldToBrowserTask();
-        }
-        const image = await createImageBitmap(
-          new ImageData(rgba, request.resolution, request.resolution),
-          {
-            imageOrientation: 'flipY',
-            premultiplyAlpha: 'none',
-          },
+        renderedColorMaskTexture = await createWorkerBackedMaskPreviewTexture(
+          mask,
+          request.resolution,
+          request.resolution,
         );
-        if (cancelled()) {
-          image.close();
-          guard();
-        }
-        renderedColorMaskTexture = await createWorkerBackedPreviewTexture(image);
       } else {
         renderedColorMaskTexture = new THREE.DataTexture(new Uint8Array([0, 0, 0, 255]), 1, 1);
         renderedColorMaskTexture.needsUpdate = true;

@@ -135,8 +135,8 @@ assert.match(
 );
 assert.match(
   panel,
-  /backgroundSize: `\$\{textureActionProgress\.progress\}% 100%, 100% 100%`[\s\S]*?`\$\{textureActionProgress\.label\} · \$\{Math\.round\(textureActionProgress\.progress\)\}%`/,
-  'the bottom texture CTA must render the shared progress fill and percentage',
+  /backgroundSize: `\$\{textureActionProgress\.progress\}% 100%, 100% 100%`[\s\S]*?`\$\{compactTextureProgressButtonLabel\(textureActionProgress\.label\)\} · \$\{Math\.round\(textureActionProgress\.progress\)\}%`/,
+  'the bottom texture CTA must keep the shared progress fill and percentage while compacting only verbose workflow labels',
 );
 
 assert.match(worker, /projectionGapMaskFromAlpha\(currentPixels, targetMask\)/);

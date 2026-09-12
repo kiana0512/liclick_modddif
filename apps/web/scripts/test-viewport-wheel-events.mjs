@@ -241,14 +241,14 @@ try {
   assert.match(viewport, /activePointerIdRef.current = event.pointerId;\s*setViewportPaintPointer\(canvas, event.pointerId\);\s*try/, 'Recovered pen contact must rebind its pointer identity');
   assert.match(viewport, /pointerListenerGenerationRef.current !== listenerGeneration\) return;\s*setViewportPaintPointer\(canvas\);/, 'Final unmount clears ownership, effect replacement preserves it');
   assert.match(viewport, /<Canvas\s[\s\S]*?events=\{createViewportEvents\}/, 'The live viewport must use the tested event manager');
-  assert.match(viewport, /const isPaintButton = event\.button === 0 \|\| penEraserContact;/, 'Mouse painting must be primary-button only');
-  assert.doesNotMatch(viewport, /rightMaskEraseContact/, 'RMB must not retain a hidden paint/erase path');
+  assert.match(viewport, /const rightModelEraseContact =\s*event\.pointerType === 'mouse' && event\.button === 2 && Boolean\(result\);/, 'RMB erasing must require a model hit');
+  assert.match(viewport, /const isPaintButton = event\.button === 0 \|\| penEraserContact \|\| rightModelEraseContact;/, 'Only a model-hit RMB may join the primary paint path');
   // Wheel is exclusively camera navigation in this canvas. A future 3D wheel
   // feature must explicitly revise this contract, not silently lose its input.
   const sceneSource = await readFile(new URL('../src/engine/viewport/SceneRoot.tsx', import.meta.url), 'utf8');
   assert.doesNotMatch(sceneSource, /onWheel\s*=/);
   console.log('Viewport wheel regression passed: 1021 -> 0 picks; perspective/orthographic zoom, click, miss and cleanup preserved.');
-  console.log('Viewport buttons passed: LMB paint-only, MMB pan, RMB orbit, wheel dolly.');
+  console.log('Viewport buttons passed: LMB paint, model-hit RMB erase, background RMB orbit, MMB pan, wheel dolly.');
   console.log('Native paint tail regression passed: 60 strokes / 120 -> 0 redundant picks; DOM delivery, selection reset, canvas/pointer isolation and capture cleanup preserved.');
 } finally {
   await server.close();

@@ -29,7 +29,10 @@ export class ProjectedUvRasterCache {
   private residentKeys: string[] = [];
   private residentSourceSizes: GpuLayerSourceSize[] = [];
   private programs = new Map<string, THREE.ShaderMaterial>();
-  private resolved?: { key: string; result: GpuLayerRastersBakeOutput; bytes: number };
+  private resolved = new Map<
+    string,
+    [result: GpuLayerRastersBakeOutput, bytes: number]
+  >();
   private readonly contextLost = () => this.clear();
   constructor(private readonly budget = 256 * 1024 * 1024) {}
 
@@ -58,10 +61,17 @@ export class ProjectedUvRasterCache {
     else this.programs.set(key, material);
   }
   async getResolved(key: string) {
-    if (this.resolved?.key !== key) return undefined;
+    const entry = this.resolved.get(key);
+    if (!entry) return undefined;
+    this.resolved.delete(key);
+    this.resolved.set(key, entry);
     const revision = this.revision;
-    const result = await this.copyResolved(this.resolved.result);
-    return !this.disposed && revision === this.revision ? result : undefined;
+    const result = await this.copyResolved(entry[0]);
+    return !this.disposed &&
+      revision === this.revision &&
+      this.resolved.get(key) === entry
+      ? result
+      : undefined;
   }
   async retainResolved(key: string, result: GpuLayerRastersBakeOutput) {
     const base = result.residentQuality;
@@ -72,8 +82,11 @@ export class ProjectedUvRasterCache {
     const revision = this.revision;
     const copy = await this.copyResolved(result);
     if (this.disposed || revision !== this.revision) return;
-    if (this.resolved) this.bytes -= this.resolved.bytes;
-    this.resolved = undefined;
+    const existing = this.resolved.get(key);
+    if (existing) {
+      this.bytes -= existing[1];
+      this.resolved.delete(key);
+    }
     // Aggregate UV replaces individual rasters within the same hard budget.
     for (const [oldKey, old] of this.entries) {
       if (this.bytes + bytes <= this.budget) break;
@@ -82,7 +95,17 @@ export class ProjectedUvRasterCache {
       old.quality.dispose();
       this.entries.delete(oldKey);
     }
-    this.resolved = { key, result: copy, bytes };
+    // Eye toggles most often alternate between exactly two authored states.
+    // Retain both inside the existing hard byte budget; a third state evicts
+    // the least recently used result before it can increase memory ownership.
+    while (this.resolved.size >= 2 || this.bytes + bytes > this.budget) {
+      const oldest = this.resolved.entries().next().value;
+      if (!oldest) break;
+      this.bytes -= oldest[1][1];
+      this.resolved.delete(oldest[0]);
+    }
+    if (this.bytes + bytes > this.budget) return;
+    this.resolved.set(key, [copy, bytes]);
     this.bytes += bytes;
   }
   private async copyResolved(result: GpuLayerRastersBakeOutput) {
@@ -177,7 +200,7 @@ export class ProjectedUvRasterCache {
       entry.quality.dispose();
     }
     this.entries.clear();
-    this.resolved = undefined;
+    this.resolved.clear();
     this.bytes = 0;
   }
   dispose() {

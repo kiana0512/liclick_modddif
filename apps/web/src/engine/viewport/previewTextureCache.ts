@@ -164,12 +164,15 @@ function getBitmapWorker() {
   return worker;
 }
 
-function decodePreviewBitmapInWorker(imageUrl: string, maxSize?: number) {
-  const id = nextBitmapId++;
+function postPreviewBitmapRequest(
+  id: number,
+  message: object,
+  transfer: Transferable[] = [],
+) {
   return new Promise<{ id: number; width: number; height: number }>((resolve, reject) => {
     const timeoutId = window.setTimeout(() => {
       if (!pendingBitmapMetadata.has(id)) return;
-      resetBitmapWorker(new Error('Preview texture decode timed out.'));
+      resetBitmapWorker(new Error('Preview texture preparation timed out.'));
     }, PREVIEW_BITMAP_DECODE_TIMEOUT_MS);
     pendingBitmapMetadata.set(id, {
       resolve: (value) => {
@@ -181,34 +184,33 @@ function decodePreviewBitmapInWorker(imageUrl: string, maxSize?: number) {
         reject(error);
       },
     });
-    getBitmapWorker().postMessage({
+    getBitmapWorker().postMessage(message, transfer);
+  });
+}
+
+function decodePreviewBitmapInWorker(imageUrl: string, maxSize?: number) {
+  const id = nextBitmapId++;
+  return postPreviewBitmapRequest(id, {
       type: 'decode',
       id,
       url: new URL(imageUrl, window.location.href).href,
       ...(maxSize ? { maxSize } : {}),
-    });
   });
 }
 
 function adoptPreviewBitmapInWorker(bitmap: ImageBitmap) {
   const id = nextBitmapId++;
-  return new Promise<{ id: number; width: number; height: number }>((resolve, reject) => {
-    const timeoutId = window.setTimeout(() => {
-      if (!pendingBitmapMetadata.has(id)) return;
-      resetBitmapWorker(new Error('Preview texture adoption timed out.'));
-    }, PREVIEW_BITMAP_DECODE_TIMEOUT_MS);
-    pendingBitmapMetadata.set(id, {
-      resolve: (value) => {
-        window.clearTimeout(timeoutId);
-        resolve(value);
-      },
-      reject: (error) => {
-        window.clearTimeout(timeoutId);
-        reject(error);
-      },
-    });
-    getBitmapWorker().postMessage({ type: 'adopt', id, bitmap }, [bitmap]);
-  });
+  return postPreviewBitmapRequest(id, { type: 'adopt', id, bitmap }, [bitmap]);
+}
+
+function adoptPreviewMaskInWorker(mask: Uint8Array, width: number, height: number) {
+  const id = nextBitmapId++;
+  const transferredMask = mask.slice();
+  return postPreviewBitmapRequest(
+    id,
+    { type: 'adopt-mask', id, mask: transferredMask.buffer, width, height },
+    [transferredMask.buffer],
+  );
 }
 
 function requestPreviewBitmapStripe(id: number, y: number, height: number) {
@@ -390,8 +392,10 @@ function configurePreviewTexture(texture: THREE.Texture) {
  * later receives bounded upload stripes, avoiding a full 4K crop on the main
  * thread while preserving the exact bitmap pixels.
  */
-export async function createWorkerBackedPreviewTexture(bitmap: ImageBitmap) {
-  const result = await adoptPreviewBitmapInWorker(bitmap);
+async function createWorkerBackedTexture(
+  resultPromise: Promise<{ id: number; width: number; height: number }>,
+) {
+  const result = await resultPromise;
   const texture = new THREE.DataTexture(
     null,
     result.width,
@@ -408,6 +412,22 @@ export async function createWorkerBackedPreviewTexture(bitmap: ImageBitmap) {
   };
   texture.addEventListener('dispose', release);
   return configurePreviewTexture(texture);
+}
+
+export function createWorkerBackedPreviewTexture(bitmap: ImageBitmap) {
+  return createWorkerBackedTexture(adoptPreviewBitmapInWorker(bitmap));
+}
+
+/** UV-DISPLAY-MASK-WORKER/1.0.0. Expand the one-byte rendered-color mask
+ * away from the UI thread. The resident GPU sampler intentionally remains
+ * RGBA so every existing WebGL/shader path keeps the same format and bytes.
+ */
+export function createWorkerBackedMaskPreviewTexture(
+  mask: Uint8Array,
+  width: number,
+  height: number,
+) {
+  return createWorkerBackedTexture(adoptPreviewMaskInWorker(mask, width, height));
 }
 
 function invalidatePreviewTextureAfterUploadFailure(texture: THREE.Texture) {

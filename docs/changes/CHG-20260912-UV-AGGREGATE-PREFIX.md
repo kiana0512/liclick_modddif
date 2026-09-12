@@ -1,5 +1,11 @@
 # CHG-20260912-UV-AGGREGATE-PREFIX
 
+## v1.6.0 图层眼睛双状态 LRU
+
+同一 renderer 和精确几何 scope 下，完成的 RGBA/coverage/rendered-color mask 聚合结果从单状态提升为原 256 MiB 硬预算内最多两个状态的 LRU。图层眼睛在 A/B 两个可见组合间往返时可以复用完整精确结果；第三组合淘汰最久未读状态，预算不足时仍先释放逐层光栅并按 LRU 收缩，绝不突破预算。
+
+内容、层序、UV/index/position/normal、drawRange、模型层级、context loss 或 renderer 变化继续清空所有聚合状态；读取和存储仍做独立字节复制，取消或旧生命周期完成不能复活。GPU/CPU/Worker/shader、Top-K、接缝、补边、完整分辨率、QA、持久化和导出不变，无迁移；回滚将 `resolved` 恢复为单项即可。
+
 - 主模块：M07；协作：M06、M09
 - 调度算法：`PERF-UV-SOURCE-PREPARE-001` v1.5.0
 - 目标：在不改变 UV 像素和质量门禁的前提下，减少普通图层追加时的重复 GPU 聚合。

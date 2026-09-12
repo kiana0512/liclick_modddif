@@ -67,7 +67,6 @@ import {
 } from '@/engine/bake/layerStackCache';
 import { useLayerStore } from '@/stores/layerStore';
 import { useWorkspaceLayoutStore } from '@/components/workspace/workspaceLayoutStore';
-import { translations, useI18nStore } from '@/stores/i18nStore';
 import {
   scheduleCurrentProjectActiveObjectPersistence,
   useProjectStore,
@@ -174,10 +173,6 @@ function getRuntimeProjectionPreviewSize(width: number, height: number) {
     height: Math.max(1, Math.round(safeHeight * scale)),
   };
 }
-function projectionPreviewCopy() {
-  return translations[useI18nStore.getState().language];
-}
-
 function stableNumberListSignature(values?: number[]) {
   if (!values?.length) return '';
   return values.map((value) => (Number.isFinite(value) ? value.toFixed(5) : '0')).join(',');

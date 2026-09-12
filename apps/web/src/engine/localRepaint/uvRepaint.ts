@@ -5,9 +5,10 @@ import {
   type UvRepaintPatch,
 } from './uvRepaintState';
 
-// ALG-LR-UV-PAINT v1.1.3. Shared UV pixels intentionally share color/alpha.
+// ALG-LR-UV-PAINT v1.1.4. Shared UV pixels intentionally share color/alpha.
 type Tile = { bounds: Rect; surfaces: Array<{ mesh: THREE.Mesh; box: THREE.Box3 }> };
 type Stroke = { before: Map<number, Promise<Uint8Array<ArrayBuffer>>>; changed: Set<number> };
+type ProjectedSurfaceBounds = [left: number, top: number, right: number, bottom: number] | true;
 
 const vertex = `
 attribute float repaintFaceId;
@@ -171,6 +172,10 @@ export class UvRepaint {
   private sourceTextures: THREE.Texture[] = [];
   private stroke?: Stroke;
   private visibilityKey = '';
+  private projectedTileBoundsKey = '';
+  private projectedTileBounds = new Map<number, ProjectedSurfaceBounds[]>();
+  private projectedBoundsTransform = new THREE.Matrix4();
+  private projectedBoundsPoint = new THREE.Vector4();
   private disposed = false;
   private outputAlive = true;
   private pending = new Set<Promise<unknown>>();
@@ -501,33 +506,59 @@ export class UvRepaint {
     this.stroke = { before: new Map(), changed: new Set() };
   }
 
-  private intersects(tile: Tile, clip: THREE.Matrix4, rect: Rect, size: THREE.Vector2) {
-    return tile.surfaces.some(({ mesh, box }) => {
-      const transform = new THREE.Matrix4().multiplyMatrices(clip, mesh.matrixWorld);
-      let left = Infinity,
-        top = Infinity,
-        right = -Infinity,
-        bottom = -Infinity;
-      for (let i = 0; i < 8; i++) {
-        const p = new THREE.Vector4(
-          i & 1 ? box.max.x : box.min.x,
-          i & 2 ? box.max.y : box.min.y,
-          i & 4 ? box.max.z : box.min.z,
-          1,
-        ).applyMatrix4(transform);
-        if (p.w <= 0) return true; // conservative near-plane intersection
-        const x = ((p.x / p.w) * 0.5 + 0.5) * size.x,
-          y = (0.5 - (p.y / p.w) * 0.5) * size.y;
-        left = Math.min(left, x);
-        right = Math.max(right, x);
-        top = Math.min(top, y);
-        bottom = Math.max(bottom, y);
+  private refreshProjectedTileBounds(key: string, clip: THREE.Matrix4, size: THREE.Vector2) {
+    if (key === this.projectedTileBoundsKey) return;
+    this.projectedTileBounds.clear();
+    for (const [id, tile] of this.tiles) {
+      const bounds: ProjectedSurfaceBounds[] = [];
+      for (const { mesh, box } of tile.surfaces) {
+        const transform = this.projectedBoundsTransform.multiplyMatrices(clip, mesh.matrixWorld);
+        let left = Infinity,
+          top = Infinity,
+          right = -Infinity,
+          bottom = -Infinity;
+        let crossesNearPlane = false;
+        for (let i = 0; i < 8; i++) {
+          const p = this.projectedBoundsPoint
+            .set(
+              i & 1 ? box.max.x : box.min.x,
+              i & 2 ? box.max.y : box.min.y,
+              i & 4 ? box.max.z : box.min.z,
+              1,
+            )
+            .applyMatrix4(transform);
+          if (p.w <= 0) {
+            crossesNearPlane = true;
+            break;
+          }
+          const x = ((p.x / p.w) * 0.5 + 0.5) * size.x,
+            y = (0.5 - (p.y / p.w) * 0.5) * size.y;
+          left = Math.min(left, x);
+          right = Math.max(right, x);
+          top = Math.min(top, y);
+          bottom = Math.max(bottom, y);
+        }
+        // Preserve the original conservative near-plane rule exactly. A boolean
+        // avoids manufacturing an unbounded rectangle for the common comparison.
+        bounds.push(
+          crossesNearPlane
+            ? true
+            : [left, top, right, bottom],
+        );
       }
+      this.projectedTileBounds.set(id, bounds);
+    }
+    this.projectedTileBoundsKey = key;
+  }
+
+  private intersects(id: number, rect: Rect) {
+    return this.projectedTileBounds.get(id)?.some((bounds) => {
+      if (bounds === true) return true;
       return (
-        right >= rect.x &&
-        left <= rect.x + rect.width &&
-        bottom >= rect.y &&
-        top <= rect.y + rect.height
+        bounds[2] >= rect.x &&
+        bounds[0] <= rect.x + rect.width &&
+        bounds[3] >= rect.y &&
+        bounds[1] <= rect.y + rect.height
       );
     });
   }
@@ -555,8 +586,6 @@ export class UvRepaint {
       width: Math.abs(from.x - to.x) + input.radius * 2,
       height: Math.abs(from.y - to.y) + input.radius * 2,
     };
-    const touched = [...this.tiles].filter(([, tile]) => this.intersects(tile, matrix, rect, size));
-    if (!touched.length) return false;
     const [width, height] = this.visibilitySize();
     const key = [
       width,
@@ -564,6 +593,10 @@ export class UvRepaint {
       ...matrix.elements,
       ...this.meshes.flatMap((mesh) => [...mesh.matrix.elements, Number(mesh.visible)]),
     ].join(',');
+    this.refreshProjectedTileBounds(`${size.x},${size.y}|${key}`, matrix, size);
+    const touched: Array<[number, Tile]> = [];
+    for (const entry of this.tiles) if (this.intersects(entry[0], rect)) touched.push(entry);
+    if (!touched.length) return false;
     isolated(this.renderer, () => {
       if (key !== this.visibilityKey) {
         this.ids.setSize(width, height);
@@ -685,6 +718,7 @@ export class UvRepaint {
       this.meshes.forEach((mesh) => mesh.geometry.dispose());
       this.scene.clear();
       this.tiles.clear();
+      this.projectedTileBounds.clear();
     };
     if (this.pending.size) void Promise.allSettled([...this.pending]).then(release);
     else release();

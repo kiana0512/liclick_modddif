@@ -29,8 +29,6 @@ import {
   SlidersHorizontal,
   TextCursorInput,
   Trash2,
-  Upload,
-  WandSparkles,
 } from 'lucide-react';
 import { cn } from '@/components/common/cn';
 import { fitCameraToImportedModel } from '@/engine/scene/transformActions';
@@ -481,7 +479,6 @@ export function LayersPanel({
   onLayerDoubleClick,
   onLayerImageEdit,
   onLayerImageReplace,
-  onLayerLocalRepaint,
   onMergeSelectedToUvLayer,
   onMergeIntoSelectedBlankUvLayer,
   mutationLocked = false,
@@ -508,7 +505,6 @@ export function LayersPanel({
   );
   const renameLayer = useLayerStore((state) => state.renameLayer);
   const updateLayer = useLayerStore((state) => state.updateLayer);
-  const moveLayer = useLayerStore((state) => state.moveLayer);
   const reorderLayer = useLayerStore((state) => state.reorderLayer);
   const captureHistory = useEditorHistoryStore((state) => state.capture);
   const [menu, setMenu] = useState<MenuState>();
@@ -967,11 +963,6 @@ export function LayersPanel({
       setLastSelectedLayerId(layer.id);
     }
     openLayerMenuAt(layer.id, event.clientX, event.clientY);
-  }
-
-  function beginReplaceLayerImage(layer: Layer) {
-    replaceImageLayerIdRef.current = layer.id;
-    replaceImageInputRef.current?.click();
   }
 
   return (

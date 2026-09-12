@@ -223,6 +223,31 @@ await compactCache.retainResolved('base', resolved);
 assert.equal(compactCache.get('a'), undefined);
 assert(compactCache.get('b'));assert(compactCache.get('c'), 'two 5-byte rasters share the 16-byte budget with a 6-byte base');
 compactCache.dispose();
+// Eye-state A/B results share the existing hard budget and use exact LRU
+// ownership. A third result evicts the least recently read state.
+{
+  const lru = new ProjectedUvRasterCache(13);
+  lru.prepare(renderer, 'eye-state-scope', []);
+  const state = (red) => ({
+    ...resolved,
+    residentQuality: {
+      ...resolved.residentQuality,
+      imageData: new ImageData(new Uint8ClampedArray([red, 2, 3, 255]), 1, 1),
+      coverage: new Uint8Array([1]),
+      renderedColorMask: new Uint8Array([red]),
+    },
+  });
+  await lru.retainResolved('eyes-a', state(11));
+  await lru.retainResolved('eyes-b', state(22));
+  assert.equal((await lru.getResolved('eyes-a')).residentQuality.imageData.data[0], 11);
+  await lru.retainResolved('eyes-c', state(33));
+  assert.equal(await lru.getResolved('eyes-b'), undefined, 'Third eye state evicts the LRU result');
+  assert.equal((await lru.getResolved('eyes-a')).residentQuality.renderedColorMask[0], 11);
+  assert.equal((await lru.getResolved('eyes-c')).residentQuality.imageData.data[0], 33);
+  lru.prepare(renderer, 'changed-eye-scope', []);
+  assert.equal(await lru.getResolved('eyes-a'), undefined, 'Geometry/scope changes invalidate every state');
+  lru.dispose();
+}
 // A context may disappear while the bounded copy yields; the same scope string
 // after restoration is not proof that a result still belongs to this lifetime.
 {
@@ -468,6 +493,75 @@ await presentation.waitForResidentUvPresentation(scene, 'other-object');
   assert.equal(requests.length,3,'unversioned index edits also invalidate');
   exports.terminateWebGpuUvTopologyRasterWorker();
 }
+// The resident display must not expand a 4K one-byte mask into a 64 MiB RGBA
+// allocation on the UI thread. Exercise the actual Worker conversion contract
+// so channel values and orientation remain explicit and byte-exact.
+{
+  const displaySource = fs.readFileSync(
+    new URL('../src/engine/projection/ResidentProjectedUvDisplay.ts', import.meta.url),
+    'utf8',
+  );
+  assert.match(displaySource, /createWorkerBackedMaskPreviewTexture\(\s*mask,/);
+  assert.doesNotMatch(displaySource, /new Uint8ClampedArray\(mask\.length \* 4\)/);
+
+  const workerSource = fs.readFileSync(
+    new URL('../src/workers/previewImageBitmap.worker.ts', import.meta.url),
+    'utf8',
+  );
+  let reply;
+  const created = [];
+  class FixtureImageData {
+    constructor(data, width, height) {
+      Object.assign(this, { data, width, height });
+    }
+  }
+  const worker = {
+    postMessage(message) {
+      reply = message;
+    },
+  };
+  const createFixtureBitmap = async (imageData, options) => {
+    created.push({ imageData, options });
+    return { width: imageData.width, height: imageData.height, close() {} };
+  };
+  new Function(
+    'self',
+    'exports',
+    'createImageBitmap',
+    'ImageData',
+    ts.transpileModule(workerSource, {
+      compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
+    }).outputText,
+  )(worker, {}, createFixtureBitmap, FixtureImageData);
+  const mask = Uint8Array.from([0, 1, 127, 255, 23, 44]);
+  await worker.onmessage({
+    data: { type: 'adopt-mask', id: 17, mask: mask.buffer, width: 3, height: 2 },
+  });
+  assert.deepEqual(reply, { type: 'ready', id: 17, width: 3, height: 2 });
+  assert.equal(created.length, 0, 'Mask adoption retains one byte per pixel without a full RGBA bitmap');
+  await worker.onmessage({
+    data: { type: 'stripe', id: 17, requestId: 31, y: 0, height: 1 },
+  });
+  assert.equal(reply.type, 'stripe');
+  assert.deepEqual(
+    [...created[0].imageData.data],
+    [255, 23, 44].flatMap((value) => [value, 0, 0, 255]),
+    'First upload stripe reads the vertically flipped final mask row',
+  );
+  await worker.onmessage({
+    data: { type: 'stripe', id: 17, requestId: 32, y: 1, height: 1 },
+  });
+  assert.deepEqual(
+    [...created[1].imageData.data],
+    [0, 1, 127].flatMap((value) => [value, 0, 0, 255]),
+    'Every mask byte keeps the exact red channel and opaque alpha contract',
+  );
+  await worker.onmessage({ data: { type: 'release', id: 17 } });
+  await worker.onmessage({
+    data: { type: 'stripe', id: 17, requestId: 33, y: 0, height: 1 },
+  });
+  assert.match(reply.message, /released/);
+}
 console.log(
-  'Resident UV: exact rounding, duplicate candidate reuse, bounded ownership and geometry invalidation passed.',
+  'Resident UV: exact rounding, duplicate candidate reuse, bounded ownership, geometry invalidation and off-thread mask expansion passed.',
 );

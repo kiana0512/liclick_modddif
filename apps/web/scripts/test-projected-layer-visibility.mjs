@@ -65,6 +65,16 @@ const localRepaintDialogSource = readFileSync(
   path.join(root, 'src/components/localRepaint/LocalRepaintDialog.tsx'),
   'utf8',
 );
+assert.match(
+  localRepaintDialogSource,
+  /const penEraserContact =\s*event\.pointerType === 'pen'[\s\S]*?const mouseEraserContact =\s*event\.pointerType === 'mouse' && event\.button === 2;[\s\S]*?strokeToolRef\.current = penEraserContact \|\| mouseEraserContact \? 'erase' : tool;/,
+  'The 2D repaint editor must keep primary paint plus mouse/pressure-pen erasing.',
+);
+assert.match(
+  localRepaintDialogSource,
+  /onContextMenu=\{\(event\) => event\.preventDefault\(\)\}/,
+  'The retired 2D RMB gesture must not reopen the browser context menu.',
+);
 const localRepaintMaskWorkerSource = readFileSync(
   path.join(root, 'src/workers/localRepaintMaskPreparation.worker.ts'),
   'utf8',
@@ -698,13 +708,13 @@ const viewportCanvasSource = readFileSync(
 );
 assert.match(
   viewportCanvasSource,
-  /const localRepaintEraseContact =\s*isLocalRepaintApplyMode &&[\s\S]*?penEraserContact \|\|[\s\S]*?isEditingPersistedLocalRepaint && event\.button === 0/,
-  'Pen erasers and the selected primary eraser gesture must subtract local repaint.',
+  /const rightModelEraseContact =\s*event\.pointerType === 'mouse' && event\.button === 2 && Boolean\(result\);[\s\S]*?const localRepaintEraseContact =\s*isLocalRepaintApplyMode &&[\s\S]*?rightModelEraseContact[\s\S]*?isEditingPersistedLocalRepaint && event\.button === 0/,
+  'RMB model hits, pen erasers and the selected primary eraser gesture must subtract local repaint.',
 );
-assert.doesNotMatch(
-  viewportCanvasSource.match(/const localRepaintEraseContact =[\s\S]*?;\n/)?.[0] ?? '',
-  /event\.button === 2/,
-  'RMB must remain exclusively available for viewport orbit.',
+assert.match(
+  viewportCanvasSource,
+  /const isPaintButton = event\.button === 0 \|\| penEraserContact \|\| rightModelEraseContact;/,
+  'RMB may be consumed by paint only after the model raycast has hit.',
 );
 assert.match(
   viewportCanvasSource,
@@ -878,8 +888,8 @@ assert.match(
 );
 assert.match(
   viewportCanvasSource,
-  /const isPointerContactActive =[\s\S]*?event\.pointerType === 'pen'[\s\S]*?return \(event\.buttons & 1\) !== 0;/,
-  'A selected left-button local repaint eraser stroke must remain active throughout pointer movement.',
+  /const isPointerContactActive =[\s\S]*?event\.pointerType === 'pen'[\s\S]*?return \(event\.buttons & 3\) !== 0;/,
+  'An active left-paint or right-erase local repaint stroke must remain active throughout pointer movement.',
 );
 assert.match(
   viewportCanvasSource,

@@ -118,6 +118,7 @@ import {
 
 import { GPT_TEXTURE_MODELS, GPT_TEXTURE_QUALITIES, resolveGptTextureModel, resolveGptTextureQuality, getGptTextureRequestParameters } from '@/engine/generation/gptTextureModels';
 import { prepareCloudRepaintCompletion } from '@/engine/localRepaint/cloudCompletion';
+import { prepareRepaintResult } from '@/engine/localRepaint/resultAlphaPolicy';
 import { buildGptLocalRepaintRequest } from '@/services/gptLocalRepaintRequest';
 
 type GenerateTab = 'multiview' | 'repaint';
@@ -331,6 +332,13 @@ function isVerboseProjectionWaitNotice(message: string) {
     message.includes('本组回贴后再生成下一组') ||
     message.includes('等待回贴与合成渲染完成')
   );
+}
+
+function compactTextureProgressButtonLabel(label: string) {
+  const pair = label.match(/第 \d+\/\d+ 组$/);
+  return pair && /^(?:提交纹理任务|准备多视图快照|结果已保存)/.test(label)
+    ? pair[0]
+    : label;
 }
 const defaultImageGenerationSettings = {
   textureGptModel: 'gpt-image-2.5-sunburst',
@@ -4232,8 +4240,6 @@ export function GeneratePanel({
       }
       if (isCancelledGeneration(pendingGeneration)) return false;
       if (!generation.resultUrl) throw new Error('局部重绘没有返回图片。');
-      const { prepareRepaintResult } =
-        await import('@/engine/localRepaint/resultAlphaPolicy');
       const preparedResult = await prepareRepaintResult(
         generation.resultUrl, capture.depthUrl, isGptLocalRepaint, requestAbortController.signal,
       );
@@ -5410,7 +5416,7 @@ export function GeneratePanel({
       >
         <span className="relative z-10">
           {textureActionProgress
-            ? `${textureActionProgress.label} · ${Math.round(textureActionProgress.progress)}%`
+            ? `${compactTextureProgressButtonLabel(textureActionProgress.label)} · ${Math.round(textureActionProgress.progress)}%`
             : generateActionRunning
               ? t('generating')
               : tab === 'multiview'

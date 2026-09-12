@@ -98,11 +98,22 @@ const panel = process.argv.includes('--baseline')
   : await read('components/panels/GeneratePanel.tsx');
 const ast = ts.createSourceFile('panel.tsx', panel, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
 const declarations = [];
+let compactProgressLabelDeclaration;
 function visit(node) {
   if (ts.isFunctionDeclaration(node) && ['handleGptPairedMultiviewGenerate', 'handleTextureMapMultiviewGenerate'].includes(node.name?.text)) declarations.push(node.getText(ast));
+  if (ts.isFunctionDeclaration(node) && node.name?.text === 'compactTextureProgressButtonLabel') compactProgressLabelDeclaration = node.getText(ast);
   ts.forEachChild(node, visit);
 }
-visit(ast); assert.equal(declarations.length, 2);
+visit(ast); assert.equal(declarations.length, 2); assert(compactProgressLabelDeclaration);
+const compactProgressLabel = new Function(
+  `${compile(compactProgressLabelDeclaration)}; return compactTextureProgressButtonLabel;`,
+)();
+assert.equal(compactProgressLabel('提交纹理任务 · 第 2/7 组'), '第 2/7 组');
+assert.equal(
+  compactProgressLabel('结果已保存 · 等待视口渲染恢复 · 第 2/7 组'),
+  '第 2/7 组',
+);
+assert.equal(compactProgressLabel('生成纹理贴图 · 第 2/7 组'), '生成纹理贴图 · 第 2/7 组');
 async function fixture(failedView, fullyCovered = false) {
   let sequence = 0, rows = [], frozen = false, repairCount = 0, whitePresentation = false;
   const jobs = new Map(), requests = [], captures = [], saved = [];

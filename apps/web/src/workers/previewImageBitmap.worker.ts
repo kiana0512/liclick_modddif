@@ -3,6 +3,7 @@ export {};
 type Request =
   | { type: 'decode'; id: number; url: string; maxSize?: number }
   | { type: 'adopt'; id: number; bitmap: ImageBitmap }
+  | { type: 'adopt-mask'; id: number; mask: ArrayBuffer; width: number; height: number }
   | { type: 'stripe'; id: number; requestId: number; y: number; height: number }
   | { type: 'release'; id: number };
 type Response =
@@ -10,7 +11,8 @@ type Response =
   | { type: 'stripe'; requestId: number; bitmap: ImageBitmap }
   | { type: 'error'; id?: number; requestId?: number; message: string };
 
-const bitmaps = new Map<number, ImageBitmap>();
+type MaskSource = { data: Uint8Array; width: number; height: number };
+const sources = new Map<number, ImageBitmap | MaskSource>();
 const scope = self as unknown as {
   onmessage: ((event: MessageEvent<Request>) => void) | null;
   postMessage(message: Response, transfer?: Transferable[]): void;
@@ -20,11 +22,22 @@ function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error);
 }
 
+function replaceSource(id: number, source: ImageBitmap | MaskSource) {
+  const previous = sources.get(id);
+  if (previous && !('data' in previous)) previous.close();
+  sources.set(id, source);
+}
+
+function postReady(id: number, source: ImageBitmap | MaskSource) {
+  scope.postMessage({ type: 'ready', id, width: source.width, height: source.height });
+}
+
 scope.onmessage = (event) => {
   const request = event.data;
   if (request.type === 'release') {
-    bitmaps.get(request.id)?.close();
-    bitmaps.delete(request.id);
+    const source = sources.get(request.id);
+    if (source && !('data' in source)) source.close();
+    sources.delete(request.id);
     return;
   }
   void (async () => {
@@ -49,33 +62,51 @@ scope.onmessage = (event) => {
               })
             : sourceBitmap;
         if (bitmap !== sourceBitmap) sourceBitmap.close();
-        bitmaps.get(request.id)?.close();
-        bitmaps.set(request.id, bitmap);
-        scope.postMessage({
-          type: 'ready',
-          id: request.id,
-          width: bitmap.width,
-          height: bitmap.height,
-        });
+        replaceSource(request.id, bitmap);
+        postReady(request.id, bitmap);
         return;
       }
       if (request.type === 'adopt') {
-        bitmaps.get(request.id)?.close();
-        bitmaps.set(request.id, request.bitmap);
-        scope.postMessage({
-          type: 'ready',
-          id: request.id,
-          width: request.bitmap.width,
-          height: request.bitmap.height,
-        });
+        replaceSource(request.id, request.bitmap);
+        postReady(request.id, request.bitmap);
         return;
       }
-      const source = bitmaps.get(request.id);
-      if (!source) throw new Error('Decoded preview texture is no longer resident.');
-      const rowCount = Math.max(1, Math.min(request.height, source.height - request.y));
-      const stripe = await createImageBitmap(source, 0, request.y, source.width, rowCount, {
-        premultiplyAlpha: 'none',
-      });
+      if (request.type === 'adopt-mask') {
+        const mask = new Uint8Array(request.mask);
+        if (request.width * request.height !== mask.length) {
+          throw new RangeError('Invalid preview mask dimensions.');
+        }
+        const source = { data: mask, width: request.width, height: request.height };
+        replaceSource(request.id, source);
+        postReady(request.id, source);
+        return;
+      }
+      const source = sources.get(request.id);
+      if (!source) throw new Error('Preview texture released.');
+      const sourceWidth = source.width;
+      const sourceHeight = source.height;
+      const rowCount = Math.max(1, Math.min(request.height, sourceHeight - request.y));
+      let stripe: ImageBitmap;
+      if ('data' in source) {
+        const rgba = new Uint8ClampedArray(sourceWidth * rowCount * 4);
+        for (let row = 0; row < rowCount; row++) {
+          const sourceRow = sourceHeight - 1 - request.y - row;
+          const sourceOffset = sourceRow * sourceWidth;
+          const destinationOffset = row * sourceWidth;
+          for (let column = 0; column < sourceWidth; column++) {
+            const destination = (destinationOffset + column) * 4;
+            rgba[destination] = source.data[sourceOffset + column];
+            rgba[destination + 3] = 255;
+          }
+        }
+        stripe = await createImageBitmap(new ImageData(rgba, sourceWidth, rowCount), {
+          premultiplyAlpha: 'none',
+        });
+      } else {
+        stripe = await createImageBitmap(source, 0, request.y, sourceWidth, rowCount, {
+          premultiplyAlpha: 'none',
+        });
+      }
       scope.postMessage({ type: 'stripe', requestId: request.requestId, bitmap: stripe }, [stripe]);
     } catch (error) {
       scope.postMessage({

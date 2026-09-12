@@ -321,7 +321,6 @@ const INPAINT_BRUSH_MAX_WORLD_RADIUS_RATIO = 0.12;
 const INPAINT_BRUSH_MIN_TEXTURE_RADIUS = 1;
 const INPAINT_BRUSH_MAX_TEXTURE_RADIUS = 72;
 const LOCAL_REPAINT_PROJECTION_LAYER_ID_PREFIX = 'local-repaint-projection';
-const LEGACY_LOCAL_REPAINT_PROJECTION_LAYER_ID_PREFIX = 'local-repaint-brush-projection';
 const LOCAL_REPAINT_UV_MERGE_LAYER_ID_PREFIX = 'local-repaint-uv-merge';
 const LOCAL_REPAINT_UV_MERGE_LAYER_NAME = '局部重绘合并层';
 
@@ -6865,6 +6864,7 @@ function SurfacePaintOverlay() {
   const lastPointerClientRef = useRef<ClientPoint>();
   const pendingPaintTargetsRef = useRef<ClientPoint[]>([]);
   const strokeCanvasRectRef = useRef<DOMRect>();
+  const strokeCursorOverlayRectRef = useRef<DOMRect>();
   const paintInputFrameRef = useRef<number>();
   const activePointerIdRef = useRef<number>();
   const pointerCancelRecoveryTimerRef = useRef<number>();
@@ -9528,12 +9528,15 @@ function SurfacePaintOverlay() {
   useEffect(() => {
     localRepaintProjectedPublishDisposedRef.current = false;
     const nativeOwnersMap = nativeUvOwnersRef.current;
+    const dirtyTextures = dirtyTexturesRef.current;
+    const projectedPublishRequests = localRepaintProjectedPublishRequestsRef.current;
+    const projectedPublishRevisions = localRepaintProjectedPublishRevisionsRef.current;
     return () => {
       localRepaintProjectedPublishDisposedRef.current = true;
       if (textureUpdateFrameRef.current !== undefined)
         window.cancelAnimationFrame(textureUpdateFrameRef.current);
       textureUpdateFrameRef.current = undefined;
-      dirtyTexturesRef.current.clear();
+      dirtyTextures.clear();
       if (projectionTextureUpdateTimerRef.current !== undefined)
         window.clearTimeout(projectionTextureUpdateTimerRef.current);
       projectionTextureUpdateTimerRef.current = undefined;
@@ -9548,8 +9551,8 @@ function SurfacePaintOverlay() {
         window.cancelAnimationFrame(localRepaintUvScheduleFrameRef.current);
       localRepaintUvScheduleFrameRef.current = undefined;
       localRepaintUvCommitRevisionRef.current += 1;
-      localRepaintProjectedPublishRequestsRef.current.clear();
-      localRepaintProjectedPublishRevisionsRef.current.clear();
+      projectedPublishRequests.clear();
+      projectedPublishRevisions.clear();
       const nativeOwners = [...nativeOwnersMap];
       nativeOwnersMap.clear();
       localRepaintCompositeRef.current = undefined;
@@ -9883,6 +9886,7 @@ function SurfacePaintOverlay() {
     invalidate,
     localRepaintGpuPrepareRevision,
     localRepaintProjectionSource,
+    promoteLocalRepaintResidentMaskTexture,
     selectedObjectId,
   ]);
 
@@ -10294,16 +10298,21 @@ function SurfacePaintOverlay() {
   }, [isInpaintMode, isLocalRepaintApplyMode, paintTool, paintToolSettings.color]);
 
   const updateCursorFromHit = useCallback(
-    (result: UvPaintHit | undefined) => {
+    (result: UvPaintHit | undefined, cachedCanvasRect?: DOMRect, cachedOverlayRect?: DOMRect) => {
       const cursor = cursorCircleRef.current;
       if (!cursor) return result;
       if (!result) {
         cursor.setAttribute('visibility', 'hidden');
-        gl.domElement.style.cursor = enabled ? 'default' : '';
+        const nextCursor = enabled ? 'default' : '';
+        if (gl.domElement.style.cursor !== nextCursor) gl.domElement.style.cursor = nextCursor;
         return undefined;
       }
-      const canvasRect = gl.domElement.getBoundingClientRect();
-      const overlayRect = cursorOverlayRef.current?.getBoundingClientRect() ?? canvasRect;
+      // Pointer capture freezes the geometry snapshot for the stroke. Re-reading
+      // both boxes after the raycast forced layout on every accepted frame and
+      // amplified hit/miss cost changes at the model silhouette.
+      const canvasRect = cachedCanvasRect ?? gl.domElement.getBoundingClientRect();
+      const overlayRect =
+        cachedOverlayRect ?? cursorOverlayRef.current?.getBoundingClientRect() ?? canvasRect;
       const centerX = canvasRect.left - overlayRect.left + result.screenUv.x * canvasRect.width;
       const centerY = canvasRect.top - overlayRect.top + result.screenUv.y * canvasRect.height;
       const axisX = result.screenBrush.axisX;
@@ -10314,7 +10323,7 @@ function SurfacePaintOverlay() {
       );
       cursor.setAttribute('stroke', getCursorColor());
       cursor.setAttribute('visibility', 'visible');
-      gl.domElement.style.cursor = 'none';
+      if (gl.domElement.style.cursor !== 'none') gl.domElement.style.cursor = 'none';
       return result;
     },
     [enabled, getCursorColor, gl.domElement],
@@ -14736,7 +14745,11 @@ function SurfacePaintOverlay() {
       const isEraserBatch = batchTool === 'eraser' || batchTool === 'inpaint-apply-erase';
       lastPaintActivityAtRef.current = paintStartedAt;
       const latestResult = paintClientPath(targets);
-      if (latestResult) updateCursorFromHit(latestResult);
+      updateCursorFromHit(
+        latestResult,
+        strokeCanvasRectRef.current,
+        strokeCursorOverlayRectRef.current,
+      );
       const batchDurationMs = performance.now() - paintStartedAt;
       recordSurfacePaintPerf(batchDurationMs);
       if (isEraserBatch) {
@@ -14768,7 +14781,7 @@ function SurfacePaintOverlay() {
     };
     const isPointerContactActive = (event: globalThis.PointerEvent) => {
       if (event.pointerType === 'pen') return event.pressure > 0 || event.buttons !== 0;
-      return (event.buttons & 1) !== 0;
+      return (event.buttons & 3) !== 0;
     };
     const finishPaintStroke = (
       event: globalThis.PointerEvent | undefined,
@@ -14837,6 +14850,7 @@ function SurfacePaintOverlay() {
       lastSampleRef.current = undefined;
       lastPointerClientRef.current = undefined;
       strokeCanvasRectRef.current = undefined;
+      strokeCursorOverlayRectRef.current = undefined;
       strokePaintToolRef.current = undefined;
       setOrbitControlsEnabled(true);
       commitPaintStroke();
@@ -14942,14 +14956,20 @@ function SurfacePaintOverlay() {
         event.pointerType === 'pen' &&
         (event.button === 2 || event.button === 5) &&
         event.pressure > 0;
+      const strokeCanvasRect = canvas.getBoundingClientRect();
+      const result = raycastModel(event, strokeCanvasRect);
+      // ALG-VIEW-INPUT-001 v1.2.0: an RMB drag that begins on paintable model
+      // geometry is the explicit erase gesture. An RMB drag that begins on
+      // the background is not consumed here and reaches orbit controls.
+      const rightModelEraseContact =
+        event.pointerType === 'mouse' && event.button === 2 && Boolean(result);
       const localRepaintEraseContact =
         isLocalRepaintApplyMode &&
         (penEraserContact ||
+          rightModelEraseContact ||
           (isEditingPersistedLocalRepaint && event.button === 0) ||
           (isEditingNativeRepaint && event.button === 0));
-      const isPaintButton = event.button === 0 || penEraserContact;
-      const strokeCanvasRect = canvas.getBoundingClientRect();
-      const result = raycastModel(event, strokeCanvasRect);
+      const isPaintButton = event.button === 0 || penEraserContact || rightModelEraseContact;
 
       // Navigation buttons must reach the camera controls even when the drag
       // starts on the model. Only the primary/pen-eraser paint gesture belongs
@@ -15080,6 +15100,8 @@ function SurfacePaintOverlay() {
       }
       isPaintingRef.current = true;
       strokeCanvasRectRef.current = strokeCanvasRect;
+      strokeCursorOverlayRectRef.current =
+        cursorOverlayRef.current?.getBoundingClientRect() ?? strokeCanvasRect;
       paintHistoryBoundary.track(
         new Promise<void>((resolve) => {
           finishHistoryGestureRef.current = resolve;
@@ -15097,8 +15119,10 @@ function SurfacePaintOverlay() {
       const pressure = getPointerPressure(event);
       const strokePaintTool: SurfaceStrokePaintTool = localRepaintEraseContact
         ? 'inpaint-apply-erase'
-        : penEraserContact && (paintTool === 'brush' || paintTool === 'eraser')
-          ? 'eraser'
+        : penEraserContact || rightModelEraseContact
+          ? isInpaintMode
+            ? 'inpaint-subtract'
+            : 'eraser'
           : paintTool;
       strokePaintToolRef.current = strokePaintTool;
       if (strokePaintTool === 'eraser' || strokePaintTool === 'inpaint-apply-erase') {
@@ -15185,6 +15209,7 @@ function SurfacePaintOverlay() {
         if (isPaintingRef.current) flushPendingPaintTargets();
         pendingPaintTargetsRef.current = [];
         strokeCanvasRectRef.current = undefined;
+        strokeCursorOverlayRectRef.current = undefined;
         cancelPendingHoverCursor();
         if (paintInputFrameRef.current !== undefined) {
           window.cancelAnimationFrame(paintInputFrameRef.current);

@@ -1,6 +1,6 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
-> 文档版本：`2.20.50`
+> 文档版本：`2.20.61`
 >
 > 生效日期：`2026-09-12`
 >
@@ -12,6 +12,8 @@
 
 ## 1. 文档地位与强制边界
 
+2026-09-12 M15，协作 M04/M07/M08：`WEB-BUNDLE-BUDGET/1.0.0` / `SHADER-TEMPLATE-FORMAT/1.2.0` 修复本次功能分支 rebase 后正式 Web 总 JavaScript 从 `3,223,880` 字节超过 `3,222,000` 门禁的问题。Preview Bitmap 请求/纹理发布与 Worker resident source 去重，局部重绘结果移除无效动态导入，缓存热路径使用等价紧凑结构；构建期 GLSL 去缩进显式扩展到 7 个实际生产 shader 模块，AST 逐 token 验证且拒绝普通 UI 模板。最终 release 环境正式产物 `3,221,157` 字节，保留 `843` 字节余量；预算、分辨率、QA、像素、Schema、持久化及导出语义不变，无迁移。详见 [Web 包体门禁变更卡](changes/CHG-20260912-WEB-BUNDLE-BUDGET.md)。
+
 2026-09-12 M15，协作 M06/M07：`SHADER-TEMPLATE-FORMAT/1.1.0` 将已有生产构建模板去缩进扩展至实际打包的 gpuUvBakeRenderer 的 GLSL 常量，仅删除换行后的缩进，保留 GLSL token、预处理行、插值间隔和像素算法。合并 GPT 参数与后台生命周期优化后总包超出预算 1651 字节；该文件可去除 2344 字节源码空白，不提高预算、不降低分辨率或 QA，最终产物仍需通过正式预算检查。新增实际模块逐 token 等价与仅 Shader 变量受影响断言；无持久化迁移，回滚可移除新增文件白名单。未采用对非打包 PreviewCompositor 的格式化，因为不减少生产产物。
 
 2026-09-12 M04：`GPT25-TEXTURE-GENERATION/1.1.0` 将单/多视图和 GPT 局部重绘输出统一为 1:1 方图，分辨率绑定顶部 1K/2K/4K；新增项目级五档质量 low/medium/high/xhigh/max，默认 high，两种 GPT 模型均可切换。透明背景固定，原远端局部重绘不变。协作 M08/M12，详见 [变更卡](changes/CHG-20260912-GPT-OPTIONS.md)。
@@ -19,6 +21,24 @@
 2026-09-12 M04/M06：`GPT-TRANSPARENT-TEXTURE/1.0.0` 接通 GPT2/Sunburst/Flare 纹理及 GPT 局部任务 background=transparent；通过持久化 extraParams.background 选择源 Alpha 分支，不根据模型名迁移旧任务。新单/多视图保留源 RGBA 和完整画布，跳过重复抠图；capture mask、深度、角度及笔刷约束保留。规范图层恢复尊重显式 ignoreSourceAlpha=false，旧无标记流程不变。协作 M07/M08/M12，详见 [变更卡](changes/CHG-20260912-GPT-TRANSPARENT.md)。
 
 2026-09-12 M04/M08：`GPT25-TEXTURE-GENERATION/1.0.0` 接入莉刻 Sunburst/Flare 并保留两视角并发、分组串行；`GPT-REPAINT-GUIDE/1.0.0` 新增独立 GPT 局部重绘入口，只有无纹理处与笔刷选区使用白模，其余纹理保留。GPT 仅接收组合图和材质参考，原始 UV 选区仍是唯一回贴授权。使用现有单视图提示词、原局部重绘保持不变。`GPT-REPAINT-ALPHA/1.0.0` 按用户确认让新 GPT 局部返图跳过 ALG-LR-013 内缩/强制不透明，前台与恢复原样保留源 RGBA；原远端 ModelView/Klein 保留内缩。协作 M06/M07/M12：回贴显式使用源 alpha，原笔刷/深度约束、合并与导出透传逻辑不变；既有已裁任务不重算。详见 [变更卡](changes/CHG-20260912-GPT25-REPAINT.md)。
+
+2026-09-12 UI-06 → M03/M08：`ALG-VIEW-INPUT-001` v1.2.1 在一次活动笔画内复用 pointer-down 冻结的 canvas/光标 overlay 几何，命中帧不再在 BVH 射线后重复执行两次 DOM 布局读取；未命中帧立即隐藏画笔光标，并避免重复写入相同 CSS cursor。模型边缘的命中判定、每显示帧一次射线、笔画断开规则、右键模型擦除/背景旋转及所有画笔像素不变。GPU/CPU/Worker/shader、分辨率、QA、持久化和导出不变，无迁移。专项表面输入、投影层、鼠标按钮及 TypeScript 回归通过；详见 [鼠标输入变更卡](changes/CHG-20260912-VIEWPORT-MOUSE-BUTTONS.md)。
+
+2026-09-12 M08：`ALG-LR-UV-PAINT` v1.1.4 将 UV 画笔瓦片的精确屏幕包围盒绑定到相机、视口、模型矩阵和可见性签名；同一静止视角连续绘制时复用结果，只做矩形相交，不再为每个命中帧重复投影全部瓦片表面及创建临时矩阵/向量。相机、视口、模型或可见性变化立即完整重算；近裁剪面保守命中、GPU 可见性/遮挡、共享 UV、羽化、擦除、像素和瓦片历史不变。CPU/Worker/shader、完整分辨率、QA、持久化及导出协议不变，无迁移。真实 Edge/WebGL 的 DPR、曲面、透视、旋转、遮挡、撤销/重做/擦除逐像素回归通过；4K 32 万面合成夹具 CPU 提交中位样本约 0.9→0.5ms，最大值受 GPU/调度噪声影响，不作为原工程 FPS 承诺。详见 [UV 笔刷变更卡](changes/CHG-20260911-UV-BRUSH-RASTER-BATCH.md)。
+
+2026-09-12 UI-06 → M03/M08：`ALG-VIEW-INPUT-001` v1.2.0 明确右键的命中优先级：三维视口从可绘制模型上起笔时由蒙版、普通画笔、局部重绘或橡皮路径独占并执行擦除；从背景起笔时不消费事件，交给轨道旋转，避免同一手势同时擦除和转相机。独立局部重绘二维画布无三维轨道，保留左键绘制、右键擦除；压感笔尾擦继续保留。画笔/橡皮像素、相机数学、GPU/CPU/Worker/shader、分辨率、QA、持久化及导出不变，无迁移。详见 [鼠标输入变更卡](changes/CHG-20260912-VIEWPORT-MOUSE-BUTTONS.md)。
+
+2026-09-12 UI-06/M08：`LOCAL-REPAINT-GPU-OWNER-LIFECYCLE` v1.1.0 在视口 effect 建立时固定捕获本生命周期的 dirty texture、发布请求与 revision 容器，卸载时只清理该批 owner；补齐 resident mask 提升回调依赖，避免闭包跨生命周期读取新 ref。同步删除 7 处明确未使用的导入、变量和帮助函数，lint 警告由 14 降至 2。局部重绘像素、生成、投影、UV、分辨率、持久化与导出不变，无迁移。详见 [视口 owner 清理变更卡](changes/CHG-20260912-VIEWPORT-CLEANUP-OWNERS.md)。
+
+2026-09-12 M07，协作 M06/M09：`UV-SEAM-REPAIR-PLAN` v1.4.0 将 4K 接缝冷计划最内层采样由短生命周期坐标对象改为等价标量计算；完整浮点插值、floor 包含 texel、边界钳制、重复地址、donor/写入顺序和 coverage 更新均不变。冻结旧核 500 组修补、40 组变换网格、重复/非流形与冷/热缓存逐字节回归通过；不降低分辨率、不跳过接缝或 QA。无 Schema、资产、持久缓存或导出迁移。详见 [接缝标量热路径变更卡](changes/CHG-20260912-UV-SEAM-SCALAR-HOTPATH.md)。
+
+2026-09-12 UI-05 → M04：多视图底部主按钮在“提交任务 / 等待本组回贴显示 / 等待视口渲染恢复”阶段只显示 `第 n/m 组 · xx%`，避免窄栏内长文案换行；左侧普通状态、错误、其他进度标题以及严格回贴/Resident UV 屏障保持不变。无算法、Schema、资产或迁移变更。详见 [渲染衔接变更卡](changes/CHG-20260912-GENERATION-RENDER-LIFECYCLE.md)。
+
+2026-09-12 M07，协作 UI-06/M06/M09：`PERF-UV-SOURCE-PREPARE-001` v1.6.0 将同一 renderer/几何 scope 下的精确 UV 聚合结果由单状态改为硬预算内最多两个状态的 LRU，覆盖图层眼睛最常见的 A/B 开关往返；第三状态、预算不足、内容/顺序/几何/context 变化按原规则淘汰或全部失效。缓存存储与读取仍复制完整 RGBA/coverage/rendered-color mask，不降低分辨率或跳过 QA。详见 [UV 聚合前缀变更卡](changes/CHG-20260912-UV-AGGREGATE-PREFIX.md)。
+
+2026-09-12 UI-10 → M08：`LOCAL-REPAINT-BRUSH-DEFAULT` v1.0.0 将局部重绘的视口蒙版画笔和独立画布画笔初始大小统一为 15；只影响新建运行时/对话框的初始设置，用户随后调整仍按原范围与压感公式生效。画笔像素公式、羽化、GPU/CPU/Worker、分辨率、保存、历史和导出不变，无 Schema 或资产迁移。详见 [局部重绘画笔默认值变更卡](changes/CHG-20260912-LOCAL-REPAINT-BRUSH-DEFAULT.md)。
+
+2026-09-12 M07，协作 M06/M09：`UV-DISPLAY-MASK-WORKER` v1.1.0 将常驻 UV 的单通道 rendered-color mask 保存在既有 Preview Bitmap Worker，并仅按当前 GPU 上传条带即时展开 RGBA。UI 线程不再执行 4K 的 16,777,216 次 JS 像素循环或持有约 64 MiB RGBA 临时数组，Worker 也不再创建整张 RGBA 位图；GPU 仍使用原 RGBA texture 和分条上传，红通道、opaque alpha、Y 翻转、shader、完整分辨率、QA、持久化与导出字节语义不变。详见 [常驻 UV 蒙版 Worker 变更卡](changes/CHG-20260912-UV-DISPLAY-MASK-WORKER.md)。
 
 2026-09-12 UI-05 → M03/M04：仅隐藏左侧“本组回贴后再生成下一组 / 等待回贴与合成渲染完成”长文本状态卡，其他普通状态、警告和错误正常显示。此变更仅影响 UI 呈现，不删除回贴/Resident UV/下一组屏障，不改写生图成功或失败判定，无 Schema、资产或迁移变更。详见 [渲染衔接变更卡](changes/CHG-20260912-GENERATION-RENDER-LIFECYCLE.md)。
 
@@ -999,6 +1019,11 @@ M15 / CLOUD-DEPLOYMENT v1.0.0（2026-09-03）：正常合并 release 部署历�
 
 | 版本 | 日期 | 基线 | 变更 |
 | --- | --- | --- | --- |
+| `2.20.53` | 2026-09-12 | `本地待提交` | 仅收短多视图主按钮的提交/回贴等待长标题为组数与百分比；普通文本、错误和内部屏障不变。见 CHG-20260912-GENERATION-RENDER-LIFECYCLE |
+| `2.20.52` | 2026-09-12 | `本地待提交` | 精确 UV 聚合结果在原硬内存预算内保留最多两个 LRU 状态，减少图层眼睛 A/B 往返的重复 GPU 合成与读回；第三状态及所有失效边界保持严格。见 CHG-20260912-UV-AGGREGATE-PREFIX |
+| `2.20.51` | 2026-09-12 | `本地待提交` | 局部重绘视口蒙版画笔与独立画布画笔默认大小统一为 15，用户调整范围、压感、羽化、保存与输出公式不变。见 CHG-20260912-LOCAL-REPAINT-BRUSH-DEFAULT |
+| `2.20.50` | 2026-09-12 | `本地待提交` | Preview Bitmap Worker 仅按 GPU 上传条带展开 rendered-color mask，不再持有整张约 64 MiB RGBA 临时位图；逐条带 Y 翻转和像素格式保持。见 CHG-20260912-UV-DISPLAY-MASK-WORKER |
+| `2.20.49` | 2026-09-12 | `本地待提交` | 常驻 UV rendered-color mask 的 RGBA 展开和位图创建迁入 Preview Bitmap Worker，移除 UI 主线程 4K 像素循环与约 64 MiB 临时 RGBA 数组；GPU/shader/像素和分条上传格式不变。见 CHG-20260912-UV-DISPLAY-MASK-WORKER |
 | `2.20.44` | 2026-09-12 | `本地待提交` | 投影数组预编译、GPU fence、UV 合成和 Runtime visibility 的裸 rAF 等待改为后台安全调度；hidden 时不再被前台交互保护锁阻塞。见 CHG-20260912-GENERATION-RENDER-LIFECYCLE |
 | `2.20.43` | 2026-09-12 | `本地待提交` | 修正贴图路由仍 active 但浏览器标签页 hidden 时未启用 WebGL/R3F 帧 lease 的漏判；前台无额外帧开销。见 CHG-20260912-GENERATION-RENDER-LIFECYCLE |
 | `2.20.42` | 2026-09-12 | `本地待提交` | 自动投影恢复告警按任务和原因只提示一次，后台恢复轮询保持运行，成功后清理提示状态。见 CHG-20260912-AUTO-PROJECTION-NOTICE |

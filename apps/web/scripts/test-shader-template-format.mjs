@@ -74,4 +74,35 @@ function verifyShaderOnly(node) {
   ts.forEachChild(node, verifyShaderOnly);
 }
 verifyShaderOnly(compositorAst);
-stdout.write(`Shader formatting preserves actual module tokens and GLSL line boundaries; removes ${saved} source bytes.\n`);
+const additionalShaderFiles = [
+  '../src/engine/bake/residentQualityComposite.ts',
+  '../src/engine/projection/createRuntimeProjectionDepth.ts',
+  '../src/engine/capture/captureDepth.ts',
+  '../src/engine/capture/captureNormal.ts',
+  '../src/engine/localRepaint/uvRepaint.ts',
+  '../src/engine/localRepaint/consumeSelectionMask.ts',
+  '../src/engine/export/comfyControlInputExporter.ts',
+];
+let additionalSaved = 0;
+for (const relativeFile of additionalShaderFiles) {
+  const file = new URL(relativeFile, import.meta.url);
+  const before = fs.readFileSync(file, 'utf8');
+  const result = compact(before);
+  assert.deepEqual(tokens(result), tokens(before));
+  assert.equal(plugin.transform(before, file.pathname).code, result);
+  additionalSaved += Buffer.byteLength(before) - Buffer.byteLength(result);
+  const ast = ts.createSourceFile('shader.ts', before, ts.ScriptTarget.Latest, true);
+  const verifyTemplate = node => {
+    if (templates.has(node.kind) && /(\r?\n)[\t ]+/.test(node.getText(ast))) {
+      assert.match(node.getText(ast), /(?:void main|#include|uniform|varying|precision|gl_)/);
+    }
+    ts.forEachChild(node, verifyTemplate);
+  };
+  verifyTemplate(ast);
+}
+assert.ok(additionalSaved >= 1500, `Expected bundle headroom savings, got ${additionalSaved}`);
+assert.equal(
+  plugin.transform(compositorSource, new URL('../src/engine/projection/ProjectedLayerPreviewCompositor.ts', import.meta.url).pathname),
+  undefined,
+);
+stdout.write(`Shader formatting preserves actual module tokens and GLSL line boundaries; removes ${saved + additionalSaved} source bytes.\n`);

@@ -137,6 +137,16 @@ try {
   );
   assert.match(
     viewportSource,
+    /updateCursorFromHit\(\s*latestResult,\s*strokeCanvasRectRef\.current,\s*strokeCursorOverlayRectRef\.current,\s*\);/,
+    'Active paint cursor updates must reuse both frozen layout rectangles and handle misses.',
+  );
+  assert.match(
+    viewportSource,
+    /strokeCursorOverlayRectRef\.current\s*=\s*cursorOverlayRef\.current\?\.getBoundingClientRect\(\) \?\? strokeCanvasRect;/,
+    'The cursor overlay rectangle must be captured once when the stroke is accepted.',
+  );
+  assert.match(
+    viewportSource,
     /previousLayer\.objectId !== model\.objectId \|\|[\s\S]*?previousLayer\.layerId !== activePaintLayerId[\s\S]*?previousLayer\.pendingPaintCommits > 0 \|\|[\s\S]*?previousLayer\.liveEraserPreviewActive \|\|[\s\S]*?previousLayer\.projectedEraserResidentHandoffPromise[\s\S]*?await handoffPromise;[\s\S]*?endLiveEraserPreview\(previousLayer\);[\s\S]*?await previousLayer\.projectedEraserResidentHandoffPromise;[\s\S]*?const layer = getUvPaintLayer\(model\);/,
     'Layer or model selection must wait for both the queued pixel commit and the resident material handoff before reusing the single live eraser sampler.',
   );
