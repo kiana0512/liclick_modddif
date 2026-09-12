@@ -2019,13 +2019,16 @@ export function EditorPage({
       });
   };
 
+  const autosaveProjectId = project?.id;
+  const autosaveProjectDirty = project?.dirty;
+  const autosaveWorkspaceMode = project?.workspaceMode;
   useEffect(() => {
     const coordinator = autosaveCoordinatorRef.current;
     if (
-      project &&
-      project.workspaceMode === 'local-server' &&
-      project.dirty &&
-      serverReadyProjectId === project.id
+      autosaveProjectId &&
+      autosaveWorkspaceMode === 'local-server' &&
+      autosaveProjectDirty &&
+      serverReadyProjectId === autosaveProjectId
     ) {
       setSaveStatus((status) => (status === 'saving' ? status : 'idle'));
       coordinator?.scheduleEdit();
@@ -2034,11 +2037,10 @@ export function EditorPage({
     }
   }, [
     autosaveRetryToken,
+    autosaveProjectDirty,
+    autosaveProjectId,
+    autosaveWorkspaceMode,
     projectEditVersion,
-    project?.dirty,
-    project?.id,
-    project?.workspaceMode,
-    pushToast,
     serverReadyProjectId,
   ]);
 
@@ -6691,7 +6693,6 @@ export function EditorPage({
     getLocalRepaintProjectionImage,
     importedModel,
     localRepaintGenerationReady,
-    localRepaintInteractiveReady,
     notifyEditorTaskRunning,
     paintMaskDataUrl,
     project,

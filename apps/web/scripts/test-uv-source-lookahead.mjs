@@ -64,6 +64,36 @@ for(const claimed of [false,true]) {
   assert.deepEqual(disposed,[1]);
 }
 const gpu=fs.readFileSync(new URL('../src/engine/bake/gpuUvBakeRenderer.ts',import.meta.url),'utf8');
+const gpuTree=ts.createSourceFile('gpu.ts',gpu,ts.ScriptTarget.Latest,true);
+const stageTextures=gpuTree.statements.find(node=>ts.isFunctionDeclaration(node)&&node.name?.text==='stageLayerTexturesForGpu');
+const stageTexturesJs=ts.transpileModule(stageTextures.getText(gpuTree),{compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText;
+const runStage=new Function('env',`const {document,performance,waitForSharedRendererBakeSlot,uploadPreviewTextureInStripes,waitForBrowserPaint,waitForSharedViewportInteractionIdle}=env;${stageTexturesJs};return stageLayerTexturesForGpu;`);
+for(const visible of [false,true]) {
+  let flushes=0,paints=0,slots=0,idleWaits=0;
+  const uploads=[];
+  const stage=runStage({
+    document:{body:{dataset:{}}},performance:{now:()=>0},
+    waitForSharedRendererBakeSlot:async()=>{slots++;},
+    uploadPreviewTextureInStripes:async(_renderer,texture,options)=>uploads.push({texture,options}),
+    waitForBrowserPaint:async()=>{paints++;},waitForSharedViewportInteractionIdle:async quiet=>{assert.equal(quiet,240);idleWaits++;},
+  });
+  const renderer={domElement:{isConnected:visible},getContext:()=>({flush:()=>flushes++})};
+  const first={id:1},second={id:2};
+  await stage(renderer,[first,second,first]);
+  assert.equal(slots,2,'each unique source owns one renderer slot');
+  assert.deepEqual(uploads.map(item=>item.texture),[first,second]);
+  assert.ok(uploads.every(item=>item.options.deferVisiblePresentationBarrier===visible));
+  assert.equal(paints,visible?2:0,'visible private sources share one final two-frame barrier');
+  assert.equal(idleWaits,visible?2:0,'each batch presentation preserves interaction priority');
+  assert.equal(flushes,visible?1:0,'visible private batch flushes once before publication');
+}
+{
+  let flushes=0,paints=0;
+  const stage=runStage({document:{body:{dataset:{}}},performance:{now:()=>0},waitForSharedRendererBakeSlot:async()=>{},
+    uploadPreviewTextureInStripes:async()=>{},waitForBrowserPaint:async()=>{paints++;},waitForSharedViewportInteractionIdle:async()=>{}});
+  await stage({domElement:{isConnected:true},getContext:()=>({flush:()=>flushes++})},[]);
+  assert.deepEqual([flushes,paints],[0,0],'empty texture sets do not add a presentation barrier');
+}
 // Reverse completion and cancellation must not publish out of order, leak a
 // successfully prepared sibling, or dispose a handed-off source twice.
 for (const claimed of [false,true]) for (const failed of [-1,0,1]) {
@@ -87,7 +117,7 @@ for (const claimed of [false,true]) for (const failed of [-1,0,1]) {
   const closing=q.close();jobs[2].resolve(2);await closing;
   assert.deepEqual(disposed,[2]);
 }
-const tree=ts.createSourceFile('gpu.ts',gpu,ts.ScriptTarget.Latest,true);
+const tree=gpuTree;
 const lookahead=tree.statements.find(node=>ts.isFunctionDeclaration(node)&&node.name?.text==='createLayerTextureLookahead');
 const lookaheadJs=ts.transpileModule(lookahead.getText(tree),{compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText;
 const policy=new Function('createSingleItemLookahead','isLiveProjectedCanvasUrl',`${lookaheadJs};return createLayerTextureLookahead;`)(
@@ -128,4 +158,4 @@ for(const fail of [false,true]) {
 assert.match(gpu,/isLiveProjectedCanvasUrl\(url\)/,'live sources excluded from lookahead');
 assert.match(gpu,/retainPreviewTexture\(input.url\)/,'borrowed bitmap protected from eviction');
 assert.equal((gpu.match(/await sources.close\(\)/g)||[]).length,2,'both GPU entries drain preparation');
-console.log('UV lookahead: 23-layer order, bounded resources, live gate, failure, cancellation and ownership passed.');
+console.log('UV lookahead: 23-layer order, bounded resources, batched presentation barrier, live gate, failure, cancellation and ownership passed.');

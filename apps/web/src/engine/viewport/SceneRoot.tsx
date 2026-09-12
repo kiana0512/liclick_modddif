@@ -381,10 +381,10 @@ function uvLayerStackPreviewSignature(layers: Layer[]) {
 }
 
 function residentUvVisibilityKey(layers: Layer[]) {
-  return [...layers]
-    .sort((left, right) => compareUvLayersForComposition(left, right, 'top-to-bottom'))
-    .map((layer) => layer.id)
-    .join('|');
+  // A visibility-state cache entry is only exact while every input that can
+  // change its composed pixels is identical. Layer ids alone let an image,
+  // opacity or authored-order edit reuse pixels from the previous revision.
+  return uvLayerStackPreviewSignature(layers);
 }
 
 function residentUvLayerRenderSignature(layer: Layer, relativeOrder: number) {
@@ -1381,6 +1381,7 @@ const ImportedModel = memo(function ImportedModel({
   const pendingUvVisibilityRenderKeyRef = useRef('');
   const uvPresentationRef = useRef<{
     texture?: THREE.Texture;
+    key?: string;
     opacity: number;
     renderedColor: boolean;
   }>({ opacity: 0, renderedColor: false });
@@ -2937,15 +2938,29 @@ const ImportedModel = memo(function ImportedModel({
     directUvLayer?.renderedColorMaskUrl,
     { colorSpace: THREE.NoColorSpace, maxSize: proxyTextureMaxSize },
   );
+  const visibleResidentUvKey = useMemo(
+    () =>
+      residentUvVisibilityKey(
+        stableVisibleUvLayers.filter(
+          (layer) => layer.role !== 'local-repaint-overlay' && layer.role !== 'local-repaint-draft',
+        ),
+      ),
+    [stableVisibleUvLayers],
+  );
+  const cachedExactUvTexture = directUvLayer
+    ? undefined
+    : residentUvPresentationCacheRef.current.get(visibleResidentUvKey);
   const exactUvTexture = directUvLayer
     ? directUvTextureState.ready
       ? directUvTextureState.texture
       : undefined
-    : compositedUvTextureState.ready
-      ? compositedUvTextureState.texture
-      : undefined;
+    : cachedExactUvTexture ??
+      (compositedUvTextureState.ready ? compositedUvTextureState.texture : undefined);
   const previousUvPresentation = uvPresentationRef.current;
-  const preservePreviousUvPresentation = nonLiveUvLayers.length > 0 && !exactUvTexture;
+  const preservePreviousUvPresentation =
+    nonLiveUvLayers.length > 0 &&
+    !exactUvTexture &&
+    previousUvPresentation.key === visibleResidentUvKey;
   const loadedUvTexture =
     exactUvTexture ?? (preservePreviousUvPresentation ? previousUvPresentation.texture : undefined);
   const uvOverlayOpacity = exactUvTexture
@@ -2960,6 +2975,11 @@ const ImportedModel = memo(function ImportedModel({
       : requestedUvRenderedColor;
   uvPresentationRef.current = {
     texture: loadedUvTexture,
+    key: exactUvTexture
+      ? visibleResidentUvKey
+      : preservePreviousUvPresentation
+        ? previousUvPresentation.key
+        : undefined,
     opacity: uvOverlayOpacity,
     renderedColor: directUvRenderedColor,
   };
@@ -2992,20 +3012,14 @@ const ImportedModel = memo(function ImportedModel({
     document.body.dataset.textureRestoreUvReady = '1';
     document.body.dataset.textureRestoreUvReadyMs = performance.now().toFixed(1);
   }, [loadedUvTexture]);
-  const visibleResidentUvKey = useMemo(
-    () =>
-      residentUvVisibilityKey(
-        stableVisibleUvLayers.filter(
-          (layer) => layer.role !== 'local-repaint-overlay' && layer.role !== 'local-repaint-draft',
-        ),
-      ),
-    [stableVisibleUvLayers],
-  );
   useEffect(() => {
-    if (!loadedUvTexture || !visibleResidentUvKey) return;
+    // Only admit the exact requested composition. During an async eye switch,
+    // loadedUvTexture may intentionally be empty or may retain the same-key
+    // presentation; it must never be registered under a different state key.
+    if (!exactUvTexture || !visibleResidentUvKey) return;
     const cache = residentUvPresentationCacheRef.current;
     cache.delete(visibleResidentUvKey);
-    cache.set(visibleResidentUvKey, loadedUvTexture);
+    cache.set(visibleResidentUvKey, exactUvTexture);
     while (cache.size > MAX_COMPOSITED_UV_TEXTURE_CACHE_SIZE) {
       const oldestKey = cache.keys().next().value as string | undefined;
       if (!oldestKey) break;
@@ -3014,7 +3028,7 @@ const ImportedModel = memo(function ImportedModel({
     if (pendingUvVisibilityRenderKeyRef.current === visibleResidentUvKey) {
       pendingUvVisibilityRenderKeyRef.current = '';
     }
-  }, [loadedUvTexture, visibleResidentUvKey]);
+  }, [exactUvTexture, visibleResidentUvKey]);
   const loadedStaticTopUvTexture = useLoadedPreviewTexture(
     liveTopUvLayer && !getLiveProjectedCanvasState(liveTopUvLayer.imageUrl)
       ? liveTopUvLayer.imageUrl

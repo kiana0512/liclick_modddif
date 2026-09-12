@@ -1,6 +1,6 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
-> 文档版本：`2.20.73`
+> 文档版本：`2.20.76`
 >
 > 生效日期：`2026-09-12`
 >
@@ -9,6 +9,14 @@
 > 基线仓库：`E:\Liclick 3D Texture Modernization`
 >
 > 审计口径：`0a2519d + 607e82f + 2568e40`，不包含错误文档提交 `2bde8c6/e03bab2/d1c5f78`
+
+2026-09-12 M07，协作 UI-06/M06/M09：`PERF-UV-SOURCE-PREPARE-001` v1.10.0 将同一次 GPU UV bake 的私有来源纹理从“每张上传后各等待两次呈现”改为“全部精确上传并 flush 后统一等待一次双帧发布屏障”。512/13 图层 retain-raster 三轮配对共 6 次均值 1771.3ms→939.6ms，约提升 47.0%；两图层 JPEG/PNG 约提升 45.3%/44.2%。4K/6 图层中位样本在约 0.5% 噪声范围内，未声明稳定提速或退化。全部 PNG、JPEG、重叠源、4K 与 retain-raster 对照像素差为 0，候选路径无 Long Task。条带大小、自适应帧预算、交互静默、取消、GL 状态恢复、每纹理 flush 与整批最终双帧屏障保留；公开缓存纹理及 detached renderer 仍使用原独立发布规则。完整分辨率、QA、GPU/CPU/Worker/shader 像素公式、持久化和导出不变，无迁移。详见 [UV 来源批量发布变更卡](changes/CHG-20260912-UV-SOURCE-BATCH-PRESENTATION.md)。
+
+2026-09-12 M07，协作 UI-06/M06/M09：`PERF-UV-SOURCE-PREPARE-001` v1.9.0 移除可见 WebGL renderer 在健康帧预算内每个 128K 精确上传条带后的强制宏任务等待，改为累计同步 GL 提交达到 4ms、帧拥塞或需要呈现时才等待下一次绘制；后台 detached renderer 仍逐条带让出任务。三轮 4K 冻结前后配对（共 6 次）均值 1032.5ms→998.1ms，约 3.3%；13 图层 retain-raster 路径约 0.6%，视为基本持平。全部对照像素差为 0，当前路径无 Long Task；条带大小、自适应降档、交互静默、取消、GL 状态恢复、flush 与最终双帧发布屏障保持。完整分辨率、QA、GPU/CPU/Worker/shader 像素公式、持久化和导出不变，无迁移。详见 [UV 可见上传批处理变更卡](changes/CHG-20260912-UV-VISIBLE-UPLOAD-BATCHING.md)。
+
+2026-09-12 UI-06 → M06/M09：`UV-DISPLAY-DERIVED-CACHE` v1.2.0 修复图层显隐组合的展示缓存身份与发布门禁。缓存键纳入完整像素影响字段，只有当前请求键的精确完成纹理可登记；精确命中同步复用，未完成的新组合不再显示或缓存另一显隐状态的旧纹理。投影转 UV 的 GPU/CPU/Worker/shader、Top-K、接缝、gutter、完整分辨率、QA、持久化和导出不变，无迁移。详见 [UV 显隐精确缓存变更卡](changes/CHG-20260912-UV-VISIBILITY-EXACT-CACHE.md)。
+
+2026-09-12 UI-05 → M04/M08：`REFERENCE-GROUP-REUSE` v1.0.0 统一单视图与其已生成多视图的提交时解析。用户再次选择单视图时，若同一 `referenceGroupId` 的多视图仍存在则直接复用；用户手动删除该多视图后才沿既有流程重新生成并建立新绑定。显式选择多视图保持直用，不跨组复用，历史任务只在没有当前选择时兜底。沿用 ReferenceImage 可选分组字段、Project Command v1、Revision CAS、ownership 与 verified reference asset；无 Schema、资产或旧工程迁移。GPU/CPU/Worker/shader、投影/UV/重绘 coverage、分辨率、QA 与导出不变。详见 [参考组复用变更卡](changes/CHG-20260912-REFERENCE-GROUP-REUSE.md)。
 
 2026-09-12 M04，协作 M08/M12：用户明确要求界面选 4K 时仍使用 2K 生图参数。`GPT25-TEXTURE-GENERATION/1.1.1` 在单/多视图及 GPT 局部重绘共享请求策略中映射 4K→2K，1K/2K 不变；方图、模型、质量、透明背景与任务数量不变。仅改变新 GPT 任务的 imageSize，不改项目 UV/贴图分辨率、截图、投影、蒙版、GPU/CPU/Worker/shader、持久化/导出公式或 Schema，不回写历史任务。无迁移；回滚该映射即恢复顶部 4K 请求 4K，已生成资产保持可读。见 [GPT 参数变更卡](changes/CHG-20260912-GPT-OPTIONS.md)。
 
@@ -1044,6 +1052,10 @@ M15 / CLOUD-DEPLOYMENT v1.0.0（2026-09-03）：正常合并 release 部署历�
 
 | 版本 | 日期 | 基线 | 变更 |
 | --- | --- | --- | --- |
+| `2.20.76` | 2026-09-12 | `ac7cccb + 本地待提交` | M07，协作 UI-06/M06/M09，`PERF-UV-SOURCE-PREPARE-001` v1.10.0：同次 bake 私有纹理共享一次最终双帧发布屏障，不再每张重复等待；512/13 图层三轮配对约提升 47%，所有冻结对照零像素差，4K 样本基本持平。公开缓存、detached、交互和发布门禁不变，无迁移。见 CHG-20260912-UV-SOURCE-BATCH-PRESENTATION。 |
+| `2.20.75` | 2026-09-12 | `b52561a + 本地待提交` | M07，协作 UI-06/M06/M09，`PERF-UV-SOURCE-PREPARE-001` v1.9.0：可见 renderer 在健康 4ms 累计预算内连续提交精确条带，不再逐条带强制宏任务等待；交互/拥塞/呈现门禁、detached 让步与像素协议不变。4K 三轮配对均值约提升 3.3%，逐像素差为 0。无 Schema/资产迁移。见 CHG-20260912-UV-VISIBLE-UPLOAD-BATCHING。 |
+| `2.20.74` | 2026-09-12 | `本地待提交` | UI-06 → M06/M09，`UV-DISPLAY-DERIVED-CACHE` v1.2.0：完整像素签名作为显隐缓存身份，精确命中同步复用，只允许当前请求的完成纹理入缓存，禁止跨显隐状态展示旧 UV。无 Schema/资产迁移。见 CHG-20260912-UV-VISIBILITY-EXACT-CACHE。 |
+| `2.20.73` | 2026-09-12 | `本地待提交` | UI-05 → M04/M08，`REFERENCE-GROUP-REUSE` v1.0.0：再次选择单视图时复用同 `referenceGroupId` 的现有多视图；多视图被手动删除后才重新生成并重建绑定。Project Command、Revision CAS、ownership、verified assets 与 Schema 不变，无迁移。见 CHG-20260912-REFERENCE-GROUP-REUSE。 |
 | `2.20.63` | 2026-09-12 | `7d449d7 + 本次并发切换` | 多视图稳定/加速按钮，默认 2 张，加速首组 2 张后续最多 4 张；保留输入冻结、定序回贴、失败和驻留屏障，设置可选字段兼容旧工程。集成远端常驻 UV、图层交互、画笔性能及包体优化；最终提交须通过 verify:prepush 后方可推送部署，未进行付费生图或实际速度验收。 |
 | `2.20.53` | 2026-09-12 | `本地待提交` | 仅收短多视图主按钮的提交/回贴等待长标题为组数与百分比；普通文本、错误和内部屏障不变。见 CHG-20260912-GENERATION-RENDER-LIFECYCLE |
 | `2.20.52` | 2026-09-12 | `本地待提交` | 精确 UV 聚合结果在原硬内存预算内保留最多两个 LRU 状态，减少图层眼睛 A/B 往返的重复 GPU 合成与读回；第三状态及所有失效边界保持严格。见 CHG-20260912-UV-AGGREGATE-PREFIX |

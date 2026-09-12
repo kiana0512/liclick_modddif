@@ -13,7 +13,10 @@ import { collectUvSeamPairs, type UvSeamEdgeRecord } from './uvSeamReconciliatio
 import type { BakeProgress, GpuUvCompositeMode, UvBakeResolution } from './uvBakeTypes';
 import { buildProjectionMatrixBundle } from '@/engine/projection/projectionMath';
 import type { Layer } from '@/types/layer';
-import { isViewportInteractionBusy } from '@/engine/viewport/viewportInteractionState';
+import {
+  isViewportInteractionBusy,
+  waitForViewportInteractionIdle as waitForSharedViewportInteractionIdle,
+} from '@/engine/viewport/viewportInteractionState';
 import { waitForBrowserPaint } from '@/utils/browserScheduling';
 import {
   residentPreviewTextureCache,
@@ -896,6 +899,7 @@ async function stageLayerTexturesForGpu(
   allowWhileInteracting = false,
 ) {
   let maximumUploadMs = 0;
+  let stagedTextureCount = 0;
   const usesVisibleRenderer = renderer.domElement.isConnected;
   let nextYieldAt = performance.now() + 4;
   for (const texture of new Set(textures)) {
@@ -908,8 +912,22 @@ async function stageLayerTexturesForGpu(
     }
     await waitForSharedRendererBakeSlot();
     const startedAt = performance.now();
-    await uploadPreviewTextureInStripes(renderer, texture, { allowWhileInteracting });
+    await uploadPreviewTextureInStripes(renderer, texture, {
+      allowWhileInteracting,
+      // These textures remain private to this bake until the entire set is
+      // staged. Preserve the exact final barrier once for the batch instead
+      // of paying two presentation frames for every individual source.
+      deferVisiblePresentationBarrier: usesVisibleRenderer,
+    });
+    stagedTextureCount += 1;
     maximumUploadMs = Math.max(maximumUploadMs, performance.now() - startedAt);
+  }
+  if (usesVisibleRenderer && stagedTextureCount > 0) {
+    renderer.getContext().flush();
+    for (let frame = 0; frame < 2; frame += 1) {
+      await waitForBrowserPaint();
+      if (!allowWhileInteracting) await waitForSharedViewportInteractionIdle(240);
+    }
   }
   if (typeof document !== 'undefined') {
     document.body.dataset.uvBakeMaximumStagedTextureUploadMs = Math.max(
