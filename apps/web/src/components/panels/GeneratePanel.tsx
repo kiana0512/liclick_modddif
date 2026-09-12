@@ -5418,13 +5418,12 @@ export function GeneratePanel({
           {isTextureMapTab && textureViewMode === 'multi' && (
             <p
               aria-label="多视图并发策略"
-              title="加速首组2张、后续最多4张；同组互不参考，组间等待回贴。"
               className="mt-2 text-[11px] text-white/56"
             >
               加速 · 最多4张并发
             </p>
           )}
-          {isLocalRepaintTab && <p className="mt-1 text-[11px] text-white/46">选区和无贴图处显示白模；回贴仅作用于笔刷选区。</p>}
+          {isLocalRepaintTab && <p className="mt-1 text-[11px] text-white/46">仅回贴笔刷选区。</p>}
         </div>
       )}
       <Button
