@@ -124,8 +124,9 @@ export class ResidentProjectedUvDisplay {
       return;
     }
     const snapshot = interactive ? draft!.snapshot() : undefined;
+    const draftRevision = draft?.revision ?? 0;
     const region = interactive && this.rawComposite
-      ? eraserBakeRegion(draft!.dirtyBounds, original.resolution) : undefined;
+      ? eraserBakeRegion(draft!.pendingBounds(), original.resolution) : undefined;
     const snapshotUrl = snapshot ? registerLiveProjectedCanvasTexture(key, snapshot) : undefined;
     const request = snapshotUrl ? { ...original, projectId: undefined,
       sourceLayers: original.sourceLayers.map(layer => layer.id === draft!.owner.layerId
@@ -331,6 +332,7 @@ export class ResidentProjectedUvDisplay {
       });
       guard();
       this.previousPixels = retainedImage ? { image: retainedImage, texture: colorTexture } : undefined;
+      draft?.acknowledge(draftRevision);
       releaseTransientPreviewUploadSource(request.renderer, colorTexture);
       releaseTransientPreviewUploadSource(request.renderer, renderedColorMaskTexture);
       const buffer = {

@@ -29,13 +29,13 @@ fixture += String.raw`
   useLayerStore.setState({ layers });
   const mesh = group.children[0];
   await until(() => mesh.material.userData.liclickResidentUvProjectionLayers?.length === layers.length, 'initial UV');
-  function pixels(x = 32) {
+  function pixels(x = 32, full = false) {
     const previous = runtime.gl.getRenderTarget(), viewport = runtime.gl.getViewport(new THREE.Vector4());
     const target = new THREE.WebGLRenderTarget(64,64);
     runtime.gl.setRenderTarget(target);
     runtime.gl.render(runtime.scene, runtime.camera);
-    const bytes = new Uint8Array(4);
-    runtime.gl.readRenderTargetPixels(target,x,32,1,1,bytes);
+    const bytes = new Uint8Array(full ? 64*64*4 : 4);
+    runtime.gl.readRenderTargetPixels(target,full ? 0 : x,full ? 0 : 32,full ? 64 : 1,full ? 64 : 1,bytes);
     runtime.gl.setRenderTarget(previous); runtime.gl.setViewport(viewport); target.dispose(); return [...bytes];
   }
   await until(() => pixels()[0] > 80, 'initial rendered pixels');
@@ -60,6 +60,7 @@ fixture += String.raw`
       status: document.body.dataset.residentUvProjectionStatus,
       stages: JSON.parse(document.body.dataset.residentUvProjectionStages || '{}'),
       duration: document.body.dataset.residentUvProjectionDurationMs }),
+    async presented() { await until(() => !getEraserUvDraft()?.pendingBounds(), 'latest draft presented'); },
     async settled() { await until(() => {
       const row = useLayerStore.getState().layers.find(l => l.id === layers[1].id);
       return !getEraserUvDraft() && row.maskUrl && isResidentUvMaskPresented(group, row.id, row.maskUrl);
@@ -72,6 +73,10 @@ const server = await createServer({ root, configFile: false, logLevel: 'error',
   resolve: { alias: { '@': root + '/src' } },
   plugins: [{ name: 'eraser-fixture',
     transform(code, id) {
+      if (process.env.LICLICK_ERASER_CUMULATIVE === '1') {
+        if (id.endsWith('/ResidentProjectedUvDisplay.ts')) return code.replace('draft!.pendingBounds()', 'draft!.dirtyBounds');
+        if (id.endsWith('/bakeProjectedLayerToTexture.ts')) return code.replace(/yieldPostprocess,\s+true,/, 'yieldPostprocess, false,');
+      }
       if (process.env.LICLICK_ERASER_FULL_BAKE === '1' && id.endsWith('/ResidentProjectedUvDisplay.ts'))
         return code.replace('retainRawComposite: request.resolution <= 2048', 'retainRawComposite: false')
           .replace('const patched = interactive && previousPixels', 'const patched = false && previousPixels');
@@ -237,10 +242,14 @@ try {
     return f.state().drawing && f.state().draft > 1 && p[2] > p[0]*2;
   }, undefined, { timeout: 20000 });
   if (holdBusy) await page.evaluate(() => { delete document.body.dataset.perfSimulatedViewportInteraction; });
+  await page.evaluate(() => window.eraserFixture.presented());
+  const liveFrame = await page.evaluate(() => window.eraserFixture.pixels(32, true));
   await page.mouse.up();
   await page.evaluate(() => window.eraserFixture.settled());
   const committed = await page.evaluate(() => window.eraserFixture.state());
   assert.deepEqual(committed.pixel, live.pixel, 'Live and committed pixels must agree.');
+  assert.deepEqual(await page.evaluate(() => window.eraserFixture.pixels(32, true)), liveFrame,
+    'The complete rendered frame must match after publishing all draft revisions and committing.');
   await page.evaluate(() => window.eraserFixture.undo());
   await page.waitForFunction(before => window.eraserFixture.pixels().every((v,i)=>v===before[i]), before);
   await page.evaluate(() => window.eraserFixture.redo());

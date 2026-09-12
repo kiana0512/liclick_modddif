@@ -37,6 +37,7 @@ export class EraserUvDraft {
   readonly image: HTMLCanvasElement;
   revision = 0;
   dirtyBounds?: Rect;
+  private changed: Array<{ revision: number; bounds: Rect }> = [];
   private base?: HTMLCanvasElement;
   private pending?: { source: HTMLCanvasElement; bounds: Rect };
   private disposed = false;
@@ -48,13 +49,31 @@ export class EraserUvDraft {
     this.flush();
     this.base = copy(this.image);
   }
-  update(source: HTMLCanvasElement, bounds: Rect) {
+  update(source: HTMLCanvasElement, bounds: Rect, changedBounds = bounds) {
     if (!this.base || this.disposed) return;
     this.pending = { source, bounds: { ...bounds } };
     // The single-flight compositor consumes this union when it is ready. Do
     // not redraw a full-resolution draft for input that it cannot yet display.
     this.revision++;
+    const sx = this.image.width / source.width, sy = this.image.height / source.height;
+    const x = Math.max(0, Math.floor(changedBounds.x * sx)), y = Math.max(0, Math.floor(changedBounds.y * sy));
+    this.changed.push({ revision: this.revision, bounds: { x, y,
+      width: Math.min(this.image.width, Math.ceil((changedBounds.x + changedBounds.width) * sx)) - x,
+      height: Math.min(this.image.height, Math.ceil((changedBounds.y + changedBounds.height) * sy)) - y } });
+    // Bound an unconsumed gesture without dropping any part of its path.
+    if (this.changed.length > 128) this.changed = [{ revision: this.revision, bounds: this.pendingBounds()! }];
   }
+  pendingBounds() {
+    let result: Rect | undefined;
+    for (const { bounds: b } of this.changed) {
+      if (!result) { result = { ...b }; continue; }
+      const x = Math.min(result.x, b.x), y = Math.min(result.y, b.y);
+      result = { x, y, width: Math.max(result.x + result.width, b.x + b.width) - x,
+        height: Math.max(result.y + result.height, b.y + b.height) - y };
+    }
+    return result;
+  }
+  acknowledge(revision: number) { this.changed = this.changed.filter(change => change.revision > revision); }
   flush() {
     const pending = this.pending; this.pending = undefined;
     if (!pending || !this.base || this.disposed) return;
@@ -87,6 +106,7 @@ export class EraserUvDraft {
   dispose() {
     this.disposed = true;
     this.pending = undefined;
+    this.changed.length = 0;
     this.image.width = this.image.height = 1;
     if (this.base) this.base.width = this.base.height = 1;
   }

@@ -6667,7 +6667,7 @@ function recordPaintStrokeDirtyRegion(
   const keys = draft.historyTileKeys ?? new Set<string>();
   for (const key of getPaintHistoryTileKeys(layer, bounds)) keys.add(key);
   draft.historyTileKeys = keys;
-  if (draft.paintOperation === 'eraser') getEraserUvDraft(layer)?.update(layer.paintPreviewCanvas, draft.bounds);
+  if (draft.paintOperation === 'eraser') getEraserUvDraft(layer)?.update(layer.paintPreviewCanvas, draft.bounds, bounds);
 }
 
 function ensurePaintBackingCanvasInitialized(layer: UvPaintLayer) {

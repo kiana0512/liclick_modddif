@@ -1543,6 +1543,7 @@ async function bakeVisibleProjectedLayersToTextureUnlocked(
                 input.uvIslandGutterPixels ?? 0,
                 input.outputAlpha === 'transparent',
                 yieldPostprocess,
+                true,
               )
             : await padUvIslandGuttersCooperatively(
                 composite,

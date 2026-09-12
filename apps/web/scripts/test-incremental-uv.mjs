@@ -40,3 +40,26 @@ assert.equal(expanded.renderedColorMask.length,1024**2);
 assert.equal(expanded.renderedColorMask[1024*700+700],111);
 assert.equal(expanded.writtenTexels,512**2);
 console.log('Incremental UV region, padding, raw ownership, coverage and rendered-color preservation passed.');
+const draftSource=fs.readFileSync(new URL('../src/engine/paint/eraserUvDraft.ts',import.meta.url),'utf8');
+const draftExports={};
+const context={drawImage(){},clearRect(){},save(){},restore(){},fillRect(){}};
+new Function('exports','document',ts.transpileModule(draftSource,{compilerOptions:{
+  module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText)(draftExports,
+  {createElement:()=>({width:0,height:0,getContext:()=>context})});
+const owner={paintCanvas:{width:2048,height:2048},target:'projected-mask'};
+const draft=new draftExports.EraserUvDraft(owner,owner.paintCanvas);
+draft.begin();
+const brush={width:512,height:512}, first={x:10,y:10,width:10,height:10};
+draft.update(brush,first,first); const firstRevision=draft.revision;
+draft.snapshot();
+draft.update(brush,{x:10,y:10,width:300,height:300},{x:290,y:290,width:20,height:20});
+draft.acknowledge(firstRevision);
+assert.deepEqual(draft.pendingBounds(),{x:1160,y:1160,width:80,height:80});
+assert.equal(region(draft.pendingBounds(),2048).size,512,'published portions must not enlarge the next bake');
+for(let i=0;i<260;i++)draft.update(brush,first,{x:i,y:1,width:1,height:1});
+const retained=draft.pendingBounds();
+assert.equal(retained.x,0);assert.equal(retained.width,1240,'coalescing must preserve every unpresented point');
+draft.acknowledge(draft.revision);assert.equal(draft.pendingBounds(),undefined);
+draft.finishStroke();draft.begin();draft.update(brush,first);
+assert.equal(draft.pendingBounds().x,40);draft.dispose();assert.equal(draft.pendingBounds(),undefined);
+console.log('Eraser dirty revisions: publication acknowledgement, in-flight input, bounded queue and next stroke passed.');
