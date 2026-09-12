@@ -84,7 +84,7 @@ try {
   page.on('response', response => { if (response.status() >= 400) console.error(response.status(), response.url()); });
   await page.goto(`http://127.0.0.1:${server.httpServer.address().port}/__action`);
   await page.waitForFunction(() => typeof window.renderCase === 'function');
-  assert.equal(await page.locator('#progress-style-probe').evaluate(el => getComputedStyle(el).backgroundColor), 'rgb(27, 27, 27)');
+  assert.equal(await page.locator('#progress-style-probe').evaluate(el => window.getComputedStyle(el).backgroundColor), 'rgb(27, 27, 27)');
   let cases = 0;
   for (const height of [720, 900, 1080]) for (const width of [292, 312]) for (const mode of ['single', 'multi', 'gpt', 'remote']) {
     await page.setViewportSize({ width: 1280, height });
