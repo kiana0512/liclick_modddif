@@ -6,12 +6,17 @@ import { yieldToBrowserTask } from '@/utils/browserScheduling';
 
 type Entry = {
   color: THREE.WebGLRenderTarget;
-  quality: THREE.WebGLRenderTarget;
+  quality?: THREE.WebGLRenderTarget;
+  qualityTexture: THREE.Texture;
   sourceSize: GpuLayerSourceSize;
 };
 
 const entryBytes = (entry: Entry) => entry.color.width * entry.color.height *
-  (entry.quality.texture.format === RedFormat ? 5 : 8);
+  (entry.qualityTexture.format === RedFormat ? 5 : 8);
+const disposeEntry = (entry: Entry) => {
+  entry.color.dispose();
+  if (entry.quality && entry.quality !== entry.color) entry.quality.dispose();
+};
 
 /** Derived, renderer-local full-resolution UV rasters. Never stores project assets.
  * Visibility changes reuse the exact quantized color/quality targets; all pixel
@@ -91,8 +96,7 @@ export class ProjectedUvRasterCache {
     for (const [oldKey, old] of this.entries) {
       if (this.bytes + bytes <= this.budget) break;
       this.bytes -= entryBytes(old);
-      old.color.dispose();
-      old.quality.dispose();
+      disposeEntry(old);
       this.entries.delete(oldKey);
     }
     // Eye toggles most often alternate between exactly two authored states.
@@ -178,8 +182,7 @@ export class ProjectedUvRasterCache {
       if (this.bytes + bytes <= this.budget) break;
       if (this.protectedKeys.has(oldKey)) continue;
       this.bytes -= entryBytes(old);
-      old.color.dispose();
-      old.quality.dispose();
+      disposeEntry(old);
       this.entries.delete(oldKey);
     }
     if (this.bytes + bytes > this.budget) return false;
@@ -196,8 +199,7 @@ export class ProjectedUvRasterCache {
     this.residentKeys = [];
     this.residentSourceSizes = [];
     for (const entry of this.entries.values()) {
-      entry.color.dispose();
-      entry.quality.dispose();
+      disposeEntry(entry);
     }
     this.entries.clear();
     this.resolved.clear();

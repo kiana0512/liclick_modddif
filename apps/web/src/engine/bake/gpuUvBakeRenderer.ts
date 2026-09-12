@@ -172,6 +172,14 @@ const vertexShader = `
   }
 `;
 
+// Projection visibility invariants kept outside the emitted GLSL:
+// - surface-locked repaint uses depth as authority; flat-normal rejection can
+//   expose adjacent triangles as strips;
+// - masks preserve continuous feather coverage, matching live projection;
+// - grazing depth always receives wider tolerance, while a face-on,
+//   center-normal match preserves capture-texel-wide low-poly bevels;
+// - surface-locked overlay quality is depth-authoritative rather than driven by
+//   normal-angle confidence across one captured surface.
 const fragmentShader = `
   ${RELIABLE_PROJECTION_GLSL}
 
@@ -212,6 +220,10 @@ const fragmentShader = `
   varying vec3 vWorldPosition;
   varying vec3 vWorldNormal;
   varying vec2 vTextureUv;
+  #if MRT == 1
+    layout(location = 0) out vec4 mrtColor;
+    layout(location = 1) out vec4 mrtQuality;
+  #endif
 
   vec3 rgbToHsv(vec3 color) {
     vec4 k = vec4(0.0, -1.0 / 3.0, 2.0 / 3.0, -1.0);
@@ -292,8 +304,6 @@ const fragmentShader = `
       ${FULL_CAPTURE_NORMAL_AGREEMENT.toFixed(2)},
       mix(abs(normalAgreement), normalAgreement, surfaceLockedVisibility)
     );
-    // Surface-locked repaint uses depth as the front-surface authority. Flat
-    // normal rejection would expose adjacent triangles as alternating strips.
     float normalCheckWeight = useNormalCheck * (1.0 - surfaceLockedVisibility);
     return depthVisibility * mix(1.0, normalVisibility, normalCheckWeight);
     #endif
@@ -391,9 +401,6 @@ const fragmentShader = `
 
     vec2 maskSampleUv = mix(projectedSampleUv, vTextureUv, maskUsesUv);
     vec4 maskTexel = texture2D(maskMap, maskSampleUv);
-    // Match the live projected material: the mask is continuous coverage, not a
-    // binary acceptance test. Turning every accepted feather texel fully opaque
-    // made a soft local-repaint stroke become a solid stripe after UV baking.
     float maskValue = dot(maskTexel.rgb, vec3(0.299, 0.587, 0.114)) * maskTexel.a;
     float maskCoverage = mix(1.0, maskValue, useMask);
 
@@ -435,8 +442,6 @@ const fragmentShader = `
       1.0,
       smoothstep(${MIN_CAPTURE_FACE_ON.toFixed(2)}, ${FULL_CAPTURE_FACE_ON.toFixed(2)}, faceOnFactor)
     );
-    // Match live preview: grazing depth needs the wider tolerance regardless
-    // of whether optional geometric-normal rejection is enabled.
     depthTolerance *= grazingDepthScale;
     float centerVisibility = computeVisibilitySample(
       texture2D(depthMap, projectedSampleUv), texture2D(normalMap, projectedSampleUv),
@@ -498,9 +503,6 @@ const fragmentShader = `
       requiredVisibilitySupport + 0.5,
       visibilitySupport
     );
-    // Preserve capture-texel-wide low-poly bevels when the center depth and
-    // geometric normal agree. Without a normal buffer, only use this fallback
-    // for face-on regions so grazing scan-line rejection remains intact.
     float centerBackedVisibility =
       centerVisibility *
       mix(0.35, 1.0, grazingConfidence) *
@@ -564,23 +566,24 @@ const fragmentShader = `
     if (coverage <= max(0.025, minimumOutputCoverage)) discard;
     float qualityEdge = computeImageEdgeFade(projectedSampleUv, 0.035);
     float quality = coverage * depthWeight * angleWeight * mix(0.3, 1.0, qualityEdge);
-    // Keep the baked priority-overlay result equivalent to the live stack:
-    // accepted surface-locked coverage is depth authoritative, not normal-angle
-    // confidence that can vary across the same captured surface.
     quality = mix(quality, max(quality, coverage), surfaceLockedVisibility);
     float qualityAlpha = clamp(max(quality, coverage * ${QUALITY_FLOOR_FROM_COVERAGE.toFixed(2)}), 0.0, 1.0);
     float writeAlpha = mix(qualityAlpha, coverage, useCoverageAlpha);
 
-    if (useQualityDepth > 0.5) {
-      gl_FragDepthEXT = 1.0 - qualityAlpha;
-      gl_FragColor = vec4(texel.rgb * coverage, coverage);
-      return;
-    }
-
-    #if UV_RASTER_QUALITY_ONLY == 1
-      gl_FragColor = vec4(writeAlpha);
+    #if MRT == 1
+      mrtColor = vec4(texel.rgb, coverage);
+      mrtQuality = vec4(1.0, 1.0, 1.0, qualityAlpha);
     #else
-      gl_FragColor = vec4(texel.rgb, writeAlpha);
+      if (useQualityDepth > 0.5) {
+        gl_FragDepthEXT = 1.0 - qualityAlpha;
+        gl_FragColor = vec4(texel.rgb * coverage, coverage);
+        return;
+      }
+      #if UV_RASTER_QUALITY_ONLY == 1
+        gl_FragColor = vec4(writeAlpha);
+      #else
+        gl_FragColor = vec4(texel.rgb, writeAlpha);
+      #endif
     #endif
   }
 `;
@@ -1091,6 +1094,7 @@ function createLayerMaterial(input: {
   maximumDepthError?: number;
   minimumOutputCoverage?: number;
   qualityOnly?: boolean;
+  mrt?: boolean;
 }) {
   if (!input.layer.camera) throw new Error('Projected layer has no capture camera.');
   const objectMatrixDelta = createObjectMatrixDelta(input.group, input.layer);
@@ -1108,10 +1112,12 @@ function createLayerMaterial(input: {
   // surface-locked/no-normal inputs give captured-normal agreement zero weight.
   return new THREE.ShaderMaterial({
     name: `LiclickGpuUvBake:${input.layer.id}`,
+    glslVersion: input.mrt ? THREE.GLSL3 : undefined,
     vertexShader,
     fragmentShader,
     defines: {
       UV_RASTER_QUALITY_ONLY: input.qualityOnly ? 1 : 0,
+      MRT: input.mrt ? 1 : 0,
       UV_RASTER_SKIP_NORMAL: !input.textures.useNormalCheck ||
         input.layer.projectionVisibilityPolicy === 'surface-locked-v1' ? 1 : 0,
     },
@@ -1181,6 +1187,13 @@ function createLayerMaterial(input: {
   });
 }
 
+function createLayerMrtTarget(resolution: number) {
+  const target = createPostprocessTarget(resolution, THREE.RGBAFormat, 2);
+  target.textures[1].format = THREE.RedFormat;
+  target.textures[1].colorSpace = THREE.NoColorSpace;
+  return target;
+}
+
 function createBakeScene(meshes: PreparedMesh[]) {
   const scene = new THREE.Scene();
   const bakeMeshes: THREE.Mesh[] = [];
@@ -1198,8 +1211,13 @@ function createBakeScene(meshes: PreparedMesh[]) {
   return { scene, bakeMeshes };
 }
 
-function createPostprocessTarget(resolution: number, format: THREE.PixelFormat = THREE.RGBAFormat) {
+function createPostprocessTarget(
+  resolution: number,
+  format: THREE.PixelFormat = THREE.RGBAFormat,
+  count = 1,
+) {
   const target = new THREE.WebGLRenderTarget(resolution, resolution, {
+    count,
     depthBuffer: false,
     stencilBuffer: false,
     format,
@@ -1651,12 +1669,13 @@ export async function bakeProjectedLayerRastersWithGpu(
     document.body.dataset.residentUvNormalBaseHit = String(Boolean(resolved));
     if (resolved) return resolved;
   }
-  let colorTarget = createPostprocessTarget(resolution);
+  let colorTarget: THREE.WebGLRenderTarget | undefined;
   // UV-QUALITY-R8/1: private weights consume one original byte, not four.
   // Odd/legacy readback paths retain their existing RGBA layout.
   const qualityFormat = renderer.capabilities.isWebGL2 && resolution % 2 === 0
     ? THREE.RedFormat : THREE.RGBAFormat;
-  let qualityTarget = createPostprocessTarget(resolution, qualityFormat);
+  let qualityTarget: THREE.WebGLRenderTarget | undefined;
+  let mrtTarget: THREE.WebGLRenderTarget | undefined;
   const qualityReadback = new QualityAlphaReadback(renderer, resolution);
   const cached = keys.map((key, i) => cacheable[i] ? rasterCache?.get(key) : undefined);
   if (rasterCache) {
@@ -1715,13 +1734,13 @@ export async function bakeProjectedLayerRastersWithGpu(
         sourceSizes.push(hit.sourceSize);
         if (resident) {
           const start = performance.now();
-          resident.push(hit.color.texture, hit.quality.texture);
+          resident.push(hit.color.texture, hit.qualityTexture);
           residentAccumulateMs += performance.now() - start;
         }
         if (retainLayerRaster) {
           const [raster, quality] = await Promise.all([
             readRenderTargetToLayerImageData(renderer, hit.color, resolution),
-            qualityReadback.read(hit.quality),
+            qualityReadback.read(hit.color, hit.qualityTexture),
           ]);
           rasters.push({ layer, imageData: raster.imageData, coverage: raster.coverage, quality, coveredPixels: raster.coveredPixels });
           coveredPixels += raster.coveredPixels;
@@ -1746,72 +1765,75 @@ export async function bakeProjectedLayerRastersWithGpu(
       await stageLayerTexturesForGpu(renderer, textures.disposableTextures);
       textureUploadMs+=performance.now()-uploadStartedAt;
 
-      const coverageMaterial = createLayerMaterial({
-        group: input.group,
-        layer,
-        textures,
+      const useMrt = Boolean(
+        resident
+        && renderer.capabilities.isWebGL2
+        && resolution % 2 === 0
+        && !isOverlay
+      );
+      const materialInput = {
+        group: input.group, layer, textures,
         enableBackfaceCulling: input.enableBackfaceCulling,
-        compositeMode: 'coverage-alpha',
         projectedImageUvFlipY: input.projectedImageUvFlipY ?? false,
         strictDepthCheck: input.strictDepthCheck,
         maximumDepthError: input.maximumDepthError,
         minimumOutputCoverage: input.minimumOutputCoverage,
+      };
+      const layerColorTarget = useMrt
+        ? (mrtTarget ??= createLayerMrtTarget(resolution))
+        : (colorTarget ??= createPostprocessTarget(resolution));
+      let layerQualityTexture: THREE.Texture;
+      const coverageMaterial = createLayerMaterial({
+        ...materialInput, compositeMode: 'coverage-alpha', mrt: useMrt,
       });
       activeMaterials.push(coverageMaterial);
-      bakeScene.bakeMeshes.forEach((mesh) => {
-        mesh.material = coverageMaterial;
-      });
+      bakeScene.bakeMeshes.forEach(mesh => { mesh.material = coverageMaterial; });
       await waitForSharedRendererBakeSlot();
-      setBakeRenderTargetState(renderer, colorTarget, resolution);
+      setBakeRenderTargetState(renderer, layerColorTarget, resolution);
       renderer.setClearColor(0x000000, 0);
       renderer.clear(true, true, true);
       reportProgress(layer, layerIndex, true);
       renderer.render(bakeScene.scene, camera);
-      const layerRasterPromise = retainLayerRaster ? readRenderTargetToLayerImageData(
-        renderer,
-        colorTarget,
-        resolution,
-      ) : undefined;
+      const layerRasterPromise = retainLayerRaster
+        ? readRenderTargetToLayerImageData(renderer, layerColorTarget, resolution)
+        : undefined;
       restoreRendererState(renderer, previousState);
 
-      const qualityMaterial = createLayerMaterial({
-        group: input.group,
-        layer,
-        textures,
-        enableBackfaceCulling: input.enableBackfaceCulling,
-        compositeMode: 'quality-alpha',
-        qualityOnly: true,
-        projectedImageUvFlipY: input.projectedImageUvFlipY ?? false,
-        strictDepthCheck: input.strictDepthCheck,
-        maximumDepthError: input.maximumDepthError,
-        minimumOutputCoverage: input.minimumOutputCoverage,
-      });
-      activeMaterials.push(qualityMaterial);
-      bakeScene.bakeMeshes.forEach((mesh) => {
-        mesh.material = qualityMaterial;
-      });
-      await waitForSharedRendererBakeSlot();
-      setBakeRenderTargetState(renderer, qualityTarget, resolution);
-      renderer.setClearColor(0x000000, 0);
-      renderer.clear(true, true, true);
-      renderer.render(bakeScene.scene, camera);
-      const qualityPromise = retainLayerRaster ? qualityReadback.read(qualityTarget) : undefined;
-      if (resident && !isOverlay) {
-        const started = performance.now();
-        resident.push(colorTarget.texture,qualityTarget.texture);
-        residentAccumulateMs += performance.now()-started;
+      let qualityPromise: ReturnType<QualityAlphaReadback['read']> | undefined;
+      if (useMrt) {
+        layerQualityTexture = layerColorTarget.textures[1];
+        qualityPromise = retainLayerRaster
+          ? qualityReadback.read(layerColorTarget, layerQualityTexture)
+          : undefined;
+        const accumulatedAt = performance.now();
+        resident!.push(layerColorTarget.textures[0], layerQualityTexture);
+        residentAccumulateMs += performance.now() - accumulatedAt;
+      } else {
+        const qualityTargetValue = (qualityTarget ??= createPostprocessTarget(resolution, qualityFormat));
+        const qualityMaterial = createLayerMaterial({
+          ...materialInput, compositeMode: 'quality-alpha', qualityOnly: true,
+        });
+        activeMaterials.push(qualityMaterial);
+        bakeScene.bakeMeshes.forEach(mesh => { mesh.material = qualityMaterial; });
+        await waitForSharedRendererBakeSlot();
+        setBakeRenderTargetState(renderer, qualityTargetValue, resolution);
+        renderer.setClearColor(0x000000, 0);
+        renderer.clear(true, true, true);
+        renderer.render(bakeScene.scene, camera);
+        qualityPromise = retainLayerRaster ? qualityReadback.read(qualityTargetValue) : undefined;
+        layerQualityTexture = qualityTargetValue.texture;
+        restoreRendererState(renderer, previousState);
       }
-      restoreRendererState(renderer, previousState);
       // The PBOs own both submitted images now. Convert the two exact byte
       // buffers concurrently while R3F has already regained the viewport.
       const readbackStartedAt=performance.now();
       const [layerRaster, quality] = await Promise.all([layerRasterPromise, qualityPromise]);
       layerReadbackWaitMs+=performance.now()-readbackStartedAt;
       previousState = captureRendererState(renderer);
-      if (rasterCache) {
-        rasterCache.releaseMaterial(coverageMaterial);
-        rasterCache.releaseMaterial(qualityMaterial);
-      } else { coverageMaterial.dispose(); qualityMaterial.dispose(); }
+      for (const material of activeMaterials) {
+        if (rasterCache) rasterCache.releaseMaterial(material as THREE.ShaderMaterial);
+        else material.dispose();
+      }
       activeMaterials.length=0;
 
       disposeLayerTextures(textures.disposableTextures);
@@ -1825,11 +1847,14 @@ export async function bakeProjectedLayerRastersWithGpu(
       });
       coveredPixels += layerRaster?.coveredPixels ?? 0;
       if (cacheable[layerIndex] && rasterCache?.take(keys[layerIndex], {
-        color: colorTarget, quality: qualityTarget, sourceSize: textures.sourceSizes,
+        color: layerColorTarget,
+        quality: useMrt ? undefined : qualityTarget,
+        qualityTexture: layerQualityTexture,
+        sourceSize: textures.sourceSizes,
       })) {
         // Transfer target ownership; later layers must never overwrite cached UVs.
-        colorTarget = createPostprocessTarget(resolution);
-        qualityTarget = createPostprocessTarget(resolution, qualityFormat);
+        if (useMrt) mrtTarget = undefined;
+        else { colorTarget = undefined; qualityTarget = undefined; }
       }
       processedTriangles += totalTrianglesPerLayer;
       reportProgress(layer, layerIndex, true);
@@ -1882,8 +1907,9 @@ export async function bakeProjectedLayerRastersWithGpu(
     activeMaterials.forEach(material=>material.dispose());
     disposeLayerTextures(activeTextures);
     restoreRendererState(renderer, previousState);
-    colorTarget.dispose();
-    qualityTarget.dispose();
+    colorTarget?.dispose();
+    qualityTarget?.dispose();
+    mrtTarget?.dispose();
     qualityReadback.dispose();
     await sources.close();
   }
