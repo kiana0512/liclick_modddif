@@ -44,6 +44,7 @@ export type ProjectSettings = {
   imageGeneration?: {
     textureGptModel?: string;
     textureGptQuality?: string;
+    textureMultiviewMode?: 'stable' | 'fast';
     localRepaintProvider?: 'modelview' | 'gpt';
     model: string;
     aspectRatio: string;

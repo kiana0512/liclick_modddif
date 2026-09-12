@@ -343,6 +343,7 @@ function compactTextureProgressButtonLabel(label: string) {
 const defaultImageGenerationSettings = {
   textureGptModel: 'gpt-image-2.5-sunburst',
   textureGptQuality: 'high',
+  textureMultiviewMode: 'stable' as 'stable' | 'fast',
   localRepaintProvider: 'modelview' as 'modelview' | 'gpt',
   model: 'gpt-image-2' as LiclickImageModel,
   aspectRatio: 'auto' as LiclickAspectRatio,
@@ -818,6 +819,7 @@ export function GeneratePanel({
   promptValueRef.current = { key: promptPolishKey, value: prompt };
   const textureGptModel = resolveGptTextureModel(generationSettings.textureGptModel);
   const textureGptQuality = resolveGptTextureQuality(generationSettings.textureGptQuality);
+  const textureMultiviewMode = generationSettings.textureMultiviewMode === 'fast' ? 'fast' : 'stable';
   const isGptLocalRepaint = generationSettings.localRepaintProvider === 'gpt';
   const imageModel = isTextureMapTab || (isLocalRepaintTab && isGptLocalRepaint)
     ? textureGptModel
@@ -2978,7 +2980,7 @@ export function GeneratePanel({
     const objectId = captureObjectId;
     const projectId = currentProject.id;
     const scheduler = await import('@/engine/generation/gptMultiviewPairs');
-    const pairs = scheduler.planGptViewPairs(requestedViews, selectedCameraViewPreset);
+    const pairs = scheduler.planGptViewPairs(requestedViews, selectedCameraViewPreset, textureMultiviewMode);
     const textureBatchId = createId('gpt-paired-multiview');
     const assertActive = () => {
       throwIfTexturePipelineCancelled(signal);
@@ -5525,6 +5527,22 @@ export function GeneratePanel({
                   />
                 </div>
                 <p className="mt-1 text-[11px] text-white/46">1:1 方图 · {resolution} · 透明背景</p>
+                {isTextureMapTab && textureViewMode === 'multi' && (
+                  <button
+                    type="button"
+                    aria-label="多视图加速模式"
+                    aria-pressed={textureMultiviewMode === 'fast'}
+                    disabled={workflowConfigurationLocked || workflowSubmissionLocked}
+                    title="加速首组2张、后续最多4张；同组互不参考，组间等待回贴。"
+                    className="mt-2 rounded border border-white/15 px-2 py-1 text-xs disabled:opacity-40"
+                    onClick={() => {
+                      if (workflowConfigurationLocked || workflowSubmissionLocked) return;
+                      updateGenerationSettings({ textureMultiviewMode: textureMultiviewMode === 'fast' ? 'stable' : 'fast' });
+                    }}
+                  >
+                    {textureMultiviewMode === 'fast' ? '加速 · 最多4张并发' : '稳定 · 2张并发'}
+                  </button>
+                )}
                 {isLocalRepaintTab && <p className="mt-1 text-[11px] text-white/46">选区和无贴图处显示白模；回贴仅作用于笔刷选区。</p>}
               </div>
             )}
