@@ -1,6 +1,6 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
-> 文档版本：`2.20.71`
+> 文档版本：`2.20.72`
 >
 > 生效日期：`2026-09-12`
 >
@@ -13,6 +13,8 @@
 2026-09-12 M04，协作 M08/M12：用户明确要求界面选 4K 时仍使用 2K 生图参数。`GPT25-TEXTURE-GENERATION/1.1.1` 在单/多视图及 GPT 局部重绘共享请求策略中映射 4K→2K，1K/2K 不变；方图、模型、质量、透明背景与任务数量不变。仅改变新 GPT 任务的 imageSize，不改项目 UV/贴图分辨率、截图、投影、蒙版、GPU/CPU/Worker/shader、持久化/导出公式或 Schema，不回写历史任务。无迁移；回滚该映射即恢复顶部 4K 请求 4K，已生成资产保持可读。见 [GPT 参数变更卡](changes/CHG-20260912-GPT-OPTIONS.md)。
 
 2026-09-12 `CHG-20260912-ERASER-INTERACTIVE-UPLOAD`：UI-06/UI-10 → M08，协作 M06/M07；候选 `ALG-ERASE-001` v1.3.10 / `UV-DISPLAY-BUFFER` v1.1.2。用户批准新版优化，本次仅落实上传与调度阶段：当前普通投影层的交互草稿显式允许源纹理和结果纹理在交互期间分条上传；默认后台/正式合并仍等待交互静默。交互结果直接转移 straight RGBA 给既有 Worker，按原方向分条，不再创建全图 ImageBitmap；静态缓存/正式结果保留旧路径及所有权。Top-3、CPU 舍入修正、接缝/gutter、shader、分辨率、QA、Schema、历史/资产持久化及导出不变，无迁移。123 项回归、1K/2K-14 层/4K 隔离持续拖动通过；强制恢复旧上传门禁的 1K 反证超时。4K 曾在并行回归负载下超时，重跑通过但反馈约 1.3 秒，尚非逐帧 GPU 增量更新，也未完成复杂工程/长期稳定验收。本次未推送或部署；回滚及详细验证见 [变更卡](changes/CHG-20260912-ERASER-INTERACTIVE-UPLOAD.md)。
+
+2026-09-12 M07，协作 M05/M06/M08：`LOCAL-BOUNDARY-REPAIR` v1.2.0 将内容识别补缝的生产检测/拓扑/修补上限由 2K 提升到 4K，使用户选择 4K 时细缝、小 UV 岛和覆盖边界不再先缩到 2K 判定；8K 仍使用明确的 4K 修补上限。Worker 启动同时取消 UI 线程对完整 topology/region/seam/source-exclusion 只读数组的显式预复制，保留 resident 源，并由浏览器结构化克隆直接创建 Worker 所有副本；短生命周期 RGBA/write mask 继续安全转移。4096² 浏览器夹具修补 524,288 texel，中心边界颜色、4K PNG、无跨区域/全局填色均通过，Worker 单次约 2965ms；2K Worker/主线程逐字节差为 0。没有改变颜色传播、Alpha、来源阈值、接缝、GPU/shader、投影层顺序、持久化或导出公式，不把 4K 总耗时冒充提速。无 Schema、Command、Revision CAS、ownership 或资产迁移。详见 [4K 内容识别补缝变更卡](changes/CHG-20260912-CONTENT-AWARE-4K.md)。
 
 2026-09-12 UI-06 → 主模块 M05，协作 M06/M07：`LAYER-MULTISELECT-VISIBILITY` v1.0.0 在批量关闭所选图层导致 LayerStore 自动切换 active layer 时保留原多选集合，因此任一仍被选中的隐藏图层眼睛可原集合批量打开；所选行增加持续可见的洋红内描边，active 蓝色底边语义不变。该修改不改变单选、Shift/Ctrl 选择、图层顺序、可见性值、投影转 UV 像素、完整分辨率、QA、持久化或导出。无 Schema、资产或工程迁移；回滚只恢复 active layer 驱动的单选收敛与原背景高亮。详见 [图层多选显隐变更卡](changes/CHG-20260912-LAYER-MULTISELECT-VISIBILITY.md)。
 

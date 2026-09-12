@@ -10,6 +10,7 @@ try {
   await server.listen();
   browser = await chromium.launch({ headless: true, channel: process.env.LICLICK_TEST_BROWSER_CHANNEL || 'msedge' });
   const page = await browser.newPage();
-  await page.goto(`http://127.0.0.1:${server.httpServer.address().port}/__repair_test`);
-  console.log(JSON.stringify(await page.evaluate(async () => (await import('/scripts/local-boundary-blend-browser-fixture.mjs')).run()), null, 2));
+  const resolution = process.env.LICLICK_CONTENT_REPAIR_TEST_RESOLUTION || '2048';
+  await page.goto(`http://127.0.0.1:${server.httpServer.address().port}/__repair_test?resolution=${resolution}`);
+  console.log(JSON.stringify(await page.evaluate(async (size) => (await import('/scripts/local-boundary-blend-browser-fixture.mjs')).run(size), Number(resolution)), null, 2));
 } finally { await browser?.close(); await server.close(); }

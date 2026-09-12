@@ -76,6 +76,7 @@ import {
   CONTENT_AWARE_REPAIR_REQUEST_EVENT,
   createVisibleSurfaceCompletionPolicy,
   runSurfaceAwareRepair,
+  CONTENT_AWARE_UV_MAX_RESOLUTION,
   type ContentAwareRepairRequestDetail,
 } from '@/engine/contentAware';
 import {
@@ -330,7 +331,6 @@ const resolutionToSize = {
 
 const LARGE_DATA_URL_ASSET_UPLOAD_THRESHOLD = 256 * 1024;
 const PROJECT_THUMBNAIL_BACKGROUND = '#333333';
-const CONTENT_AWARE_UV_MAX_RESOLUTION = 2048;
 const EDITOR_TASK_LOCKED_SHORTCUTS = [
   'project.save',
   'history.undo',
