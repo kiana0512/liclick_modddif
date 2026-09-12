@@ -1735,6 +1735,7 @@ export async function bakeProjectedLayerRastersWithGpu(
         if (resident) {
           const start = performance.now();
           resident.push(hit.color.texture, hit.qualityTexture);
+          rasterCache?.recordResidentState(keys.slice(0, layerIndex + 1), sourceSizes);
           residentAccumulateMs += performance.now() - start;
         }
         if (retainLayerRaster) {
@@ -1807,6 +1808,7 @@ export async function bakeProjectedLayerRastersWithGpu(
           : undefined;
         const accumulatedAt = performance.now();
         resident!.push(layerColorTarget.textures[0], layerQualityTexture);
+        rasterCache?.recordResidentState(keys.slice(0, layerIndex + 1), sourceSizes);
         residentAccumulateMs += performance.now() - accumulatedAt;
       } else {
         const qualityTargetValue = (qualityTarget ??= createPostprocessTarget(resolution, qualityFormat));

@@ -11,6 +11,11 @@ type Entry = {
   sourceSize: GpuLayerSourceSize;
 };
 
+type ResidentState = {
+  keys: string[];
+  sourceSizes: GpuLayerSourceSize[];
+};
+
 const entryBytes = (entry: Entry) => entry.color.width * entry.color.height *
   (entry.qualityTexture.format === RedFormat ? 5 : 8);
 const disposeEntry = (entry: Entry) => {
@@ -31,8 +36,8 @@ export class ProjectedUvRasterCache {
   private disposed = false;
   private revision = 0;
   private resident?: ResidentQualityComposite;
-  private residentKeys: string[] = [];
-  private residentSourceSizes: GpuLayerSourceSize[] = [];
+  private residentStates = new Map<number, ResidentState>();
+  private residentWorkingStates = new Map<number, ResidentState>();
   private programs = new Map<string, THREE.ShaderMaterial>();
   private resolved = new Map<
     string,
@@ -150,30 +155,55 @@ export class ProjectedUvRasterCache {
   }
   getResident(renderer: THREE.WebGLRenderer, resolution: number) {
     this.resident ??= new ResidentQualityComposite(renderer, resolution);
-    this.residentKeys = [];
-    this.residentSourceSizes = [];
+    this.residentStates.clear();
+    this.residentWorkingStates.clear();
     this.resident.reset();
     return this.resident;
   }
   leaseResident(renderer: THREE.WebGLRenderer, resolution: number, keys: string[]) {
     this.resident ??= new ResidentQualityComposite(renderer, resolution);
-    const canResume = this.residentKeys.length > 0 &&
-      this.residentKeys.length <= keys.length &&
-      this.residentKeys.every((key, index) => key === keys[index]);
-    const startIndex = canResume ? this.residentKeys.length : 0;
-    const sourceSizes = canResume ? this.residentSourceSizes.slice() : [];
+    let matched: [number, ResidentState] | undefined;
+    for (const state of this.residentStates) {
+      if (state[1].keys.length > keys.length) continue;
+      if (!state[1].keys.every((key, index) => key === keys[index])) continue;
+      if (!matched || state[1].keys.length > matched[1].keys.length) matched = state;
+    }
+    const startIndex = matched?.[1].keys.length ?? 0;
+    const sourceSizes = matched?.[1].sourceSizes.slice() ?? [];
     // The current candidate targets are leased to this calculation. If it is
     // cancelled or fails, no later request may treat the partial targets as a
     // completed prefix.
-    this.residentKeys = [];
-    this.residentSourceSizes = [];
-    if (!canResume) this.resident.reset();
+    this.residentWorkingStates = new Map(this.residentStates);
+    this.residentStates.clear();
+    if (matched) this.resident.selectSlot(matched[0]);
+    else {
+      this.residentWorkingStates.clear();
+      this.resident.reset();
+    }
     return { composite: this.resident, startIndex, sourceSizes };
+  }
+  recordResidentState(keys: string[], sourceSizes: GpuLayerSourceSize[]) {
+    if (!this.resident || keys.length !== sourceSizes.length) return;
+    this.residentWorkingStates.set(this.resident.getCurrentSlot(), {
+      keys: keys.slice(),
+      sourceSizes: sourceSizes.slice(),
+    });
   }
   commitResident(keys: string[], sourceSizes: GpuLayerSourceSize[]) {
     if (this.disposed || keys.length !== sourceSizes.length) return;
-    this.residentKeys = keys.slice();
-    this.residentSourceSizes = sourceSizes.slice();
+    if (this.resident) {
+      this.residentWorkingStates.set(this.resident.getCurrentSlot(), {
+        keys: keys.slice(), sourceSizes: sourceSizes.slice(),
+      });
+    }
+    this.residentStates.clear();
+    for (const [slot, state] of this.residentWorkingStates) {
+      if (
+        state.keys.length <= keys.length &&
+        state.keys.every((key, index) => key === keys[index])
+      ) this.residentStates.set(slot, state);
+    }
+    this.residentWorkingStates.clear();
   }
   take(key: string, entry: Entry) {
     const bytes = entryBytes(entry);
@@ -196,8 +226,8 @@ export class ProjectedUvRasterCache {
     this.programs.clear();
     this.resident?.dispose();
     this.resident = undefined;
-    this.residentKeys = [];
-    this.residentSourceSizes = [];
+    this.residentStates.clear();
+    this.residentWorkingStates.clear();
     for (const entry of this.entries.values()) {
       disposeEntry(entry);
     }

@@ -315,6 +315,14 @@ export class ResidentQualityComposite {
     this.current=next;
   }
 
+  getCurrentSlot() { return this.current; }
+
+  selectSlot(slot: number) {
+    if (slot !== 0 && slot !== 1) throw new Error('Invalid resident quality slot.');
+    this.current=slot;
+    this.initialized=true;
+  }
+
   resolve(preserveAlpha: boolean, markUncertain = false) {
     if (!this.initialized) throw new Error('Resident quality composite has no layers.');
     this.resolveMaterial.uniforms.previousCandidates.value=this.targets[this.current].texture;

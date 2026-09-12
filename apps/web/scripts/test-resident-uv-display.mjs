@@ -193,8 +193,13 @@ aggregateCache.dispose();
 {
   const prefixCache = new ProjectedUvRasterCache(64);
   prefixCache.prepare(renderer, 'prefix-scope', ['a', 'b']);
-  let resets = 0;
-  const composite = { reset() { resets++; }, dispose() {} };
+  let resets = 0, slot = 0;
+  const composite = {
+    reset() { resets++; slot = 0; },
+    dispose() {},
+    getCurrentSlot() { return slot; },
+    selectSlot(next) { slot = next; },
+  };
   prefixCache.resident = composite;
   let lease = prefixCache.leaseResident(renderer, 1, ['a', 'b']);
   assert.equal(lease.startIndex, 0);
@@ -213,6 +218,43 @@ aggregateCache.dispose();
   assert.equal(lease.startIndex, 0, 'Middle-layer changes require a full recomposition');
   assert.equal(resets, 3);
   prefixCache.dispose();
+}
+// The ping-pong candidate target that preceded a completed stack is still an
+// exact Top-K prefix. Closing the highest-priority visible layer should select
+// that resident slot instead of projecting every remaining layer again.
+{
+  const rewindCache = new ProjectedUvRasterCache(64);
+  rewindCache.prepare(renderer, 'rewind-scope', ['a', 'b', 'c']);
+  let currentSlot = 0, resets = 0;
+  rewindCache.resident = {
+    reset() { resets++; currentSlot = 0; },
+    dispose() {},
+    getCurrentSlot() { return currentSlot; },
+    selectSlot(next) { currentSlot = next; },
+  };
+  rewindCache.leaseResident(renderer, 1, ['a', 'b', 'c']);
+  currentSlot = 1;
+  rewindCache.recordResidentState(['a'], [{ id: 'a' }]);
+  currentSlot = 0;
+  rewindCache.recordResidentState(['a', 'b'], [{ id: 'a' }, { id: 'b' }]);
+  currentSlot = 1;
+  rewindCache.recordResidentState(
+    ['a', 'b', 'c'],
+    [{ id: 'a' }, { id: 'b' }, { id: 'c' }],
+  );
+  rewindCache.commitResident(
+    ['a', 'b', 'c'],
+    [{ id: 'a' }, { id: 'b' }, { id: 'c' }],
+  );
+  const rewind = rewindCache.leaseResident(renderer, 1, ['a', 'b']);
+  assert.equal(rewind.startIndex, 2, 'One-layer suffix removal reuses the exact previous slot');
+  assert.equal(currentSlot, 0);
+  assert.deepEqual(rewind.sourceSizes, [{ id: 'a' }, { id: 'b' }]);
+  rewindCache.commitResident(['a', 'b'], [{ id: 'a' }, { id: 'b' }]);
+  const append = rewindCache.leaseResident(renderer, 1, ['a', 'b', 'c']);
+  assert.equal(append.startIndex, 2, 'Re-enabling the top layer resumes the same exact prefix');
+  assert.equal(resets, 1);
+  rewindCache.dispose();
 }
 const compactCache = new ProjectedUvRasterCache(16);
 compactCache.prepare(renderer, 'compact', ['a', 'b', 'c']);
