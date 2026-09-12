@@ -7,7 +7,10 @@ import {
 
 // ALG-LR-UV-PAINT v1.1.4. Shared UV pixels intentionally share color/alpha.
 type Tile = { bounds: Rect; surfaces: Array<{ mesh: THREE.Mesh; box: THREE.Box3 }> };
-type Stroke = { before: Map<number, Promise<Uint8Array<ArrayBuffer>>>; changed: Set<number> };
+type Stroke = {
+  before?: Map<number, Promise<Uint8Array<ArrayBuffer>>>;
+  changed: Set<number>;
+};
 type ProjectedSurfaceBounds = [left: number, top: number, right: number, bottom: number] | true;
 
 const vertex = `
@@ -426,25 +429,28 @@ export class UvRepaint {
     return [Math.ceil(width * scale), Math.ceil(height * scale)] as const;
   }
 
-  async prepare(material: THREE.ShaderMaterial, camera: THREE.Camera, initial?: CanvasImageSource) {
+  async prepare(
+    material: THREE.ShaderMaterial | undefined,
+    camera: THREE.Camera,
+    initial?: CanvasImageSource,
+  ) {
     this.updateMatrices(camera);
     // Retain immutable capture uniforms/textures, not a pre-flattened UV source:
     // overlapping faces may sample different colors in the frozen source image.
-    const captured = THREE.UniformsUtils.clone(material.uniforms);
-    this.sourceTextures = Object.values(captured)
-      .map((uniform) => uniform.value)
-      .filter((value): value is THREE.Texture => value?.isTexture);
-    this.brush.uniforms = { ...captured, ...this.brush.uniforms };
-    this.brush.defines = { ...material.defines };
-    this.brush.vertexShader =
-      material.vertexShader.replace(/void main\(\)\s*\{/, 'void paintSourceVertex() {') +
-      vertex.replace('void main() {', 'void main() { paintSourceVertex();');
-    // Depth selects strongest visible hit; ties retain first stable triangle.
-    // The separate composite applies shared UV erasure exactly once per stamp.
-    this.brush.fragmentShader =
-      material.fragmentShader.replace(/void main\(\)\s*\{/, 'void paintSourceFragment() {') +
-      paintFragment +
-      `
+    if (material) {
+      const captured = THREE.UniformsUtils.clone(material.uniforms);
+      this.sourceTextures = Object.values(captured)
+        .map((uniform) => uniform.value)
+        .filter((value): value is THREE.Texture => value?.isTexture);
+      this.brush.uniforms = { ...captured, ...this.brush.uniforms };
+      this.brush.defines = { ...material.defines };
+      this.brush.vertexShader =
+        material.vertexShader.replace(/void main\(\)\s*\{/, 'void paintSourceVertex() {') +
+        vertex.replace('void main() {', 'void main() { paintSourceVertex();');
+      this.brush.fragmentShader =
+        material.fragmentShader.replace(/void main\(\)\s*\{/, 'void paintSourceFragment() {') +
+        paintFragment +
+        `
       void main() {
         float weight = repaintWeight();
         if (erase > 0.5) gl_FragColor = vec4(0.0, 0.0, 0.0, weight);
@@ -455,6 +461,19 @@ export class UvRepaint {
         }
         gl_FragDepth = 1.0 - weight;
       }`;
+    } else {
+      // Mask-only sessions never sample or flatten source colour. They rasterize
+      // the visible surface footprint straight into a full-resolution GPU keep-mask.
+      this.brush.vertexShader = vertex.replace(
+        'vec4(uv*2.0-1.0,0.0,1.0)',
+        'vec4(vec2(uv.x,1.0-uv.y)*2.0-1.0,0.0,1.0)',
+      );
+      for (const tile of this.tiles.values())
+        tile.bounds.y = this.resolution - tile.bounds.y - tile.bounds.height;
+      this.brush.fragmentShader =
+        paintFragment +
+        'void main(){float weight=repaintWeight();gl_FragColor=vec4(0,0,0,weight);gl_FragDepth=1.0-weight;}';
+    }
     this.brush.needsUpdate = true;
     try {
       await isolated(this.renderer, () => {
@@ -493,6 +512,8 @@ export class UvRepaint {
             (this.resolution - row - 1) * stride,
           );
         this.write({ x: 0, y: 0, width: this.resolution, height: this.resolution }, flipped);
+      } else if (!material) {
+        this.resetWhite();
       }
     } finally {
       this.meshes.forEach((mesh) => {
@@ -501,9 +522,12 @@ export class UvRepaint {
     }
   }
 
-  begin() {
+  begin(captureHistory = true) {
     if (this.disposed || this.stroke) throw new Error('UV 笔画会话不可用。');
-    this.stroke = { before: new Map(), changed: new Set() };
+    this.stroke = {
+      ...(captureHistory ? { before: new Map() } : {}),
+      changed: new Set(),
+    };
   }
 
   private refreshProjectedTileBounds(key: string, clip: THREE.Matrix4, size: THREE.Vector2) {
@@ -631,7 +655,8 @@ export class UvRepaint {
       // enter the authored output or its history.
       const bounds = { ...touched[0][1].bounds };
       for (const [id, tile] of touched) {
-        if (!stroke.before.has(id)) stroke.before.set(id, this.read(this.output, tile.bounds));
+        if (stroke.before && !stroke.before.has(id))
+          stroke.before.set(id, this.read(this.output, tile.bounds));
         stroke.changed.add(id);
         const right = Math.max(bounds.x + bounds.width, tile.bounds.x + tile.bounds.width);
         const bottom = Math.max(bounds.y + bounds.height, tile.bounds.y + tile.bounds.height);
@@ -657,11 +682,12 @@ export class UvRepaint {
   end(): Promise<UvRepaintPatch[]> {
     const stroke = this.stroke;
     this.stroke = undefined;
-    if (!stroke) return Promise.resolve([]);
+    if (!stroke?.before) return Promise.resolve([]);
+    const beforeReads = stroke.before;
     const reads = [...stroke.changed].map(async (id) => {
       const bounds = this.tiles.get(id)!.bounds;
       const afterPromise = this.read(this.output, bounds);
-      const [before, after] = await Promise.all([stroke.before.get(id)!, afterPromise]);
+      const [before, after] = await Promise.all([beforeReads.get(id)!, afterPromise]);
       if (before.every((value, i) => value === after[i])) return undefined;
       return { bounds, before, after };
     });
@@ -670,6 +696,16 @@ export class UvRepaint {
         patches.filter((patch): patch is UvRepaintPatch => Boolean(patch)),
       ),
     );
+  }
+
+  resetWhite() {
+    if (this.disposed || !this.outputAlive) return;
+    this.stroke = undefined;
+    isolated(this.renderer, () => {
+      this.renderer.setRenderTarget(this.output);
+      this.renderer.setClearColor(0xffffff, 1);
+      this.renderer.clear(true, false, false);
+    });
   }
 
   publish(patches: UvRepaintPatch[], side: 'before' | 'after', restoreGpu = false) {
