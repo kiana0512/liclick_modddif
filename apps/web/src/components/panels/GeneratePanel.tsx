@@ -5423,7 +5423,6 @@ export function GeneratePanel({
               加速 · 最多4张并发
             </p>
           )}
-          {isLocalRepaintTab && <p className="mt-1 text-[11px] text-white/46">仅回贴笔刷选区。</p>}
         </div>
       )}
       <Button
