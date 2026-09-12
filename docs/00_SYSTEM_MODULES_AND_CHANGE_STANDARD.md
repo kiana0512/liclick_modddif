@@ -12,7 +12,7 @@
 
 ## 1. 文档地位与强制边界
 
-2026-09-12 M15，协作 M06：`SHADER-TEMPLATE-FORMAT/1.1.0` 将已有生产构建模板去缩进扩展至 ProjectedLayerPreviewCompositor 的 GLSL 常量，仅删除换行后的缩进，保留 GLSL token、预处理行、插值间隔和像素算法。合并 GPT 参数与后台生命周期优化后总包超出预算 1651 字节；通过该文件 2028 字节无语义空白压缩消除超额，不提高预算、不降低分辨率或 QA。新增实际模块逐 token 等价与仅 Shader 变量受影响断言；无持久化迁移，回滚可移除新增文件白名单。
+2026-09-12 M15，协作 M06/M07：`SHADER-TEMPLATE-FORMAT/1.1.0` 将已有生产构建模板去缩进扩展至实际打包的 gpuUvBakeRenderer 的 GLSL 常量，仅删除换行后的缩进，保留 GLSL token、预处理行、插值间隔和像素算法。合并 GPT 参数与后台生命周期优化后总包超出预算 1651 字节；该文件可去除 2344 字节源码空白，不提高预算、不降低分辨率或 QA，最终产物仍需通过正式预算检查。新增实际模块逐 token 等价与仅 Shader 变量受影响断言；无持久化迁移，回滚可移除新增文件白名单。未采用对非打包 PreviewCompositor 的格式化，因为不减少生产产物。
 
 2026-09-12 M04：`GPT25-TEXTURE-GENERATION/1.1.0` 将单/多视图和 GPT 局部重绘输出统一为 1:1 方图，分辨率绑定顶部 1K/2K/4K；新增项目级五档质量 low/medium/high/xhigh/max，默认 high，两种 GPT 模型均可切换。透明背景固定，原远端局部重绘不变。协作 M08/M12，详见 [变更卡](changes/CHG-20260912-GPT-OPTIONS.md)。
 

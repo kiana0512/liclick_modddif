@@ -57,7 +57,7 @@ const plugin = shaderTemplateFormatPlugin();
 assert.equal(plugin.apply, 'build');
 assert.equal(plugin.transform(fixture, '/src/ui/Panel.ts'), undefined);
 assert.equal(plugin.transform(source, filename.pathname).code, result);
-const compositorFile = new URL('../src/engine/projection/ProjectedLayerPreviewCompositor.ts', import.meta.url);
+const compositorFile = new URL('../src/engine/bake/gpuUvBakeRenderer.ts', import.meta.url);
 const compositorSource = fs.readFileSync(compositorFile, 'utf8');
 const compositorResult = compact(compositorSource);
 assert.deepEqual(tokens(compositorResult), tokens(compositorSource));
