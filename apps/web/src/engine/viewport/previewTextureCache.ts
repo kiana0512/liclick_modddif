@@ -698,7 +698,7 @@ export function uploadPreviewTextureInStripes(
           await waitForBrowserPaint();
           batchSynchronousMs = 0;
           presentationRequired = false;
-        } else {
+        } else if (!usesVisibleRenderer) {
           // The detached renderer has independent GL state. A macrotask yield
           // lets pointer/rAF work run without adding a mandatory 16.7ms wait to
           // every exact upload stripe (hundreds of waits in a 14-view 4K bake).

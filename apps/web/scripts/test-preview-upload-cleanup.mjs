@@ -8,7 +8,7 @@ const code = ts.transpileModule(source.slice(source.indexOf('export function upl
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
 }).outputText;
 
-async function run(failure, flipY, fast = false, mask = false, allowWhileInteracting = false) {
+async function run(failure, flipY, fast = false, mask = false, allowWhileInteracting = false, visible = true) {
   let cancelled = false;
   let uploads = 0;
   let monitors = 0;
@@ -37,11 +37,12 @@ async function run(failure, flipY, fast = false, mask = false, allowWhileInterac
       );
     },
   };
-  const renderer = { domElement: { isConnected: true }, getContext: () => context,
+  const renderer = { domElement: { isConnected: visible }, getContext: () => context,
     initTexture() { if (failure === 'allocate') throw new Error('allocation failed'); },
     properties: { get: () => ({ __webglTexture: 'new' }) },
   };
   let waitCount = 0;
+  let taskYields = 0;
   let idleWaits = 0;
   const unhandled = [];
   const onUnhandled = error => unhandled.push(error);
@@ -49,7 +50,7 @@ async function run(failure, flipY, fast = false, mask = false, allowWhileInterac
   const scope = {
     THREE: { RedFormat: 'red' },
     window: { location: { search: fast ? '' : '?perfLab=1&perfResidentQuality=0' } },
-    yieldToBrowserTask: async () => { await new Promise(resolve => setImmediate(resolve)); },
+    yieldToBrowserTask: async () => { taskYields++; await new Promise(resolve => setImmediate(resolve)); },
     exports: {}, ImageBitmap: Bitmap, document: { body: { dataset: {} } },
     previewTextureReadyRenderers: new WeakMap(), previewTextureUploadPromises: new WeakMap(),
     markPreviewTextureUploadStarted: () => uploads++, markPreviewTextureUploadFinished: () => uploads--,
@@ -102,6 +103,7 @@ async function run(failure, flipY, fast = false, mask = false, allowWhileInterac
     assert.equal(Boolean(states.get('flip')), true);
     assert.equal(Boolean(states.get('premultiply')), true);
     assert.equal(states.get('alignment'), 8);
+    return { taskYields, waitCount };
   } finally { process.off('unhandledRejection', onUnhandled); }
 }
 
@@ -122,4 +124,8 @@ for (const failure of [undefined, 'before-allocation', 'allocate', 'first-crop',
 }
 await run(undefined, false, true, 'rgba', true);
 await run(undefined, false, true, true, true);
-console.log('Preview upload cleanup passed: RGBA bitmap/bytes and R8 mask success/cancel/failure cases; idle gating, late/rejected stripes, GL state, source ownership, orientation and zero live monitors/uploads.');
+const visibleBatch = await run(undefined, false, true, false, false, true);
+assert.equal(visibleBatch.taskYields, 0, 'healthy visible uploads batch sub-budget stripes without one macrotask per stripe');
+const detachedBatch = await run(undefined, false, true, false, false, false);
+assert.equal(detachedBatch.taskYields, 4, 'detached uploads continue yielding once per exact stripe');
+console.log('Preview upload cleanup passed: RGBA bitmap/bytes and R8 mask success/cancel/failure cases; visible sub-budget batching, detached task yields, idle gating, late/rejected stripes, GL state, source ownership, orientation and zero live monitors/uploads.');
