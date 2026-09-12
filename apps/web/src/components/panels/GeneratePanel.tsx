@@ -1,5 +1,5 @@
 import { usesCaptureMaskTextureProjection, preservesGeneratedSourceAlpha, textureProjectionIgnoresSourceAlpha } from '@/engine/generation/textureProjectionPolicy';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Download, Layers, LoaderCircle, Maximize2, Plus, Sparkles, Square, X } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
@@ -343,7 +343,6 @@ function compactTextureProgressButtonLabel(label: string) {
 const defaultImageGenerationSettings = {
   textureGptModel: 'gpt-image-2.5-sunburst',
   textureGptQuality: 'high',
-  textureMultiviewMode: 'stable' as 'stable' | 'fast',
   localRepaintProvider: 'modelview' as 'modelview' | 'gpt',
   model: 'gpt-image-2' as LiclickImageModel,
   aspectRatio: 'auto' as LiclickAspectRatio,
@@ -819,7 +818,6 @@ export function GeneratePanel({
   promptValueRef.current = { key: promptPolishKey, value: prompt };
   const textureGptModel = resolveGptTextureModel(generationSettings.textureGptModel);
   const textureGptQuality = resolveGptTextureQuality(generationSettings.textureGptQuality);
-  const textureMultiviewMode = generationSettings.textureMultiviewMode === 'fast' ? 'fast' : 'stable';
   const isGptLocalRepaint = generationSettings.localRepaintProvider === 'gpt';
   const imageModel = isTextureMapTab || (isLocalRepaintTab && isGptLocalRepaint)
     ? textureGptModel
@@ -982,12 +980,32 @@ export function GeneratePanel({
   const persistPairedMultiviewReferenceRef =
     useRef<(singleReference: ReferenceImage, generation: Generation) => Promise<ReferenceImage>>();
   const portalRoot = typeof document === 'undefined' ? undefined : document.body;
+  const generateActionRef = useRef<HTMLDivElement>(null);
   const dockDensity = useWorkspaceLayoutStore((state) => state.dockDensity);
   const generatePanelExpanded = useWorkspaceLayoutStore(
     (state) =>
       state.mode === 'texture' &&
       state.panels.some((panel) => panel.id === 'generate' && !panel.collapsed && panel.visible),
   );
+  useLayoutEffect(() => {
+    const action = generateActionRef.current;
+    if (!workspaceActive || !generatePanelExpanded || !portalRoot || !action) return;
+    const property = '--generate-action-space';
+    const previous = portalRoot.style.getPropertyValue(property);
+    const measure = () => {
+      // Keep the existing 12px clearance, including wrapped parameter/help text.
+      const height = action.getBoundingClientRect().height;
+      portalRoot.style.setProperty(property, `${height > 0 ? Math.ceil(height) + 12 : 76}px`);
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(action);
+    return () => {
+      observer.disconnect();
+      if (previous) portalRoot.style.setProperty(property, previous);
+      else portalRoot.style.removeProperty(property);
+    };
+  }, [workspaceActive, generatePanelExpanded, portalRoot]);
   const tabGenerations = generations.filter((generation) => {
     const projectId =
       typeof generation.metadata.projectId === 'string' ? generation.metadata.projectId : undefined;
@@ -2980,7 +2998,7 @@ export function GeneratePanel({
     const objectId = captureObjectId;
     const projectId = currentProject.id;
     const scheduler = await import('@/engine/generation/gptMultiviewPairs');
-    const pairs = scheduler.planGptViewPairs(requestedViews, selectedCameraViewPreset, textureMultiviewMode);
+    const pairs = scheduler.planGptViewPairs(requestedViews, selectedCameraViewPreset);
     const textureBatchId = createId('gpt-paired-multiview');
     const assertActive = () => {
       throwIfTexturePipelineCancelled(signal);
@@ -5364,6 +5382,7 @@ export function GeneratePanel({
 
   const generateAction = (
     <div
+      ref={generateActionRef}
       data-texture-onboarding="generate-texture"
       data-onboarding-complete={
         previewGeneration?.status === 'succeeded' &&
@@ -5376,6 +5395,38 @@ export function GeneratePanel({
         canCancelGeneration ? 'grid grid-cols-[1fr_52px] gap-2' : ''
       }`}
     >
+      {(isTextureMapTab || isGptLocalRepaint) && (
+        <div className="col-span-full mb-2" aria-label="GPT 2.5 模型选择">
+          <SegmentedControl
+            value={textureGptModel}
+            options={GPT_TEXTURE_MODELS.map((model) => ({ ...model,
+              disabled: workflowConfigurationLocked || workflowSubmissionLocked,
+            }))}
+            onChange={(textureGptModel) => updateGenerationSettings({ textureGptModel })}
+          />
+          <div className="mt-2" aria-label="GPT 生图质量">
+            <p className="mb-1 text-[11px] text-white/56">质量</p>
+            <SegmentedControl
+              value={textureGptQuality}
+              options={GPT_TEXTURE_QUALITIES.map((quality) => ({ ...quality,
+                disabled: workflowConfigurationLocked || workflowSubmissionLocked,
+              }))}
+              onChange={(textureGptQuality) => updateGenerationSettings({ textureGptQuality })}
+            />
+          </div>
+          <p className="mt-1 text-[11px] text-white/46">1:1 方图 · {resolution} · 透明背景</p>
+          {isTextureMapTab && textureViewMode === 'multi' && (
+            <p
+              aria-label="多视图并发策略"
+              title="加速首组2张、后续最多4张；同组互不参考，组间等待回贴。"
+              className="mt-2 text-[11px] text-white/56"
+            >
+              加速 · 最多4张并发
+            </p>
+          )}
+          {isLocalRepaintTab && <p className="mt-1 text-[11px] text-white/46">选区和无贴图处显示白模；回贴仅作用于笔刷选区。</p>}
+        </div>
+      )}
       <Button
         className={`relative h-12 w-full overflow-hidden text-base ${
           textureActionProgress ? 'disabled:opacity-100' : ''
@@ -5506,45 +5557,6 @@ export function GeneratePanel({
                 onChange={(localRepaintProvider) => updateGenerationSettings({ localRepaintProvider })}
                 className="mb-2"
               />
-            )}
-            {(isTextureMapTab || isGptLocalRepaint) && (
-              <div className="mb-2" aria-label="GPT 2.5 模型选择">
-                <SegmentedControl
-                  value={textureGptModel}
-                  options={GPT_TEXTURE_MODELS.map((model) => ({ ...model,
-                    disabled: workflowConfigurationLocked || workflowSubmissionLocked,
-                  }))}
-                  onChange={(textureGptModel) => updateGenerationSettings({ textureGptModel })}
-                />
-                <div className="mt-2" aria-label="GPT 生图质量">
-                  <p className="mb-1 text-[11px] text-white/56">质量</p>
-                  <SegmentedControl
-                    value={textureGptQuality}
-                    options={GPT_TEXTURE_QUALITIES.map((quality) => ({ ...quality,
-                      disabled: workflowConfigurationLocked || workflowSubmissionLocked,
-                    }))}
-                    onChange={(textureGptQuality) => updateGenerationSettings({ textureGptQuality })}
-                  />
-                </div>
-                <p className="mt-1 text-[11px] text-white/46">1:1 方图 · {resolution} · 透明背景</p>
-                {isTextureMapTab && textureViewMode === 'multi' && (
-                  <button
-                    type="button"
-                    aria-label="多视图加速模式"
-                    aria-pressed={textureMultiviewMode === 'fast'}
-                    disabled={workflowConfigurationLocked || workflowSubmissionLocked}
-                    title="加速首组2张、后续最多4张；同组互不参考，组间等待回贴。"
-                    className="mt-2 rounded border border-white/15 px-2 py-1 text-xs disabled:opacity-40"
-                    onClick={() => {
-                      if (workflowConfigurationLocked || workflowSubmissionLocked) return;
-                      updateGenerationSettings({ textureMultiviewMode: textureMultiviewMode === 'fast' ? 'stable' : 'fast' });
-                    }}
-                  >
-                    {textureMultiviewMode === 'fast' ? '加速 · 最多4张并发' : '稳定 · 2张并发'}
-                  </button>
-                )}
-                {isLocalRepaintTab && <p className="mt-1 text-[11px] text-white/46">选区和无贴图处显示白模；回贴仅作用于笔刷选区。</p>}
-              </div>
             )}
           </div>
         )}

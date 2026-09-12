@@ -44,6 +44,7 @@ export type ProjectSettings = {
   imageGeneration?: {
     textureGptModel?: string;
     textureGptQuality?: string;
+    /** Legacy setting retained for old projects; new GPT batches always use accelerated groups. */
     textureMultiviewMode?: 'stable' | 'fast';
     localRepaintProvider?: 'modelview' | 'gpt';
     model: string;

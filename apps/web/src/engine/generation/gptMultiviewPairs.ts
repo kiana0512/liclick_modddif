@@ -1,7 +1,7 @@
 import type { Object3D, Mesh, Material } from 'three';
 import { isResidentProjectedMaterial } from '../projection/projectedMaterialIdentity';
 
-// GPT-MULTIVIEW-PAIR-SEQUENCE v1.3.0. Preview order is deliberately untouched.
+// GPT-MULTIVIEW-PAIR-SEQUENCE v1.4.0. Fixed accelerated groups; preview order unchanged.
 const presetPairs = {
   'preset-1': [
     ['front', 'back'],
@@ -26,7 +26,6 @@ const presetPairs = {
 export function planGptViewPairs<T extends { id: string; value?: string }>(
   views: readonly T[],
   preset: keyof typeof presetPairs,
-  mode: 'stable' | 'fast' = 'stable',
 ): T[][] {
   const remaining = new Map(views.map((view) => [view.id, view]));
   const take = (names: readonly string[]) =>
@@ -49,7 +48,6 @@ export function planGptViewPairs<T extends { id: string; value?: string }>(
   // Added views are never silently re-aimed, dropped or paired by a guessed angle.
   pairs.push(...[...remaining.values()].map((view) => [view]));
   if (poles.length) pairs.push(poles);
-  if (mode !== 'fast') return pairs;
   const groups: T[][] = [];
   for (const pair of pairs) {
     const previous = groups.at(-1);

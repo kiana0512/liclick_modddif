@@ -19,18 +19,17 @@ const expected2 = [['front', 'back'], ['left', 'right'], ['right-top', 'left-bot
 const ids = (pairs) => pairs.map((pair) => pair.map((view) => view.id));
 for (const [preset, expected] of [['preset-1', expected1], ['preset-2', expected2]]) {
   const views = make(expected.flat().reverse()), before = JSON.parse(JSON.stringify(views));
-  assert.deepEqual(ids(planGptViewPairs(views, preset)), expected);
   const fast = [expected[0], ...Array.from({ length: (expected.length - 1) / 2 }, (_, index) => expected.slice(1 + index * 2, 3 + index * 2).flat())];
+  assert.deepEqual(ids(planGptViewPairs(views, preset)), fast);
   assert.deepEqual(ids(planGptViewPairs(views, preset, 'fast')), fast);
-  assert.deepEqual(ids(planGptViewPairs(views, preset, 'unknown')), expected, 'unknown persisted mode stays stable');
+  for (const legacy of ['stable', 'unknown']) assert.deepEqual(ids(planGptViewPairs(views, preset, legacy)), fast, 'legacy arguments cannot restore retired grouping');
   const added = { id: 'user-angle', viewDirection: [0.2, 0.9, 0.3] };
-  assert.deepEqual(ids(planGptViewPairs([...views, added], 'custom')), [...expected.slice(0, -1), ['user-angle'], ['top', 'bottom']]);
   const customFast = planGptViewPairs([...views, added], 'custom', 'fast');
   assert.deepEqual(ids(customFast).flat(), [...expected.slice(0, -1).flat(), 'user-angle', 'top', 'bottom']);
   assert.deepEqual(customFast.find((group) => group.includes(added)), [added]);
   assert.deepEqual(views, before, 'thumbnail array and camera definitions are immutable');
 }
-assert.deepEqual(ids(planGptViewPairs(make(['front', 'left', 'back', 'right', 'top', 'bottom']), 'custom')), [['front', 'back'], ['left', 'right'], ['top', 'bottom']]);
+assert.deepEqual(ids(planGptViewPairs(make(['front', 'left', 'back', 'right', 'top', 'bottom']), 'custom')), [['front', 'back'], ['left', 'right', 'top', 'bottom']]);
 assert.deepEqual(ids(planGptViewPairs(make(['front', 'top', 'front']), 'preset-1')), [['front'], ['top']]);
 assert.deepEqual(planGptViewPairs([], 'custom'), []);
 assert.deepEqual(planGptViewPairs([], 'custom', 'fast'), []);
@@ -144,7 +143,7 @@ assert.equal(compactProgressLabel('生成纹理贴图 · 第 2/7 组'), '生成�
 async function fixture(failedView, fullyCovered = false, mode = 'stable', preset = 'custom', names = ['front', 'left', 'back', 'right', 'top', 'bottom']) {
   let sequence = 0, rows = [], frozen = false, repairCount = 0, whitePresentation = false;
   const jobs = new Map(), requests = [], captures = [], saved = [];
-  const project = { id: 'project', captures: [] };
+  const project = { id: 'project', captures: [], settings: { imageGeneration: { textureMultiviewMode: mode } } };
   const sceneRoot = new THREE.Group(), resident = new THREE.ShaderMaterial({ name: 'LiclickProjectedLayerStack:layers' });
   sceneRoot.add(new THREE.Mesh(new THREE.BoxGeometry(), resident));
   const active = () => { assert.equal(frozen, false, 'capture must not run against a frozen preview'); };
@@ -152,7 +151,7 @@ async function fixture(failedView, fullyCovered = false, mode = 'stable', preset
     require: (name) => name.endsWith('gptMultiviewPairs') ? scheduler : {
       buildTextureMapPrompt: () => 'initial', buildTextureMapCompletionPrompt: () => 'completion',
     },
-    captureObjectId: 'object', currentProject: project, selectedCameraViewPreset: preset, textureMultiviewMode: mode,
+    captureObjectId: 'object', currentProject: project, selectedCameraViewPreset: preset,
     singleViewProvider: 'gpt', prompt: 'user draft', imageModel: 'gpt', resolution: '2k', resolutionToSize: { '2k': 2048 },
     objects: [{ id: 'object' }], t: (key) => key, console,
     createId: (prefix) => `${prefix}-${++sequence}`,
@@ -173,7 +172,7 @@ async function fixture(failedView, fullyCovered = false, mode = 'stable', preset
       },
     }) },
     getTextureMapMultiviewCaptures: async (views) => {
-      active(); assert(views.length <= (mode === 'fast' && captures.length ? 4 : 2)); captures.push(views.map((view) => view.id));
+      active(); assert(views.length <= (captures.length ? 4 : 2)); captures.push(views.map((view) => view.id));
       // Clearing transient white mode does not synchronously restore SceneRoot's
       // resident texture material. Model the gap that the old adapter captured.
       whitePresentation = true;
@@ -224,10 +223,10 @@ async function fixture(failedView, fullyCovered = false, mode = 'stable', preset
 }
 const success = await fixture();
 assert.ifError(success.error);
-assert.deepEqual(success.captures, [['front', 'back'], ['left', 'right'], ['top', 'bottom']]);
+assert.deepEqual(success.captures, [['front', 'back'], ['left', 'right', 'top', 'bottom']]);
 assert.deepEqual(success.rows.map((row) => row.id), success.captures.flat());
 assert.deepEqual(success.requests.map((request) => request.prompt), ['initial', 'initial', 'completion', 'completion', 'completion', 'completion']);
-assert.deepEqual(success.requests.map((request) => request.guide.url), ['clay-front', 'clay-back', 'effect:front,back', 'effect:front,back', 'effect:front,back,left,right', 'effect:front,back,left,right']);
+assert.deepEqual(success.requests.map((request) => request.guide.url), ['clay-front', 'clay-back', ...Array(4).fill('effect:front,back')]);
 assert.equal(new Set([...success.jobs.values()].map((job) => job.metadata.textureBatchId)).size, 1);
 assert.equal(success.repairCount, 1);
 const covered = await fixture(undefined, true);
@@ -239,8 +238,8 @@ assert(failure.error);
 assert.deepEqual(failure.captures, [['front', 'back']]);
 assert.deepEqual(failure.rows.map((row) => row.id), ['front']);
 assert.equal(failure.repairCount, 0);
-for (const [preset, expected] of [['preset-1', expected1], ['preset-2', expected2]]) {
-  const result = await fixture(undefined, false, 'fast', preset, expected.flat());
+for (const [preset, expected] of [['preset-1', expected1], ['preset-2', expected2]]) for (const stored of [undefined, 'stable', 'fast', 'unknown']) {
+  const result = await fixture(undefined, false, stored, preset, expected.flat());
   assert.ifError(result.error);
   assert.deepEqual(result.captures.map((group) => group.length), preset === 'preset-1' ? [2, 4, 4] : [2, 4, 4, 4]);
   assert.deepEqual(result.rows.map((row) => row.id), expected.flat());
@@ -260,49 +259,7 @@ assert.deepEqual(fastFailure.captures.map((group) => group.length), [2, 4]);
 assert.deepEqual(fastFailure.rows.map((row) => row.id), ['front', 'back', 'left', 'right', 'left-bottom']);
 assert.equal(fastFailure.repairCount, 0);
 
-// Exercise the actual JSX toggle and handler, including both lock phases.
-let toggle;
-function findToggle(node) {
-  if (ts.isJsxElement(node) && node.openingElement.attributes.properties.some((attr) =>
-    ts.isJsxAttribute(attr) && attr.name.text === 'aria-label' && attr.initializer?.text === '多视图加速模式')) toggle = node;
-  ts.forEachChild(node, findToggle);
-}
-findToggle(ast); assert(toggle);
-assert.match(toggle.parent.parent.getText(ast), /isTextureMapTab && textureViewMode === 'multi'/);
-const settingNodes = new Map();
-function findSettings(node) {
-  if (ts.isVariableDeclaration(node) && ['defaultImageGenerationSettings', 'generationSettings', 'textureMultiviewMode'].includes(node.name.getText(ast))) {
-    settingNodes.set(node.name.getText(ast), `const ${node.getText(ast)};`);
-  }
-  if (ts.isFunctionDeclaration(node) && node.name?.text === 'updateGenerationSettings') settingNodes.set(node.name.text, node.getText(ast));
-  ts.forEachChild(node, findSettings);
-}
-findSettings(ast); assert.equal(settingNodes.size, 4);
-const settingsFactory = new Function('currentProject', 'updateCurrentProject', compile(
-  `${[...settingNodes.values()].join('\n')} return { mode: textureMultiviewMode, write: updateGenerationSettings };`));
-for (const stored of [undefined, 'unknown', 'stable', 'fast']) {
-  let project = { settings: { resolution: '4K', imageGeneration: { textureMultiviewMode: stored, textureGptQuality: 'high', textureMapPrompt: 'keep' } } };
-  const current = settingsFactory(project, (patch) => { project = { ...project, ...patch }; });
-  assert.equal(current.mode, stored === 'fast' ? 'fast' : 'stable');
-  current.write({ textureMultiviewMode: 'fast' });
-  const restored = JSON.parse(JSON.stringify(project));
-  assert.equal(settingsFactory(restored, () => {}).mode, 'fast');
-  assert.equal(restored.settings.resolution, '4K');
-  assert.equal(restored.settings.imageGeneration.textureGptQuality, 'high');
-  assert.equal(restored.settings.imageGeneration.textureMapPrompt, 'keep');
-}
-const jsx = ts.transpileModule(`return (${toggle.getText(ast)});`, { compilerOptions: {
-  target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.React,
-} }).outputText;
-for (const mode of ['stable', 'fast']) {
-  for (const [configurationLocked, submissionLocked] of [[false, false], [true, false], [false, true]]) {
-    const writes = [];
-    const element = new Function('React', 'textureMultiviewMode', 'workflowConfigurationLocked', 'workflowSubmissionLocked', 'updateGenerationSettings', jsx)(
-      { createElement: (_, props, ...children) => ({ props, children }) }, mode, configurationLocked, submissionLocked, (patch) => writes.push(patch));
-    assert.equal(element.props['aria-pressed'], mode === 'fast');
-    assert.equal(element.props.disabled, configurationLocked || submissionLocked);
-    element.props.onClick();
-    assert.deepEqual(writes, configurationLocked || submissionLocked ? [] : [{ textureMultiviewMode: mode === 'fast' ? 'stable' : 'fast' }]);
-  }
-}
-console.log('GPT opposite-pair planning, concurrency, fresh-input, ordered projection, resident barrier and failure contracts passed.');
+assert.doesNotMatch(panel, /textureMultiviewMode|稳定 · 2张并发|aria-label="多视图加速模式"/);
+assert.match(panel, /planGptViewPairs\(requestedViews, selectedCameraViewPreset\)/);
+assert.match(panel, /aria-label="多视图并发策略"/);
+console.log('Fixed accelerated GPT groups: defaults, legacy settings, fresh inputs, ordered commits, cancellation and failure contracts passed.');
