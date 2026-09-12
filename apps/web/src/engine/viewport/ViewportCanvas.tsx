@@ -5364,6 +5364,13 @@ function createInpaintMaskMaterial(maskTexture: THREE.CanvasTexture) {
   });
 }
 
+// R/G preserve which geometric side faced the painting camera. Match
+// that sign to the current view instead of hard-clipping interpolated
+// normals, which produced thin cracks across otherwise solid masks.
+// The projected color stack writes its own small depth bias. Keep the
+// editor selection deterministically in front of that coplanar surface;
+// polygon offset alone becomes angle-dependent and made the mask vanish
+// when the painted face was viewed head-on.
 function createAccumulatedInpaintMaskMaterial(maskTexture: THREE.Texture) {
   const material = new THREE.ShaderMaterial({
     uniforms: {
@@ -5426,9 +5433,9 @@ function createAccumulatedInpaintMaskMaterial(maskTexture: THREE.Texture) {
         float maskAlpha = 0.0;
         if (baseReady > 0.5) {
           vec4 maskTexel = texture2D(maskMap, vMaskUv);
-          // R/G preserve which geometric side faced the painting camera. Match
-          // that sign to the current view instead of hard-clipping interpolated
-          // normals, which produced thin cracks across otherwise solid masks.
+
+
+
           maskAlpha = vViewerFacing >= 0.0 ? maskTexel.r : maskTexel.g;
         }
         if (
@@ -5454,10 +5461,10 @@ function createAccumulatedInpaintMaskMaterial(maskTexture: THREE.Texture) {
         if (maskAlpha <= 0.01) discard;
         float coord = mod(gl_FragCoord.x + gl_FragCoord.y, stripePeriod);
         float stripe = 1.0 - step(stripeWidth, coord);
-        // The projected color stack writes its own small depth bias. Keep the
-        // editor selection deterministically in front of that coplanar surface;
-        // polygon offset alone becomes angle-dependent and made the mask vanish
-        // when the painted face was viewed head-on.
+
+
+
+
         gl_FragDepthEXT = clamp(gl_FragCoord.z - 0.00008, 0.0, 1.0);
         gl_FragColor = vec4(
           stripeColor,
@@ -5555,6 +5562,9 @@ function createInpaintAccumulationTarget(size = PROJECTION_PAINT_MAX_SIZE) {
   return target;
 }
 
+// Store the two sides independently. The accumulated UV mask can then
+// be shown only from the side that was actually painted, without using
+// a brittle normal threshold that cuts cracks through the selection.
 function createInpaintUvAccumulationMaterial(
   snapshot: InpaintProjectionSource,
   operation: 'add' | 'subtract',
@@ -5600,9 +5610,9 @@ function createInpaintUvAccumulationMaterial(
         vec4 maskTexel = texture2D(maskMap, maskUv);
         float coverage = max(maskTexel.r, max(maskTexel.g, maskTexel.b)) * maskTexel.a;
         if (coverage <= 0.01) discard;
-        // Store the two sides independently. The accumulated UV mask can then
-        // be shown only from the side that was actually painted, without using
-        // a brittle normal threshold that cuts cracks through the selection.
+
+
+
         float positiveSide = step(0.0, vProjectorFacing);
         gl_FragColor = vec4(
           coverage * positiveSide,
