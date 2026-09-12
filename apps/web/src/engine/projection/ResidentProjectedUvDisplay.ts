@@ -42,7 +42,7 @@ type Request = {
   onError: (error: unknown) => void;
 };
 
-/** UV-DISPLAY-BUFFER/1.2.0. The display owns derived UV buffers, never layers/assets.
+/** UV-DISPLAY-BUFFER/1.2.1. The display owns derived UV buffers, never layers/assets.
  * Use the same resident Top-K and exact postprocess path as explicit UV merge.
  * Keep the front buffer until its replacement has uploaded and been bound.
  */

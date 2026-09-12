@@ -1,6 +1,6 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
-> 文档版本：`2.20.76`
+> 文档版本：`2.20.77`
 >
 > 生效日期：`2026-09-12`
 >
@@ -9,6 +9,8 @@
 > 基线仓库：`E:\Liclick 3D Texture Modernization`
 >
 > 审计口径：`0a2519d + 607e82f + 2568e40`，不包含错误文档提交 `2bde8c6/e03bab2/d1c5f78`
+
+2026-09-12 UI-06/UI-10 → M08，协作 M06/M07：`ALG-ERASE-001` v1.4.1 / `UV-DISPLAY-BUFFER` v1.2.1 仅确认已经成功发布的橡皮草稿 revision，下一轮计算窗口覆盖所有尚未发布的变化；保留累计 Canvas 蒙版和正式提交语义。不可变 UV topology 可复用有界边界种子，动态 coverage 仍逐次过滤，顺序传播不变。不是完整 GPU 橡皮，短距离拖动未证明端到端提速。完整分辨率、QA、GPU/CPU/Worker/shader 像素规则、持久化和导出不变，无迁移。验证和回滚见 [增量确认变更卡](changes/CHG-20260912-ERASER-REVISION-BOUNDS.md)。
 
 2026-09-12 M07，协作 UI-06/M06/M09：`PERF-UV-SOURCE-PREPARE-001` v1.10.0 将同一次 GPU UV bake 的私有来源纹理从“每张上传后各等待两次呈现”改为“全部精确上传并 flush 后统一等待一次双帧发布屏障”。512/13 图层 retain-raster 三轮配对共 6 次均值 1771.3ms→939.6ms，约提升 47.0%；两图层 JPEG/PNG 约提升 45.3%/44.2%。4K/6 图层中位样本在约 0.5% 噪声范围内，未声明稳定提速或退化。全部 PNG、JPEG、重叠源、4K 与 retain-raster 对照像素差为 0，候选路径无 Long Task。条带大小、自适应帧预算、交互静默、取消、GL 状态恢复、每纹理 flush 与整批最终双帧屏障保留；公开缓存纹理及 detached renderer 仍使用原独立发布规则。完整分辨率、QA、GPU/CPU/Worker/shader 像素公式、持久化和导出不变，无迁移。详见 [UV 来源批量发布变更卡](changes/CHG-20260912-UV-SOURCE-BATCH-PRESENTATION.md)。
 
