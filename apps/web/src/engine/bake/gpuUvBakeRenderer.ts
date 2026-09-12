@@ -55,6 +55,7 @@ const SURFACE_LOCKED_VISIBILITY_FEATHER = 0.05;
 const gpuUvSeamPairCache = new WeakMap<THREE.Object3D, ReturnType<typeof collectUvSeamPairs>>();
 
 type GpuLayerStackBakeInput = {
+  region?: import('./incrementalUvComposite').UvBakeRegion;
   allowWhileInteracting?: boolean;
   rasterCache?: import('./ProjectedUvRasterCache').ProjectedUvRasterCache;
   residentQuality?: { preserveAlpha: boolean; retainRasters: boolean };
@@ -598,6 +599,8 @@ const fullscreenVertexShader = `
   }
 `;
 
+// Render targets contain premultiplied RGB. Preserve the neighbouring alpha
+// instead of forcing a solid ring around a feathered transparent overlay.
 const dilationFragmentShader = `
   uniform sampler2D sourceMap;
   uniform vec2 texelSize;
@@ -645,8 +648,8 @@ const dilationFragmentShader = `
     }
     float alpha = alphaSum / weightSum;
     vec3 straightColor = colorSum / weightSum;
-    // Render targets contain premultiplied RGB. Preserve the neighbouring alpha
-    // instead of forcing a solid ring around a feathered transparent overlay.
+
+
     gl_FragColor = vec4(straightColor * alpha, alpha);
   }
 `;
@@ -676,6 +679,9 @@ const topologyDilationFragmentShader = `
   }
 `;
 
+// Never alter the original projection edge: fading creates dark UV contours.
+// Only bridge absent original UV raster texels recovered by topology padding;
+// transparent texels inside an existing island are brush boundaries, not holes.
 const interiorHoleConstraintFragmentShader = `
   uniform sampler2D sourceMap;
   uniform sampler2D originalMap;
@@ -686,8 +692,8 @@ const interiorHoleConstraintFragmentShader = `
   void main() {
     vec4 original = texture2D(originalMap, vUv);
     if (original.a > 0.0001) {
-      // Never alter the original projection edge. Fading it here created the
-      // dark contour around every small UV fragment.
+
+
       gl_FragColor = original;
       return;
     }
@@ -695,9 +701,9 @@ const interiorHoleConstraintFragmentShader = `
     vec4 expanded = texture2D(sourceMap, vUv);
     float insideOriginalUv = texture2D(uvTopologyBaseMap, vUv).r;
     float insidePaddedUv = texture2D(uvTopologyMap, vUv).r;
-    // Only bridge a texel that was absent from the original UV raster but is
-    // recovered by its one-pixel topology padding. A normal transparent texel
-    // inside an existing UV island is the brush boundary and must stay empty.
+
+
+
     gl_FragColor = expanded.a > 0.0001 && insideOriginalUv <= 0.0001 && insidePaddedUv > 0.0001
       ? expanded
       : vec4(0.0);
@@ -725,6 +731,8 @@ const uvSeamRepairVertexShader = `
   }
 `;
 
+// Local repaint transfers only missing coverage from a geometrically paired UV
+// side; preserve authored texels instead of averaging their colours.
 const uvSeamRepairFragmentShader = `
   uniform sampler2D sourceMap;
   varying vec2 vDestinationUv;
@@ -733,9 +741,9 @@ const uvSeamRepairFragmentShader = `
   void main() {
     vec4 destination = texture2D(sourceMap, clamp(vDestinationUv, vec2(0.0), vec2(1.0)));
     vec4 paired = texture2D(sourceMap, clamp(vPairedUv, vec2(0.0), vec2(1.0)));
-    // Local repaint needs missing-coverage transfer, not colour averaging.
-    // Preserve authored texels and copy only when the geometrically paired UV
-    // side contains valid projected coverage.
+
+
+
     if (destination.a > 0.0001 || paired.a <= 0.0001) discard;
     gl_FragColor = paired;
   }
@@ -1622,19 +1630,31 @@ function setBakeRenderTargetState(
   renderer: THREE.WebGLRenderer,
   target: THREE.WebGLRenderTarget,
   resolution: number,
+  region?: GpuLayerStackBakeInput['region'],
 ) {
   renderer.xr.enabled = false;
   renderer.setPixelRatio(1);
   renderer.autoClear = false;
   renderer.setRenderTarget(target);
   renderer.setViewport(0, 0, resolution, resolution);
-  renderer.setScissorTest(false);
+  if (region) renderer.setScissor(region.x, resolution - region.y - region.size, region.size, region.size);
+  renderer.setScissorTest(Boolean(region));
+}
+
+function copyBakeRegion(renderer: THREE.WebGLRenderer, source: THREE.WebGLRenderTarget,
+  target: THREE.WebGLRenderTarget, region: NonNullable<GpuLayerStackBakeInput['region']>) {
+  const y = source.height - region.y - region.size;
+  const box = new THREE.Box2(new THREE.Vector2(region.x, y), new THREE.Vector2(region.x + region.size, y + region.size));
+  renderer.setRenderTarget(target);
+  for (let i = 0; i < target.textures.length; i++)
+    renderer.copyTextureToTexture(source.textures[i], target.textures[i], box);
 }
 
 export async function bakeProjectedLayerRastersWithGpu(
   input: GpuLayerStackBakeInput,
 ): Promise<GpuLayerRastersBakeOutput> {
-  const { renderer, resolution } = input;
+  const { renderer } = input;
+  const resolution = input.region?.size ?? input.resolution;
   if (resolution > renderer.capabilities.maxTextureSize) {
     throw new Error(
       `GPU max texture size is ${renderer.capabilities.maxTextureSize}, requested ${resolution}.`,
@@ -1651,13 +1671,14 @@ export async function bakeProjectedLayerRastersWithGpu(
   let residentAccumulateMs = 0;
   let sourcePreparationWaitMs=0,textureUploadMs=0,layerReadbackWaitMs=0;
   const rasterCache = input.rasterCache;
-  const keys = input.layers.map(layer => JSON.stringify({ ...layer, visible: true, name: '', order: 0 }));
+  const fullKeys = input.layers.map(layer => JSON.stringify({ ...layer, visible: true, name: '', order: 0 }));
+  const keys = fullKeys.map(key => key + (input.region ? JSON.stringify(input.region) : ''));
   if (rasterCache) {
     const geometry = meshes.map(({ source }) => [source.uuid, source.matrixWorld.elements,
       source.geometry.uuid, ...['position', 'normal', 'uv'].map(name =>
         projectionAttributeRevision(source.geometry.getAttribute(name))),
       projectionAttributeRevision(source.geometry.index), source.geometry.drawRange.start, source.geometry.drawRange.count]);
-    rasterCache.prepare(renderer, JSON.stringify([resolution, geometry, input.enableBackfaceCulling,
+    rasterCache.prepare(renderer, JSON.stringify([input.resolution, geometry, input.enableBackfaceCulling,
       input.inputTextureFlipY, input.projectedImageUvFlipY, input.strictDepthCheck,
       input.maximumDepthError, input.minimumOutputCoverage]), keys);
   }
@@ -1678,8 +1699,32 @@ export async function bakeProjectedLayerRastersWithGpu(
     ? THREE.RedFormat : THREE.RGBAFormat;
   let qualityTarget: THREE.WebGLRenderTarget | undefined;
   let mrtTarget: THREE.WebGLRenderTarget | undefined;
+  let regionColor: THREE.WebGLRenderTarget | undefined, regionQuality: THREE.WebGLRenderTarget | undefined;
+  let regionMrt: THREE.WebGLRenderTarget | undefined;
   const qualityReadback = new QualityAlphaReadback(renderer, resolution);
-  const cached = keys.map((key, i) => cacheable[i] ? rasterCache?.get(key) : undefined);
+  const cached = keys.map((key, i) => {
+    if (!cacheable[i] || !rasterCache) return;
+    const hit = rasterCache.get(key);
+    if (hit || !input.region) return hit;
+    const full = rasterCache.get(fullKeys[i]);
+    if (!full) return;
+    const color = full.color.textures.length === 2
+      ? createLayerMrtTarget(resolution) : createPostprocessTarget(resolution);
+    const quality = full.quality ? createPostprocessTarget(resolution,
+      full.qualityTexture.format === THREE.RedFormat ? THREE.RedFormat : THREE.RGBAFormat) : undefined;
+    const state = captureRendererState(renderer);
+    let retained = false;
+    try {
+      copyBakeRegion(renderer, full.color, color, input.region);
+      if (quality && full.quality) copyBakeRegion(renderer, full.quality, quality, input.region);
+      const entry = { color, quality, qualityTexture: quality?.texture ?? color.textures[1], sourceSize: full.sourceSize };
+      retained = rasterCache.take(key, entry);
+      if (retained) return entry;
+    } finally {
+      restoreRendererState(renderer, state);
+      if (!retained) { color.dispose(); quality?.dispose(); }
+    }
+  });
   if (rasterCache) {
     document.body.dataset.residentUvRasterHits = String(cached.filter(Boolean).length);
     document.body.dataset.residentUvRasterMisses = String(cached.filter(value => !value).length);
@@ -1792,11 +1837,15 @@ export async function bakeProjectedLayerRastersWithGpu(
       activeMaterials.push(coverageMaterial);
       bakeScene.bakeMeshes.forEach(mesh => { mesh.material = coverageMaterial; });
       await waitForSharedRendererBakeSlot();
-      setBakeRenderTargetState(renderer, layerColorTarget, resolution);
+      const drawColorTarget = input.region ? useMrt
+        ? (regionMrt ??= createLayerMrtTarget(input.resolution))
+        : (regionColor ??= createPostprocessTarget(input.resolution)) : layerColorTarget;
+      setBakeRenderTargetState(renderer, drawColorTarget, input.resolution, input.region);
       renderer.setClearColor(0x000000, 0);
       renderer.clear(true, true, true);
       reportProgress(layer, layerIndex, true);
       renderer.render(bakeScene.scene, camera);
+      if (input.region) copyBakeRegion(renderer, drawColorTarget, layerColorTarget, input.region);
       const layerRasterPromise = retainLayerRaster
         ? readRenderTargetToLayerImageData(renderer, layerColorTarget, resolution)
         : undefined;
@@ -1820,10 +1869,13 @@ export async function bakeProjectedLayerRastersWithGpu(
         activeMaterials.push(qualityMaterial);
         bakeScene.bakeMeshes.forEach(mesh => { mesh.material = qualityMaterial; });
         await waitForSharedRendererBakeSlot();
-        setBakeRenderTargetState(renderer, qualityTargetValue, resolution);
+        const drawQualityTarget = input.region
+          ? (regionQuality ??= createPostprocessTarget(input.resolution, qualityFormat)) : qualityTargetValue;
+        setBakeRenderTargetState(renderer, drawQualityTarget, input.resolution, input.region);
         renderer.setClearColor(0x000000, 0);
         renderer.clear(true, true, true);
         renderer.render(bakeScene.scene, camera);
+        if (input.region) copyBakeRegion(renderer, drawQualityTarget, qualityTargetValue, input.region);
         qualityPromise = retainLayerRaster ? qualityReadback.read(qualityTargetValue) : undefined;
         layerQualityTexture = qualityTargetValue.texture;
         restoreRendererState(renderer, previousState);
@@ -1914,6 +1966,7 @@ export async function bakeProjectedLayerRastersWithGpu(
     colorTarget?.dispose();
     qualityTarget?.dispose();
     mrtTarget?.dispose();
+    regionColor?.dispose(); regionQuality?.dispose(); regionMrt?.dispose();
     qualityReadback.dispose();
     await sources.close();
   }
@@ -1922,7 +1975,10 @@ export async function bakeProjectedLayerRastersWithGpu(
 export async function bakeProjectedLayerStackWithGpu(
   input: GpuLayerStackBakeInput,
 ): Promise<GpuLayerStackBakeOutput> {
-  const { renderer, resolution } = input;
+  const { renderer } = input;
+  const resolution = input.region?.size ?? input.resolution;
+  if (input.region && (input.enableDilation || input.repairMissingUvSeams || input.compositeMode !== 'coverage-alpha'))
+    throw new Error('Region raster requires canonical full-image postprocessing.');
   if (resolution > renderer.capabilities.maxTextureSize) {
     throw new Error(
       `GPU max texture size is ${renderer.capabilities.maxTextureSize}, requested ${resolution}.`,
@@ -1935,7 +1991,7 @@ export async function bakeProjectedLayerStackWithGpu(
   const totalTriangles = totalTrianglesPerLayer * input.layers.length;
   if (totalTriangles <= 0) throw new Error('No UV triangles were available for GPU baking.');
 
-  const renderTarget = new THREE.WebGLRenderTarget(resolution, resolution, {
+  const renderTarget = new THREE.WebGLRenderTarget(input.resolution, input.resolution, {
     depthBuffer: input.compositeMode === 'quality-depth',
     stencilBuffer: false,
     format: THREE.RGBAFormat,
@@ -1945,6 +2001,7 @@ export async function bakeProjectedLayerStackWithGpu(
     generateMipmaps: false,
   });
   renderTarget.texture.colorSpace = THREE.NoColorSpace;
+  const regionTarget = input.region ? createPostprocessTarget(resolution) : undefined;
   let uvTopologyTarget: THREE.WebGLRenderTarget | undefined;
   let uvSeamGeometry: THREE.BufferGeometry | undefined;
   const sources=createLayerTextureLookahead(input);
@@ -1987,7 +2044,7 @@ export async function bakeProjectedLayerStackWithGpu(
       const textures = await sources.take();
       activeTextures=textures.disposableTextures;
       sourceSizes.push(textures.sourceSizes);
-      await stageLayerTexturesForGpu(renderer, textures.disposableTextures);
+      await stageLayerTexturesForGpu(renderer, textures.disposableTextures, input.allowWhileInteracting);
       const material = createLayerMaterial({
         group: input.group,
         layer,
@@ -2007,7 +2064,7 @@ export async function bakeProjectedLayerStackWithGpu(
       // Never leave the shared viewport renderer bound to the 4K bake target
       // across asset loads, striped uploads, rAF yields or progress callbacks.
       // Those awaits let React Three Fiber render a visible frame.
-      setBakeRenderTargetState(renderer, renderTarget, resolution);
+      setBakeRenderTargetState(renderer, renderTarget, input.resolution, input.region);
       if (!renderTargetInitialized) {
         renderer.setClearColor(0x000000, 0);
         renderer.clear(true, true, true);
@@ -2067,9 +2124,10 @@ export async function bakeProjectedLayerStackWithGpu(
         warnings.push(`GPU UV seam repair mapped ${seamRepair.seamPairs} geometric seam pairs.`);
       }
     }
+    if (regionTarget && input.region) copyBakeRegion(renderer, renderTarget, regionTarget, input.region);
     const postprocess = runGpuPostprocess({
       renderer,
-      source: renderTarget,
+      source: regionTarget ?? renderTarget,
       uvTopologySource: uvTopologyTarget,
       uvSeamGeometry,
       resolution,
@@ -2124,6 +2182,7 @@ export async function bakeProjectedLayerStackWithGpu(
     uvSeamGeometry?.dispose();
     uvTopologyTarget?.dispose();
     renderTarget.dispose();
+    regionTarget?.dispose();
     activeMaterial?.dispose();disposeLayerTextures(activeTextures);
     await sources.close();
   }

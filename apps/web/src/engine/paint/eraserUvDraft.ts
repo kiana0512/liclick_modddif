@@ -36,6 +36,7 @@ export class EraserUvDraft {
   readonly id = ++serial;
   readonly image: HTMLCanvasElement;
   revision = 0;
+  dirtyBounds?: Rect;
   private base?: HTMLCanvasElement;
   private pending?: { source: HTMLCanvasElement; bounds: Rect };
   private disposed = false;
@@ -68,6 +69,10 @@ export class EraserUvDraft {
     const region = { x, y,
       width: Math.max(1, Math.min(this.image.width, Math.ceil((bounds.x + bounds.width) * sx)) - x),
       height: Math.max(1, Math.min(this.image.height, Math.ceil((bounds.y + bounds.height) * sy)) - y) };
+    const old = this.dirtyBounds;
+    this.dirtyBounds = old ? { x: Math.min(old.x, x), y: Math.min(old.y, y),
+      width: Math.max(old.x + old.width, x + region.width) - Math.min(old.x, x),
+      height: Math.max(old.y + old.height, y + region.height) - Math.min(old.y, y) } : region;
     const context = this.image.getContext('2d')!;
     context.clearRect(x, y, region.width, region.height);
     context.drawImage(this.base, x, y, region.width, region.height, x, y, region.width, region.height);

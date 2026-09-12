@@ -58,6 +58,8 @@ vec4 score(uint rgba, uint quality) {
 }
 uvec3 rgb(uint value) { return uvec3(value, value >> 8u, value >> 16u) & 255u; }
 `;
+// Preserve JavaScript double rounding: 38 byte pairs differ from exact
+// integer division at half-integer ties (for example RGB=11, alpha=66).
 const accumulateShader = `${common}
 uniform sampler2D layerColor;
 uniform sampler2D layerQuality;
@@ -73,8 +75,8 @@ void main() {
   if (color.a <= 5u) return;
   vec4 qualityTexel = texelFetch(layerQuality, p, 0);
   uint quality = uint(floor((qualityIsRed ? qualityTexel.r : qualityTexel.a) * 255.0 + 0.5));
-  // Preserve JavaScript double rounding: 38 byte pairs differ from exact
-  // integer division at half-integer ties (for example RGB=11, alpha=66).
+
+
   uvec3 straight=uvec3(
     floor(texelFetch(unpremultiplyTable,ivec2(int(color.r),int(color.a)),0).r*255.0+0.5),
     floor(texelFetch(unpremultiplyTable,ivec2(int(color.g),int(color.a)),0).r*255.0+0.5),
@@ -95,6 +97,8 @@ void main() {
   result=selected;
 }
 `;
+// This internal sentinel never leaves readCorrected(): only rounding-boundary
+// candidates are gathered for the canonical double-precision CPU resolver.
 const resolveShader = `${common}
 uniform sampler2D linearTable;
 uniform bool preserveAlpha;
@@ -146,8 +150,8 @@ void main() {
   vec3 color=blended*(1.0-dominance)+ca*dominance;
   vec3 bytes=vec3(srgbByte(color.r),srgbByte(color.g),srgbByte(color.b));
   bool uncertain=uncertainAlpha || any(lessThan(abs(fract(bytes)-vec3(0.5)),vec3(0.01)));
-  // This internal sentinel never leaves readCorrected(): only rounding-boundary
-  // candidates are gathered for the canonical double-precision CPU resolver.
+
+
   result=markUncertain && uncertain ? correctionMarker : vec4(floor(bytes+0.5),alpha)/255.0;
 }
 `;

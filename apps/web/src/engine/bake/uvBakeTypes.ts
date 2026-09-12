@@ -76,6 +76,10 @@ export interface BakeProjectedLayerInput {
 }
 
 export interface BakeVisibleProjectedLayersInput {
+  /** Renderer-only pre-postprocess state for exact interactive region recomposition. */
+  retainRawComposite?: boolean;
+  incrementalUv?: { region: import('./incrementalUvComposite').UvBakeRegion;
+    base: import('./incrementalUvComposite').RawUvComposite };
   /** Interactive derived pixels may upload during input; authored bakes still wait. */
   allowWhileInteracting?: boolean;
   /** Renderer-owned display calculation for this exact model, independent of selection. */
@@ -141,6 +145,7 @@ export interface BakeVisibleProjectedLayersInput {
 }
 
 export interface BakeProjectedLayerResult {
+  rawComposite?: import('./incrementalUvComposite').RawUvComposite;
   bakedTexture: BakedTexture;
   canvas: HTMLCanvasElement;
   imageData?: ImageData;

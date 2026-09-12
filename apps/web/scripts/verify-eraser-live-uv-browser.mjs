@@ -45,6 +45,10 @@ fixture += String.raw`
   await tick(); await tick(); await new Promise(r => setTimeout(r, 500));
   const rect = runtime.gl.domElement.getBoundingClientRect();
   window.eraserFixture = { before, pixels, point: { x: rect.x+rect.width/2, y:rect.y+rect.height/2 },
+    async verifyRegions() {
+      return (await import('/scripts/incremental-uv-browser-fixture.mjs')).verify(model,
+        serializeCamera(runtime.camera,1,new THREE.Vector3()));
+    },
     async switchLayer() {
       useLayerStore.setState({ activeProjectedLayerId: layers[0].id });
       await tick(); await tick();
@@ -68,6 +72,9 @@ const server = await createServer({ root, configFile: false, logLevel: 'error',
   resolve: { alias: { '@': root + '/src' } },
   plugins: [{ name: 'eraser-fixture',
     transform(code, id) {
+      if (process.env.LICLICK_ERASER_FULL_BAKE === '1' && id.endsWith('/ResidentProjectedUvDisplay.ts'))
+        return code.replace('retainRawComposite: request.resolution <= 2048', 'retainRawComposite: false')
+          .replace('const patched = interactive && previousPixels', 'const patched = false && previousPixels');
       if (process.env.LICLICK_ERASER_BASELINE_UPLOAD === '1' && id.endsWith('/ResidentProjectedUvDisplay.ts'))
         return code.replaceAll('allowWhileInteracting: interactive', 'allowWhileInteracting: false');
     },
@@ -122,7 +129,46 @@ try {
       }
       if (results[0].some((v,i)=>v!==results[1][i])) throw Error('RGBA upload differs from bitmap: '+JSON.stringify(results));
       if (source.data.byteLength!==0) throw Error('RGBA ownership was not transferred');
-      return { bytes:24, exact:true };
+      const { uploadUvDisplayPatch } = await import('/src/engine/projection/uploadUvDisplayPatch.ts');
+      const { markSparseAlphaBaseTexture } = await import('/src/engine/projection/ProjectedLayerMaterial.ts');
+      const count=renderer.info.memory.textures;
+      const original=new ImageData(bytes.slice(),3,2), changed=new ImageData(bytes.slice(),3,2);
+      changed.data.set([19,241,17,127],4);changed.data.set([213,37,69,0],16);
+      const textures=[];
+      try {
+        const initial=await createWorkerBackedPreviewTexture(new ImageData(bytes.slice(),3,2));textures.push(initial);
+        markSparseAlphaBaseTexture(initial);await uploadPreviewTextureInStripes(renderer,initial,{allowWhileInteracting:true});
+        const candidate=await uploadUvDisplayPatch(renderer,changed,{image:original,texture:initial},()=>false);textures.push(candidate);
+        const unchanged=await uploadUvDisplayPatch(renderer,changed,{image:changed,texture:candidate},()=>false);textures.push(unchanged);
+        const gold=await createWorkerBackedPreviewTexture(new ImageData(changed.data.slice(),3,2));textures.push(gold);
+        markSparseAlphaBaseTexture(gold);await uploadPreviewTextureInStripes(renderer,gold,{allowWhileInteracting:true});
+        const samples=[];
+        for(const texture of [candidate,unchanged,gold]) {
+          material.uniforms.map.value=texture;renderer.setRenderTarget(target);renderer.render(scene,new THREE.Camera());
+          const p=new Uint8Array(24);renderer.readRenderTargetPixels(target,0,0,3,2,p);samples.push([...p]);
+        }
+        if(samples[0].some((v,i)=>v!==samples[2][i])||samples[1].some((v,i)=>v!==samples[2][i]))
+          throw Error('Partial GPU copy/upload changed RGBA: '+JSON.stringify(samples));
+        let cancelled=false;
+        try{await uploadUvDisplayPatch(renderer,changed,{image:original,texture:initial},()=>true);}
+        catch(e){cancelled=e.name==='AbortError';}
+        if(!cancelled)throw Error('Patch cancellation ignored');
+        if(original.data.some((v,i)=>v!==bytes[i]))throw Error('Patch mutated previous CPU pixels');
+        const copy=renderer.copyTextureToTexture, retained=renderer.info.memory.textures;
+        const oldTarget=renderer.getRenderTarget(), oldViewport=renderer.getViewport(new THREE.Vector4());
+        const oldScissor=renderer.getScissor(new THREE.Vector4()), oldTest=renderer.getScissorTest();
+        let failed=false;
+        renderer.copyTextureToTexture=()=>{throw Error('injected GPU copy failure');};
+        try{await uploadUvDisplayPatch(renderer,changed,{image:original,texture:initial},()=>false);}
+        catch(e){failed=e.message==='injected GPU copy failure';}
+        finally{renderer.copyTextureToTexture=copy;}
+        if(!failed || renderer.info.memory.textures!==retained || renderer.getRenderTarget()!==oldTarget ||
+          !renderer.getViewport(new THREE.Vector4()).equals(oldViewport) ||
+          !renderer.getScissor(new THREE.Vector4()).equals(oldScissor) || renderer.getScissorTest()!==oldTest)
+          throw Error('Failed patch leaked resources or renderer state');
+      }finally{for(const texture of textures){releaseTransientPreviewUploadSource(renderer,texture);texture.dispose();}}
+      if(renderer.info.memory.textures!==count)throw Error('Patch framebuffer/texture leaked');
+      return { bytes:24, exact:true, patchExact:true, patchResourcesReleased:true };
     } finally { material.dispose();geometry.dispose();target.dispose();renderer.dispose(); }
   });
   const draftChecks = await page.evaluate(async () => {
@@ -175,10 +221,15 @@ try {
   assert(live.pixel[2] > live.pixel[0], 'Erasing the orange layer must reveal the blue layer, not erase both.');
   assert(live.layers.every(layer => !layer.mask), 'Interactive draft must not publish authored layer masks.');
   const visibleRevisions = new Set();
+  const timings=[];
   for (let step=1;step<=60;step++) {
     await page.mouse.move(point.x + 70*step/60, point.y);
     await page.waitForTimeout(16);
     visibleRevisions.add(await page.evaluate(() => document.body.dataset.residentUvProjectionDurationMs));
+    const sample=await page.evaluate(()=>({revision:document.body.dataset.residentUvProjectionRevision,
+      duration:Number(document.body.dataset.residentUvProjectionDurationMs),
+      stages:JSON.parse(document.body.dataset.residentUvProjectionStages||'{}')}));
+    if(timings.at(-1)?.revision!==sample.revision)timings.push(sample);
   }
   assert(visibleRevisions.size > 1, 'UV output must advance during continuous movement, not only after stopping');
   await page.waitForFunction(() => {
@@ -198,9 +249,12 @@ try {
   await page.mouse.move(point.x - 60, point.y); await page.mouse.down();
   await page.waitForFunction(() => window.eraserFixture.state().drawing, undefined, { timeout: 10000 });
   await page.mouse.up();
+  await page.waitForTimeout(1500);
+  const regionParity=process.env.LICLICK_ERASER_REGION_PARITY==='1'
+    ? await page.evaluate(()=>window.eraserFixture.verifyRegions()) : undefined;
   assert.deepEqual(errors, []);
   console.log(JSON.stringify({ resolution, layerCount, holdBusy, uploadParity, visibleUpdates:visibleRevisions.size-1,
-    draftChecks, before, live, committed, latencyMs, errors }));
+    draftChecks, before, live, committed, latencyMs, timings, regionParity, errors }));
 } catch (error) {
   console.log(JSON.stringify({ errors, state: await page.evaluate(() => window.eraserFixture?.state()),
     diagnostics: await page.evaluate(() => ({...document.body.dataset})) }));

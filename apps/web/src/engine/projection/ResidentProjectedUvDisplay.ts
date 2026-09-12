@@ -2,6 +2,8 @@ import * as THREE from 'three';
 import type { Layer } from '@/types/layer';
 import type { ModelLoadResult } from '@/engine/loaders/modelImportTypes';
 import type { UvBakeResolution } from '@/engine/bake/uvBakeTypes';
+import { eraserBakeRegion, type RawUvComposite } from '@/engine/bake/incrementalUvComposite';
+import { uploadUvDisplayPatch } from './uploadUvDisplayPatch';
 import { getMergeUvPostprocessOptions } from '@/engine/layers/mergeUvComposition';
 import {
   createWorkerBackedMaskPreviewTexture,
@@ -40,7 +42,7 @@ type Request = {
   onError: (error: unknown) => void;
 };
 
-/** UV-DISPLAY-BUFFER/1.1.2. The display owns derived UV buffers, never layers/assets.
+/** UV-DISPLAY-BUFFER/1.2.0. The display owns derived UV buffers, never layers/assets.
  * Use the same resident Top-K and exact postprocess path as explicit UV merge.
  * Keep the front buffer until its replacement has uploaded and been bound.
  */
@@ -61,6 +63,8 @@ export class ResidentProjectedUvDisplay {
     this.clearBuffers();
   };
   private front?: ProjectedPreviewComposite;
+  private rawComposite?: RawUvComposite;
+  private previousPixels?: { image: ImageData; texture: THREE.Texture };
   private readonly cache = new Map<string, ProjectedPreviewComposite>();
   private readonly rasters = new ProjectedUvRasterCache();
   private readonly compressed = new ResidentUvCompressedCache();
@@ -79,6 +83,7 @@ export class ResidentProjectedUvDisplay {
     if (this.requested && this.requested.sourceModel.group !== request.sourceModel.group)
       releaseResidentUvManagement(this.requested.sourceModel.group);
     this.requested = request;
+    this.rawComposite = undefined;
     markResidentUvPending(request.sourceModel.group, request.sourceModel.objectId);
     this.retries = 0;
     this.retryAt = 0;
@@ -119,6 +124,8 @@ export class ResidentProjectedUvDisplay {
       return;
     }
     const snapshot = interactive ? draft!.snapshot() : undefined;
+    const region = interactive && this.rawComposite
+      ? eraserBakeRegion(draft!.dirtyBounds, original.resolution) : undefined;
     const snapshotUrl = snapshot ? registerLiveProjectedCanvasTexture(key, snapshot) : undefined;
     const request = snapshotUrl ? { ...original, projectId: undefined,
       sourceLayers: original.sourceLayers.map(layer => layer.id === draft!.owner.layerId
@@ -214,12 +221,15 @@ export class ResidentProjectedUvDisplay {
             skipImageEncoding: true,
             skipCanvasUpload: true,
             allowWhileInteracting: interactive,
+            retainRawComposite: request.resolution <= 2048,
+            incrementalUv: region && this.rawComposite ? { region, base: this.rawComposite } : undefined,
             checkCancelled: guard,
             onProgress: guard,
           });
       stages.completeBakeMs = performance.now() - bakeStartedAt;
       guard();
       if (!result.imageData) throw new Error('UV display calculation returned no pixels.');
+      if ('rawComposite' in result && result.rawComposite) this.rawComposite = result.rawComposite;
       // Empty is the canonical all-zero mask for ordinary BaseColor stacks.
       // Avoid both a 4K main-thread scan and a needless R8 upload in that case.
       const mask = result.renderedColorMask?.length ? result.renderedColorMask : undefined;
@@ -267,9 +277,18 @@ export class ResidentProjectedUvDisplay {
       }
       stages.underlayCompositeMs = performance.now() - underlayStartedAt;
       const uploadStartedAt = performance.now();
+      const previousPixels = this.previousPixels?.texture === this.front?.colorTexture ? this.previousPixels : undefined;
+      const patched = interactive && previousPixels
+        ? await uploadUvDisplayPatch(request.renderer, result.imageData, previousPixels, cancelled) : undefined;
+      if (patched) created.push(patched);
+      // A full interactive upload transfers its input. Keep one independent CPU
+      // mirror only at <=2K; patch uploads transfer only the small extracted region.
+      const retainedImage = request.resolution <= 2048
+        ? !patched ? new ImageData(result.imageData.data.slice(), request.resolution, request.resolution)
+          : result.imageData : undefined;
       // Draft pixels have no persistence/cache consumers. Transfer them directly
       // to the stripe worker instead of creating and cropping a full-size bitmap.
-      const bitmap = interactive ? result.imageData : await createImageBitmap(result.imageData, {
+      const bitmap = patched ? undefined : interactive ? result.imageData : await createImageBitmap(result.imageData, {
         imageOrientation: 'flipY',
         premultiplyAlpha: 'none',
       });
@@ -277,8 +296,8 @@ export class ResidentProjectedUvDisplay {
         if (bitmap instanceof ImageBitmap) bitmap.close();
         guard();
       }
-      const colorTexture = await createWorkerBackedPreviewTexture(bitmap);
-      created.push(colorTexture);
+      const colorTexture = patched ?? await createWorkerBackedPreviewTexture(bitmap!);
+      if (!patched) created.push(colorTexture);
       guard();
       // Establish the sparse base sampler profile before the stripe upload.
       // Changing it after upload reallocates a worker-owned DataTexture with no CPU pixels.
@@ -302,7 +321,7 @@ export class ResidentProjectedUvDisplay {
       created.push(renderedColorMaskTexture);
       renderedColorMaskTexture.colorSpace = THREE.NoColorSpace;
       guard();
-      await uploadPreviewTextureInStripes(request.renderer, colorTexture, {
+      if (!patched) await uploadPreviewTextureInStripes(request.renderer, colorTexture, {
         allowWhileInteracting: interactive,
         shouldCancel: cancelled,
       });
@@ -311,6 +330,7 @@ export class ResidentProjectedUvDisplay {
         shouldCancel: cancelled,
       });
       guard();
+      this.previousPixels = retainedImage ? { image: retainedImage, texture: colorTexture } : undefined;
       releaseTransientPreviewUploadSource(request.renderer, colorTexture);
       releaseTransientPreviewUploadSource(request.renderer, renderedColorMaskTexture);
       const buffer = {
@@ -406,6 +426,8 @@ export class ResidentProjectedUvDisplay {
     }
   }
   cancelPending() {
+    this.rawComposite = undefined;
+    this.previousPixels = undefined;
     if (this.requested) releaseResidentUvManagement(this.requested.sourceModel.group);
     this.revision++;
     this.requested = undefined;
@@ -421,6 +443,8 @@ export class ResidentProjectedUvDisplay {
     this.clearBuffers();
   }
   private clearBuffers() {
+    this.rawComposite = undefined;
+    this.previousPixels = undefined;
     for (const value of this.cache.values()) {
       value.colorTexture.dispose();
       value.renderedColorMaskTexture.dispose();

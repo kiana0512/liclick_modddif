@@ -369,6 +369,74 @@ function createWhiteMembranePreviewMaterial(_previewLightingInput?: ProjectionPr
 // present with or without a normal buffer, so always widen the tolerance;
 // tying it to useNormalCheck makes the depth-only production path alternate
 // between accepted and rejected triangles after array promotion.
+// Shader explanations are kept as TypeScript comments to avoid shipping prose.
+// This uniform keeps its legacy name for saved-project compatibility, but
+// the UI control is HSV Value and must preserve hue and saturation.
+// Surface-locked repaint uses depth as the visible-surface authority.
+// Per-triangle normal rejection creates alternating strips on dense meshes.
+// Neighbourhood matching removes seams between two faces that were both
+// visible in the capture, while still rejecting genuinely hidden faces.
+// Visibility is sampled against geometric depth, but its presentation
+// feather must remain continuous across a smooth surface. Flat derivative
+// normals are triangle-constant and expose the mesh tessellation as a comb.
+// A face seen edge-on in the source capture can rasterize as isolated scan
+// lines. Require broader local support for those grazing faces so the scan
+// lines do not get magnified into zebra stripes in the current viewport.
+// A thin bevel on a low-poly mesh can cover only the center capture texel.
+// Keep it when that texel has an exact geometric-normal match. Captures
+// without a normal buffer still require a reasonably face-on projection,
+// preserving the neighborhood guard against grazing zebra stripes.
+// At a grazing silhouette the captured surface can be thinner than one
+// visibility texel. Requiring several matching texels makes neighbouring
+// triangles alternate between accepted and rejected. Any continuous depth
+// support is sufficient there; angle coverage supplies the soft exit.
+// At a grazing angle the capture raster contains alternating empty centre
+// samples. The 3x3 neighbourhood is already depth- and normal-matched to
+// this exact surface, so let that support close the sub-pixel gaps instead
+// of multiplying it by the rejected centre again.
+// A single captured depth texel can cover many display pixels at a grazing
+// angle. Treat any matching texel in the 3x3 depth neighbourhood as a hard
+// surface hit, otherwise the discrete capture columns become zebra bands.
+// Capture depth is the visibility authority. Imported/scanned meshes often
+// contain locally flipped normals; using signed N·V after accepting the
+// depth match turns those otherwise visible triangles into hard dead zones.
+// Captured depth is the authoritative visible-surface guard. Applying the
+// fallback normal-angle cutoff as well makes neighbouring triangles on a
+// dense mesh alternate between accepted/rejected after the resident
+// material replaces the live overlay. Only use the angle guard for legacy
+// repaint data that has no depth capture.
+// Surface locking hardens depth visibility but keeps the authored mask
+// continuous so brush feather survives. Retain the smooth inward-facing
+// guard from the remote fix to prevent the repaint leaking across sides.
+// Once a depth-backed projection is surface locked, coverage already
+// contains the authoritative capture visibility. Do not let interpolated
+// mesh normals make a valid priority overlay translucent again.
+// A repair underlay is a fallback texel, not a translucent decal. Hardening
+// its accepted coverage prevents the mask edge from blending with the
+// diagnostic black empty-preview color.
+// Legacy rendered-color layers already contain viewport exposure.
+// LinearToneMapping applies renderer exposure at the end of this shader, so
+// cancel that second exposure only for those explicitly marked layers.
+// Current local-repaint output is BaseColor and follows the ordinary path.
+// Local repaint is the authored final replacement, not another Top-K
+// candidate. Keep geometric visibility gates, but never attenuate it
+// with the background projection quality weight.
+// Keep live projected overlays equivalent to applyOverlayRasters in the
+// UV bake. The shared coverage term still supplies a soft transition.
+// Match the UV compositor's colour-consistency pass before weighting the
+// top candidates. This makes a grazing side capture lose influence when
+// its colour disagrees with the stronger frontal samples.
+// ANGLE/D3D still diagnoses the unguarded division even though the zero-
+// coverage branch returns above. Clamp it explicitly so shader compilation
+// cannot emit X4008 or hand a driver an undefined zero-division path.
+// Geometry diagnostics do not depend on any projected/UV texel. Exit
+// before the 14-layer array, visibility and colour-composite work so an
+// eye toggle in normal/wire mode cannot stall on discarded sampling.
+// A merged UV row below projections and the sparse repair remain UV samples.
+// Composite them underneath the completed projection buffer, never as projections.
+// A sparse repair base disables the overlay checker to reveal valid base
+// pixels. It must not turn texels missing from *both* maps into white clay.
+// Keep every covered fragment and both capture modes unchanged.
 const fragmentShader = `
   ${RELIABLE_PROJECTION_GLSL}
   ${PROJECTED_RASTER_DEPTH_GLSL}
@@ -475,8 +543,8 @@ const fragmentShader = `
     vec3 hsv = rgbToHsv(linearToSrgb(clamp(color, 0.0, 1.0)));
     hsv.x = mod(hsv.x + hue + 1.0, 1.0);
     hsv.y = clamp(hsv.y + saturation, 0.0, 1.0);
-    // This uniform keeps its legacy name for saved-project compatibility, but
-    // the UI control is HSV Value and must preserve hue and saturation.
+
+
     hsv.z = clamp(hsv.z + lightness, 0.0, 1.0);
     return srgbToLinear(hsvToRgb(hsv));
   }
@@ -531,8 +599,8 @@ const fragmentShader = `
       ${FULL_CAPTURE_NORMAL_AGREEMENT.toFixed(2)},
       mix(abs(normalAgreement), normalAgreement, surfaceLockedVisibility)
     );
-    // Surface-locked repaint uses depth as the visible-surface authority.
-    // Per-triangle normal rejection creates alternating strips on dense meshes.
+
+
     float normalCheckWeight = useNormalCheck * (1.0 - surfaceLockedVisibility);
     return depthVisibility * mix(1.0, normalVisibility, normalCheckWeight);
   }
@@ -637,11 +705,11 @@ const fragmentShader = `
       -1.0,
       step(dot(projectedFaceNormal, captureViewVertexNormal), 0.0)
     );
-    // Neighbourhood matching removes seams between two faces that were both
-    // visible in the capture, while still rejecting genuinely hidden faces.
-    // Visibility is sampled against geometric depth, but its presentation
-    // feather must remain continuous across a smooth surface. Flat derivative
-    // normals are triangle-constant and expose the mesh tessellation as a comb.
+
+
+
+
+
     float faceOnFactor = abs(captureViewVertexNormal.z);
     float projectionFacingFactor = abs(
       dot(captureViewVertexNormal, normalize(-captureViewPosition))
@@ -716,9 +784,9 @@ const fragmentShader = `
       texture2D(normalMap, uv + vec2(-visibilityTexelSize.x, visibilityTexelSize.y)),
       projectedMetric, depthTolerance, projectedFaceNormal
     );
-    // A face seen edge-on in the source capture can rasterize as isolated scan
-    // lines. Require broader local support for those grazing faces so the scan
-    // lines do not get magnified into zebra stripes in the current viewport.
+
+
+
     float grazingConfidence = smoothstep(
       ${MIN_CAPTURE_FACE_ON.toFixed(2)},
       ${FULL_CAPTURE_FACE_ON.toFixed(2)},
@@ -734,10 +802,10 @@ const fragmentShader = `
       requiredVisibilitySupport + 0.5,
       visibilitySupport
     );
-    // A thin bevel on a low-poly mesh can cover only the center capture texel.
-    // Keep it when that texel has an exact geometric-normal match. Captures
-    // without a normal buffer still require a reasonably face-on projection,
-    // preserving the neighborhood guard against grazing zebra stripes.
+
+
+
+
     float centerBackedVisibility =
       centerVisibility *
       mix(0.35, 1.0, grazingConfidence) *
@@ -745,10 +813,10 @@ const fragmentShader = `
     float supportedVisibilityCoverage =
       max(neighborhoodVisibility, centerBackedVisibility) *
       smoothstep(${MIN_CAPTURE_FACE_ON.toFixed(2)}, ${FACE_ON_VISIBILITY_FULL.toFixed(2)}, faceOnFactor);
-    // At a grazing silhouette the captured surface can be thinner than one
-    // visibility texel. Requiring several matching texels makes neighbouring
-    // triangles alternate between accepted and rejected. Any continuous depth
-    // support is sufficient there; angle coverage supplies the soft exit.
+
+
+
+
     float grazingVisibilityCoverage =
       smoothstep(0.0, 1.0, visibilitySupport) *
       smoothstep(${MIN_CAPTURE_FACE_ON.toFixed(2)}, ${FACE_ON_VISIBILITY_FULL.toFixed(2)}, faceOnFactor);
@@ -757,18 +825,18 @@ const fragmentShader = `
       supportedVisibilityCoverage,
       grazingConfidence
     );
-    // At a grazing angle the capture raster contains alternating empty centre
-    // samples. The 3x3 neighbourhood is already depth- and normal-matched to
-    // this exact surface, so let that support close the sub-pixel gaps instead
-    // of multiplying it by the rejected centre again.
+
+
+
+
     float lockedFacingCoverage = smoothstep(
       ${SURFACE_LOCKED_FACING_START.toFixed(3)},
       ${SURFACE_LOCKED_FACING_END.toFixed(3)},
       projectionFacingFactor
     );
-    // A single captured depth texel can cover many display pixels at a grazing
-    // angle. Treat any matching texel in the 3x3 depth neighbourhood as a hard
-    // surface hit, otherwise the discrete capture columns become zebra bands.
+
+
+
     float lockedVisibilityCoverage = smoothstep(
       0.0,
       ${SURFACE_LOCKED_VISIBILITY_FEATHER.toFixed(2)},
@@ -785,9 +853,9 @@ const fragmentShader = `
     texel.rgb = applyHsvAdjustments(texel.rgb, hueShift, saturationShift, lightnessShift);
     float sourceAlpha = mix(texel.a, 1.0, ignoreSourceAlpha) * maskAlpha;
     float alphaCoverage = step(0.01, sourceAlpha);
-    // Capture depth is the visibility authority. Imported/scanned meshes often
-    // contain locally flipped normals; using signed N·V after accepting the
-    // depth match turns those otherwise visible triangles into hard dead zones.
+
+
+
     float visibilityBackedNdv = mix(ndv, abs(ndv), useDepthCheck);
     float angleCoverage = mix(
       smoothstep(${NDV_COVERAGE_START.toFixed(2)}, ${NDV_COVERAGE_END.toFixed(2)}, ndv),
@@ -798,11 +866,11 @@ const fragmentShader = `
     float coverageEdge = computeImageEdgeFade(uv, ${IMAGE_COVERAGE_EDGE_FADE.toFixed(3)});
     float continuousCoverage = clamp(layerOpacity * sourceAlpha * reliableProjectionSupport(angleCoverage * visibilityCoverage * projectionFacingCoverage * mix(0.35, 1.0, coverageEdge)), 0.0, 1.0);
     float lockedSurfaceFacing = abs(dot(captureViewVertexNormal, normalize(-captureViewPosition)));
-    // Captured depth is the authoritative visible-surface guard. Applying the
-    // fallback normal-angle cutoff as well makes neighbouring triangles on a
-    // dense mesh alternate between accepted/rejected after the resident
-    // material replaces the live overlay. Only use the angle guard for legacy
-    // repaint data that has no depth capture.
+
+
+
+
+
     float lockedSafetyCoverage = mix(
       smoothstep(
         ${(SURFACE_LOCKED_MIN_SAFE_FACING - 0.08).toFixed(2)},
@@ -812,9 +880,9 @@ const fragmentShader = `
       1.0,
       useDepthCheck
     );
-    // Surface locking hardens depth visibility but keeps the authored mask
-    // continuous so brush feather survives. Retain the smooth inward-facing
-    // guard from the remote fix to prevent the repaint leaking across sides.
+
+
+
     float lockedCoverage =
       layerOpacity *
       sourceAlpha *
@@ -825,18 +893,18 @@ const fragmentShader = `
     float angleWeight = computeAngleWeight(visibilityBackedNdv, layerStrength);
     float qualityEdge = computeImageEdgeFade(uv, ${IMAGE_QUALITY_EDGE_FADE.toFixed(3)});
     float quality = coverage * depthWeight * angleWeight * mix(0.3, 1.0, qualityEdge);
-    // Once a depth-backed projection is surface locked, coverage already
-    // contains the authoritative capture visibility. Do not let interpolated
-    // mesh normals make a valid priority overlay translucent again.
+
+
+
     quality = mix(quality, max(quality, coverage), surfaceLockedVisibility);
     float softCoverageGate = smoothstep(0.0, ${COVERAGE_FEATHER_END.toFixed(2)}, coverage);
     float projectionAlpha = inside * backfaceAlpha * alphaCoverage * coverage * softCoverageGate;
     float overlayQualityFade = smoothstep(0.0, 0.15, max(quality, coverage * 0.25));
     float overlayProjectionAlpha = inside * backfaceAlpha * alphaCoverage * coverage * mix(0.75, 1.0, overlayQualityFade);
     projectionAlpha = mix(projectionAlpha, overlayProjectionAlpha, projectedBlendModeOverlay);
-    // A repair underlay is a fallback texel, not a translucent decal. Hardening
-    // its accepted coverage prevents the mask edge from blending with the
-    // diagnostic black empty-preview color.
+
+
+
     projectionAlpha = mix(
       projectionAlpha,
       step(${COVERAGE_THRESHOLD.toFixed(2)}, projectionAlpha),
@@ -857,10 +925,10 @@ const fragmentShader = `
     );
     float baseTextureAlpha = useBaseMap * baseTexel.a * baseTextureOpacity;
     vec3 baseSurfaceColor = mix(baseColor, baseTexel.rgb, baseTextureAlpha);
-    // Legacy rendered-color layers already contain viewport exposure.
-    // LinearToneMapping applies renderer exposure at the end of this shader, so
-    // cancel that second exposure only for those explicitly marked layers.
-    // Current local-repaint output is BaseColor and follows the ordinary path.
+
+
+
+
     float renderedColorExposureCompensation = 1.0 / max(previewExposure, 0.0001);
     vec3 emptyPreviewColor = mix(
       computeProjectionEmptyPreviewColor(baseColor, computeWhiteMembraneLight(captureWorldNormal)),
@@ -873,9 +941,9 @@ const fragmentShader = `
       projectedIsRenderedColor
     );
     if (transparentProjectionOnly > 0.5) {
-      // Local repaint is the authored final replacement, not another Top-K
-      // candidate. Keep geometric visibility gates, but never attenuate it
-      // with the background projection quality weight.
+
+
+
       float literalReplacementAlpha = clamp(
         inside * backfaceAlpha * alphaCoverage * coverage,
         0.0,
@@ -1792,8 +1860,8 @@ function buildStackFragmentShader(
       float quality = coverage * depthWeight * angleWeight * mix(0.3, 1.0, qualityEdge);
       quality = ${layerUsesSurfaceLock(index) ? 'max(quality, coverage)' : 'quality'};
       if (inside * backfaceAlpha * alphaCoverage > 0.5 && coverage > ${MIN_BLEND_COVERAGE.toFixed(4)}) {
-        // Keep live projected overlays equivalent to applyOverlayRasters in the
-        // UV bake. The shared coverage term still supplies a soft transition.
+
+
         float overlayAlpha = computeOrderedOverlayAlpha(
           coverage,
           quality
@@ -2111,9 +2179,9 @@ function buildStackFragmentShader(
     float sumSoft = topCoverage0 + topCoverage1 + topCoverage2;
     if (sumSoft <= 0.0001) return fallbackColor;
 
-    // Match the UV compositor's colour-consistency pass before weighting the
-    // top candidates. This makes a grazing side capture lose influence when
-    // its colour disagrees with the stronger frontal samples.
+
+
+
     float consistencyTotal = topQuality0 + topQuality1 + topQuality2;
     vec3 consistencyBase =
       (topColor0 * topQuality0 + topColor1 * topQuality1 + topColor2 * topQuality2) /
@@ -2138,9 +2206,9 @@ function buildStackFragmentShader(
       pow(max(adjustedQuality1, 0.0), ${BLEND_POWER.toFixed(1)}) +
       pow(max(adjustedQuality2, 0.0), ${BLEND_POWER.toFixed(1)});
 
-    // ANGLE/D3D still diagnoses the unguarded division even though the zero-
-    // coverage branch returns above. Clamp it explicitly so shader compilation
-    // cannot emit X4008 or hand a driver an undefined zero-division path.
+
+
+
     float safeSumSoft = max(sumSoft, 0.000001);
     float w0 = mix(pow(adjustedQuality0, ${BLEND_POWER.toFixed(1)}) / max(sumStrong, 0.000001), topCoverage0 / safeSumSoft, ${RESIDUAL_MIX.toFixed(2)});
     float w1 = mix(pow(adjustedQuality1, ${BLEND_POWER.toFixed(1)}) / max(sumStrong, 0.000001), topCoverage1 / safeSumSoft, ${RESIDUAL_MIX.toFixed(2)});
@@ -2159,9 +2227,9 @@ function buildStackFragmentShader(
 
   void main() {
     vec3 normal = normalize(vWorldNormal);
-    // Geometry diagnostics do not depend on any projected/UV texel. Exit
-    // before the 14-layer array, visibility and colour-composite work so an
-    // eye toggle in normal/wire mode cannot stall on discarded sampling.
+
+
+
     if (normalPreviewEnabled > 0.5) {
       ${
         features.useTextureArrays
@@ -5251,8 +5319,8 @@ const uvOverlayFragmentShader = `
       liveUvOverlaySaturationShift,
       liveUvOverlayLightnessShift
     );
-    // A merged UV row below projections and the sparse repair remain UV samples.
-    // Composite them underneath the completed projection buffer, never as projections.
+
+
     if (uvOverlayBelowBase > 0.5) {
       float belowAlpha = overlayTexel.a * useUvOverlayMap * uvOverlayOpacity;
       float a = baseTexel.a + belowAlpha * (1.0 - baseTexel.a);
@@ -5310,9 +5378,9 @@ const uvOverlayFragmentShader = `
     gl_FragDepthEXT = gl_FragCoord.z;
     float capturedCoverage = 1.0 - (1.0 - baseTextureAlpha * surfaceMask) *
       (1.0 - overlayAlpha) * (1.0 - liveOverlayAlpha);
-    // A sparse repair base disables the overlay checker to reveal valid base
-    // pixels. It must not turn texels missing from *both* maps into white clay.
-    // Keep every covered fragment and both capture modes unchanged.
+
+
+
     if (showEmptyUvChecker < 0.5 && hasAnyColor > 0.5 && capturedCoverage == 0.0 &&
         showEmptyProjectionHatch > 0.5 && showEmptyProjectionHatch < 1.5) {
       displayColor = computeUvEmptyPreviewColor();

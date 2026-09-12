@@ -154,14 +154,22 @@ export class ProjectedUvRasterCache {
     };
   }
   getResident(renderer: THREE.WebGLRenderer, resolution: number) {
-    this.resident ??= new ResidentQualityComposite(renderer, resolution);
+    this.prepareResident(renderer, resolution);
     this.residentStates.clear();
     this.residentWorkingStates.clear();
-    this.resident.reset();
-    return this.resident;
+    this.resident!.reset();
+    return this.resident!;
+  }
+  private prepareResident(renderer: THREE.WebGLRenderer, resolution: number) {
+    if (this.resident?.resolution !== resolution) {
+      this.resident?.dispose();
+      this.resident = new ResidentQualityComposite(renderer, resolution);
+      this.residentStates.clear(); this.residentWorkingStates.clear();
+    }
   }
   leaseResident(renderer: THREE.WebGLRenderer, resolution: number, keys: string[]) {
-    this.resident ??= new ResidentQualityComposite(renderer, resolution);
+    this.prepareResident(renderer, resolution);
+    const resident = this.resident!;
     let matched: [number, ResidentState] | undefined;
     for (const state of this.residentStates) {
       if (state[1].keys.length > keys.length) continue;
@@ -175,12 +183,12 @@ export class ProjectedUvRasterCache {
     // completed prefix.
     this.residentWorkingStates = new Map(this.residentStates);
     this.residentStates.clear();
-    if (matched) this.resident.selectSlot(matched[0]);
+    if (matched) resident.selectSlot(matched[0]);
     else {
       this.residentWorkingStates.clear();
-      this.resident.reset();
+      resident.reset();
     }
-    return { composite: this.resident, startIndex, sourceSizes };
+    return { composite: resident, startIndex, sourceSizes };
   }
   recordResidentState(keys: string[], sourceSizes: GpuLayerSourceSize[]) {
     if (!this.resident || keys.length !== sourceSizes.length) return;

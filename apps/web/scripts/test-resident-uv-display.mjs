@@ -195,6 +195,7 @@ aggregateCache.dispose();
   prefixCache.prepare(renderer, 'prefix-scope', ['a', 'b']);
   let resets = 0, slot = 0;
   const composite = {
+    resolution: 1,
     reset() { resets++; slot = 0; },
     dispose() {},
     getCurrentSlot() { return slot; },
@@ -217,6 +218,10 @@ aggregateCache.dispose();
   lease = prefixCache.leaseResident(renderer, 1, ['a', 'x', 'c']);
   assert.equal(lease.startIndex, 0, 'Middle-layer changes require a full recomposition');
   assert.equal(resets, 3);
+  const resized = prefixCache.leaseResident(renderer, 512, ['a', 'x', 'c']);
+  assert.equal(resized.startIndex, 0, 'Region size changes invalidate candidate prefixes');
+  assert.equal(resized.composite.resolution, 512);
+  assert.notEqual(resized.composite, composite);
   prefixCache.dispose();
 }
 // The ping-pong candidate target that preceded a completed stack is still an
@@ -227,6 +232,7 @@ aggregateCache.dispose();
   rewindCache.prepare(renderer, 'rewind-scope', ['a', 'b', 'c']);
   let currentSlot = 0, resets = 0;
   rewindCache.resident = {
+    resolution: 1,
     reset() { resets++; currentSlot = 0; },
     dispose() {},
     getCurrentSlot() { return currentSlot; },

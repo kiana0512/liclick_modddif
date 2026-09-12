@@ -1,6 +1,6 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
-> 文档版本：`2.20.71`
+> 文档版本：`2.20.72`
 >
 > 生效日期：`2026-09-12`
 >
@@ -28,6 +28,8 @@
 2026-09-12 M07，协作 M06/M09/M15：`UV-DISPLAY-MASK-WORKER/1.3.0` 将普通 BaseColor 投影栈的全零 rendered-color mask 规范化为空数组。Quality Blend Worker 不再为每次 4K 普通合成分配并传输 16 MiB 全零 R8，Resident GPU 聚合缓存不再复制/计入该冗余数组，CPU fallback 也只在存在 rendered-color 图层时分配；显示端对空数组绑定原 1×1 零值 RedFormat 纹理。包含 rendered-color 局部重绘的栈仍生成、衰减、缓存并上传完整逐 texel mask；RGBA、coverage、层序、shader 采样、完整分辨率、QA、持久化和导出语义不变，无迁移。详见 [Resident UV 全零蒙版省略变更卡](changes/CHG-20260912-UV-ZERO-MASK-ELISION.md)。
 
 2026-09-12 M07，协作 M06/M09/M15：`UV-RASTER-MRT/1.0.0` 在偶数分辨率 WebGL2 Resident 普通投影路径用一个双附件 draw 同时写 RGBA 颜色与 R8 质量，替代对同一高面数几何执行颜色、质量两个完整 pass；生产 1K/2K/4K 均覆盖，非 Resident、overlay、WebGL1 与奇数诊断尺寸仍保留原双 pass。颜色附件继续使用非预乘 NormalBlending；质量附件以 RGB=1、Alpha=quality 表达原 premultiplied source-over，缓存对两个附件只释放一次 owner。16 组 shader 对照和 512/4096 整链冻结对照均为 0 字节差异；约 26 万三角形夹具的 6 层提交由 12 draw/3,133,440 三角降为 6 draw/1,566,720 三角。直接 4K 六层基线端到端受来源上传主导，约 942–1054ms 对 1000–1051ms，不能宣称该样本已有稳定整体提速。完整分辨率、QA、Worker/CPU、接缝、持久化和导出不变，无迁移。详见 [Resident UV MRT 变更卡](changes/CHG-20260912-UV-RASTER-MRT.md)。
+
+2026-09-12 `CHG-20260912-ERASER-UV-REGION`：UI-06/UI-10 → 主模块 M08，协作 M06/M07；`ALG-ERASE-001` v1.4.0 / `UV-DISPLAY-BUFFER` v1.2.0。用户反馈第一阶段仍迟滞并批准继续优化。1K/2K 普通投影橡皮保留完整密度的 pre-postprocess RGBA/coverage/rendered-color 原始合成；脏区以 512/1024 方块局部光栅、Top-3 解析、CPU 舍入修正、overlay 合成并贴回原始合成，再完整执行原接缝/gutter/Alpha 后处理。保持原 framebuffer 大小和 viewport，以 scissor 限定范围、GPU 精确拷贝到小目标，避免移动 viewport 引入插值舍入差异。全图/区域缓存共用原 256 MiB 上限，候选尺寸变化重建整数目标、使旧前缀失效；区域缓存可直接裁取既有同签名 GPU 栅格。4K、过大笔画、无原始缓存均用原完整路径，不降采样。正式合并、导出、持久化、撤销/重做及 Schema 不变，无资产迁移；显示端扫描后处理后的实际像素差异，在新目标中 GPU 复制旧图、只上传变化区域并原子发布；源蒙版/R8 上传及完整后处理仍有开销，不宣称逐帧 GPU 显示。验证和回滚见 [区域重算变更卡](changes/CHG-20260912-ERASER-UV-REGION.md)。
 
 ## 1. 文档地位与强制边界
 
