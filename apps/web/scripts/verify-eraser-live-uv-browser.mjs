@@ -106,7 +106,7 @@ try {
     scene.add(new THREE.Mesh(geometry,material));
     const bytes = Uint8ClampedArray.from([27,55,88,255, 100,60,20,127, 250,12,8,1,
       99,31,45,0, 10,21,250,254, 35,126,78,64]);
-    const reference = await createImageBitmap(new ImageData(bytes.slice(),3,2),
+    const reference = await window.createImageBitmap(new ImageData(bytes.slice(),3,2),
       {imageOrientation:'flipY',premultiplyAlpha:'none'});
     const source = new ImageData(bytes.slice(),3,2), results=[];
     try {
