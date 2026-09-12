@@ -59,6 +59,11 @@ assert.match(layersPanel, /blockMutation\('删除图层', deletionLocked\)/);
 for (const action of ['导入参考图', '切换参考图', '复制参考图', '删除参考图']) {
   assert.ok(referencePicker.includes(`blockMutation('${action}')`), `${action} must be guarded.`);
 }
+assert.match(
+  referencePicker,
+  /deleteReference\(menu\.referenceId\);\s*window\.dispatchEvent\(new Event\(IMMEDIATE_PROJECT_SAVE_EVENT\)\)/,
+  'Reference deletion must enter the immediate Revision/CAS save coordinator before navigation.',
+);
 
 assert.match(generatePanel, /cancelActiveGenerationRequestKey\?: number/);
 assert.match(

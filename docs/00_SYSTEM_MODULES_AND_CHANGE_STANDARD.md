@@ -1,6 +1,6 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
-> 文档版本：`2.20.67`
+> 文档版本：`2.20.68`
 >
 > 生效日期：`2026-09-12`
 >
@@ -9,6 +9,8 @@
 > 基线仓库：`E:\Liclick 3D Texture Modernization`
 >
 > 审计口径：`0a2519d + 607e82f + 2568e40`，不包含错误文档提交 `2bde8c6/e03bab2/d1c5f78`
+
+2026-09-12 UI-05 → 主模块 M05，协作 M03/M12：旧版单图参考选择器删除参考图后立即进入既有 Project Save Coordinator，以当前 ReferenceStore 快照执行 Revision CAS 保存，不再依赖可能晚于路由切换/刷新的延迟 autosave。新版分组参考选择器原有即时保存保持；只移除工程中的引用关系，不删除已验证对象资产，不改变生成输入、图片字节、ownership、Project Schema 或 Command 幂等语义，无数据迁移。回滚可移除旧入口的即时事件，工程数据无需改写。详见 [参考图删除持久化变更卡](changes/CHG-20260912-REFERENCE-DELETE-PERSISTENCE.md)。
 
 2026-09-12 M07，协作 UI-06/M06/M09：`PERF-UV-SOURCE-PREPARE-001` v1.7.0 将 Resident Top-K 的两个既有 ping-pong 候选目标都登记为已完成精确前缀。关闭最高优先级可见投影层时，直接选择仍驻留的前一候选目标并从该精确层数继续，不再重新投影其下全部可见层；重新打开时只追加尾层。租用即撤销完成身份，只有同一请求完整读回、补缝、gutter 与发布成功才重新提交；取消、异常、中间层显隐、顺序/内容/几何/context 变化仍完整重算。没有增加显存预算，不降低分辨率，不跳过 QA，GPU/CPU/Worker/shader 像素公式、持久化与导出不变。详见 [UV 聚合前缀变更卡](changes/CHG-20260912-UV-AGGREGATE-PREFIX.md)。
 
