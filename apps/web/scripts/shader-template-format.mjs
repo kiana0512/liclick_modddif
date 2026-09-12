@@ -33,7 +33,7 @@ export function shaderTemplateFormatPlugin() {
     enforce: 'pre',
     transform(code, id) {
       // Explicitly scoped: no UI strings, external packages, or other templates.
-      if (!/\/engine\/(?:projection\/(?:ProjectedLayerMaterial|createRuntimeProjectionDepth)|bake\/(?:gpuUvBakeRenderer|residentQualityComposite)|capture\/(?:captureDepth|captureNormal)|localRepaint\/(?:uvRepaint|consumeSelectionMask)|export\/comfyControlInputExporter)\.ts$/.test(id.replaceAll('\\', '/'))) return;
+      if (!/\/engine\/(?:projection\/(?:ProjectedLayerMaterial|createRuntimeProjectionDepth)|bake\/(?:gpuUvBakeRenderer|residentQualityComposite)|capture\/(?:captureDepth|captureNormal)|localRepaint\/(?:uvRepaint|consumeSelectionMask)|export\/comfyControlInputExporter)\.ts$|\/engine\/viewport\/ViewportCanvas\.tsx$/.test(id.replaceAll('\\', '/'))) return;
       return { code: compactShaderTemplateIndentation(code), map: null };
     },
   };

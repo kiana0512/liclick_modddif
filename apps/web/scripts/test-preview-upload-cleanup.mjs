@@ -8,7 +8,7 @@ const code = ts.transpileModule(source.slice(source.indexOf('export function upl
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
 }).outputText;
 
-async function run(failure, flipY, fast = false) {
+async function run(failure, flipY, fast = false, mask = false) {
   let cancelled = false;
   let uploads = 0;
   let monitors = 0;
@@ -20,16 +20,20 @@ async function run(failure, flipY, fast = false) {
     close() { assert.equal(this.closed++, 0, 'each owned bitmap closes exactly once'); }
   }
   const texture = { image: new Bitmap(2, 8), source: { dataReady: true }, userData: {}, flipY };
-  const states = new Map([['active', 7], ['binding', 'original'], ['flip', true], ['premultiply', true]]);
+  const states = new Map([['active', 7], ['binding', 'original'], ['flip', true], ['premultiply', true], ['alignment', 8]]);
   const context = {
     ACTIVE_TEXTURE: 'active', TEXTURE_BINDING_2D: 'binding', UNPACK_FLIP_Y_WEBGL: 'flip',
-    UNPACK_PREMULTIPLY_ALPHA_WEBGL: 'premultiply', TEXTURE_2D: '2d', RGBA: 'rgba', UNSIGNED_BYTE: 'byte',
+    UNPACK_PREMULTIPLY_ALPHA_WEBGL: 'premultiply', UNPACK_ALIGNMENT: 'alignment', TEXTURE_2D: '2d', RGBA: 'rgba', RED: 'red', UNSIGNED_BYTE: 'byte',
     getParameter: key => states.get(key), pixelStorei: (key, value) => states.set(key, value),
     activeTexture: value => states.set('active', value), bindTexture: (_, value) => states.set('binding', value), flush() {},
     texSubImage2D(...args) {
       if (failure === 'submit') throw new Error('submit failed');
-      const bitmap = args.at(-1);
-      submissions.push([args[3], bitmap.row, bitmap.height]);
+      const source = args.at(-1);
+      submissions.push(
+        ArrayBuffer.isView(source)
+          ? [args[3], -1, args[5], args[6]]
+          : [args[3], source.row, source.height, args[4]],
+      );
     },
   };
   const renderer = { domElement: { isConnected: true }, getContext: () => context,
@@ -46,7 +50,7 @@ async function run(failure, flipY, fast = false) {
     exports: {}, ImageBitmap: Bitmap, document: { body: { dataset: {} } },
     previewTextureReadyRenderers: new WeakMap(), previewTextureUploadPromises: new WeakMap(),
     markPreviewTextureUploadStarted: () => uploads++, markPreviewTextureUploadFinished: () => uploads--,
-    getWorkerBitmapId: () => undefined, previewUploadGovernorEnabled: () => true,
+    getWorkerBitmapId: () => mask ? 17 : undefined, previewUploadGovernorEnabled: () => true,
     createTextureUploadBudget: () => ({ pixels: 4 }), updateTextureUploadBudget: budget => budget,
     startFrameIntervalMonitor: () => { monitors++; return { stop: () => monitors--, readAndReset: () => ({}) }; },
     waitForViewportInteractionIdle: async () => { if (failure === 'before-allocation') cancelled = true; },
@@ -54,7 +58,7 @@ async function run(failure, flipY, fast = false) {
     waitForBrowserPaint: async () => {
       waitCount++;
       if (failure === 'after-crop' && waitCount === 1) cancelled = true;
-      if (failure === 'drain' && waitCount === 5) cancelled = true;
+      if (failure === 'drain' && waitCount === (fast ? 1 : 5)) cancelled = true;
       // A rejected next crop may sit across a whole browser task before use.
       await new Promise(resolve => setImmediate(resolve));
     },
@@ -63,6 +67,11 @@ async function run(failure, flipY, fast = false) {
       if (failure === 'late-crop' && y > 0) await new Promise(resolve => setTimeout(resolve, 5));
       const bitmap = new Bitmap(width, height, y); bitmaps.push(bitmap); return bitmap;
     },
+    requestPreviewBitmapStripe: async (_, y, height) => {
+      if ((failure === 'first-crop' && y === 0) || (failure === 'next-crop' && y > 0)) throw new Error('crop failed');
+      if (failure === 'late-crop' && y > 0) await new Promise(resolve => setTimeout(resolve, 5));
+      return { pixels: new Uint8Array(2 * height), width: 2, height };
+    },
     markPreviewUploadStep() {}, invalidatePreviewTextureAfterUploadFailure: () => invalidations++,
     PREVIEW_TEXTURE_UPLOAD_STRIPES_PER_FLUSH: 4, DETACHED_PREVIEW_TEXTURE_UPLOAD_PIXELS_PER_FRAME: 4,
   };
@@ -70,7 +79,7 @@ async function run(failure, flipY, fast = false) {
   try {
     const upload = new Function(...Object.keys(scope), code + ';return uploadPreviewTextureInStripes;')(...Object.values(scope));
     const operation = upload(renderer, texture, { shouldCancel: () => cancelled });
-    if (failure) await assert.rejects(operation); else await operation;
+    if (failure) await assert.rejects(operation, undefined, `${mask ? 'R8' : 'RGBA'} ${failure}`); else await operation;
     await new Promise(resolve => setTimeout(resolve, 10));
     assert.equal(uploads, 0);
     assert.equal(monitors, 0, 'allocation errors also stop frame monitoring');
@@ -80,11 +89,15 @@ async function run(failure, flipY, fast = false) {
     for (const bitmap of bitmaps) assert.equal(bitmap.closed, 1, 'active and pending crops are released');
     assert.equal(texture.image.closed, 0, 'the source image belongs to its caller');
     assert.deepEqual(unhandled, []);
-    if (!failure) assert.deepEqual(submissions, [0, 2, 4, 6].map(y => [flipY ? 6 - y : y, y, 2]));
+    if (!failure) assert.deepEqual(
+      submissions,
+      [0, 2, 4, 6].map(y => [flipY ? 6 - y : y, mask ? -1 : y, 2, mask ? 'red' : 'rgba']),
+    );
     assert.equal(states.get('active'), 7);
     assert.equal(states.get('binding'), 'original');
     assert.equal(Boolean(states.get('flip')), true);
     assert.equal(Boolean(states.get('premultiply')), true);
+    assert.equal(states.get('alignment'), 8);
   } finally { process.off('unhandledRejection', onUnhandled); }
 }
 
@@ -97,4 +110,8 @@ for (let cycle = 0; cycle < 10; cycle++) {
     await run(failure, cycle % 2 === 1);
   }
 }
-console.log('Preview upload cleanup passed: 90 baseline + 14 batched success/cancel/failure cases; late/rejected crops, GL state, source ownership, orientation and zero live monitors/uploads.');
+for (const failure of [undefined, 'before-allocation', 'allocate', 'first-crop', 'next-crop', 'after-crop', 'submit', 'late-crop', 'drain']) {
+  await run(failure, false, true, true);
+  await run(failure, true, true, true);
+}
+console.log('Preview upload cleanup passed: RGBA bitmap and R8 mask success/cancel/failure cases; late/rejected stripes, GL state, source ownership, orientation and zero live monitors/uploads.');

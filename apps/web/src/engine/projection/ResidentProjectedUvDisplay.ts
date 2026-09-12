@@ -256,7 +256,12 @@ export class ResidentProjectedUvDisplay {
           request.resolution,
         );
       } else {
-        renderedColorMaskTexture = new THREE.DataTexture(new Uint8Array([0, 0, 0, 255]), 1, 1);
+        renderedColorMaskTexture = new THREE.DataTexture(
+          new Uint8Array([0]),
+          1,
+          1,
+          THREE.RedFormat,
+        );
         renderedColorMaskTexture.needsUpdate = true;
       }
       created.push(renderedColorMaskTexture);
@@ -335,7 +340,7 @@ export class ResidentProjectedUvDisplay {
     // including the single-pixel mask used by ordinary BaseColor stacks.
     const size = (value: ProjectedPreviewComposite) =>
       value.resolution ** 2 * 4 +
-      value.renderedColorMaskTexture.image.width * value.renderedColorMaskTexture.image.height * 4;
+      value.renderedColorMaskTexture.image.width * value.renderedColorMaskTexture.image.height;
     let bytes = [...this.cache.values()].reduce((total, value) => total + size(value), 0);
     for (const [key, value] of this.cache) {
       if (bytes <= 512 * 1024 * 1024 && this.cache.size <= 32) break;

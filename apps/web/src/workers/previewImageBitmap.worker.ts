@@ -9,6 +9,7 @@ type Request =
 type Response =
   | { type: 'ready'; id: number; width: number; height: number }
   | { type: 'stripe'; requestId: number; bitmap: ImageBitmap }
+  | { type: 'mask-stripe'; requestId: number; pixels: ArrayBuffer; width: number; height: number }
   | { type: 'error'; id?: number; requestId?: number; message: string };
 
 type MaskSource = { data: Uint8Array; width: number; height: number };
@@ -86,27 +87,23 @@ scope.onmessage = (event) => {
       const sourceWidth = source.width;
       const sourceHeight = source.height;
       const rowCount = Math.max(1, Math.min(request.height, sourceHeight - request.y));
-      let stripe: ImageBitmap;
       if ('data' in source) {
-        const rgba = new Uint8ClampedArray(sourceWidth * rowCount * 4);
+        const pixels = new Uint8Array(sourceWidth * rowCount);
         for (let row = 0; row < rowCount; row++) {
           const sourceRow = sourceHeight - 1 - request.y - row;
           const sourceOffset = sourceRow * sourceWidth;
           const destinationOffset = row * sourceWidth;
-          for (let column = 0; column < sourceWidth; column++) {
-            const destination = (destinationOffset + column) * 4;
-            rgba[destination] = source.data[sourceOffset + column];
-            rgba[destination + 3] = 255;
-          }
+          pixels.set(source.data.subarray(sourceOffset, sourceOffset + sourceWidth), destinationOffset);
         }
-        stripe = await createImageBitmap(new ImageData(rgba, sourceWidth, rowCount), {
-          premultiplyAlpha: 'none',
-        });
-      } else {
-        stripe = await createImageBitmap(source, 0, request.y, sourceWidth, rowCount, {
-          premultiplyAlpha: 'none',
-        });
+        scope.postMessage(
+          { type: 'mask-stripe', requestId: request.requestId, pixels: pixels.buffer, width: sourceWidth, height: rowCount },
+          [pixels.buffer],
+        );
+        return;
       }
+      const stripe = await createImageBitmap(source, 0, request.y, sourceWidth, rowCount, {
+        premultiplyAlpha: 'none',
+      });
       scope.postMessage({ type: 'stripe', requestId: request.requestId, bitmap: stripe }, [stripe]);
     } catch (error) {
       scope.postMessage({

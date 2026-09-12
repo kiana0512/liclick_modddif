@@ -503,6 +503,14 @@ await presentation.waitForResidentUvPresentation(scene, 'other-object');
   );
   assert.match(displaySource, /createWorkerBackedMaskPreviewTexture\(\s*mask,/);
   assert.doesNotMatch(displaySource, /new Uint8ClampedArray\(mask\.length \* 4\)/);
+  assert.match(displaySource, /THREE\.RedFormat/);
+
+  const previewCacheSource = fs.readFileSync(
+    new URL('../src/engine/viewport/previewTextureCache.ts', import.meta.url),
+    'utf8',
+  );
+  assert.match(previewCacheSource, /adoptPreviewMaskInWorker[\s\S]*?THREE\.RedFormat/);
+  assert.match(previewCacheSource, /webgl2\.RED/);
 
   const workerSource = fs.readFileSync(
     new URL('../src/workers/previewImageBitmap.worker.ts', import.meta.url),
@@ -538,23 +546,23 @@ await presentation.waitForResidentUvPresentation(scene, 'other-object');
     data: { type: 'adopt-mask', id: 17, mask: mask.buffer, width: 3, height: 2 },
   });
   assert.deepEqual(reply, { type: 'ready', id: 17, width: 3, height: 2 });
-  assert.equal(created.length, 0, 'Mask adoption retains one byte per pixel without a full RGBA bitmap');
+  assert.equal(created.length, 0, 'Mask adoption retains one byte per pixel without a bitmap');
   await worker.onmessage({
     data: { type: 'stripe', id: 17, requestId: 31, y: 0, height: 1 },
   });
-  assert.equal(reply.type, 'stripe');
+  assert.equal(reply.type, 'mask-stripe');
   assert.deepEqual(
-    [...created[0].imageData.data],
-    [255, 23, 44].flatMap((value) => [value, 0, 0, 255]),
+    [...new Uint8Array(reply.pixels)],
+    [255, 23, 44],
     'First upload stripe reads the vertically flipped final mask row',
   );
   await worker.onmessage({
     data: { type: 'stripe', id: 17, requestId: 32, y: 1, height: 1 },
   });
   assert.deepEqual(
-    [...created[1].imageData.data],
-    [0, 1, 127].flatMap((value) => [value, 0, 0, 255]),
-    'Every mask byte keeps the exact red channel and opaque alpha contract',
+    [...new Uint8Array(reply.pixels)],
+    [0, 1, 127],
+    'Every mask byte keeps the exact red-channel contract',
   );
   await worker.onmessage({ data: { type: 'release', id: 17 } });
   await worker.onmessage({
@@ -563,5 +571,5 @@ await presentation.waitForResidentUvPresentation(scene, 'other-object');
   assert.match(reply.message, /released/);
 }
 console.log(
-  'Resident UV: exact rounding, duplicate candidate reuse, bounded ownership, geometry invalidation and off-thread mask expansion passed.',
+  'Resident UV: exact rounding, duplicate candidate reuse, bounded ownership, geometry invalidation and one-byte mask upload passed.',
 );

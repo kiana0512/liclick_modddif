@@ -34,8 +34,8 @@ const result = compact(source);
 // Compare every leaf token of the actual module, including comments/trivia;
 // only template indentation may differ. Expressions and token separators stay.
 const templates = new Set([ts.SyntaxKind.NoSubstitutionTemplateLiteral, ts.SyntaxKind.TemplateHead, ts.SyntaxKind.TemplateMiddle, ts.SyntaxKind.TemplateTail]);
-function tokens(code) {
-  const ast = ts.createSourceFile('shader.ts', code, ts.ScriptTarget.Latest, true);
+function tokens(code, scriptKind = ts.ScriptKind.TS) {
+  const ast = ts.createSourceFile('shader.ts', code, ts.ScriptTarget.Latest, true, scriptKind);
   assert.equal(ast.parseDiagnostics.length, 0);
   const out = [];
   const visit = node => {
@@ -82,19 +82,33 @@ const additionalShaderFiles = [
   '../src/engine/localRepaint/uvRepaint.ts',
   '../src/engine/localRepaint/consumeSelectionMask.ts',
   '../src/engine/export/comfyControlInputExporter.ts',
+  '../src/engine/viewport/ViewportCanvas.tsx',
 ];
 let additionalSaved = 0;
 for (const relativeFile of additionalShaderFiles) {
   const file = new URL(relativeFile, import.meta.url);
   const before = fs.readFileSync(file, 'utf8');
   const result = compact(before);
-  assert.deepEqual(tokens(result), tokens(before));
+  const scriptKind = relativeFile.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS;
+  assert.deepEqual(tokens(result, scriptKind), tokens(before, scriptKind));
   assert.equal(plugin.transform(before, file.pathname).code, result);
   additionalSaved += Buffer.byteLength(before) - Buffer.byteLength(result);
-  const ast = ts.createSourceFile('shader.ts', before, ts.ScriptTarget.Latest, true);
+  const ast = ts.createSourceFile('shader.ts', before, ts.ScriptTarget.Latest, true, scriptKind);
   const verifyTemplate = node => {
     if (templates.has(node.kind) && /(\r?\n)[\t ]+/.test(node.getText(ast))) {
-      assert.match(node.getText(ast), /(?:void main|#include|uniform|varying|precision|gl_)/);
+      const owners = [];
+      let parent = node.parent;
+      while (parent) {
+        if (ts.isVariableDeclaration(parent) || ts.isPropertyAssignment(parent)) {
+          owners.push(parent.name.getText(ast));
+        }
+        parent = parent.parent;
+      }
+      assert.ok(
+        /(?:void main|#include|uniform|varying|precision|gl_)/.test(node.getText(ast)) ||
+          /(?:Shader|shader|material|vertexAssignment|fragmentBlend)/.test(owners.join(' ')),
+        `Only GLSL templates may be compacted: ${owners.join(' ')}`,
+      );
     }
     ts.forEachChild(node, verifyTemplate);
   };
