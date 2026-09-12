@@ -115,22 +115,26 @@ const { ProjectedUvRasterCache } = load('ProjectedUvRasterCache', {
 const cache = new ProjectedUvRasterCache(16);
 const renderer = { domElement: { addEventListener() {}, removeEventListener() {} } };
 let disposed = 0;
-const entry = () => ({
-  color: {
-    width: 1,
-    height: 1,
-    dispose() {
-      disposed++;
+const entry = () => {
+  const qualityTexture = { format: THREE.RGBAFormat };
+  return {
+    color: {
+      width: 1,
+      height: 1,
+      dispose() {
+        disposed++;
+      },
     },
-  },
-  quality: {
-    texture: { format: THREE.RGBAFormat },
-    dispose() {
-      disposed++;
+    quality: {
+      texture: qualityTexture,
+      dispose() {
+        disposed++;
+      },
     },
-  },
-  sourceSize: {},
-});
+    qualityTexture,
+    sourceSize: {},
+  };
+};
 cache.prepare(renderer, 'mesh-1/1K', ['a', 'b']);
 const a = entry(),
   b = entry();
@@ -189,8 +193,13 @@ aggregateCache.dispose();
 {
   const prefixCache = new ProjectedUvRasterCache(64);
   prefixCache.prepare(renderer, 'prefix-scope', ['a', 'b']);
-  let resets = 0;
-  const composite = { reset() { resets++; }, dispose() {} };
+  let resets = 0, slot = 0;
+  const composite = {
+    reset() { resets++; slot = 0; },
+    dispose() {},
+    getCurrentSlot() { return slot; },
+    selectSlot(next) { slot = next; },
+  };
   prefixCache.resident = composite;
   let lease = prefixCache.leaseResident(renderer, 1, ['a', 'b']);
   assert.equal(lease.startIndex, 0);
@@ -210,10 +219,47 @@ aggregateCache.dispose();
   assert.equal(resets, 3);
   prefixCache.dispose();
 }
+// The ping-pong candidate target that preceded a completed stack is still an
+// exact Top-K prefix. Closing the highest-priority visible layer should select
+// that resident slot instead of projecting every remaining layer again.
+{
+  const rewindCache = new ProjectedUvRasterCache(64);
+  rewindCache.prepare(renderer, 'rewind-scope', ['a', 'b', 'c']);
+  let currentSlot = 0, resets = 0;
+  rewindCache.resident = {
+    reset() { resets++; currentSlot = 0; },
+    dispose() {},
+    getCurrentSlot() { return currentSlot; },
+    selectSlot(next) { currentSlot = next; },
+  };
+  rewindCache.leaseResident(renderer, 1, ['a', 'b', 'c']);
+  currentSlot = 1;
+  rewindCache.recordResidentState(['a'], [{ id: 'a' }]);
+  currentSlot = 0;
+  rewindCache.recordResidentState(['a', 'b'], [{ id: 'a' }, { id: 'b' }]);
+  currentSlot = 1;
+  rewindCache.recordResidentState(
+    ['a', 'b', 'c'],
+    [{ id: 'a' }, { id: 'b' }, { id: 'c' }],
+  );
+  rewindCache.commitResident(
+    ['a', 'b', 'c'],
+    [{ id: 'a' }, { id: 'b' }, { id: 'c' }],
+  );
+  const rewind = rewindCache.leaseResident(renderer, 1, ['a', 'b']);
+  assert.equal(rewind.startIndex, 2, 'One-layer suffix removal reuses the exact previous slot');
+  assert.equal(currentSlot, 0);
+  assert.deepEqual(rewind.sourceSizes, [{ id: 'a' }, { id: 'b' }]);
+  rewindCache.commitResident(['a', 'b'], [{ id: 'a' }, { id: 'b' }]);
+  const append = rewindCache.leaseResident(renderer, 1, ['a', 'b', 'c']);
+  assert.equal(append.startIndex, 2, 'Re-enabling the top layer resumes the same exact prefix');
+  assert.equal(resets, 1);
+  rewindCache.dispose();
+}
 const compactCache = new ProjectedUvRasterCache(16);
 compactCache.prepare(renderer, 'compact', ['a', 'b', 'c']);
 const compactEntry = () => {
-  const value = entry(); value.quality.texture.format = THREE.RedFormat; return value;
+  const value = entry(); value.qualityTexture.format = THREE.RedFormat; return value;
 };
 assert(compactCache.take('a', compactEntry()));
 assert(compactCache.take('b', compactEntry()));
@@ -223,6 +269,20 @@ await compactCache.retainResolved('base', resolved);
 assert.equal(compactCache.get('a'), undefined);
 assert(compactCache.get('b'));assert(compactCache.get('c'), 'two 5-byte rasters share the 16-byte budget with a 6-byte base');
 compactCache.dispose();
+// MRT color/quality attachments share one render-target owner. Eviction must
+// dispose that owner exactly once while still charging the R8 byte footprint.
+{
+  let mrtDisposals = 0;
+  const mrtCache = new ProjectedUvRasterCache(5);
+  mrtCache.prepare(renderer, 'mrt-a', ['mrt']);
+  assert(mrtCache.take('mrt', {
+    color: { width: 1, height: 1, dispose() { mrtDisposals++; } },
+    qualityTexture: { format: THREE.RedFormat }, sourceSize: {},
+  }));
+  mrtCache.prepare(renderer, 'mrt-b', []);
+  assert.equal(mrtDisposals, 1, 'shared MRT attachment owner is released once');
+  mrtCache.dispose();
+}
 // Eye-state A/B results share the existing hard budget and use exact LRU
 // ownership. A third result evicts the least recently read state.
 {
@@ -525,6 +585,13 @@ await presentation.waitForResidentUvPresentation(scene, 'other-object');
     'utf8',
   );
   assert.match(gpuBakeSource, /renderedColorMask:new Uint8Array\(0\)/);
+  assert.match(gpuBakeSource, /#if MRT == 1/);
+  assert.match(gpuBakeSource, /createPostprocessTarget\(resolution, THREE\.RGBAFormat, 2\)/);
+  assert.match(
+    gpuBakeSource,
+    /resident[\s\S]*?renderer\.capabilities\.isWebGL2[\s\S]*?resolution % 2 === 0[\s\S]*?!isOverlay/,
+  );
+  assert.match(gpuBakeSource, /resident!\.push\(layerColorTarget\.textures\[0\], layerQualityTexture\)/);
 
   const previewCacheSource = fs.readFileSync(
     new URL('../src/engine/viewport/previewTextureCache.ts', import.meta.url),

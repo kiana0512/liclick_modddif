@@ -379,6 +379,7 @@ export function ReferenceImagePicker({
               onClick={() => {
                 if (blockMutation('删除参考图')) return;
                 deleteReference(menu.referenceId);
+                window.dispatchEvent(new Event(IMMEDIATE_PROJECT_SAVE_EVENT));
                 setMenu(undefined);
               }}
             >

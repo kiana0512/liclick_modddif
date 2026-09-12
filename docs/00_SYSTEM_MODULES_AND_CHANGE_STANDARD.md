@@ -1,6 +1,6 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
-> 文档版本：`2.20.67`
+> 文档版本：`2.20.71`
 >
 > 生效日期：`2026-09-12`
 >
@@ -14,10 +14,20 @@
 
 2026-09-12 `CHG-20260912-ERASER-INTERACTIVE-UPLOAD`：UI-06/UI-10 → M08，协作 M06/M07；候选 `ALG-ERASE-001` v1.3.10 / `UV-DISPLAY-BUFFER` v1.1.2。用户批准新版优化，本次仅落实上传与调度阶段：当前普通投影层的交互草稿显式允许源纹理和结果纹理在交互期间分条上传；默认后台/正式合并仍等待交互静默。交互结果直接转移 straight RGBA 给既有 Worker，按原方向分条，不再创建全图 ImageBitmap；静态缓存/正式结果保留旧路径及所有权。Top-3、CPU 舍入修正、接缝/gutter、shader、分辨率、QA、Schema、历史/资产持久化及导出不变，无迁移。123 项回归、1K/2K-14 层/4K 隔离持续拖动通过；强制恢复旧上传门禁的 1K 反证超时。4K 曾在并行回归负载下超时，重跑通过但反馈约 1.3 秒，尚非逐帧 GPU 增量更新，也未完成复杂工程/长期稳定验收。本次未推送或部署；回滚及详细验证见 [变更卡](changes/CHG-20260912-ERASER-INTERACTIVE-UPLOAD.md)。
 
+2026-09-12 UI-06 → 主模块 M05，协作 M06/M07：`LAYER-MULTISELECT-VISIBILITY` v1.0.0 在批量关闭所选图层导致 LayerStore 自动切换 active layer 时保留原多选集合，因此任一仍被选中的隐藏图层眼睛可原集合批量打开；所选行增加持续可见的洋红内描边，active 蓝色底边语义不变。该修改不改变单选、Shift/Ctrl 选择、图层顺序、可见性值、投影转 UV 像素、完整分辨率、QA、持久化或导出。无 Schema、资产或工程迁移；回滚只恢复 active layer 驱动的单选收敛与原背景高亮。详见 [图层多选显隐变更卡](changes/CHG-20260912-LAYER-MULTISELECT-VISIBILITY.md)。
+
+2026-09-12 M07，协作 M06/M08/M09：`PERF-UV-SOURCE-PREPARE-001` v1.8.0 将“普通投影底层 + 单个连续局部重绘 literal overlay”也纳入既有颜色直合成路径。该路径不再为最终只按颜色覆盖的 overlay 创建、栅格化和读回未被消费的质量缓冲；RGBA、coverage、rendered-color mask、层序、接缝、gutter、完整分辨率与发布屏障保持原公式。4K 冻结夹具的 5→4 层状态单次样本由 1122.4ms 降至 892.5ms，GPU/读回阶段由 619.0ms 降至 412.9ms，完整 bake 由 991.1ms 降至 765.1ms；17 个显隐状态重复结果逐像素一致，该隔离样本不作为所有模型的固定提速承诺。CPU/Worker/shader、持久化、导出、Schema、Revision CAS、ownership 与 verified assets 不变，无迁移。详见 [单覆盖层 UV 直合成变更卡](changes/CHG-20260912-UV-SINGLE-OVERLAY.md)。
+
+2026-09-12 UI-05 → 主模块 M05，协作 M03/M12：旧版单图参考选择器删除参考图后立即进入既有 Project Save Coordinator，以当前 ReferenceStore 快照执行 Revision CAS 保存，不再依赖可能晚于路由切换/刷新的延迟 autosave。新版分组参考选择器原有即时保存保持；只移除工程中的引用关系，不删除已验证对象资产，不改变生成输入、图片字节、ownership、Project Schema 或 Command 幂等语义，无数据迁移。回滚可移除旧入口的即时事件，工程数据无需改写。详见 [参考图删除持久化变更卡](changes/CHG-20260912-REFERENCE-DELETE-PERSISTENCE.md)。
+
+2026-09-12 M07，协作 UI-06/M06/M09：`PERF-UV-SOURCE-PREPARE-001` v1.7.0 将 Resident Top-K 的两个既有 ping-pong 候选目标都登记为已完成精确前缀。关闭最高优先级可见投影层时，直接选择仍驻留的前一候选目标并从该精确层数继续，不再重新投影其下全部可见层；重新打开时只追加尾层。租用即撤销完成身份，只有同一请求完整读回、补缝、gutter 与发布成功才重新提交；取消、异常、中间层显隐、顺序/内容/几何/context 变化仍完整重算。没有增加显存预算，不降低分辨率，不跳过 QA，GPU/CPU/Worker/shader 像素公式、持久化与导出不变。详见 [UV 聚合前缀变更卡](changes/CHG-20260912-UV-AGGREGATE-PREFIX.md)。
+
 变更卡 `CHG-20260912-GPT-MULTIVIEW-CONCURRENCY`：UI-05 → 主模块 M04，`GPT-MULTIVIEW-PAIR-SEQUENCE` v1.3.0（Multiview concurrency selection / 多视图并发切换）；稳定路径 production，加速路径为非默认可选能力，真实远端速度与美术一致性待验收。实施 Codex、体验验收维护者。新增小按钮切换稳定/加速，按项目保存可选 `settings.imageGeneration.textureMultiviewMode=stable|fast`；缺失或未知值读取为 stable。稳定每组最多 2 张；加速保留首组，后续仅合并相邻完整预设对为最多 4 张，预设 10 视图为 2+4+4，14 视图为 2+4+4+4；自定义新增相机和缺失一半的预设对仍独立执行，不猜测朝向，不重排原有提交顺序。输入为既有视角列表/预设和模式，输出为有序分组，不涉及像素、单位或矩阵换算。生成准备和执行期间锁定按钮，批次使用启动时的策略；同组全部输入先准备并持久化再提交远端，组内并发等待、按固定顺序串行回贴，真实材质驻留与呈现屏障后才捕获下一组。同组结果不互相参考，四图并发不保证美术一致性或固定提速；失败保留本组成功结果并停止后续组，取消沿用原任务身份检查，整批成功后仍仅一次内容修补。不改变单视图、局部重绘、提示词、分辨率、质量、透明 Alpha、GPU/CPU/Worker/shader 投影、UV/export、捕获空间、Layer/Generation/Capture Schema、Command v1、Revision CAS、ownership 或 verified assets。Project 设置新增可选枚举，不需批量迁移；回退按钮/策略后忽略该字段，保留历史图层和资产，稳定模式可立即恢复原分组。回归执行实际调度器与面板适配器，覆盖 10/14 视图、默认/未知值、自定义相机、四任务乱序、组间呈现屏障、本组失败保留、输入快照及按钮双向切换/锁定。未进行付费生图，不把模拟并发等同线上耗时收益。
 
 2026-09-12 UI-06/UI-10 → 主模块 M08，协作 M06/M07，候选 `ALG-ERASE-001` v1.3.9 / `UV-DISPLAY-BUFFER` v1.1.1：普通投影橡皮恢复有界密集表面采样，并在用户批准后接入当前层独立、完整分辨率的 UV 蒙版草稿。拖动中单任务合成最新快照；复用正式 GPU/CPU/Worker/接缝/gutter/QA 管线，不擦最终整栈 Alpha，不降低分辨率。草稿不写入 LayerStore、持久缓存或历史，正式蒙版按 URL/revision 实际呈现后交接。当前候选仍为完整 UV 重合成，不是脏区 GPU 增量核；4K 隔离反馈约 929ms，未达到逐帧跟手，包体门禁也待解决，不具备发布结论。原生 UV/局部重绘橡皮显示路径、投影/UV/export 像素、Schema、CAS/ownership/资产协议不变，无迁移。Modddif 录屏仅用于确认交互目标，不作为其内部算法或性能证据。见 [变更卡](changes/CHG-20260912-ERASER-CONTINUITY.md)。
 2026-09-12 M07，协作 M06/M09/M15：`UV-DISPLAY-MASK-WORKER/1.3.0` 将普通 BaseColor 投影栈的全零 rendered-color mask 规范化为空数组。Quality Blend Worker 不再为每次 4K 普通合成分配并传输 16 MiB 全零 R8，Resident GPU 聚合缓存不再复制/计入该冗余数组，CPU fallback 也只在存在 rendered-color 图层时分配；显示端对空数组绑定原 1×1 零值 RedFormat 纹理。包含 rendered-color 局部重绘的栈仍生成、衰减、缓存并上传完整逐 texel mask；RGBA、coverage、层序、shader 采样、完整分辨率、QA、持久化和导出语义不变，无迁移。详见 [Resident UV 全零蒙版省略变更卡](changes/CHG-20260912-UV-ZERO-MASK-ELISION.md)。
+
+2026-09-12 M07，协作 M06/M09/M15：`UV-RASTER-MRT/1.0.0` 在偶数分辨率 WebGL2 Resident 普通投影路径用一个双附件 draw 同时写 RGBA 颜色与 R8 质量，替代对同一高面数几何执行颜色、质量两个完整 pass；生产 1K/2K/4K 均覆盖，非 Resident、overlay、WebGL1 与奇数诊断尺寸仍保留原双 pass。颜色附件继续使用非预乘 NormalBlending；质量附件以 RGB=1、Alpha=quality 表达原 premultiplied source-over，缓存对两个附件只释放一次 owner。16 组 shader 对照和 512/4096 整链冻结对照均为 0 字节差异；约 26 万三角形夹具的 6 层提交由 12 draw/3,133,440 三角降为 6 draw/1,566,720 三角。直接 4K 六层基线端到端受来源上传主导，约 942–1054ms 对 1000–1051ms，不能宣称该样本已有稳定整体提速。完整分辨率、QA、Worker/CPU、接缝、持久化和导出不变，无迁移。详见 [Resident UV MRT 变更卡](changes/CHG-20260912-UV-RASTER-MRT.md)。
 
 ## 1. 文档地位与强制边界
 
