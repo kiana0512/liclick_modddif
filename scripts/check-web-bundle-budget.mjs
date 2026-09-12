@@ -85,7 +85,10 @@ const budgets = [
 // CHG-20260912-REFERENCE-GROUP-REUSE + UV-VISIBILITY-EXACT-CACHE: the exact
 // Cloud release build is 3,221,860 bytes. Allocate a bounded 2,000-byte
 // integration allowance; all hot-chunk, resolution and QA gates remain intact.
-const maxTotalJavaScriptBytes = 3_224_000;
+// CHG-20260912-ERASER-GPU-MASK: the full-resolution GPU live mask, exact-stack
+// gate and fail-closed fallback measure 3,225,540 bytes after compaction. Grant
+// only 2,000 bytes; all per-chunk, resolution, correctness and QA gates remain.
+const maxTotalJavaScriptBytes = 3_226_000;
 
 let entries;
 try {

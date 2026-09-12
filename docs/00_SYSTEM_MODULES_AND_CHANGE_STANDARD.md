@@ -1,6 +1,6 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
-> 文档版本：`2.20.79`
+> 文档版本：`2.20.80`
 >
 > 生效日期：`2026-09-12`
 >
@@ -11,6 +11,8 @@
 > 审计口径：`0a2519d + 607e82f + 2568e40`，不包含错误文档提交 `2bde8c6/e03bab2/d1c5f78`
 
 2026-09-12 UI-05 → M04（协作 M08）：`GPT-MULTIVIEW-PAIR-SEQUENCE` v1.4.0 固定采用原加速分组，移除两张稳定模式及切换按钮，旧工程并发枚举仅保留兼容、不参与新任务调度。10/14 视图分别为 2+4+4、2+4+4+4，自定义及不完整配对保持独立；组内并发、固定序回贴、组间材质呈现与失败/取消门禁不变。模型和质量参数移入底部生成按钮区；原局部重绘隐藏参数，GPT 局部重绘保留。侧栏按按钮区实测高度避让。GPU/CPU/Worker/shader、投影/UV/export、分辨率、质量参数、透明 Alpha、持久化和资产协议不变，无数据迁移。见 [生成区布局及固定并发变更卡](changes/CHG-20260912-GENERATION-ACTION-FAST.md)。
+
+2026-09-12 UI-06/UI-10 → M08，协作 M06/M07：`ALG-ERASE-001` v1.5.0 / `UV-DISPLAY-BUFFER` v1.3.0 将普通 projected 橡皮的可见交互改为项目真实 1K/2K/4K/8K 分辨率 GPU keep-mask 增量盖章；每帧只写命中脏瓦片，不再触发 Resident UV 全图重合成、Worker 质量传播、CPU readback 或整图上传。安全的 direct/texture-array 正式图层栈继续负责源纹理、顺序、作者蒙版、深度和颜色，Resident UV 仍负责眼睛/顺序变化及正式提交；采样器或 uniform 预算不安全时 fail-closed 回到原精确路径。修复 mask-only UV 输出和瓦片 scissor 的 V 轴约定，消除上下镜像笔触。512 Canvas 只作为不可见的延迟持久化草稿，不参与显示、最终蒙版或导出；GPU 不可用时回退为完整项目分辨率 Canvas。Schema、Project Command、Revision CAS、ownership 与 verified assets 不变，无迁移。详见 [GPU 跟手蒙版变更卡](changes/CHG-20260912-ERASER-GPU-MASK.md)。
 
 2026-09-12 UI-01 → M03：工具箱 `/tools` 顶部 LI3D Logo 接入页面已有的功能主页导航，与同页“返回功能首页”按钮保持一致；Logo 具备按钮语义、键盘焦点、可访问名称与现有 hover/focus 反馈。工具清单、下载、登录状态、路由结构、算法、Schema、资产、持久化和部署不变，无迁移。详见 [工具箱 Logo 导航变更卡](changes/CHG-20260912-TOOLBOX-LOGO-HOME.md)。
 
@@ -613,7 +615,9 @@ Layer 的 `type`、`role`、`blendMode`、`visibility policy` 是四个独立维
 
 删除最后一个活动对象图层后，store 自动创建空 UV 保底层。剪刀发布时会隐藏所有实际被消费的源层；若指定空 UV 目标则原位填充，否则在源层位置创建 merged-uv。
 
-### 5.1 当前图层橡皮 `ALG-ERASE-001` v1.3.7
+### 5.1 当前图层橡皮 `ALG-ERASE-001` v1.5.0
+
+v1.5.0 普通 projected 橡皮交互（UI-06/UI-10 → M08，协作 M06/M07）：工具激活时在当前 WebGL renderer 预热与项目 UV 相同分辨率的 R/G/B/A keep-mask render target，并把它注册为当前层 live mask。拖动期间按 `requestAnimationFrame` 合并输入，只对命中 UV 脏瓦片执行 GPU stamp；`captureHistory=false` 保证交互阶段不做 readback，Resident UV 全图合成、Worker 质量传播、CPU 后处理和整图纹理上传均不进入逐帧路径。屏幕仍由安全的 direct/texture-array 正式投影栈精确混合 source、作者 mask、live keep-mask、深度和图层顺序；若层数、采样器或 uniform 预算不允许该精确栈，则保持原 Resident 精确路径，不显示近似或错误结果。mask-only shader 将 UV 的 V 轴转换到 Canvas/project 约定，瓦片 scissor 同步翻转，避免实际笔触与上下镜像位置互换。512 Canvas 仅记录不可见的延迟提交草稿，不是交互显示或输出；正式 keep-mask、历史、补缝、保存、UV bake 与 export 仍使用项目选择的完整分辨率。GPU 初始化失败回退到完整分辨率 Canvas，不静默降质。Schema 仍为 `ERASER_ALGORITHM_VERSION=1`，无需资产迁移；回滚只移除 GPU mask session 与 exact-stack 门禁，已有蒙版和工程继续兼容。详见 `CHG-20260912-ERASER-GPU-MASK`。
 
 v1.3.7 普通投影蒙版 GPU 存储尺寸修复（M06/M12，协作 M03）：1×1 白色 bootstrap 在首次擦除提交时扩大为所选 UV 分辨率，仅设置 needsUpdate 无法扩容 WebGL2 immutable storage，真实测试报 GL_INVALID_VALUE 并保留旧蒙版。live canvas 注册表记录已配置宽高，在发布、换 backing 或读取发现尺寸改变时只释放旧 GPU 存储，保留共享 Texture/Source、URL 和 canvas 像素，下次上传重建正确尺寸。等尺寸笔触不重建。局部重绘擦除逻辑不变；shader/CPU/Worker/UV/export 像素公式、分辨率、PNG 保存、Schema/CAS/ownership/verified assets 不变，无数据迁移。详见 `CHG-20260909-PROJECTED-ERASER-STORAGE`。
 
@@ -627,7 +631,7 @@ v1.3.7 普通投影蒙版 GPU 存储尺寸修复（M06/M12，协作 M03）：1×
 | content-aware underlay | 只读计算结果 | 必须先显式创建普通 UV 可编辑副本；原 underlay 不变 |
 | normal/patch | 无 | fail-closed；normal 禁止颜色橡皮，patch 先合并为 UV |
 
-覆盖公式为 `effectiveCoverage = authoredCoverage × editKeepCoverage`。UV 图层在提交时把 keep coverage 合入该层 alpha；projected 图层把它保存为 UV0 灰度 keep mask；局部重绘沿用独立作者 mask。GPU 实时材质、GPU UV bake、CPU UV rasterizer、UV Worker source-over、图层合并和模型导出都消费同一结果。交互笔画预览可使用 512/1024 代理，但持久遮罩、延迟补缝和输出必须使用项目选择的 1K/2K/4K/8K，不得以旧 2K 上限作为最终结果。
+覆盖公式为 `effectiveCoverage = authoredCoverage × editKeepCoverage`。UV 图层在提交时把 keep coverage 合入该层 alpha；projected 图层把它保存为 UV0 灰度 keep mask；局部重绘沿用独立作者 mask。GPU 实时材质、GPU UV bake、CPU UV rasterizer、UV Worker source-over、图层合并和模型导出都消费同一结果。普通 projected 橡皮的可见实时蒙版必须使用项目选择的 1K/2K/4K/8K；512 Canvas 只能作为不可见的延迟持久化草稿，不能参与屏幕显示、正式遮罩或导出。其他明确登记的交互代理不改变其正式完整分辨率要求，不得以旧 2K 上限作为最终结果。
 
 v1.2.0 的交互调度只优化普通 projected keep-mask：原始鼠标/压感笔事件在每个显示帧仅保留最后一个表面命中，512 代理画布用连续笔刷段补齐帧间路径；复用 pointer-down 画布边界，停止逐帧上传仅用于延迟细化的 projection texture。抬笔后等待 48ms 无输入窗口，再让出一个任务执行持久画布、历史瓦片和图层发布，不再等待可能延迟数秒的 requestIdleCallback；切层/切模型时优先完成旧笔画提交，再释放旧 live mask，交接期间不接收新笔画。高分辨率投影补缝仍在 3000ms 交互空闲后运行。普通/合并 UV 橡皮继续使用密集 BVH/UV 重采样，局部重绘作者 coverage、最终分辨率和覆盖公式均不变。
 
@@ -1058,6 +1062,7 @@ M15 / CLOUD-DEPLOYMENT v1.0.0（2026-09-03）：正常合并 release 部署历�
 
 | 版本 | 日期 | 基线 | 变更 |
 | --- | --- | --- | --- |
+| `2.20.79` | 2026-09-12 | `ec629a7 + 本地待提交` | UI-06/UI-10 → M08，协作 M06/M07，`ALG-ERASE-001` v1.5.0 / `UV-DISPLAY-BUFFER` v1.3.0：projected 橡皮以项目完整分辨率 GPU keep-mask 增量盖章并接入安全 exact stack，交互期不再执行 Resident 全图重合成/readback/Worker/整图上传；修复 V 轴镜像。512 仅为不可见持久化草稿，GPU 失败回退完整分辨率 Canvas。Schema/资产不变，无迁移。见 CHG-20260912-ERASER-GPU-MASK。 |
 | `2.20.78` | 2026-09-12 | `0a6835e + 本地待提交` | UI-01 → M03：工具箱顶部 LI3D Logo 复用已有 `openHome` 导航，点击或键盘激活均返回功能主页；工具下载、登录、算法、Schema 与资产不变，无迁移。见 CHG-20260912-TOOLBOX-LOGO-HOME。 |
 | `2.20.76` | 2026-09-12 | `ac7cccb + 本地待提交` | M07，协作 UI-06/M06/M09，`PERF-UV-SOURCE-PREPARE-001` v1.10.0：同次 bake 私有纹理共享一次最终双帧发布屏障，不再每张重复等待；512/13 图层三轮配对约提升 47%，所有冻结对照零像素差，4K 样本基本持平。公开缓存、detached、交互和发布门禁不变，无迁移。见 CHG-20260912-UV-SOURCE-BATCH-PRESENTATION。 |
 | `2.20.75` | 2026-09-12 | `b52561a + 本地待提交` | M07，协作 UI-06/M06/M09，`PERF-UV-SOURCE-PREPARE-001` v1.9.0：可见 renderer 在健康 4ms 累计预算内连续提交精确条带，不再逐条带强制宏任务等待；交互/拥塞/呈现门禁、detached 让步与像素协议不变。4K 三轮配对均值约提升 3.3%，逐像素差为 0。无 Schema/资产迁移。见 CHG-20260912-UV-VISIBLE-UPLOAD-BATCHING。 |

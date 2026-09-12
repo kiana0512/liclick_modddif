@@ -85,6 +85,7 @@ import {
   markViewportInteractionActivity,
 } from './viewportInteractionState';
 import { getTransientLocalRepaintLayerId } from './localRepaintResidentHandoff';
+import { getEraserTargetPolicy } from '@/engine/paint/eraserTargetPolicy';
 import {
   createWorkerBackedPreviewTexture,
   getReadyResidentPreviewTexture,
@@ -1435,6 +1436,11 @@ const ImportedModel = memo(function ImportedModel({
       ),
     [importedModel.objectId, layerRenderSignature, uvVisibilityRenderRevision, projectedUvDisplaySignature],
   );
+  const projectedEraserArmed = Boolean(
+    localRepaintPaintTool === 'eraser' &&
+      getEraserTargetPolicy(layers.find((layer) => layer.id === activeLayerId)).kind ===
+        'projected-mask',
+  );
   const visibleMergedUvBoundaryOrder = useMemo(
     () => getVisibleMergedUvBoundaryOrder(layers, importedModel.objectId),
     [importedModel.objectId, layers],
@@ -2497,7 +2503,7 @@ const ImportedModel = memo(function ImportedModel({
     directProjectedSamplerBudget.required < directProjectedSamplerHeadroom,
   );
   const useProjectedTextureArrays = Boolean(
-    !residentUvDisplayEnabled &&
+    (!residentUvDisplayEnabled || projectedEraserArmed) &&
     gl.capabilities.isWebGL2 &&
     previewProjectionInputs.length > 1 &&
     projectedTextureArraySamplerBudget.withinBudget &&
@@ -2549,6 +2555,13 @@ const ImportedModel = memo(function ImportedModel({
     (failedProjectedTextureArraySignature === projectedTextureArrayStructureSignature ||
       !isProjectedUniformBudgetSafe(previewProjectionInputs.length, gl.capabilities.maxFragmentUniforms)),
   );
+  const directProjectedStackSafe = Boolean(
+    directProjectedSamplerBudget.withinBudget &&
+      isProjectedUniformBudgetSafe(
+        previewProjectionInputs.length,
+        gl.capabilities.maxFragmentUniforms,
+      ),
+  );
   const canUseDirectVisibleStackAfterArrayFailure = Boolean(
     // Once the array path has failed, correctness is more important than the
     // normal headroom preference. A six-view image+depth stack needs most of the
@@ -2556,11 +2569,19 @@ const ImportedModel = memo(function ImportedModel({
     // material. Sending it to the progressive compositor instead can leave the
     // last UV/bootstrap material resident if that asynchronous publication is
     // superseded by an eye toggle or eraser clear.
-    textureArrayCompositionFallbackRequired && directProjectedSamplerBudget.withinBudget &&
-    isProjectedUniformBudgetSafe(previewProjectionInputs.length, gl.capabilities.maxFragmentUniforms),
+    textureArrayCompositionFallbackRequired && directProjectedStackSafe,
+  );
+  const canUseExactProjectedEraserStack = Boolean(
+    projectedEraserArmed &&
+      ((useProjectedTextureArrays && !textureArrayCompositionFallbackRequired) ||
+        directProjectedStackSafe),
   );
   // Projections are calculation inputs. Every normal viewport frame samples UV.
-  const canUseProgressiveUvFallback = residentUvDisplayEnabled;
+  // A projected eraser edits one keep-mask. Keep the authored layer stack on
+  // the GPU while the tool is armed so each input frame only changes that mask
+  // uniform; the resident UV compositor remains the exact idle/commit path.
+  const canUseProgressiveUvFallback =
+    residentUvDisplayEnabled && !canUseExactProjectedEraserStack;
   const projectedPreviewNeedsComposition = Boolean(
     previewProjectionInputs.length > 0 || !projectedSamplerBudget.withinBudget ||
     (textureArrayCompositionFallbackRequired && !canUseDirectVisibleStackAfterArrayFailure),
@@ -4026,7 +4047,8 @@ const ImportedModel = memo(function ImportedModel({
       const projectedPreviewOverBudget = Boolean(
         canPreviewProjectedLayers &&
         projectedPreviewNeedsComposition &&
-        !canUseProgressivePreviewBase,
+        !canUseProgressivePreviewBase &&
+        !canUseExactProjectedEraserStack,
       );
       const progressiveBaseOnly =
         !showWhiteMembrane && canUseProgressivePreviewBase && materialProjectionInputs.length === 0;
@@ -5166,6 +5188,7 @@ const ImportedModel = memo(function ImportedModel({
     };
   }, [
     camera,
+    canUseExactProjectedEraserStack,
     canPreviewProjectedLayers,
     retainedProjectedMaterials,
     displayMode,
