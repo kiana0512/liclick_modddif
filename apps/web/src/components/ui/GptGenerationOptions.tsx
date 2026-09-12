@@ -18,7 +18,6 @@ export function GptGenerationOptions({ model, quality, disabled, onModelChange, 
   const trigger = useRef<HTMLButtonElement | null>(null);
   const options = open === 'model' ? GPT_TEXTURE_MODELS : getGptTextureQualities(model);
   const selected = open === 'model' ? model : quality;
-  const modelLabel = (value: string, label: string) => value.startsWith('gpt-image-2.5-') ? `GPT-Image 2.5 ${label}` : label;
 
   useLayoutEffect(() => {
     if (!open || disabled) {
@@ -104,7 +103,7 @@ export function GptGenerationOptions({ model, quality, disabled, onModelChange, 
         }}
         className={`gen-options-item ${selected === item.value ? 'bg-white/10 text-liclick-pink' : ''}`}
       >
-        {open === 'model' ? modelLabel(item.value, item.label) : item.label}
+        {item.label}
         <span aria-hidden="true">{selected === item.value ? '✓' : ''}</span>
       </button>)}
     </div>, document.body)}

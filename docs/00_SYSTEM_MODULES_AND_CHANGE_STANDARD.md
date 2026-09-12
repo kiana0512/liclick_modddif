@@ -10,6 +10,8 @@
 >
 > 审计口径：`0a2519d + 607e82f + 2568e40`，不包含错误文档提交 `2bde8c6/e03bab2/d1c5f78`
 
+2026-09-12 UI-05 → M04：模型入口收起时保留 `GPT-Image 2.5` 前缀，与弹窗共用完整标签，窄栏只省略尾部。仅展示文案变更，算法、请求值、质量、默认设置和 Schema 不变，无迁移；回滚标签即可恢复简称。见 [生成区变更卡](changes/CHG-20260912-GENERATION-ACTION-FAST.md)。
+
 2026-09-12 UI-05 → M04（协作 M08/M12）：生成按钮上方改为左模型、右质量两个入口，点击在上方 Portal 叠加弹窗、选完收起；支持外部/Esc 关闭、互斥、焦点和键盘导航，原局部重绘隐藏参数，移除两行说明。`GPT25-TEXTURE-GENERATION` v1.2.0 支持 Sunburst、Flare、GPT-Image 2，默认 Sunburst/高，保留用户合法选择。依据莉刻实时注册表，2.5 模型五档质量、GPT-Image 2 三档，切换至不支持当前档位的模型时显示并保存高；服务端按模型校验质量并修复 GPT-Image 2 恒传高。弹窗仅展示层变更，无新增算法语义。任务锁、侧栏避让、方图/透明/4K→2K、固定并发、GPU/CPU/Worker/shader、资产持久化与导出不变，无 Schema 迁移。验证与回滚见 [生成区变更卡](changes/CHG-20260912-GENERATION-ACTION-FAST.md)。
 
 2026-09-12 UI-06/UI-10 → M08，协作 M06/M07：`ALG-ERASE-001` v1.5.1 / `UV-DISPLAY-BUFFER` v1.3.1 将当前普通 projected 图层的中性 GPU keep-mask 与 exact direct/texture-array 材质栈提前常驻预热，不再等用户选择橡皮后才开始编译。若用户在异步 GPU 准备完成前已经落笔，完整记录屏幕笔段并在 GPU 接管前按原半径、羽化和顺序补放；当前手势继续保持打开，已完成手势也不会在 Canvas→GPU 交接时回弹或丢失。图层/模型/分辨率变化释放旧会话并重建；完整分辨率、QA、正式提交、Worker/CPU 后处理、持久化、导出、Schema/CAS/ownership/verified assets 不变，无迁移。同步验证 direct fallback 与橡皮 exact stack 的共享预算门禁，修复流水线 #630458 的 web-regression 失败。详见 [常驻预热变更卡](changes/CHG-20260912-ERASER-RESIDENT-PREWARM.md)。

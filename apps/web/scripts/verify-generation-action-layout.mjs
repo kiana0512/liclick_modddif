@@ -104,7 +104,7 @@ try {
   await page.evaluate(() => window.renderCase('gpt'));
   const model = page.getByRole('button', {name:'GPT 模型选择', exact:true});
   const quality = page.getByRole('button', {name:'GPT 生图质量', exact:true});
-  assert.match(await model.textContent(), /Sunburst/);
+  assert.match(await model.textContent(), /GPT-Image 2\.5 Sunburst/);
   assert.match(await quality.textContent(), /质量 · 高/);
   assert((await model.boundingBox()).x < (await quality.boundingBox()).x);
   const choose = async (trigger, label, count) => {
@@ -120,8 +120,10 @@ try {
     assert(await trigger.evaluate(el => el === document.activeElement));
   };
   await choose(model, 'GPT-Image 2.5 Flare', 3);
+  assert.match(await model.textContent(), /GPT-Image 2\.5 Flare/);
   await choose(quality, '最高', 5);
   await choose(model, 'GPT-Image 2', 3);
+  assert.match(await model.textContent(), /GPT-Image 2/);
   assert.match(await quality.textContent(), /质量 · 高/);
   assert.deepEqual(await page.evaluate(() => window.writes), [
     {textureGptModel:'gpt-image-2.5-flare', textureGptQuality:'high'},

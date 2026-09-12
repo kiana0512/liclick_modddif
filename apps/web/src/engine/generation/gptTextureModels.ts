@@ -1,7 +1,7 @@
 // GPT25-TEXTURE-GENERATION/1.2.0. LiClick registry verified 2026-09-12.
 export const GPT_TEXTURE_MODELS = [
-  { value: 'gpt-image-2.5-sunburst', label: 'Sunburst' },
-  { value: 'gpt-image-2.5-flare', label: 'Flare' },
+  { value: 'gpt-image-2.5-sunburst', label: 'GPT-Image 2.5 Sunburst' },
+  { value: 'gpt-image-2.5-flare', label: 'GPT-Image 2.5 Flare' },
   { value: 'gpt-image-2', label: 'GPT-Image 2' },
 ] as const;
 export type GptTextureModel = typeof GPT_TEXTURE_MODELS[number]['value'];
