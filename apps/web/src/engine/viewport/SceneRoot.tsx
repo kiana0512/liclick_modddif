@@ -1436,16 +1436,18 @@ const ImportedModel = memo(function ImportedModel({
       ),
     [importedModel.objectId, layerRenderSignature, uvVisibilityRenderRevision, projectedUvDisplaySignature],
   );
+  const liveSurfacePaintPreview = useLiveSurfacePaintPreview();
   const projectedEraserArmed = Boolean(
-    localRepaintPaintTool === 'eraser' &&
+    (localRepaintPaintTool === 'eraser' &&
       getEraserTargetPolicy(layers.find((layer) => layer.id === activeLayerId)).kind ===
-        'projected-mask',
+        'projected-mask') ||
+      (liveSurfacePaintPreview?.target === 'projected-mask' &&
+        liveSurfacePaintPreview.objectId === importedModel.objectId),
   );
   const visibleMergedUvBoundaryOrder = useMemo(
     () => getVisibleMergedUvBoundaryOrder(layers, importedModel.objectId),
     [importedModel.objectId, layers],
   );
-  const liveSurfacePaintPreview = useLiveSurfacePaintPreview();
   // SurfacePaintOverlay owns the renderer-only local repaint preview. Keep an
   // already-persisted repaint row resident in the projected texture array and
   // mute it by uniform while the overlay is active. Removing/reinserting that

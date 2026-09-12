@@ -169,6 +169,16 @@ try {
   );
   assert.match(
     viewportSource,
+    /getUvPaintLayer\(model, true\)[\s\S]*?prepareProjectedEraserGpuPreview\(layer, model\)\.then\([\s\S]*?beginLiveEraserPreview\(layer, model\.group\)/,
+    'The active projected layer must keep its neutral GPU mask and exact display stack warm before eraser activation.',
+  );
+  assert.match(
+    viewportSource,
+    /const backlog = layer\.eraserGpuBacklog \?\? \[\];[\s\S]*?engine\.begin\(false\);[\s\S]*?backlog\.forEach\(\(stamp\) => engine\.stamp\(stamp\)\)[\s\S]*?if \(!continuing\) void engine\.end\(\)/,
+    'Samples received during asynchronous GPU warmup must be replayed, with the active gesture left open for following frames.',
+  );
+  assert.match(
+    viewportSource,
     /const canvasRect = strokeCanvasRectRef\.current \?\? canvas\.getBoundingClientRect\(\);/,
     'Paint batches must reuse pointer-down canvas bounds instead of forcing layout every frame.',
   );

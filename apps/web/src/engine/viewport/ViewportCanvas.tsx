@@ -3964,6 +3964,7 @@ type UvPaintLayer = {
   liveEraserPreviewInitialized: boolean;
   eraserGpu?: UvRepaint;
   eraserGpuReady?: Promise<void>;
+  eraserGpuBacklog?: Array<Parameters<UvRepaint['stamp']>[0]>;
   liveEraserPreviewRoot?: THREE.Object3D;
   projectedEraserResidentHandoffs?: Set<UvPaintLayer>;
   projectedEraserResidentHandoffPromise?: Promise<void>;
@@ -8061,10 +8062,10 @@ function SurfacePaintOverlay() {
   }, [generationPreparationMaskUrl]);
 
   const getUvPaintLayer = useCallback(
-    (model: SurfacePaintTarget) => {
+    (model: SurfacePaintTarget, prewarmProjected = false) => {
       const layerState = useLayerStore.getState();
       const selectedLayer =
-        paintTool === 'brush' || paintTool === 'eraser'
+        prewarmProjected || paintTool === 'brush' || paintTool === 'eraser'
           ? layerState.layers.find(
               (layer) =>
                 layer.id === layerState.activeProjectedLayerId &&
@@ -8276,6 +8277,18 @@ function SurfacePaintOverlay() {
             engine.texture,
           );
           if (url !== layer.liveResultUrl) throw new Error('GPU 蒙版绑定失败。');
+          const backlog = layer.eraserGpuBacklog ?? [];
+          const continuing = Boolean(
+            isPaintingRef.current &&
+              strokeDraftRef.current?.layer === layer &&
+              strokeDraftRef.current.paintOperation === 'eraser',
+          );
+          if (backlog.length || continuing) {
+            engine.begin(false);
+            backlog.forEach((stamp) => engine.stamp(stamp));
+            if (!continuing) void engine.end();
+          }
+          layer.eraserGpuBacklog = undefined;
           layer.eraserGpu = engine;
           layer.liveResultTexture = engine.texture;
           layer.liveEraserPreviewInitialized = true;
@@ -8296,12 +8309,26 @@ function SurfacePaintOverlay() {
 
   useLayoutEffect(() => {
     if (
+      !canUseSurfacePaint ||
+      getEraserTargetPolicy(activePaintLayer).kind !== 'projected-mask'
+    )
+      return;
+    const model = getTargetModel();
+    if (!model) return;
+    const layer = getUvPaintLayer(model, true);
+    void prepareProjectedEraserGpuPreview(layer, model).then(() => {
+      if (layerRef.current !== layer || !layer.eraserGpu) return;
+      beginLiveEraserPreview(layer, model.group);
+      invalidate();
+    });
+  }, [activePaintLayer, canUseSurfacePaint, getTargetModel, getUvPaintLayer, invalidate, prepareProjectedEraserGpuPreview]);
+
+  useLayoutEffect(() => {
+    if (
       (paintTool !== 'brush' && paintTool !== 'eraser') ||
       !canUseSurfacePaint ||
       isEditingPersistedLocalRepaint
     ) {
-      const previousLayer = layerRef.current;
-      if (previousLayer?.liveEraserPreviewActive) endLiveEraserPreview(previousLayer);
       return;
     }
     let cancelled = false;
@@ -8348,10 +8375,9 @@ function SurfacePaintOverlay() {
         // projected material inside the first stroke, which could expose the clay
         // material for one frame. The all-white multiplier is visually neutral,
         // so it is safe to prewarm before any pixels are erased.
-        await prepareProjectedEraserGpuPreview(layer, model);
-        if (cancelled || layerRef.current !== layer) return;
         beginLiveEraserPreview(layer, model.group);
         invalidate();
+        void prepareProjectedEraserGpuPreview(layer, model);
         if (!layer.isReady) {
           await layer.ready;
           if (
@@ -11652,18 +11678,22 @@ function SurfacePaintOverlay() {
         ) {
           scheduleTextureUpdate(layer.projectionTexture);
         }
+        const gpuStamp = {
+          camera,
+          from: previousScreenUv?.clone(),
+          to: result.screenUv.clone(),
+          viewport: new THREE.Vector2(
+            gl.domElement.clientWidth,
+            gl.domElement.clientHeight,
+          ),
+          radius: result.screenBrushRadiusPx * pressureSizeScale,
+          feather: eraserFeather / 100,
+          erase: true,
+        };
         if (layer.eraserGpu && layer.liveEraserPreviewActive) {
-          const rect = gl.domElement.getBoundingClientRect();
-          layer.eraserGpu.stamp({
-            camera,
-            from: previousScreenUv,
-            to: result.screenUv,
-            viewport: new THREE.Vector2(rect.width, rect.height),
-            radius: result.screenBrushRadiusPx * pressureSizeScale,
-            feather: eraserFeather / 100,
-            erase: true,
-          });
+          layer.eraserGpu.stamp(gpuStamp);
         } else if (layer.liveEraserPreviewActive) {
+          (layer.eraserGpuBacklog ??= []).push(gpuStamp);
           drawSurfaceBrushSegment(
             layer.liveResultContext,
             layer.liveResultTexture as THREE.CanvasTexture,

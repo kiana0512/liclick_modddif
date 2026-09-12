@@ -88,7 +88,9 @@ const budgets = [
 // CHG-20260912-ERASER-GPU-MASK: the full-resolution GPU live mask, exact-stack
 // gate and fail-closed fallback measure 3,225,540 bytes after compaction. Grant
 // only 2,000 bytes; all per-chunk, resolution, correctness and QA gates remain.
-const maxTotalJavaScriptBytes = 3_226_000;
+// CHG-20260912-ERASER-RESIDENT-PREWARM: resident preparation plus first-stroke
+// replay adds under 500 bytes. Keep the allowance exact and every other gate.
+const maxTotalJavaScriptBytes = 3_226_500;
 
 let entries;
 try {
