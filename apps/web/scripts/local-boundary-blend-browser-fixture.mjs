@@ -2,7 +2,7 @@ import { runSurfaceAwareRepair } from '../src/engine/contentAware/runSurfaceAwar
 import { createVisibleSurfaceCompletionPolicy } from '../src/engine/contentAware/visibleSurfaceCompletionPolicy.ts';
 import { encodeRgbaPngBlob } from '../src/utils/encodeRgbaPng.ts';
 const check = (condition, message) => { if (!condition) throw Error(message); };
-export async function run(requested = Number(new URLSearchParams(location.search).get('resolution'))) {
+export async function run(requested = Number(new globalThis.URLSearchParams(globalThis.location.search).get('resolution'))) {
   const width = requested || 2048, height = width, count = width * height, midpoint = width / 2;
   const rgba = new Uint8ClampedArray(count * 4), writeMask = new Uint8Array(count);
   const topologyMask = new Uint8Array(count).fill(1), topologyRegionIds = new Uint32Array(count).fill(1);

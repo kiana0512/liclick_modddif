@@ -25,7 +25,7 @@ test('worker launch transfers disposable pixels but keeps resident topology buff
   globalThis.Worker = class {
     postMessage(_request, transfer) {
       transferred = transfer;
-      queueMicrotask(() => this.onmessage({ data: { kind: 'result', filledRgba: new ArrayBuffer(64), repairedMask: new ArrayBuffer(16), sourceExclusionMask: new ArrayBuffer(16), stats: {} } }));
+      globalThis.queueMicrotask(() => this.onmessage({ data: { kind: 'result', filledRgba: new ArrayBuffer(64), repairedMask: new ArrayBuffer(16), sourceExclusionMask: new ArrayBuffer(16), stats: {} } }));
     }
     terminate() {}
   };
