@@ -1872,7 +1872,6 @@ async function bakeVisibleProjectedLayersToTextureUnlocked(
   const context = canvas.getContext('2d', { willReadFrequently: true });
   if (!context) throw new Error('Could not create stacked UV bake canvas.');
   const composite = new ImageData(input.resolution, input.resolution);
-  const renderedColorMask = new Uint8Array(input.resolution * input.resolution);
   const qualityBlendComposite = createQualityBlendStackComposite(input.resolution);
   const overlayRasters: OverlayRaster[] = [];
   const readableLayers: Layer[] = [];
@@ -2002,6 +2001,9 @@ async function bakeVisibleProjectedLayersToTextureUnlocked(
     composite,
     input.preserveCoverageConfidenceAlpha,
   );
+  const renderedColorMask = overlayRasters.some(({ layer }) => usesUnlitRenderedColor(layer))
+    ? new Uint8Array(input.resolution * input.resolution)
+    : undefined;
   await applyOverlayRasters(
     composite,
     qualityBlendComposite.coverage,

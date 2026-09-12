@@ -219,7 +219,9 @@ export class ResidentProjectedUvDisplay {
       stages.completeBakeMs = performance.now() - bakeStartedAt;
       guard();
       if (!result.imageData) throw new Error('UV display calculation returned no pixels.');
-      const mask = result.renderedColorMask;
+      // Empty is the canonical all-zero mask for ordinary BaseColor stacks.
+      // Avoid both a 4K main-thread scan and a needless R8 upload in that case.
+      const mask = result.renderedColorMask?.length ? result.renderedColorMask : undefined;
       let hasRenderedColor = false;
       if (mask) {
         let sliceStarted = performance.now();
