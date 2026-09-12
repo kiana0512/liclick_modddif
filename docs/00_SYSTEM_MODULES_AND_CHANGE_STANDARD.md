@@ -1,6 +1,6 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
-> 文档版本：`2.20.77`
+> 文档版本：`2.20.78`
 >
 > 生效日期：`2026-09-12`
 >
@@ -9,6 +9,8 @@
 > 基线仓库：`E:\Liclick 3D Texture Modernization`
 >
 > 审计口径：`0a2519d + 607e82f + 2568e40`，不包含错误文档提交 `2bde8c6/e03bab2/d1c5f78`
+
+2026-09-12 UI-01 → M03：工具箱 `/tools` 顶部 LI3D Logo 接入页面已有的功能主页导航，与同页“返回功能首页”按钮保持一致；Logo 具备按钮语义、键盘焦点、可访问名称与现有 hover/focus 反馈。工具清单、下载、登录状态、路由结构、算法、Schema、资产、持久化和部署不变，无迁移。详见 [工具箱 Logo 导航变更卡](changes/CHG-20260912-TOOLBOX-LOGO-HOME.md)。
 
 2026-09-12 UI-06/UI-10 → M08，协作 M06/M07：`ALG-ERASE-001` v1.4.1 / `UV-DISPLAY-BUFFER` v1.2.1 仅确认已经成功发布的橡皮草稿 revision，下一轮计算窗口覆盖所有尚未发布的变化；保留累计 Canvas 蒙版和正式提交语义。不可变 UV topology 可复用有界边界种子，动态 coverage 仍逐次过滤，顺序传播不变。不是完整 GPU 橡皮，短距离拖动未证明端到端提速。完整分辨率、QA、GPU/CPU/Worker/shader 像素规则、持久化和导出不变，无迁移。验证和回滚见 [增量确认变更卡](changes/CHG-20260912-ERASER-REVISION-BOUNDS.md)。
 
@@ -1054,6 +1056,7 @@ M15 / CLOUD-DEPLOYMENT v1.0.0（2026-09-03）：正常合并 release 部署历�
 
 | 版本 | 日期 | 基线 | 变更 |
 | --- | --- | --- | --- |
+| `2.20.78` | 2026-09-12 | `0a6835e + 本地待提交` | UI-01 → M03：工具箱顶部 LI3D Logo 复用已有 `openHome` 导航，点击或键盘激活均返回功能主页；工具下载、登录、算法、Schema 与资产不变，无迁移。见 CHG-20260912-TOOLBOX-LOGO-HOME。 |
 | `2.20.76` | 2026-09-12 | `ac7cccb + 本地待提交` | M07，协作 UI-06/M06/M09，`PERF-UV-SOURCE-PREPARE-001` v1.10.0：同次 bake 私有纹理共享一次最终双帧发布屏障，不再每张重复等待；512/13 图层三轮配对约提升 47%，所有冻结对照零像素差，4K 样本基本持平。公开缓存、detached、交互和发布门禁不变，无迁移。见 CHG-20260912-UV-SOURCE-BATCH-PRESENTATION。 |
 | `2.20.75` | 2026-09-12 | `b52561a + 本地待提交` | M07，协作 UI-06/M06/M09，`PERF-UV-SOURCE-PREPARE-001` v1.9.0：可见 renderer 在健康 4ms 累计预算内连续提交精确条带，不再逐条带强制宏任务等待；交互/拥塞/呈现门禁、detached 让步与像素协议不变。4K 三轮配对均值约提升 3.3%，逐像素差为 0。无 Schema/资产迁移。见 CHG-20260912-UV-VISIBLE-UPLOAD-BATCHING。 |
 | `2.20.74` | 2026-09-12 | `本地待提交` | UI-06 → M06/M09，`UV-DISPLAY-DERIVED-CACHE` v1.2.0：完整像素签名作为显隐缓存身份，精确命中同步复用，只允许当前请求的完成纹理入缓存，禁止跨显隐状态展示旧 UV。无 Schema/资产迁移。见 CHG-20260912-UV-VISIBILITY-EXACT-CACHE。 |

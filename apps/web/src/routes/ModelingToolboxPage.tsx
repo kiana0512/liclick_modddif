@@ -137,7 +137,7 @@ export function ModelingToolboxPage({
     <main className="li3d-home-surface relative min-h-screen overflow-hidden text-white">
       <div className="pointer-events-none absolute right-[10%] top-8 h-96 w-96 rounded-full bg-cyan-400/[0.055] blur-[110px]" />
       <header className="relative z-10 flex h-16 items-center justify-between border-b border-white/[0.055] px-5 sm:px-8">
-        <BrandMark />
+        <BrandMark onBack={onBack} backLabel="返回功能首页" />
         <UserMenu onLogout={onLogout} />
       </header>
 
