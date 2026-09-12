@@ -28,8 +28,9 @@ function createAbortError() {
   return new DOMException('Surface-aware repair was cancelled.', 'AbortError');
 }
 
-function copyRegionIds(regionIds: SurfaceRepairRegionArray | undefined) {
+function copyRegionIds(regionIds: SurfaceRepairRegionArray | undefined, preserveWholeView = false) {
   if (!regionIds) return undefined;
+  if (preserveWholeView && canTransferWholeView(regionIds)) return regionIds;
   return regionIds instanceof Int32Array ? new Int32Array(regionIds) : new Uint32Array(regionIds);
 }
 
@@ -41,10 +42,11 @@ function canTransferWholeView(value: ArrayBufferView) {
   );
 }
 
-/** Cached topology inputs are copied; explicitly disposable image inputs may transfer directly. */
+/** Main-thread fallback copies all inputs; Worker topology copies are owned by structured clone. */
 function copyInput(
   input: SurfaceAwareRepairInput,
   options: RunSurfaceAwareRepairOptions,
+  preserveWholeReadOnlyViews = false,
 ): SurfaceAwareRepairInput {
   const transferRgba = options.transferOwnership?.rgba && canTransferWholeView(input.rgba);
   const transferWriteMask =
@@ -53,14 +55,27 @@ function copyInput(
     ...input,
     rgba: transferRgba ? input.rgba : new Uint8ClampedArray(input.rgba),
     writeMask: transferWriteMask ? input.writeMask : new Uint8Array(input.writeMask),
-    topologyMask: new Uint8Array(input.topologyMask),
+    topologyMask:
+      preserveWholeReadOnlyViews && canTransferWholeView(input.topologyMask)
+        ? input.topologyMask
+        : new Uint8Array(input.topologyMask),
     ...(input.sourceExclusionMask
-      ? { sourceExclusionMask: new Uint8Array(input.sourceExclusionMask) }
+      ? {
+          sourceExclusionMask:
+            preserveWholeReadOnlyViews && canTransferWholeView(input.sourceExclusionMask)
+              ? input.sourceExclusionMask
+              : new Uint8Array(input.sourceExclusionMask),
+        }
       : { sourceExclusionMask: undefined }),
     ...(input.seamLinks
-      ? { seamLinks: new Uint32Array(input.seamLinks) }
+      ? {
+          seamLinks:
+            preserveWholeReadOnlyViews && canTransferWholeView(input.seamLinks)
+              ? input.seamLinks
+              : new Uint32Array(input.seamLinks),
+        }
       : { seamLinks: undefined }),
-    topologyRegionIds: copyRegionIds(input.topologyRegionIds),
+    topologyRegionIds: copyRegionIds(input.topologyRegionIds, preserveWholeReadOnlyViews),
   };
 }
 
@@ -86,10 +101,12 @@ export function runSurfaceAwareRepair(
   options: RunSurfaceAwareRepairOptions = {},
 ): Promise<SurfaceAwareRepairResult> {
   if (options.signal?.aborted) return Promise.reject(createAbortError());
-  const copiedInput = copyInput(input, options);
   if (options.useWorker === false || typeof Worker === 'undefined') {
-    return runOnMainThread(copiedInput, options);
+    return runOnMainThread(copyInput(input, options), options);
   }
+  // The browser's structured clone owns the immutable topology copy. Avoid
+  // duplicating those 4K arrays once in JS before postMessage copies them again.
+  const copiedInput = copyInput(input, options, true);
 
   return new Promise<SurfaceAwareRepairResult>((resolve, reject) => {
     const worker = new Worker(new URL('./surfaceAwareRepair.worker.ts', import.meta.url), {
@@ -181,10 +198,10 @@ export function runSurfaceAwareRepair(
       localBoundaryBlend: copiedInput.localBoundaryBlend,
       adaptiveGapDistance: copiedInput.adaptiveGapDistance,
     };
-    const transfer: Transferable[] = [rgbaBuffer, writeMaskBuffer, topologyMaskBuffer];
-    if (sourceExclusionBuffer) transfer.push(sourceExclusionBuffer);
-    if (seamLinksBuffer) transfer.push(seamLinksBuffer);
-    if (topologyRegionBuffer) transfer.push(topologyRegionBuffer);
+    // RGBA/writeMask are disposable copies (or explicitly transferred caller
+    // buffers). Keep cached topology sources attached and let structured clone
+    // create the Worker's immutable copies.
+    const transfer: Transferable[] = [rgbaBuffer, writeMaskBuffer];
     try {
       worker.postMessage(request, transfer);
     } catch (error) {
