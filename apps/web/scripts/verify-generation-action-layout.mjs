@@ -7,6 +7,8 @@ import { createServer } from 'vite';
 // Render the production action JSX and measurement effect, not a duplicated mock UI.
 const root = fileURLToPath(new URL('..', import.meta.url)).replaceAll('\\', '/').replace(/\/$/, '');
 const source = readFileSync(`${root}/src/components/panels/GeneratePanel.tsx`, 'utf8');
+const progressClass = source.match(/const previewProgressOverlayClassName =\s*'([^']+)'/)?.[1];
+assert(progressClass);
 const ast = ts.createSourceFile('panel.tsx', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
 let action, effect;
 function visit(node) {
@@ -71,7 +73,7 @@ function installFixturePage(server) { server.middlewares.use((req, res, next) =>
     bottom:calc(var(--workspace-bottom-offset) + var(--generate-action-space,76px));
     height:calc(100% - var(--workspace-left-top-offset) - var(--workspace-bottom-offset) - var(--generate-action-space,76px)); }
   #footer {position:fixed; bottom:16px; left:16px; width:292px; border-radius:8px; overflow:hidden;}
-  </style><aside id="dock">参考图 / 提示词区域</aside><div id="footer"></div><script type="module" src="/__action.mjs"></script>`); }); }
+  </style><div id="progress-style-probe" class="${progressClass}" style="width:1px;height:1px;left:-100px"></div><aside id="dock">参考图 / 提示词区域</aside><div id="footer"></div><script type="module" src="/__action.mjs"></script>`); }); }
 let browser;
 try {
   await server.listen();
@@ -82,6 +84,7 @@ try {
   page.on('response', response => { if (response.status() >= 400) console.error(response.status(), response.url()); });
   await page.goto(`http://127.0.0.1:${server.httpServer.address().port}/__action`);
   await page.waitForFunction(() => typeof window.renderCase === 'function');
+  assert.equal(await page.locator('#progress-style-probe').evaluate(el => getComputedStyle(el).backgroundColor), 'rgb(27, 27, 27)');
   let cases = 0;
   for (const height of [720, 900, 1080]) for (const width of [292, 312]) for (const mode of ['single', 'multi', 'gpt', 'remote']) {
     await page.setViewportSize({ width: 1280, height });
