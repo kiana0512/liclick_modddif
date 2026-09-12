@@ -6,12 +6,22 @@ import { yieldToBrowserTask } from '@/utils/browserScheduling';
 
 type Entry = {
   color: THREE.WebGLRenderTarget;
-  quality: THREE.WebGLRenderTarget;
+  quality?: THREE.WebGLRenderTarget;
+  qualityTexture: THREE.Texture;
   sourceSize: GpuLayerSourceSize;
 };
 
+type ResidentState = {
+  keys: string[];
+  sourceSizes: GpuLayerSourceSize[];
+};
+
 const entryBytes = (entry: Entry) => entry.color.width * entry.color.height *
-  (entry.quality.texture.format === RedFormat ? 5 : 8);
+  (entry.qualityTexture.format === RedFormat ? 5 : 8);
+const disposeEntry = (entry: Entry) => {
+  entry.color.dispose();
+  if (entry.quality && entry.quality !== entry.color) entry.quality.dispose();
+};
 
 /** Derived, renderer-local full-resolution UV rasters. Never stores project assets.
  * Visibility changes reuse the exact quantized color/quality targets; all pixel
@@ -26,8 +36,13 @@ export class ProjectedUvRasterCache {
   private disposed = false;
   private revision = 0;
   private resident?: ResidentQualityComposite;
+  private residentStates = new Map<number, ResidentState>();
+  private residentWorkingStates = new Map<number, ResidentState>();
   private programs = new Map<string, THREE.ShaderMaterial>();
-  private resolved?: { key: string; result: GpuLayerRastersBakeOutput; bytes: number };
+  private resolved = new Map<
+    string,
+    [result: GpuLayerRastersBakeOutput, bytes: number]
+  >();
   private readonly contextLost = () => this.clear();
   constructor(private readonly budget = 256 * 1024 * 1024) {}
 
@@ -56,10 +71,17 @@ export class ProjectedUvRasterCache {
     else this.programs.set(key, material);
   }
   async getResolved(key: string) {
-    if (this.resolved?.key !== key) return undefined;
+    const entry = this.resolved.get(key);
+    if (!entry) return undefined;
+    this.resolved.delete(key);
+    this.resolved.set(key, entry);
     const revision = this.revision;
-    const result = await this.copyResolved(this.resolved.result);
-    return !this.disposed && revision === this.revision ? result : undefined;
+    const result = await this.copyResolved(entry[0]);
+    return !this.disposed &&
+      revision === this.revision &&
+      this.resolved.get(key) === entry
+      ? result
+      : undefined;
   }
   async retainResolved(key: string, result: GpuLayerRastersBakeOutput) {
     const base = result.residentQuality;
@@ -70,17 +92,29 @@ export class ProjectedUvRasterCache {
     const revision = this.revision;
     const copy = await this.copyResolved(result);
     if (this.disposed || revision !== this.revision) return;
-    if (this.resolved) this.bytes -= this.resolved.bytes;
-    this.resolved = undefined;
+    const existing = this.resolved.get(key);
+    if (existing) {
+      this.bytes -= existing[1];
+      this.resolved.delete(key);
+    }
     // Aggregate UV replaces individual rasters within the same hard budget.
     for (const [oldKey, old] of this.entries) {
       if (this.bytes + bytes <= this.budget) break;
       this.bytes -= entryBytes(old);
-      old.color.dispose();
-      old.quality.dispose();
+      disposeEntry(old);
       this.entries.delete(oldKey);
     }
-    this.resolved = { key, result: copy, bytes };
+    // Eye toggles most often alternate between exactly two authored states.
+    // Retain both inside the existing hard byte budget; a third state evicts
+    // the least recently used result before it can increase memory ownership.
+    while (this.resolved.size >= 2 || this.bytes + bytes > this.budget) {
+      const oldest = this.resolved.entries().next().value;
+      if (!oldest) break;
+      this.bytes -= oldest[1][1];
+      this.resolved.delete(oldest[0]);
+    }
+    if (this.bytes + bytes > this.budget) return;
+    this.resolved.set(key, [copy, bytes]);
     this.bytes += bytes;
   }
   private async copyResolved(result: GpuLayerRastersBakeOutput) {
@@ -120,9 +154,64 @@ export class ProjectedUvRasterCache {
     };
   }
   getResident(renderer: THREE.WebGLRenderer, resolution: number) {
-    this.resident ??= new ResidentQualityComposite(renderer, resolution);
-    this.resident.reset();
-    return this.resident;
+    this.prepareResident(renderer, resolution);
+    this.residentStates.clear();
+    this.residentWorkingStates.clear();
+    this.resident!.reset();
+    return this.resident!;
+  }
+  private prepareResident(renderer: THREE.WebGLRenderer, resolution: number) {
+    if (this.resident?.resolution !== resolution) {
+      this.resident?.dispose();
+      this.resident = new ResidentQualityComposite(renderer, resolution);
+      this.residentStates.clear(); this.residentWorkingStates.clear();
+    }
+  }
+  leaseResident(renderer: THREE.WebGLRenderer, resolution: number, keys: string[]) {
+    this.prepareResident(renderer, resolution);
+    const resident = this.resident!;
+    let matched: [number, ResidentState] | undefined;
+    for (const state of this.residentStates) {
+      if (state[1].keys.length > keys.length) continue;
+      if (!state[1].keys.every((key, index) => key === keys[index])) continue;
+      if (!matched || state[1].keys.length > matched[1].keys.length) matched = state;
+    }
+    const startIndex = matched?.[1].keys.length ?? 0;
+    const sourceSizes = matched?.[1].sourceSizes.slice() ?? [];
+    // The current candidate targets are leased to this calculation. If it is
+    // cancelled or fails, no later request may treat the partial targets as a
+    // completed prefix.
+    this.residentWorkingStates = new Map(this.residentStates);
+    this.residentStates.clear();
+    if (matched) resident.selectSlot(matched[0]);
+    else {
+      this.residentWorkingStates.clear();
+      resident.reset();
+    }
+    return { composite: resident, startIndex, sourceSizes };
+  }
+  recordResidentState(keys: string[], sourceSizes: GpuLayerSourceSize[]) {
+    if (!this.resident || keys.length !== sourceSizes.length) return;
+    this.residentWorkingStates.set(this.resident.getCurrentSlot(), {
+      keys: keys.slice(),
+      sourceSizes: sourceSizes.slice(),
+    });
+  }
+  commitResident(keys: string[], sourceSizes: GpuLayerSourceSize[]) {
+    if (this.disposed || keys.length !== sourceSizes.length) return;
+    if (this.resident) {
+      this.residentWorkingStates.set(this.resident.getCurrentSlot(), {
+        keys: keys.slice(), sourceSizes: sourceSizes.slice(),
+      });
+    }
+    this.residentStates.clear();
+    for (const [slot, state] of this.residentWorkingStates) {
+      if (
+        state.keys.length <= keys.length &&
+        state.keys.every((key, index) => key === keys[index])
+      ) this.residentStates.set(slot, state);
+    }
+    this.residentWorkingStates.clear();
   }
   take(key: string, entry: Entry) {
     const bytes = entryBytes(entry);
@@ -131,8 +220,7 @@ export class ProjectedUvRasterCache {
       if (this.bytes + bytes <= this.budget) break;
       if (this.protectedKeys.has(oldKey)) continue;
       this.bytes -= entryBytes(old);
-      old.color.dispose();
-      old.quality.dispose();
+      disposeEntry(old);
       this.entries.delete(oldKey);
     }
     if (this.bytes + bytes > this.budget) return false;
@@ -146,12 +234,13 @@ export class ProjectedUvRasterCache {
     this.programs.clear();
     this.resident?.dispose();
     this.resident = undefined;
+    this.residentStates.clear();
+    this.residentWorkingStates.clear();
     for (const entry of this.entries.values()) {
-      entry.color.dispose();
-      entry.quality.dispose();
+      disposeEntry(entry);
     }
     this.entries.clear();
-    this.resolved = undefined;
+    this.resolved.clear();
     this.bytes = 0;
   }
   dispose() {

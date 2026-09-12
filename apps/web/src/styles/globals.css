@@ -2,6 +2,38 @@
 @tailwind components;
 @tailwind utilities;
 
+@layer components {
+  .gen-preview-progress { @apply absolute inset-0 grid place-items-center bg-[#1b1b1b] px-4 text-center text-white; }
+  .gen-prompt-section { @apply order-3 grid shrink-0 gap-1.5 text-xs font-semibold; }
+  .gen-preview-shell { @apply relative grid h-full w-full place-items-center overflow-hidden rounded-[inherit] bg-[#303033]; }
+  .gen-preview-gradient { @apply absolute inset-0 bg-[radial-gradient(circle_at_45%_34%,rgba(255,255,255,0.16),transparent_30%),linear-gradient(135deg,rgba(82,255,163,0.18),rgba(71,126,255,0.2))]; }
+  .gen-preview-spinner { @apply h-5 w-5 animate-spin rounded-full border-2; }
+  .gen-preview-body { @apply flex min-h-0 flex-1 flex-col overflow-hidden rounded-md border border-white/10; }
+  .gen-preview-actions { @apply absolute right-2 top-2 flex gap-1 rounded-md border border-white/10 p-1 shadow-xl backdrop-blur-sm; }
+  .gen-preview-apply { @apply grid h-8 w-8 shrink-0 place-items-center rounded-md text-white transition hover:bg-liclick-pink/90; }
+  .gen-preview-tool { @apply grid h-8 w-8 shrink-0 place-items-center rounded-md text-white transition; }
+  .gen-preview-error { @apply absolute inset-0 grid place-items-center px-4 text-center text-white; }
+  .gen-content-scroll { @apply flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain px-2.5 pt-2.5; }
+  .gen-camera-remove { @apply absolute right-1 top-1 grid h-6 w-6 place-items-center rounded-full opacity-0 shadow transition hover:bg-red-500 hover:text-white group-hover:opacity-100 focus:opacity-100; }
+  .gen-camera-add { @apply grid place-items-center overflow-hidden rounded-lg bg-[#303033] text-liclick-pink transition hover:bg-[#3a3a3e] focus:outline-none focus:ring-2 focus:ring-liclick-pink/30; }
+  .gen-prompt-polish { @apply grid h-7 w-7 shrink-0 place-items-center rounded-md border transition hover:border-liclick-pink/55 hover:text-white focus:outline-none focus:ring-2 focus:ring-liclick-pink/40 disabled:cursor-not-allowed disabled:opacity-35; }
+  .gen-prompt-input { @apply w-full resize-none rounded-md border p-2.5 text-[13px] leading-5 text-white outline-none transition focus:border-liclick-pink; }
+  .gen-cancel-backdrop { @apply fixed inset-0 z-[140] grid place-items-center px-4 backdrop-blur-sm; }
+  .gen-cancel-dialog { @apply w-full max-w-[420px] rounded-lg border bg-[#151520] p-4 text-white shadow-2xl; }
+  .gen-cancel-close { @apply grid h-8 w-8 place-items-center rounded-md text-white/70 transition hover:bg-white/10 hover:text-white; }
+  .gen-zoom-backdrop { @apply fixed inset-0 z-[135] grid cursor-zoom-out place-items-center p-4 backdrop-blur-sm; }
+  .gen-zoom-image { @apply max-h-[92vh] max-w-[94vw] rounded-md border bg-[#181818] object-contain shadow-2xl; }
+  .gen-options-trigger { @apply flex h-9 min-w-0 items-center justify-between gap-1 rounded-md border bg-[#181824] px-2 text-xs text-white outline-none focus-visible:border-liclick-pink disabled:opacity-40; }
+  .gen-options-popup { @apply fixed z-[200] overflow-y-auto rounded-xl border bg-[#181824] p-2 text-sm text-white shadow-2xl; }
+  .gen-action-surface { @apply p-2 shadow-[0_-16px_42px_rgba(0,0,0,0.68)] backdrop-blur-xl; }
+  .gen-action-button { @apply relative h-12 w-full overflow-hidden text-base; }
+  .gen-camera-preset { @apply min-h-10 min-w-0 rounded-md px-1.5 py-1 text-[10px] font-semibold leading-3 transition focus:outline-none focus-visible:ring-2 focus-visible:ring-liclick-pink/35; }
+  .gen-camera-caption { @apply mt-0.5 block truncate text-[9px] font-normal; }
+  .gen-status-box { @apply order-4 shrink-0 rounded-md border px-2.5 py-2 text-xs leading-5; }
+  .gen-action-dock { @apply pointer-events-auto fixed bottom-4 left-4 z-[90] hidden overflow-hidden rounded-lg lg:block; }
+  .gen-options-item { @apply flex w-full items-center justify-between rounded-lg px-3 py-2.5 text-left outline-none hover:bg-white/10 focus-visible:bg-white/10; }
+}
+
 :root {
   color-scheme: dark;
   font-family:

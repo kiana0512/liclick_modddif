@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { stdout } from 'node:process';
 import { fileURLToPath } from 'node:url';
@@ -13,6 +14,7 @@ const server = await createServer({
 });
 
 try {
+  const appSource = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
   const { nextRetainedTextureProjectId, persistentTextureProjectId } =
     await server.ssrLoadModule('/src/features/workflow/persistentTextureEditor.ts');
 
@@ -33,6 +35,12 @@ try {
     undefined,
     'Leaving the project workflow must release the retained renderer.',
   );
+  assert.match(appSource, /nextRetainedTextureProjectId\(/);
+  assert.match(appSource, /route\.name === 'autoRetopology'/);
+  assert.match(appSource, /route\.name === 'autoUv'/);
+  assert.match(appSource, /route\.name === 'bake'/);
+  assert.doesNotMatch(appSource, /\shidden=\{!textureWorkspaceActive\}/);
+  assert.match(appSource, /pointer-events-none fixed inset-0 -z-10 h-screen w-screen opacity-0/);
 
   stdout.write('Persistent texture editor regression test passed.\n');
 } finally {

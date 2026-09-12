@@ -115,22 +115,26 @@ const { ProjectedUvRasterCache } = load('ProjectedUvRasterCache', {
 const cache = new ProjectedUvRasterCache(16);
 const renderer = { domElement: { addEventListener() {}, removeEventListener() {} } };
 let disposed = 0;
-const entry = () => ({
-  color: {
-    width: 1,
-    height: 1,
-    dispose() {
-      disposed++;
+const entry = () => {
+  const qualityTexture = { format: THREE.RGBAFormat };
+  return {
+    color: {
+      width: 1,
+      height: 1,
+      dispose() {
+        disposed++;
+      },
     },
-  },
-  quality: {
-    texture: { format: THREE.RGBAFormat },
-    dispose() {
-      disposed++;
+    quality: {
+      texture: qualityTexture,
+      dispose() {
+        disposed++;
+      },
     },
-  },
-  sourceSize: {},
-});
+    qualityTexture,
+    sourceSize: {},
+  };
+};
 cache.prepare(renderer, 'mesh-1/1K', ['a', 'b']);
 const a = entry(),
   b = entry();
@@ -183,10 +187,85 @@ assert.equal(
 aggregateCache.prepare(renderer, 'changed-geometry', []);
 assert.equal(await aggregateCache.getResolved('normal-stack'), undefined);
 aggregateCache.dispose();
+// A completed all-normal aggregate can continue with newly appended top
+// layers. Any non-prefix stack must reset, and taking a lease invalidates the
+// old prefix until the new calculation commits successfully.
+{
+  const prefixCache = new ProjectedUvRasterCache(64);
+  prefixCache.prepare(renderer, 'prefix-scope', ['a', 'b']);
+  let resets = 0, slot = 0;
+  const composite = {
+    resolution: 1,
+    reset() { resets++; slot = 0; },
+    dispose() {},
+    getCurrentSlot() { return slot; },
+    selectSlot(next) { slot = next; },
+  };
+  prefixCache.resident = composite;
+  let lease = prefixCache.leaseResident(renderer, 1, ['a', 'b']);
+  assert.equal(lease.startIndex, 0);
+  assert.equal(lease.composite, composite);
+  assert.equal(resets, 1);
+  prefixCache.commitResident(['a', 'b'], [{ width: 1 }, { width: 2 }]);
+  lease = prefixCache.leaseResident(renderer, 1, ['a', 'b', 'c']);
+  assert.equal(lease.startIndex, 2, 'Appending a top layer resumes the exact candidate prefix');
+  assert.deepEqual(lease.sourceSizes, [{ width: 1 }, { width: 2 }]);
+  assert.equal(resets, 1);
+  lease = prefixCache.leaseResident(renderer, 1, ['a', 'b', 'c']);
+  assert.equal(lease.startIndex, 0, 'An uncommitted lease cannot be reused after cancellation');
+  assert.equal(resets, 2);
+  prefixCache.commitResident(['a', 'b', 'c'], [{}, {}, {}]);
+  lease = prefixCache.leaseResident(renderer, 1, ['a', 'x', 'c']);
+  assert.equal(lease.startIndex, 0, 'Middle-layer changes require a full recomposition');
+  assert.equal(resets, 3);
+  const resized = prefixCache.leaseResident(renderer, 512, ['a', 'x', 'c']);
+  assert.equal(resized.startIndex, 0, 'Region size changes invalidate candidate prefixes');
+  assert.equal(resized.composite.resolution, 512);
+  assert.notEqual(resized.composite, composite);
+  prefixCache.dispose();
+}
+// The ping-pong candidate target that preceded a completed stack is still an
+// exact Top-K prefix. Closing the highest-priority visible layer should select
+// that resident slot instead of projecting every remaining layer again.
+{
+  const rewindCache = new ProjectedUvRasterCache(64);
+  rewindCache.prepare(renderer, 'rewind-scope', ['a', 'b', 'c']);
+  let currentSlot = 0, resets = 0;
+  rewindCache.resident = {
+    resolution: 1,
+    reset() { resets++; currentSlot = 0; },
+    dispose() {},
+    getCurrentSlot() { return currentSlot; },
+    selectSlot(next) { currentSlot = next; },
+  };
+  rewindCache.leaseResident(renderer, 1, ['a', 'b', 'c']);
+  currentSlot = 1;
+  rewindCache.recordResidentState(['a'], [{ id: 'a' }]);
+  currentSlot = 0;
+  rewindCache.recordResidentState(['a', 'b'], [{ id: 'a' }, { id: 'b' }]);
+  currentSlot = 1;
+  rewindCache.recordResidentState(
+    ['a', 'b', 'c'],
+    [{ id: 'a' }, { id: 'b' }, { id: 'c' }],
+  );
+  rewindCache.commitResident(
+    ['a', 'b', 'c'],
+    [{ id: 'a' }, { id: 'b' }, { id: 'c' }],
+  );
+  const rewind = rewindCache.leaseResident(renderer, 1, ['a', 'b']);
+  assert.equal(rewind.startIndex, 2, 'One-layer suffix removal reuses the exact previous slot');
+  assert.equal(currentSlot, 0);
+  assert.deepEqual(rewind.sourceSizes, [{ id: 'a' }, { id: 'b' }]);
+  rewindCache.commitResident(['a', 'b'], [{ id: 'a' }, { id: 'b' }]);
+  const append = rewindCache.leaseResident(renderer, 1, ['a', 'b', 'c']);
+  assert.equal(append.startIndex, 2, 'Re-enabling the top layer resumes the same exact prefix');
+  assert.equal(resets, 1);
+  rewindCache.dispose();
+}
 const compactCache = new ProjectedUvRasterCache(16);
 compactCache.prepare(renderer, 'compact', ['a', 'b', 'c']);
 const compactEntry = () => {
-  const value = entry(); value.quality.texture.format = THREE.RedFormat; return value;
+  const value = entry(); value.qualityTexture.format = THREE.RedFormat; return value;
 };
 assert(compactCache.take('a', compactEntry()));
 assert(compactCache.take('b', compactEntry()));
@@ -196,6 +275,45 @@ await compactCache.retainResolved('base', resolved);
 assert.equal(compactCache.get('a'), undefined);
 assert(compactCache.get('b'));assert(compactCache.get('c'), 'two 5-byte rasters share the 16-byte budget with a 6-byte base');
 compactCache.dispose();
+// MRT color/quality attachments share one render-target owner. Eviction must
+// dispose that owner exactly once while still charging the R8 byte footprint.
+{
+  let mrtDisposals = 0;
+  const mrtCache = new ProjectedUvRasterCache(5);
+  mrtCache.prepare(renderer, 'mrt-a', ['mrt']);
+  assert(mrtCache.take('mrt', {
+    color: { width: 1, height: 1, dispose() { mrtDisposals++; } },
+    qualityTexture: { format: THREE.RedFormat }, sourceSize: {},
+  }));
+  mrtCache.prepare(renderer, 'mrt-b', []);
+  assert.equal(mrtDisposals, 1, 'shared MRT attachment owner is released once');
+  mrtCache.dispose();
+}
+// Eye-state A/B results share the existing hard budget and use exact LRU
+// ownership. A third result evicts the least recently read state.
+{
+  const lru = new ProjectedUvRasterCache(13);
+  lru.prepare(renderer, 'eye-state-scope', []);
+  const state = (red) => ({
+    ...resolved,
+    residentQuality: {
+      ...resolved.residentQuality,
+      imageData: new ImageData(new Uint8ClampedArray([red, 2, 3, 255]), 1, 1),
+      coverage: new Uint8Array([1]),
+      renderedColorMask: new Uint8Array([red]),
+    },
+  });
+  await lru.retainResolved('eyes-a', state(11));
+  await lru.retainResolved('eyes-b', state(22));
+  assert.equal((await lru.getResolved('eyes-a')).residentQuality.imageData.data[0], 11);
+  await lru.retainResolved('eyes-c', state(33));
+  assert.equal(await lru.getResolved('eyes-b'), undefined, 'Third eye state evicts the LRU result');
+  assert.equal((await lru.getResolved('eyes-a')).residentQuality.renderedColorMask[0], 11);
+  assert.equal((await lru.getResolved('eyes-c')).residentQuality.imageData.data[0], 33);
+  lru.prepare(renderer, 'changed-eye-scope', []);
+  assert.equal(await lru.getResolved('eyes-a'), undefined, 'Geometry/scope changes invalidate every state');
+  lru.dispose();
+}
 // A context may disappear while the bounded copy yields; the same scope string
 // after restoration is not proof that a result still belongs to this lifetime.
 {
@@ -371,9 +489,11 @@ try {
   assert.notEqual(await persistentMergeKey(input), first, 'Unversioned geometry edits invalidate UV');
   userId = ''; assert.equal(await persistentMergeKey(input), undefined);
 } finally { globalThis.window = oldWindow; globalThis.fetch = oldFetch; }
+let maskRevision = 1;
 let paints = 0,
   finish;
 const presentation = load('../projection/residentUvPresentation', {
+  './liveProjectedCanvasTextureRegistry': { getLiveProjectedCanvasState: () => ({ revision: maskRevision }) },
   '@/utils/browserScheduling': {
     async waitForBrowserPaint() {
       paints++;
@@ -388,6 +508,13 @@ presentation.markResidentUvPending(object, 'a');
 finish = () => presentation.finishResidentUvPresentation(object);
 await presentation.waitForResidentUvPresentation(scene, 'a');
 assert.equal(paints, 2, 'Capture waits until the UV buffer has actually been bound');
+presentation.finishResidentUvPresentation(object, [{ layerId: 'layer', url: 'mask', revision: 1 }]);
+assert(presentation.isResidentUvMaskPresented(object, 'layer', 'mask'));
+assert(!presentation.isResidentUvMaskPresented(object, 'other', 'mask'));
+maskRevision++;
+assert(!presentation.isResidentUvMaskPresented(object, 'layer', 'mask'), 'An old UV cannot acknowledge a newer eraser revision');
+presentation.markResidentUvPending(object, 'a');
+assert(!presentation.isResidentUvMaskPresented(object, 'layer', 'mask'));
 presentation.markResidentUvPending(object, 'a', new Error('UV failed'));
 await assert.rejects(presentation.waitForResidentUvPresentation(scene, 'a'), /UV failed/);
 await presentation.waitForResidentUvPresentation(scene, 'other-object');
@@ -441,6 +568,118 @@ await presentation.waitForResidentUvPresentation(scene, 'other-object');
   assert.equal(requests.length,3,'unversioned index edits also invalidate');
   exports.terminateWebGpuUvTopologyRasterWorker();
 }
+// The resident display must not expand a 4K one-byte mask into a 64 MiB RGBA
+// allocation on the UI thread. Exercise the actual Worker conversion contract
+// so channel values and orientation remain explicit and byte-exact.
+{
+  const displaySource = fs.readFileSync(
+    new URL('../src/engine/projection/ResidentProjectedUvDisplay.ts', import.meta.url),
+    'utf8',
+  );
+  assert.match(displaySource, /createWorkerBackedMaskPreviewTexture\(\s*mask,/);
+  assert.doesNotMatch(displaySource, /new Uint8ClampedArray\(mask\.length \* 4\)/);
+  assert.match(displaySource, /result\.renderedColorMask\?\.length/);
+  assert.match(displaySource, /THREE\.RedFormat/);
+
+  const bakeSource = fs.readFileSync(
+    new URL('../src/engine/bake/bakeProjectedLayerToTexture.ts', import.meta.url),
+    'utf8',
+  );
+  assert.match(bakeSource, /overlayRasters\.some\(\(\{ layer \}\) => usesUnlitRenderedColor\(layer\)\)/);
+  const gpuBakeSource = fs.readFileSync(
+    new URL('../src/engine/bake/gpuUvBakeRenderer.ts', import.meta.url),
+    'utf8',
+  );
+  assert.match(gpuBakeSource, /renderedColorMask:new Uint8Array\(0\)/);
+  assert.match(gpuBakeSource, /#if MRT == 1/);
+  assert.match(gpuBakeSource, /createPostprocessTarget\(resolution, THREE\.RGBAFormat, 2\)/);
+  assert.match(
+    gpuBakeSource,
+    /resident[\s\S]*?renderer\.capabilities\.isWebGL2[\s\S]*?resolution % 2 === 0[\s\S]*?!isOverlay/,
+  );
+  assert.match(gpuBakeSource, /resident!\.push\(layerColorTarget\.textures\[0\], layerQualityTexture\)/);
+
+  const previewCacheSource = fs.readFileSync(
+    new URL('../src/engine/viewport/previewTextureCache.ts', import.meta.url),
+    'utf8',
+  );
+  assert.match(previewCacheSource, /adoptPreviewMaskInWorker[\s\S]*?THREE\.RedFormat/);
+  assert.match(previewCacheSource, /webgl2\.RED/);
+
+  const workerSource = fs.readFileSync(
+    new URL('../src/workers/previewImageBitmap.worker.ts', import.meta.url),
+    'utf8',
+  );
+  let reply;
+  const created = [];
+  class FixtureImageData {
+    constructor(data, width, height) {
+      Object.assign(this, { data, width, height });
+    }
+  }
+  const worker = {
+    postMessage(message) {
+      reply = message;
+    },
+  };
+  const createFixtureBitmap = async (imageData, options) => {
+    created.push({ imageData, options });
+    return { width: imageData.width, height: imageData.height, close() {} };
+  };
+  new Function(
+    'self',
+    'exports',
+    'createImageBitmap',
+    'ImageData',
+    ts.transpileModule(workerSource, {
+      compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
+    }).outputText,
+  )(worker, {}, createFixtureBitmap, FixtureImageData);
+  const mask = Uint8Array.from([0, 1, 127, 255, 23, 44]);
+  await worker.onmessage({
+    data: { type: 'adopt-mask', id: 17, mask: mask.buffer, width: 3, height: 2 },
+  });
+  assert.deepEqual(reply, { type: 'ready', id: 17, width: 3, height: 2 });
+  assert.equal(created.length, 0, 'Mask adoption retains one byte per pixel without a bitmap');
+  await worker.onmessage({
+    data: { type: 'stripe', id: 17, requestId: 31, y: 0, height: 1 },
+  });
+  assert.equal(reply.type, 'mask-stripe');
+  assert.deepEqual(
+    [...new Uint8Array(reply.pixels)],
+    [255, 23, 44],
+    'First upload stripe reads the vertically flipped final mask row',
+  );
+  await worker.onmessage({
+    data: { type: 'stripe', id: 17, requestId: 32, y: 1, height: 1 },
+  });
+  assert.deepEqual(
+    [...new Uint8Array(reply.pixels)],
+    [0, 1, 127],
+    'Every mask byte keeps the exact red-channel contract',
+  );
+  await worker.onmessage({ data: { type: 'release', id: 17 } });
+  await worker.onmessage({
+    data: { type: 'stripe', id: 17, requestId: 33, y: 0, height: 1 },
+  });
+  assert.match(reply.message, /released/);
+  // The same worker transports straight RGBA drafts without a bitmap roundtrip.
+  const rgba = Uint8Array.from({ length: 24 }, (_, i) => (i * 47) % 256);
+  await worker.onmessage({ data: { type: 'adopt-mask', id: 18, mask: rgba.buffer,
+    width: 3, height: 2, channels: 4 } });
+  assert.equal(reply.type, 'ready');
+  for (const [y, expected] of [[0, rgba.slice(12)], [1, rgba.slice(0,12)]]) {
+    await worker.onmessage({ data: { type: 'stripe', id: 18, requestId: 34, y, height: 1 } });
+    assert.deepEqual(new Uint8Array(reply.pixels), expected, 'RGBA row/channel/alpha bytes are unchanged');
+  }
+  assert.equal(created.length, 0, 'RGBA adoption must not allocate a bitmap');
+  await worker.onmessage({ data: { type: 'release', id: 18 } });
+  await worker.onmessage({ data: { type: 'stripe', id: 18, requestId: 35, y: 0, height: 1 } });
+  assert.match(reply.message, /released/);
+  await worker.onmessage({ data: { type: 'adopt-mask', id: 19, mask: rgba.buffer,
+    width: 3, height: 3, channels: 4 } });
+  assert.match(reply.message, /dimensions/);
+}
 console.log(
-  'Resident UV: exact rounding, duplicate candidate reuse, bounded ownership and geometry invalidation passed.',
+  'Resident UV: exact rounding, duplicate candidate reuse, bounded ownership, geometry invalidation and one-byte mask upload passed.',
 );

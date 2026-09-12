@@ -42,6 +42,11 @@ export type ProjectSettings = {
   projectionMode: ProjectionMode;
   colorManagement: 'srgb' | 'linear';
   imageGeneration?: {
+    textureGptModel?: string;
+    textureGptQuality?: string;
+    /** Legacy setting retained for old projects; new GPT batches always use accelerated groups. */
+    textureMultiviewMode?: 'stable' | 'fast';
+    localRepaintProvider?: 'modelview' | 'gpt';
     model: string;
     aspectRatio: string;
     imageSize: string;

@@ -20,7 +20,7 @@ const layersPanelSource = readFileSync(
 const layerRowStyles = layersPanelSource.match(/'group relative flex h-\[58px\][\s\S]*?pendingDisplay &&[^\n]+/)?.[0];
 assert.ok(layerRowStyles);
 assert.doesNotMatch(layerRowStyles, /hover:/, 'Layer rows must not highlight on hover.');
-assert.match(layerRowStyles, /selected && 'bg-white\/\[0\.22\]'/);
+assert.match(layerRowStyles, /selected && 'bg-white\/\[0\.22\][^']*ring-fuchsia-400\/80'/);
 assert.match(layerRowStyles, /active && 'after:absolute/);
 const viewportCanvasInteractionSource = readFileSync(
   path.join(root, 'src/engine/viewport/ViewportCanvas.tsx'),
@@ -64,6 +64,16 @@ const editorShellSource = readFileSync(path.join(root, 'src/layouts/EditorShell.
 const localRepaintDialogSource = readFileSync(
   path.join(root, 'src/components/localRepaint/LocalRepaintDialog.tsx'),
   'utf8',
+);
+assert.match(
+  localRepaintDialogSource,
+  /const penEraserContact =\s*event\.pointerType === 'pen'[\s\S]*?const mouseEraserContact =\s*event\.pointerType === 'mouse' && event\.button === 2;[\s\S]*?strokeToolRef\.current = penEraserContact \|\| mouseEraserContact \? 'erase' : tool;/,
+  'The 2D repaint editor must keep primary paint plus mouse/pressure-pen erasing.',
+);
+assert.match(
+  localRepaintDialogSource,
+  /onContextMenu=\{\(event\) => event\.preventDefault\(\)\}/,
+  'The retired 2D RMB gesture must not reopen the browser context menu.',
 );
 const localRepaintMaskWorkerSource = readFileSync(
   path.join(root, 'src/workers/localRepaintMaskPreparation.worker.ts'),
@@ -120,7 +130,7 @@ assert.match(
 );
 assert.match(
   layerStoreSource,
-  /addProjectedLayerFromGeneration:[\s\S]*?captureMaskUrl = captureMaskTexture \? capture\?\.maskUrl : undefined[\s\S]*?maskUrl: captureMaskUrl[\s\S]*?maskSpace: captureMaskUrl \? 'projection' : undefined[\s\S]*?projectionCoverageMode: captureMaskTexture[\s\S]*?'capture-mask'[\s\S]*?ignoreSourceAlpha: captureMaskTexture \? true : undefined[\s\S]*?projectionVisibilityPolicy: captureMaskTexture \? 'standard' : undefined/,
+  /addProjectedLayerFromGeneration:[\s\S]*?captureMaskUrl = captureMaskTexture \? capture\?\.maskUrl : undefined[\s\S]*?maskUrl: captureMaskUrl[\s\S]*?maskSpace: captureMaskUrl \? 'projection' : undefined[\s\S]*?projectionCoverageMode: captureMaskTexture[\s\S]*?'capture-mask'[\s\S]*?ignoreSourceAlpha: textureProjectionIgnoresSourceAlpha\(generation\)[\s\S]*?projectionVisibilityPolicy: captureMaskTexture \? 'standard' : undefined/,
   'New GPT and remote single-view layers must use the capture silhouette while joining ordinary quality composition.',
 );
 assert.match(
@@ -290,7 +300,7 @@ const runContextMenu = new Function('isInpaintMode', 'isLocalRepaintApplyMode', 
 for (const mask of [false, true]) for (const apply of [false, true]) {
   let prevented = false;
   runContextMenu(mask, apply, { preventDefault: () => { prevented = true; } });
-  assert.equal(prevented, mask || apply, 'Both repaint brushes suppress the context menu; navigation retains it.');
+  assert.equal(prevented, true, 'RMB orbit always suppresses the browser context menu.');
 }
 assert.match(
   viewportCanvasInteractionSource,
@@ -379,7 +389,7 @@ assert.match(
 );
 assert.match(
   generatePanelSource,
-  /captureCurrentLocalRepaintView\([\s\S]*?resolution: LOCAL_REPAINT_INPUT_RESOLUTION[\s\S]*?colorMode: 'flat-target'[\s\S]*?cameraSnapshot: captureCameraSnapshot/,
+  /captureCurrentLocalRepaintView\([\s\S]*?resolution: LOCAL_REPAINT_INPUT_RESOLUTION[\s\S]*?colorMode: isGptLocalRepaint \? 'flat-target-coverage' : 'flat-target'[\s\S]*?cameraSnapshot: captureCameraSnapshot/,
   'The local-repaint current-effect input must capture frozen-camera BaseColor without PBR lighting.',
 );
 assert.match(
@@ -698,8 +708,13 @@ const viewportCanvasSource = readFileSync(
 );
 assert.match(
   viewportCanvasSource,
-  /const localRepaintEraseContact =\s*isLocalRepaintApplyMode &&[\s\S]*?event\.button === 2 \|\|[\s\S]*?penEraserContact \|\|[\s\S]*?isEditingPersistedLocalRepaint && event\.button === 0/,
-  'Button 3, pen erasers, and the primary eraser gesture must subtract local repaint.',
+  /const rightModelEraseContact =\s*event\.pointerType === 'mouse' && event\.button === 2 && Boolean\(result\);[\s\S]*?const localRepaintEraseContact =\s*isLocalRepaintApplyMode &&[\s\S]*?rightModelEraseContact[\s\S]*?isEditingPersistedLocalRepaint && event\.button === 0/,
+  'RMB model hits, pen erasers and the selected primary eraser gesture must subtract local repaint.',
+);
+assert.match(
+  viewportCanvasSource,
+  /const isPaintButton = event\.button === 0 \|\| penEraserContact \|\| rightModelEraseContact;/,
+  'RMB may be consumed by paint only after the model raycast has hit.',
 );
 assert.match(
   viewportCanvasSource,
@@ -873,8 +888,8 @@ assert.match(
 );
 assert.match(
   viewportCanvasSource,
-  /strokePaintToolRef\.current === 'inpaint-apply-erase';[\s\S]*?event\.buttons & \(usesSecondaryButton \? 2 : 1\)/,
-  'A right-button local repaint stroke must remain active throughout pointer movement.',
+  /const isPointerContactActive =[\s\S]*?event\.pointerType === 'pen'[\s\S]*?return \(event\.buttons & 3\) !== 0;/,
+  'An active left-paint or right-erase local repaint stroke must remain active throughout pointer movement.',
 );
 assert.match(
   viewportCanvasSource,
@@ -889,7 +904,7 @@ assert.match(
 assert.match(
   viewportCanvasSource,
   /erasesLocalRepaint && paintTool === 'eraser'[\s\S]*?paintToolSettings\.eraserFeather[\s\S]*?: featherPercent/,
-  'The dedicated eraser must use its own feather while right-button erase keeps the repaint brush feather.',
+  'The selected dedicated eraser must use its own feather while repaint apply keeps its brush feather.',
 );
 assert.match(
   viewportCanvasSource,
@@ -1269,6 +1284,49 @@ try {
       ?.visible,
     true,
     'Two immediate toggles must round-trip visibility without reading a stale frame.',
+  );
+  const linkedVisibilityLayers = [
+    {
+      id: 'local-repaint-projection-visible-row',
+      type: 'projected',
+      role: 'local-repaint-overlay',
+      replacementTargetLayerId: 'local-repaint-uv-merge-target',
+      visible: true,
+      order: 0,
+    },
+    {
+      id: 'local-repaint-uv-merge-target',
+      type: 'uv',
+      visible: true,
+      order: 1,
+    },
+  ];
+  layerStore.useLayerStore.setState({
+    layers: linkedVisibilityLayers,
+    activeProjectedLayerId: 'local-repaint-projection-visible-row',
+  });
+  sceneStore.useSceneStore.getState().setPaintTool('eraser');
+  layerStore.useLayerStore.getState().toggleLayer('local-repaint-projection-visible-row');
+  assert.deepEqual(
+    layerStore.useLayerStore.getState().layers.map((layer) => layer.visible),
+    [false, false],
+    'Keyboard/store visibility must hide both representations of one local repaint result.',
+  );
+  assert.equal(sceneStore.useSceneStore.getState().paintTool, 'none');
+  layerStore.useLayerStore.getState().toggleLayer('local-repaint-projection-visible-row');
+  assert.deepEqual(
+    layerStore.useLayerStore.getState().layers.map((layer) => layer.visible),
+    [true, true],
+    'Linked local repaint visibility must round-trip atomically.',
+  );
+  const stableVisibilityLayers = layerStore.useLayerStore.getState().layers;
+  layerStore.useLayerStore
+    .getState()
+    .setLayerVisibility(['local-repaint-projection-visible-row'], true);
+  assert.equal(
+    layerStore.useLayerStore.getState().layers,
+    stableVisibilityLayers,
+    'A repeated visibility set must preserve the layers array and avoid recomposition.',
   );
   layerStore.useLayerStore.setState({ layers: [], activeProjectedLayerId: undefined });
   const generatedSourceAlphaLayer = layerStore.useLayerStore

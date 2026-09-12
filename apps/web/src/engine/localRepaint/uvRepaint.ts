@@ -5,9 +5,13 @@ import {
   type UvRepaintPatch,
 } from './uvRepaintState';
 
-// ALG-LR-UV-PAINT v1.1.3. Shared UV pixels intentionally share color/alpha.
+// ALG-LR-UV-PAINT v1.1.4. Shared UV pixels intentionally share color/alpha.
 type Tile = { bounds: Rect; surfaces: Array<{ mesh: THREE.Mesh; box: THREE.Box3 }> };
-type Stroke = { before: Map<number, Promise<Uint8Array<ArrayBuffer>>>; changed: Set<number> };
+type Stroke = {
+  before?: Map<number, Promise<Uint8Array<ArrayBuffer>>>;
+  changed: Set<number>;
+};
+type ProjectedSurfaceBounds = [left: number, top: number, right: number, bottom: number] | true;
 
 const vertex = `
 attribute float repaintFaceId;
@@ -171,6 +175,10 @@ export class UvRepaint {
   private sourceTextures: THREE.Texture[] = [];
   private stroke?: Stroke;
   private visibilityKey = '';
+  private projectedTileBoundsKey = '';
+  private projectedTileBounds = new Map<number, ProjectedSurfaceBounds[]>();
+  private projectedBoundsTransform = new THREE.Matrix4();
+  private projectedBoundsPoint = new THREE.Vector4();
   private disposed = false;
   private outputAlive = true;
   private pending = new Set<Promise<unknown>>();
@@ -421,25 +429,28 @@ export class UvRepaint {
     return [Math.ceil(width * scale), Math.ceil(height * scale)] as const;
   }
 
-  async prepare(material: THREE.ShaderMaterial, camera: THREE.Camera, initial?: CanvasImageSource) {
+  async prepare(
+    material: THREE.ShaderMaterial | undefined,
+    camera: THREE.Camera,
+    initial?: CanvasImageSource,
+  ) {
     this.updateMatrices(camera);
     // Retain immutable capture uniforms/textures, not a pre-flattened UV source:
     // overlapping faces may sample different colors in the frozen source image.
-    const captured = THREE.UniformsUtils.clone(material.uniforms);
-    this.sourceTextures = Object.values(captured)
-      .map((uniform) => uniform.value)
-      .filter((value): value is THREE.Texture => value?.isTexture);
-    this.brush.uniforms = { ...captured, ...this.brush.uniforms };
-    this.brush.defines = { ...material.defines };
-    this.brush.vertexShader =
-      material.vertexShader.replace(/void main\(\)\s*\{/, 'void paintSourceVertex() {') +
-      vertex.replace('void main() {', 'void main() { paintSourceVertex();');
-    // Depth selects strongest visible hit; ties retain first stable triangle.
-    // The separate composite applies shared UV erasure exactly once per stamp.
-    this.brush.fragmentShader =
-      material.fragmentShader.replace(/void main\(\)\s*\{/, 'void paintSourceFragment() {') +
-      paintFragment +
-      `
+    if (material) {
+      const captured = THREE.UniformsUtils.clone(material.uniforms);
+      this.sourceTextures = Object.values(captured)
+        .map((uniform) => uniform.value)
+        .filter((value): value is THREE.Texture => value?.isTexture);
+      this.brush.uniforms = { ...captured, ...this.brush.uniforms };
+      this.brush.defines = { ...material.defines };
+      this.brush.vertexShader =
+        material.vertexShader.replace(/void main\(\)\s*\{/, 'void paintSourceVertex() {') +
+        vertex.replace('void main() {', 'void main() { paintSourceVertex();');
+      this.brush.fragmentShader =
+        material.fragmentShader.replace(/void main\(\)\s*\{/, 'void paintSourceFragment() {') +
+        paintFragment +
+        `
       void main() {
         float weight = repaintWeight();
         if (erase > 0.5) gl_FragColor = vec4(0.0, 0.0, 0.0, weight);
@@ -450,6 +461,19 @@ export class UvRepaint {
         }
         gl_FragDepth = 1.0 - weight;
       }`;
+    } else {
+      // Mask-only sessions never sample or flatten source colour. They rasterize
+      // the visible surface footprint straight into a full-resolution GPU keep-mask.
+      this.brush.vertexShader = vertex.replace(
+        'vec4(uv*2.0-1.0,0.0,1.0)',
+        'vec4(vec2(uv.x,1.0-uv.y)*2.0-1.0,0.0,1.0)',
+      );
+      for (const tile of this.tiles.values())
+        tile.bounds.y = this.resolution - tile.bounds.y - tile.bounds.height;
+      this.brush.fragmentShader =
+        paintFragment +
+        'void main(){float weight=repaintWeight();gl_FragColor=vec4(0,0,0,weight);gl_FragDepth=1.0-weight;}';
+    }
     this.brush.needsUpdate = true;
     try {
       await isolated(this.renderer, () => {
@@ -488,6 +512,8 @@ export class UvRepaint {
             (this.resolution - row - 1) * stride,
           );
         this.write({ x: 0, y: 0, width: this.resolution, height: this.resolution }, flipped);
+      } else if (!material) {
+        this.resetWhite();
       }
     } finally {
       this.meshes.forEach((mesh) => {
@@ -496,38 +522,67 @@ export class UvRepaint {
     }
   }
 
-  begin() {
+  begin(captureHistory = true) {
     if (this.disposed || this.stroke) throw new Error('UV 笔画会话不可用。');
-    this.stroke = { before: new Map(), changed: new Set() };
+    this.stroke = {
+      ...(captureHistory ? { before: new Map() } : {}),
+      changed: new Set(),
+    };
   }
 
-  private intersects(tile: Tile, clip: THREE.Matrix4, rect: Rect, size: THREE.Vector2) {
-    return tile.surfaces.some(({ mesh, box }) => {
-      const transform = new THREE.Matrix4().multiplyMatrices(clip, mesh.matrixWorld);
-      let left = Infinity,
-        top = Infinity,
-        right = -Infinity,
-        bottom = -Infinity;
-      for (let i = 0; i < 8; i++) {
-        const p = new THREE.Vector4(
-          i & 1 ? box.max.x : box.min.x,
-          i & 2 ? box.max.y : box.min.y,
-          i & 4 ? box.max.z : box.min.z,
-          1,
-        ).applyMatrix4(transform);
-        if (p.w <= 0) return true; // conservative near-plane intersection
-        const x = ((p.x / p.w) * 0.5 + 0.5) * size.x,
-          y = (0.5 - (p.y / p.w) * 0.5) * size.y;
-        left = Math.min(left, x);
-        right = Math.max(right, x);
-        top = Math.min(top, y);
-        bottom = Math.max(bottom, y);
+  private refreshProjectedTileBounds(key: string, clip: THREE.Matrix4, size: THREE.Vector2) {
+    if (key === this.projectedTileBoundsKey) return;
+    this.projectedTileBounds.clear();
+    for (const [id, tile] of this.tiles) {
+      const bounds: ProjectedSurfaceBounds[] = [];
+      for (const { mesh, box } of tile.surfaces) {
+        const transform = this.projectedBoundsTransform.multiplyMatrices(clip, mesh.matrixWorld);
+        let left = Infinity,
+          top = Infinity,
+          right = -Infinity,
+          bottom = -Infinity;
+        let crossesNearPlane = false;
+        for (let i = 0; i < 8; i++) {
+          const p = this.projectedBoundsPoint
+            .set(
+              i & 1 ? box.max.x : box.min.x,
+              i & 2 ? box.max.y : box.min.y,
+              i & 4 ? box.max.z : box.min.z,
+              1,
+            )
+            .applyMatrix4(transform);
+          if (p.w <= 0) {
+            crossesNearPlane = true;
+            break;
+          }
+          const x = ((p.x / p.w) * 0.5 + 0.5) * size.x,
+            y = (0.5 - (p.y / p.w) * 0.5) * size.y;
+          left = Math.min(left, x);
+          right = Math.max(right, x);
+          top = Math.min(top, y);
+          bottom = Math.max(bottom, y);
+        }
+        // Preserve the original conservative near-plane rule exactly. A boolean
+        // avoids manufacturing an unbounded rectangle for the common comparison.
+        bounds.push(
+          crossesNearPlane
+            ? true
+            : [left, top, right, bottom],
+        );
       }
+      this.projectedTileBounds.set(id, bounds);
+    }
+    this.projectedTileBoundsKey = key;
+  }
+
+  private intersects(id: number, rect: Rect) {
+    return this.projectedTileBounds.get(id)?.some((bounds) => {
+      if (bounds === true) return true;
       return (
-        right >= rect.x &&
-        left <= rect.x + rect.width &&
-        bottom >= rect.y &&
-        top <= rect.y + rect.height
+        bounds[2] >= rect.x &&
+        bounds[0] <= rect.x + rect.width &&
+        bounds[3] >= rect.y &&
+        bounds[1] <= rect.y + rect.height
       );
     });
   }
@@ -555,8 +610,6 @@ export class UvRepaint {
       width: Math.abs(from.x - to.x) + input.radius * 2,
       height: Math.abs(from.y - to.y) + input.radius * 2,
     };
-    const touched = [...this.tiles].filter(([, tile]) => this.intersects(tile, matrix, rect, size));
-    if (!touched.length) return false;
     const [width, height] = this.visibilitySize();
     const key = [
       width,
@@ -564,6 +617,10 @@ export class UvRepaint {
       ...matrix.elements,
       ...this.meshes.flatMap((mesh) => [...mesh.matrix.elements, Number(mesh.visible)]),
     ].join(',');
+    this.refreshProjectedTileBounds(`${size.x},${size.y}|${key}`, matrix, size);
+    const touched: Array<[number, Tile]> = [];
+    for (const entry of this.tiles) if (this.intersects(entry[0], rect)) touched.push(entry);
+    if (!touched.length) return false;
     isolated(this.renderer, () => {
       if (key !== this.visibilityKey) {
         this.ids.setSize(width, height);
@@ -598,7 +655,8 @@ export class UvRepaint {
       // enter the authored output or its history.
       const bounds = { ...touched[0][1].bounds };
       for (const [id, tile] of touched) {
-        if (!stroke.before.has(id)) stroke.before.set(id, this.read(this.output, tile.bounds));
+        if (stroke.before && !stroke.before.has(id))
+          stroke.before.set(id, this.read(this.output, tile.bounds));
         stroke.changed.add(id);
         const right = Math.max(bounds.x + bounds.width, tile.bounds.x + tile.bounds.width);
         const bottom = Math.max(bounds.y + bounds.height, tile.bounds.y + tile.bounds.height);
@@ -624,11 +682,12 @@ export class UvRepaint {
   end(): Promise<UvRepaintPatch[]> {
     const stroke = this.stroke;
     this.stroke = undefined;
-    if (!stroke) return Promise.resolve([]);
+    if (!stroke?.before) return Promise.resolve([]);
+    const beforeReads = stroke.before;
     const reads = [...stroke.changed].map(async (id) => {
       const bounds = this.tiles.get(id)!.bounds;
       const afterPromise = this.read(this.output, bounds);
-      const [before, after] = await Promise.all([stroke.before.get(id)!, afterPromise]);
+      const [before, after] = await Promise.all([beforeReads.get(id)!, afterPromise]);
       if (before.every((value, i) => value === after[i])) return undefined;
       return { bounds, before, after };
     });
@@ -637,6 +696,16 @@ export class UvRepaint {
         patches.filter((patch): patch is UvRepaintPatch => Boolean(patch)),
       ),
     );
+  }
+
+  resetWhite() {
+    if (this.disposed || !this.outputAlive) return;
+    this.stroke = undefined;
+    isolated(this.renderer, () => {
+      this.renderer.setRenderTarget(this.output);
+      this.renderer.setClearColor(0xffffff, 1);
+      this.renderer.clear(true, false, false);
+    });
   }
 
   publish(patches: UvRepaintPatch[], side: 'before' | 'after', restoreGpu = false) {
@@ -685,6 +754,7 @@ export class UvRepaint {
       this.meshes.forEach((mesh) => mesh.geometry.dispose());
       this.scene.clear();
       this.tiles.clear();
+      this.projectedTileBounds.clear();
     };
     if (this.pending.size) void Promise.allSettled([...this.pending]).then(release);
     else release();

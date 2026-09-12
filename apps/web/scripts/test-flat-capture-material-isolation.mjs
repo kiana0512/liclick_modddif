@@ -17,14 +17,14 @@ const source = declarations(await read('renderTargetUtils.ts'), ['applyTargetOnl
   declarations(capture, ['createFlatTargetCaptureMaterial', 'prepareFlatTargetCapture', 'captureFlatTarget']);
 const compiled = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
 
-async function check(mode = 'success', coverage = true) {
+async function check(mode = 'success', coverage = true, untextured = false) {
   const scene = new THREE.Scene();
   const shader = new THREE.ShaderMaterial({ uniforms: {
     previewLightingEnabled: { value: 1 }, previewExposure: { value: 2 },
     normalPreviewEnabled: { value: 1 }, wirePreviewEnabled: { value: 1 },
     showEmptyProjectionHatch: { value: 1 },
   } });
-  const map = new THREE.Texture();
+  const map = untextured ? null : new THREE.Texture();
   const authored = new THREE.MeshStandardMaterial({ color: '#b38346', map });
   const meshes = [shader, shader, authored].map((material) => {
     const mesh = new THREE.Mesh(new THREE.BoxGeometry(), material);
@@ -65,6 +65,9 @@ async function check(mode = 'success', coverage = true) {
         assert(meshes[2].material instanceof THREE.MeshBasicMaterial);
         assert.equal(meshes[2].material.map, map, 'authored texture is not replaced by a silhouette mask');
         assert(meshes[2].material.color.equals(authored.color));
+        assert.equal(meshes[2].material.opacity, coverage && untextured ? 0 : authored.opacity);
+        assert.equal(meshes[2].material.depthWrite, authored.depthWrite, 'coverage capture preserves occlusion');
+        if (coverage && untextured) assert.equal(meshes[2].material.blending, THREE.NoBlending);
         meshes[2].material.addEventListener('dispose', () => { disposed++; });
         draws++;
         if (mode === 'render-error') throw new Error('controlled render failure');
@@ -92,4 +95,6 @@ await check();
 await check('success', false);
 await check('render-error');
 await check('replacement');
+await check('success', true, true);
+await check('success', false, true);
 console.log('Production flat capture: per-tile material/uniform isolation, unchanged texture/2048, interrupted snapshot rejection and error cleanup passed.');

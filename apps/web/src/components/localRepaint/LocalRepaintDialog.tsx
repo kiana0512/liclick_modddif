@@ -59,7 +59,7 @@ type CanvasRect = {
   h: number;
 };
 
-const DEFAULT_LOCAL_REPAINT_BRUSH_SIZE = 16;
+const DEFAULT_LOCAL_REPAINT_BRUSH_SIZE = 15;
 const MAX_LOCAL_REPAINT_BRUSH_SIZE = 96;
 const STROKE_CLIP_PADDING = 2;
 
@@ -617,17 +617,22 @@ export function LocalRepaintDialog({
               onPointerDown={(event) => {
                 if (event.pointerType === 'touch' || activePointerIdRef.current !== undefined)
                   return;
+                const penEraserContact =
+                  event.pointerType === 'pen' &&
+                  (event.button === 2 || event.button === 5) &&
+                  event.pressure > 0;
+                const mouseEraserContact =
+                  event.pointerType === 'mouse' && event.button === 2;
+                if (event.button !== 0 && !penEraserContact && !mouseEraserContact) return;
                 event.preventDefault();
                 event.currentTarget.setPointerCapture(event.pointerId);
                 activePointerIdRef.current = event.pointerId;
                 drawingRef.current = true;
                 lastPointRef.current = undefined;
-                strokeToolRef.current =
-                  event.pointerType === 'pen' && (event.button === 2 || event.button === 5)
-                    ? 'erase'
-                    : tool;
+                strokeToolRef.current = penEraserContact || mouseEraserContact ? 'erase' : tool;
                 paintPointerEventBatch(event);
               }}
+              onContextMenu={(event) => event.preventDefault()}
               onPointerMove={(event) => {
                 if (activePointerIdRef.current !== event.pointerId) return;
                 if (drawingRef.current) {

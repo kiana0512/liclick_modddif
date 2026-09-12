@@ -56,6 +56,8 @@ test('blocks incompatible protocol versions', () => {
 
 test('rejects malformed release data', () => {
   assert.throws(() => manifest({ gitSha: 'not a sha' }), /gitSha/);
+  assert.throws(() => manifest({ runtimeMode: 'desktop-legacy' }), /runtimeMode/);
+  assert.throws(() => manifest({ component: 'local-agent' }), /component/);
   assert.throws(() => parseReleaseManifest({ schemaVersion: 999 }), /Unsupported/);
 });
 

@@ -1,9 +1,9 @@
+import { preservesRepaintResultAlpha } from '@/engine/localRepaint/resultAlphaPolicy';
 import { isNativeUvRepaintLayer } from '@/engine/localRepaint/uvRepaintState';
 import {prepareMergeProjection,startMergeProjectionPreparation,mergePreparationSignature} from '@/engine/bake/mergeProjectionPreparation';
 import {getPreparedMergePng,awaitPreparedMergePng,reuseUnchangedMergePng} from '@/engine/bake/mergeFinalPreparation';
 import {compareProjectedLayersForDeterministicBake,createReusableProjectionBakeSignature,cloneProjectionBakeImageData,type ReusableProjectionBakeEntry,type ReusableProjectionBakePurpose} from '@/engine/bake/projectionBakeSignature';
 import {
-  startTransition,
   useCallback,
   useEffect,
   useMemo,
@@ -76,6 +76,7 @@ import {
   CONTENT_AWARE_REPAIR_REQUEST_EVENT,
   createVisibleSurfaceCompletionPolicy,
   runSurfaceAwareRepair,
+  CONTENT_AWARE_UV_MAX_RESOLUTION,
   type ContentAwareRepairRequestDetail,
 } from '@/engine/contentAware';
 import {
@@ -330,7 +331,6 @@ const resolutionToSize = {
 
 const LARGE_DATA_URL_ASSET_UPLOAD_THRESHOLD = 256 * 1024;
 const PROJECT_THUMBNAIL_BACKGROUND = '#333333';
-const CONTENT_AWARE_UV_MAX_RESOLUTION = 2048;
 const EDITOR_TASK_LOCKED_SHORTCUTS = [
   'project.save',
   'history.undo',
@@ -2019,13 +2019,16 @@ export function EditorPage({
       });
   };
 
+  const autosaveProjectId = project?.id;
+  const autosaveProjectDirty = project?.dirty;
+  const autosaveWorkspaceMode = project?.workspaceMode;
   useEffect(() => {
     const coordinator = autosaveCoordinatorRef.current;
     if (
-      project &&
-      project.workspaceMode === 'local-server' &&
-      project.dirty &&
-      serverReadyProjectId === project.id
+      autosaveProjectId &&
+      autosaveWorkspaceMode === 'local-server' &&
+      autosaveProjectDirty &&
+      serverReadyProjectId === autosaveProjectId
     ) {
       setSaveStatus((status) => (status === 'saving' ? status : 'idle'));
       coordinator?.scheduleEdit();
@@ -2034,11 +2037,10 @@ export function EditorPage({
     }
   }, [
     autosaveRetryToken,
+    autosaveProjectDirty,
+    autosaveProjectId,
+    autosaveWorkspaceMode,
     projectEditVersion,
-    project?.dirty,
-    project?.id,
-    project?.workspaceMode,
-    pushToast,
     serverReadyProjectId,
   ]);
 
@@ -5298,10 +5300,6 @@ export function EditorPage({
   }
 
   function handleOpenBake(requestedHandoff?: TextureBakeHandoff) {
-    if (generationConflictLocked) {
-      showGenerationConflict('进入烘焙工作区');
-      return;
-    }
     if (publishingToBakeRef.current || manualBakeRunningRef.current) return;
     const objectId = requestedHandoff?.objectId ?? selectedObjectId ?? importedModel?.objectId;
     if (!project || !objectId) {
@@ -5336,10 +5334,6 @@ export function EditorPage({
   }
 
   function handleOpenUv() {
-    if (generationConflictLocked) {
-      showGenerationConflict('进入 UV 工作区');
-      return;
-    }
     onOpenUv();
   }
 
@@ -5421,10 +5415,6 @@ export function EditorPage({
   });
 
   async function handlePublishToRetopology() {
-    if (generationConflictLocked) {
-      showGenerationConflict('进入拓扑工作区');
-      return;
-    }
     if (!project || publishingToRetopology) return;
     const sourceObjectId = selectedObjectId ?? importedModel?.objectId;
     if (!sourceObjectId) {
@@ -5744,7 +5734,7 @@ export function EditorPage({
       const rawResultUrl =
         typeof metadata.rawResultUrl === 'string' ? metadata.rawResultUrl : generation.resultUrl;
       if (!rawResultUrl) return Promise.reject(new Error('Local repaint result is missing.'));
-      if (metadata.modelSilhouetteClipVersion === 1 && generation.resultUrl) {
+      if (preservesRepaintResultAlpha(metadata) && generation.resultUrl) {
         return Promise.resolve({ imageUrl: generation.resultUrl, persistentImageUrl: generation.resultUrl,
           rawImageUrl: rawResultUrl, seamMode: 'legacy' as const, seamHarmonizationVersion: undefined });
       }
@@ -6247,7 +6237,7 @@ export function EditorPage({
           imageUrl: projectionImage.imageUrl,
           persistentImageUrl: projectionImage.persistentImageUrl,
           rawImageUrl: projectionImage.rawImageUrl,
-          ignoreSourceAlpha: latestLocalRepaintGeneration.metadata.modelSilhouetteClipVersion !== 1,
+          ignoreSourceAlpha: !preservesRepaintResultAlpha(latestLocalRepaintGeneration.metadata),
           seamHarmonizationVersion: projectionImage.seamHarmonizationVersion,
           autoActivate: false,
           allowedMaskUrl: generationMaskUrl,
@@ -6675,7 +6665,7 @@ export function EditorPage({
         imageUrl: projectionImage.imageUrl,
         persistentImageUrl: projectionImage.persistentImageUrl,
         rawImageUrl: projectionImage.rawImageUrl,
-        ignoreSourceAlpha: latestLocalRepaintGeneration.metadata.modelSilhouetteClipVersion !== 1,
+        ignoreSourceAlpha: !preservesRepaintResultAlpha(latestLocalRepaintGeneration.metadata),
         seamHarmonizationVersion: projectionImage.seamHarmonizationVersion,
         autoActivate: true,
         allowedMaskUrl: generationMaskUrl,
@@ -6703,7 +6693,6 @@ export function EditorPage({
     getLocalRepaintProjectionImage,
     importedModel,
     localRepaintGenerationReady,
-    localRepaintInteractiveReady,
     notifyEditorTaskRunning,
     paintMaskDataUrl,
     project,
@@ -8131,6 +8120,7 @@ export function EditorPage({
               }}
               importDisabled={modelImportBusy || modelMutationLocked}
               isActive={isActive}
+              keepRuntimeActive={generationConflictLocked || contentAwareRepairTaskActive}
             />
           }
           panels={panelDefinitions}

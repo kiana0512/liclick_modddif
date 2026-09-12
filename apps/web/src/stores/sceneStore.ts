@@ -64,7 +64,7 @@ export type LocalRepaintBrushSettings = {
 
 export const MIN_PAINT_MASK_BRUSH_SIZE = 0.1;
 export const DEFAULT_PAINT_MASK_BRUSH_SIZE = 45;
-export const DEFAULT_LOCAL_REPAINT_BRUSH_SIZE = 10;
+export const DEFAULT_LOCAL_REPAINT_BRUSH_SIZE = 15;
 export const MAX_PAINT_MASK_BRUSH_SIZE = 60;
 
 export type PaintToolSettings = {

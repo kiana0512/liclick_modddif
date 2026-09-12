@@ -29,8 +29,6 @@ import {
   SlidersHorizontal,
   TextCursorInput,
   Trash2,
-  Upload,
-  WandSparkles,
 } from 'lucide-react';
 import { cn } from '@/components/common/cn';
 import { fitCameraToImportedModel } from '@/engine/scene/transformActions';
@@ -39,6 +37,10 @@ import {
   getLiveProjectedTextureSourceState,
 } from '@/engine/projection/liveProjectedCanvasTextureRegistry';
 import { isFlattenableUvMergeSource } from '@/engine/layers/mergeUvComposition';
+import {
+  expandAuthoredLayerVisibilityIds,
+  isLocalRepaintVisibilityLayer,
+} from '@/engine/layers/layerVisibility';
 import {
   createGeneratedDisplayPreview,
   createLayerThumbnail,
@@ -99,12 +101,14 @@ function useLayerImageSource(url: string, enabled: boolean) {
 
 function useProjectedLayerDisplayPreview(layer: Layer, thumbnail = false) {
   const { type, imageUrl: sourceUrl, depthUrl, contentRevision: revision } = layer;
-  const key = JSON.stringify([type, sourceUrl, depthUrl, revision, thumbnail]);
+  const preserveSource = type === 'projected' && layer.projectionCoverageMode === 'capture-mask' &&
+    layer.ignoreSourceAlpha === false;
+  const key = JSON.stringify([type, sourceUrl, depthUrl, revision, thumbnail, preserveSource]);
   const [preview, setPreview] = useState<
     (GeneratedDisplayPreview & { key: string }) | undefined
   >();
   const enabled =
-    (thumbnail || type === 'projected') && sourceUrl && !isLocalRepaintPreviewLayer(layer) &&
+    (thumbnail || (type === 'projected' && !preserveSource)) && sourceUrl && !isLocalRepaintPreviewLayer(layer) &&
     !(thumbnail && getLiveProjectedTextureSourceState(sourceUrl));
 
   useEffect(() => {
@@ -114,7 +118,7 @@ function useProjectedLayerDisplayPreview(layer: Layer, thumbnail = false) {
     const controller = new AbortController();
     void (thumbnail ? createLayerThumbnail : createGeneratedDisplayPreview)(sourceUrl, depthUrl, {
       signal: controller.signal, revision,
-    }, type === 'projected')
+    }, type === 'projected' && !preserveSource)
       .then((nextPreview) => {
         if (!cancelled) setPreview({ ...nextPreview, key });
       })
@@ -128,7 +132,7 @@ function useProjectedLayerDisplayPreview(layer: Layer, thumbnail = false) {
       cancelled = true;
       controller.abort();
     };
-  }, [enabled, key, revision, depthUrl, sourceUrl, type, thumbnail]);
+  }, [enabled, key, revision, depthUrl, sourceUrl, type, thumbnail, preserveSource]);
 
   return enabled && preview?.key === key ? preview : undefined;
 }
@@ -451,39 +455,6 @@ type OpacityDrag = {
   y: number;
 };
 
-function isLocalRepaintVisibilityLayer(layer: Layer) {
-  return Boolean(
-    layer.role === 'local-repaint-draft' ||
-    layer.role === 'local-repaint-overlay' ||
-    layer.id.startsWith('local-repaint-projection') ||
-    layer.id.startsWith('local-repaint-brush-projection') ||
-    layer.id.startsWith('local-repaint-uv-merge'),
-  );
-}
-
-/**
- * One local repaint result is represented by a visible projected row and an
- * implementation-only UV destination. Eye gestures must update both in one
- * store transaction or the remaining representation keeps the effect visible.
- */
-function expandLocalRepaintVisibilityIds(layers: Layer[], layerIds: string[]) {
-  const expanded = new Set(layerIds);
-  for (const layerId of layerIds) {
-    const layer = layers.find((item) => item.id === layerId);
-    if (!layer || !isLocalRepaintVisibilityLayer(layer)) continue;
-    if (layer.replacementTargetLayerId) expanded.add(layer.replacementTargetLayerId);
-    layers.forEach((candidate) => {
-      if (
-        isLocalRepaintVisibilityLayer(candidate) &&
-        candidate.replacementTargetLayerId === layer.id
-      ) {
-        expanded.add(candidate.id);
-      }
-    });
-  }
-  return [...expanded];
-}
-
 const checkerStyle = {
   backgroundColor: '#d6d6d6',
   backgroundImage:
@@ -508,7 +479,6 @@ export function LayersPanel({
   onLayerDoubleClick,
   onLayerImageEdit,
   onLayerImageReplace,
-  onLayerLocalRepaint,
   onMergeSelectedToUvLayer,
   onMergeIntoSelectedBlankUvLayer,
   mutationLocked = false,
@@ -535,7 +505,6 @@ export function LayersPanel({
   );
   const renameLayer = useLayerStore((state) => state.renameLayer);
   const updateLayer = useLayerStore((state) => state.updateLayer);
-  const moveLayer = useLayerStore((state) => state.moveLayer);
   const reorderLayer = useLayerStore((state) => state.reorderLayer);
   const captureHistory = useEditorHistoryStore((state) => state.capture);
   const [menu, setMenu] = useState<MenuState>();
@@ -613,21 +582,25 @@ export function LayersPanel({
       visibleLayers.some((layer) => layer.id === activeProjectedLayerId)
     )
       return;
+    const preserveMultiSelection = selectedLayerIds.length > 1;
     const nextActiveLayer = visibleLayers.find((layer) => layer.type === 'projected');
     if (nextActiveLayer) {
       setActiveLayer(nextActiveLayer.id);
-      setSelectedLayerIds([nextActiveLayer.id]);
-      setLastSelectedLayerId(nextActiveLayer.id);
-    } else {
+      if (!preserveMultiSelection) {
+        setSelectedLayerIds([nextActiveLayer.id]);
+        setLastSelectedLayerId(nextActiveLayer.id);
+      }
+    } else if (!preserveMultiSelection) {
       setSelectedLayerIds([]);
       setLastSelectedLayerId(undefined);
     }
-  }, [activeProjectedLayerId, setActiveLayer, visibleLayers]);
+  }, [activeProjectedLayerId, selectedLayerIds, setActiveLayer, visibleLayers]);
 
   useEffect(() => {
     if (
       !activeProjectedLayerId ||
       !layerIdSet.has(activeProjectedLayerId) ||
+      selectedLayerIds.length > 1 ||
       selectedLayerIds.includes(activeProjectedLayerId)
     )
       return;
@@ -659,7 +632,7 @@ export function LayersPanel({
       if (!layerId) return;
       setVisibilityDrag((current) => {
         if (!current || current.touched.has(layerId)) return current;
-        const affectedIds = expandLocalRepaintVisibilityIds(useLayerStore.getState().layers, [
+        const affectedIds = expandAuthoredLayerVisibilityIds(useLayerStore.getState().layers, [
           layerId,
         ]);
         setLayerVisibility(affectedIds, current.visible);
@@ -785,7 +758,7 @@ export function LayersPanel({
       captureHistory(`删除图层：${describeLayerSelection(ids)}`);
       const sceneState = useSceneStore.getState();
       const latestLayers = useLayerStore.getState().layers;
-      const expandedIds = expandLocalRepaintVisibilityIds(latestLayers, ids);
+      const expandedIds = expandAuthoredLayerVisibilityIds(latestLayers, ids);
       const expandedIdSet = new Set(expandedIds);
       const deletesLocalRepaint = ids.some((id) =>
         latestLayers.some((layer) => layer.id === id && isLocalRepaintVisibilityLayer(layer)),
@@ -932,7 +905,7 @@ export function LayersPanel({
   function getAffectedLayerIds(layerId: string, currentLayers: Layer[]) {
     const selectedIds =
       selectedLayerIdSet.has(layerId) && selectedLayerIds.length > 1 ? selectedLayerIds : [layerId];
-    return expandLocalRepaintVisibilityIds(currentLayers, selectedIds);
+    return expandAuthoredLayerVisibilityIds(currentLayers, selectedIds);
   }
 
   function beginVisibilityDrag(layer: Layer) {
@@ -947,7 +920,7 @@ export function LayersPanel({
 
   function continueVisibilityDrag(layerId: string) {
     if (!visibilityDrag || visibilityDrag.touched.has(layerId)) return;
-    const affectedIds = expandLocalRepaintVisibilityIds(useLayerStore.getState().layers, [layerId]);
+    const affectedIds = expandAuthoredLayerVisibilityIds(useLayerStore.getState().layers, [layerId]);
     affectedIds.forEach((id) => visibilityDrag.touched.add(id));
     setLayerVisibility(affectedIds, visibilityDrag.visible);
     setVisibilityDrag({
@@ -994,11 +967,6 @@ export function LayersPanel({
       setLastSelectedLayerId(layer.id);
     }
     openLayerMenuAt(layer.id, event.clientX, event.clientY);
-  }
-
-  function beginReplaceLayerImage(layer: Layer) {
-    replaceImageLayerIdRef.current = layer.id;
-    replaceImageInputRef.current?.click();
   }
 
   return (
@@ -1302,7 +1270,7 @@ export function LayersPanelActions({
       return;
     }
 
-    const expandedIds = expandLocalRepaintVisibilityIds(latestLayers, currentLayerIds);
+    const expandedIds = expandAuthoredLayerVisibilityIds(latestLayers, currentLayerIds);
     const expandedIdSet = new Set(expandedIds);
     captureHistory(`清空当前模型图层（${expandedIds.length} 个）`);
     setLayerVisibility(expandedIds, false);
@@ -1524,7 +1492,7 @@ function LayerRow({
       onDragEnd={onDragEnd}
       className={cn(
         'group relative flex h-[58px] cursor-pointer items-center gap-2 border-b border-white/30 bg-black/86 px-2 transition [contain-intrinsic-size:58px] [content-visibility:auto]',
-        selected && 'bg-white/[0.22]',
+        selected && 'bg-white/[0.22] ring-1 ring-inset ring-fuchsia-400/80',
         active && 'after:absolute after:inset-x-0 after:bottom-0 after:h-px after:bg-[#74a7ff]',
         dragging && 'opacity-45',
         pendingDisplay && 'h-[76px] border-l-4 border-l-amber-400 bg-amber-400/10',

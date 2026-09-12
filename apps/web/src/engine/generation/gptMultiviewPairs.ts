@@ -1,7 +1,7 @@
 import type { Object3D, Mesh, Material } from 'three';
 import { isResidentProjectedMaterial } from '../projection/projectedMaterialIdentity';
 
-// GPT-MULTIVIEW-PAIR-SEQUENCE v1.0.0. Preview order is deliberately untouched.
+// GPT-MULTIVIEW-PAIR-SEQUENCE v1.4.0. Fixed accelerated groups; preview order unchanged.
 const presetPairs = {
   'preset-1': [
     ['front', 'back'],
@@ -48,7 +48,18 @@ export function planGptViewPairs<T extends { id: string; value?: string }>(
   // Added views are never silently re-aimed, dropped or paired by a guessed angle.
   pairs.push(...[...remaining.values()].map((view) => [view]));
   if (poles.length) pairs.push(poles);
-  return pairs;
+  const groups: T[][] = [];
+  for (const pair of pairs) {
+    const previous = groups.at(-1);
+    // Keep the initial pair and added/unpaired cameras isolated. Combine only
+    // consecutive complete preset pairs, preserving deterministic commit order.
+    if (groups.length > 1 && previous?.length === 2 && pair.length === 2) {
+      previous.push(...pair);
+    } else {
+      groups.push([...pair]);
+    }
+  }
+  return groups;
 }
 
 export async function runGptViewPairs<T>(
@@ -114,8 +125,9 @@ export async function waitForGptPairPresentation(
   assertActive: () => void,
   present: () => Promise<void>,
   timeoutMs = 60_000,
+  onDelayed?: () => void,
 ) {
-  const deadline = Date.now() + timeoutMs;
+  let deadline = Date.now() + timeoutMs;
   for (;;) {
     assertActive();
     if (ready()) {
@@ -124,8 +136,12 @@ export async function waitForGptPairPresentation(
       assertActive();
       if (ready()) return;
     }
-    if (Date.now() >= deadline)
-      throw new Error('本组纹理已保存，但视口尚未完成显示；已停止后续视角，请检查图层显示状态。');
+    if (Date.now() >= deadline) {
+      // The image generation already succeeded. A delayed viewport is not a
+      // generation failure and must not release the next capture out of order.
+      onDelayed?.();
+      deadline = Date.now() + Math.max(timeoutMs, 1_000);
+    }
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
 }

@@ -14,7 +14,14 @@ export function compactShaderTemplateIndentation(source) {
     if (kinds.has(node.kind)) {
       const start = node.getStart(ast), end = node.end;
       const before = source.slice(start, end);
-      const after = before.replace(/(\r?\n)[\t ]+/g, '$1');
+      let after = before.replace(/(\r?\n)[\t ]+/g, '$1');
+      // Static GLSL only: discard standalone comment text, keeping every line
+      // boundary. Refuse block comments, escapes/continuations and interpolated
+      // templates so comment state can never cross a token boundary.
+      if (node.kind === ts.SyntaxKind.NoSubstitutionTemplateLiteral &&
+          !before.includes('/*') && !before.includes('\\')) {
+        after = after.replace(/(\r?\n)\/\/[^\r\n]*/g, '$1');
+      }
       if (before !== after) edits.push({ start, end, after });
     }
     ts.forEachChild(node, visit);
@@ -33,7 +40,7 @@ export function shaderTemplateFormatPlugin() {
     enforce: 'pre',
     transform(code, id) {
       // Explicitly scoped: no UI strings, external packages, or other templates.
-      if (!id.replaceAll('\\', '/').endsWith('/engine/projection/ProjectedLayerMaterial.ts')) return;
+      if (!/\/engine\/(?:projection\/(?:ProjectedLayerMaterial|createRuntimeProjectionDepth)|bake\/(?:gpuUvBakeRenderer|residentQualityComposite)|capture\/(?:captureDepth|captureNormal)|localRepaint\/(?:uvRepaint|consumeSelectionMask)|export\/comfyControlInputExporter)\.ts$|\/engine\/viewport\/ViewportCanvas\.tsx$/.test(id.replaceAll('\\', '/'))) return;
       return { code: compactShaderTemplateIndentation(code), map: null };
     },
   };

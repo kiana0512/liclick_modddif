@@ -269,6 +269,20 @@ try {
     /render\(this\.compositeScene, input\.camera\)/,
     'one composite per texel avoids repeated shared erase',
   );
+  assert.match(
+    engine,
+    /refreshProjectedTileBounds\(`\$\{size\.x\},\$\{size\.y\}\|\$\{key\}`/,
+    'tile screen bounds are invalidated by the exact viewport and visibility signature',
+  );
+  const intersectsBody = engine.match(
+    /private intersects\(id: number, rect: Rect\) \{([\s\S]*?)\n {2}\}/,
+  )?.[1];
+  assert.ok(intersectsBody, 'cached tile intersection helper must remain present');
+  assert.doesNotMatch(
+    intersectsBody,
+    /new THREE\.(?:Matrix4|Vector4)/,
+    'warm edge stamps must not allocate projection matrices or corner vectors per tile',
+  );
   console.log(
     'Native UV: independent RGBA, frozen source, old-layer/selection retention, deletion guard, user settings, save barrier/failure and lazy pipeline passed.',
   );

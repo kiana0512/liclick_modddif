@@ -68,7 +68,11 @@ fixture += String.raw`
     useLayerStore.setState({layers:useLayerStore.getState().layers.map(layer=>layer.id===id?{...layer,visible}:layer)});
     await until(()=>document.body.dataset.residentUvProjectionRevision!==revision && document.body.dataset.residentUvProjectionStatus==='ready','toggle');await tick();
     await waitForResidentUvPresentation(runtime.scene,object.id);
-    return {ms:performance.now()-start,stages:JSON.parse(document.body.dataset.residentUvProjectionStages)};
+    return {ms:performance.now()-start,stages:JSON.parse(document.body.dataset.residentUvProjectionStages),
+      rasterHits:Number(document.body.dataset.residentUvRasterHits||0),
+      rasterMisses:Number(document.body.dataset.residentUvRasterMisses||0),
+      aggregatePrefixLayers:Number(document.body.dataset.residentUvAggregatePrefixLayers||0),
+      normalBaseHit:document.body.dataset.residentUvNormalBaseHit==='true'};
   },async manual(){
     const {prepareMergeProjectionLayers}=await import('/src/engine/bake/prepareMergeProjectionLayers.ts');
     const {bakeVisibleProjectedLayersToTexture}=await import('/src/engine/bake/bakeProjectedLayerToTexture.ts');
@@ -95,8 +99,8 @@ fixture += String.raw`
     for(let y=0;y<4096;y++)for(let x=0;x<4096*4;x++)if(manualGpu[y*4096*4+x]!==initialGpu[(4095-y)*4096*4+x])gpuFlipChanged++;
     for(let i=0;i<actual.length;i++){const delta=Math.abs(actual[i]-initial[i]);if(delta)changed++;total+=delta;max=Math.max(max,delta);}
     return {changed,mean:total/actual.length,max,uvChanged,uvMax,alphaChanged,gpuChanged,gpuAlphaChanged,gpuMax,gpuFlipChanged,uvCaptured:!!initialUv,initialUniforms,manualUniforms:uniforms()};
-  },normalId:original.find(layer=>layer.type==='projected'&&!layer.id.startsWith('local-repaint-')).id,
-    localId:original.find(layer=>layer.id.startsWith('local-repaint-')).id};
+  },normalId:original.find(layer=>layer.type==='projected'&&!layer.role?.startsWith('local-repaint')).id,
+    localId:original.find(layer=>layer.type==='uv').id};
 }
 `;
 if(process.env.LICLICK_UV_TOP_VIEW)fixture=fixture.replace('new THREE.Vector3(4,1.5,5)','new THREE.Vector3(0,5,2)');

@@ -125,6 +125,27 @@ try {
   assert.equal(migrated.minimumProjectionFacing, 0.18);
   assert.equal(migrated.projectionVisibilityPolicy, 'standard');
 
+  const { preservesGeneratedSourceAlpha } = await server.ssrLoadModule('/src/engine/generation/textureProjectionPolicy.ts');
+  for (const mode of ['single', 'multiview']) {
+    const raw = generation(`transparent-${mode}`, mode);
+    raw.metadata = { ...raw.metadata, provider: 'liclick-atlas', model: 'gpt-image-2.5-sunburst',
+      extraParams: { background: 'transparent' } };
+    assert.equal(preservesGeneratedSourceAlpha(raw), true);
+    const transparent = useLayerStore.getState().addProjectedLayerFromGeneration(raw, capture, capture.objectId);
+    assert.equal(transparent.imageUrl, raw.resultUrl);
+    assert.equal(transparent.ignoreSourceAlpha, false);
+    assert.equal(transparent.maskUrl, capture.maskUrl);
+    assert.equal(transparent.depthUrl, capture.depthUrl);
+    assert.equal(transparent.minimumProjectionFacing, firstSingle.minimumProjectionFacing);
+    const edited = { ...transparent, maskUrl: 'memory://authored-eraser', maskSpace: 'uv' };
+    useLayerStore.getState().setLayers(JSON.parse(JSON.stringify([edited])));
+    assert.deepEqual(footprint(useLayerStore.getState().layers[0]), footprint(edited), 'Transparent alpha and eraser survive reload');
+    for (const background of [undefined, 'auto', 'opaque']) {
+      assert.equal(preservesGeneratedSourceAlpha({ ...raw, metadata: { ...raw.metadata, extraParams: { background } } }), false,
+        'Old GPT jobs cannot be migrated based on model name');
+    }
+  }
+
   projection.primeProjectedImageTexture(firstSingle.imageUrl, { width: 2, height: 2 });
   projection.primeProjectedImageTexture(secondSingle.imageUrl, { width: 2, height: 2 });
   const material = await projection.createProjectedLayerStackMaterial(
@@ -159,6 +180,25 @@ try {
   );
   projection.disposeGeneratedMaterialTree(material);
 
+  // UV/export masking must multiply the original alpha, not replace it.
+  const previousImageData = globalThis.ImageData;
+  globalThis.ImageData = class { constructor(data, width, height) { Object.assign(this, { data, width, height }); } };
+  try {
+    const { applyProjectedAlphaMask } = await server.ssrLoadModule('/src/engine/projection/projectedAlphaMask.ts');
+    const source = new ImageData(new Uint8ClampedArray([
+      90, 70, 30, 0, 90, 70, 30, 64, 90, 70, 30, 128, 90, 70, 30, 255,
+    ]), 4, 1);
+    const mask = new ImageData(new Uint8ClampedArray([
+      255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 128, 0, 0, 0, 255,
+    ]), 4, 1);
+    const before = source.data.slice();
+    const masked = applyProjectedAlphaMask(source, mask, { ignoreSourceAlpha: false });
+    assert.deepEqual([3, 7, 11, 15].map(i => masked.data[i]), [0, 64, 64, 0]);
+    assert.deepEqual(source.data, before, 'Source RGBA remains immutable during UV preparation');
+  } finally {
+    globalThis.ImageData = previousImageData;
+  }
+
   const layerStoreSource = readFileSync(new URL('../src/stores/layerStore.ts', import.meta.url), 'utf8');
   const sceneRootSource = readFileSync(new URL('../src/engine/viewport/SceneRoot.tsx', import.meta.url), 'utf8');
   const generatePanelSource = readFileSync(new URL('../src/components/panels/GeneratePanel.tsx', import.meta.url), 'utf8');
@@ -174,6 +214,12 @@ try {
   );
   assert.doesNotMatch(generatePanelSource, /hasVisibleTextureBase|projectionUsesSourceAlpha/);
   assert.doesNotMatch(generatePanelSource, /projectionEdgeBlendMode:\s*'distance-field-v1'/);
+  assert.match(generatePanelSource, /if \(captureMaskTexture && generationCapture.maskUrl && !preservesGeneratedSourceAlpha\(generation\)\)/,
+    'Transparent results bypass RGB matting and preserve source canvas');
+  assert.match(generatePanelSource, /previewProcessingMode = displayedPreviewGeneration && !preservesGeneratedSourceAlpha\(displayedPreviewGeneration\)/);
+  const thumbnailSource = readFileSync(new URL('../src/components/panels/LayersPanel.tsx', import.meta.url), 'utf8');
+  assert.match(thumbnailSource, /type === 'projected' && !preserveSource/,
+    'Transparent layer display must not run a second matte');
 
   console.log('Unified single-view and multiview quality composition invariants passed.');
 } finally {

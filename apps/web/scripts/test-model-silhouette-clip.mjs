@@ -33,11 +33,13 @@ assert.throws(()=>clip(color,new Pixels(new Uint8ClampedArray(w*h*4).fill(255),w
 depth.data.fill(255);for(let y=0;y<h;y++)depth.data[(y*w+100)*4]=0;
 assert.equal(clip(color,depth).data.some((v,i)=>i%4===3&&v),false);
 const panel=read('components/panels/GeneratePanel.tsx');
-assert.match(panel,/prepareModelClippedRepaint\(\s*generation.resultUrl, capture.depthUrl, requestAbortController.signal/);
+assert.match(panel,/prepareRepaintResult\(\s*generation.resultUrl, capture.depthUrl, isGptLocalRepaint, requestAbortController.signal/);
+const policy=read('engine/localRepaint/resultAlphaPolicy.ts');
+assert.match(policy,/prepareModelClippedRepaint\(sourceUrl, depthUrl, signal\)/);
 assert.match(panel,/cameraSnapshot: captureCameraSnapshot,\s*}, 2048\).catch/);
 assert.match(panel,/rawResultUrl: generation.resultUrl/);
 const editor=read('routes/EditorPage.tsx');
-assert.equal((editor.match(/ignoreSourceAlpha: latestLocalRepaintGeneration.metadata.modelSilhouetteClipVersion !== 1/g)||[]).length,2);
+assert.equal((editor.match(/ignoreSourceAlpha: !preservesRepaintResultAlpha\(latestLocalRepaintGeneration.metadata\)/g)||[]).length,2);
 const viewport=read('engine/viewport/ViewportCanvas.tsx');
 assert.equal((viewport.match(/ignoreSourceAlpha: (?:localRepaintSource|source).ignoreSourceAlpha \?\? true/g)||[]).length,4);
 assert.match(viewport,/ignoreSourceAlpha: activePaintLayer.ignoreSourceAlpha/);

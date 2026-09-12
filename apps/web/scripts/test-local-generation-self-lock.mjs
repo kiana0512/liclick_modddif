@@ -5,11 +5,12 @@ import { stdout } from 'node:process';
 import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const [editorPage, generatePanel, textureMapPrompts, liclickGenerationService] = await Promise.all([
+const [editorPage, generatePanel, textureMapPrompts, liclickGenerationService, styles] = await Promise.all([
   readFile(path.join(root, 'src/routes/EditorPage.tsx'), 'utf8'),
   readFile(path.join(root, 'src/components/panels/GeneratePanel.tsx'), 'utf8'),
   readFile(path.join(root, 'src/engine/generation/textureMapPrompts.ts'), 'utf8'),
   readFile(path.join(root, '../server/src/services/liclickGenerationService.ts'), 'utf8'),
+  readFile(path.join(root, 'src/styles/globals.css'), 'utf8'),
 ]);
 const progressStatusSource = generatePanel.slice(
   generatePanel.indexOf('function GenerationProgressStatus'),
@@ -114,9 +115,12 @@ assert.match(
 );
 assert.match(
   generatePanel,
-  /const previewProgressOverlayClassName =[\s\S]{0,160}bg-\[#1b1b1b\]/,
+  /const previewProgressOverlayClassName =\s*'gen-preview-progress'/,
   'Preparation and submitted generation states must share one opaque preview background.',
 );
+assert.equal((generatePanel.match(/className=\{previewProgressOverlayClassName\}/g) || []).length, 2);
+assert.match(styles, /\.gen-preview-progress\s*\{[^}]*@apply[^;]*bg-\[#1b1b1b\]/,
+  'The extracted CSS must retain the opaque preview background, not only a class name.');
 assert.doesNotMatch(
   progressStatusSource,
   /animate-spin|<img|backdrop-blur/,
@@ -154,8 +158,8 @@ assert.match(
 );
 assert.match(
   generatePanel,
-  /if \(!isMultiviewReference\(materialReference\)\) \{[\s\S]*?materialReference = await generatePairedMultiviewReference\(materialReference\)/,
-  'A selected single-view material reference must be converted while the repaint submission lock is held.',
+  /if \(!isGptLocalRepaint && !isMultiviewReference\(materialReference\)\) \{[\s\S]*?materialReference = await generatePairedMultiviewReference\(materialReference\)/,
+  'The original ModelView branch must convert single-view references while holding the repaint lock; GPT must not.',
 );
 
 stdout.write('Local generation self-lock regression test passed.\n');

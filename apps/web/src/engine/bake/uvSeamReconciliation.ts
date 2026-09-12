@@ -237,12 +237,6 @@ function* collectUvSeamPairSteps(root: THREE.Object3D, includeDiscontinuous = fa
   return pairs;
 }
 
-function pixelIndex(point: PixelPoint, width: number, height: number) {
-  const x = Math.max(0, Math.min(width - 1, Math.floor(point.x)));
-  const y = Math.max(0, Math.min(height - 1, Math.floor(point.y)));
-  return y * width + x;
-}
-
 export function reconcileUvSeams(...args: Parameters<typeof reconcileUvSeamSteps>) {
   const steps = reconcileUvSeamSteps(...args);
   let step = steps.next();
@@ -333,27 +327,34 @@ function* reconcileUvSeamSteps(
     for (let sampleIndex = 0; sampleIndex < samples; sampleIndex += 1) {
       if (sampleIndex % 128 === 0) yield;
       const t = (sampleIndex + 0.5) / samples;
-      const firstEdge = {
-        x: firstStart.x + (firstEnd.x - firstStart.x) * t,
-        y: firstStart.y + (firstEnd.y - firstStart.y) * t,
-      };
-      const secondEdge = {
-        x: secondStart.x + (secondEnd.x - secondStart.x) * t,
-        y: secondStart.y + (secondEnd.y - secondStart.y) * t,
-      };
+      const firstEdgeX = firstStart.x + (firstEnd.x - firstStart.x) * t;
+      const firstEdgeY = firstStart.y + (firstEnd.y - firstStart.y) * t;
+      const secondEdgeX = secondStart.x + (secondEnd.x - secondStart.x) * t;
+      const secondEdgeY = secondStart.y + (secondEnd.y - secondStart.y) * t;
 
       for (let depth = 0; depth < bandPixels; depth += 1) {
         const offset = depth + 0.35;
-        const firstPoint = {
-          x: firstEdge.x + firstInward.x * offset,
-          y: firstEdge.y + firstInward.y * offset,
-        };
-        const secondPoint = {
-          x: secondEdge.x + secondInward.x * offset,
-          y: secondEdge.y + secondInward.y * offset,
-        };
-        const firstIndex = pixelIndex(firstPoint, width, height);
-        const secondIndex = pixelIndex(secondPoint, width, height);
+        // UV-SEAM-REPAIR-PLAN/1.4. This loop visits hundreds of thousands of addresses at 4K. Keep the
+        // exact containing-texel math but do it with scalars so the cold seam
+        // plan does not allocate two short-lived point objects per address.
+        const firstX = Math.max(
+          0,
+          Math.min(width - 1, Math.floor(firstEdgeX + firstInward.x * offset)),
+        );
+        const firstY = Math.max(
+          0,
+          Math.min(height - 1, Math.floor(firstEdgeY + firstInward.y * offset)),
+        );
+        const secondX = Math.max(
+          0,
+          Math.min(width - 1, Math.floor(secondEdgeX + secondInward.x * offset)),
+        );
+        const secondY = Math.max(
+          0,
+          Math.min(height - 1, Math.floor(secondEdgeY + secondInward.y * offset)),
+        );
+        const firstIndex = firstY * width + firstX;
+        const secondIndex = secondY * width + secondX;
         if (cacheable) {
           if (addressCount === MAX_REPAIR_WORDS) { cacheable = false; chunks.length = 0; }
           else {

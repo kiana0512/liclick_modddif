@@ -12,7 +12,7 @@ export class QualityAlphaReadback {
 
   constructor(private renderer: THREE.WebGLRenderer, private resolution: number) {}
 
-  async read(source: THREE.WebGLRenderTarget) {
+  async read(source: THREE.WebGLRenderTarget, texture = source.texture) {
     const { renderer, resolution } = this;
     if (!renderer.capabilities.isWebGL2 || resolution % 2) {
       return convertQualityGpuReadbackInWorker(
@@ -28,7 +28,7 @@ export class QualityAlphaReadback {
       this.material = new THREE.RawShaderMaterial({
         glslVersion: THREE.GLSL3, depthTest: false, depthWrite: false,
         blending: THREE.NoBlending, toneMapped: false,
-        uniforms: { source: { value: source.texture }, width: { value: resolution }, redChannel: { value: false } },
+        uniforms: { source: { value: texture }, width: { value: resolution }, redChannel: { value: false } },
         vertexShader: `in vec3 position;
 void main() { gl_Position = vec4(position, 1.0); }`,
         fragmentShader: `precision highp float;
@@ -51,8 +51,8 @@ void main() {
       this.mesh = new THREE.Mesh(geometry, this.material);
       this.mesh.frustumCulled = false;
     }
-    this.material!.uniforms.source.value = source.texture;
-    this.material!.uniforms.redChannel.value = source.texture.format === THREE.RedFormat;
+    this.material!.uniforms.source.value = texture;
+    this.material!.uniforms.redChannel.value = texture.format === THREE.RedFormat;
     const target = renderer.getRenderTarget();
     const face = renderer.getActiveCubeFace(), mip = renderer.getActiveMipmapLevel();
     const viewport = renderer.getViewport(new THREE.Vector4());

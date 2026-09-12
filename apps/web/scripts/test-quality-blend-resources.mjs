@@ -51,6 +51,28 @@ for (const mode of ['literal', 'feathered']) for (const renderedColor of [false,
   assert.deepEqual(newMask, oldMask);
   assert.deepEqual(newCoverage, oldCoverage);
 }
+// Ordinary overlays cannot introduce rendered-color attribution. Their output
+// and coverage remain byte-identical while the 4K all-zero mask is elided.
+{
+  const count = 64, color = new Uint8ClampedArray(count * 4), quality = new Float32Array(count);
+  const base = new Uint8ClampedArray(count * 4), coverage = new Uint8Array(count);
+  for (let i = 0; i < count; i++) {
+    color.set([i, 255 - i, i * 3, 127 + (i & 1)], i * 4);
+    base.set([91, 37, 203, i & 1 ? 255 : 0], i * 4);
+    quality[i] = 1;
+  }
+  const expectedBase = base.slice(), expectedCoverage = coverage.slice();
+  const request = { resolution: 8, preserveCoverageConfidenceAlpha: false,
+    forceCpuOutput: true, verify: false, interactive: false, layers: [],
+    resolvedBase: { output: base.buffer, coverage: coverage.buffer, writtenTexels: 0 },
+    overlays: [{ color: color.buffer, quality: quality.buffer, overlayMode: 'literal', renderedColor: false }] };
+  const result = await next.run(request);
+  assert.equal(result.renderedColorMask.length, 0, 'ordinary stacks do not allocate an all-zero mask');
+  const expectedMask = new Uint8Array(count);
+  await old.applyOverlays(expectedBase, expectedCoverage, expectedMask, request.overlays);
+  assert.deepEqual(result.output, expectedBase);
+  assert.deepEqual(result.coverage, expectedCoverage);
+}
 // Exhaust all source byte/alpha pairs on transparent and opaque destinations.
 // Mixed overlay modes, rendered masks and repeated pixels must retain the
 // frozen implementation's bytes and coverage, including feather thresholds.

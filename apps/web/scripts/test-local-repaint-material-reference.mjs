@@ -13,8 +13,8 @@ const panel = fs.readFileSync(
 
 assert.match(
   resolver,
-  /if \(selectedReference\) return \{ \.\.\.selectedReference \}/,
-  'an explicit selection must preserve the exact card role chosen by the user',
+  /const pairedMultiview = input\.references\.find/,
+  'an explicit single-view selection must inspect its durable reference group',
 );
 
 const references = [
@@ -65,8 +65,17 @@ assert.equal(
     selectedReferenceIds: ['board-single'],
     historicalReferenceId: 'robot-multi',
   })?.id,
+  'board-multi',
+  'selecting a single image must reuse its existing paired multiview input',
+);
+assert.equal(
+  resolveLocalRepaintMaterialReference({
+    references: references.filter((reference) => reference.id !== 'board-multi'),
+    selectedReferenceIds: ['board-single'],
+    historicalReferenceId: 'robot-multi',
+  })?.id,
   'board-single',
-  'selecting a single image must remain observable so the caller can generate a fresh multiview input',
+  'deleting the paired multiview image must return the selected single image so the caller regenerates it',
 );
 assert.equal(
   resolveLocalRepaintMaterialReference({
@@ -93,8 +102,8 @@ const localRepaintFlow = panel.slice(
 );
 assert.match(
   localRepaintFlow,
-  /if \(!isMultiviewReference\(materialReference\)\) \{[\s\S]*materialReference = await generatePairedMultiviewReference\(materialReference\)/,
-  'a selected single-view reference must finish automatic multiview generation before local repaint continues',
+  /if \(!isGptLocalRepaint && !isMultiviewReference\(materialReference\)\) \{[\s\S]*materialReference = await generatePairedMultiviewReference\(materialReference\)/,
+  'the original ModelView path must still prepare multiview input; GPT uses the selected reference directly',
 );
 assert.ok(
   localRepaintFlow.indexOf('await generatePairedMultiviewReference(materialReference)') <

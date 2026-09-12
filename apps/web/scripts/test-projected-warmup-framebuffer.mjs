@@ -12,7 +12,7 @@ assert(start >= 0 && end > start);
 const compiled = ts.transpileModule(source.slice(start, end), {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
 }).outputText;
-const run = new Function('THREE', 'gl', 'nextBuild', 'projectedTextureArrayBuildRef', 'compileForRenderTarget', 'window', 'document',
+const run = new Function('THREE', 'gl', 'nextBuild', 'projectedTextureArrayBuildRef', 'compileForRenderTarget', 'waitForBrowserPaint', 'window', 'document',
   `${compiled}\nreturn nextBuild.precompilePromise;`);
 
 for (const onScreen of [true, false]) for (const mode of ['complete', 'cancel', 'render-error', 'compile-error', 'wait-error', 'no-fence']) {
@@ -56,7 +56,8 @@ for (const onScreen of [true, false]) for (const mode of ['complete', 'cancel', 
     restored();
     if (mode === 'compile-error') throw Error(mode);
   };
-  const result = run(THREE, gl, nextBuild, { current: nextBuild }, compile, window, { body: { dataset: {} } });
+  const waitForBrowserPaint = () => new Promise((resolve) => window.requestAnimationFrame(resolve));
+  const result = run(THREE, gl, nextBuild, { current: nextBuild }, compile, waitForBrowserPaint, window, { body: { dataset: {} } });
   if (mode.endsWith('error')) await assert.rejects(result, new RegExp(mode));
   else await result;
   restored();

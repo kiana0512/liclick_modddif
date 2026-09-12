@@ -96,7 +96,6 @@ function assertExpectedProjectRevision(
   const currentRevision = currentProjectRevision(existingProject);
   if (!currentRevision) return;
   if (expectedRevisionId === currentRevision.id) return;
-  if (expectedRevisionId === undefined && process.env.LICLICK_RUNTIME_MODE !== 'cloud') return;
   throw new ProjectSaveConflictError(
     'Blocked saving a stale project snapshot over a newer project revision. Reload and retry the save.',
     'PROJECT_REVISION_CONFLICT',

@@ -31,6 +31,11 @@ assert.match(source, /查看使用说明/);
 assert.match(source, /\['平台', 'Windows'\]/);
 assert.match(source, /\['安装包', '11\.0 MB'\]/);
 assert.match(source, /安装器与说明书已上传到 Li3D，可直接从本页获取/);
+assert.match(
+  source,
+  /<BrandMark onBack=\{onBack\} backLabel="返回功能首页" \/>/,
+  '工具箱顶部 LI3D Logo 必须返回功能首页',
+);
 assert.doesNotMatch(source, /LIclick-3D-Texture-Local-Component-Setup\.exe/);
 
-console.log('原版建模工具箱下载入口、9 项清单与零组件边界门禁通过。');
+console.log('原版建模工具箱下载入口、9 项清单、顶部 Logo 导航与零组件边界门禁通过。');

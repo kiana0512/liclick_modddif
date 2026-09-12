@@ -13,8 +13,8 @@ const workspaceApiBase = getWorkspaceApiBase(import.meta.env.VITE_LICLICK_WORKSP
 
 function runtimeMode(): RuntimeMode {
   const value = import.meta.env.VITE_LICLICK_RUNTIME_MODE?.trim();
-  if (value === 'cloud' || value === 'desktop-legacy' || value === 'development') return value;
-  return import.meta.env.PROD ? 'desktop-legacy' : 'development';
+  if (value === 'cloud' || value === 'development') return value;
+  return import.meta.env.PROD ? 'cloud' : 'development';
 }
 
 const gitSha = import.meta.env.VITE_LICLICK_GIT_SHA?.trim() || 'development';
@@ -32,7 +32,7 @@ export const webReleaseManifest = createReleaseManifest({
   capabilities: [
     'release-manifest',
     'browser-local-compute',
-    ...(runtimeMode() === 'cloud' ? ['cloud-adapter-planned'] : ['desktop-legacy-adapter']),
+    ...(runtimeMode() === 'cloud' ? ['cloud-control-plane-client'] : ['development-runtime']),
   ],
 });
 

@@ -52,11 +52,11 @@ export function WorkspaceDock({ side, panels, compactHidden, onRequestOpen }: Wo
       style={
         side === 'left' && generatePanelExpanded
           ? {
-              bottom: 'calc(var(--workspace-bottom-offset) + 76px)',
+              bottom: 'calc(var(--workspace-bottom-offset) + var(--generate-action-space, 76px))',
               height:
-                'calc(100% - var(--workspace-left-top-offset) - var(--workspace-bottom-offset) - 76px)',
+                'calc(100% - var(--workspace-left-top-offset) - var(--workspace-bottom-offset) - var(--generate-action-space, 76px))',
               maxHeight:
-                'calc(100% - var(--workspace-left-top-offset) - var(--workspace-bottom-offset) - 76px)',
+                'calc(100% - var(--workspace-left-top-offset) - var(--workspace-bottom-offset) - var(--generate-action-space, 76px))',
             }
           : undefined
       }

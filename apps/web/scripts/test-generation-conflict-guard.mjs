@@ -44,9 +44,10 @@ assert.match(
   'A blocked editor action must open the shared generation cancellation dialog directly.',
 );
 assert.match(editor, /showGenerationConflict\('返回项目列表'\)/);
-assert.match(editor, /showGenerationConflict\('进入 UV 工作区'\)/);
-assert.match(editor, /showGenerationConflict\('进入烘焙工作区'\)/);
-assert.match(editor, /showGenerationConflict\('进入拓扑工作区'\)/);
+assert.doesNotMatch(editor, /showGenerationConflict\('进入 UV 工作区'\)/);
+assert.doesNotMatch(editor, /showGenerationConflict\('进入烘焙工作区'\)/);
+assert.doesNotMatch(editor, /showGenerationConflict\('进入拓扑工作区'\)/);
+assert.match(editor, /keepRuntimeActive=\{generationConflictLocked \|\| contentAwareRepairTaskActive\}/);
 
 for (const action of ['切换当前模型', '切换模型显隐', '删除模型', '复制模型', '排列模型']) {
   assert.ok(objectsPanel.includes(`onMutationLocked?.('${action}')`), `${action} must be guarded.`);
@@ -55,9 +56,25 @@ for (const action of ['合并图层', '编辑图层图片']) {
   assert.ok(layersPanel.includes(`blockMutation('${action}')`), `${action} must be guarded.`);
 }
 assert.match(layersPanel, /blockMutation\('删除图层', deletionLocked\)/);
+assert.match(
+  layersPanel,
+  /selectedLayerIds\.length > 1 \|\|\s*selectedLayerIds\.includes\(activeProjectedLayerId\)/,
+  'Batch visibility must keep the multi-selection after hiding its active layer.',
+);
+assert.match(
+  layersPanel,
+  /const preserveMultiSelection = selectedLayerIds\.length > 1;[\s\S]*else if \(!preserveMultiSelection\)/,
+  'Active-layer failover must not clear a hidden multi-selection.',
+);
+assert.match(layersPanel, /ring-fuchsia-400\/80/, 'Multi-selected rows need a durable visual boundary.');
 for (const action of ['导入参考图', '切换参考图', '复制参考图', '删除参考图']) {
   assert.ok(referencePicker.includes(`blockMutation('${action}')`), `${action} must be guarded.`);
 }
+assert.match(
+  referencePicker,
+  /deleteReference\(menu\.referenceId\);\s*window\.dispatchEvent\(new Event\(IMMEDIATE_PROJECT_SAVE_EVENT\)\)/,
+  'Reference deletion must enter the immediate Revision/CAS save coordinator before navigation.',
+);
 
 assert.match(generatePanel, /cancelActiveGenerationRequestKey\?: number/);
 assert.match(

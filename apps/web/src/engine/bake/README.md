@@ -23,6 +23,9 @@ flatten the whole visible stack in the background.
    and resource limits allow it.
 5. Resolve candidate quality in a Worker/WebGPU path when available, with CPU
    calibration/fallback preserving output semantics.
+   Even-sized WebGL2 Resident rasters write RGBA colour and R8 quality through
+   one MRT draw; non-Resident and compatibility paths retain the exact two-pass
+   fallback.
 6. Return straight RGBA, coverage/report data, and optional encoded PNG. The
    caller decides whether to create a UV layer, cache a baked texture, apply it,
    or persist it.

@@ -1,4 +1,5 @@
 import type * as THREE from 'three';
+import { copyRawUvComposite, patchRawUvComposite } from './incrementalUvComposite';
 import { flushLiveUvCommits } from '@/engine/projection/liveProjectedCanvasTextureRegistry';
 import { createBakeReport } from './bakeReport';
 import {
@@ -1217,6 +1218,11 @@ async function bakeVisibleProjectedLayersToTextureUnlocked(
       const gpuProjectedImageUvFlipY =
         input.gpuProjectedImageUvFlipY ?? getDebugGpuProjectedImageUvFlipY(true);
       if (gpuCompositeMode === 'cpu-parity') {
+        const incremental = input.incrementalUv;
+        if (incremental && (!input.allowWhileInteracting || input.commitToProject !== false ||
+          input.markSourceLayersBaked !== false || incremental.base.imageData.width !== input.resolution))
+          throw new Error('Incremental UV is only valid for an owned interactive display.');
+        const compositeResolution = incremental?.region.size ?? input.resolution;
         const gpuRasterStartedAt = performance.now();
         markUvBakePerformancePhase('gpu-raster-readback');
         // Local repaint layers are literal source-over overlays. Rasterizing every
@@ -1244,8 +1250,10 @@ async function bakeVisibleProjectedLayersToTextureUnlocked(
           renderer,
           group: importedModel.group,
           rasterCache: input.rasterCache,
+          allowWhileInteracting: input.allowWhileInteracting,
           layers: bakeLayers,
           resolution: input.resolution,
+          region: incremental?.region,
           enableBackfaceCulling: input.enableBackfaceCulling,
           enableDilation: false,
           dilationPixels: 0,
@@ -1404,7 +1412,7 @@ async function bakeVisibleProjectedLayersToTextureUnlocked(
         let residentBase=gpuBake.residentQuality;
         if(residentBase && residentPolicy?.retainRasters) {
           const referenceStartedAt=performance.now();
-          const reference=await blendProjectedRastersInWorker(normalRasters,input.resolution,
+          const reference=await blendProjectedRastersInWorker(normalRasters,compositeResolution,
             input.preserveCoverageConfidenceAlpha ?? false,[],true);
           residentBase=verifyResidentQuality(renderer,input.preserveCoverageConfidenceAlpha ?? false,residentBase,reference);
           performanceBreakdown.qualityFullReferenceMs=performance.now()-referenceStartedAt;
@@ -1417,9 +1425,9 @@ async function bakeVisibleProjectedLayersToTextureUnlocked(
             ...(batchedLiteralOverlay ? [{color:batchedLiteralOverlay.imageData.data,
               overlayMode:batchedLiteralOverlay.mode,renderedColor:usesUnlitRenderedColor(batchedLiteralOverlay.layer)}] : []),
         ];
-        const qualityBlend = residentBase && blendOverlays.length===0 ? residentBase : await blendProjectedRastersInWorker(
+        let qualityBlend = residentBase && blendOverlays.length===0 ? residentBase : await blendProjectedRastersInWorker(
           residentBase ? [] : normalRasters,
-          input.resolution,
+          compositeResolution,
           input.preserveCoverageConfidenceAlpha ?? false,
           blendOverlays,false,residentBase,
         );
@@ -1430,6 +1438,10 @@ async function bakeVisibleProjectedLayersToTextureUnlocked(
           qualityBlend.totalMs+=residentBase.totalMs;
           qualityBlend.verification=residentBase.verification;
         }
+        if (incremental) qualityBlend = { ...qualityBlend,
+          ...patchRawUvComposite(incremental.base, qualityBlend, incremental.region) };
+        const rawComposite = input.retainRawComposite ? copyRawUvComposite(qualityBlend) : undefined;
+        performanceBreakdown.interactiveRasterTexels = compositeResolution * compositeResolution;
         const composite = qualityBlend.imageData;
         const qualityCoverage = qualityBlend.coverage;
         writtenTexels = qualityBlend.writtenTexels;
@@ -1531,6 +1543,7 @@ async function bakeVisibleProjectedLayersToTextureUnlocked(
                 input.uvIslandGutterPixels ?? 0,
                 input.outputAlpha === 'transparent',
                 yieldPostprocess,
+                true,
               )
             : await padUvIslandGuttersCooperatively(
                 composite,
@@ -1625,6 +1638,7 @@ async function bakeVisibleProjectedLayersToTextureUnlocked(
           bakedTexture,
           canvas,
           imageData: composite,
+          rawComposite,
           renderedColorMask: qualityBlend.renderedColorMask,
           imageBlob,
           imageUrl,
@@ -1872,7 +1886,6 @@ async function bakeVisibleProjectedLayersToTextureUnlocked(
   const context = canvas.getContext('2d', { willReadFrequently: true });
   if (!context) throw new Error('Could not create stacked UV bake canvas.');
   const composite = new ImageData(input.resolution, input.resolution);
-  const renderedColorMask = new Uint8Array(input.resolution * input.resolution);
   const qualityBlendComposite = createQualityBlendStackComposite(input.resolution);
   const overlayRasters: OverlayRaster[] = [];
   const readableLayers: Layer[] = [];
@@ -2002,6 +2015,9 @@ async function bakeVisibleProjectedLayersToTextureUnlocked(
     composite,
     input.preserveCoverageConfidenceAlpha,
   );
+  const renderedColorMask = overlayRasters.some(({ layer }) => usesUnlitRenderedColor(layer))
+    ? new Uint8Array(input.resolution * input.resolution)
+    : undefined;
   await applyOverlayRasters(
     composite,
     qualityBlendComposite.coverage,

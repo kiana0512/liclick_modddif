@@ -120,7 +120,8 @@ assert.equal(v3.objects[0].name, '贴图源.fbx');
 assert.equal(v3.bakeWorkspace.bakeSets['texture-object'].high.name, 'v3.fbx');
 assert.deepEqual(
   getBakeHighObjects(v3).map((object) => object.name),
-  ['v3.fbx', '其他模型.fbx'],
+  ['v3.fbx'],
+  'A low-only Bake Set must not become an implicit high-poly input.',
 );
 assert.deepEqual(getBakeHighObjects({ ...originalProject, bakeWorkspace: undefined }), []);
 

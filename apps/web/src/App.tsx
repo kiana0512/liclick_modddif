@@ -2,6 +2,7 @@ import { lazy, Suspense, useEffect, useMemo, useRef, useState, type ReactNode } 
 import { TextureRuntimeBoundary } from './components/runtime/TextureRuntimeBoundary';
 import { EngineSessionBoundary } from './engine/session/EngineSessionBoundary';
 import { resolveBakeEntryProject } from './features/workflow/resolveBakeEntryProject';
+import { nextRetainedTextureProjectId } from './features/workflow/persistentTextureEditor';
 import { ToastHost } from './components/common/ToastHost';
 import { getAuthMe, getProviderStatus } from './services/authApiClient';
 import { createProject, listProjects, loadProject } from './services/workspaceApiClient';
@@ -192,11 +193,12 @@ export function App() {
   const navigationRevisionRef = useRef(0);
   const entryProjectPromiseRef = useRef<Promise<Project | undefined> | null>(null);
   const residentTextureProjectIdRef = useRef<string>();
-  if (route.name === 'editor') residentTextureProjectIdRef.current = route.projectId;
-  const preserveTextureWorkspaceForUv = Boolean(
-    route.name === 'autoUv' &&
-      route.projectId &&
-      residentTextureProjectIdRef.current === route.projectId,
+  residentTextureProjectIdRef.current = nextRetainedTextureProjectId(
+    residentTextureProjectIdRef.current,
+    route,
+  );
+  const preserveTextureWorkspace = Boolean(
+    route.name !== 'editor' && residentTextureProjectIdRef.current,
   );
   const setChecking = useAuthStore((state) => state.setChecking);
   const authStatus = useAuthStore((state) => state.status);
@@ -403,14 +405,21 @@ export function App() {
     );
   }
 
-  if (route.name === 'editor' || preserveTextureWorkspaceForUv) {
+  if (route.name === 'editor' || preserveTextureWorkspace) {
     const textureProjectId =
       route.name === 'editor' ? route.projectId : residentTextureProjectIdRef.current!;
     const textureWorkspaceActive = route.name === 'editor';
     return (
       <EngineSessionBoundary projectId={textureProjectId}>
         <TextureRuntimeBoundary onBack={navigation.openHome}>
-          <div className="h-screen" hidden={!textureWorkspaceActive} aria-hidden={!textureWorkspaceActive}>
+          <div
+            className={
+              textureWorkspaceActive
+                ? 'h-screen'
+                : 'pointer-events-none fixed inset-0 -z-10 h-screen w-screen opacity-0'
+            }
+            aria-hidden={!textureWorkspaceActive}
+          >
             <Suspense fallback={<AppRouteFallback />}>
               <EditorPage
                 projectId={textureProjectId}
@@ -445,6 +454,35 @@ export function App() {
                 onOpenBake: () => navigation.openBake(textureProjectId),
               }}
               onContinue={(projectId, handoff) => navigation.openBake(projectId, handoff)}
+            />
+          </Suspense>
+        ) : null}
+        {route.name === 'autoRetopology' ? (
+          <Suspense fallback={<AppRouteFallback />}>
+            <AutoRetopologyPage
+              projectId={route.projectId}
+              onBack={navigation.openHome}
+              onLogout={navigation.openHome}
+              navigation={{
+                activeModule: 'retopology',
+                onOpenTexture: () => navigation.openEditor(textureProjectId),
+                onOpenRetopology: () => undefined,
+                onOpenUv: () => navigation.openAutoUv(textureProjectId),
+                onOpenBake: () => navigation.openBake(textureProjectId),
+              }}
+              onContinue={(projectId) => navigation.openAutoUv(projectId)}
+            />
+          </Suspense>
+        ) : null}
+        {route.name === 'bake' ? (
+          <Suspense fallback={<AppRouteFallback />}>
+            <BakeWorkspacePage
+              projectId={route.projectId}
+              onBack={navigation.openHome}
+              onOpenTexture={() => navigation.openEditor(textureProjectId)}
+              onOpenRetopology={() => navigation.openAutoRetopology(textureProjectId)}
+              onOpenUv={() => navigation.openAutoUv(textureProjectId)}
+              handoff={route.handoff}
             />
           </Suspense>
         ) : null}

@@ -484,6 +484,15 @@ function prepareFlatTargetCapture(
         return source;
       }
       const material = createFlatTargetCaptureMaterial(source);
+      // Coverage capture must distinguish an untextured material from a valid
+      // white texture. Write zero coverage, but keep depth/occlusion intact.
+      if (options.forceEmptyProjectionHatch && material instanceof THREE.MeshBasicMaterial &&
+          !material.map && !material.vertexColors) {
+        material.opacity = 0;
+        material.transparent = false;
+        material.blending = THREE.NoBlending;
+        material.alphaTest = 0;
+      }
       temporaryMaterials.add(material);
       return material;
     },
@@ -647,8 +656,10 @@ export async function captureCurrentLocalRepaintView(
     height: interactiveHeight,
   };
   const color =
-    request.colorMode === 'flat-target'
-      ? await captureFlatTarget(passRequest, { width, height })
+    request.colorMode === 'flat-target' || request.colorMode === 'flat-target-coverage'
+      ? await captureFlatTarget(passRequest, { width, height }, {
+          forceEmptyProjectionHatch: request.colorMode === 'flat-target-coverage',
+        })
       : await captureClayTarget(passRequest, { width, height });
   const capture: Capture = {
     id: createId('capture'),

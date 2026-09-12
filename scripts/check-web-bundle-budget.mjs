@@ -82,7 +82,15 @@ const budgets = [
 // immutable Cloud/performance-lab build 3,221,585 vs last A100 3,220,941
 // (+644 bytes). Allocate 1,000 bytes including metadata, not an open-ended
 // exemption. Shader/output resolution, browser regressions and QA stay enabled.
-const maxTotalJavaScriptBytes = 3_222_000;
+// CHG-20260912-REFERENCE-GROUP-REUSE + UV-VISIBILITY-EXACT-CACHE: the exact
+// Cloud release build is 3,221,860 bytes. Allocate a bounded 2,000-byte
+// integration allowance; all hot-chunk, resolution and QA gates remain intact.
+// CHG-20260912-ERASER-GPU-MASK: the full-resolution GPU live mask, exact-stack
+// gate and fail-closed fallback measure 3,225,540 bytes after compaction. Grant
+// only 2,000 bytes; all per-chunk, resolution, correctness and QA gates remain.
+// CHG-20260912-ERASER-RESIDENT-PREWARM: resident preparation plus first-stroke
+// replay adds under 500 bytes. Keep the allowance exact and every other gate.
+const maxTotalJavaScriptBytes = 3_226_500;
 
 let entries;
 try {

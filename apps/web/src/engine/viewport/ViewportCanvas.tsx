@@ -1,5 +1,7 @@
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { Bvh } from '@react-three/drei';
+import { beginEraserUvDraft, getEraserUvDraft, clearEraserUvDraft, applyEraserUvPatch } from '@/engine/paint/eraserUvDraft';
+import { isResidentUvManaged, isResidentUvMaskPresented } from '@/engine/projection/residentUvPresentation';
 import {
   memo,
   Suspense,
@@ -41,6 +43,7 @@ import {
   markLiveProjectedCanvasTextureUpdated,
   registerLiveProjectedCanvasTexture,
   registerLiveProjectedImageTexture,
+  registerLiveUvRenderTarget,
   flushLiveUvCommits,
   unregisterLiveUvRenderTarget,
 } from '@/engine/projection/liveProjectedCanvasTextureRegistry';
@@ -156,6 +159,10 @@ import {
   measureEraserNextFrame,
   measureEraserPerformanceEvent,
 } from '@/engine/performance/eraserPerformanceMonitor';
+import {
+  getRetainedRuntimeFrameLeaseMode,
+  getRetainedViewportFrameloop,
+} from './viewportActivityPolicy';
 
 type SurfacePaintTarget = {
   objectId: string;
@@ -170,6 +177,7 @@ type ViewportCanvasProps = {
   onOpenImport: () => void;
   importDisabled?: boolean;
   isActive?: boolean;
+  keepRuntimeActive?: boolean;
   showGrid?: boolean;
   gridVariant?: 'default' | 'subtle';
   backgroundColor?: string;
@@ -265,7 +273,7 @@ function getDraggedImageSourceUrls(dataTransfer: DataTransfer) {
 }
 
 const UV_PAINT_RESOLUTION = 512;
-const UV_STROKE_PREVIEW_RESOLUTION = 512;
+const PAINT_STROKE_PREVIEW_RESOLUTION = 512;
 const UV_TEXTURE_RESOLUTION = {
   '1K': 1024,
   '2K': 2048,
@@ -316,7 +324,6 @@ const INPAINT_BRUSH_MAX_WORLD_RADIUS_RATIO = 0.12;
 const INPAINT_BRUSH_MIN_TEXTURE_RADIUS = 1;
 const INPAINT_BRUSH_MAX_TEXTURE_RADIUS = 72;
 const LOCAL_REPAINT_PROJECTION_LAYER_ID_PREFIX = 'local-repaint-projection';
-const LEGACY_LOCAL_REPAINT_PROJECTION_LAYER_ID_PREFIX = 'local-repaint-brush-projection';
 const LOCAL_REPAINT_UV_MERGE_LAYER_ID_PREFIX = 'local-repaint-uv-merge';
 const LOCAL_REPAINT_UV_MERGE_LAYER_NAME = '局部重绘合并层';
 
@@ -490,6 +497,68 @@ function AcceleratedSceneRoot({ sceneOverlay }: { sceneOverlay?: ReactNode }) {
       {sceneOverlay}
     </Bvh>
   );
+}
+
+/**
+ * A retained texture workspace has no foreground rAF owner. Keep a small task
+ * render lease while generation is active so useFrame-driven UV composition
+ * and material publication continue without waiting for route visibility.
+ */
+function RetainedRuntimeFrameDriver({
+  enabled,
+  workspaceActive,
+}: {
+  enabled: boolean;
+  workspaceActive: boolean;
+}) {
+  const { advance, invalidate } = useThree();
+
+  useEffect(() => {
+    if (!enabled) return undefined;
+    let cancelled = false;
+    let timerId: number | undefined;
+    const clearTimer = () => {
+      if (timerId !== undefined) window.clearTimeout(timerId);
+      timerId = undefined;
+    };
+    const submit = () => {
+      timerId = undefined;
+      if (cancelled) return;
+      const leaseMode = getRetainedRuntimeFrameLeaseMode(
+        workspaceActive,
+        document.visibilityState !== 'visible' || !document.hasFocus(),
+      );
+      if (leaseMode === 'advance') {
+        // Chromium suspends rAF in background tabs. R3F advance runs the same
+        // frame subscribers and renderer once without starting a busy loop.
+        advance(performance.now(), true);
+      } else if (leaseMode === 'invalidate') {
+        invalidate();
+      }
+      if (leaseMode !== 'none') {
+        timerId = window.setTimeout(submit, leaseMode === 'advance' ? 250 : 50);
+      }
+    };
+    const restart = () => {
+      clearTimer();
+      submit();
+    };
+    restart();
+    document.addEventListener('visibilitychange', restart);
+    window.addEventListener('blur', restart);
+    window.addEventListener('focus', restart);
+    window.addEventListener('pageshow', restart);
+    return () => {
+      cancelled = true;
+      clearTimer();
+      document.removeEventListener('visibilitychange', restart);
+      window.removeEventListener('blur', restart);
+      window.removeEventListener('focus', restart);
+      window.removeEventListener('pageshow', restart);
+    };
+  }, [advance, enabled, invalidate, workspaceActive]);
+
+  return null;
 }
 
 type GpuTimerQueryExtension = {
@@ -3889,10 +3958,13 @@ type UvPaintLayer = {
   paintPreviewMaterial: THREE.ShaderMaterial;
   liveResultCanvas: HTMLCanvasElement;
   liveResultContext: CanvasRenderingContext2D;
-  liveResultTexture: THREE.CanvasTexture;
+  liveResultTexture: THREE.Texture;
   liveResultUrl: string;
   liveEraserPreviewActive: boolean;
   liveEraserPreviewInitialized: boolean;
+  eraserGpu?: UvRepaint;
+  eraserGpuReady?: Promise<void>;
+  eraserGpuBacklog?: Array<Parameters<UvRepaint['stamp']>[0]>;
   liveEraserPreviewRoot?: THREE.Object3D;
   projectedEraserResidentHandoffs?: Set<UvPaintLayer>;
   projectedEraserResidentHandoffPromise?: Promise<void>;
@@ -5296,6 +5368,13 @@ function createInpaintMaskMaterial(maskTexture: THREE.CanvasTexture) {
   });
 }
 
+// R/G preserve which geometric side faced the painting camera. Match
+// that sign to the current view instead of hard-clipping interpolated
+// normals, which produced thin cracks across otherwise solid masks.
+// The projected color stack writes its own small depth bias. Keep the
+// editor selection deterministically in front of that coplanar surface;
+// polygon offset alone becomes angle-dependent and made the mask vanish
+// when the painted face was viewed head-on.
 function createAccumulatedInpaintMaskMaterial(maskTexture: THREE.Texture) {
   const material = new THREE.ShaderMaterial({
     uniforms: {
@@ -5358,9 +5437,9 @@ function createAccumulatedInpaintMaskMaterial(maskTexture: THREE.Texture) {
         float maskAlpha = 0.0;
         if (baseReady > 0.5) {
           vec4 maskTexel = texture2D(maskMap, vMaskUv);
-          // R/G preserve which geometric side faced the painting camera. Match
-          // that sign to the current view instead of hard-clipping interpolated
-          // normals, which produced thin cracks across otherwise solid masks.
+
+
+
           maskAlpha = vViewerFacing >= 0.0 ? maskTexel.r : maskTexel.g;
         }
         if (
@@ -5386,10 +5465,10 @@ function createAccumulatedInpaintMaskMaterial(maskTexture: THREE.Texture) {
         if (maskAlpha <= 0.01) discard;
         float coord = mod(gl_FragCoord.x + gl_FragCoord.y, stripePeriod);
         float stripe = 1.0 - step(stripeWidth, coord);
-        // The projected color stack writes its own small depth bias. Keep the
-        // editor selection deterministically in front of that coplanar surface;
-        // polygon offset alone becomes angle-dependent and made the mask vanish
-        // when the painted face was viewed head-on.
+
+
+
+
         gl_FragDepthEXT = clamp(gl_FragCoord.z - 0.00008, 0.0, 1.0);
         gl_FragColor = vec4(
           stripeColor,
@@ -5487,6 +5566,9 @@ function createInpaintAccumulationTarget(size = PROJECTION_PAINT_MAX_SIZE) {
   return target;
 }
 
+// Store the two sides independently. The accumulated UV mask can then
+// be shown only from the side that was actually painted, without using
+// a brittle normal threshold that cuts cracks through the selection.
 function createInpaintUvAccumulationMaterial(
   snapshot: InpaintProjectionSource,
   operation: 'add' | 'subtract',
@@ -5532,9 +5614,9 @@ function createInpaintUvAccumulationMaterial(
         vec4 maskTexel = texture2D(maskMap, maskUv);
         float coverage = max(maskTexel.r, max(maskTexel.g, maskTexel.b)) * maskTexel.a;
         if (coverage <= 0.01) discard;
-        // Store the two sides independently. The accumulated UV mask can then
-        // be shown only from the side that was actually painted, without using
-        // a brittle normal threshold that cuts cracks through the selection.
+
+
+
         float positiveSide = step(0.0, vProjectorFacing);
         gl_FragColor = vec4(
           coverage * positiveSide,
@@ -5897,7 +5979,12 @@ function hasInpaintProjectionCameraChanged(layer: UvPaintLayer, camera: THREE.Ca
 
 function disposeUvPaintLayer(layer?: UvPaintLayer) {
   if (!layer) return;
+  clearEraserUvDraft(layer);
   endLiveEraserPreview(layer);
+  if (layer.eraserGpu) {
+    unregisterLiveUvRenderTarget(layer.liveResultUrl, layer.eraserGpu.texture);
+    layer.eraserGpu.dispose();
+  }
   layer.overlayMeshes.forEach((mesh) => mesh.removeFromParent());
   layer.paintPreviewMaterial.dispose();
   layer.projectionTexture.dispose();
@@ -6588,6 +6675,7 @@ function recordPaintStrokeDirtyRegion(
   const keys = draft.historyTileKeys ?? new Set<string>();
   for (const key of getPaintHistoryTileKeys(layer, bounds)) keys.add(key);
   draft.historyTileKeys = keys;
+  if (draft.paintOperation === 'eraser') getEraserUvDraft(layer)?.update(layer.paintPreviewCanvas, draft.bounds, bounds);
 }
 
 function ensurePaintBackingCanvasInitialized(layer: UvPaintLayer) {
@@ -6625,16 +6713,13 @@ function beginLiveEraserPreview(layer: UvPaintLayer, root?: THREE.Object3D) {
   }
   // Projected layers use a separate all-white keep-mask that is multiplied
   // over the original projection mask in the shader.
-  const sourceWidth = layer.paintDefaultResolution;
-  const sourceHeight = layer.paintDefaultResolution;
-  const scale = UV_STROKE_PREVIEW_RESOLUTION / Math.max(sourceWidth, sourceHeight, 1);
-  const width = Math.max(1, Math.round(sourceWidth * scale));
-  const height = Math.max(1, Math.round(sourceHeight * scale));
-  const sizeChanged =
-    layer.liveResultCanvas.width !== width || layer.liveResultCanvas.height !== height;
-  if (sizeChanged) {
-    layer.liveResultCanvas.width = width;
-    layer.liveResultCanvas.height = height;
+  const width = layer.paintDefaultResolution;
+  const height = width;
+  if (
+    !layer.eraserGpu &&
+    (layer.liveResultCanvas.width !== width || layer.liveResultCanvas.height !== height)
+  ) {
+    layer.liveResultCanvas.width = layer.liveResultCanvas.height = width;
     layer.liveEraserPreviewInitialized = false;
   }
   // Keep this multiplier cumulative across consecutive strokes. Clearing it to
@@ -6644,7 +6729,7 @@ function beginLiveEraserPreview(layer: UvPaintLayer, root?: THREE.Object3D) {
   // up. Reusing the same mask makes every new stroke start from the pixels the
   // user can already see; multiplying an already-erased pixel by zero again is
   // idempotent once the persistent layer has caught up.
-  if (!layer.liveEraserPreviewInitialized) {
+  if (!layer.liveEraserPreviewInitialized && !layer.eraserGpu) {
     layer.liveResultContext.clearRect(0, 0, width, height);
     layer.liveResultContext.fillStyle = '#ffffff';
     layer.liveResultContext.fillRect(0, 0, width, height);
@@ -6683,6 +6768,7 @@ function promoteProjectedEraserMaskToResidentMaterial(
     layer.pendingBaseImage
   )
     return false;
+  if (isResidentUvManaged(root)) return isResidentUvMaskPresented(root, layer.layerId, layer.assetUrl);
   const result = syncProjectedLayerResidentMaskTextureInObject(
     root,
     layer.layerId,
@@ -6701,6 +6787,7 @@ function promoteProjectedEraserMaskToResidentMaterial(
 
 function endLiveEraserPreview(layer: UvPaintLayer) {
   layer.liveEraserPreviewActive = false;
+  if (layer.pendingPaintCommits === 0 && !getEraserUvDraft(layer)?.drawing) clearEraserUvDraft(layer);
   const root = layer.liveEraserPreviewRoot;
   if (
     shouldRetainProjectedEraserPreview({
@@ -6798,6 +6885,7 @@ function SurfacePaintOverlay() {
   const lastPointerClientRef = useRef<ClientPoint>();
   const pendingPaintTargetsRef = useRef<ClientPoint[]>([]);
   const strokeCanvasRectRef = useRef<DOMRect>();
+  const strokeCursorOverlayRectRef = useRef<DOMRect>();
   const paintInputFrameRef = useRef<number>();
   const activePointerIdRef = useRef<number>();
   const pointerCancelRecoveryTimerRef = useRef<number>();
@@ -7974,10 +8062,10 @@ function SurfacePaintOverlay() {
   }, [generationPreparationMaskUrl]);
 
   const getUvPaintLayer = useCallback(
-    (model: SurfacePaintTarget) => {
+    (model: SurfacePaintTarget, prewarmProjected = false) => {
       const layerState = useLayerStore.getState();
       const selectedLayer =
-        paintTool === 'brush' || paintTool === 'eraser'
+        prewarmProjected || paintTool === 'brush' || paintTool === 'eraser'
           ? layerState.layers.find(
               (layer) =>
                 layer.id === layerState.activeProjectedLayerId &&
@@ -8067,7 +8155,9 @@ function SurfacePaintOverlay() {
       projectionTexture.magFilter = THREE.LinearFilter;
       projectionTexture.generateMipmaps = false;
       projectionTexture.needsUpdate = true;
-      const paintPreview = createPaintCanvas(UV_STROKE_PREVIEW_RESOLUTION, false);
+      // This canvas is only a deferred persistence draft. Projected eraser
+      // presentation is owned by the full-resolution GPU mask above.
+      const paintPreview = createPaintCanvas(PAINT_STROKE_PREVIEW_RESOLUTION, false);
       const paintPreviewMaterial = createProjectedPaintPreviewMaterial(projectionTexture);
       const liveResult = createPaintCanvas(1, false);
       const liveResultUrl = registerLiveProjectedCanvasTexture(
@@ -8162,14 +8252,83 @@ function SurfacePaintOverlay() {
     [deactivateLiveInpaintScreenPreview, getPaintableMeshes, paintTool, textureResolutionSetting],
   );
 
+  const prepareProjectedEraserGpuPreview = useCallback(
+    (layer: UvPaintLayer, model: SurfacePaintTarget) => {
+      if (layer.target !== 'projected-mask' || layer.eraserGpu)
+        return layer.eraserGpuReady ?? Promise.resolve();
+      if (layer.eraserGpuReady) return layer.eraserGpuReady;
+      const work = (async () => {
+        const { UvRepaint: GpuUvMask } = await import('@/engine/localRepaint/uvRepaint');
+        if (layerRef.current !== layer) return;
+        const engine = new GpuUvMask(
+          gl,
+          getPaintableMeshes(model),
+          layer.paintDefaultResolution,
+        );
+        try {
+          await engine.prepare(undefined, camera);
+          if (layerRef.current !== layer) {
+            engine.dispose();
+            return;
+          }
+          const url = registerLiveUvRenderTarget(
+            `surface-edit-preview:${layer.target}:${layer.layerId}`,
+            engine.canvas,
+            engine.texture,
+          );
+          if (url !== layer.liveResultUrl) throw new Error('GPU 蒙版绑定失败。');
+          const backlog = layer.eraserGpuBacklog ?? [];
+          const continuing = Boolean(
+            isPaintingRef.current &&
+              strokeDraftRef.current?.layer === layer &&
+              strokeDraftRef.current.paintOperation === 'eraser',
+          );
+          if (backlog.length || continuing) {
+            engine.begin(false);
+            backlog.forEach((stamp) => engine.stamp(stamp));
+            if (!continuing) void engine.end();
+          }
+          layer.eraserGpuBacklog = undefined;
+          layer.eraserGpu = engine;
+          layer.liveResultTexture = engine.texture;
+          layer.liveEraserPreviewInitialized = true;
+          if (layer.liveEraserPreviewActive) beginLiveEraserPreview(layer, model.group);
+          invalidate();
+        } catch (error) {
+          engine.dispose();
+          throw error;
+        }
+      })().catch((error) => {
+        if (layerRef.current === layer) console.warn(error);
+      });
+      layer.eraserGpuReady = work;
+      return work;
+    },
+    [camera, getPaintableMeshes, gl, invalidate],
+  );
+
+  useLayoutEffect(() => {
+    if (
+      !canUseSurfacePaint ||
+      getEraserTargetPolicy(activePaintLayer).kind !== 'projected-mask'
+    )
+      return;
+    const model = getTargetModel();
+    if (!model) return;
+    const layer = getUvPaintLayer(model, true);
+    void prepareProjectedEraserGpuPreview(layer, model).then(() => {
+      if (layerRef.current !== layer || !layer.eraserGpu) return;
+      beginLiveEraserPreview(layer, model.group);
+      invalidate();
+    });
+  }, [activePaintLayer, canUseSurfacePaint, getTargetModel, getUvPaintLayer, invalidate, prepareProjectedEraserGpuPreview]);
+
   useLayoutEffect(() => {
     if (
       (paintTool !== 'brush' && paintTool !== 'eraser') ||
       !canUseSurfacePaint ||
       isEditingPersistedLocalRepaint
     ) {
-      const previousLayer = layerRef.current;
-      if (previousLayer?.liveEraserPreviewActive) endLiveEraserPreview(previousLayer);
       return;
     }
     let cancelled = false;
@@ -8218,6 +8377,7 @@ function SurfacePaintOverlay() {
         // so it is safe to prewarm before any pixels are erased.
         beginLiveEraserPreview(layer, model.group);
         invalidate();
+        void prepareProjectedEraserGpuPreview(layer, model);
         if (!layer.isReady) {
           await layer.ready;
           if (
@@ -8256,6 +8416,7 @@ function SurfacePaintOverlay() {
     invalidate,
     isEditingPersistedLocalRepaint,
     paintTool,
+    prepareProjectedEraserGpuPreview,
   ]);
 
   const ensureOverlayForMesh = useCallback(
@@ -8667,7 +8828,9 @@ function SurfacePaintOverlay() {
 
   useEffect(
     () => () => {
-      disposeUvPaintLayer(layerRef.current);
+      const layer = layerRef.current;
+      layerRef.current = undefined;
+      disposeUvPaintLayer(layer);
       for (const layer of projectedEraserResidentHandoffsRef.current) {
         layer.resolveProjectedEraserResidentHandoff?.();
       }
@@ -9461,12 +9624,15 @@ function SurfacePaintOverlay() {
   useEffect(() => {
     localRepaintProjectedPublishDisposedRef.current = false;
     const nativeOwnersMap = nativeUvOwnersRef.current;
+    const dirtyTextures = dirtyTexturesRef.current;
+    const projectedPublishRequests = localRepaintProjectedPublishRequestsRef.current;
+    const projectedPublishRevisions = localRepaintProjectedPublishRevisionsRef.current;
     return () => {
       localRepaintProjectedPublishDisposedRef.current = true;
       if (textureUpdateFrameRef.current !== undefined)
         window.cancelAnimationFrame(textureUpdateFrameRef.current);
       textureUpdateFrameRef.current = undefined;
-      dirtyTexturesRef.current.clear();
+      dirtyTextures.clear();
       if (projectionTextureUpdateTimerRef.current !== undefined)
         window.clearTimeout(projectionTextureUpdateTimerRef.current);
       projectionTextureUpdateTimerRef.current = undefined;
@@ -9481,8 +9647,8 @@ function SurfacePaintOverlay() {
         window.cancelAnimationFrame(localRepaintUvScheduleFrameRef.current);
       localRepaintUvScheduleFrameRef.current = undefined;
       localRepaintUvCommitRevisionRef.current += 1;
-      localRepaintProjectedPublishRequestsRef.current.clear();
-      localRepaintProjectedPublishRevisionsRef.current.clear();
+      projectedPublishRequests.clear();
+      projectedPublishRevisions.clear();
       const nativeOwners = [...nativeOwnersMap];
       nativeOwnersMap.clear();
       localRepaintCompositeRef.current = undefined;
@@ -9816,6 +9982,7 @@ function SurfacePaintOverlay() {
     invalidate,
     localRepaintGpuPrepareRevision,
     localRepaintProjectionSource,
+    promoteLocalRepaintResidentMaskTexture,
     selectedObjectId,
   ]);
 
@@ -10227,16 +10394,21 @@ function SurfacePaintOverlay() {
   }, [isInpaintMode, isLocalRepaintApplyMode, paintTool, paintToolSettings.color]);
 
   const updateCursorFromHit = useCallback(
-    (result: UvPaintHit | undefined) => {
+    (result: UvPaintHit | undefined, cachedCanvasRect?: DOMRect, cachedOverlayRect?: DOMRect) => {
       const cursor = cursorCircleRef.current;
       if (!cursor) return result;
       if (!result) {
         cursor.setAttribute('visibility', 'hidden');
-        gl.domElement.style.cursor = enabled ? 'default' : '';
+        const nextCursor = enabled ? 'default' : '';
+        if (gl.domElement.style.cursor !== nextCursor) gl.domElement.style.cursor = nextCursor;
         return undefined;
       }
-      const canvasRect = gl.domElement.getBoundingClientRect();
-      const overlayRect = cursorOverlayRef.current?.getBoundingClientRect() ?? canvasRect;
+      // Pointer capture freezes the geometry snapshot for the stroke. Re-reading
+      // both boxes after the raycast forced layout on every accepted frame and
+      // amplified hit/miss cost changes at the model silhouette.
+      const canvasRect = cachedCanvasRect ?? gl.domElement.getBoundingClientRect();
+      const overlayRect =
+        cachedOverlayRect ?? cursorOverlayRef.current?.getBoundingClientRect() ?? canvasRect;
       const centerX = canvasRect.left - overlayRect.left + result.screenUv.x * canvasRect.width;
       const centerY = canvasRect.top - overlayRect.top + result.screenUv.y * canvasRect.height;
       const axisX = result.screenBrush.axisX;
@@ -10247,7 +10419,7 @@ function SurfacePaintOverlay() {
       );
       cursor.setAttribute('stroke', getCursorColor());
       cursor.setAttribute('visibility', 'visible');
-      gl.domElement.style.cursor = 'none';
+      if (gl.domElement.style.cursor !== 'none') gl.domElement.style.cursor = 'none';
       return result;
     },
     [enabled, getCursorColor, gl.domElement],
@@ -11506,10 +11678,25 @@ function SurfacePaintOverlay() {
         ) {
           scheduleTextureUpdate(layer.projectionTexture);
         }
-        if (layer.liveEraserPreviewActive) {
+        const gpuStamp = {
+          camera,
+          from: previousScreenUv?.clone(),
+          to: result.screenUv.clone(),
+          viewport: new THREE.Vector2(
+            gl.domElement.clientWidth,
+            gl.domElement.clientHeight,
+          ),
+          radius: result.screenBrushRadiusPx * pressureSizeScale,
+          feather: eraserFeather / 100,
+          erase: true,
+        };
+        if (layer.eraserGpu && layer.liveEraserPreviewActive) {
+          layer.eraserGpu.stamp(gpuStamp);
+        } else if (layer.liveEraserPreviewActive) {
+          (layer.eraserGpuBacklog ??= []).push(gpuStamp);
           drawSurfaceBrushSegment(
             layer.liveResultContext,
-            layer.liveResultTexture,
+            layer.liveResultTexture as THREE.CanvasTexture,
             fromUv,
             result.uv,
             uvBrush,
@@ -11972,6 +12159,11 @@ function SurfacePaintOverlay() {
         if (!layer) return;
         if (strokePaintTool === 'eraser') {
           beginLiveEraserPreview(layer, result.model.group);
+          if (layer.eraserGpu) layer.eraserGpu.begin(false);
+          if (layer.isReady && layer.target === 'projected-mask' && !layer.eraserGpu) {
+            ensurePaintBackingCanvasInitialized(layer);
+            beginEraserUvDraft(layer);
+          }
           invalidate();
         }
         if (strokePaintTool !== 'eraser') endLiveEraserPreview(layer);
@@ -13044,7 +13236,12 @@ function SurfacePaintOverlay() {
     const layer = draft?.layer;
     const localRepaintSource = draft?.localRepaintSource ?? localRepaintProjectionSource;
     if (draft?.localRepaintComposite?.nativeUv) return;
+    if (draft?.paintOperation === 'eraser' && layer?.eraserGpu) void layer.eraserGpu.end();
     if (!draft?.bounds) {
+      if (layer) {
+        getEraserUvDraft(layer)?.finishStroke();
+        if (layer.pendingPaintCommits === 0) clearEraserUvDraft(layer);
+      }
       if (layer && !(draft?.paintOperation === 'eraser' && layer.target === 'projected-mask'))
         endLiveEraserPreview(layer);
       return;
@@ -13097,6 +13294,7 @@ function SurfacePaintOverlay() {
       // repaint. Detach it now so another stroke can start while the source UV
       // image is still decoding in the background.
       const previewBounds = draft.bounds;
+      getEraserUvDraft(layer)?.finishStroke();
       const paintPreviewCommit = copyCanvasRect(layer.paintPreviewCanvas, previewBounds);
       layer.paintPreviewContext.clearRect(
         previewBounds.x,
@@ -13211,33 +13409,8 @@ function SurfacePaintOverlay() {
           layer.paintCanvas.height,
         );
         const applyStroke = (context: CanvasRenderingContext2D) => {
-          context.save();
-          context.globalCompositeOperation =
-            draft.paintOperation === 'eraser' ? 'destination-out' : 'source-over';
-          context.drawImage(
-            paintPreviewCommit,
-            0,
-            0,
-            paintPreviewCommit.width,
-            paintPreviewCommit.height,
-            paintBounds.x,
-            paintBounds.y,
-            paintBounds.width,
-            paintBounds.height,
-          );
-          context.restore();
-          if (draft.paintOperation === 'eraser' && layer.target === 'projected-mask') {
-            // Store projection masks as opaque grayscale instead of transparent
-            // white. Transparent mask edges interpolate both RGB and alpha, and
-            // the projection shader multiplies the two, producing a dark fringe.
-            // Filling black behind the result preserves the exact same coverage
-            // while keeping alpha at one, so linear filtering has no seam.
-            context.save();
-            context.globalCompositeOperation = 'destination-over';
-            context.fillStyle = '#000000';
-            context.fillRect(paintBounds.x, paintBounds.y, paintBounds.width, paintBounds.height);
-            context.restore();
-          }
+          applyEraserUvPatch(context, paintPreviewCommit, paintBounds,
+            layer.target === 'projected-mask', draft.paintOperation === 'eraser');
         };
         const applyStartedAt = performance.now();
         applyStroke(layer.paintContext);
@@ -13269,6 +13442,7 @@ function SurfacePaintOverlay() {
           },
         };
         const applyTiles = (side: 'before' | 'after') => {
+          clearEraserUvDraft(layer);
           historyStroke.applied = side === 'after';
           const remaining = [
             ...(projectedEraserBatchesRef.current.get(layer.layerId)?.strokes ?? []),
@@ -13298,22 +13472,25 @@ function SurfacePaintOverlay() {
           // Neutralize the resident multiplier NOW, without a shader rebuild.
           for (const preview of new Set([layer, layerRef.current])) {
             if (!preview || preview.layerId !== layer.layerId) continue;
-            preview.liveResultContext.clearRect(
-              0,
-              0,
-              preview.liveResultCanvas.width,
-              preview.liveResultCanvas.height,
-            );
-            preview.liveResultContext.fillStyle = '#ffffff';
-            preview.liveResultContext.fillRect(
-              0,
-              0,
-              preview.liveResultCanvas.width,
-              preview.liveResultCanvas.height,
-            );
+            if (preview.eraserGpu) preview.eraserGpu.resetWhite();
+            else {
+              preview.liveResultContext.clearRect(
+                0,
+                0,
+                preview.liveResultCanvas.width,
+                preview.liveResultCanvas.height,
+              );
+              preview.liveResultContext.fillStyle = '#ffffff';
+              preview.liveResultContext.fillRect(
+                0,
+                0,
+                preview.liveResultCanvas.width,
+                preview.liveResultCanvas.height,
+              );
+              markLiveProjectedCanvasTextureUpdated(preview.liveResultUrl);
+              scheduleTextureUpdate(preview.liveResultTexture as THREE.CanvasTexture);
+            }
             preview.liveEraserPreviewInitialized = true;
-            markLiveProjectedCanvasTextureUpdated(preview.liveResultUrl);
-            scheduleTextureUpdate(preview.liveResultTexture);
           }
           // The layer URL remains stable across strokes, so React/store updates
           // alone do not always schedule an R3F frame. Upload and invalidate the
@@ -13448,6 +13625,7 @@ function SurfacePaintOverlay() {
         })
         .finally(() => {
           layer.pendingPaintCommits = Math.max(0, layer.pendingPaintCommits - 1);
+          if (layer.pendingPaintCommits === 0 && !getEraserUvDraft(layer)?.drawing) clearEraserUvDraft(layer);
           if (layer.pendingPaintCommits === 0 && !layer.liveEraserPreviewActive) {
             endLiveEraserPreview(layer);
           }
@@ -14669,7 +14847,11 @@ function SurfacePaintOverlay() {
       const isEraserBatch = batchTool === 'eraser' || batchTool === 'inpaint-apply-erase';
       lastPaintActivityAtRef.current = paintStartedAt;
       const latestResult = paintClientPath(targets);
-      if (latestResult) updateCursorFromHit(latestResult);
+      updateCursorFromHit(
+        latestResult,
+        strokeCanvasRectRef.current,
+        strokeCursorOverlayRectRef.current,
+      );
       const batchDurationMs = performance.now() - paintStartedAt;
       recordSurfacePaintPerf(batchDurationMs);
       if (isEraserBatch) {
@@ -14701,10 +14883,7 @@ function SurfacePaintOverlay() {
     };
     const isPointerContactActive = (event: globalThis.PointerEvent) => {
       if (event.pointerType === 'pen') return event.pressure > 0 || event.buttons !== 0;
-      const usesSecondaryButton =
-        strokePaintToolRef.current === 'inpaint-subtract' ||
-        strokePaintToolRef.current === 'inpaint-apply-erase';
-      return (event.buttons & (usesSecondaryButton ? 2 : 1)) !== 0;
+      return (event.buttons & 3) !== 0;
     };
     const finishPaintStroke = (
       event: globalThis.PointerEvent | undefined,
@@ -14773,6 +14952,7 @@ function SurfacePaintOverlay() {
       lastSampleRef.current = undefined;
       lastPointerClientRef.current = undefined;
       strokeCanvasRectRef.current = undefined;
+      strokeCursorOverlayRectRef.current = undefined;
       strokePaintToolRef.current = undefined;
       setOrbitControlsEnabled(true);
       commitPaintStroke();
@@ -14878,17 +15058,20 @@ function SurfacePaintOverlay() {
         event.pointerType === 'pen' &&
         (event.button === 2 || event.button === 5) &&
         event.pressure > 0;
-      const rightMaskEraseContact = isInpaintMode && event.button === 2;
-      const localRepaintEraseContact =
-        isLocalRepaintApplyMode &&
-        (event.button === 2 ||
-          penEraserContact ||
-          (isEditingPersistedLocalRepaint && event.button === 0) ||
-          (isEditingNativeRepaint && event.button === 0));
-      const isPaintButton =
-        event.button === 0 || penEraserContact || rightMaskEraseContact || localRepaintEraseContact;
       const strokeCanvasRect = canvas.getBoundingClientRect();
       const result = raycastModel(event, strokeCanvasRect);
+      // ALG-VIEW-INPUT-001 v1.2.0: an RMB drag that begins on paintable model
+      // geometry is the explicit erase gesture. An RMB drag that begins on
+      // the background is not consumed here and reaches orbit controls.
+      const rightModelEraseContact =
+        event.pointerType === 'mouse' && event.button === 2 && Boolean(result);
+      const localRepaintEraseContact =
+        isLocalRepaintApplyMode &&
+        (penEraserContact ||
+          rightModelEraseContact ||
+          (isEditingPersistedLocalRepaint && event.button === 0) ||
+          (isEditingNativeRepaint && event.button === 0));
+      const isPaintButton = event.button === 0 || penEraserContact || rightModelEraseContact;
 
       // Navigation buttons must reach the camera controls even when the drag
       // starts on the model. Only the primary/pen-eraser paint gesture belongs
@@ -15019,6 +15202,8 @@ function SurfacePaintOverlay() {
       }
       isPaintingRef.current = true;
       strokeCanvasRectRef.current = strokeCanvasRect;
+      strokeCursorOverlayRectRef.current =
+        cursorOverlayRef.current?.getBoundingClientRect() ?? strokeCanvasRect;
       paintHistoryBoundary.track(
         new Promise<void>((resolve) => {
           finishHistoryGestureRef.current = resolve;
@@ -15036,11 +15221,11 @@ function SurfacePaintOverlay() {
       const pressure = getPointerPressure(event);
       const strokePaintTool: SurfaceStrokePaintTool = localRepaintEraseContact
         ? 'inpaint-apply-erase'
-        : rightMaskEraseContact
-          ? 'inpaint-subtract'
-          : penEraserContact && (paintTool === 'brush' || paintTool === 'eraser')
-            ? 'eraser'
-            : paintTool;
+        : penEraserContact || rightModelEraseContact
+          ? isInpaintMode
+            ? 'inpaint-subtract'
+            : 'eraser'
+          : paintTool;
       strokePaintToolRef.current = strokePaintTool;
       if (strokePaintTool === 'eraser' || strokePaintTool === 'inpaint-apply-erase') {
         eraserStrokeStartedAtRef.current = paintStartedAt;
@@ -15097,7 +15282,8 @@ function SurfacePaintOverlay() {
       if (!isPaintingRef.current) gl.domElement.style.cursor = '';
     };
     const handleContextMenu = (event: MouseEvent) => {
-      if (isMaskStroke) event.preventDefault();
+      // RMB is always viewport orbit, including while a paint tool is active.
+      event.preventDefault();
     };
     canvas.addEventListener('pointermove', handlePointerMove, true);
     canvas.addEventListener('pointerdown', handlePointerDown, true);
@@ -15125,6 +15311,7 @@ function SurfacePaintOverlay() {
         if (isPaintingRef.current) flushPendingPaintTargets();
         pendingPaintTargetsRef.current = [];
         strokeCanvasRectRef.current = undefined;
+        strokeCursorOverlayRectRef.current = undefined;
         cancelPendingHoverCursor();
         if (paintInputFrameRef.current !== undefined) {
           window.cancelAnimationFrame(paintInputFrameRef.current);
@@ -15195,6 +15382,7 @@ export function ViewportCanvas({
   onOpenImport,
   importDisabled = false,
   isActive = true,
+  keepRuntimeActive = false,
   backgroundColor = '#080914',
   showCaptureFrame = true,
   showViewCube = true,
@@ -15324,7 +15512,7 @@ export function ViewportCanvas({
       <Canvas
         key={canvasKey}
         events={createViewportEvents}
-        frameloop={isActive ? 'always' : 'never'}
+        frameloop={getRetainedViewportFrameloop(isActive, keepRuntimeActive)}
         dpr={[1, 1.5]}
         camera={{ position: [3.2, 2.4, 4], fov: 45, near: 0.1, far: 100 }}
         gl={{
@@ -15375,6 +15563,10 @@ export function ViewportCanvas({
         <color attach="background" args={[backgroundColor]} />
         <Suspense fallback={null}>
           <RendererSettings />
+          <RetainedRuntimeFrameDriver
+            enabled={keepRuntimeActive}
+            workspaceActive={isActive}
+          />
           <ViewportPerformanceProbe enabled={performanceTestModeEnabled} />
           <PerformanceAutoOrbit enabled={performanceAutoOrbitEnabled} />
           <AcceleratedSceneRoot sceneOverlay={sceneOverlay} />

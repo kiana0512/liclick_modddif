@@ -13,11 +13,12 @@ type ReferenceInput = {
 export type GenerateImageInput = {
   clientGenerationId?: string;
   projectId?: string;
-  workflow?: 'liclick' | 'texture-map';
+  workflow?: 'liclick' | 'texture-map' | 'local-repaint';
   prompt: string;
   model?: string;
   aspectRatio?: 'auto' | '1:1' | '4:3' | '3:4' | '3:2' | '2:3' | '16:9' | '9:16';
   imageSize?: 'auto' | '1K' | '2K' | '4K';
+  quality?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
   count?: number;
   references?: ReferenceInput[];
 };
@@ -51,6 +52,48 @@ type LiclickImageParam = {
 
 const uploadedImageAssetCache = new Map<string, Promise<string>>();
 const maxUploadedImageAssetCacheEntries = 128;
+const atlasAssetUploadMaximumAttempts = 5;
+
+export function isRetryableAtlasAssetUploadError(error: unknown) {
+  const message = errorMessage(error).toLowerCase();
+  return /http\s+(?:408|429|5\d\d)|backend tools\/call failed|upstream connect error|bad gateway|service unavailable|temporarily unavailable|timeout|timed out|econn|enotfound|socket|fetch failed|暂时异常|服务繁忙|稍后重试/.test(
+    message,
+  );
+}
+
+type AtlasAssetUploadRetryOptions = {
+  maximumAttempts?: number;
+  wait?: (delayMs: number) => Promise<void>;
+  onRetry?: (attempt: number, error: unknown, delayMs: number) => void;
+};
+
+/**
+ * LICLICK-ASSET-UPLOAD-RETRY/1.0.0
+ * Retry only the pre-submission asset upload. Never wrap generate_image here:
+ * retrying an ambiguous generation response could create duplicate paid tasks.
+ */
+export async function retryAtlasAssetUpload<T>(
+  operation: () => Promise<T>,
+  options: AtlasAssetUploadRetryOptions = {},
+): Promise<T> {
+  const maximumAttempts = Math.max(1, options.maximumAttempts ?? atlasAssetUploadMaximumAttempts);
+  const wait = options.wait ?? ((delayMs: number) => new Promise<void>((resolve) => setTimeout(resolve, delayMs)));
+
+  for (let attempt = 1; attempt <= maximumAttempts; attempt += 1) {
+    try {
+      return await operation();
+    } catch (error) {
+      if (!isRetryableAtlasAssetUploadError(error) || attempt >= maximumAttempts) {
+        throw error;
+      }
+      const delayMs = Math.min(8_000, 1_000 * 2 ** (attempt - 1));
+      options.onRetry?.(attempt, error, delayMs);
+      await wait(delayMs);
+    }
+  }
+
+  throw new Error('参考图上传重试状态异常。');
+}
 
 export type LiclickImageTaskResult = {
   status: string;
@@ -428,7 +471,7 @@ function dataUrlToBase64(dataUrl: string) {
   return isBase64 ? match[2] : Buffer.from(decodeURIComponent(match[2]), 'utf8').toString('base64');
 }
 
-function buildExtraParams(input: GenerateImageInput, uploadedReferences: UploadedReference[]) {
+export function buildExtraParams(input: GenerateImageInput, uploadedReferences: UploadedReference[]) {
   const model = input.model || 'gpt-image-2';
   const aspectRatio = input.aspectRatio ?? 'auto';
   const imageSize = input.imageSize ?? 'auto';
@@ -442,6 +485,22 @@ function buildExtraParams(input: GenerateImageInput, uploadedReferences: Uploade
     quality: 'high',
     n: clampCount(input.count),
   };
+  const isGpt25 = model === 'gpt-image-2.5-sunburst' || model === 'gpt-image-2.5-flare';
+  // GPT-TRANSPARENT-TEXTURE/1.0.0. Only texture/repaint outputs, not reference art.
+  if ((isGpt25 || model === 'gpt-image-2') &&
+      (input.workflow === 'texture-map' || input.workflow === 'local-repaint')) {
+    extraParams.background = 'transparent';
+  }
+  if (isGpt25 || model === 'gpt-image-2') {
+    const qualities = isGpt25 ? ['low', 'medium', 'high', 'xhigh', 'max'] : ['low', 'medium', 'high'];
+    if (input.quality !== undefined && !qualities.includes(input.quality))
+      throw new Error(`Unsupported quality for ${model}: ${input.quality}.`);
+    extraParams.quality = input.quality ?? 'high';
+    if (isGpt25 && (aspectRatio === 'auto') !== (imageSize === 'auto')) {
+      throw new Error('GPT 2.5 requires auto ratio/size together, or explicit ratio and size.');
+    }
+    extraParams.model = model;
+  }
   if (referenceImages.length > 0) extraParams.reference_images = referenceImages;
 
   if (model === 'gpt-image-1.5') {
@@ -456,7 +515,7 @@ function buildExtraParams(input: GenerateImageInput, uploadedReferences: Uploade
     // automatic framing avoids an unexpected 1:1 crop that breaks projection
     // alignment when the user selects 1K/2K explicitly.
     extraParams.aspect_ratio = aspectRatio;
-    if (model === 'gpt-image-2') {
+    if (model === 'gpt-image-2' || isGpt25) {
       extraParams.image_size = gptImage2Size;
     } else if (model === 'nano_banana_2' || model === 'nano_banana_pro') {
       extraParams.image_size = imageSize === 'auto' ? '1K' : imageSize;
@@ -673,12 +732,22 @@ async function uploadReference(
   let uploadPromise = uploadedImageAssetCache.get(cacheKey);
   if (!uploadPromise) {
     uploadPromise = (async () => {
-      const upload = await callAtlasToolJson(
-        'liclick',
-        'upload_asset',
-        toolArguments,
-        10 * 60 * 1000,
-        personalAtlasHomeDir,
+      const upload = await retryAtlasAssetUpload(
+        () =>
+          callAtlasToolJson(
+            'liclick',
+            'upload_asset',
+            toolArguments,
+            10 * 60 * 1000,
+            personalAtlasHomeDir,
+          ),
+        {
+          onRetry: (attempt, error, delayMs) => {
+            console.warn(
+              `[liclick] reference upload transient failure; retry ${attempt + 1}/${atlasAssetUploadMaximumAttempts} in ${delayMs}ms: ${trimOutput(errorMessage(error))}`,
+            );
+          },
+        },
       );
       const parsed = parseJsonFromOutput(upload.stdout);
       const assetId =

@@ -67,7 +67,6 @@ import {
 } from '@/engine/bake/layerStackCache';
 import { useLayerStore } from '@/stores/layerStore';
 import { useWorkspaceLayoutStore } from '@/components/workspace/workspaceLayoutStore';
-import { translations, useI18nStore } from '@/stores/i18nStore';
 import {
   scheduleCurrentProjectActiveObjectPersistence,
   useProjectStore,
@@ -86,6 +85,7 @@ import {
   markViewportInteractionActivity,
 } from './viewportInteractionState';
 import { getTransientLocalRepaintLayerId } from './localRepaintResidentHandoff';
+import { getEraserTargetPolicy } from '@/engine/paint/eraserTargetPolicy';
 import {
   createWorkerBackedPreviewTexture,
   getReadyResidentPreviewTexture,
@@ -105,6 +105,7 @@ import type { Capture } from '@/types/capture';
 import { usesUnlitRenderedColor } from './renderedLayerColor';
 import { getPreviewLighting } from './previewLighting';
 import { isPerformanceLabEnabled } from '@/dev/performanceLabPolicy';
+import { waitForBrowserPaint } from '@/utils/browserScheduling';
 
 const RESOLUTION_TO_SIZE = {
   '1K': 1024,
@@ -152,11 +153,14 @@ function getProjectedProgramWarmupMap(renderer: THREE.WebGLRenderer) {
 function waitForProjectionVisibilityIdle(delayMs: number, timeoutMs = 1200) {
   return new Promise<void>((resolve) => {
     window.setTimeout(() => {
-      if (typeof window.requestIdleCallback === 'function') {
+      if (
+        document.visibilityState !== 'hidden' &&
+        typeof window.requestIdleCallback === 'function'
+      ) {
         window.requestIdleCallback(() => resolve(), { timeout: timeoutMs });
         return;
       }
-      window.requestAnimationFrame(() => resolve());
+      void waitForBrowserPaint().then(resolve);
     }, delayMs);
   });
 }
@@ -170,10 +174,6 @@ function getRuntimeProjectionPreviewSize(width: number, height: number) {
     height: Math.max(1, Math.round(safeHeight * scale)),
   };
 }
-function projectionPreviewCopy() {
-  return translations[useI18nStore.getState().language];
-}
-
 function stableNumberListSignature(values?: number[]) {
   if (!values?.length) return '';
   return values.map((value) => (Number.isFinite(value) ? value.toFixed(5) : '0')).join(',');
@@ -382,10 +382,10 @@ function uvLayerStackPreviewSignature(layers: Layer[]) {
 }
 
 function residentUvVisibilityKey(layers: Layer[]) {
-  return [...layers]
-    .sort((left, right) => compareUvLayersForComposition(left, right, 'top-to-bottom'))
-    .map((layer) => layer.id)
-    .join('|');
+  // A visibility-state cache entry is only exact while every input that can
+  // change its composed pixels is identical. Layer ids alone let an image,
+  // opacity or authored-order edit reuse pixels from the previous revision.
+  return uvLayerStackPreviewSignature(layers);
 }
 
 function residentUvLayerRenderSignature(layer: Layer, relativeOrder: number) {
@@ -736,7 +736,7 @@ function useCompositedUvTextureState(
 
     const waitForInteractionIdle = async () => {
       while (!cancelled && isSharedViewportInteractionBusy()) {
-        await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+        await waitForBrowserPaint();
       }
     };
 
@@ -1219,7 +1219,7 @@ function TopologyWireframeOverlay({
       // mode switch a visibility/uniform-only operation.
       await waitForProjectionVisibilityIdle(0);
       while (!cancelled && isSharedViewportInteractionBusy(250)) {
-        await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+        await waitForBrowserPaint();
       }
       if (cancelled) return;
       const warmTarget = new THREE.WebGLRenderTarget(1, 1, {
@@ -1382,6 +1382,7 @@ const ImportedModel = memo(function ImportedModel({
   const pendingUvVisibilityRenderKeyRef = useRef('');
   const uvPresentationRef = useRef<{
     texture?: THREE.Texture;
+    key?: string;
     opacity: number;
     renderedColor: boolean;
   }>({ opacity: 0, renderedColor: false });
@@ -1435,11 +1436,18 @@ const ImportedModel = memo(function ImportedModel({
       ),
     [importedModel.objectId, layerRenderSignature, uvVisibilityRenderRevision, projectedUvDisplaySignature],
   );
+  const liveSurfacePaintPreview = useLiveSurfacePaintPreview();
+  const projectedEraserArmed = Boolean(
+    (localRepaintPaintTool === 'eraser' &&
+      getEraserTargetPolicy(layers.find((layer) => layer.id === activeLayerId)).kind ===
+        'projected-mask') ||
+      (liveSurfacePaintPreview?.target === 'projected-mask' &&
+        liveSurfacePaintPreview.objectId === importedModel.objectId),
+  );
   const visibleMergedUvBoundaryOrder = useMemo(
     () => getVisibleMergedUvBoundaryOrder(layers, importedModel.objectId),
     [importedModel.objectId, layers],
   );
-  const liveSurfacePaintPreview = useLiveSurfacePaintPreview();
   // SurfacePaintOverlay owns the renderer-only local repaint preview. Keep an
   // already-persisted repaint row resident in the projected texture array and
   // mute it by uniform while the overlay is active. Removing/reinserting that
@@ -1640,7 +1648,8 @@ const ImportedModel = memo(function ImportedModel({
             paintTool === 'inpaint-subtract' ||
             paintTool === 'inpaint-apply';
           if (!busy) return;
-          await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+          if (document.visibilityState === 'hidden') return;
+          await waitForBrowserPaint();
         }
       };
       const completedVisibility: Record<string, { depthUrl: string; normalUrl: string }> = {};
@@ -2496,7 +2505,7 @@ const ImportedModel = memo(function ImportedModel({
     directProjectedSamplerBudget.required < directProjectedSamplerHeadroom,
   );
   const useProjectedTextureArrays = Boolean(
-    !residentUvDisplayEnabled &&
+    (!residentUvDisplayEnabled || projectedEraserArmed) &&
     gl.capabilities.isWebGL2 &&
     previewProjectionInputs.length > 1 &&
     projectedTextureArraySamplerBudget.withinBudget &&
@@ -2548,6 +2557,13 @@ const ImportedModel = memo(function ImportedModel({
     (failedProjectedTextureArraySignature === projectedTextureArrayStructureSignature ||
       !isProjectedUniformBudgetSafe(previewProjectionInputs.length, gl.capabilities.maxFragmentUniforms)),
   );
+  const directProjectedStackSafe = Boolean(
+    directProjectedSamplerBudget.withinBudget &&
+      isProjectedUniformBudgetSafe(
+        previewProjectionInputs.length,
+        gl.capabilities.maxFragmentUniforms,
+      ),
+  );
   const canUseDirectVisibleStackAfterArrayFailure = Boolean(
     // Once the array path has failed, correctness is more important than the
     // normal headroom preference. A six-view image+depth stack needs most of the
@@ -2555,11 +2571,19 @@ const ImportedModel = memo(function ImportedModel({
     // material. Sending it to the progressive compositor instead can leave the
     // last UV/bootstrap material resident if that asynchronous publication is
     // superseded by an eye toggle or eraser clear.
-    textureArrayCompositionFallbackRequired && directProjectedSamplerBudget.withinBudget &&
-    isProjectedUniformBudgetSafe(previewProjectionInputs.length, gl.capabilities.maxFragmentUniforms),
+    textureArrayCompositionFallbackRequired && directProjectedStackSafe,
+  );
+  const canUseExactProjectedEraserStack = Boolean(
+    projectedEraserArmed &&
+      ((useProjectedTextureArrays && !textureArrayCompositionFallbackRequired) ||
+        directProjectedStackSafe),
   );
   // Projections are calculation inputs. Every normal viewport frame samples UV.
-  const canUseProgressiveUvFallback = residentUvDisplayEnabled;
+  // A projected eraser edits one keep-mask. Keep the authored layer stack on
+  // the GPU while the tool is armed so each input frame only changes that mask
+  // uniform; the resident UV compositor remains the exact idle/commit path.
+  const canUseProgressiveUvFallback =
+    residentUvDisplayEnabled && !canUseExactProjectedEraserStack;
   const projectedPreviewNeedsComposition = Boolean(
     previewProjectionInputs.length > 0 || !projectedSamplerBudget.withinBudget ||
     (textureArrayCompositionFallbackRequired && !canUseDirectVisibleStackAfterArrayFailure),
@@ -2645,6 +2669,34 @@ const ImportedModel = memo(function ImportedModel({
           tone: 'error', dedupeKey: `resident-uv:${importedObjectId}` });
       },
     });
+    // UV composition is an algorithm task, not a presentation-frame callback.
+    // Start it from the request itself and keep a bounded task-driven retry
+    // lease until its exact signature is ready. This is essential in Chromium
+    // background tabs where rAF/useFrame can remain suspended until the tab is
+    // previewed, even though timers, Workers and WebGL commands can still run.
+    let driveCancelled = false;
+    let driveTimer: number | undefined;
+    const drive = () => {
+      driveTimer = undefined;
+      if (driveCancelled || !compositor.hasPendingWork(progressiveBackgroundSignature)) return;
+      const interaction = projectedPreviewInteractionRef.current;
+      const backgrounded = document.visibilityState !== 'visible' || !document.hasFocus();
+      const isInteracting =
+        !backgrounded &&
+        (isSharedViewportInteractionBusy(180) ||
+          interaction.pointerDown ||
+          performance.now() - interaction.lastMovedAt < 140);
+      compositor.step(isInteracting);
+      if (compositor.hasPendingWork(progressiveBackgroundSignature)) {
+        driveTimer = window.setTimeout(drive, backgrounded ? 250 : 50);
+      }
+    };
+    queueMicrotask(drive);
+    invalidate();
+    return () => {
+      driveCancelled = true;
+      if (driveTimer !== undefined) window.clearTimeout(driveTimer);
+    };
   }, [
     allPreviewProjectedLayers,
     gl,
@@ -2652,6 +2704,7 @@ const ImportedModel = memo(function ImportedModel({
     canUseProgressiveUvFallback,
     importedModel,
     importedObjectId,
+    invalidate,
     progressiveBackgroundInputs,
     progressiveBackgroundSignature,
     projectedPreviewNeedsComposition,
@@ -2908,15 +2961,29 @@ const ImportedModel = memo(function ImportedModel({
     directUvLayer?.renderedColorMaskUrl,
     { colorSpace: THREE.NoColorSpace, maxSize: proxyTextureMaxSize },
   );
+  const visibleResidentUvKey = useMemo(
+    () =>
+      residentUvVisibilityKey(
+        stableVisibleUvLayers.filter(
+          (layer) => layer.role !== 'local-repaint-overlay' && layer.role !== 'local-repaint-draft',
+        ),
+      ),
+    [stableVisibleUvLayers],
+  );
+  const cachedExactUvTexture = directUvLayer
+    ? undefined
+    : residentUvPresentationCacheRef.current.get(visibleResidentUvKey);
   const exactUvTexture = directUvLayer
     ? directUvTextureState.ready
       ? directUvTextureState.texture
       : undefined
-    : compositedUvTextureState.ready
-      ? compositedUvTextureState.texture
-      : undefined;
+    : cachedExactUvTexture ??
+      (compositedUvTextureState.ready ? compositedUvTextureState.texture : undefined);
   const previousUvPresentation = uvPresentationRef.current;
-  const preservePreviousUvPresentation = nonLiveUvLayers.length > 0 && !exactUvTexture;
+  const preservePreviousUvPresentation =
+    nonLiveUvLayers.length > 0 &&
+    !exactUvTexture &&
+    previousUvPresentation.key === visibleResidentUvKey;
   const loadedUvTexture =
     exactUvTexture ?? (preservePreviousUvPresentation ? previousUvPresentation.texture : undefined);
   const uvOverlayOpacity = exactUvTexture
@@ -2931,6 +2998,11 @@ const ImportedModel = memo(function ImportedModel({
       : requestedUvRenderedColor;
   uvPresentationRef.current = {
     texture: loadedUvTexture,
+    key: exactUvTexture
+      ? visibleResidentUvKey
+      : preservePreviousUvPresentation
+        ? previousUvPresentation.key
+        : undefined,
     opacity: uvOverlayOpacity,
     renderedColor: directUvRenderedColor,
   };
@@ -2963,20 +3035,14 @@ const ImportedModel = memo(function ImportedModel({
     document.body.dataset.textureRestoreUvReady = '1';
     document.body.dataset.textureRestoreUvReadyMs = performance.now().toFixed(1);
   }, [loadedUvTexture]);
-  const visibleResidentUvKey = useMemo(
-    () =>
-      residentUvVisibilityKey(
-        stableVisibleUvLayers.filter(
-          (layer) => layer.role !== 'local-repaint-overlay' && layer.role !== 'local-repaint-draft',
-        ),
-      ),
-    [stableVisibleUvLayers],
-  );
   useEffect(() => {
-    if (!loadedUvTexture || !visibleResidentUvKey) return;
+    // Only admit the exact requested composition. During an async eye switch,
+    // loadedUvTexture may intentionally be empty or may retain the same-key
+    // presentation; it must never be registered under a different state key.
+    if (!exactUvTexture || !visibleResidentUvKey) return;
     const cache = residentUvPresentationCacheRef.current;
     cache.delete(visibleResidentUvKey);
-    cache.set(visibleResidentUvKey, loadedUvTexture);
+    cache.set(visibleResidentUvKey, exactUvTexture);
     while (cache.size > MAX_COMPOSITED_UV_TEXTURE_CACHE_SIZE) {
       const oldestKey = cache.keys().next().value as string | undefined;
       if (!oldestKey) break;
@@ -2985,7 +3051,7 @@ const ImportedModel = memo(function ImportedModel({
     if (pendingUvVisibilityRenderKeyRef.current === visibleResidentUvKey) {
       pendingUvVisibilityRenderKeyRef.current = '';
     }
-  }, [loadedUvTexture, visibleResidentUvKey]);
+  }, [exactUvTexture, visibleResidentUvKey]);
   const loadedStaticTopUvTexture = useLoadedPreviewTexture(
     liveTopUvLayer && !getLiveProjectedCanvasState(liveTopUvLayer.imageUrl)
       ? liveTopUvLayer.imageUrl
@@ -3171,7 +3237,7 @@ const ImportedModel = memo(function ImportedModel({
     // Interaction owns the frame budget. Even a single compositor operation can
     // enqueue enough GPU work to surface as a later wheel/drag hitch, so suspend
     // the background queue completely until the viewport has settled.
-    if (!isInteracting) projectedPreviewCompositorRef.current?.step();
+    projectedPreviewCompositorRef.current?.step(isInteracting);
     if (stableVisibleProjectedLayers.length === 0) {
       lastProjectedTransformRef.current = undefined;
       return;
@@ -3550,7 +3616,7 @@ const ImportedModel = memo(function ImportedModel({
             gl2.flush();
             try {
               while (!nextBuild.cancelled) {
-                await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+                await waitForBrowserPaint();
                 const status = gl2.clientWaitSync(sync, 0, 0);
                 if (
                   status === gl2.ALREADY_SIGNALED ||
@@ -3712,7 +3778,8 @@ const ImportedModel = memo(function ImportedModel({
     };
     const waitForViewportInteractionIdle = async () => {
       while (!cancelled && isViewportInteractionBusy()) {
-        await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+        if (document.visibilityState === 'hidden') return;
+        await waitForBrowserPaint();
       }
     };
     const precompileProjectedMaterial = async (
@@ -3831,9 +3898,7 @@ const ImportedModel = memo(function ImportedModel({
                 try {
                   while (!cancelled) {
                     await waitForViewportInteractionIdle();
-                    await new Promise<void>((resolve) =>
-                      window.requestAnimationFrame(() => resolve()),
-                    );
+                    await waitForBrowserPaint();
                     const status = gl2.clientWaitSync(sync, 0, 0);
                     if (status === gl2.ALREADY_SIGNALED || status === gl2.CONDITION_SATISFIED)
                       break;
@@ -3984,7 +4049,8 @@ const ImportedModel = memo(function ImportedModel({
       const projectedPreviewOverBudget = Boolean(
         canPreviewProjectedLayers &&
         projectedPreviewNeedsComposition &&
-        !canUseProgressivePreviewBase,
+        !canUseProgressivePreviewBase &&
+        !canUseExactProjectedEraserStack,
       );
       const progressiveBaseOnly =
         !showWhiteMembrane && canUseProgressivePreviewBase && materialProjectionInputs.length === 0;
@@ -5124,6 +5190,7 @@ const ImportedModel = memo(function ImportedModel({
     };
   }, [
     camera,
+    canUseExactProjectedEraserStack,
     canPreviewProjectedLayers,
     retainedProjectedMaterials,
     displayMode,

@@ -1,7 +1,8 @@
 import { projectionGapMaskFromAlpha } from '../engine/projection/projectionCoverageContract.mjs';
+import { composeGptRepaintGuide } from '../engine/localRepaint/gptGuide';
 
 type GenerationInputWorkerRequest = {
-  mode: 'local' | 'single';
+  mode: 'local' | 'single' | 'gpt-local';
   id: number;
   currentEffect: ImageBitmap;
   clayPreview: ImageBitmap;
@@ -521,6 +522,18 @@ self.onmessage = async (event: MessageEvent<GenerationInputWorkerRequest>) => {
     const currentPixels = readPixels(currentEffect, width, height);
     const clayPixels = readPixels(clayPreview, width, height);
     finishPhase('read-input-pixels');
+    if (request.mode === 'gpt-local') {
+      const maskPixels = readPixels(inputMask, width, height);
+      const composite = composeGptRepaintGuide(currentPixels.data, clayPixels.data, maskPixels.data);
+      const canvas = new OffscreenCanvas(width, height);
+      const context = canvas.getContext('2d');
+      if (!context) throw new Error('Could not encode GPT repaint guide.');
+      context.putImageData(new ImageData(composite, width, height), 0, 0);
+      const compositeBlob = await canvas.convertToBlob({ type: 'image/png' });
+      self.postMessage({ id, compositeBlob, dilationRadius: 0, featherRadius: 0,
+        processMs: performance.now() - startedAt, phaseDurationsMs });
+      return;
+    }
     const scale = Math.max(width, height) / 2048;
     let compositeCore: Uint8Array;
     let coreBounds: MaskBounds;

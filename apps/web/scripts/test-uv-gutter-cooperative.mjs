@@ -96,7 +96,8 @@ for (let trial = 0; trial < 600; trial++) {
   const expectedImage = { width, height, data: data.slice() };
   const expectedCoverage = coverage.slice();
   const expectedCount = reference(expectedImage, expectedCoverage, topology, iterations, mode);
-  for (const kernel of [synchronous, cooperative]) {
+  const indexed = (...args) => cooperative(...args, true);
+  for (const kernel of [synchronous, cooperative, indexed, indexed]) {
     const image = { width, height, data: data.slice() };
     const mask = coverage.slice();
     const count = await kernel(image, mask, topology, iterations, mode, async () => {});
@@ -105,6 +106,14 @@ for (let trial = 0; trial < 600; trial++) {
     assert.deepEqual(mask, expectedCoverage, `coverage trial ${trial}`);
     assert.deepEqual(topology, originalTopology, 'topology remains read-only');
   }
+  const nextMask = Uint8Array.from(coverage, value => value ? 0 : 1);
+  const nextGold = { width, height, data: data.slice() }, nextActual = { width, height, data: data.slice() };
+  const goldMask = nextMask.slice();
+  const goldCount = reference(nextGold, goldMask, topology, iterations, mode);
+  const nextCount = await indexed(nextActual, nextMask, topology, iterations, mode, async () => {});
+  assert.equal(nextCount, goldCount, 'cached frontier must re-evaluate dynamic coverage');
+  assert.deepEqual(nextActual.data, nextGold.data);
+  assert.deepEqual(nextMask, goldMask);
 }
 
 const width = 2048;

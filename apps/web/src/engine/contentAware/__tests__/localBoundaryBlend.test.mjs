@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { repairSurfaceTexture } from '../surfaceAwareRepair.ts';
+import { runSurfaceAwareRepair } from '../runSurfaceAwareRepair.ts';
 import { createVisibleSurfaceCompletionPolicy } from '../visibleSurfaceCompletionPolicy.ts';
+import { CONTENT_AWARE_UV_MAX_RESOLUTION } from '../contentAwareResolution.ts';
 
 function fixture(width, height = 1) {
   const size = width * height;
@@ -12,6 +14,33 @@ function fixture(width, height = 1) {
 }
 const pixel = (f, i, rgb, alpha = 255) => f.rgba.set([...rgb, alpha], i * 4);
 const rgb = (r, i) => [...r.filledRgba.slice(i * 4, i * 4 + 3)];
+
+test('content-aware seam detection preserves every production texture tier through 4K', () => {
+  assert.equal(CONTENT_AWARE_UV_MAX_RESOLUTION, 4096);
+});
+
+test('worker launch transfers disposable pixels but keeps resident topology buffers attached', async () => {
+  const f = fixture(4); let transferred;
+  const PreviousWorker = globalThis.Worker;
+  globalThis.Worker = class {
+    postMessage(_request, transfer) {
+      transferred = transfer;
+      globalThis.queueMicrotask(() => this.onmessage({ data: { kind: 'result', filledRgba: new ArrayBuffer(64), repairedMask: new ArrayBuffer(16), sourceExclusionMask: new ArrayBuffer(16), stats: {} } }));
+    }
+    terminate() {}
+  };
+  try {
+    const topologyBuffer = f.topologyMask.buffer, regionBuffer = f.topologyRegionIds.buffer;
+    await runSurfaceAwareRepair(f);
+    assert.equal(transferred.length, 2);
+    assert.equal(f.topologyMask.buffer, topologyBuffer);
+    assert.equal(f.topologyRegionIds.buffer, regionBuffer);
+    assert.equal(topologyBuffer.byteLength, 4);
+    assert.equal(regionBuffer.byteLength, 16);
+  } finally {
+    if (PreviousWorker === undefined) delete globalThis.Worker; else globalThis.Worker = PreviousWorker;
+  }
+});
 
 test('a narrow seam interpolates both local boundaries instead of a constant or nearest-owner stripe', () => {
   const f = fixture(9); pixel(f, 0, [110, 80, 75]); pixel(f, 8, [150, 100, 95]); f.writeMask.fill(255, 1, 8);

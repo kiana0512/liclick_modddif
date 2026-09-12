@@ -91,6 +91,38 @@ const server = await createServer({
 try {
   const { createViewportEvents, setViewportPaintPointer } = await server.ssrLoadModule('/src/engine/viewport/viewportEvents.ts');
   const { BlenderOrbitControls } = await server.ssrLoadModule('/src/engine/viewport/BlenderOrbitControls.ts');
+  {
+    const target = new InputTarget();
+    const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 100);
+    camera.position.set(0, 0, 5);
+    camera.updateMatrixWorld();
+    const controls = new BlenderOrbitControls(camera, target);
+    const initialPosition = camera.position.clone();
+    const initialTarget = controls.target.clone();
+
+    target.emit('pointerdown', { pointerId: 10, button: 0, clientX: 20, clientY: 20 });
+    target.emit('pointermove', { pointerId: 10, button: 0, buttons: 1, clientX: 70, clientY: 50 });
+    target.emit('pointerup', { pointerId: 10, button: 0, clientX: 70, clientY: 50 });
+    assert(camera.position.equals(initialPosition), 'LMB drag must not navigate the camera');
+    assert(controls.target.equals(initialTarget), 'LMB remains available exclusively to paint/select');
+
+    target.emit('pointerdown', { pointerId: 11, button: 1, ctrlKey: true, clientX: 20, clientY: 20 });
+    target.emit('pointermove', { pointerId: 11, button: 1, buttons: 4, ctrlKey: true, clientX: 45, clientY: 35 });
+    target.emit('pointerup', { pointerId: 11, button: 1, clientX: 45, clientY: 35 });
+    const pannedPosition = camera.position.clone();
+    const pannedTarget = controls.target.clone();
+    assert(!pannedTarget.equals(initialTarget), 'MMB drag must pan even when Ctrl/Cmd is pressed');
+    assert(pannedPosition.clone().sub(pannedTarget).equals(initialPosition.clone().sub(initialTarget)), 'Pan must preserve camera distance and direction');
+
+    target.emit('pointerdown', { pointerId: 12, button: 2, clientX: 20, clientY: 20 });
+    target.emit('pointermove', { pointerId: 12, button: 2, buttons: 2, clientX: 65, clientY: 40 });
+    target.emit('pointerup', { pointerId: 12, button: 2, clientX: 65, clientY: 40 });
+    assert(!camera.position.equals(pannedPosition), 'RMB drag must orbit the camera');
+    assert(controls.target.equals(pannedTarget), 'Orbit must preserve the navigation target');
+    const contextMenu = target.emit('contextmenu', { button: 2 });
+    assert(contextMenu.defaultPrevented, 'RMB orbit must suppress the browser context menu');
+    controls.dispose();
+  }
   const baseline = makeScene(events);
   for (let i = 0; i < 1021; i++) baseline.target.emit('wheel');
   assert.equal(baseline.counts().raycasts, 1021, 'Baseline must reproduce one needless pick per packet');
@@ -209,11 +241,14 @@ try {
   assert.match(viewport, /activePointerIdRef.current = event.pointerId;\s*setViewportPaintPointer\(canvas, event.pointerId\);\s*try/, 'Recovered pen contact must rebind its pointer identity');
   assert.match(viewport, /pointerListenerGenerationRef.current !== listenerGeneration\) return;\s*setViewportPaintPointer\(canvas\);/, 'Final unmount clears ownership, effect replacement preserves it');
   assert.match(viewport, /<Canvas\s[\s\S]*?events=\{createViewportEvents\}/, 'The live viewport must use the tested event manager');
+  assert.match(viewport, /const rightModelEraseContact =\s*event\.pointerType === 'mouse' && event\.button === 2 && Boolean\(result\);/, 'RMB erasing must require a model hit');
+  assert.match(viewport, /const isPaintButton = event\.button === 0 \|\| penEraserContact \|\| rightModelEraseContact;/, 'Only a model-hit RMB may join the primary paint path');
   // Wheel is exclusively camera navigation in this canvas. A future 3D wheel
   // feature must explicitly revise this contract, not silently lose its input.
   const sceneSource = await readFile(new URL('../src/engine/viewport/SceneRoot.tsx', import.meta.url), 'utf8');
   assert.doesNotMatch(sceneSource, /onWheel\s*=/);
   console.log('Viewport wheel regression passed: 1021 -> 0 picks; perspective/orthographic zoom, click, miss and cleanup preserved.');
+  console.log('Viewport buttons passed: LMB paint, model-hit RMB erase, background RMB orbit, MMB pan, wheel dolly.');
   console.log('Native paint tail regression passed: 60 strokes / 120 -> 0 redundant picks; DOM delivery, selection reset, canvas/pointer isolation and capture cleanup preserved.');
 } finally {
   await server.close();

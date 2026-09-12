@@ -124,6 +124,24 @@ const candidateVertexShader = `
   }
 `;
 
+// Compositor shader invariants (kept outside emitted GLSL).
+// For local repaint, depth chooses the visible surface. Normal rejection is
+// intentionally disabled because it classifies adjacent thin triangles
+// differently and creates a striped boundary.
+// Depth quantisation grows at grazing angles even when normal rejection is
+// disabled. Keep the staged compositor aligned with the resident shader.
+// Depth already identifies the front-most captured surface. Do not combine
+// it with a per-triangle normal cutoff: when the resident preview takes
+// over, scanned/dense meshes otherwise turn into alternating paint strips.
+// The angle cutoff remains a safe fallback for legacy captures without depth.
+// Keep depth authoritative while preserving a continuous angular and
+// neighbourhood feather; no triangle-level decision reaches output alpha.
+// Surface-locked coverage has already passed the capture depth/mask test.
+// Preserve that confidence for priority composition instead of fading the
+// accepted surface a second time with the mesh-normal angle.
+// Existing projections win completely. The repair candidate is used only
+// where normal projection composition produced no texel, and is accepted
+// as an opaque fallback to avoid a dark half-alpha boundary.
 const candidateFragmentShader = `
   ${RELIABLE_PROJECTION_GLSL}
 
@@ -241,9 +259,9 @@ const candidateFragmentShader = `
       ${FULL_CAPTURE_NORMAL_AGREEMENT.toFixed(2)},
       mix(abs(normalAgreement), normalAgreement, surfaceLockedVisibility)
     );
-    // For local repaint, depth chooses the visible surface. Normal rejection is
-    // intentionally disabled because it classifies adjacent thin triangles
-    // differently and creates a striped boundary.
+
+
+
     float normalCheckWeight = useNormalCheck * (1.0 - surfaceLockedVisibility);
     return depthVisibility * mix(1.0, normalVisibility, normalCheckWeight);
   }
@@ -309,8 +327,8 @@ const candidateFragmentShader = `
       1.0,
       smoothstep(${MIN_CAPTURE_FACE_ON.toFixed(2)}, ${FULL_CAPTURE_FACE_ON.toFixed(2)}, faceOnFactor)
     );
-    // Depth quantisation grows at grazing angles even when normal rejection is
-    // disabled. Keep the staged compositor aligned with the resident shader.
+
+
     depthTolerance *= grazingDepthScale;
     float centerVisibility = computeVisibilitySample(
       texture(depthMap, uv), texture(normalMap, uv),
@@ -407,10 +425,10 @@ const candidateFragmentShader = `
     float depthWeight = mix(0.7, 1.0, visibilityCoverage);
     float continuousCoverage = clamp(layerOpacity * sourceAlpha * reliableProjectionSupport(angleCoverage * visibilityCoverage * mix(0.35, 1.0, edgeFade(uv, 0.015))), 0.0, 1.0);
     float lockedSurfaceFacing = abs(dot(captureViewVertexNormal, normalize(-captureViewPosition)));
-    // Depth already identifies the front-most captured surface. Do not combine
-    // it with a per-triangle normal cutoff: when the resident preview takes
-    // over, scanned/dense meshes otherwise turn into alternating paint strips.
-    // The angle cutoff remains a safe fallback for legacy captures without depth.
+
+
+
+
     float lockedSafetyCoverage = mix(
       smoothstep(
         ${(SURFACE_LOCKED_MIN_SAFE_FACING - 0.08).toFixed(2)},
@@ -420,8 +438,8 @@ const candidateFragmentShader = `
       1.0,
       useDepthCheck
     );
-    // Keep depth authoritative while preserving a continuous angular and
-    // neighbourhood feather; no triangle-level decision reaches output alpha.
+
+
     float depthAuthoritativeFacingCoverage = mix(
       lockedFacingCoverage,
       1.0,
@@ -438,9 +456,9 @@ const candidateFragmentShader = `
     float strength = clamp(layerStrength, 0.25, 3.0);
     float angleWeight = smoothstep(0.02, 0.25, visibilityBackedNdv) * pow(clamp(visibilityBackedNdv, 0.0, 1.0), 4.0 / strength);
     float quality = coverage * depthWeight * angleWeight * mix(0.3, 1.0, edgeFade(uv, 0.035));
-    // Surface-locked coverage has already passed the capture depth/mask test.
-    // Preserve that confidence for priority composition instead of fading the
-    // accepted surface a second time with the mesh-normal angle.
+
+
+
     quality = mix(quality, max(quality, coverage), surfaceLockedVisibility);
     float score = max(quality, coverage * ${QUALITY_FLOOR_FROM_COVERAGE.toFixed(2)});
     candidateColor = vec4(texel.rgb, score);
@@ -613,9 +631,9 @@ const underlayFragmentShader = `
     vec2 candidateInfo = texture(candidateInfoMap, uv).rg;
     float basePresent = step(0.5, base.a);
     float candidatePresent = step(${COVERAGE_THRESHOLD.toFixed(2)}, candidateInfo.x);
-    // Existing projections win completely. The repair candidate is used only
-    // where normal projection composition produced no texel, and is accepted
-    // as an opaque fallback to avoid a dark half-alpha boundary.
+
+
+
     float useCandidate = (1.0 - basePresent) * candidatePresent;
     vec3 color = mix(base.rgb, candidate.rgb, useCandidate);
     composedColor = vec4(liclickLinearToSrgb(clamp(color, 0.0, 1.0)), max(base.a, useCandidate));

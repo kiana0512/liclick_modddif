@@ -1,4 +1,4 @@
-import { usesCaptureMaskTextureProjection } from '@/engine/generation/textureProjectionPolicy';
+import { usesCaptureMaskTextureProjection, textureProjectionIgnoresSourceAlpha } from '@/engine/generation/textureProjectionPolicy';
 import { create } from 'zustand';
 import { v4 as uuid } from 'uuid';
 import type { Capture } from '@/types/capture';
@@ -7,6 +7,7 @@ import type { Layer, LayerAdjustments } from '@/types/layer';
 import { markPerformanceEvent } from '@/engine/performance/performanceTimeline';
 import { isContentAwareEraserUnderlay } from '@/engine/paint/eraserTargetPolicy';
 import { prepareUvMergeConsumption } from '@/engine/layers/uvMergeConsumption';
+import { expandAuthoredLayerVisibilityIds } from '@/engine/layers/layerVisibility';
 import { isViewportInteractionBusy } from '@/engine/viewport/viewportInteractionState';
 import { SINGLE_VIEW_MINIMUM_PROJECTION_FACING } from '@/engine/projection/projectionTypes';
 import { useSceneStore } from './sceneStore';
@@ -174,7 +175,9 @@ function normalizeLayer(layer: Layer) {
     projectionCoverageMode: singleViewGeneratedProjection
       ? 'capture-mask'
       : layer.projectionCoverageMode,
-    ignoreSourceAlpha: singleViewGeneratedProjection ? true : layer.ignoreSourceAlpha,
+    ignoreSourceAlpha: singleViewGeneratedProjection
+      ? (canonicalSingleViewProjection ? layer.ignoreSourceAlpha ?? true : true)
+      : layer.ignoreSourceAlpha,
     minimumProjectionFacing: singleViewGeneratedProjection
       ? SINGLE_VIEW_MINIMUM_PROJECTION_FACING
       : layer.minimumProjectionFacing,
@@ -282,8 +285,8 @@ export const useLayerStore = create<LayerStore>((set, get) => ({
         : generation.metadata.alphaMode === 'geometry-mask-separated'
           ? 'source-alpha-depth'
           : undefined,
-      // Single and multiview results share geometry coverage and quality blending.
-      ignoreSourceAlpha: captureMaskTexture ? true : undefined,
+      // Transparent outputs intersect source alpha with the same capture geometry.
+      ignoreSourceAlpha: textureProjectionIgnoresSourceAlpha(generation),
       minimumProjectionFacing: captureMaskTexture
         ? SINGLE_VIEW_MINIMUM_PROJECTION_FACING
         : undefined,
@@ -396,19 +399,28 @@ export const useLayerStore = create<LayerStore>((set, get) => ({
   },
   toggleLayer: (layerId) => {
     const target = get().layers.find((layer) => layer.id === layerId);
+    if (!target) return;
+    const affectedIds = expandAuthoredLayerVisibilityIds(get().layers, [layerId]);
+    const affectedIdSet = new Set(affectedIds);
+    const nextVisible = !target.visible;
     markPerformanceEvent('layers', 'toggle-layer', {
       layerId,
       layerType: target?.type,
-      nextVisible: !target?.visible,
+      affectedLayerIds: affectedIds,
+      nextVisible,
     });
-    if (target?.visible && get().activeProjectedLayerId === layerId) {
+    if (
+      !nextVisible &&
+      get().activeProjectedLayerId &&
+      affectedIdSet.has(get().activeProjectedLayerId!)
+    ) {
       useSceneStore.getState().setPaintTool('none');
     }
     set((state) => {
-      const target = state.layers.find((layer) => layer.id === layerId);
-      const nextVisible = !target?.visible;
       const layers = state.layers.map((layer) =>
-        layer.id === layerId ? { ...layer, visible: nextVisible } : layer,
+        affectedIdSet.has(layer.id) && layer.visible !== nextVisible
+          ? { ...layer, visible: nextVisible }
+          : layer,
       );
       const activeLayer = layers.find(
         (layer) => layer.id === state.activeProjectedLayerId && layer.visible,
@@ -421,6 +433,10 @@ export const useLayerStore = create<LayerStore>((set, get) => ({
   },
   setLayerVisibility: (layerIds, visible) => {
     const currentLayers = get().layers;
+    const layerIdSet = new Set(layerIds);
+    if (!currentLayers.some((layer) => layerIdSet.has(layer.id) && layer.visible !== visible)) {
+      return;
+    }
     markPerformanceEvent('layers', 'set-layer-visibility', {
       layerIds,
       layerTypes: layerIds.map(
@@ -436,9 +452,8 @@ export const useLayerStore = create<LayerStore>((set, get) => ({
       useSceneStore.getState().setPaintTool('none');
     }
     set((state) => {
-      const layerIdSet = new Set(layerIds);
       const layers = state.layers.map((layer) =>
-        layerIdSet.has(layer.id) ? { ...layer, visible } : layer,
+        layerIdSet.has(layer.id) && layer.visible !== visible ? { ...layer, visible } : layer,
       );
       const activeLayer = layers.find(
         (layer) => layer.id === state.activeProjectedLayerId && layer.visible,

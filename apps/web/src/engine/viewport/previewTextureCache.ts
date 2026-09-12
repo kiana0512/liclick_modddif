@@ -98,7 +98,11 @@ export function getReadyResidentPreviewTexture(
 type BitmapWorkerResponse =
   | { type: 'ready'; id: number; width: number; height: number }
   | { type: 'stripe'; requestId: number; bitmap: ImageBitmap }
+  | { type: 'mask-stripe'; requestId: number; pixels: ArrayBuffer; width: number; height: number }
   | { type: 'error'; id?: number; requestId?: number; message: string };
+type PreviewTextureStripe =
+  | ImageBitmap
+  | { pixels: Uint8Array; width: number; height: number };
 let bitmapWorker: Worker | undefined;
 let nextBitmapId = 1;
 let nextStripeRequestId = 1;
@@ -111,7 +115,7 @@ const pendingBitmapMetadata = new Map<
 >();
 const pendingBitmapStripes = new Map<
   number,
-  { resolve: (bitmap: ImageBitmap) => void; reject: (error: Error) => void }
+  { resolve: (stripe: PreviewTextureStripe) => void; reject: (error: Error) => void }
 >();
 
 function resetBitmapWorker(error: Error) {
@@ -138,14 +142,18 @@ function getBitmapWorker() {
       request.resolve({ id: message.id, width: message.width, height: message.height });
       return;
     }
-    if (message.type === 'stripe') {
+    if (message.type === 'stripe' || message.type === 'mask-stripe') {
       const request = pendingBitmapStripes.get(message.requestId);
       if (!request) {
-        message.bitmap.close();
+        if (message.type === 'stripe') message.bitmap.close();
         return;
       }
       pendingBitmapStripes.delete(message.requestId);
-      request.resolve(message.bitmap);
+      request.resolve(
+        message.type === 'stripe'
+          ? message.bitmap
+          : { pixels: new Uint8Array(message.pixels), width: message.width, height: message.height },
+      );
       return;
     }
     if (message.requestId !== undefined) {
@@ -164,8 +172,11 @@ function getBitmapWorker() {
   return worker;
 }
 
-function decodePreviewBitmapInWorker(imageUrl: string, maxSize?: number) {
-  const id = nextBitmapId++;
+function postPreviewBitmapRequest(
+  id: number,
+  message: object,
+  transfer: Transferable[] = [],
+) {
   return new Promise<{ id: number; width: number; height: number }>((resolve, reject) => {
     const timeoutId = window.setTimeout(() => {
       if (!pendingBitmapMetadata.has(id)) return;
@@ -181,39 +192,38 @@ function decodePreviewBitmapInWorker(imageUrl: string, maxSize?: number) {
         reject(error);
       },
     });
-    getBitmapWorker().postMessage({
+    getBitmapWorker().postMessage(message, transfer);
+  });
+}
+
+function decodePreviewBitmapInWorker(imageUrl: string, maxSize?: number) {
+  const id = nextBitmapId++;
+  return postPreviewBitmapRequest(id, {
       type: 'decode',
       id,
       url: new URL(imageUrl, window.location.href).href,
       ...(maxSize ? { maxSize } : {}),
-    });
   });
 }
 
 function adoptPreviewBitmapInWorker(bitmap: ImageBitmap) {
   const id = nextBitmapId++;
-  return new Promise<{ id: number; width: number; height: number }>((resolve, reject) => {
-    const timeoutId = window.setTimeout(() => {
-      if (!pendingBitmapMetadata.has(id)) return;
-      resetBitmapWorker(new Error('Preview texture adoption timed out.'));
-    }, PREVIEW_BITMAP_DECODE_TIMEOUT_MS);
-    pendingBitmapMetadata.set(id, {
-      resolve: (value) => {
-        window.clearTimeout(timeoutId);
-        resolve(value);
-      },
-      reject: (error) => {
-        window.clearTimeout(timeoutId);
-        reject(error);
-      },
-    });
-    getBitmapWorker().postMessage({ type: 'adopt', id, bitmap }, [bitmap]);
-  });
+  return postPreviewBitmapRequest(id, { type: 'adopt', id, bitmap }, [bitmap]);
+}
+
+function adoptPreviewMaskInWorker(mask: Uint8Array | Uint8ClampedArray, width: number, height: number, channels?: 4) {
+  const id = nextBitmapId++;
+  const transferredMask = channels === 4 ? mask : mask.slice();
+  return postPreviewBitmapRequest(
+    id,
+    { type: 'adopt-mask', id, mask: transferredMask.buffer, width, height, channels },
+    [transferredMask.buffer],
+  );
 }
 
 function requestPreviewBitmapStripe(id: number, y: number, height: number) {
   const requestId = nextStripeRequestId++;
-  return new Promise<ImageBitmap>((resolve, reject) => {
+  return new Promise<PreviewTextureStripe>((resolve, reject) => {
     const timeoutId = window.setTimeout(() => {
       if (!pendingBitmapStripes.has(requestId)) return;
       resetBitmapWorker(new Error('Preview texture upload stripe timed out.'));
@@ -390,13 +400,16 @@ function configurePreviewTexture(texture: THREE.Texture) {
  * later receives bounded upload stripes, avoiding a full 4K crop on the main
  * thread while preserving the exact bitmap pixels.
  */
-export async function createWorkerBackedPreviewTexture(bitmap: ImageBitmap) {
-  const result = await adoptPreviewBitmapInWorker(bitmap);
+async function createWorkerBackedTexture(
+  resultPromise: Promise<{ id: number; width: number; height: number }>,
+  format: THREE.PixelFormat = THREE.RGBAFormat,
+) {
+  const result = await resultPromise;
   const texture = new THREE.DataTexture(
     null,
     result.width,
     result.height,
-    THREE.RGBAFormat,
+    format,
     THREE.UnsignedByteType,
   );
   texture.userData.liclickPreviewWorkerBitmapId = result.id;
@@ -408,6 +421,28 @@ export async function createWorkerBackedPreviewTexture(bitmap: ImageBitmap) {
   };
   texture.addEventListener('dispose', release);
   return configurePreviewTexture(texture);
+}
+
+/** ImageData transfers ownership of its RGBA buffer; callers must not reuse it. */
+export function createWorkerBackedPreviewTexture(bitmap: ImageBitmap | ImageData) {
+  if (bitmap instanceof ImageData) {
+    return createWorkerBackedTexture(adoptPreviewMaskInWorker(bitmap.data, bitmap.width, bitmap.height, 4));
+  }
+  return createWorkerBackedTexture(adoptPreviewBitmapInWorker(bitmap));
+}
+
+/** UV-DISPLAY-MASK-WORKER/1.2.0. Preserve the one-byte rendered-color mask
+ * through the Worker and GPU upload. Existing shaders sample only red.
+ */
+export function createWorkerBackedMaskPreviewTexture(
+  mask: Uint8Array,
+  width: number,
+  height: number,
+) {
+  return createWorkerBackedTexture(
+    adoptPreviewMaskInWorker(mask, width, height),
+    THREE.RedFormat,
+  );
 }
 
 function invalidatePreviewTextureAfterUploadFailure(texture: THREE.Texture) {
@@ -524,7 +559,11 @@ export function releasePreviewTexture(imageUrl: string) {
 export function uploadPreviewTextureInStripes(
   renderer: THREE.WebGLRenderer,
   texture: THREE.Texture,
-  options?: { allowWhileInteracting?: boolean; shouldCancel?: () => boolean },
+  options?: {
+    allowWhileInteracting?: boolean;
+    shouldCancel?: () => boolean;
+    deferVisiblePresentationBarrier?: boolean;
+  },
 ) {
   if (previewTextureReadyRenderers.get(texture)?.has(renderer)) return Promise.resolve();
   let rendererUploads = previewTextureUploadPromises.get(texture);
@@ -586,9 +625,12 @@ export function uploadPreviewTextureInStripes(
     let stripeCount = 0;
     let minimumUploadPixels = uploadBudget.pixels;
     let maximumUploadPixels = uploadBudget.pixels;
-    type PreparedPreviewStripe = { rowCount: number; stripe: ImageBitmap; y: number };
+    type PreparedPreviewStripe = { rowCount: number; stripe: PreviewTextureStripe; y: number };
     let pendingStripe: Promise<PreparedPreviewStripe> | undefined;
-    let activeStripe: ImageBitmap | undefined;
+    let activeStripe: PreviewTextureStripe | undefined;
+    const releaseStripe = (stripe: PreviewTextureStripe) => {
+      if (!('pixels' in stripe)) stripe.close();
+    };
     try {
       texture.source.dataReady = false;
       texture.needsUpdate = true;
@@ -660,7 +702,7 @@ export function uploadPreviewTextureInStripes(
           await waitForBrowserPaint();
           batchSynchronousMs = 0;
           presentationRequired = false;
-        } else {
+        } else if (!usesVisibleRenderer) {
           // The detached renderer has independent GL state. A macrotask yield
           // lets pointer/rAF work run without adding a mandatory 16.7ms wait to
           // every exact upload stripe (hundreds of waits in a 14-view 4K bake).
@@ -673,7 +715,7 @@ export function uploadPreviewTextureInStripes(
         throwIfCancelled();
         const { rowCount, stripe } = prepared;
         if (options?.shouldCancel?.()) {
-          stripe.close();
+          releaseStripe(stripe);
           activeStripe = undefined;
           throw new DOMException('Texture upload superseded.', 'AbortError');
         }
@@ -691,6 +733,7 @@ export function uploadPreviewTextureInStripes(
         const framePremultiply = context.getParameter(
           context.UNPACK_PREMULTIPLY_ALPHA_WEBGL,
         ) as boolean;
+        const frameAlignment = context.getParameter(context.UNPACK_ALIGNMENT) as number;
         context.pixelStorei(context.UNPACK_FLIP_Y_WEBGL, 0);
         context.pixelStorei(context.UNPACK_PREMULTIPLY_ALPHA_WEBGL, 0);
         let stripeSubmitMs = 0;
@@ -698,15 +741,32 @@ export function uploadPreviewTextureInStripes(
           const stripeStartedAt = performance.now();
           markPreviewUploadStep(`${uploadPhasePrefix}-submit`);
           context.bindTexture(context.TEXTURE_2D, webGlTexture);
-          context.texSubImage2D(
-            context.TEXTURE_2D,
-            0,
-            0,
-            texture.flipY ? image.height - y - rowCount : y,
-            context.RGBA,
-            context.UNSIGNED_BYTE,
-            stripe,
-          );
+          const targetY = texture.flipY ? image.height - y - rowCount : y;
+          if ('pixels' in stripe) {
+            const webgl2 = context as WebGL2RenderingContext;
+            webgl2.pixelStorei(webgl2.UNPACK_ALIGNMENT, 1);
+            webgl2.texSubImage2D(
+              webgl2.TEXTURE_2D,
+              0,
+              0,
+              targetY,
+              stripe.width,
+              stripe.height,
+              texture.format === THREE.RedFormat ? webgl2.RED : webgl2.RGBA,
+              webgl2.UNSIGNED_BYTE,
+              stripe.pixels,
+            );
+          } else {
+            context.texSubImage2D(
+              context.TEXTURE_2D,
+              0,
+              0,
+              targetY,
+              context.RGBA,
+              context.UNSIGNED_BYTE,
+              stripe,
+            );
+          }
           stripeSubmitMs = performance.now() - stripeStartedAt;
           batchSynchronousMs += stripeSubmitMs;
           maximumStripeMs = Math.max(maximumStripeMs, stripeSubmitMs);
@@ -724,12 +784,13 @@ export function uploadPreviewTextureInStripes(
             submittedSinceFlush = 0;
           }
         } finally {
-          stripe.close();
+          releaseStripe(stripe);
           activeStripe = undefined;
           context.activeTexture(frameActiveTexture);
           context.bindTexture(context.TEXTURE_2D, frameBinding);
           context.pixelStorei(context.UNPACK_FLIP_Y_WEBGL, Number(frameFlipY));
           context.pixelStorei(context.UNPACK_PREMULTIPLY_ALPHA_WEBGL, Number(framePremultiply));
+          context.pixelStorei(context.UNPACK_ALIGNMENT, frameAlignment);
         }
         if (adaptiveVisibleUpload && frameMonitor) {
           const frameSample = frameMonitor.readAndReset();
@@ -754,11 +815,13 @@ export function uploadPreviewTextureInStripes(
       if (usesVisibleRenderer) {
         markPreviewUploadStep(`${uploadPhasePrefix}-drain`);
         context.flush();
-        for (let frame = 0; frame < 2; frame += 1) {
-          await waitForBrowserPaint();
-          throwIfCancelled();
-          if (pauseDuringInteraction) await waitForViewportInteractionIdle();
-          throwIfCancelled();
+        if (options?.deferVisiblePresentationBarrier !== true) {
+          for (let frame = 0; frame < 2; frame += 1) {
+            await waitForBrowserPaint();
+            throwIfCancelled();
+            if (pauseDuringInteraction) await waitForViewportInteractionIdle();
+            throwIfCancelled();
+          }
         }
       }
       texture.source.dataReady = true;
@@ -778,11 +841,11 @@ export function uploadPreviewTextureInStripes(
       invalidatePreviewTextureAfterUploadFailure(texture);
       throw error;
     } finally {
-      activeStripe?.close();
+      if (activeStripe) releaseStripe(activeStripe);
       // A crop already in flight still owns its eventual bitmap after abort.
       // Rejections are observed without replacing the original upload error.
       void pendingStripe?.then(
-        ({ stripe }) => stripe.close(),
+        ({ stripe }) => releaseStripe(stripe),
         () => undefined,
       );
       frameMonitor?.stop();

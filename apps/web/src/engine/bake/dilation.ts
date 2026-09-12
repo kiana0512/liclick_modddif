@@ -9,6 +9,10 @@ export type UvGutterAlphaMode = boolean | 'rgb-only';
 const COMPONENT_QUEUE_CHUNK_SIZE = 65_536;
 const MIN_UV_REPAIR_SOURCE_ALPHA = 8;
 const MAX_TOPOLOGY_PINHOLE_RGB_DISTANCE_SQUARED = 64 * 64;
+// Only immutable, geometry-validated topology opts in. One atlas, <=1 MiB;
+// dense/fragmented atlases retain the original scan and donor ordering.
+let gutterBoundary: { mask: WeakRef<Uint8Array>; width: number; height: number;
+  seeds: ChunkedUint32Queue | undefined } | undefined;
 
 function getRgbDistanceSquared(data: Uint8ClampedArray, first: number, second: number) {
   const firstOffset = first * 4;
@@ -206,8 +210,9 @@ export async function padUvIslandGuttersWithTopologyCooperatively(
   iterations: number,
   alphaMode: UvGutterAlphaMode,
   yieldToUi: () => Promise<void>,
+  immutableTopology = false,
 ) {
-  const steps = padUvIslandGutterSteps(imageData, coverage, topology, iterations, alphaMode);
+  const steps = padUvIslandGutterSteps(imageData, coverage, topology, iterations, alphaMode, immutableTopology);
   return runUvPostprocessSteps(steps, yieldToUi);
 }
 
@@ -230,6 +235,7 @@ function* padUvIslandGutterSteps(
   topology: Uint8Array,
   iterations: number,
   alphaMode: UvGutterAlphaMode = false,
+  immutableTopology = false,
 ) {
   const { width, height, data } = imageData;
   if (iterations <= 0) return 0;
@@ -242,11 +248,21 @@ function* padUvIslandGutterSteps(
     [-1, 1],  [0, 1],  [1, 1],
   ] as const;
   let currentFrontier: number[] = [];
+  const cached = immutableTopology && gutterBoundary?.mask.deref() === topology &&
+    gutterBoundary.width === width && gutterBoundary.height === height ? gutterBoundary : undefined;
+  let prepared = immutableTopology && !cached ? new ChunkedUint32Queue() : undefined;
+  if (cached?.seeds) {
+    for (let i = 0; i < cached.seeds.length; i++) {
+      if (i % 8192 === 0) yield;
+      const index = cached.seeds.get(i);
+      if (coverage[index]) currentFrontier.push(index);
+    }
+  } else {
   for (let y = 0; y < height; y += 1) {
     if (y > 0) yield;
     for (let x = 0; x < width; x += 1) {
       const index = y * width + x;
-      if (!coverage[index]) continue;
+      if (!coverage[index] && !prepared) continue;
       // This is a boolean membership test, not donor selection. Keep the
       // row-major frontier and the ordered donor walk below unchanged.
       const touchesAtlasGutter =
@@ -256,9 +272,19 @@ function* padUvIslandGutterSteps(
         (x + 1 < width && !topology[index + 1]) ||
         (y + 1 < height && ((x > 0 && !topology[index + width - 1]) ||
           !topology[index + width] || (x + 1 < width && !topology[index + width + 1])));
-      if (touchesAtlasGutter) currentFrontier.push(index);
+      if (touchesAtlasGutter) {
+        if (coverage[index]) currentFrontier.push(index);
+        if (prepared) {
+          if (prepared.length < 262144) prepared.push(index);
+          else prepared = undefined;
+        }
+      }
     }
   }
+  }
+  if (immutableTopology && !cached) gutterBoundary = {
+    mask: new WeakRef(topology), width, height, seeds: prepared,
+  };
   let paddedPixels = 0;
   let processedSeeds = 0;
 
