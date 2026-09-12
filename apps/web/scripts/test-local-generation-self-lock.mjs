@@ -154,8 +154,8 @@ assert.match(
 );
 assert.match(
   generatePanel,
-  /if \(!isMultiviewReference\(materialReference\)\) \{[\s\S]*?materialReference = await generatePairedMultiviewReference\(materialReference\)/,
-  'A selected single-view material reference must be converted while the repaint submission lock is held.',
+  /if \(!isGptLocalRepaint && !isMultiviewReference\(materialReference\)\) \{[\s\S]*?materialReference = await generatePairedMultiviewReference\(materialReference\)/,
+  'The original ModelView branch must convert single-view references while holding the repaint lock; GPT must not.',
 );
 
 stdout.write('Local generation self-lock regression test passed.\n');

@@ -126,13 +126,13 @@ assert.match(
 );
 assert.match(
   generatePanelSource,
-  /captureCurrentLocalRepaintView\([\s\S]*resolution: LOCAL_REPAINT_INPUT_RESOLUTION,[\s\S]*colorMode: 'flat-target'/,
+  /captureCurrentLocalRepaintView\([\s\S]*resolution: LOCAL_REPAINT_INPUT_RESOLUTION,[\s\S]*colorMode: isGptLocalRepaint \? 'flat-target-coverage' : 'flat-target'/,
   'the generation path must first capture the frozen-camera current BaseColor effect',
 );
 assert.match(
   generatePanelSource,
   /prepareLocalRepaintGenerationInput\(\{[\s\S]*currentEffectUrl: flatCurrentEffectUrl,[\s\S]*clayPreviewUrl,[\s\S]*authoredMaskUrl: currentPaintMaskDataUrl/,
-  'the remote image input must composite aligned clay geometry only inside the authored mask',
+  'the input worker must receive the unchanged authored mask alongside aligned current and clay captures',
 );
 assert.match(
   generatePanelSource,
@@ -151,7 +151,7 @@ assert.match(
 );
 assert.match(
   generatePanelSource,
-  /resultUrl: clippedResultUrl,[\s\S]*rawResultUrl: generation\.resultUrl,[\s\S]*resultComposition: 'direct-v1'/,
+  /resultUrl: preparedResult.resultUrl,[\s\S]*rawResultUrl: generation\.resultUrl,[\s\S]*resultComposition: 'direct-v1'/,
   'model silhouette clipping preserves the untouched provider result without colour harmonization',
 );
 assert.doesNotMatch(
@@ -171,8 +171,8 @@ assert.match(
 );
 assert.match(
   generatePanelSource,
-  /authoredMaskUrl: currentPaintMaskDataUrl,[\s\S]*submittedMaskUrl: preparedGenerationInput\.submittedMaskUrl/,
-  'each task must archive the remote blending mask separately from the retained authored mask',
+  /authoredMaskUrl: currentPaintMaskDataUrl,[\s\S]*submittedMaskUrl: isGptLocalRepaint \? undefined : preparedGenerationInput\.submittedMaskUrl/,
+  'ModelView must archive its sampling mask separately; GPT sends no mask but must retain the authored write mask',
 );
 assert.match(
   generatePanelSource,

@@ -1,4 +1,4 @@
-import { usesCaptureMaskTextureProjection } from '@/engine/generation/textureProjectionPolicy';
+import { usesCaptureMaskTextureProjection, preservesGeneratedSourceAlpha, textureProjectionIgnoresSourceAlpha } from '@/engine/generation/textureProjectionPolicy';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Download, Layers, LoaderCircle, Maximize2, Plus, Sparkles, Square, X } from 'lucide-react';
@@ -115,6 +115,10 @@ import {
   urlToDataUrl,
   type AssetCategory,
 } from '@/services/workspaceApiClient';
+
+import { GPT_TEXTURE_MODELS, GPT_TEXTURE_QUALITIES, resolveGptTextureModel, resolveGptTextureQuality, getGptTextureRequestParameters } from '@/engine/generation/gptTextureModels';
+import { prepareCloudRepaintCompletion } from '@/engine/localRepaint/cloudCompletion';
+import { buildGptLocalRepaintRequest } from '@/services/gptLocalRepaintRequest';
 
 type GenerateTab = 'multiview' | 'repaint';
 type TextureViewMode = 'single' | 'multi';
@@ -322,6 +326,9 @@ function generationPollToastKey(jobId: string) {
   return `generation-poll-retrying:${jobId}`;
 }
 const defaultImageGenerationSettings = {
+  textureGptModel: 'gpt-image-2.5-sunburst',
+  textureGptQuality: 'high',
+  localRepaintProvider: 'modelview' as 'modelview' | 'gpt',
   model: 'gpt-image-2' as LiclickImageModel,
   aspectRatio: 'auto' as LiclickAspectRatio,
   imageSize: 'auto' as LiclickImageSize,
@@ -574,8 +581,8 @@ function createFailedGeneration(
   };
 }
 
-function resolveRequestImageSize(imageSize: LiclickImageSize) {
-  return imageSize;
+function resolveRequestImageSize(imageSize: LiclickImageSize, aspectRatio: LiclickAspectRatio = 'auto') {
+  return imageSize === 'auto' && aspectRatio !== 'auto' ? '1K' : imageSize;
 }
 
 function resolveRequestAspectRatio(
@@ -583,7 +590,7 @@ function resolveRequestAspectRatio(
   aspectRatio: LiclickAspectRatio,
   requestImageSize: LiclickImageSize,
 ) {
-  if (model === 'gpt-image-2' && aspectRatio === 'auto' && requestImageSize !== 'auto')
+  if ((model === 'gpt-image-2' || model.startsWith('gpt-image-2.5-')) && aspectRatio === 'auto' && requestImageSize !== 'auto')
     return '1:1';
   return aspectRatio;
 }
@@ -663,7 +670,7 @@ export function GeneratePanel({
   const promptPolishRequestRef = useRef(0);
   const promptValueRef = useRef({ key: '', value: '' });
   const localRepaintResolvedPromptCacheRef = useRef(
-    new Map<string, { prompt: string; source: 'user-request' | 'default-seam' }>(),
+    new Map<string, { prompt: string; source: 'user-request' | 'default-seam' | 'single-view-template' }>(),
   );
   const [previewImageOpen, setPreviewImageOpen] = useState(false);
   const [subjectFilledPreview, setSubjectFilledPreview] = useState<{
@@ -794,8 +801,11 @@ export function GeneratePanel({
       : liclickPrompt;
   const promptPolishKey = `${currentProjectId ?? 'none'}:${isLocalRepaintTab ? 'local-repaint' : `${textureViewMode}:${singleViewProvider}`}`;
   promptValueRef.current = { key: promptPolishKey, value: prompt };
-  const imageModel = isTextureMapTab
-    ? ('gpt-image-2' as LiclickImageModel)
+  const textureGptModel = resolveGptTextureModel(generationSettings.textureGptModel);
+  const textureGptQuality = resolveGptTextureQuality(generationSettings.textureGptQuality);
+  const isGptLocalRepaint = generationSettings.localRepaintProvider === 'gpt';
+  const imageModel = isTextureMapTab || (isLocalRepaintTab && isGptLocalRepaint)
+    ? textureGptModel
     : (generationSettings.model as LiclickImageModel);
   const aspectRatio = generationSettings.aspectRatio as LiclickAspectRatio;
   const imageSize = generationSettings.imageSize as LiclickImageSize;
@@ -1138,7 +1148,7 @@ export function GeneratePanel({
       isTextureMapGeneration(displayedPreviewGeneration))
       ? previewCapture?.maskUrl
       : undefined;
-  const previewProcessingMode = displayedPreviewGeneration
+  const previewProcessingMode = displayedPreviewGeneration && !preservesGeneratedSourceAlpha(displayedPreviewGeneration)
     ? isLocalRepaintGeneration(displayedPreviewGeneration)
       ? 'generated-display'
       : isTextureMapGeneration(displayedPreviewGeneration)
@@ -1309,7 +1319,7 @@ export function GeneratePanel({
       return generationIdentityIds(generation).some((id) => jobIds.has(id));
     }
 
-    function reconcileJob(job: GenerationJobListItem) {
+    async function reconcileJob(job: GenerationJobListItem) {
       const generationState = useGenerationStore.getState().generations;
       const liveProject = useProjectStore
         .getState()
@@ -1325,6 +1335,9 @@ export function GeneratePanel({
         return { changed: false, needsPersist: false };
 
       const existing = projectGeneration ?? storeGeneration;
+      // Foreground repaint owns clipping and completion; do not publish its raw result early.
+      if (existing?.metadata.provider === 'liclick-atlas' && isLocalRepaintGeneration(existing) && generationAbortControllersRef.current.has(existing.id))
+        return { changed: false, needsPersist: false };
       const fallback = storeGeneration ?? projectGeneration;
       const existingMetadata = {
         ...(projectGeneration?.metadata ?? {}),
@@ -1336,7 +1349,7 @@ export function GeneratePanel({
       const resultUrl =
         workspaceResultUrl ?? existing?.resultUrl ?? fallback?.resultUrl ?? job.resultUrl;
       const status = resultUrl ? ('succeeded' as const) : job.status;
-      const generation: Generation = {
+      let generation: Generation = {
         id: existing?.id ?? fallback?.id ?? job.clientGenerationId ?? job.id,
         mode: existing?.mode ?? fallback?.mode ?? 'single',
         prompt: existing?.prompt || fallback?.prompt || job.prompt,
@@ -1364,6 +1377,7 @@ export function GeneratePanel({
           uploadedReferences: job.uploadedReferences ?? existingMetadata.uploadedReferences,
           aspectRatio: job.params?.aspectRatio ?? existingMetadata.aspectRatio,
           imageSize: job.params?.imageSize ?? existingMetadata.imageSize,
+          quality: job.params?.quality ?? existingMetadata.quality,
           count: job.params?.count ?? existingMetadata.count,
           startedAt: job.startedAt ?? existingMetadata.startedAt,
           completedAt:
@@ -1375,6 +1389,9 @@ export function GeneratePanel({
           serverSubmitted: true,
         },
       };
+      generation = await prepareCloudRepaintCompletion(generation, liveProject?.captures ?? []);
+      if (cancelled || generationIdentityIds(generation).some((id) => cancelledGenerationIdsRef.current.has(id)))
+        return { changed: false, needsPersist: false };
       const nextSignature = generationRecoverySignature(generation);
       const needsPersist =
         Boolean(generation.resultUrl) && !isWorkspaceAssetUrl(generation.resultUrl);
@@ -1406,7 +1423,7 @@ export function GeneratePanel({
         let didChange = false;
         let shouldPersist = false;
         for (const job of [...jobs].reverse()) {
-          const reconciliation = reconcileJob(job);
+          const reconciliation = await reconcileJob(job);
           didChange = reconciliation.changed || didChange;
           if (reconciliation.needsPersist && job.resultUrl) {
             const persistenceKey = `${job.id}:${job.resultUrl}`;
@@ -1646,6 +1663,8 @@ export function GeneratePanel({
     if (generationToPoll.status !== 'queued' && generationToPoll.status !== 'running')
       return undefined;
     if (cancelledGenerationIdsRef.current.has(generationToPoll.id)) return undefined;
+    if (generationToPoll.metadata.provider === 'liclick-atlas' && isLocalRepaintGeneration(generationToPoll) && generationAbortControllersRef.current.has(generationToPoll.id))
+      return undefined;
     if (!isGenerationSubmittedToServer(generationToPoll)) {
       const startedAt = getGenerationStartedAt(generationToPoll);
       const remaining = Number.isFinite(startedAt)
@@ -1721,7 +1740,11 @@ export function GeneratePanel({
               completedAt: result.updatedAt ?? new Date().toISOString(),
             },
           };
-          syncGeneration(generation);
+          const restored = await prepareCloudRepaintCompletion(generation,
+            useProjectStore.getState().projects.find((project) => project.id === generation.metadata.projectId)?.captures ?? [],
+            controller.signal);
+          if (cancelled || controller.signal.aborted) return;
+          syncGeneration(restored);
           window.dispatchEvent(new Event(IMMEDIATE_PROJECT_SAVE_EVENT));
           console.info('[Liclick 3D Texture] Restored generation result:', generation.id);
           return;
@@ -2469,7 +2492,7 @@ export function GeneratePanel({
     capture: Capture,
   ) {
     const referenceImages = [modelViewReference, materialReference];
-    const requestImageSize = resolveRequestImageSize(imageSize);
+    const requestParameters = getGptTextureRequestParameters(resolution, textureGptQuality);
     return createLiclickApiClient().generateTextureSingleView({
       clientGenerationId: generationId,
       projectId: currentProject?.id,
@@ -2485,9 +2508,7 @@ export function GeneratePanel({
       visibleOnly: true,
       upscale: false,
       model: imageModel,
-      aspectRatio: resolveRequestAspectRatio(imageModel, aspectRatio, requestImageSize),
-      imageSize: requestImageSize,
-      count: 1,
+      ...requestParameters,
     });
   }
 
@@ -2698,7 +2719,7 @@ export function GeneratePanel({
         await saveGenerationStateBestEffort();
         updateTexturePipelineProgress(
           42 + (index / viewCount) * 50,
-          `远端多视图 ${stepLabel} · ${usesGptView ? 'GPT2' : '远端'}生成${view.label}`,
+          `远端多视图 ${stepLabel} · ${usesGptView ? 'GPT 2.5' : '远端'}生成${view.label}`,
         );
 
         try {
@@ -3736,7 +3757,7 @@ export function GeneratePanel({
       // next request prepares detached browser snapshots.
       useSceneStore.getState().setLocalRepaintGenerationPresentationActive(true);
       if (authStatus !== 'authenticated' && !(await requireFeishuLogin())) return false;
-      if (!isMultiviewReference(materialReference)) {
+      if (!isGptLocalRepaint && !isMultiviewReference(materialReference)) {
         setLocalRepaintPreparation((current) => ({
           startedAt: current?.startedAt ?? Date.now(),
           detail: '正在准备多视图材质参考',
@@ -3821,7 +3842,7 @@ export function GeneratePanel({
           objectId,
           resolution: LOCAL_REPAINT_INPUT_RESOLUTION,
           framing: 'current',
-          colorMode: 'flat-target',
+          colorMode: isGptLocalRepaint ? 'flat-target-coverage' : 'flat-target',
           aspect: captureAspect,
           cameraSnapshot: captureCameraSnapshot,
         },
@@ -3847,6 +3868,7 @@ export function GeneratePanel({
           detail: '正在融合当前效果与蒙版预览',
         }));
         preparedGenerationInput = await prepareLocalRepaintGenerationInput({
+          gptGuide: isGptLocalRepaint,
           currentEffectUrl: flatCurrentEffectUrl,
           clayPreviewUrl,
           authoredMaskUrl: currentPaintMaskDataUrl,
@@ -3878,7 +3900,7 @@ export function GeneratePanel({
         console.warn('[Liclick 3D Texture] Could not persist authored repaint mask:', error);
         return currentPaintMaskDataUrl;
       });
-      const persistedSubmittedMaskUrlPromise = persistGeneratedImage(
+      const persistedSubmittedMaskUrlPromise = isGptLocalRepaint ? Promise.resolve(undefined) : persistGeneratedImage(
         'generations',
         preparedGenerationInput.submittedMaskUrl,
         `${generationId}-submitted-mask.png`,
@@ -3911,9 +3933,11 @@ export function GeneratePanel({
         camera: capture.camera,
         objectMatrixWorld: captureObjectMatrixWorld,
         surfaceSignature,
-        sourceComposition: 'flat-clay-mask-v1',
+        sourceComposition: isGptLocalRepaint ? 'gpt-clay-selection-coverage-v1' : 'flat-clay-mask-v1',
       });
-      let resolvedPrompt = localRepaintResolvedPromptCacheRef.current.get(promptFingerprint);
+      let resolvedPrompt = isGptLocalRepaint
+        ? { prompt: (await import('@/engine/generation/textureMapPrompts')).buildTextureMapCompletionPrompt(rawUserPrompt), source: 'single-view-template' as const }
+        : localRepaintResolvedPromptCacheRef.current.get(promptFingerprint);
       if (!resolvedPrompt) {
         const persistedResolution = useGenerationStore
           .getState()
@@ -4000,9 +4024,10 @@ export function GeneratePanel({
         captureId: capture.id,
         status: 'running',
         metadata: {
-          provider: 'modelview-int8',
+          provider: isGptLocalRepaint ? 'liclick-atlas' : 'modelview-int8',
+          model: isGptLocalRepaint ? textureGptModel : undefined,
           workflow: 'local-repaint',
-          modelviewWorkflow: '2026.08.28-cd48a78-truev3-gguf-mask-4input-rseed-r1',
+          modelviewWorkflow: isGptLocalRepaint ? undefined : '2026.08.28-cd48a78-truev3-gguf-mask-4input-rseed-r1',
           clientGenerationId: generationId,
           projectId: currentProject.id,
           objectId,
@@ -4010,12 +4035,12 @@ export function GeneratePanel({
           paintMaskRevision: currentPaintMaskRevision,
           paintMaskSource: 'user',
           authoredMaskUrl: currentPaintMaskDataUrl,
-          submittedMaskUrl: preparedGenerationInput.submittedMaskUrl,
+          submittedMaskUrl: isGptLocalRepaint ? undefined : preparedGenerationInput.submittedMaskUrl,
           promptSource: resolvedPrompt.source,
           promptFingerprint,
           userPrompt: rawUserPrompt,
-          sourceColorMode: 'flat-clay-mask-v1',
-          sourceComposition: 'flat-clay-mask-v1',
+          sourceColorMode: isGptLocalRepaint ? 'gpt-clay-selection-coverage-v1' : 'flat-clay-mask-v1',
+          sourceComposition: isGptLocalRepaint ? 'gpt-clay-selection-coverage-v1' : 'flat-clay-mask-v1',
           maskExpansionRadius: preparedGenerationInput.dilationRadius,
           maskFeatherRadius: preparedGenerationInput.featherRadius,
           resultComposition: 'direct-v1',
@@ -4035,7 +4060,7 @@ export function GeneratePanel({
       setLastCapture(capture);
       setGenerateNotice({
         tone: 'info',
-        message: '正在提交当前效果图、材质参考图、蒙版和提示词。',
+        message: isGptLocalRepaint ? '正在提交白模组合图、材质参考图和提示词。' : '正在提交当前效果图、材质参考图、蒙版和提示词。',
       });
       if (localRepaintPreparationAbortControllerRef.current === requestAbortController) {
         localRepaintPreparationAbortControllerRef.current = undefined;
@@ -4044,9 +4069,45 @@ export function GeneratePanel({
       const [currentEffectDataUrl, materialReferenceDataUrl, maskDataUrl] = await Promise.all([
         urlToDataUrl(capture.colorUrl),
         urlToDataUrl(materialReference.url),
-        urlToDataUrl(preparedGenerationInput.submittedMaskUrl),
+        isGptLocalRepaint ? Promise.resolve('') : urlToDataUrl(preparedGenerationInput.submittedMaskUrl),
       ]);
-      const generationPromise = createModelviewApiClient().generateInpaint(
+      let depthPreviewPromise: ReturnType<typeof captureRepaintDepth> | undefined;
+      const generationPromise = isGptLocalRepaint ? (async () => {
+        // Persist camera + authored selection before paying for a recoverable cloud job.
+        const authoredMaskUrl = await persistedAuthoredMaskUrlPromise;
+        if (!isWorkspaceAssetUrl(authoredMaskUrl)) throw new Error('原始选区尚未保存，未提交 GPT 任务，请重试。');
+        const depth = await (depthPreviewPromise ??= captureRepaintDepth());
+        if (!depth) throw new Error('深度截图失败，未提交 GPT 任务，请重试。');
+        capture = { ...capture, depthUrl: depth.depthUrl, depthEncoding: depth.depthEncoding };
+        const recoveryCaptures = [
+          { ...capture, maskUrl: authoredMaskUrl },
+          ...(useProjectStore.getState().projects.find((item) => item.id === currentProject.id)?.captures ?? [])
+            .filter((item) => item.id !== capture.id),
+        ];
+        updateProjectById(currentProject.id, { captures: recoveryCaptures });
+        syncGeneration({ ...pendingGeneration!, metadata: { ...pendingGeneration!.metadata,
+          authoredMaskUrl, maskUrl: authoredMaskUrl } });
+        await saveCriticalProjectState({ captures: recoveryCaptures });
+        if (requestAbortController!.signal.aborted) throw new DOMException('已终止局部生图。', 'AbortError');
+        const submitted = await createLiclickApiClient().generateTextureSingleView(buildGptLocalRepaintRequest({
+          generationId, projectId: currentProject.id, prompt: effectivePrompt,
+          guideUrl: currentEffectDataUrl, reference: { ...materialReference!, url: materialReferenceDataUrl },
+          capture, object: objects.find((item) => item.id === objectId), model: textureGptModel,
+          quality: textureGptQuality,
+          resolution,
+        }));
+        if (isCancelledGeneration(pendingGeneration!)) {
+          await createLiclickApiClient().cancelGenerationJob(getGenerationJobId(submitted));
+          throw new DOMException('已终止局部生图。', 'AbortError');
+        }
+        const tracked: Generation = { ...pendingGeneration!, metadata: {
+          ...pendingGeneration!.metadata, ...submitted.metadata, authoredMaskUrl, maskUrl: authoredMaskUrl,
+          workflow: 'local-repaint', serverSubmitted: true,
+        } };
+        syncGeneration(tracked);
+        window.dispatchEvent(new Event(IMMEDIATE_PROJECT_SAVE_EVENT));
+        return waitForLiclickGeneration({ ...tracked, resultUrl: submitted.resultUrl });
+      })() : createModelviewApiClient().generateInpaint(
         {
           clientGenerationId: generationId,
           projectId: currentProject.id,
@@ -4068,19 +4129,21 @@ export function GeneratePanel({
         },
         { signal: requestAbortController.signal },
       );
-      // The depth guard is local-only. Capture it at 2K from the exact frozen
-      // camera while the remote request is already running, then attach it to
-      // the archived capture before the result can be painted back.
-      const depthPreviewPromise = captureCurrentDepthPreview({
-        objectId,
-        resolution: 2048,
-        framing: 'current',
-        aspect: captureAspect,
-        cameraSnapshot: captureCameraSnapshot,
-      }, 2048).catch((error) => {
-        console.warn('[Liclick 3D Texture] Local repaint depth guard was not captured:', error);
-        return undefined;
-      });
+      // Keep the original provider submission ahead of the local-only depth
+      // capture. GPT waits for this same promise before persisting/submitting.
+      function captureRepaintDepth() {
+        return captureCurrentDepthPreview({
+          objectId,
+          resolution: 2048,
+          framing: 'current',
+          aspect: captureAspect,
+          cameraSnapshot: captureCameraSnapshot,
+        }, 2048).catch((error) => {
+          console.warn('[Liclick 3D Texture] Local repaint depth guard was not captured:', error);
+          return undefined;
+        });
+      }
+      depthPreviewPromise ??= captureRepaintDepth();
       const [generation, depthPreview] = await Promise.all([
         generationPromise,
         depthPreviewPromise,
@@ -4105,32 +4168,34 @@ export function GeneratePanel({
       }
       if (isCancelledGeneration(pendingGeneration)) return false;
       if (!generation.resultUrl) throw new Error('局部重绘没有返回图片。');
-      const { MODEL_SILHOUETTE_CLIP_VERSION, prepareModelClippedRepaint } =
-        await import('@/engine/localRepaint/modelSilhouetteClip');
-      const clippedResultUrl = await prepareModelClippedRepaint(
-        generation.resultUrl, capture.depthUrl, requestAbortController.signal,
+      const { prepareRepaintResult } =
+        await import('@/engine/localRepaint/resultAlphaPolicy');
+      const preparedResult = await prepareRepaintResult(
+        generation.resultUrl, capture.depthUrl, isGptLocalRepaint, requestAbortController.signal,
       );
       if (isCancelledGeneration(pendingGeneration)) return false;
       const completedGeneration: Generation = {
         ...generation,
+        mode: 'inpaint',
         // Keep one canonical client id from start through completion. Some
         // legacy ModelView responses used the remote id here, leaving the
         // persisted client-id record permanently `running` beside the result.
         id: pendingGeneration.id,
-        resultUrl: clippedResultUrl,
+        resultUrl: preparedResult.resultUrl,
         captureId: generation.captureId ?? capture.id,
         metadata: {
           ...pendingGeneration.metadata,
           ...generation.metadata,
+          workflow: 'local-repaint',
           objectMatrixWorld: captureObjectMatrixWorld,
           captureCamera: capture.camera,
           maskUrl: currentPaintMaskDataUrl,
           rawResultUrl: generation.resultUrl,
-          modelSilhouetteClipVersion: MODEL_SILHOUETTE_CLIP_VERSION,
+          ...preparedResult.metadata,
           resultComposition: 'direct-v1',
           paintMaskRevision: currentPaintMaskRevision,
-          sourceColorMode: 'flat-clay-mask-v1',
-          sourceComposition: 'flat-clay-mask-v1',
+          sourceColorMode: isGptLocalRepaint ? 'gpt-clay-selection-coverage-v1' : 'flat-clay-mask-v1',
+          sourceComposition: isGptLocalRepaint ? 'gpt-clay-selection-coverage-v1' : 'flat-clay-mask-v1',
           completedAt: generation.metadata.completedAt ?? new Date().toISOString(),
         },
       };
@@ -4378,9 +4443,9 @@ export function GeneratePanel({
         aspectRatio: resolveRequestAspectRatio(
           imageModel,
           aspectRatio,
-          resolveRequestImageSize(imageSize),
+          resolveRequestImageSize(imageSize, aspectRatio),
         ),
-        imageSize: resolveRequestImageSize(imageSize),
+        imageSize: resolveRequestImageSize(imageSize, aspectRatio),
         count: 1,
       });
       const alignedGeneration: Generation = {
@@ -4924,7 +4989,7 @@ export function GeneratePanel({
       : generation.resultUrl;
     const captureMaskTexture = usesCaptureMaskTextureProjection(generation);
     let projectedResultUrl = readableResultUrl;
-    if (captureMaskTexture && generationCapture.maskUrl) {
+    if (captureMaskTexture && generationCapture.maskUrl && !preservesGeneratedSourceAlpha(generation)) {
       try {
         // The panel preview is tightly cropped and cannot be projected without
         // changing camera UVs. Prepare the same cleaned edge colours in the
@@ -5067,7 +5132,8 @@ export function GeneratePanel({
         projectionCoverageMode: captureMaskTexture
           ? 'capture-mask'
           : currentExisting.projectionCoverageMode,
-        ignoreSourceAlpha: captureMaskTexture ? true : currentExisting.ignoreSourceAlpha,
+        ignoreSourceAlpha: captureMaskTexture
+          ? textureProjectionIgnoresSourceAlpha(generation) : currentExisting.ignoreSourceAlpha,
         minimumProjectionFacing: captureMaskTexture
           ? SINGLE_VIEW_MINIMUM_PROJECTION_FACING
           : currentExisting.minimumProjectionFacing,
@@ -5350,6 +5416,40 @@ export function GeneratePanel({
               }}
               className="mb-2"
             />
+            {isLocalRepaintTab && (
+              <SegmentedControl<'modelview' | 'gpt'>
+                value={generationSettings.localRepaintProvider}
+                options={[
+                  { value: 'modelview', label: '原局部重绘', disabled: workflowConfigurationLocked || workflowSubmissionLocked },
+                  { value: 'gpt', label: 'GPT 局部重绘', disabled: workflowConfigurationLocked || workflowSubmissionLocked },
+                ]}
+                onChange={(localRepaintProvider) => updateGenerationSettings({ localRepaintProvider })}
+                className="mb-2"
+              />
+            )}
+            {(isTextureMapTab || isGptLocalRepaint) && (
+              <div className="mb-2" aria-label="GPT 2.5 模型选择">
+                <SegmentedControl
+                  value={textureGptModel}
+                  options={GPT_TEXTURE_MODELS.map((model) => ({ ...model,
+                    disabled: workflowConfigurationLocked || workflowSubmissionLocked,
+                  }))}
+                  onChange={(textureGptModel) => updateGenerationSettings({ textureGptModel })}
+                />
+                <div className="mt-2" aria-label="GPT 生图质量">
+                  <p className="mb-1 text-[11px] text-white/56">质量</p>
+                  <SegmentedControl
+                    value={textureGptQuality}
+                    options={GPT_TEXTURE_QUALITIES.map((quality) => ({ ...quality,
+                      disabled: workflowConfigurationLocked || workflowSubmissionLocked,
+                    }))}
+                    onChange={(textureGptQuality) => updateGenerationSettings({ textureGptQuality })}
+                  />
+                </div>
+                <p className="mt-1 text-[11px] text-white/46">1:1 方图 · {resolution} · 透明背景</p>
+                {isLocalRepaintTab && <p className="mt-1 text-[11px] text-white/46">选区和无贴图处显示白模；回贴仅作用于笔刷选区。</p>}
+              </div>
+            )}
           </div>
         )}
         <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-md border border-white/10 bg-black/24">
@@ -5547,7 +5647,7 @@ export function GeneratePanel({
                 </span>
                 {isLocalRepaintTab ? (
                   <span className="text-[11px] font-medium text-white/46">
-                    生成时优化提示词
+                    {isGptLocalRepaint ? '使用单视图提示词' : '生成时优化提示词'}
                   </span>
                 ) : (
                   <button

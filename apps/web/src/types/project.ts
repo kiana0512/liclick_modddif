@@ -42,6 +42,9 @@ export type ProjectSettings = {
   projectionMode: ProjectionMode;
   colorManagement: 'srgb' | 'linear';
   imageGeneration?: {
+    textureGptModel?: string;
+    textureGptQuality?: string;
+    localRepaintProvider?: 'modelview' | 'gpt';
     model: string;
     aspectRatio: string;
     imageSize: string;

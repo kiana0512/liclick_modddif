@@ -70,9 +70,16 @@ assert.ok(submitView, 'The shared GPT submission helper must exist.');
 const submitJs = ts.transpileModule(submitView.getText(panelAst), {
   compilerOptions: { target: ts.ScriptTarget.ES2022 },
 }).outputText;
+const optionsSource = await fs.readFile(path.join(root, 'src/engine/generation/gptTextureModels.ts'), 'utf8');
+const optionsJs = ts.transpileModule(optionsSource, {
+  compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
+}).outputText;
+const optionExports = {};
+new Function('exports', optionsJs)(optionExports);
 const submitScope = { createLiclickApiClient: () => ({ generateTextureSingleView: (request) => request }),
-  currentProject: { id: 'project' }, objects: [], resolution: 2048, imageSize: '2K', imageModel: 'GPT2',
-  aspectRatio: '1:1', resolveRequestImageSize: (value) => value, resolveRequestAspectRatio: () => '1:1' };
+  currentProject: { id: 'project' }, objects: [], resolution: '4K', imageSize: 'auto', imageModel: 'gpt-image-2.5-flare',
+  aspectRatio: 'auto', textureGptQuality: 'max',
+  getGptTextureRequestParameters: optionExports.getGptTextureRequestParameters };
 const submit = new Function(...Object.keys(submitScope), `${submitJs}; return submitGptTextureView;`)(...Object.values(submitScope));
 const guide = { id: 'guide' }, material = { id: 'material' }, capture = { objectId: 'object' };
 const request = submit('generation', 'completion prompt', guide, material, capture);
@@ -80,6 +87,10 @@ assert.deepEqual(request.referenceIds, ['guide', 'material']);
 assert.deepEqual(request.referenceImages, [guide, material], 'Atlas receives exactly the guide then material reference.');
 assert.equal(request.capture, capture);
 assert.equal(request.count, 1);
+assert.equal(request.imageSize, '4K', 'The top viewport resolution, not the old auto image setting, drives output');
+assert.equal(request.aspectRatio, '1:1');
+assert.equal(request.quality, 'max');
+assert.equal(request.model, 'gpt-image-2.5-flare');
 assert.match(panel, /return submitGptTextureView\(\s*generationId,\s*pendingGeneration.prompt,\s*modelViewReference,\s*materialReference,\s*capture/);
 assert.match(textureMapPrompts, /只在图一上进行材质补全，不重新生成物体/);
 assert.match(

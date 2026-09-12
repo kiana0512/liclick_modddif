@@ -24,6 +24,8 @@ export class LiclickApiError extends Error {
 }
 
 export type LiclickImageModel =
+  | 'gpt-image-2.5-sunburst'
+  | 'gpt-image-2.5-flare'
   | 'gpt-image-2'
   | 'nano_banana_2'
   | 'nano_banana_pro'
@@ -66,6 +68,7 @@ export type LiclickGenerateTextureSingleViewInput = GenerateTextureInput & {
   model?: LiclickImageModel;
   aspectRatio?: LiclickAspectRatio;
   imageSize?: LiclickImageSize;
+  quality?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
   count?: number;
 };
 
@@ -89,7 +92,7 @@ export type GenerationJobResult = {
   status: Generation['status'];
   resultUrl?: string;
   resultUrls?: string[];
-  workflow?: 'liclick' | 'texture-map';
+  workflow?: 'liclick' | 'texture-map' | 'local-repaint';
   model?: string;
   extraParams?: Record<string, unknown>;
   uploadedReferences?: unknown[];
@@ -108,6 +111,7 @@ export type GenerationJobListItem = GenerationJobResult & {
   params?: {
     aspectRatio?: LiclickAspectRatio;
     imageSize?: LiclickImageSize;
+    quality?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
     count?: number;
   };
 };
@@ -225,7 +229,7 @@ export function createLiclickApiClient(config: LiclickApiConfig = {}): LiclickAp
         extraParams?: Record<string, unknown>;
         uploadedReferences?: unknown[];
         activeProjectJob?: boolean;
-        workflow?: 'liclick' | 'texture-map';
+        workflow?: 'liclick' | 'texture-map' | 'local-repaint';
         message?: string;
         startedAt?: string;
       }>(await getTransport(), '/api/liclick/generate-image', {
@@ -238,6 +242,7 @@ export function createLiclickApiClient(config: LiclickApiConfig = {}): LiclickAp
           model: input.model,
           aspectRatio: input.aspectRatio,
           imageSize: input.imageSize,
+          quality: input.quality,
           count: input.count,
           references: preparedReferences.map(({ id, name, url }) => ({ id, name, url })),
         }),

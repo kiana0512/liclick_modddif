@@ -19,7 +19,7 @@ export type PreparedSingleViewTextureCompletion = {
 type LocalRepaintWorkerResult = {
   id: number;
   compositeBlob: Blob;
-  submittedMaskBlob: Blob;
+  submittedMaskBlob?: Blob;
 } & Omit<PreparedLocalRepaintGenerationInput, 'compositeUrl' | 'submittedMaskUrl'>;
 
 type SingleViewWorkerResult = {
@@ -71,7 +71,7 @@ async function readImageBlob(url: string) {
 }
 
 async function prepareWorkerInput(input: {
-  mode: 'local' | 'single';
+  mode: 'local' | 'single' | 'gpt-local';
   currentEffectUrl: string;
   clayPreviewUrl: string;
   maskUrl: string;
@@ -108,19 +108,21 @@ async function prepareWorkerInput(input: {
 }
 
 export async function prepareLocalRepaintGenerationInput(input: {
+  gptGuide?: boolean;
   currentEffectUrl: string;
   clayPreviewUrl: string;
   authoredMaskUrl: string;
 }): Promise<PreparedLocalRepaintGenerationInput> {
   const result = (await prepareWorkerInput({
-    mode: 'local',
+    mode: input.gptGuide ? 'gpt-local' : 'local',
     currentEffectUrl: input.currentEffectUrl,
     clayPreviewUrl: input.clayPreviewUrl,
     maskUrl: input.authoredMaskUrl,
   })) as LocalRepaintWorkerResult;
+  if (!input.gptGuide && !result.submittedMaskBlob) throw new Error('Missing repaint sampling mask.');
   return {
     compositeUrl: createRegisteredObjectUrl(result.compositeBlob),
-    submittedMaskUrl: createRegisteredObjectUrl(result.submittedMaskBlob),
+    submittedMaskUrl: input.gptGuide ? input.authoredMaskUrl : createRegisteredObjectUrl(result.submittedMaskBlob!),
     dilationRadius: result.dilationRadius,
     featherRadius: result.featherRadius,
     processMs: result.processMs,

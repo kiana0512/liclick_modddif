@@ -93,8 +93,8 @@ const localRepaintFlow = panel.slice(
 );
 assert.match(
   localRepaintFlow,
-  /if \(!isMultiviewReference\(materialReference\)\) \{[\s\S]*materialReference = await generatePairedMultiviewReference\(materialReference\)/,
-  'a selected single-view reference must finish automatic multiview generation before local repaint continues',
+  /if \(!isGptLocalRepaint && !isMultiviewReference\(materialReference\)\) \{[\s\S]*materialReference = await generatePairedMultiviewReference\(materialReference\)/,
+  'the original ModelView path must still prepare multiview input; GPT uses the selected reference directly',
 );
 assert.ok(
   localRepaintFlow.indexOf('await generatePairedMultiviewReference(materialReference)') <

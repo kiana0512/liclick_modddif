@@ -33,7 +33,7 @@ type GenerationJob = {
   id: string;
   userId: string;
   projectId: string;
-  workflow: 'liclick' | 'texture-map';
+  workflow: 'liclick' | 'texture-map' | 'local-repaint';
   atlasHomeDir?: string;
   input: GenerateImageInput;
   status: 'submitting' | 'running' | 'succeeded' | 'failed';
@@ -193,7 +193,7 @@ async function loadGenerationJobsFromDisk() {
   }
   const normalizedJobs = jobs.map((job) => ({
     ...job,
-    workflow: job.workflow === 'texture-map' ? ('texture-map' as const) : ('liclick' as const),
+    workflow: job.workflow === 'local-repaint' ? ('local-repaint' as const) : job.workflow === 'texture-map' ? ('texture-map' as const) : ('liclick' as const),
   }));
   for (const job of normalizedJobs) {
     generationJobs.set(job.id, job);
@@ -608,7 +608,7 @@ function createGenerationJob(
     id: jobId,
     userId: user.id,
     projectId: input.projectId ?? 'default',
-    workflow: input.workflow === 'texture-map' ? 'texture-map' : 'liclick',
+    workflow: input.workflow === 'local-repaint' ? 'local-repaint' : input.workflow === 'texture-map' ? 'texture-map' : 'liclick',
     atlasHomeDir: user.atlasHomeDir,
     input,
     status: 'submitting',
@@ -673,6 +673,7 @@ function getJobListResponse(job: GenerationJob) {
     params: {
       aspectRatio: job.input.aspectRatio,
       imageSize: job.input.imageSize,
+      quality: job.input.quality,
       count: job.input.count,
     },
     extraParams: job.extraParams,
@@ -1149,13 +1150,17 @@ export async function handleLiclickRoute(
     }
     const input = await readJsonBody<GenerateImageInput>(request);
     const projectId = input.projectId ?? 'default';
-    const workflow = input.workflow === 'texture-map' ? 'texture-map' : 'liclick';
+    const workflow = input.workflow === 'local-repaint' ? 'local-repaint' : input.workflow === 'texture-map' ? 'texture-map' : 'liclick';
     // Texture-map multiview generation intentionally creates one independently
     // tracked job per camera. The frontend submission lock still prevents duplicate
     // clicks, while Comfy/LiClick can queue these jobs without collapsing their IDs.
     const activeJob =
       workflow === 'texture-map' ? undefined : findActiveProjectJob(user, projectId, workflow);
     if (activeJob) {
+      if (workflow === 'local-repaint' && activeJob.id !== input.clientGenerationId) {
+        sendJson(response, 409, { error: '已有局部重绘任务正在运行，请等待完成；未提交新任务。' });
+        return true;
+      }
       startGenerationJob(activeJob);
       sendJson(response, 202, {
         ...getJobResponse(activeJob),

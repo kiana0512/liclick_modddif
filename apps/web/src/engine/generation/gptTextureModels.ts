@@ -1,0 +1,29 @@
+// GPT25-TEXTURE-GENERATION/1.1.0. Legacy GPT2 selections migrate on read only.
+export const GPT_TEXTURE_MODELS = [
+  { value: 'gpt-image-2.5-sunburst', label: 'Sunburst' },
+  { value: 'gpt-image-2.5-flare', label: 'Flare' },
+] as const;
+export type GptTextureModel = typeof GPT_TEXTURE_MODELS[number]['value'];
+export function resolveGptTextureModel(value?: string): GptTextureModel {
+  return value === 'gpt-image-2.5-flare' ? value : 'gpt-image-2.5-sunburst';
+}
+
+export const GPT_TEXTURE_QUALITIES = [
+  { value: 'low', label: '低' },
+  { value: 'medium', label: '中' },
+  { value: 'high', label: '高' },
+  { value: 'xhigh', label: '超高' },
+  { value: 'max', label: '最高' },
+] as const;
+export type GptTextureQuality = typeof GPT_TEXTURE_QUALITIES[number]['value'];
+export function resolveGptTextureQuality(value?: string): GptTextureQuality {
+  return GPT_TEXTURE_QUALITIES.find((option) => option.value === value)?.value ?? 'high';
+}
+
+/** A submitted batch keeps this snapshot; never reads mutable viewport settings. */
+export function getGptTextureRequestParameters(resolution: string, quality?: string) {
+  if (resolution !== '1K' && resolution !== '2K' && resolution !== '4K')
+    throw new Error('GPT 生图仅支持 1K、2K、4K，请在顶部选择分辨率。');
+  return { aspectRatio: '1:1' as const, imageSize: resolution,
+    quality: resolveGptTextureQuality(quality), count: 1 } as const;
+}

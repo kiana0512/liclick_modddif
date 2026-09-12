@@ -99,12 +99,14 @@ function useLayerImageSource(url: string, enabled: boolean) {
 
 function useProjectedLayerDisplayPreview(layer: Layer, thumbnail = false) {
   const { type, imageUrl: sourceUrl, depthUrl, contentRevision: revision } = layer;
-  const key = JSON.stringify([type, sourceUrl, depthUrl, revision, thumbnail]);
+  const preserveSource = type === 'projected' && layer.projectionCoverageMode === 'capture-mask' &&
+    layer.ignoreSourceAlpha === false;
+  const key = JSON.stringify([type, sourceUrl, depthUrl, revision, thumbnail, preserveSource]);
   const [preview, setPreview] = useState<
     (GeneratedDisplayPreview & { key: string }) | undefined
   >();
   const enabled =
-    (thumbnail || type === 'projected') && sourceUrl && !isLocalRepaintPreviewLayer(layer) &&
+    (thumbnail || (type === 'projected' && !preserveSource)) && sourceUrl && !isLocalRepaintPreviewLayer(layer) &&
     !(thumbnail && getLiveProjectedTextureSourceState(sourceUrl));
 
   useEffect(() => {
@@ -114,7 +116,7 @@ function useProjectedLayerDisplayPreview(layer: Layer, thumbnail = false) {
     const controller = new AbortController();
     void (thumbnail ? createLayerThumbnail : createGeneratedDisplayPreview)(sourceUrl, depthUrl, {
       signal: controller.signal, revision,
-    }, type === 'projected')
+    }, type === 'projected' && !preserveSource)
       .then((nextPreview) => {
         if (!cancelled) setPreview({ ...nextPreview, key });
       })
@@ -128,7 +130,7 @@ function useProjectedLayerDisplayPreview(layer: Layer, thumbnail = false) {
       cancelled = true;
       controller.abort();
     };
-  }, [enabled, key, revision, depthUrl, sourceUrl, type, thumbnail]);
+  }, [enabled, key, revision, depthUrl, sourceUrl, type, thumbnail, preserveSource]);
 
   return enabled && preview?.key === key ? preview : undefined;
 }

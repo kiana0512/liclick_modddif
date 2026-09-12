@@ -13,11 +13,12 @@ type ReferenceInput = {
 export type GenerateImageInput = {
   clientGenerationId?: string;
   projectId?: string;
-  workflow?: 'liclick' | 'texture-map';
+  workflow?: 'liclick' | 'texture-map' | 'local-repaint';
   prompt: string;
   model?: string;
   aspectRatio?: 'auto' | '1:1' | '4:3' | '3:4' | '3:2' | '2:3' | '16:9' | '9:16';
   imageSize?: 'auto' | '1K' | '2K' | '4K';
+  quality?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
   count?: number;
   references?: ReferenceInput[];
 };
@@ -428,7 +429,7 @@ function dataUrlToBase64(dataUrl: string) {
   return isBase64 ? match[2] : Buffer.from(decodeURIComponent(match[2]), 'utf8').toString('base64');
 }
 
-function buildExtraParams(input: GenerateImageInput, uploadedReferences: UploadedReference[]) {
+export function buildExtraParams(input: GenerateImageInput, uploadedReferences: UploadedReference[]) {
   const model = input.model || 'gpt-image-2';
   const aspectRatio = input.aspectRatio ?? 'auto';
   const imageSize = input.imageSize ?? 'auto';
@@ -442,6 +443,21 @@ function buildExtraParams(input: GenerateImageInput, uploadedReferences: Uploade
     quality: 'high',
     n: clampCount(input.count),
   };
+  const isGpt25 = model === 'gpt-image-2.5-sunburst' || model === 'gpt-image-2.5-flare';
+  // GPT-TRANSPARENT-TEXTURE/1.0.0. Only texture/repaint outputs, not reference art.
+  if ((isGpt25 || model === 'gpt-image-2') &&
+      (input.workflow === 'texture-map' || input.workflow === 'local-repaint')) {
+    extraParams.background = 'transparent';
+  }
+  if (isGpt25) {
+    if (input.quality !== undefined && !['low', 'medium', 'high', 'xhigh', 'max'].includes(input.quality))
+      throw new Error('GPT 2.5 quality must be low, medium, high, xhigh or max.');
+    extraParams.quality = input.quality ?? 'high';
+    if ((aspectRatio === 'auto') !== (imageSize === 'auto')) {
+      throw new Error('GPT 2.5 requires auto ratio/size together, or explicit ratio and size.');
+    }
+    extraParams.model = model;
+  }
   if (referenceImages.length > 0) extraParams.reference_images = referenceImages;
 
   if (model === 'gpt-image-1.5') {
@@ -456,7 +472,7 @@ function buildExtraParams(input: GenerateImageInput, uploadedReferences: Uploade
     // automatic framing avoids an unexpected 1:1 crop that breaks projection
     // alignment when the user selects 1K/2K explicitly.
     extraParams.aspect_ratio = aspectRatio;
-    if (model === 'gpt-image-2') {
+    if (model === 'gpt-image-2' || isGpt25) {
       extraParams.image_size = gptImage2Size;
     } else if (model === 'nano_banana_2' || model === 'nano_banana_pro') {
       extraParams.image_size = imageSize === 'auto' ? '1K' : imageSize;

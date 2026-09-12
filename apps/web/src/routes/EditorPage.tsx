@@ -1,3 +1,4 @@
+import { preservesRepaintResultAlpha } from '@/engine/localRepaint/resultAlphaPolicy';
 import { isNativeUvRepaintLayer } from '@/engine/localRepaint/uvRepaintState';
 import {prepareMergeProjection,startMergeProjectionPreparation,mergePreparationSignature} from '@/engine/bake/mergeProjectionPreparation';
 import {getPreparedMergePng,awaitPreparedMergePng,reuseUnchangedMergePng} from '@/engine/bake/mergeFinalPreparation';
@@ -5744,7 +5745,7 @@ export function EditorPage({
       const rawResultUrl =
         typeof metadata.rawResultUrl === 'string' ? metadata.rawResultUrl : generation.resultUrl;
       if (!rawResultUrl) return Promise.reject(new Error('Local repaint result is missing.'));
-      if (metadata.modelSilhouetteClipVersion === 1 && generation.resultUrl) {
+      if (preservesRepaintResultAlpha(metadata) && generation.resultUrl) {
         return Promise.resolve({ imageUrl: generation.resultUrl, persistentImageUrl: generation.resultUrl,
           rawImageUrl: rawResultUrl, seamMode: 'legacy' as const, seamHarmonizationVersion: undefined });
       }
@@ -6247,7 +6248,7 @@ export function EditorPage({
           imageUrl: projectionImage.imageUrl,
           persistentImageUrl: projectionImage.persistentImageUrl,
           rawImageUrl: projectionImage.rawImageUrl,
-          ignoreSourceAlpha: latestLocalRepaintGeneration.metadata.modelSilhouetteClipVersion !== 1,
+          ignoreSourceAlpha: !preservesRepaintResultAlpha(latestLocalRepaintGeneration.metadata),
           seamHarmonizationVersion: projectionImage.seamHarmonizationVersion,
           autoActivate: false,
           allowedMaskUrl: generationMaskUrl,
@@ -6675,7 +6676,7 @@ export function EditorPage({
         imageUrl: projectionImage.imageUrl,
         persistentImageUrl: projectionImage.persistentImageUrl,
         rawImageUrl: projectionImage.rawImageUrl,
-        ignoreSourceAlpha: latestLocalRepaintGeneration.metadata.modelSilhouetteClipVersion !== 1,
+        ignoreSourceAlpha: !preservesRepaintResultAlpha(latestLocalRepaintGeneration.metadata),
         seamHarmonizationVersion: projectionImage.seamHarmonizationVersion,
         autoActivate: true,
         allowedMaskUrl: generationMaskUrl,

@@ -120,7 +120,7 @@ assert.match(
 );
 assert.match(
   layerStoreSource,
-  /addProjectedLayerFromGeneration:[\s\S]*?captureMaskUrl = captureMaskTexture \? capture\?\.maskUrl : undefined[\s\S]*?maskUrl: captureMaskUrl[\s\S]*?maskSpace: captureMaskUrl \? 'projection' : undefined[\s\S]*?projectionCoverageMode: captureMaskTexture[\s\S]*?'capture-mask'[\s\S]*?ignoreSourceAlpha: captureMaskTexture \? true : undefined[\s\S]*?projectionVisibilityPolicy: captureMaskTexture \? 'standard' : undefined/,
+  /addProjectedLayerFromGeneration:[\s\S]*?captureMaskUrl = captureMaskTexture \? capture\?\.maskUrl : undefined[\s\S]*?maskUrl: captureMaskUrl[\s\S]*?maskSpace: captureMaskUrl \? 'projection' : undefined[\s\S]*?projectionCoverageMode: captureMaskTexture[\s\S]*?'capture-mask'[\s\S]*?ignoreSourceAlpha: textureProjectionIgnoresSourceAlpha\(generation\)[\s\S]*?projectionVisibilityPolicy: captureMaskTexture \? 'standard' : undefined/,
   'New GPT and remote single-view layers must use the capture silhouette while joining ordinary quality composition.',
 );
 assert.match(
@@ -379,7 +379,7 @@ assert.match(
 );
 assert.match(
   generatePanelSource,
-  /captureCurrentLocalRepaintView\([\s\S]*?resolution: LOCAL_REPAINT_INPUT_RESOLUTION[\s\S]*?colorMode: 'flat-target'[\s\S]*?cameraSnapshot: captureCameraSnapshot/,
+  /captureCurrentLocalRepaintView\([\s\S]*?resolution: LOCAL_REPAINT_INPUT_RESOLUTION[\s\S]*?colorMode: isGptLocalRepaint \? 'flat-target-coverage' : 'flat-target'[\s\S]*?cameraSnapshot: captureCameraSnapshot/,
   'The local-repaint current-effect input must capture frozen-camera BaseColor without PBR lighting.',
 );
 assert.match(

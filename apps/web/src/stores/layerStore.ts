@@ -1,4 +1,4 @@
-import { usesCaptureMaskTextureProjection } from '@/engine/generation/textureProjectionPolicy';
+import { usesCaptureMaskTextureProjection, textureProjectionIgnoresSourceAlpha } from '@/engine/generation/textureProjectionPolicy';
 import { create } from 'zustand';
 import { v4 as uuid } from 'uuid';
 import type { Capture } from '@/types/capture';
@@ -174,7 +174,9 @@ function normalizeLayer(layer: Layer) {
     projectionCoverageMode: singleViewGeneratedProjection
       ? 'capture-mask'
       : layer.projectionCoverageMode,
-    ignoreSourceAlpha: singleViewGeneratedProjection ? true : layer.ignoreSourceAlpha,
+    ignoreSourceAlpha: singleViewGeneratedProjection
+      ? (canonicalSingleViewProjection ? layer.ignoreSourceAlpha ?? true : true)
+      : layer.ignoreSourceAlpha,
     minimumProjectionFacing: singleViewGeneratedProjection
       ? SINGLE_VIEW_MINIMUM_PROJECTION_FACING
       : layer.minimumProjectionFacing,
@@ -282,8 +284,8 @@ export const useLayerStore = create<LayerStore>((set, get) => ({
         : generation.metadata.alphaMode === 'geometry-mask-separated'
           ? 'source-alpha-depth'
           : undefined,
-      // Single and multiview results share geometry coverage and quality blending.
-      ignoreSourceAlpha: captureMaskTexture ? true : undefined,
+      // Transparent outputs intersect source alpha with the same capture geometry.
+      ignoreSourceAlpha: textureProjectionIgnoresSourceAlpha(generation),
       minimumProjectionFacing: captureMaskTexture
         ? SINGLE_VIEW_MINIMUM_PROJECTION_FACING
         : undefined,

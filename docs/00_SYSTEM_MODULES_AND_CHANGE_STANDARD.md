@@ -1,8 +1,8 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
-> 文档版本：`2.20.33`
+> 文档版本：`2.20.37`
 >
-> 生效日期：`2026-09-11`
+> 生效日期：`2026-09-12`
 >
 > 代码盘点基线：`9e69980 + 单视图成功结果自动投影恢复`
 >
@@ -11,6 +11,12 @@
 > 审计口径：`0a2519d + 607e82f + 2568e40`，不包含错误文档提交 `2bde8c6/e03bab2/d1c5f78`
 
 ## 1. 文档地位与强制边界
+
+2026-09-12 M04：`GPT25-TEXTURE-GENERATION/1.1.0` 将单/多视图和 GPT 局部重绘输出统一为 1:1 方图，分辨率绑定顶部 1K/2K/4K；新增项目级五档质量 low/medium/high/xhigh/max，默认 high，两种 GPT 模型均可切换。透明背景固定，原远端局部重绘不变。协作 M08/M12，详见 [变更卡](changes/CHG-20260912-GPT-OPTIONS.md)。
+
+2026-09-12 M04/M06：`GPT-TRANSPARENT-TEXTURE/1.0.0` 接通 GPT2/Sunburst/Flare 纹理及 GPT 局部任务 background=transparent；通过持久化 extraParams.background 选择源 Alpha 分支，不根据模型名迁移旧任务。新单/多视图保留源 RGBA 和完整画布，跳过重复抠图；capture mask、深度、角度及笔刷约束保留。规范图层恢复尊重显式 ignoreSourceAlpha=false，旧无标记流程不变。协作 M07/M08/M12，详见 [变更卡](changes/CHG-20260912-GPT-TRANSPARENT.md)。
+
+2026-09-12 M04/M08：`GPT25-TEXTURE-GENERATION/1.0.0` 接入莉刻 Sunburst/Flare 并保留两视角并发、分组串行；`GPT-REPAINT-GUIDE/1.0.0` 新增独立 GPT 局部重绘入口，只有无纹理处与笔刷选区使用白模，其余纹理保留。GPT 仅接收组合图和材质参考，原始 UV 选区仍是唯一回贴授权。使用现有单视图提示词、原局部重绘保持不变。`GPT-REPAINT-ALPHA/1.0.0` 按用户确认让新 GPT 局部返图跳过 ALG-LR-013 内缩/强制不透明，前台与恢复原样保留源 RGBA；原远端 ModelView/Klein 保留内缩。协作 M06/M07/M12：回贴显式使用源 alpha，原笔刷/深度约束、合并与导出透传逻辑不变；既有已裁任务不重算。详见 [变更卡](changes/CHG-20260912-GPT25-REPAINT.md)。
 
 2026-09-11 M07：`UV-RASTER-CACHE-IDENTITY/2` 将逐层 GPU 缓存与外层合成签名统一到属性/底层数组身份、交错布局及上传版本，补齐 drawRange；缓存复制/保留以生命周期 revision 防止 context loss 后复活。内置冻结回归复现旧核更换同版本 UV 后 524288 字节错误，新核零差异。像素算法、分辨率、QA、持久格式不变，无资产迁移。收尾验证、未完成性能项与回滚见 [变更卡](changes/CHG-20260911-UV-CACHE-IDENTITY.md)。
 
