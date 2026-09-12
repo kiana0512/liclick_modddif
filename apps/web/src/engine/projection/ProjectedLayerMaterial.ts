@@ -360,6 +360,15 @@ function createWhiteMembranePreviewMaterial(_previewLightingInput?: ProjectionPr
 // overlayProjectionAlpha matches UV-bake composition: coverage already contains
 // source mask, capture angle, depth/normal visibility and image-edge fade.
 // Applying another gate would crop strong frontal data around the nose.
+// Surface-locked repaint still needs an inward-facing footprint. Depth
+// proves which surface was captured, but it does not make a grazing side
+// face part of the authored view; keeping this smooth guard avoids both
+// cross-side leakage and hard black seams.
+// On a foreshortened plane the expected depth changes several times more
+// per source pixel than on a face-on plane. This geometric quantisation is
+// present with or without a normal buffer, so always widen the tolerance;
+// tying it to useNormalCheck makes the depth-only production path alternate
+// between accepted and rejected triangles after array promotion.
 const fragmentShader = `
   ${RELIABLE_PROJECTION_GLSL}
   ${PROJECTED_RASTER_DEPTH_GLSL}
@@ -647,15 +656,15 @@ const fragmentShader = `
       ),
       useProjectionFacingGuard
     );
-    // Surface-locked repaint still needs an inward-facing footprint. Depth
-    // proves which surface was captured, but it does not make a grazing side
-    // face part of the authored view; keeping this smooth guard avoids both
-    // cross-side leakage and hard black seams.
-    // On a foreshortened plane the expected depth changes several times more
-    // per source pixel than on a face-on plane. This geometric quantisation is
-    // present with or without a normal buffer, so always widen the tolerance;
-    // tying it to useNormalCheck makes the depth-only production path alternate
-    // between accepted and rejected triangles after array promotion.
+
+
+
+
+
+
+
+
+
     float grazingDepthScale = mix(
       ${MAX_GRAZING_DEPTH_SCALE.toFixed(1)},
       1.0,
