@@ -211,12 +211,12 @@ function adoptPreviewBitmapInWorker(bitmap: ImageBitmap) {
   return postPreviewBitmapRequest(id, { type: 'adopt', id, bitmap }, [bitmap]);
 }
 
-function adoptPreviewMaskInWorker(mask: Uint8Array, width: number, height: number) {
+function adoptPreviewMaskInWorker(mask: Uint8Array | Uint8ClampedArray, width: number, height: number, channels?: 4) {
   const id = nextBitmapId++;
-  const transferredMask = mask.slice();
+  const transferredMask = channels === 4 ? mask : mask.slice();
   return postPreviewBitmapRequest(
     id,
-    { type: 'adopt-mask', id, mask: transferredMask.buffer, width, height },
+    { type: 'adopt-mask', id, mask: transferredMask.buffer, width, height, channels },
     [transferredMask.buffer],
   );
 }
@@ -423,7 +423,11 @@ async function createWorkerBackedTexture(
   return configurePreviewTexture(texture);
 }
 
-export function createWorkerBackedPreviewTexture(bitmap: ImageBitmap) {
+/** ImageData transfers ownership of its RGBA buffer; callers must not reuse it. */
+export function createWorkerBackedPreviewTexture(bitmap: ImageBitmap | ImageData) {
+  if (bitmap instanceof ImageData) {
+    return createWorkerBackedTexture(adoptPreviewMaskInWorker(bitmap.data, bitmap.width, bitmap.height, 4));
+  }
   return createWorkerBackedTexture(adoptPreviewBitmapInWorker(bitmap));
 }
 
@@ -744,7 +748,7 @@ export function uploadPreviewTextureInStripes(
               targetY,
               stripe.width,
               stripe.height,
-              webgl2.RED,
+              texture.format === THREE.RedFormat ? webgl2.RED : webgl2.RGBA,
               webgl2.UNSIGNED_BYTE,
               stripe.pixels,
             );

@@ -7,6 +7,7 @@ const { chromium } = await import(process.env.PLAYWRIGHT_MODULE
 const root = fileURLToPath(new URL('..', import.meta.url)).replaceAll('\\', '/').replace(/\/$/, '');
 let fixture = await readFile(root + '/scripts/uv-repaint-viewport-fixture.mjs', 'utf8');
 const resolution = process.env.LICLICK_UV_TEST_RESOLUTION ?? '1K';
+const holdBusy = process.env.LICLICK_ERASER_BUSY_TEST === '1';
 const layerCount = Number(process.env.LICLICK_ERASER_TEST_LAYERS ?? 2);
 assert([2,10,14].includes(layerCount));
 assert(['1K', '2K', '4K'].includes(resolution));
@@ -53,6 +54,7 @@ fixture += String.raw`
     state: () => ({ pixel: pixels(), draft: getEraserUvDraft()?.revision,
       drawing: getEraserUvDraft()?.drawing, layers: useLayerStore.getState().layers.map(l => ({id:l.id, mask:l.maskUrl})),
       status: document.body.dataset.residentUvProjectionStatus,
+      stages: JSON.parse(document.body.dataset.residentUvProjectionStages || '{}'),
       duration: document.body.dataset.residentUvProjectionDurationMs }),
     async settled() { await until(() => {
       const row = useLayerStore.getState().layers.find(l => l.id === layers[1].id);
@@ -60,10 +62,15 @@ fixture += String.raw`
     }, 'committed UV'); }
   };
 }
+export { THREE };
 `;
 const server = await createServer({ root, configFile: false, logLevel: 'error',
   resolve: { alias: { '@': root + '/src' } },
   plugins: [{ name: 'eraser-fixture',
+    transform(code, id) {
+      if (process.env.LICLICK_ERASER_BASELINE_UPLOAD === '1' && id.endsWith('/ResidentProjectedUvDisplay.ts'))
+        return code.replaceAll('allowWhileInteracting: interactive', 'allowWhileInteracting: false');
+    },
     resolveId(id) { if (id === '/__eraser.mjs') return root + '/__eraser.mjs'; },
     load(id) { if (id === root + '/__eraser.mjs') return fixture; },
     configureServer(s) { s.middlewares.use('/__fixture', (_, res) => {
@@ -85,6 +92,39 @@ await page.route('**/api/**', route => route.fulfill({ json: {} }));
 await page.route('**/__li3d_eraser_perf', route => route.fulfill({ json: {} }));
 try {
   await page.goto(server.resolvedUrls.local[0] + '__fixture?layers='+layerCount);
+  const uploadParity = await page.evaluate(async () => {
+    const { THREE } = await import('/__eraser.mjs');
+    const { createWorkerBackedPreviewTexture, uploadPreviewTextureInStripes,
+      releaseTransientPreviewUploadSource } = await import('/src/engine/viewport/previewTextureCache.ts');
+    const renderer = new THREE.WebGLRenderer();
+    const target = new THREE.WebGLRenderTarget(3,2);
+    const geometry = new THREE.PlaneGeometry(2,2), scene = new THREE.Scene();
+    const material = new THREE.ShaderMaterial({ uniforms:{ map:{value:null} },
+      vertexShader:'varying vec2 v;void main(){v=uv;gl_Position=vec4(position.xy,0.,1.);}',
+      fragmentShader:'varying vec2 v;uniform sampler2D map;void main(){gl_FragColor=texture2D(map,v);}',
+      blending:THREE.NoBlending });
+    scene.add(new THREE.Mesh(geometry,material));
+    const bytes = Uint8ClampedArray.from([27,55,88,255, 100,60,20,127, 250,12,8,1,
+      99,31,45,0, 10,21,250,254, 35,126,78,64]);
+    const reference = await createImageBitmap(new ImageData(bytes.slice(),3,2),
+      {imageOrientation:'flipY',premultiplyAlpha:'none'});
+    const source = new ImageData(bytes.slice(),3,2), results=[];
+    try {
+      for (const input of [reference, source]) {
+        const texture = await createWorkerBackedPreviewTexture(input);
+        try {
+          await uploadPreviewTextureInStripes(renderer,texture,{allowWhileInteracting:true});
+          material.uniforms.map.value=texture;
+          renderer.setRenderTarget(target);renderer.render(scene,new THREE.Camera());
+          const pixels=new Uint8Array(24);renderer.readRenderTargetPixels(target,0,0,3,2,pixels);
+          results.push([...pixels]);
+        } finally {releaseTransientPreviewUploadSource(renderer,texture);texture.dispose();}
+      }
+      if (results[0].some((v,i)=>v!==results[1][i])) throw Error('RGBA upload differs from bitmap: '+JSON.stringify(results));
+      if (source.data.byteLength!==0) throw Error('RGBA ownership was not transferred');
+      return { bytes:24, exact:true };
+    } finally { material.dispose();geometry.dispose();target.dispose();renderer.dispose(); }
+  });
   const draftChecks = await page.evaluate(async () => {
     const { EraserUvDraft } = await import('/src/engine/paint/eraserUvDraft.ts');
     const results = [];
@@ -122,6 +162,7 @@ try {
   });
   await page.evaluate(async () => (await import('/__eraser.mjs')).setup());
   const { point, before } = await page.evaluate(() => window.eraserFixture);
+  if (holdBusy) await page.evaluate(() => { document.body.dataset.perfSimulatedViewportInteraction='1'; });
   await page.mouse.move(point.x, point.y); await page.mouse.down();
   const start = Date.now();
   await page.waitForFunction(before => {
@@ -133,11 +174,18 @@ try {
   assert(live.drawing, 'The visible pixel must change before pointer-up.');
   assert(live.pixel[2] > live.pixel[0], 'Erasing the orange layer must reveal the blue layer, not erase both.');
   assert(live.layers.every(layer => !layer.mask), 'Interactive draft must not publish authored layer masks.');
-  await page.mouse.move(point.x + 70, point.y, { steps: 15 });
+  const visibleRevisions = new Set();
+  for (let step=1;step<=60;step++) {
+    await page.mouse.move(point.x + 70*step/60, point.y);
+    await page.waitForTimeout(16);
+    visibleRevisions.add(await page.evaluate(() => document.body.dataset.residentUvProjectionDurationMs));
+  }
+  assert(visibleRevisions.size > 1, 'UV output must advance during continuous movement, not only after stopping');
   await page.waitForFunction(() => {
     const f=window.eraserFixture, p=f.pixels(37);
     return f.state().drawing && f.state().draft > 1 && p[2] > p[0]*2;
   }, undefined, { timeout: 20000 });
+  if (holdBusy) await page.evaluate(() => { delete document.body.dataset.perfSimulatedViewportInteraction; });
   await page.mouse.up();
   await page.evaluate(() => window.eraserFixture.settled());
   const committed = await page.evaluate(() => window.eraserFixture.state());
@@ -151,8 +199,10 @@ try {
   await page.waitForFunction(() => window.eraserFixture.state().drawing, undefined, { timeout: 10000 });
   await page.mouse.up();
   assert.deepEqual(errors, []);
-  console.log(JSON.stringify({ resolution, layerCount, draftChecks, before, live, committed, latencyMs, errors }));
+  console.log(JSON.stringify({ resolution, layerCount, holdBusy, uploadParity, visibleUpdates:visibleRevisions.size-1,
+    draftChecks, before, live, committed, latencyMs, errors }));
 } catch (error) {
-  console.log(JSON.stringify({ errors, state: await page.evaluate(() => window.eraserFixture?.state()) }));
+  console.log(JSON.stringify({ errors, state: await page.evaluate(() => window.eraserFixture?.state()),
+    diagnostics: await page.evaluate(() => ({...document.body.dataset})) }));
   throw error;
 } finally { await browser.close(); await server.close(); }

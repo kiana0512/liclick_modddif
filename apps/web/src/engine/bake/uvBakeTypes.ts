@@ -76,6 +76,8 @@ export interface BakeProjectedLayerInput {
 }
 
 export interface BakeVisibleProjectedLayersInput {
+  /** Interactive derived pixels may upload during input; authored bakes still wait. */
+  allowWhileInteracting?: boolean;
   /** Renderer-owned display calculation for this exact model, independent of selection. */
   sourceModel?: ModelLoadResult;
   /** Optional renderer-owned cache; never persisted or used as authoritative output. */

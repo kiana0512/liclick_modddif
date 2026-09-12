@@ -55,6 +55,7 @@ const SURFACE_LOCKED_VISIBILITY_FEATHER = 0.05;
 const gpuUvSeamPairCache = new WeakMap<THREE.Object3D, ReturnType<typeof collectUvSeamPairs>>();
 
 type GpuLayerStackBakeInput = {
+  allowWhileInteracting?: boolean;
   rasterCache?: import('./ProjectedUvRasterCache').ProjectedUvRasterCache;
   residentQuality?: { preserveAlpha: boolean; retainRasters: boolean };
   renderer: THREE.WebGLRenderer;
@@ -881,6 +882,7 @@ async function loadLayerTextureFromCpuImageData(input: {
 async function stageLayerTexturesForGpu(
   renderer: THREE.WebGLRenderer,
   textures: Iterable<THREE.Texture>,
+  allowWhileInteracting = false,
 ) {
   let maximumUploadMs = 0;
   const usesVisibleRenderer = renderer.domElement.isConnected;
@@ -895,7 +897,7 @@ async function stageLayerTexturesForGpu(
     }
     await waitForSharedRendererBakeSlot();
     const startedAt = performance.now();
-    await uploadPreviewTextureInStripes(renderer, texture);
+    await uploadPreviewTextureInStripes(renderer, texture, { allowWhileInteracting });
     maximumUploadMs = Math.max(maximumUploadMs, performance.now() - startedAt);
   }
   if (typeof document !== 'undefined') {
@@ -1743,7 +1745,7 @@ export async function bakeProjectedLayerRastersWithGpu(
       activeTextures = textures.disposableTextures;
       sourceSizes.push(textures.sourceSizes);
       const uploadStartedAt=performance.now();
-      await stageLayerTexturesForGpu(renderer, textures.disposableTextures);
+      await stageLayerTexturesForGpu(renderer, textures.disposableTextures, input.allowWhileInteracting);
       textureUploadMs+=performance.now()-uploadStartedAt;
 
       const coverageMaterial = createLayerMaterial({

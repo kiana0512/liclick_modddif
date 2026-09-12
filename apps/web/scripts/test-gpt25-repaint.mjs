@@ -52,6 +52,7 @@ assert.equal(resolveGptTextureQuality('invalid'), 'high');
 assert.throws(() => getGptTextureRequestParameters('8K', 'max'), /仅支持/);
 assert.deepEqual(GPT_TEXTURE_QUALITIES.map(({ value }) => value), ['low', 'medium', 'high', 'xhigh', 'max']);
 for (const { value: model } of GPT_TEXTURE_MODELS) for (const resolution of ['1K', '2K', '4K']) for (const { value: quality } of GPT_TEXTURE_QUALITIES) {
+  const expectedImageSize = resolution === '4K' ? '2K' : resolution;
   assert.equal(resolveGptTextureModel(model), model);
   const capture = { id: 'capture', maskUrl: 'private-authored-mask', camera: {}, depthUrl: 'private-depth' };
   const reference = { id: 'reference', name: 'reference.png', url: 'material-image' };
@@ -65,10 +66,10 @@ for (const { value: model } of GPT_TEXTURE_MODELS) for (const resolution of ['1K
   assert.equal(input.capture.maskUrl, 'private-authored-mask');
   assert.equal(input.mask, undefined);
   assert.equal(input.aspectRatio, '1:1');
-  assert.equal(input.imageSize, resolution);
+  assert.equal(input.imageSize, expectedImageSize);
   assert.equal(input.quality, quality);
   const textureParams = getGptTextureRequestParameters(resolution, quality);
-  assert.deepEqual(textureParams, { aspectRatio: '1:1', imageSize: resolution, quality, count: 1 });
+  assert.deepEqual(textureParams, { aspectRatio: '1:1', imageSize: expectedImageSize, quality, count: 1 });
 }
 
 const clipCalls = [];

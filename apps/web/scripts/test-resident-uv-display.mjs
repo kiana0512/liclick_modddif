@@ -590,6 +590,22 @@ await presentation.waitForResidentUvPresentation(scene, 'other-object');
     data: { type: 'stripe', id: 17, requestId: 33, y: 0, height: 1 },
   });
   assert.match(reply.message, /released/);
+  // The same worker transports straight RGBA drafts without a bitmap roundtrip.
+  const rgba = Uint8Array.from({ length: 24 }, (_, i) => (i * 47) % 256);
+  await worker.onmessage({ data: { type: 'adopt-mask', id: 18, mask: rgba.buffer,
+    width: 3, height: 2, channels: 4 } });
+  assert.equal(reply.type, 'ready');
+  for (const [y, expected] of [[0, rgba.slice(12)], [1, rgba.slice(0,12)]]) {
+    await worker.onmessage({ data: { type: 'stripe', id: 18, requestId: 34, y, height: 1 } });
+    assert.deepEqual(new Uint8Array(reply.pixels), expected, 'RGBA row/channel/alpha bytes are unchanged');
+  }
+  assert.equal(created.length, 0, 'RGBA adoption must not allocate a bitmap');
+  await worker.onmessage({ data: { type: 'release', id: 18 } });
+  await worker.onmessage({ data: { type: 'stripe', id: 18, requestId: 35, y: 0, height: 1 } });
+  assert.match(reply.message, /released/);
+  await worker.onmessage({ data: { type: 'adopt-mask', id: 19, mask: rgba.buffer,
+    width: 3, height: 3, channels: 4 } });
+  assert.match(reply.message, /dimensions/);
 }
 console.log(
   'Resident UV: exact rounding, duplicate candidate reuse, bounded ownership, geometry invalidation and one-byte mask upload passed.',

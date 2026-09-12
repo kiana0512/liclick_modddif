@@ -40,7 +40,7 @@ type Request = {
   onError: (error: unknown) => void;
 };
 
-/** UV-DISPLAY-BUFFER/1.1.0. The display owns derived UV buffers, never layers/assets.
+/** UV-DISPLAY-BUFFER/1.1.2. The display owns derived UV buffers, never layers/assets.
  * Use the same resident Top-K and exact postprocess path as explicit UV merge.
  * Keep the front buffer until its replacement has uploaded and been bound.
  */
@@ -213,6 +213,7 @@ export class ResidentProjectedUvDisplay {
             markSourceLayersBaked: false,
             skipImageEncoding: true,
             skipCanvasUpload: true,
+            allowWhileInteracting: interactive,
             checkCancelled: guard,
             onProgress: guard,
           });
@@ -266,12 +267,14 @@ export class ResidentProjectedUvDisplay {
       }
       stages.underlayCompositeMs = performance.now() - underlayStartedAt;
       const uploadStartedAt = performance.now();
-      const bitmap = await createImageBitmap(result.imageData, {
+      // Draft pixels have no persistence/cache consumers. Transfer them directly
+      // to the stripe worker instead of creating and cropping a full-size bitmap.
+      const bitmap = interactive ? result.imageData : await createImageBitmap(result.imageData, {
         imageOrientation: 'flipY',
         premultiplyAlpha: 'none',
       });
       if (cancelled()) {
-        bitmap.close();
+        if (bitmap instanceof ImageBitmap) bitmap.close();
         guard();
       }
       const colorTexture = await createWorkerBackedPreviewTexture(bitmap);
@@ -300,9 +303,11 @@ export class ResidentProjectedUvDisplay {
       renderedColorMaskTexture.colorSpace = THREE.NoColorSpace;
       guard();
       await uploadPreviewTextureInStripes(request.renderer, colorTexture, {
+        allowWhileInteracting: interactive,
         shouldCancel: cancelled,
       });
       await uploadPreviewTextureInStripes(request.renderer, renderedColorMaskTexture, {
+        allowWhileInteracting: interactive,
         shouldCancel: cancelled,
       });
       guard();

@@ -1244,6 +1244,7 @@ async function bakeVisibleProjectedLayersToTextureUnlocked(
           renderer,
           group: importedModel.group,
           rasterCache: input.rasterCache,
+          allowWhileInteracting: input.allowWhileInteracting,
           layers: bakeLayers,
           resolution: input.resolution,
           enableBackfaceCulling: input.enableBackfaceCulling,

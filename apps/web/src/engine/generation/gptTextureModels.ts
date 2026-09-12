@@ -1,4 +1,4 @@
-// GPT25-TEXTURE-GENERATION/1.1.0. Legacy GPT2 selections migrate on read only.
+// GPT25-TEXTURE-GENERATION/1.1.1. Legacy GPT2 selections migrate on read only.
 export const GPT_TEXTURE_MODELS = [
   { value: 'gpt-image-2.5-sunburst', label: 'Sunburst' },
   { value: 'gpt-image-2.5-flare', label: 'Flare' },
@@ -24,6 +24,7 @@ export function resolveGptTextureQuality(value?: string): GptTextureQuality {
 export function getGptTextureRequestParameters(resolution: string, quality?: string) {
   if (resolution !== '1K' && resolution !== '2K' && resolution !== '4K')
     throw new Error('GPT 生图仅支持 1K、2K、4K，请在顶部选择分辨率。');
-  return { aspectRatio: '1:1' as const, imageSize: resolution,
+  // Generation is capped at 2K; keep the project's 4K UV/display setting intact.
+  return { aspectRatio: '1:1' as const, imageSize: resolution === '4K' ? '2K' : resolution,
     quality: resolveGptTextureQuality(quality), count: 1 } as const;
 }

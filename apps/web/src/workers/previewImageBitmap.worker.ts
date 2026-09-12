@@ -3,7 +3,7 @@ export {};
 type Request =
   | { type: 'decode'; id: number; url: string; maxSize?: number }
   | { type: 'adopt'; id: number; bitmap: ImageBitmap }
-  | { type: 'adopt-mask'; id: number; mask: ArrayBuffer; width: number; height: number }
+  | { type: 'adopt-mask'; id: number; mask: ArrayBuffer; width: number; height: number; channels?: 4 }
   | { type: 'stripe'; id: number; requestId: number; y: number; height: number }
   | { type: 'release'; id: number };
 type Response =
@@ -12,7 +12,7 @@ type Response =
   | { type: 'mask-stripe'; requestId: number; pixels: ArrayBuffer; width: number; height: number }
   | { type: 'error'; id?: number; requestId?: number; message: string };
 
-type MaskSource = { data: Uint8Array; width: number; height: number };
+type MaskSource = { data: Uint8Array; width: number; height: number; channels: number };
 const sources = new Map<number, ImageBitmap | MaskSource>();
 const scope = self as unknown as {
   onmessage: ((event: MessageEvent<Request>) => void) | null;
@@ -74,10 +74,11 @@ scope.onmessage = (event) => {
       }
       if (request.type === 'adopt-mask') {
         const mask = new Uint8Array(request.mask);
-        if (request.width * request.height !== mask.length) {
+        const channels = request.channels ?? 1;
+        if (request.width * request.height * channels !== mask.length) {
           throw new RangeError('Invalid preview mask dimensions.');
         }
-        const source = { data: mask, width: request.width, height: request.height };
+        const source = { data: mask, width: request.width, height: request.height, channels };
         replaceSource(request.id, source);
         postReady(request.id, source);
         return;
@@ -88,12 +89,13 @@ scope.onmessage = (event) => {
       const sourceHeight = source.height;
       const rowCount = Math.max(1, Math.min(request.height, sourceHeight - request.y));
       if ('data' in source) {
-        const pixels = new Uint8Array(sourceWidth * rowCount);
+        const rowBytes = sourceWidth * source.channels;
+        const pixels = new Uint8Array(rowBytes * rowCount);
         for (let row = 0; row < rowCount; row++) {
           const sourceRow = sourceHeight - 1 - request.y - row;
-          const sourceOffset = sourceRow * sourceWidth;
-          const destinationOffset = row * sourceWidth;
-          pixels.set(source.data.subarray(sourceOffset, sourceOffset + sourceWidth), destinationOffset);
+          const sourceOffset = sourceRow * rowBytes;
+          const destinationOffset = row * rowBytes;
+          pixels.set(source.data.subarray(sourceOffset, sourceOffset + rowBytes), destinationOffset);
         }
         scope.postMessage(
           { type: 'mask-stripe', requestId: request.requestId, pixels: pixels.buffer, width: sourceWidth, height: rowCount },
