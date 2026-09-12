@@ -390,7 +390,7 @@ function CameraViewThumbnail({
 }
 
 const previewProgressOverlayClassName =
-  'absolute inset-0 grid place-items-center bg-[#1b1b1b] px-4 text-center text-white';
+  'gen-preview-progress';
 
 function GenerationProgressStatus({ generation }: { generation: Generation }) {
   const [now, setNow] = useState(() => Date.now());
@@ -5727,7 +5727,7 @@ export function GeneratePanel({
               </section>
             )}
 
-            <section className="order-3 grid shrink-0 gap-1.5 text-xs font-semibold text-white/82">
+            <section className="gen-prompt-section">
               <div className="flex items-center justify-between gap-2">
                 <span className="text-sm font-semibold text-white/88">
                   {isLocalRepaintTab
