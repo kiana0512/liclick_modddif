@@ -41,7 +41,7 @@ export function getBatchedLiteralOverlaySuffix<
     suffixStart -= 1;
   }
   const suffix = overlays.slice(suffixStart);
-  return suffix.length > 1 ? suffix : [];
+  return suffix;
 }
 
 /**

@@ -25,7 +25,11 @@ try {
   );
   const ids = (layers) => getBatchedLiteralOverlaySuffix(layers).map((layer) => layer.id);
 
-  assert.deepEqual(ids([normal('base'), repaint('one')]), [], 'one repaint keeps exact path');
+  assert.deepEqual(
+    ids([normal('base'), repaint('one')]),
+    ['local-repaint-one'],
+    'one repaint skips the unused quality raster/readback',
+  );
   assert.deepEqual(
     ids([normal('base'), repaint('one'), repaint('two')]),
     ['local-repaint-one', 'local-repaint-two'],

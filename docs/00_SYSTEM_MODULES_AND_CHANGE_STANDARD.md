@@ -1,6 +1,6 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
-> 文档版本：`2.20.68`
+> 文档版本：`2.20.69`
 >
 > 生效日期：`2026-09-12`
 >
@@ -9,6 +9,8 @@
 > 基线仓库：`E:\Liclick 3D Texture Modernization`
 >
 > 审计口径：`0a2519d + 607e82f + 2568e40`，不包含错误文档提交 `2bde8c6/e03bab2/d1c5f78`
+
+2026-09-12 M07，协作 M06/M08/M09：`PERF-UV-SOURCE-PREPARE-001` v1.8.0 将“普通投影底层 + 单个连续局部重绘 literal overlay”也纳入既有颜色直合成路径。该路径不再为最终只按颜色覆盖的 overlay 创建、栅格化和读回未被消费的质量缓冲；RGBA、coverage、rendered-color mask、层序、接缝、gutter、完整分辨率与发布屏障保持原公式。4K 冻结夹具的 5→4 层状态单次样本由 1122.4ms 降至 892.5ms，GPU/读回阶段由 619.0ms 降至 412.9ms，完整 bake 由 991.1ms 降至 765.1ms；17 个显隐状态重复结果逐像素一致，该隔离样本不作为所有模型的固定提速承诺。CPU/Worker/shader、持久化、导出、Schema、Revision CAS、ownership 与 verified assets 不变，无迁移。详见 [单覆盖层 UV 直合成变更卡](changes/CHG-20260912-UV-SINGLE-OVERLAY.md)。
 
 2026-09-12 UI-05 → 主模块 M05，协作 M03/M12：旧版单图参考选择器删除参考图后立即进入既有 Project Save Coordinator，以当前 ReferenceStore 快照执行 Revision CAS 保存，不再依赖可能晚于路由切换/刷新的延迟 autosave。新版分组参考选择器原有即时保存保持；只移除工程中的引用关系，不删除已验证对象资产，不改变生成输入、图片字节、ownership、Project Schema 或 Command 幂等语义，无数据迁移。回滚可移除旧入口的即时事件，工程数据无需改写。详见 [参考图删除持久化变更卡](changes/CHG-20260912-REFERENCE-DELETE-PERSISTENCE.md)。
 
