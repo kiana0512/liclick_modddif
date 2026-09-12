@@ -23,6 +23,26 @@ assert.match(
   /objectUvLayers\.some\(\(layer\) =>\s*\(hasLowerRepaintUv \|\| isRenderedLocalRepaintLayer\(layer\)\) &&\s*previousLayerVisibilityById\.get\(layer\.id\) !== layer\.visible/,
   'Mixed UV composites and repaint sampler reassignment must reconcile on both eye directions.',
 );
+assert.match(
+  sceneRootSource,
+  /function residentUvVisibilityKey\(layers: Layer\[\]\) \{[\s\S]*?return uvLayerStackPreviewSignature\(layers\)/,
+  'UV visibility cache identity must include pixel-affecting content rather than layer ids alone.',
+);
+assert.match(
+  sceneRootSource,
+  /cachedExactUvTexture \?\?[\s\S]*?compositedUvTextureState\.ready/,
+  'An exact completed eye-state cache entry must win without waiting for recomposition.',
+);
+assert.match(
+  sceneRootSource,
+  /previousUvPresentation\.key === visibleResidentUvKey/,
+  'A pending visibility state must never present a texture from a different authored state.',
+);
+assert.match(
+  sceneRootSource,
+  /if \(!exactUvTexture \|\| !visibleResidentUvKey\) return;[\s\S]*?cache\.set\(visibleResidentUvKey, exactUvTexture\)/,
+  'Only an exact completed UV composition may be admitted to the visibility cache.',
+);
 
 assert.match(
   layersPanelSource,
