@@ -559,7 +559,11 @@ export function releasePreviewTexture(imageUrl: string) {
 export function uploadPreviewTextureInStripes(
   renderer: THREE.WebGLRenderer,
   texture: THREE.Texture,
-  options?: { allowWhileInteracting?: boolean; shouldCancel?: () => boolean },
+  options?: {
+    allowWhileInteracting?: boolean;
+    shouldCancel?: () => boolean;
+    deferVisiblePresentationBarrier?: boolean;
+  },
 ) {
   if (previewTextureReadyRenderers.get(texture)?.has(renderer)) return Promise.resolve();
   let rendererUploads = previewTextureUploadPromises.get(texture);
@@ -811,11 +815,13 @@ export function uploadPreviewTextureInStripes(
       if (usesVisibleRenderer) {
         markPreviewUploadStep(`${uploadPhasePrefix}-drain`);
         context.flush();
-        for (let frame = 0; frame < 2; frame += 1) {
-          await waitForBrowserPaint();
-          throwIfCancelled();
-          if (pauseDuringInteraction) await waitForViewportInteractionIdle();
-          throwIfCancelled();
+        if (options?.deferVisiblePresentationBarrier !== true) {
+          for (let frame = 0; frame < 2; frame += 1) {
+            await waitForBrowserPaint();
+            throwIfCancelled();
+            if (pauseDuringInteraction) await waitForViewportInteractionIdle();
+            throwIfCancelled();
+          }
         }
       }
       texture.source.dataReady = true;

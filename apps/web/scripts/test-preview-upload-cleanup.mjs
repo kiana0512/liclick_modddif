@@ -8,7 +8,7 @@ const code = ts.transpileModule(source.slice(source.indexOf('export function upl
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
 }).outputText;
 
-async function run(failure, flipY, fast = false, mask = false, allowWhileInteracting = false, visible = true) {
+async function run(failure, flipY, fast = false, mask = false, allowWhileInteracting = false, visible = true, deferBarrier = false) {
   let cancelled = false;
   let uploads = 0;
   let monitors = 0;
@@ -82,7 +82,11 @@ async function run(failure, flipY, fast = false, mask = false, allowWhileInterac
   if (failure === 'late-crop') context.texSubImage2D = () => { throw new Error('submit failed'); };
   try {
     const upload = new Function(...Object.keys(scope), code + ';return uploadPreviewTextureInStripes;')(...Object.values(scope));
-    const operation = upload(renderer, texture, { shouldCancel: () => cancelled, allowWhileInteracting });
+    const operation = upload(renderer, texture, {
+      shouldCancel: () => cancelled,
+      allowWhileInteracting,
+      deferVisiblePresentationBarrier: deferBarrier,
+    });
     if (failure) await assert.rejects(operation, undefined, `${mask ? 'R8' : 'RGBA'} ${failure}`); else await operation;
     await new Promise(resolve => setTimeout(resolve, 10));
     assert.equal(uploads, 0);
@@ -128,4 +132,6 @@ const visibleBatch = await run(undefined, false, true, false, false, true);
 assert.equal(visibleBatch.taskYields, 0, 'healthy visible uploads batch sub-budget stripes without one macrotask per stripe');
 const detachedBatch = await run(undefined, false, true, false, false, false);
 assert.equal(detachedBatch.taskYields, 4, 'detached uploads continue yielding once per exact stripe');
-console.log('Preview upload cleanup passed: RGBA bitmap/bytes and R8 mask success/cancel/failure cases; visible sub-budget batching, detached task yields, idle gating, late/rejected stripes, GL state, source ownership, orientation and zero live monitors/uploads.');
+const deferredVisibleBatch = await run(undefined, false, true, false, false, true, true);
+assert.equal(deferredVisibleBatch.waitCount, 0, 'private visible batches may defer their per-texture presentation barrier');
+console.log('Preview upload cleanup passed: RGBA bitmap/bytes and R8 mask success/cancel/failure cases; visible sub-budget batching and deferred barrier, detached task yields, idle gating, late/rejected stripes, GL state, source ownership, orientation and zero live monitors/uploads.');
