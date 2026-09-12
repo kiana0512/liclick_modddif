@@ -27,6 +27,11 @@ assert.ok(after.shader.includes('// Preserve comment newline\nfloat'));
 assert.ok(compact(fixture).includes('const ordinary = "  UI text"'));
 assert.equal(compact(compact(fixture)), compact(fixture));
 assert.equal(compact('const s = `\r\n\t  float a;\r\n`;'), 'const s = `\r\nfloat a;\r\n`;');
+assert.equal(compact('const s = `\n  // comment\n  float a;\n`;'), 'const s = `\n\nfloat a;\n`;');
+for (const guarded of ['/* block\n// closes */', '// continuation\\\nfloat a;', '// ${value}\nfloat a;']) {
+  const code = 'const s = `\n' + guarded + '\n`;';
+  assert.equal(compact(code), code, 'Ambiguous comment state must remain intact');
+}
 
 const filename = new URL('../src/engine/projection/ProjectedLayerMaterial.ts', import.meta.url);
 const source = fs.readFileSync(filename, 'utf8');
@@ -43,7 +48,16 @@ function tokens(code, scriptKind = ts.ScriptKind.TS) {
     if (children.length) children.forEach(visit);
     else {
       let text = node.getFullText(ast);
-      if (templates.has(node.kind)) text = text.replace(/(\r?\n)[\t ]+/g, '$1');
+      if (templates.has(node.kind)) {
+        const start = node.getStart(ast), end = node.end;
+        const raw = code.slice(start, end);
+        let expected = raw.replace(/(\r?\n)[\t ]+/g, '$1');
+        if (node.kind === ts.SyntaxKind.NoSubstitutionTemplateLiteral &&
+            !raw.includes('/*') && !raw.includes('\\')) {
+          expected = expected.replace(/(\r?\n)\/\/[^\r\n]*/g, '$1');
+        }
+        text = text.slice(0, text.length - raw.length) + expected;
+      }
       out.push([node.kind, text]);
     }
   };
