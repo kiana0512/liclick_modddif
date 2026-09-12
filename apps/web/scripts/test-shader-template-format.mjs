@@ -57,4 +57,21 @@ const plugin = shaderTemplateFormatPlugin();
 assert.equal(plugin.apply, 'build');
 assert.equal(plugin.transform(fixture, '/src/ui/Panel.ts'), undefined);
 assert.equal(plugin.transform(source, filename.pathname).code, result);
+const compositorFile = new URL('../src/engine/projection/ProjectedLayerPreviewCompositor.ts', import.meta.url);
+const compositorSource = fs.readFileSync(compositorFile, 'utf8');
+const compositorResult = compact(compositorSource);
+assert.deepEqual(tokens(compositorResult), tokens(compositorSource));
+assert.equal(plugin.transform(compositorSource, compositorFile.pathname).code, compositorResult);
+assert.ok(Buffer.byteLength(compositorSource) - Buffer.byteLength(compositorResult) >= 2000);
+// Every changed template in this additional file must belong to a GLSL variable.
+const compositorAst = ts.createSourceFile('shader.ts', compositorSource, ts.ScriptTarget.Latest, true);
+function verifyShaderOnly(node) {
+  if (templates.has(node.kind) && /(\r?\n)[\t ]+/.test(node.getText(compositorAst))) {
+    let parent = node.parent;
+    while (parent && !ts.isVariableDeclaration(parent)) parent = parent.parent;
+    assert.ok(parent && /Shader$/.test(parent.name.getText(compositorAst)));
+  }
+  ts.forEachChild(node, verifyShaderOnly);
+}
+verifyShaderOnly(compositorAst);
 stdout.write(`Shader formatting preserves actual module tokens and GLSL line boundaries; removes ${saved} source bytes.\n`);

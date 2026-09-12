@@ -33,7 +33,7 @@ export function shaderTemplateFormatPlugin() {
     enforce: 'pre',
     transform(code, id) {
       // Explicitly scoped: no UI strings, external packages, or other templates.
-      if (!id.replaceAll('\\', '/').endsWith('/engine/projection/ProjectedLayerMaterial.ts')) return;
+      if (!/\/engine\/projection\/(ProjectedLayerMaterial|ProjectedLayerPreviewCompositor)\.ts$/.test(id.replaceAll('\\', '/'))) return;
       return { code: compactShaderTemplateIndentation(code), map: null };
     },
   };
