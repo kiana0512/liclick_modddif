@@ -29,6 +29,16 @@ for (const model of ['gpt-image-2.5-sunburst', 'gpt-image-2.5-flare']) {
   assert.equal(buildExtraParams({ model, prompt: 'test' }, []).extraParams.quality, 'high');
 }
 assert.equal(buildExtraParams({ model: 'gpt-image-2', prompt: '', aspectRatio: '1:1' }, []).extraParams.image_size, '1K');
+for (const quality of ['low', 'medium', 'high']) for (const workflow of ['texture-map', 'local-repaint']) {
+  const {model, extraParams} = buildExtraParams({model:'gpt-image-2', prompt:'test', workflow, quality, imageSize:'2K', aspectRatio:'1:1'}, []);
+  assert.equal(model, 'gpt-image-2');
+  assert.equal(extraParams.model, model);
+  assert.equal(extraParams.quality, quality);
+  assert.equal(extraParams.background, 'transparent');
+}
+for (const quality of ['xhigh', 'max', 'invalid']) {
+  assert.throws(() => buildExtraParams({model:'gpt-image-2', prompt:'test', quality}, []), /quality/);
+}
 for (const model of ['gpt-image-2', 'gpt-image-2.5-sunburst', 'gpt-image-2.5-flare']) {
   for (const workflow of ['texture-map', 'local-repaint']) {
     assert.equal(buildExtraParams({ model, workflow, prompt: 'test', aspectRatio: '1:1', imageSize: '2K' }, [])

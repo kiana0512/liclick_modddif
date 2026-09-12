@@ -15,8 +15,8 @@ function visit(node) {
   ts.forEachChild(node, visit);
 }
 visit(ast);
-assert(action?.includes('GPT 2.5 模型选择'));
-assert.equal(source.match(/aria-label="GPT 2.5 模型选择"/g)?.length, 1);
+assert(action?.includes('GptGenerationOptions'));
+assert.equal(source.match(/<GptGenerationOptions/g)?.length, 1);
 assert(effect);
 const dock = readFileSync(`${root}/src/components/workspace/WorkspaceDock.tsx`, 'utf8');
 assert.equal(dock.match(/var\(--generate-action-space, 76px\)/g)?.length, 3);
@@ -31,22 +31,24 @@ const server = await createServer({ root, configFile: false, resolve: { alias: {
     configureServer(server) { installFixturePage(server); },
     resolveId(id) { if (id === '/__action.mjs') return `${root}/__action.mjs`; },
     load(id) { if (id === `${root}/__action.mjs`) return `
-      import React, {useLayoutEffect, useRef} from 'react';
+      import React, {useLayoutEffect, useRef, useState} from 'react';
       import {createRoot} from 'react-dom/client';
       import {Button} from '/src/components/ui/Button.tsx';
+      import {GptGenerationOptions} from '/src/components/ui/GptGenerationOptions.tsx';
       import {SegmentedControl} from '/src/components/ui/SegmentedControl.tsx';
-      import {GPT_TEXTURE_MODELS, GPT_TEXTURE_QUALITIES} from '/src/engine/generation/gptTextureModels.ts';
+      import {GPT_TEXTURE_MODELS, getGptTextureQualities, resolveGptTextureModel, resolveGptTextureQuality} from '/src/engine/generation/gptTextureModels.ts';
       import '/src/styles/globals.css';
       const root = createRoot(document.getElementById('footer'));
       window.writes = [];
       function Fixture({mode, locked}) {
-        const scope = {React, useLayoutEffect, Button, SegmentedControl, GPT_TEXTURE_MODELS, GPT_TEXTURE_QUALITIES,
+        const [settings, setSettings] = useState({textureGptModel: GPT_TEXTURE_MODELS[0].value, textureGptQuality: 'high'});
+        const scope = {React, useLayoutEffect, Button, GptGenerationOptions, SegmentedControl, GPT_TEXTURE_MODELS, getGptTextureQualities, resolveGptTextureModel, resolveGptTextureQuality,
           generateActionRef: useRef(null), workspaceActive: true, generatePanelExpanded: true, portalRoot: document.body,
           previewGeneration: undefined, canCancelGeneration: locked, isTextureMapTab: mode === 'single' || mode === 'multi',
           isGptLocalRepaint: mode === 'gpt', isLocalRepaintTab: mode === 'gpt' || mode === 'remote',
-          textureGptModel: GPT_TEXTURE_MODELS[0].value, textureGptQuality: 'high', textureViewMode: mode,
+          textureGptModel: settings.textureGptModel, textureGptQuality: resolveGptTextureQuality(settings.textureGptQuality, settings.textureGptModel), textureViewMode: mode,
           workflowConfigurationLocked: locked, workflowSubmissionLocked: locked, resolution: '2K', textureMultiviewMode: 'stable',
-          updateGenerationSettings: patch => window.writes.push(patch), textureActionProgress: undefined,
+          updateGenerationSettings: patch => { window.writes.push(patch); setSettings(previous => ({...previous, ...patch})); }, textureActionProgress: undefined,
           tab: mode === 'gpt' || mode === 'remote' ? 'repaint' : 'multiview', texturePipelineProgress: undefined,
           previewIsGenerating: false, displayedReferenceGroupGenerationState: undefined, generateActionRunning: locked,
           contentAwareRepairActive: false, localRepaintPreparationCancellable: false, snapshotPreparing: false,
@@ -84,11 +86,11 @@ try {
   for (const height of [720, 900, 1080]) for (const width of [292, 312]) for (const mode of ['single', 'multi', 'gpt', 'remote']) {
     await page.setViewportSize({ width: 1280, height });
     await page.evaluate(({width, mode}) => { document.getElementById('footer').style.width = `${width}px`; window.renderCase(mode); }, {width, mode});
-    await page.waitForFunction(mode => document.querySelectorAll('[aria-label="GPT 2.5 模型选择"]').length === (mode === 'remote' ? 0 : 1), mode);
+    await page.waitForFunction(mode => document.querySelectorAll('[aria-label="GPT 模型选择"]').length === (mode === 'remote' ? 0 : 1), mode);
     await page.waitForTimeout(80);
     const geometry = await page.evaluate(() => {
       const footer = document.getElementById('footer'), dock = document.getElementById('dock');
-      const block = document.querySelector('[aria-label="GPT 2.5 模型选择"]');
+      const block = document.querySelector('[aria-label="GPT 生图参数"]');
       const button = document.querySelector('[data-texture-onboarding="generate-texture"] > button');
       return { gap: footer.getBoundingClientRect().top - dock.getBoundingClientRect().bottom,
         overflow: footer.scrollWidth > footer.clientWidth, button: button.getBoundingClientRect().top,
@@ -100,18 +102,61 @@ try {
     cases++;
   }
   await page.evaluate(() => window.renderCase('gpt'));
-  await page.getByRole('button', {name:'Flare', exact:true}).click();
-  await page.getByRole('button', {name:'最高', exact:true}).click();
-  assert.deepEqual(await page.evaluate(() => window.writes), [{textureGptModel:'gpt-image-2.5-flare'}, {textureGptQuality:'max'}]);
+  const model = page.getByRole('button', {name:'GPT 模型选择', exact:true});
+  const quality = page.getByRole('button', {name:'GPT 生图质量', exact:true});
+  assert.match(await model.textContent(), /Sunburst/);
+  assert.match(await quality.textContent(), /质量 · 高/);
+  assert((await model.boundingBox()).x < (await quality.boundingBox()).x);
+  const choose = async (trigger, label, count) => {
+    const before = await page.locator('#footer').boundingBox();
+    await trigger.click();
+    assert.equal(await page.getByRole('menu').count(), 1);
+    assert.equal(await page.getByRole('menuitemradio').count(), count);
+    const menu = await page.getByRole('menu').boundingBox();
+    assert(menu.y >= 0 && menu.y + menu.height < (await model.boundingBox()).y);
+    assert.deepEqual(await page.locator('#footer').boundingBox(), before, 'Overlay must not reflow footer');
+    await page.getByRole('menuitemradio', {name:label, exact:true}).click();
+    assert.equal(await page.getByRole('menu').count(), 0, 'Selection closes popup');
+    assert(await trigger.evaluate(el => el === document.activeElement));
+  };
+  await choose(model, 'GPT-Image 2.5 Flare', 3);
+  await choose(quality, '最高', 5);
+  await choose(model, 'GPT-Image 2', 3);
+  assert.match(await quality.textContent(), /质量 · 高/);
+  assert.deepEqual(await page.evaluate(() => window.writes), [
+    {textureGptModel:'gpt-image-2.5-flare', textureGptQuality:'high'},
+    {textureGptQuality:'max'}, {textureGptModel:'gpt-image-2', textureGptQuality:'high'}]);
+  await choose(quality, '低', 3);
+  await choose(model, 'GPT-Image 2.5 Sunburst', 3);
+  assert.match(await quality.textContent(), /质量 · 低/);
+  await choose(quality, '高', 5);
+  await model.click();
+  await quality.click();
+  assert.equal(await page.getByRole('menu').count(), 1);
+  assert.equal(await page.getByRole('menu', {name:'选择质量'}).count(), 1);
+  await page.keyboard.press('End');
+  assert.equal(await page.evaluate(() => document.activeElement.textContent.trim()), '最高');
+  await page.keyboard.press('Escape');
+  assert.equal(await page.getByRole('menu').count(), 0);
+  assert(await quality.evaluate(el => el === document.activeElement));
+  await model.click();
+  await page.locator('#dock').click();
+  assert.equal(await page.getByRole('menu').count(), 0);
+  await model.click();
   await page.evaluate(() => window.renderCase('multi', true));
-  await page.waitForFunction(() => document.querySelector('[aria-label="GPT 2.5 模型选择"] button')?.disabled);
-  assert.equal(await page.locator('[aria-label="GPT 2.5 模型选择"] button:not(:disabled)').count(), 0);
+  await page.waitForFunction(() => document.querySelector('[aria-label="GPT 模型选择"]')?.disabled);
+  assert.equal(await page.locator('[aria-label="GPT 生图参数"] button:not(:disabled)').count(), 0);
+  assert.equal(await page.getByRole('menu').count(), 0);
+  assert.equal(await page.getByText('1:1 方图', {exact:false}).count(), 0);
+  assert.equal(await page.getByText('最多4张并发', {exact:false}).count(), 0);
   const cancel = page.getByRole('button', {name:'终止纹理贴图生成', exact:true});
   assert(await cancel.isVisible());
   await page.evaluate(() => window.renderCase('multi'));
   await page.waitForTimeout(100);
+  await model.click();
   if (process.env.LICLICK_LAYOUT_SCREENSHOT) await page.screenshot({path:process.env.LICLICK_LAYOUT_SCREENSHOT});
   await page.evaluate(() => window.unmountCase());
+  assert.equal(await page.getByRole('menu').count(), 0);
   assert.equal(await page.evaluate(() => document.body.style.getPropertyValue('--generate-action-space')), '');
   assert.deepEqual(errors, []);
   console.log(`Generation action: ${cases} layouts, selection, locks, cancel and cleanup passed.`);

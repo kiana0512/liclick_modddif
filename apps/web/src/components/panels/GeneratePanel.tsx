@@ -116,7 +116,8 @@ import {
   type AssetCategory,
 } from '@/services/workspaceApiClient';
 
-import { GPT_TEXTURE_MODELS, GPT_TEXTURE_QUALITIES, resolveGptTextureModel, resolveGptTextureQuality, getGptTextureRequestParameters } from '@/engine/generation/gptTextureModels';
+import { resolveGptTextureModel, resolveGptTextureQuality, getGptTextureRequestParameters } from '@/engine/generation/gptTextureModels';
+import { GptGenerationOptions } from '@/components/ui/GptGenerationOptions';
 import { prepareCloudRepaintCompletion } from '@/engine/localRepaint/cloudCompletion';
 import { prepareRepaintResult } from '@/engine/localRepaint/resultAlphaPolicy';
 import { buildGptLocalRepaintRequest } from '@/services/gptLocalRepaintRequest';
@@ -817,7 +818,7 @@ export function GeneratePanel({
   const promptPolishKey = `${currentProjectId ?? 'none'}:${isLocalRepaintTab ? 'local-repaint' : `${textureViewMode}:${singleViewProvider}`}`;
   promptValueRef.current = { key: promptPolishKey, value: prompt };
   const textureGptModel = resolveGptTextureModel(generationSettings.textureGptModel);
-  const textureGptQuality = resolveGptTextureQuality(generationSettings.textureGptQuality);
+  const textureGptQuality = resolveGptTextureQuality(generationSettings.textureGptQuality, textureGptModel);
   const isGptLocalRepaint = generationSettings.localRepaintProvider === 'gpt';
   const imageModel = isTextureMapTab || (isLocalRepaintTab && isGptLocalRepaint)
     ? textureGptModel
@@ -2552,7 +2553,7 @@ export function GeneratePanel({
     capture: Capture,
   ) {
     const referenceImages = [modelViewReference, materialReference];
-    const requestParameters = getGptTextureRequestParameters(resolution, textureGptQuality);
+    const requestParameters = getGptTextureRequestParameters(resolution, textureGptQuality, textureGptModel);
     return createLiclickApiClient().generateTextureSingleView({
       clientGenerationId: generationId,
       projectId: currentProject?.id,
@@ -5396,34 +5397,16 @@ export function GeneratePanel({
       }`}
     >
       {(isTextureMapTab || isGptLocalRepaint) && (
-        <div className="col-span-full mb-2" aria-label="GPT 2.5 模型选择">
-          <SegmentedControl
-            value={textureGptModel}
-            options={GPT_TEXTURE_MODELS.map((model) => ({ ...model,
-              disabled: workflowConfigurationLocked || workflowSubmissionLocked,
-            }))}
-            onChange={(textureGptModel) => updateGenerationSettings({ textureGptModel })}
-          />
-          <div className="mt-2" aria-label="GPT 生图质量">
-            <p className="mb-1 text-[11px] text-white/56">质量</p>
-            <SegmentedControl
-              value={textureGptQuality}
-              options={GPT_TEXTURE_QUALITIES.map((quality) => ({ ...quality,
-                disabled: workflowConfigurationLocked || workflowSubmissionLocked,
-              }))}
-              onChange={(textureGptQuality) => updateGenerationSettings({ textureGptQuality })}
-            />
-          </div>
-          <p className="mt-1 text-[11px] text-white/46">1:1 方图 · {resolution} · 透明背景</p>
-          {isTextureMapTab && textureViewMode === 'multi' && (
-            <p
-              aria-label="多视图并发策略"
-              className="mt-2 text-[11px] text-white/56"
-            >
-              加速 · 最多4张并发
-            </p>
-          )}
-        </div>
+        <GptGenerationOptions
+          model={textureGptModel}
+          quality={textureGptQuality}
+          disabled={workflowConfigurationLocked || workflowSubmissionLocked}
+          onModelChange={(value) => {
+            const model = resolveGptTextureModel(value);
+            updateGenerationSettings({ textureGptModel: model, textureGptQuality: resolveGptTextureQuality(textureGptQuality, model) });
+          }}
+          onQualityChange={(value) => updateGenerationSettings({ textureGptQuality: resolveGptTextureQuality(value, textureGptModel) })}
+        />
       )}
       <Button
         className={`relative h-12 w-full overflow-hidden text-base ${

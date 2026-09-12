@@ -19,6 +19,6 @@ export function buildGptLocalRepaintRequest(input: {
     workflow: 'local-repaint', mode: 'single', prompt: input.prompt,
     referenceIds: [guide.id, input.reference.id], referenceImages: [guide, input.reference],
     capture: input.capture, object: input.object, model: input.model,
-    ...getGptTextureRequestParameters(input.resolution, input.quality), visibleOnly: true, upscale: false,
+    ...getGptTextureRequestParameters(input.resolution, input.quality, input.model), visibleOnly: true, upscale: false,
   };
 }

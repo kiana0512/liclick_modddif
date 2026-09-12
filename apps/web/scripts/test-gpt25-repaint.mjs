@@ -40,18 +40,21 @@ assert.throws(() => composeGptRepaintGuide(current, clay.slice(4), mask), /dimen
 
 const gptOptions = load('../src/engine/generation/gptTextureModels.ts');
 const { GPT_TEXTURE_MODELS, resolveGptTextureModel, GPT_TEXTURE_QUALITIES,
-  resolveGptTextureQuality, getGptTextureRequestParameters } = gptOptions;
+  resolveGptTextureQuality, getGptTextureRequestParameters, getGptTextureQualities } = gptOptions;
 const { buildGptLocalRepaintRequest } = load('../src/services/gptLocalRepaintRequest.ts', {
   '@/engine/generation/gptTextureModels': gptOptions,
 });
 const { buildTextureMapCompletionPrompt, buildTextureMapPrompt } = load('../src/engine/generation/textureMapPrompts.ts');
-assert.equal(resolveGptTextureModel('gpt-image-2'), GPT_TEXTURE_MODELS[0].value);
+assert.equal(resolveGptTextureModel('gpt-image-2'), 'gpt-image-2');
+assert.equal(GPT_TEXTURE_MODELS.length, 3);
+assert.deepEqual(getGptTextureQualities('gpt-image-2').map(({value}) => value), ['low', 'medium', 'high']);
 assert.equal(resolveGptTextureModel(undefined), GPT_TEXTURE_MODELS[0].value);
 assert.equal(resolveGptTextureQuality(undefined), 'high');
 assert.equal(resolveGptTextureQuality('invalid'), 'high');
 assert.throws(() => getGptTextureRequestParameters('8K', 'max'), /仅支持/);
 assert.deepEqual(GPT_TEXTURE_QUALITIES.map(({ value }) => value), ['low', 'medium', 'high', 'xhigh', 'max']);
 for (const { value: model } of GPT_TEXTURE_MODELS) for (const resolution of ['1K', '2K', '4K']) for (const { value: quality } of GPT_TEXTURE_QUALITIES) {
+  const expectedQuality = model === 'gpt-image-2' && ['xhigh', 'max'].includes(quality) ? 'high' : quality;
   const expectedImageSize = resolution === '4K' ? '2K' : resolution;
   assert.equal(resolveGptTextureModel(model), model);
   const capture = { id: 'capture', maskUrl: 'private-authored-mask', camera: {}, depthUrl: 'private-depth' };
@@ -67,9 +70,9 @@ for (const { value: model } of GPT_TEXTURE_MODELS) for (const resolution of ['1K
   assert.equal(input.mask, undefined);
   assert.equal(input.aspectRatio, '1:1');
   assert.equal(input.imageSize, expectedImageSize);
-  assert.equal(input.quality, quality);
-  const textureParams = getGptTextureRequestParameters(resolution, quality);
-  assert.deepEqual(textureParams, { aspectRatio: '1:1', imageSize: expectedImageSize, quality, count: 1 });
+  assert.equal(input.quality, expectedQuality);
+  const textureParams = getGptTextureRequestParameters(resolution, quality, model);
+  assert.deepEqual(textureParams, { aspectRatio: '1:1', imageSize: expectedImageSize, quality: expectedQuality, count: 1 });
 }
 
 const clipCalls = [];
@@ -115,10 +118,10 @@ const oldClipped = { ...generation, metadata: { ...generation.metadata, modelSil
 assert.equal(await prepareCloudRepaintCompletion(oldClipped, []), oldClipped, 'Do not rewrite completed old jobs');
 
 const panel = readFileSync(new URL('../src/components/panels/GeneratePanel.tsx', import.meta.url), 'utf8');
-assert.match(panel, /getGptTextureRequestParameters\(resolution, textureGptQuality\)/);
+assert.match(panel, /getGptTextureRequestParameters\(resolution, textureGptQuality, textureGptModel\)/);
 assert.match(panel, /quality: textureGptQuality,\s*resolution,/);
-assert.match(panel, /GPT_TEXTURE_QUALITIES.map[\s\S]*disabled: workflowConfigurationLocked \|\| workflowSubmissionLocked/);
-assert.match(panel, /updateGenerationSettings\(\{ textureGptQuality \}\)/);
+assert.match(panel, /<GptGenerationOptions[\s\S]*?disabled=\{workflowConfigurationLocked \|\| workflowSubmissionLocked\}/);
+assert.match(panel, /updateGenerationSettings\(\{ textureGptQuality: resolveGptTextureQuality\(value, textureGptModel\) \}\)/);
 const client = readFileSync(new URL('../src/services/liclickApiClient.ts', import.meta.url), 'utf8');
 assert.match(client, /quality: input.quality/);
 assert.match(panel, /gptGuide: isGptLocalRepaint/);

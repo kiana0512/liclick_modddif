@@ -261,5 +261,5 @@ assert.equal(fastFailure.repairCount, 0);
 
 assert.doesNotMatch(panel, /textureMultiviewMode|稳定 · 2张并发|aria-label="多视图加速模式"/);
 assert.match(panel, /planGptViewPairs\(requestedViews, selectedCameraViewPreset\)/);
-assert.match(panel, /aria-label="多视图并发策略"/);
+assert.doesNotMatch(panel, /aria-label="多视图并发策略"|加速 · 最多4张并发/);
 console.log('Fixed accelerated GPT groups: defaults, legacy settings, fresh inputs, ordered commits, cancellation and failure contracts passed.');

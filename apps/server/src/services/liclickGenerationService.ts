@@ -491,11 +491,12 @@ export function buildExtraParams(input: GenerateImageInput, uploadedReferences: 
       (input.workflow === 'texture-map' || input.workflow === 'local-repaint')) {
     extraParams.background = 'transparent';
   }
-  if (isGpt25) {
-    if (input.quality !== undefined && !['low', 'medium', 'high', 'xhigh', 'max'].includes(input.quality))
-      throw new Error('GPT 2.5 quality must be low, medium, high, xhigh or max.');
+  if (isGpt25 || model === 'gpt-image-2') {
+    const qualities = isGpt25 ? ['low', 'medium', 'high', 'xhigh', 'max'] : ['low', 'medium', 'high'];
+    if (input.quality !== undefined && !qualities.includes(input.quality))
+      throw new Error(`Unsupported quality for ${model}: ${input.quality}.`);
     extraParams.quality = input.quality ?? 'high';
-    if ((aspectRatio === 'auto') !== (imageSize === 'auto')) {
+    if (isGpt25 && (aspectRatio === 'auto') !== (imageSize === 'auto')) {
       throw new Error('GPT 2.5 requires auto ratio/size together, or explicit ratio and size.');
     }
     extraParams.model = model;
