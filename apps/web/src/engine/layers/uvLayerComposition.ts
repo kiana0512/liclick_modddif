@@ -2,6 +2,13 @@ import type { Layer } from '@/types/layer';
 
 export type UvLayerCompositionDirection = 'bottom-to-top' | 'top-to-bottom';
 
+export function isUvLayerApplicableToObject(
+  layer: Pick<Layer, 'objectId'>,
+  objectId: string,
+) {
+  return !layer.objectId || layer.objectId === objectId;
+}
+
 export function isLocalRepaintUvOverlayLayer(
   layer: Pick<Layer, 'id' | 'name' | 'type' | 'role' | 'imageUrl'>,
 ) {
@@ -39,7 +46,7 @@ export function getVisibleUvLayerStack(
         layer.type === 'uv' &&
         layer.visible &&
         Boolean(layer.imageUrl) &&
-        (!layer.objectId || layer.objectId === objectId),
+        isUvLayerApplicableToObject(layer, objectId),
     )
     .sort((left, right) => compareUvLayersForComposition(left, right, direction));
 }

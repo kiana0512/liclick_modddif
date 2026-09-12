@@ -156,6 +156,10 @@ import {
   measureEraserNextFrame,
   measureEraserPerformanceEvent,
 } from '@/engine/performance/eraserPerformanceMonitor';
+import {
+  getRetainedRuntimeFrameLeaseMode,
+  getRetainedViewportFrameloop,
+} from './viewportActivityPolicy';
 
 type SurfacePaintTarget = {
   objectId: string;
@@ -170,6 +174,7 @@ type ViewportCanvasProps = {
   onOpenImport: () => void;
   importDisabled?: boolean;
   isActive?: boolean;
+  keepRuntimeActive?: boolean;
   showGrid?: boolean;
   gridVariant?: 'default' | 'subtle';
   backgroundColor?: string;
@@ -490,6 +495,68 @@ function AcceleratedSceneRoot({ sceneOverlay }: { sceneOverlay?: ReactNode }) {
       {sceneOverlay}
     </Bvh>
   );
+}
+
+/**
+ * A retained texture workspace has no foreground rAF owner. Keep a small task
+ * render lease while generation is active so useFrame-driven UV composition
+ * and material publication continue without waiting for route visibility.
+ */
+function RetainedRuntimeFrameDriver({
+  enabled,
+  workspaceActive,
+}: {
+  enabled: boolean;
+  workspaceActive: boolean;
+}) {
+  const { advance, invalidate } = useThree();
+
+  useEffect(() => {
+    if (!enabled) return undefined;
+    let cancelled = false;
+    let timerId: number | undefined;
+    const clearTimer = () => {
+      if (timerId !== undefined) window.clearTimeout(timerId);
+      timerId = undefined;
+    };
+    const submit = () => {
+      timerId = undefined;
+      if (cancelled) return;
+      const leaseMode = getRetainedRuntimeFrameLeaseMode(
+        workspaceActive,
+        document.visibilityState !== 'visible' || !document.hasFocus(),
+      );
+      if (leaseMode === 'advance') {
+        // Chromium suspends rAF in background tabs. R3F advance runs the same
+        // frame subscribers and renderer once without starting a busy loop.
+        advance(performance.now(), true);
+      } else if (leaseMode === 'invalidate') {
+        invalidate();
+      }
+      if (leaseMode !== 'none') {
+        timerId = window.setTimeout(submit, leaseMode === 'advance' ? 250 : 50);
+      }
+    };
+    const restart = () => {
+      clearTimer();
+      submit();
+    };
+    restart();
+    document.addEventListener('visibilitychange', restart);
+    window.addEventListener('blur', restart);
+    window.addEventListener('focus', restart);
+    window.addEventListener('pageshow', restart);
+    return () => {
+      cancelled = true;
+      clearTimer();
+      document.removeEventListener('visibilitychange', restart);
+      window.removeEventListener('blur', restart);
+      window.removeEventListener('focus', restart);
+      window.removeEventListener('pageshow', restart);
+    };
+  }, [advance, enabled, invalidate, workspaceActive]);
+
+  return null;
 }
 
 type GpuTimerQueryExtension = {
@@ -14701,10 +14768,7 @@ function SurfacePaintOverlay() {
     };
     const isPointerContactActive = (event: globalThis.PointerEvent) => {
       if (event.pointerType === 'pen') return event.pressure > 0 || event.buttons !== 0;
-      const usesSecondaryButton =
-        strokePaintToolRef.current === 'inpaint-subtract' ||
-        strokePaintToolRef.current === 'inpaint-apply-erase';
-      return (event.buttons & (usesSecondaryButton ? 2 : 1)) !== 0;
+      return (event.buttons & 1) !== 0;
     };
     const finishPaintStroke = (
       event: globalThis.PointerEvent | undefined,
@@ -14878,15 +14942,12 @@ function SurfacePaintOverlay() {
         event.pointerType === 'pen' &&
         (event.button === 2 || event.button === 5) &&
         event.pressure > 0;
-      const rightMaskEraseContact = isInpaintMode && event.button === 2;
       const localRepaintEraseContact =
         isLocalRepaintApplyMode &&
-        (event.button === 2 ||
-          penEraserContact ||
+        (penEraserContact ||
           (isEditingPersistedLocalRepaint && event.button === 0) ||
           (isEditingNativeRepaint && event.button === 0));
-      const isPaintButton =
-        event.button === 0 || penEraserContact || rightMaskEraseContact || localRepaintEraseContact;
+      const isPaintButton = event.button === 0 || penEraserContact;
       const strokeCanvasRect = canvas.getBoundingClientRect();
       const result = raycastModel(event, strokeCanvasRect);
 
@@ -15036,11 +15097,9 @@ function SurfacePaintOverlay() {
       const pressure = getPointerPressure(event);
       const strokePaintTool: SurfaceStrokePaintTool = localRepaintEraseContact
         ? 'inpaint-apply-erase'
-        : rightMaskEraseContact
-          ? 'inpaint-subtract'
-          : penEraserContact && (paintTool === 'brush' || paintTool === 'eraser')
-            ? 'eraser'
-            : paintTool;
+        : penEraserContact && (paintTool === 'brush' || paintTool === 'eraser')
+          ? 'eraser'
+          : paintTool;
       strokePaintToolRef.current = strokePaintTool;
       if (strokePaintTool === 'eraser' || strokePaintTool === 'inpaint-apply-erase') {
         eraserStrokeStartedAtRef.current = paintStartedAt;
@@ -15097,7 +15156,8 @@ function SurfacePaintOverlay() {
       if (!isPaintingRef.current) gl.domElement.style.cursor = '';
     };
     const handleContextMenu = (event: MouseEvent) => {
-      if (isMaskStroke) event.preventDefault();
+      // RMB is always viewport orbit, including while a paint tool is active.
+      event.preventDefault();
     };
     canvas.addEventListener('pointermove', handlePointerMove, true);
     canvas.addEventListener('pointerdown', handlePointerDown, true);
@@ -15195,6 +15255,7 @@ export function ViewportCanvas({
   onOpenImport,
   importDisabled = false,
   isActive = true,
+  keepRuntimeActive = false,
   backgroundColor = '#080914',
   showCaptureFrame = true,
   showViewCube = true,
@@ -15324,7 +15385,7 @@ export function ViewportCanvas({
       <Canvas
         key={canvasKey}
         events={createViewportEvents}
-        frameloop={isActive ? 'always' : 'never'}
+        frameloop={getRetainedViewportFrameloop(isActive, keepRuntimeActive)}
         dpr={[1, 1.5]}
         camera={{ position: [3.2, 2.4, 4], fov: 45, near: 0.1, far: 100 }}
         gl={{
@@ -15375,6 +15436,10 @@ export function ViewportCanvas({
         <color attach="background" args={[backgroundColor]} />
         <Suspense fallback={null}>
           <RendererSettings />
+          <RetainedRuntimeFrameDriver
+            enabled={keepRuntimeActive}
+            workspaceActive={isActive}
+          />
           <ViewportPerformanceProbe enabled={performanceTestModeEnabled} />
           <PerformanceAutoOrbit enabled={performanceAutoOrbitEnabled} />
           <AcceleratedSceneRoot sceneOverlay={sceneOverlay} />

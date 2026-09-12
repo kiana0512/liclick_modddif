@@ -330,6 +330,15 @@ export class ResidentProjectedUvDisplay {
       });
   }
 
+  hasPendingWork(signature: string) {
+    return Boolean(
+      !this.disposed &&
+        this.requested?.signature === signature &&
+        !this.cache.has(signature) &&
+        this.retryAt !== Infinity,
+    );
+  }
+
   acknowledgePresentation(texture: THREE.Texture) {
     const buffer = [...this.cache.values()].find((value) => value.colorTexture === texture);
     if (!buffer) return;

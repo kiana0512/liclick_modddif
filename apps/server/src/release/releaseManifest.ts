@@ -20,10 +20,10 @@ function rootPackageVersion() {
 
 function runtimeMode(): RuntimeMode {
   const configured = process.env.LICLICK_RUNTIME_MODE?.trim();
-  if (configured === 'cloud' || configured === 'desktop-legacy' || configured === 'development') {
+  if (configured === 'cloud' || configured === 'development') {
     return configured;
   }
-  return process.env.NODE_ENV === 'production' ? 'desktop-legacy' : 'development';
+  return process.env.NODE_ENV === 'production' ? 'cloud' : 'development';
 }
 
 const gitSha =
@@ -46,6 +46,6 @@ export const serverReleaseManifest = createReleaseManifest({
   capabilities: [
     'release-manifest',
     'project-revision-planned',
-    ...(runtimeMode() === 'cloud' ? ['cloud-control-plane'] : ['desktop-legacy-adapter']),
+    ...(runtimeMode() === 'cloud' ? ['cloud-control-plane'] : ['development-runtime']),
   ],
 });

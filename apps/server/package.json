@@ -23,6 +23,7 @@
     "test:telemetry": "node scripts/clean-dist.mjs && tsc -p tsconfig.json && node scripts/test-telemetry-aggregation.mjs",
     "test:prompt-polish": "node scripts/clean-dist.mjs && tsc -p tsconfig.json && node scripts/test-prompt-polish.mjs",
     "test:liclick-personal-account": "node scripts/clean-dist.mjs && tsc -p tsconfig.json && node scripts/test-liclick-personal-account-boundary.mjs",
+    "test:liclick-asset-upload-retry": "node scripts/clean-dist.mjs && tsc -p tsconfig.json && node scripts/test-liclick-asset-upload-retry.mjs",
     "test:task-history": "node scripts/clean-dist.mjs && tsc -p tsconfig.json && node ../../scripts/smoke-task-history.mjs",
     "test:regression": "corepack pnpm --filter @liclick/contracts build && node scripts/run-regression-suite.mjs",
     "lint": "eslint src",
@@ -39,7 +40,7 @@
     "busboy": "^1.6.0",
     "pg": "^8.16.3",
     "pinyin-pro": "3.28.2",
-    "sharp": "^0.34.5",
+    "sharp": "^0.35.4",
     "ws": "^8.21.1"
   },
   "devDependencies": {

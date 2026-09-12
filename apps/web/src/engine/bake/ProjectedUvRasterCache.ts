@@ -26,6 +26,8 @@ export class ProjectedUvRasterCache {
   private disposed = false;
   private revision = 0;
   private resident?: ResidentQualityComposite;
+  private residentKeys: string[] = [];
+  private residentSourceSizes: GpuLayerSourceSize[] = [];
   private programs = new Map<string, THREE.ShaderMaterial>();
   private resolved?: { key: string; result: GpuLayerRastersBakeOutput; bytes: number };
   private readonly contextLost = () => this.clear();
@@ -121,8 +123,30 @@ export class ProjectedUvRasterCache {
   }
   getResident(renderer: THREE.WebGLRenderer, resolution: number) {
     this.resident ??= new ResidentQualityComposite(renderer, resolution);
+    this.residentKeys = [];
+    this.residentSourceSizes = [];
     this.resident.reset();
     return this.resident;
+  }
+  leaseResident(renderer: THREE.WebGLRenderer, resolution: number, keys: string[]) {
+    this.resident ??= new ResidentQualityComposite(renderer, resolution);
+    const canResume = this.residentKeys.length > 0 &&
+      this.residentKeys.length <= keys.length &&
+      this.residentKeys.every((key, index) => key === keys[index]);
+    const startIndex = canResume ? this.residentKeys.length : 0;
+    const sourceSizes = canResume ? this.residentSourceSizes.slice() : [];
+    // The current candidate targets are leased to this calculation. If it is
+    // cancelled or fails, no later request may treat the partial targets as a
+    // completed prefix.
+    this.residentKeys = [];
+    this.residentSourceSizes = [];
+    if (!canResume) this.resident.reset();
+    return { composite: this.resident, startIndex, sourceSizes };
+  }
+  commitResident(keys: string[], sourceSizes: GpuLayerSourceSize[]) {
+    if (this.disposed || keys.length !== sourceSizes.length) return;
+    this.residentKeys = keys.slice();
+    this.residentSourceSizes = sourceSizes.slice();
   }
   take(key: string, entry: Entry) {
     const bytes = entryBytes(entry);
@@ -146,6 +170,8 @@ export class ProjectedUvRasterCache {
     this.programs.clear();
     this.resident?.dispose();
     this.resident = undefined;
+    this.residentKeys = [];
+    this.residentSourceSizes = [];
     for (const entry of this.entries.values()) {
       entry.color.dispose();
       entry.quality.dispose();

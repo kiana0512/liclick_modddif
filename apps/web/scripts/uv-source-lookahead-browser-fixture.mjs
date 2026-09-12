@@ -101,7 +101,10 @@ export async function runCached(resolution=4096,count=6) {
       });
       const states=[];
       try {
-        for(const hidden of [-1,count-1,count-2,count-3,-1]) {
+        // Start without the final ordered layer, then append it. The optimized
+        // implementation resumes that exact aggregate prefix.
+        for(const hidden of [count-1,-1,count-2,count-3,-1]) {
+          delete document.body.dataset.residentUvAggregatePrefixLayers;
           const started=performance.now();
           const result=await algorithm({renderer,group,layers:layers.filter((_,i)=>i!==hidden),resolution,
             enableBackfaceCulling:true,enableDilation:false,dilationPixels:0,rasterCache:cache,
@@ -109,7 +112,8 @@ export async function runCached(resolution=4096,count=6) {
           const ms=performance.now()-started,base=result.residentQuality;
           states.push({hidden,ms,hits:Number(document.body.dataset.residentUvRasterHits),
             misses:Number(document.body.dataset.residentUvRasterMisses),rgba:await hash(base.imageData.data),
-            coverage:await hash(base.coverage),coveredPixels:result.coveredPixels,sourceMs:result.sourcePreparationWaitMs});
+            coverage:await hash(base.coverage),coveredPixels:result.coveredPixels,sourceMs:result.sourcePreparationWaitMs,
+            aggregatePrefix:Number(document.body.dataset.residentUvAggregatePrefixLayers)});
         }
         records.push(states);
       }finally{cache.dispose();geometry.dispose();material.dispose();renderer.dispose();}
@@ -117,6 +121,10 @@ export async function runCached(resolution=4096,count=6) {
     if(new Set(records[0].map(state=>state.rgba)).size<3)throw Error('Fixture layer toggles must change visible colors');
     for(const states of records.slice(1))for(let i=0;i<states.length;i++)for(const key of ['rgba','coverage','coveredPixels']) {
       if(states[i][key]!==records[0][i][key])throw Error('Cached state mismatch '+i+' '+key);
+    }
+    for(const states of records.slice(1,3)) {
+      if(states[1].aggregatePrefix!==count-1)throw Error('Appended layer did not resume the aggregate prefix');
+      if(states[2].aggregatePrefix!==0)throw Error('Middle-layer change must not resume an aggregate prefix');
     }
     return {cached:true,resolution,count,records,differences:0};
   }finally{urls.forEach(url=>URL.revokeObjectURL(url));}

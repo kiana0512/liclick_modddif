@@ -417,9 +417,7 @@ function reconcileFlattenedBaseColorUvSeams(
 
 function findVisibleUvLayers(objectId: string) {
   const layers = useLayerStore.getState().layers;
-  const stack = getVisibleUvLayerStack(layers, objectId, 'bottom-to-top').filter(
-    (layer) => layer.objectId === objectId,
-  );
+  const stack = getVisibleUvLayerStack(layers, objectId, 'bottom-to-top');
   const mergedLayer = findMergedUvBakeLayer(layers, objectId);
   if (!mergedLayer) return stack;
 

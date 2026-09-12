@@ -1,7 +1,11 @@
 {
   "schemaVersion": 1,
-  "roots": ["apps/web/src"],
+  "roots": ["apps/web/src", "apps/server/src", "packages/contracts/src"],
   "forbiddenReferences": [
+    "desktop-legacy",
+    "desktop-legacy-adapter",
+    "localhost:4618",
+    "127.0.0.1:4618",
     "getLocalTextureRuntimeApiBase",
     "checkLocalTextureRuntime",
     "downloadLocalTextureRuntimeInstaller",

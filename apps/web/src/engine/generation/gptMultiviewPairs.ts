@@ -114,8 +114,9 @@ export async function waitForGptPairPresentation(
   assertActive: () => void,
   present: () => Promise<void>,
   timeoutMs = 60_000,
+  onDelayed?: () => void,
 ) {
-  const deadline = Date.now() + timeoutMs;
+  let deadline = Date.now() + timeoutMs;
   for (;;) {
     assertActive();
     if (ready()) {
@@ -124,8 +125,12 @@ export async function waitForGptPairPresentation(
       assertActive();
       if (ready()) return;
     }
-    if (Date.now() >= deadline)
-      throw new Error('本组纹理已保存，但视口尚未完成显示；已停止后续视角，请检查图层显示状态。');
+    if (Date.now() >= deadline) {
+      // The image generation already succeeded. A delayed viewport is not a
+      // generation failure and must not release the next capture out of order.
+      onDelayed?.();
+      deadline = Date.now() + Math.max(timeoutMs, 1_000);
+    }
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
 }

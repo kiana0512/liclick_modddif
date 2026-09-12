@@ -325,6 +325,13 @@ const generationPollIntervalMs = 5000;
 function generationPollToastKey(jobId: string) {
   return `generation-poll-retrying:${jobId}`;
 }
+
+function isVerboseProjectionWaitNotice(message: string) {
+  return (
+    message.includes('本组回贴后再生成下一组') ||
+    message.includes('等待回贴与合成渲染完成')
+  );
+}
 const defaultImageGenerationSettings = {
   textureGptModel: 'gpt-image-2.5-sunburst',
   textureGptQuality: 'high',
@@ -957,6 +964,7 @@ export function GeneratePanel({
   const generationAbortControllersRef = useRef(new Map<string, AbortController>());
   const texturePipelineAbortControllerRef = useRef<AbortController>();
   const projectedLayerCommitQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const autoProjectionFailureNoticeRef = useRef(new Map<string, string>());
   const recoverSingleViewProjectionsRef = useRef<() => Promise<void>>();
   const wakeSingleViewProjectionsRef = useRef<() => void>();
   const criticalProjectSaveQueueRef = useRef<Promise<void>>(Promise.resolve());
@@ -2457,10 +2465,28 @@ export function GeneratePanel({
     if (generation.resultUrl) return generation;
     const client = createLiclickApiClient();
     const jobId = getGenerationJobId(generation);
-    const startedAt = Date.now();
-    while (Date.now() - startedAt < 30 * 60 * 1000) {
+    let transientFailures = 0;
+    let nextLongWaitNoticeAt = Date.now() + 30 * 60 * 1000;
+    for (;;) {
       if (isCancelledGeneration(generation)) throw new Error('用户已终止纹理贴图生成任务。');
-      const result = await client.getGenerationJob(jobId);
+      let result: Awaited<ReturnType<typeof client.getGenerationJob>>;
+      try {
+        result = await client.getGenerationJob(jobId);
+        transientFailures = 0;
+      } catch (error) {
+        if (isCancelledGeneration(generation)) throw new Error('用户已终止纹理贴图生成任务。');
+        const message = error instanceof Error ? error.message : String(error);
+        if (/Generation job not found|生成任务已失效|没有找到.*任务/i.test(message)) throw error;
+        transientFailures += 1;
+        if (transientFailures >= 2) {
+          setGenerateNotice({
+            tone: 'warning',
+            message: '生图服务连接暂时不可用，远端任务不会判定失败，正在自动重连。',
+          });
+        }
+        await new Promise((resolve) => window.setTimeout(resolve, 3500));
+        continue;
+      }
       if (result.status === 'failed') {
         throw new Error(
           getUserFacingGenerationError(result.error, '纹理贴图生成失败，请稍后重试。'),
@@ -2479,9 +2505,15 @@ export function GeneratePanel({
           },
         };
       }
+      if (Date.now() >= nextLongWaitNoticeAt) {
+        setGenerateNotice({
+          tone: 'warning',
+          message: '远端仍在处理本组生图，任务保持运行并会继续等待，不会因页面切换判定失败。',
+        });
+        nextLongWaitNoticeAt = Date.now() + 30 * 60 * 1000;
+      }
       await new Promise((resolve) => window.setTimeout(resolve, 3500));
     }
-    throw new Error('等待多视角纹理贴图生成超时。');
   }
 
   function submitGptTextureView(
@@ -2512,7 +2544,11 @@ export function GeneratePanel({
     });
   }
 
-  function waitForProjectedMaterialResident(objectId: string, signal?: AbortSignal) {
+  function waitForProjectedMaterialResident(
+    objectId: string,
+    signal?: AbortSignal,
+    onDelayed?: () => void,
+  ) {
     let settled = false;
     let timeoutId: number | undefined;
     let settle: ((ready: boolean) => void) | undefined;
@@ -2533,11 +2569,22 @@ export function GeneratePanel({
       finishWait(true);
     };
     const handleAbort = () => finishWait(false);
+    const scheduleDelayedNotice = () => {
+      timeoutId = window.setTimeout(() => {
+        timeoutId = undefined;
+        if (settled) return;
+        // The remote result already exists. Keep the strict resident-material
+        // barrier and report a render delay without converting it to a failed
+        // image-generation record.
+        onDelayed?.();
+        scheduleDelayedNotice();
+      }, 60_000);
+    };
     const promise = new Promise<boolean>((resolve) => {
       settle = resolve;
       window.addEventListener('liclick:projected-material-resident', handleResident);
       signal?.addEventListener('abort', handleAbort, { once: true });
-      timeoutId = window.setTimeout(() => finishWait(false), 60_000);
+      scheduleDelayedNotice();
       if (signal?.aborted) finishWait(false);
     });
     return { promise, cancel: () => finishWait(false) };
@@ -2831,7 +2878,16 @@ export function GeneratePanel({
             44 + (index / viewCount) * 50,
             `远端多视图 ${stepLabel} · 回贴${view.label}`,
           );
-          const residentWait = waitForProjectedMaterialResident(objectId, signal);
+          const residentWait = waitForProjectedMaterialResident(objectId, signal, () => {
+            updateTexturePipelineProgress(
+              44 + (index / viewCount) * 50,
+              `结果已保存 · 等待${view.label}回贴渲染`,
+            );
+            setGenerateNotice({
+              tone: 'warning',
+              message: `${view.label} 生图结果已保存，正在等待回贴与合成渲染完成；完成后自动继续。`,
+            });
+          });
           let projectedLayer: Layer | undefined;
           try {
             projectedLayer = await addGenerationAsProjectedLayer(completed, {
@@ -2965,6 +3021,14 @@ export function GeneratePanel({
           },
           assertActive,
           waitForBrowserPaint,
+          60_000,
+          () => {
+            updateTexturePipelineProgress(87, '结果已保存 · 等待视口渲染恢复');
+            setGenerateNotice({
+              tone: 'warning',
+              message: '本组生图结果已保存，正在等待回贴与合成渲染完成；完成后会自动继续下一组。',
+            });
+          },
         );
         projectedCount += result.projected;
         updateTexturePipelineProgress(90, '多视图回贴完成');
@@ -5238,6 +5302,10 @@ export function GeneratePanel({
     const pending = useGenerationStore.getState().generations.filter((generation) =>
       needsSingleViewAutoProjection(generation, currentProjectId),
     );
+    const pendingIds = new Set(pending.map((generation) => generation.id));
+    for (const generationId of autoProjectionFailureNoticeRef.current.keys()) {
+      if (!pendingIds.has(generationId)) autoProjectionFailureNoticeRef.current.delete(generationId);
+    }
     for (const generation of pending) {
       if (
         useProjectStore.getState().currentProjectId !== currentProjectId ||
@@ -5245,13 +5313,17 @@ export function GeneratePanel({
       ) return;
       try {
         const layer = await addGenerationAsProjectedLayer(generation, { automatic: true });
-        if (layer) dismissToastByDedupeKey(`auto-project:${generation.id}`);
+        if (layer) {
+          autoProjectionFailureNoticeRef.current.delete(generation.id);
+          dismissToastByDedupeKey(`auto-project:${generation.id}`);
+        }
       } catch (error) {
-        pushToast({
-          tone: 'warning',
-          title: '图片已生成，正在重试自动投影',
-          description: error instanceof Error ? error.message : '请保持网络连接，无需重新生图。',
-          dedupeKey: `auto-project:${generation.id}`,
+        const message = error instanceof Error ? error.message : '请保持网络连接，无需重新生图。';
+        if (autoProjectionFailureNoticeRef.current.get(generation.id) === message) continue;
+        autoProjectionFailureNoticeRef.current.set(generation.id, message);
+        console.warn('[generation] Automatic projection recovery remains pending', {
+          generationId: generation.id,
+          message,
         });
       }
     }
@@ -5714,7 +5786,7 @@ export function GeneratePanel({
               </section>
             )}
 
-            {generateNotice && (
+            {generateNotice && !isVerboseProjectionWaitNotice(generateNotice.message) && (
               <div
                 role={generateNotice.tone === 'error' ? 'alert' : 'status'}
                 aria-live="polite"

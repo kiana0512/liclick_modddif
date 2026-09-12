@@ -4,10 +4,6 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { serverConfig } from '../config.js';
 import { streamFileResponse } from './fileResponseService.js';
 
-const retiredHostExtensionPaths = new Set([
-  '/downloads/LIclick-3D-Texture-Local-Component-Setup.exe',
-]);
-
 const mimeTypes: Record<string, string> = {
   '.avif': 'image/avif',
   '.bin': 'application/octet-stream',
@@ -90,14 +86,6 @@ export async function serveWebFrontend(
 ) {
   if (!serverConfig.serveWeb) return false;
   if (request.method !== 'GET' && request.method !== 'HEAD') return false;
-  if (retiredHostExtensionPaths.has(url.pathname)) {
-    response.writeHead(404, {
-      'content-type': 'application/json; charset=utf-8',
-      'cache-control': 'no-store',
-    });
-    response.end(JSON.stringify({ error: 'Host extensions are not distributed by LI3D.' }));
-    return true;
-  }
   const filePath = resolveStaticFile(url);
   if (!filePath) {
     const indexPath = path.resolve(serverConfig.webDistDir, 'index.html');

@@ -1,6 +1,6 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
-> 文档版本：`2.20.37`
+> 文档版本：`2.20.49`
 >
 > 生效日期：`2026-09-12`
 >
@@ -17,6 +17,36 @@
 2026-09-12 M04/M06：`GPT-TRANSPARENT-TEXTURE/1.0.0` 接通 GPT2/Sunburst/Flare 纹理及 GPT 局部任务 background=transparent；通过持久化 extraParams.background 选择源 Alpha 分支，不根据模型名迁移旧任务。新单/多视图保留源 RGBA 和完整画布，跳过重复抠图；capture mask、深度、角度及笔刷约束保留。规范图层恢复尊重显式 ignoreSourceAlpha=false，旧无标记流程不变。协作 M07/M08/M12，详见 [变更卡](changes/CHG-20260912-GPT-TRANSPARENT.md)。
 
 2026-09-12 M04/M08：`GPT25-TEXTURE-GENERATION/1.0.0` 接入莉刻 Sunburst/Flare 并保留两视角并发、分组串行；`GPT-REPAINT-GUIDE/1.0.0` 新增独立 GPT 局部重绘入口，只有无纹理处与笔刷选区使用白模，其余纹理保留。GPT 仅接收组合图和材质参考，原始 UV 选区仍是唯一回贴授权。使用现有单视图提示词、原局部重绘保持不变。`GPT-REPAINT-ALPHA/1.0.0` 按用户确认让新 GPT 局部返图跳过 ALG-LR-013 内缩/强制不透明，前台与恢复原样保留源 RGBA；原远端 ModelView/Klein 保留内缩。协作 M06/M07/M12：回贴显式使用源 alpha，原笔刷/深度约束、合并与导出透传逻辑不变；既有已裁任务不重算。详见 [变更卡](changes/CHG-20260912-GPT25-REPAINT.md)。
+
+2026-09-12 UI-05 → M03/M04：仅隐藏左侧“本组回贴后再生成下一组 / 等待回贴与合成渲染完成”长文本状态卡，其他普通状态、警告和错误正常显示。此变更仅影响 UI 呈现，不删除回贴/Resident UV/下一组屏障，不改写生图成功或失败判定，无 Schema、资产或迁移变更。详见 [渲染衔接变更卡](changes/CHG-20260912-GENERATION-RENDER-LIFECYCLE.md)。
+
+2026-09-12 UI-05/UI-06 → M03/M04/M06/M07：`TEXTURE-RUNTIME-RESIDENCY` v1.5.0 将 Resident UV 合成从 `useFrame` 解耦：图层签名变更即由后台安全任务主动启动计算，不再等 Chromium 为 hidden 标签页或任务栏预览分配下一个 rAF。暂时失败只在当前精确签名上重试，前台交互仍让帧；不降低分辨率、不跳过 GPU 上传/材质提交/真实 Resident 屏障，像素、QA、持久化与导出不变。详见 [渲染衔接变更卡](changes/CHG-20260912-GENERATION-RENDER-LIFECYCLE.md)。
+
+2026-09-12 UI-05/UI-06 → M03/M04/M06：`TEXTURE-RUNTIME-RESIDENCY` v1.4.0 将 LI3D 窗口失焦/被其他窗口遮挡也纳入后台渲染 lease，不再只依赖 `document.hidden`。生成持锁期间的 blur/focus/visibilitychange 会立即重评估，失焦时由 R3F `advance` 继续材质提交、Resident UV 和下一组快照屏障；获得焦点后停止额外定时帧。像素、分辨率、QA、持久化和导出语义不变。详见 [渲染衔接变更卡](changes/CHG-20260912-GENERATION-RENDER-LIFECYCLE.md)。
+
+2026-09-12 UI-05/UI-06 → M03/M04：`GENERATION-AUTO-PROJECTION-NOTICE` v1.1.0 将自动投影恢复改为静默后台流程，不再弹出“图片已生成，正在重试自动投影”。五秒恢复轮询、原因去重、严格回贴屏障、投影/UV 像素、分辨率、QA、持久化和导出语义不变。详见 [自动投影提示去重变更卡](changes/CHG-20260912-AUTO-PROJECTION-NOTICE.md)。
+
+2026-09-12 UI-05/UI-06 → M03/M04/M06/M07：`TEXTURE-RUNTIME-RESIDENCY` v1.3.0 将投影纹理数组预编译、GPU fence 轮询、UV 合成与 Runtime visibility 的裸 `requestAnimationFrame` 等待统一替换为后台安全 paint 调度；标签隐藏时解除仅用于保护前台交互的等待，不降低预编译、GPU 完成或像素正确性要求。修复帧 lease 已运行但材质构建内部仍可能停在 rAF 的第二层卡点。详见 [渲染衔接变更卡](changes/CHG-20260912-GENERATION-RENDER-LIFECYCLE.md)。
+
+2026-09-12 UI-05/UI-06 → M03/M04/M06：`TEXTURE-RUNTIME-RESIDENCY` v1.2.0 修正浏览器标签页隐藏但仍停留在贴图路由时的渲染 lease 漏判：只要生成链路持锁，`document.hidden` 即由 R3F `advance` 驱动 WebGL/useFrame，站内隐藏路由继续使用 demand invalidate，前台贴图页不增加额外定时帧。解决后台保持白模、真实材质未呈现导致下一组等待的问题；严格回贴屏障、像素、分辨率、QA、持久化和导出不变。详见 [渲染衔接变更卡](changes/CHG-20260912-GENERATION-RENDER-LIFECYCLE.md)。
+
+2026-09-12 UI-05/UI-06 → M03/M04：`GENERATION-AUTO-PROJECTION-NOTICE` v1.0.0 将已完成图片的自动投影恢复告警按“任务 ID + 原因”在当前运行时内只提示一次；五秒恢复轮询继续运行，错误原因改变可再次提示，投影成功后清理告警状态。修复缺少历史相机捕获时同一提示被周期性延长或反复弹出，不改变生成、投影、UV、分辨率、QA、持久化和导出语义。详见 [自动投影提示去重变更卡](changes/CHG-20260912-AUTO-PROJECTION-NOTICE.md)。
+
+2026-09-12 M03/M04/M12：`LICLICK-ASSET-UPLOAD-RETRY` v1.0.0 对远端生图任务创建前的参考图 `upload_asset` 增加仅限瞬时网关、限流和传输故障的五次指数退避重试；认证、参数等永久错误立即失败，`generate_image` 不做盲重试，避免重复远端任务与费用。真实多视图后台链路已验证完成两组回贴、UV 合成并自动提交下一组，第三组原故障定位为 Atlas 上传 502，而非页面切换后的渲染屏障停摆。分辨率、QA、投影/UV 像素、持久化与导出语义不变。详见 [参考图上传重试变更卡](changes/CHG-20260912-LICLICK-ASSET-UPLOAD-RETRY.md)。
+
+2026-09-12 UI-05/UI-06 → M03/M04/M06：`GPT-MULTIVIEW-PAIR-SEQUENCE` v1.2.1 / `TEXTURE-RUNTIME-RESIDENCY` v1.1.0 为隐藏且有生成任务的纹理运行时增加低频渲染 lease；同页模块切换唤醒 demand 帧，浏览器隐藏时由 R3F advance 推进 useFrame/Resident UV，且新合成请求显式唤醒首帧。修复“切回贴图界面才完成渲染并提交下一批”的遗漏；严格回贴屏障、像素、分辨率、QA、持久化及导出语义不变。详见 [渲染衔接变更卡](changes/CHG-20260912-GENERATION-RENDER-LIFECYCLE.md)。
+
+2026-09-12 M05/M07/M11：`UV-LAYER-OBJECT-APPLICABILITY` v1.0.0 统一无 objectId 历史/global UV 在常驻显示、FBX、GLB/GLTF/OBJ 的对象适用规则，移除标准导出的二次严格筛选。层序、像素、分辨率、QA、GPU/CPU/Worker/shader、持久化不变，无迁移。详见 [global UV 导出变更卡](changes/CHG-20260912-GLOBAL-UV-EXPORT-PARITY.md)。
+
+2026-09-12 UI-06/UI-10 → M05/M07/M08/M11：`LAYER-VISIBILITY-AUTHORITY` v1.0.0 将局部重绘投影行与实现 UV destination 的显隐关联迁入 `engine/layers`，眼睛、拖拽和快捷键统一原子切换；重复同值保持数组引用，避免无意义常驻 UV 重合成。图层 Schema/顺序、像素、分辨率、GPU/CPU/Worker/shader、QA、持久化及导出协议不变，无迁移。详见 [图层显隐变更卡](changes/CHG-20260912-LAYER-VISIBILITY-AUTHORITY.md)。
+
+2026-09-12 UI-05/UI-06 → M03/M04/M06：`GPT-MULTIVIEW-PAIR-SEQUENCE` v1.2.0 / `TEXTURE-RUNTIME-RESIDENCY` v1.0.0 保留“远端生成 → 保存 → 回贴/合成实际渲染 → 下一组截图”的严格顺序。进入同项目 UV、重拓扑或烘焙时保持 Engine Session、Editor、GeneratePanel、场景与 WebGL 常驻；前台 always、后台任务 demand、后台空闲 never。浏览器标签页隐藏时由非 rAF 调度回退继续 Runtime depth/normal、投影与合成屏障；已成功结果不会因页面切换、材质驻留延迟或暂时网络错误被改写为生图失败。只有服务端明确失败、任务不存在、工程/模型切换或用户终止才失败/停止。GPU/CPU/Worker/shader、分辨率、QA、持久化和导出语义不变，无 Schema/资产迁移。详见 [渲染衔接变更卡](changes/CHG-20260912-GENERATION-RENDER-LIFECYCLE.md)。
+
+2026-09-12 UI-06 → M03/M08：`ALG-VIEW-INPUT-001` v1.0.0 将鼠标输入固定为左键仅交给当前绘制/橡皮工具、中键平移、右键旋转、滚轮缩放；Ctrl/Cmd 不再把中键变为缩放，压感笔尾擦仍保留。未改相机数学、画笔/橡皮像素、GPU/CPU/Worker/shader、分辨率、QA、持久化或导出，无资产/Schema 迁移。测试与回滚见 [鼠标输入变更卡](changes/CHG-20260912-VIEWPORT-MOUSE-BUTTONS.md)。
+
+2026-09-12 M07，协作 M06/M09：`PERF-UV-SOURCE-PREPARE-001` v1.5.0 在全静态、普通混合的常驻 GPU Top-K 栈追加图层时租用已完成的精确有序前缀，仅计算新增尾层；取消、失败、非前缀、overlay、live 或 context/scope 变化全部清空并完整重算。4K 真实 WebGL 冻结对照 RGBA/coverage/coveredPixels 差异 0，五层前缀命中时 source prepare 29.3→16.3ms；端到端样本 635.1→606.0ms，不能外推为所有工程。分辨率、QA、shader/Top-K、持久化及导出不变，无迁移。详见 [UV 聚合前缀变更卡](changes/CHG-20260912-UV-AGGREGATE-PREFIX.md)。
+
+2026-09-12 M01/M02/M12/M15：`CLOUD-RUNTIME-BOUNDARY` v1.1.0 删除生产清单的 desktop/local-agent 合法值与非 Cloud CAS 旁路，并将 Cloud 边界扫描扩展到 Server/Contracts；依赖审计修复 7 high / 3 moderate。不恢复本地组件、4618、安装器、端点切换或本地凭据。Project Command、Revision CAS、ownership 与 verified assets 语义收紧但 Schema 不变，无资产迁移；外部发布能力未伪造为完成。审计、回滚及限制见 [Cloud 审计修复变更卡](changes/CHG-20260912-CLOUD-AUDIT-HARDENING.md)。
 
 2026-09-11 M07：`UV-RASTER-CACHE-IDENTITY/2` 将逐层 GPU 缓存与外层合成签名统一到属性/底层数组身份、交错布局及上传版本，补齐 drawRange；缓存复制/保留以生命周期 revision 防止 context loss 后复活。内置冻结回归复现旧核更换同版本 UV 后 524288 字节错误，新核零差异。像素算法、分辨率、QA、持久格式不变，无资产迁移。收尾验证、未完成性能项与回滚见 [变更卡](changes/CHG-20260911-UV-CACHE-IDENTITY.md)。
 
@@ -967,6 +997,13 @@ M15 / CLOUD-DEPLOYMENT v1.0.0（2026-09-03）：正常合并 release 部署历�
 
 | 版本 | 日期 | 基线 | 变更 |
 | --- | --- | --- | --- |
+| `2.20.44` | 2026-09-12 | `本地待提交` | 投影数组预编译、GPU fence、UV 合成和 Runtime visibility 的裸 rAF 等待改为后台安全调度；hidden 时不再被前台交互保护锁阻塞。见 CHG-20260912-GENERATION-RENDER-LIFECYCLE |
+| `2.20.43` | 2026-09-12 | `本地待提交` | 修正贴图路由仍 active 但浏览器标签页 hidden 时未启用 WebGL/R3F 帧 lease 的漏判；前台无额外帧开销。见 CHG-20260912-GENERATION-RENDER-LIFECYCLE |
+| `2.20.42` | 2026-09-12 | `本地待提交` | 自动投影恢复告警按任务和原因只提示一次，后台恢复轮询保持运行，成功后清理提示状态。见 CHG-20260912-AUTO-PROJECTION-NOTICE |
+| `2.20.41` | 2026-09-12 | `本地待提交` | 生图任务创建前的参考图上传对 408/429/5xx 与瞬时传输故障执行有限退避重试；永久错误立即失败，禁止盲重试 generate_image。见 CHG-20260912-LICLICK-ASSET-UPLOAD-RETRY |
+| `2.20.40` | 2026-09-12 | `本地待提交` | 后台生成渲染 lease 修复切回贴图才推进下一批；global UV 跨导出对象适用规则统一。见 CHG-20260912-GENERATION-RENDER-LIFECYCLE、CHG-20260912-GLOBAL-UV-EXPORT-PARITY |
+| `2.20.39` | 2026-09-12 | `本地待提交` | 局部重绘展示层/实现 UV 层显隐权限统一到领域层，快捷键与眼睛原子一致，同值 no-op 避免常驻 UV 重算。见 CHG-20260912-LAYER-VISIBILITY-AUTHORITY |
+| `2.20.38` | 2026-09-12 | `本地待提交` | 同项目纹理生成/投影/合成运行时跨 UV、重拓扑、烘焙与后台标签页常驻；前台 always、后台任务 demand、空闲 never；严格呈现屏障不降级。见 CHG-20260912-GENERATION-RENDER-LIFECYCLE |
 | `2.20.8` | 2026-09-10 | `5e5f7c3 + 发布确认` | 用户确认移除贴图工作台 8K 选项及保留无自动补洞合并；旧项目不降采样，授权 master/A100 发布 |
 | `2.20.7` | 2026-09-10 | `20b0912a + 本地待提交` | 局部重绘 UV 可见面绘制、稀疏 RGBA 历史与保存/导出/合并一致性；单视图不改。见 CHG-20260910-UV-REPAINT |
 | `2.0.0` | 2026-08-26 | `2568e405` | 从 Modernization 基线重新审计；彻底移除旧本地组件架构；重建 Cloud 保存、图层、投影、UV v4、局部重绘 v14/v5、生产 UV/拓扑/Bake 与维护规则 |
