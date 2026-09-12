@@ -12,7 +12,7 @@
 
 ## 1. 文档地位与强制边界
 
-2026-09-12 M07，协作 M06/M08/M09/M15：`UV-DISPLAY-MASK-WORKER/1.2.0` 将 Resident UV 的 rendered-color mask 从 Worker resident source、翻转条带到 WebGL2 纹理全程保持 R8 单通道；shader 继续只采 `.r`，不再为每个条带创建 RGBA `ImageData/ImageBitmap`。4K 单 mask GPU 名义容量由 64 MiB 降为 16 MiB，上传字节与条带瞬时数组减少 75%；`UNPACK_ALIGNMENT` 显式设为 1 并恢复原 GL 状态。`SHADER-TEMPLATE-FORMAT/1.3.0` 同时将已验证只含 shader 模板的 ViewportCanvas 纳入构建去缩进，release 总 JavaScript 为 `3,219,113 / 3,222,000`，余量 `2,887` 字节。完整分辨率、QA、UV 颜色、图层/眼睛、持久化和导出不变，无迁移。详见 [Resident UV R8 变更卡](changes/CHG-20260912-UV-DISPLAY-R8.md)。
+2026-09-12 M07，协作 M06/M08/M09/M15：`UV-DISPLAY-MASK-WORKER/1.2.0` 将 Resident UV 的 rendered-color mask 从 Worker resident source、翻转条带到 WebGL2 纹理全程保持 R8 单通道；shader 继续只采 `.r`，不再为每个条带创建 RGBA `ImageData/ImageBitmap`。4K 单 mask GPU 名义容量由 64 MiB 降为 16 MiB，上传字节与条带瞬时数组减少 75%；`UNPACK_ALIGNMENT` 显式设为 1 并恢复原 GL 状态。`SHADER-TEMPLATE-FORMAT/1.3.0` 同时将已验证只含 shader 模板的 ViewportCanvas 纳入构建去缩进，最终提交 `5504d49` 的 release 总 JavaScript 为 `3,219,108 / 3,222,000`，余量 `2,892` 字节。完整分辨率、QA、UV 颜色、图层/眼睛、持久化和导出不变，无迁移。详见 [Resident UV R8 变更卡](changes/CHG-20260912-UV-DISPLAY-R8.md)。
 
 2026-09-12 M15，协作 M04/M07/M08：`WEB-BUNDLE-BUDGET/1.0.0` / `SHADER-TEMPLATE-FORMAT/1.2.0` 修复本次功能分支 rebase 后正式 Web 总 JavaScript 从 `3,223,880` 字节超过 `3,222,000` 门禁的问题。Preview Bitmap 请求/纹理发布与 Worker resident source 去重，局部重绘结果移除无效动态导入，缓存热路径使用等价紧凑结构；构建期 GLSL 去缩进显式扩展到 7 个实际生产 shader 模块，AST 逐 token 验证且拒绝普通 UI 模板。最终 release 环境正式产物 `3,221,157` 字节，保留 `843` 字节余量；预算、分辨率、QA、像素、Schema、持久化及导出语义不变，无迁移。详见 [Web 包体门禁变更卡](changes/CHG-20260912-WEB-BUNDLE-BUDGET.md)。
 

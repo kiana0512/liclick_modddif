@@ -25,7 +25,7 @@ v1.1.0 已把 4K rendered-color mask 的整图 RGBA 展开移出 UI 线程，但
 - 单个 GPU mask 名义容量：RGBA8 64 MiB → R8 16 MiB，减少 48 MiB（75%）。
 - Worker 条带数组与 Worker→GPU 源数据：4 bytes/texel → 1 byte/texel，减少 75%；实际总耗时仍受驱动、条带调度和同帧其他 GPU 工作影响，不把名义带宽比例冒充端到端加速。
 - Shader 格式门禁的受控源缩进移除量：12,368 → 14,930 字节。
-- release 总 JavaScript：`3,219,113 / 3,222,000` 字节，余量 `2,887` 字节；原预算不变。
+- 最终提交 `5504d49` 的 release 总 JavaScript：`3,219,108 / 3,222,000` 字节，余量 `2,892` 字节；原预算不变。
 
 ## 验证
 
