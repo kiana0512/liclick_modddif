@@ -91,7 +91,7 @@ assert.equal(remoteResult.metadata.modelSilhouetteClipVersion, 1);
 assert.deepEqual(clipCalls[0].slice(0, 2), ['remote-source', 'depth']);
 assert.equal(preservesRepaintResultAlpha({}), false, 'Unversioned legacy jobs keep their old behavior');
 assert.equal(preservesRepaintResultAlpha({ modelSilhouetteClipVersion: 1 }), true);
-const abort = new AbortController();
+const abort = new globalThis.AbortController();
 abort.abort();
 await assert.rejects(() => prepareRepaintResult('raw', 'depth', true, abort.signal), /abort/i);
 clipCalls.length = 0;
