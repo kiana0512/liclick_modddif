@@ -1,6 +1,6 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
-> 文档版本：`2.20.69`
+> 文档版本：`2.20.70`
 >
 > 生效日期：`2026-09-12`
 >
@@ -9,6 +9,8 @@
 > 基线仓库：`E:\Liclick 3D Texture Modernization`
 >
 > 审计口径：`0a2519d + 607e82f + 2568e40`，不包含错误文档提交 `2bde8c6/e03bab2/d1c5f78`
+
+2026-09-12 UI-06 → 主模块 M05，协作 M06/M07：`LAYER-MULTISELECT-VISIBILITY` v1.0.0 在批量关闭所选图层导致 LayerStore 自动切换 active layer 时保留原多选集合，因此任一仍被选中的隐藏图层眼睛可原集合批量打开；所选行增加持续可见的洋红内描边，active 蓝色底边语义不变。该修改不改变单选、Shift/Ctrl 选择、图层顺序、可见性值、投影转 UV 像素、完整分辨率、QA、持久化或导出。无 Schema、资产或工程迁移；回滚只恢复 active layer 驱动的单选收敛与原背景高亮。详见 [图层多选显隐变更卡](changes/CHG-20260912-LAYER-MULTISELECT-VISIBILITY.md)。
 
 2026-09-12 M07，协作 M06/M08/M09：`PERF-UV-SOURCE-PREPARE-001` v1.8.0 将“普通投影底层 + 单个连续局部重绘 literal overlay”也纳入既有颜色直合成路径。该路径不再为最终只按颜色覆盖的 overlay 创建、栅格化和读回未被消费的质量缓冲；RGBA、coverage、rendered-color mask、层序、接缝、gutter、完整分辨率与发布屏障保持原公式。4K 冻结夹具的 5→4 层状态单次样本由 1122.4ms 降至 892.5ms，GPU/读回阶段由 619.0ms 降至 412.9ms，完整 bake 由 991.1ms 降至 765.1ms；17 个显隐状态重复结果逐像素一致，该隔离样本不作为所有模型的固定提速承诺。CPU/Worker/shader、持久化、导出、Schema、Revision CAS、ownership 与 verified assets 不变，无迁移。详见 [单覆盖层 UV 直合成变更卡](changes/CHG-20260912-UV-SINGLE-OVERLAY.md)。
 

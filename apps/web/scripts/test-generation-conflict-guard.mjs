@@ -56,6 +56,17 @@ for (const action of ['合并图层', '编辑图层图片']) {
   assert.ok(layersPanel.includes(`blockMutation('${action}')`), `${action} must be guarded.`);
 }
 assert.match(layersPanel, /blockMutation\('删除图层', deletionLocked\)/);
+assert.match(
+  layersPanel,
+  /selectedLayerIds\.length > 1 \|\|\s*selectedLayerIds\.includes\(activeProjectedLayerId\)/,
+  'Batch visibility must keep the multi-selection after hiding its active layer.',
+);
+assert.match(
+  layersPanel,
+  /const preserveMultiSelection = selectedLayerIds\.length > 1;[\s\S]*else if \(!preserveMultiSelection\)/,
+  'Active-layer failover must not clear a hidden multi-selection.',
+);
+assert.match(layersPanel, /ring-fuchsia-400\/80/, 'Multi-selected rows need a durable visual boundary.');
 for (const action of ['导入参考图', '切换参考图', '复制参考图', '删除参考图']) {
   assert.ok(referencePicker.includes(`blockMutation('${action}')`), `${action} must be guarded.`);
 }

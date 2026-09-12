@@ -582,21 +582,25 @@ export function LayersPanel({
       visibleLayers.some((layer) => layer.id === activeProjectedLayerId)
     )
       return;
+    const preserveMultiSelection = selectedLayerIds.length > 1;
     const nextActiveLayer = visibleLayers.find((layer) => layer.type === 'projected');
     if (nextActiveLayer) {
       setActiveLayer(nextActiveLayer.id);
-      setSelectedLayerIds([nextActiveLayer.id]);
-      setLastSelectedLayerId(nextActiveLayer.id);
-    } else {
+      if (!preserveMultiSelection) {
+        setSelectedLayerIds([nextActiveLayer.id]);
+        setLastSelectedLayerId(nextActiveLayer.id);
+      }
+    } else if (!preserveMultiSelection) {
       setSelectedLayerIds([]);
       setLastSelectedLayerId(undefined);
     }
-  }, [activeProjectedLayerId, setActiveLayer, visibleLayers]);
+  }, [activeProjectedLayerId, selectedLayerIds, setActiveLayer, visibleLayers]);
 
   useEffect(() => {
     if (
       !activeProjectedLayerId ||
       !layerIdSet.has(activeProjectedLayerId) ||
+      selectedLayerIds.length > 1 ||
       selectedLayerIds.includes(activeProjectedLayerId)
     )
       return;
@@ -1488,7 +1492,7 @@ function LayerRow({
       onDragEnd={onDragEnd}
       className={cn(
         'group relative flex h-[58px] cursor-pointer items-center gap-2 border-b border-white/30 bg-black/86 px-2 transition [contain-intrinsic-size:58px] [content-visibility:auto]',
-        selected && 'bg-white/[0.22]',
+        selected && 'bg-white/[0.22] ring-1 ring-inset ring-fuchsia-400/80',
         active && 'after:absolute after:inset-x-0 after:bottom-0 after:h-px after:bg-[#74a7ff]',
         dragging && 'opacity-45',
         pendingDisplay && 'h-[76px] border-l-4 border-l-amber-400 bg-amber-400/10',
