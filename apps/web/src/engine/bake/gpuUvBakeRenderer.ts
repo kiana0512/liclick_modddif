@@ -1850,7 +1850,7 @@ export async function bakeProjectedLayerRastersWithGpu(
       if (!retainRasters) coveredPixels+=await resident.countLayerCoverage();
       const resolveMs=performance.now()-started;
       residentQuality={imageData,coverage,
-        renderedColorMask:new Uint8Array(coverage.length),writtenTexels,backend:'webgl-resident',
+        renderedColorMask:new Uint8Array(0),writtenTexels,backend:'webgl-resident',
         accumulateMs:residentAccumulateMs,resolveMs,overlayMs:0,totalMs:residentAccumulateMs+resolveMs};
       // Live canvases and overlay passes are mutable even when their serialized
       // layer key is stable, so their aggregate must never become resumable.

@@ -234,6 +234,7 @@ async function applyOverlays(
   overlays: BlendRequest['overlays'],
 ) {
   let addedCoverage = 0;
+  const tracksRenderedColor = renderedColorMask.length > 0;
   for (const overlay of overlays) {
     const imageData = new Uint8ClampedArray(overlay.color);
     const qualityMap = new Float32Array(overlay.quality);
@@ -251,11 +252,11 @@ async function applyOverlays(
       }
       const sourceWord = sourceWords[pixelIndex], baseWord = outputWords[pixelIndex];
       const quality = overlay.overlayMode === 'literal' ? 0 : qualityMap[pixelIndex];
-      const mask = renderedColorMask[pixelIndex];
+      const mask = tracksRenderedColor ? renderedColorMask[pixelIndex] : 0;
       if (sourceWord === previousSource && baseWord === previousBase &&
           quality === previousQuality && mask === previousMask) {
         outputWords[pixelIndex] = previousResult;
-        renderedColorMask[pixelIndex] = previousResultMask;
+        if (tracksRenderedColor) renderedColorMask[pixelIndex] = previousResultMask;
       } else {
       const alpha = getProjectionOverlayAlpha(
         layerCoverage,
@@ -295,14 +296,17 @@ async function applyOverlays(
       // Store rendered-color contribution as premultiplied coverage. This is
       // the exact information the viewport needs after a display-color local
       // repaint has been flattened together with ordinary BaseColor texels.
-      const retainedRenderedCoverage = (renderedColorMask[pixelIndex] / 255) * (1 - alpha);
-      renderedColorMask[pixelIndex] = Math.round(
-        Math.max(0, Math.min(1, retainedRenderedCoverage + (overlay.renderedColor ? alpha : 0))) *
-          255,
-      );
+      if (tracksRenderedColor) {
+        const retainedRenderedCoverage = (renderedColorMask[pixelIndex] / 255) * (1 - alpha);
+        renderedColorMask[pixelIndex] = Math.round(
+          Math.max(0, Math.min(1, retainedRenderedCoverage + (overlay.renderedColor ? alpha : 0))) *
+            255,
+        );
+      }
       previousSource = sourceWord; previousBase = baseWord;
       previousQuality = quality; previousMask = mask;
-      previousResult = outputWords[pixelIndex]; previousResultMask = renderedColorMask[pixelIndex];
+      previousResult = outputWords[pixelIndex];
+      previousResultMask = tracksRenderedColor ? renderedColorMask[pixelIndex] : 0;
       }
       if (!coverage[pixelIndex]) {
         coverage[pixelIndex] = 1;
@@ -495,12 +499,17 @@ function verify(cpu: Uint8ClampedArray, gpu: Uint8ClampedArray): Verification {
 async function run(request: BlendRequest) {
   interactive = request.interactive;
   const startedAt = performance.now();
+  // UV-DISPLAY-MASK-WORKER/1.3.0: ordinary BaseColor stacks cannot produce
+  // rendered-color attribution. Keep their canonical mask empty instead of
+  // allocating and transferring one zero byte per output texel.
+  const renderedColorMaskLength = request.overlays.some(overlay => overlay.renderedColor)
+    ? request.resolution * request.resolution : 0;
   if(request.resolvedBase) {
     const output=new Uint8ClampedArray(request.resolvedBase.output);
     const coverage=new Uint8Array(request.resolvedBase.coverage);
     const count=request.resolution*request.resolution;
     if(request.layers.length || output.length!==count*4 || coverage.length!==count) throw new Error('Invalid resident quality base.');
-    const renderedColorMask=new Uint8Array(count);
+    const renderedColorMask=new Uint8Array(renderedColorMaskLength);
     const added=await applyOverlays(output,coverage,renderedColorMask,request.overlays);
     const overlayMs=performance.now()-startedAt;
     return {output,coverage,renderedColorMask,writtenTexels:request.resolvedBase.writtenTexels+added,
@@ -558,7 +567,7 @@ async function run(request: BlendRequest) {
   }
   const resolveMs = performance.now() - resolveStartedAt;
   const overlayStartedAt = performance.now();
-  const renderedColorMask = new Uint8Array(topK.coverage.length);
+  const renderedColorMask = new Uint8Array(renderedColorMaskLength);
   const overlayAddedCoverage = await applyOverlays(
     output,
     topK.coverage,

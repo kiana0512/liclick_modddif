@@ -1,6 +1,6 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
-> 文档版本：`2.20.63`
+> 文档版本：`2.20.64`
 >
 > 生效日期：`2026-09-12`
 >
@@ -11,6 +11,8 @@
 > 审计口径：`0a2519d + 607e82f + 2568e40`，不包含错误文档提交 `2bde8c6/e03bab2/d1c5f78`
 
 变更卡 `CHG-20260912-GPT-MULTIVIEW-CONCURRENCY`：UI-05 → 主模块 M04，`GPT-MULTIVIEW-PAIR-SEQUENCE` v1.3.0（Multiview concurrency selection / 多视图并发切换）；稳定路径 production，加速路径为非默认可选能力，真实远端速度与美术一致性待验收。实施 Codex、体验验收维护者。新增小按钮切换稳定/加速，按项目保存可选 `settings.imageGeneration.textureMultiviewMode=stable|fast`；缺失或未知值读取为 stable。稳定每组最多 2 张；加速保留首组，后续仅合并相邻完整预设对为最多 4 张，预设 10 视图为 2+4+4，14 视图为 2+4+4+4；自定义新增相机和缺失一半的预设对仍独立执行，不猜测朝向，不重排原有提交顺序。输入为既有视角列表/预设和模式，输出为有序分组，不涉及像素、单位或矩阵换算。生成准备和执行期间锁定按钮，批次使用启动时的策略；同组全部输入先准备并持久化再提交远端，组内并发等待、按固定顺序串行回贴，真实材质驻留与呈现屏障后才捕获下一组。同组结果不互相参考，四图并发不保证美术一致性或固定提速；失败保留本组成功结果并停止后续组，取消沿用原任务身份检查，整批成功后仍仅一次内容修补。不改变单视图、局部重绘、提示词、分辨率、质量、透明 Alpha、GPU/CPU/Worker/shader 投影、UV/export、捕获空间、Layer/Generation/Capture Schema、Command v1、Revision CAS、ownership 或 verified assets。Project 设置新增可选枚举，不需批量迁移；回退按钮/策略后忽略该字段，保留历史图层和资产，稳定模式可立即恢复原分组。回归执行实际调度器与面板适配器，覆盖 10/14 视图、默认/未知值、自定义相机、四任务乱序、组间呈现屏障、本组失败保留、输入快照及按钮双向切换/锁定。未进行付费生图，不把模拟并发等同线上耗时收益。
+
+2026-09-12 M07，协作 M06/M09/M15：`UV-DISPLAY-MASK-WORKER/1.3.0` 将普通 BaseColor 投影栈的全零 rendered-color mask 规范化为空数组。Quality Blend Worker 不再为每次 4K 普通合成分配并传输 16 MiB 全零 R8，Resident GPU 聚合缓存不再复制/计入该冗余数组，CPU fallback 也只在存在 rendered-color 图层时分配；显示端对空数组绑定原 1×1 零值 RedFormat 纹理。包含 rendered-color 局部重绘的栈仍生成、衰减、缓存并上传完整逐 texel mask；RGBA、coverage、层序、shader 采样、完整分辨率、QA、持久化和导出语义不变，无迁移。详见 [Resident UV 全零蒙版省略变更卡](changes/CHG-20260912-UV-ZERO-MASK-ELISION.md)。
 
 ## 1. 文档地位与强制边界
 

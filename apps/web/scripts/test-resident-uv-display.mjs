@@ -503,7 +503,19 @@ await presentation.waitForResidentUvPresentation(scene, 'other-object');
   );
   assert.match(displaySource, /createWorkerBackedMaskPreviewTexture\(\s*mask,/);
   assert.doesNotMatch(displaySource, /new Uint8ClampedArray\(mask\.length \* 4\)/);
+  assert.match(displaySource, /result\.renderedColorMask\?\.length/);
   assert.match(displaySource, /THREE\.RedFormat/);
+
+  const bakeSource = fs.readFileSync(
+    new URL('../src/engine/bake/bakeProjectedLayerToTexture.ts', import.meta.url),
+    'utf8',
+  );
+  assert.match(bakeSource, /overlayRasters\.some\(\(\{ layer \}\) => usesUnlitRenderedColor\(layer\)\)/);
+  const gpuBakeSource = fs.readFileSync(
+    new URL('../src/engine/bake/gpuUvBakeRenderer.ts', import.meta.url),
+    'utf8',
+  );
+  assert.match(gpuBakeSource, /renderedColorMask:new Uint8Array\(0\)/);
 
   const previewCacheSource = fs.readFileSync(
     new URL('../src/engine/viewport/previewTextureCache.ts', import.meta.url),
