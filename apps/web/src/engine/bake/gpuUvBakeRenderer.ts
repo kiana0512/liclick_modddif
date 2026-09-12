@@ -1663,16 +1663,22 @@ export async function bakeProjectedLayerRastersWithGpu(
     document.body.dataset.residentUvRasterHits = String(cached.filter(Boolean).length);
     document.body.dataset.residentUvRasterMisses = String(cached.filter(value => !value).length);
   }
-  const resident = input.residentQuality
-    ? rasterCache?.getResident(renderer, resolution) ?? new ResidentQualityComposite(renderer,resolution)
+  const resumeKeys = cacheable.every(Boolean) ? keys : [];
+  const residentLease = input.residentQuality && rasterCache
+    ? rasterCache.leaseResident(renderer, resolution, resumeKeys)
     : undefined;
-  const sources=createLayerTextureLookahead({ ...input, layers: input.layers.filter((_, i) => !cached[i]) });
+  const resident = input.residentQuality
+    ? residentLease?.composite ?? new ResidentQualityComposite(renderer,resolution)
+    : undefined;
+  const residentStartIndex = residentLease?.startIndex ?? 0;
+  const sources=createLayerTextureLookahead({ ...input, layers: input.layers.filter((_, i) =>
+    i >= residentStartIndex && !cached[i]) });
   let activeTextures: THREE.Texture[] = [];
   const activeMaterials: THREE.Material[] = [];
   let previousState = captureRendererState(renderer);
 
   const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, -1, 1);
-  const sourceSizes: GpuLayerSourceSize[] = [];
+  const sourceSizes: GpuLayerSourceSize[] = residentLease?.sourceSizes ?? [];
   const rasters: GpuLayerRaster[] = [];
   let processedTriangles = 0;
   let coveredPixels = 0;
@@ -1696,6 +1702,11 @@ export async function bakeProjectedLayerRastersWithGpu(
   try {
     const bakeScene = createBakeScene(meshes);
     for (const [layerIndex, layer] of input.layers.entries()) {
+      if (layerIndex < residentStartIndex) {
+        processedTriangles += totalTrianglesPerLayer;
+        reportProgress(layer, layerIndex, true);
+        continue;
+      }
       const isOverlay=!!getProjectedLayerOverlayMode(layer);
       const retainLayerRaster=retainRasters || isOverlay;
       const hit = cached[layerIndex];
@@ -1841,7 +1852,13 @@ export async function bakeProjectedLayerRastersWithGpu(
       residentQuality={imageData,coverage,
         renderedColorMask:new Uint8Array(coverage.length),writtenTexels,backend:'webgl-resident',
         accumulateMs:residentAccumulateMs,resolveMs,overlayMs:0,totalMs:residentAccumulateMs+resolveMs};
+      // Live canvases and overlay passes are mutable even when their serialized
+      // layer key is stable, so their aggregate must never become resumable.
+      if (rasterCache && resumeKeys.length === keys.length) {
+        rasterCache.commitResident(keys, sourceSizes);
+      }
       warnings.push(`Resident GPU quality: ${correctedPixels} rounding-boundary texels corrected; ${retainRasters ? 'calibration retains reference rasters' : 'no per-layer readbacks'}.`);
+      if (rasterCache) document.body.dataset.residentUvAggregatePrefixLayers = String(residentStartIndex);
     }
 
     warnings.push(

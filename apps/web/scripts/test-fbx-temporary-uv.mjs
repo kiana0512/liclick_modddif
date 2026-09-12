@@ -13,6 +13,26 @@ try {
   const composition = await server.ssrLoadModule('/src/engine/layers/mergeUvComposition.ts');
   const uv = await server.ssrLoadModule('/src/engine/layers/uvLayerComposition.ts');
   const { resolveBakeUvMergePlan } = await server.ssrLoadModule('/src/features/workflow/selectBakeBaseColor.ts');
+  assert.deepEqual(
+    uv
+      .getVisibleUvLayerStack(
+        [
+          { id: 'global-uv', type: 'uv', visible: true, imageUrl: 'global', order: 1 },
+          { id: 'model-uv', type: 'uv', visible: true, imageUrl: 'model', objectId: 'model', order: 0 },
+          { id: 'other-uv', type: 'uv', visible: true, imageUrl: 'other', objectId: 'other', order: 2 },
+          { id: 'hidden-global', type: 'uv', visible: false, imageUrl: 'hidden', order: 3 },
+        ],
+        'model',
+      )
+      .map((item) => item.id),
+    ['global-uv', 'model-uv'],
+    'Viewport, FBX and standard exports must share legacy/global UV applicability.',
+  );
+  assert.doesNotMatch(
+    source,
+    /getVisibleUvLayerStack\(layers, objectId, 'bottom-to-top'\)\.filter/,
+    'Standard GLB/GLTF/OBJ export must not drop global UV rows after shared filtering.',
+  );
   const layer = (id, extra = {}) => ({ id, type: 'projected', visible: true, imageUrl: id, camera: {}, objectId: 'model', opacity: 1, order: 0, ...extra });
   let layers, scene, resolution, bakeCalls, flattened, encoded, revoked, mutate, invalid, revisions, maskOptions;
   const project = { id: 'project', name: 'fixture' };

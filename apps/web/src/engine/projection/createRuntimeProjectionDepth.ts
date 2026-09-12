@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { renderSceneToPngUrl } from '@/engine/capture/renderTargetUtils';
 import type { SerializedCamera } from '@/types/capture';
+import { waitForBrowserPaint } from '@/utils/browserScheduling';
 
 type RuntimeProjectionDepthRequest = {
   renderer: THREE.WebGLRenderer;
@@ -417,7 +418,7 @@ async function renderRuntimeProjectionDepth(request: RuntimeProjectionDepthReque
     // quality passes, but they do not need to occupy consecutive frames.
     // Yield once and honour viewport interaction before submitting the second
     // pass so an eye/mode/camera action cannot be trapped behind both GPU jobs.
-    await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+    await waitForBrowserPaint();
     await request.waitForViewportIdle?.();
     clone.traverse((object) => {
       if (object instanceof THREE.Mesh && object.visible) object.material = normalMaterial;

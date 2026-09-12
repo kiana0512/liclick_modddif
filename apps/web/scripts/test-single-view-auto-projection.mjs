@@ -93,6 +93,7 @@ function fixture(allowUpdates = false) {
     ...policy, console: { warn() {}, error() {} },
     currentProject: project, currentProjectId: 'p', workflowSubmissionLocked: false,
     submitLocksRef: { current: new Set() }, recoverSingleViewProjectionsRef: {},
+    autoProjectionFailureNoticeRef: { current: new Map() },
     projectedLayerCommitQueueRef: { current: Promise.resolve() },
     useGenerationStore: { getState: () => ({ generations }) },
     useProjectStore: { getState: () => ({ ...state, projects: [project] }) },
@@ -183,11 +184,14 @@ await concurrent.recover();
 await concurrent.add(base, { automatic: true });
 assert.equal(concurrent.rows().length, 0, 'deletion is not undone by stale batch completion');
 const retry = fixture();
-retry.fail(3);
+retry.fail(6);
 await retry.recover();
 assert.equal(retry.rows().length, 0);
-assert.equal(retry.notices.length, 1);
+assert.equal(retry.notices.length, 0, 'automatic projection recovery must remain silent');
 assert.equal(policy.hasProjectionCommit(retry.generations()[0]), false);
+await retry.recover();
+assert.equal(retry.rows().length, 0);
+assert.equal(retry.notices.length, 0, 'repeated automatic projection recovery must remain silent');
 await retry.recover();
 assert.equal(retry.rows().length, 1);
 for (const change of ['project', 'cancel', 'object-deleted', 'committed-then-deleted']) {

@@ -40,6 +40,10 @@ import {
 } from '@/engine/projection/liveProjectedCanvasTextureRegistry';
 import { isFlattenableUvMergeSource } from '@/engine/layers/mergeUvComposition';
 import {
+  expandAuthoredLayerVisibilityIds,
+  isLocalRepaintVisibilityLayer,
+} from '@/engine/layers/layerVisibility';
+import {
   createGeneratedDisplayPreview,
   createLayerThumbnail,
   type GeneratedDisplayPreview,
@@ -451,39 +455,6 @@ type OpacityDrag = {
   y: number;
 };
 
-function isLocalRepaintVisibilityLayer(layer: Layer) {
-  return Boolean(
-    layer.role === 'local-repaint-draft' ||
-    layer.role === 'local-repaint-overlay' ||
-    layer.id.startsWith('local-repaint-projection') ||
-    layer.id.startsWith('local-repaint-brush-projection') ||
-    layer.id.startsWith('local-repaint-uv-merge'),
-  );
-}
-
-/**
- * One local repaint result is represented by a visible projected row and an
- * implementation-only UV destination. Eye gestures must update both in one
- * store transaction or the remaining representation keeps the effect visible.
- */
-function expandLocalRepaintVisibilityIds(layers: Layer[], layerIds: string[]) {
-  const expanded = new Set(layerIds);
-  for (const layerId of layerIds) {
-    const layer = layers.find((item) => item.id === layerId);
-    if (!layer || !isLocalRepaintVisibilityLayer(layer)) continue;
-    if (layer.replacementTargetLayerId) expanded.add(layer.replacementTargetLayerId);
-    layers.forEach((candidate) => {
-      if (
-        isLocalRepaintVisibilityLayer(candidate) &&
-        candidate.replacementTargetLayerId === layer.id
-      ) {
-        expanded.add(candidate.id);
-      }
-    });
-  }
-  return [...expanded];
-}
-
 const checkerStyle = {
   backgroundColor: '#d6d6d6',
   backgroundImage:
@@ -659,7 +630,7 @@ export function LayersPanel({
       if (!layerId) return;
       setVisibilityDrag((current) => {
         if (!current || current.touched.has(layerId)) return current;
-        const affectedIds = expandLocalRepaintVisibilityIds(useLayerStore.getState().layers, [
+        const affectedIds = expandAuthoredLayerVisibilityIds(useLayerStore.getState().layers, [
           layerId,
         ]);
         setLayerVisibility(affectedIds, current.visible);
@@ -785,7 +756,7 @@ export function LayersPanel({
       captureHistory(`删除图层：${describeLayerSelection(ids)}`);
       const sceneState = useSceneStore.getState();
       const latestLayers = useLayerStore.getState().layers;
-      const expandedIds = expandLocalRepaintVisibilityIds(latestLayers, ids);
+      const expandedIds = expandAuthoredLayerVisibilityIds(latestLayers, ids);
       const expandedIdSet = new Set(expandedIds);
       const deletesLocalRepaint = ids.some((id) =>
         latestLayers.some((layer) => layer.id === id && isLocalRepaintVisibilityLayer(layer)),
@@ -932,7 +903,7 @@ export function LayersPanel({
   function getAffectedLayerIds(layerId: string, currentLayers: Layer[]) {
     const selectedIds =
       selectedLayerIdSet.has(layerId) && selectedLayerIds.length > 1 ? selectedLayerIds : [layerId];
-    return expandLocalRepaintVisibilityIds(currentLayers, selectedIds);
+    return expandAuthoredLayerVisibilityIds(currentLayers, selectedIds);
   }
 
   function beginVisibilityDrag(layer: Layer) {
@@ -947,7 +918,7 @@ export function LayersPanel({
 
   function continueVisibilityDrag(layerId: string) {
     if (!visibilityDrag || visibilityDrag.touched.has(layerId)) return;
-    const affectedIds = expandLocalRepaintVisibilityIds(useLayerStore.getState().layers, [layerId]);
+    const affectedIds = expandAuthoredLayerVisibilityIds(useLayerStore.getState().layers, [layerId]);
     affectedIds.forEach((id) => visibilityDrag.touched.add(id));
     setLayerVisibility(affectedIds, visibilityDrag.visible);
     setVisibilityDrag({
@@ -1302,7 +1273,7 @@ export function LayersPanelActions({
       return;
     }
 
-    const expandedIds = expandLocalRepaintVisibilityIds(latestLayers, currentLayerIds);
+    const expandedIds = expandAuthoredLayerVisibilityIds(latestLayers, currentLayerIds);
     const expandedIdSet = new Set(expandedIds);
     captureHistory(`清空当前模型图层（${expandedIds.length} 个）`);
     setLayerVisibility(expandedIds, false);

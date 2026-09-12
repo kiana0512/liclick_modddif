@@ -183,6 +183,33 @@ assert.equal(
 aggregateCache.prepare(renderer, 'changed-geometry', []);
 assert.equal(await aggregateCache.getResolved('normal-stack'), undefined);
 aggregateCache.dispose();
+// A completed all-normal aggregate can continue with newly appended top
+// layers. Any non-prefix stack must reset, and taking a lease invalidates the
+// old prefix until the new calculation commits successfully.
+{
+  const prefixCache = new ProjectedUvRasterCache(64);
+  prefixCache.prepare(renderer, 'prefix-scope', ['a', 'b']);
+  let resets = 0;
+  const composite = { reset() { resets++; }, dispose() {} };
+  prefixCache.resident = composite;
+  let lease = prefixCache.leaseResident(renderer, 1, ['a', 'b']);
+  assert.equal(lease.startIndex, 0);
+  assert.equal(lease.composite, composite);
+  assert.equal(resets, 1);
+  prefixCache.commitResident(['a', 'b'], [{ width: 1 }, { width: 2 }]);
+  lease = prefixCache.leaseResident(renderer, 1, ['a', 'b', 'c']);
+  assert.equal(lease.startIndex, 2, 'Appending a top layer resumes the exact candidate prefix');
+  assert.deepEqual(lease.sourceSizes, [{ width: 1 }, { width: 2 }]);
+  assert.equal(resets, 1);
+  lease = prefixCache.leaseResident(renderer, 1, ['a', 'b', 'c']);
+  assert.equal(lease.startIndex, 0, 'An uncommitted lease cannot be reused after cancellation');
+  assert.equal(resets, 2);
+  prefixCache.commitResident(['a', 'b', 'c'], [{}, {}, {}]);
+  lease = prefixCache.leaseResident(renderer, 1, ['a', 'x', 'c']);
+  assert.equal(lease.startIndex, 0, 'Middle-layer changes require a full recomposition');
+  assert.equal(resets, 3);
+  prefixCache.dispose();
+}
 const compactCache = new ProjectedUvRasterCache(16);
 compactCache.prepare(renderer, 'compact', ['a', 'b', 'c']);
 const compactEntry = () => {

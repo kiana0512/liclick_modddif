@@ -106,6 +106,7 @@ async function main() {
   const mock = startProcess(process.execPath, ['scripts/mock-idaas-server.mjs'], {
     MOCK_IDAAS_PORT: String(mockPort),
     MOCK_IDAAS_REQUIRE_JSON_TOKEN_REQUEST: 'true',
+    MOCK_IDAAS_REQUIRE_EXPLICIT_SSO_CALLBACK: 'true',
     MOCK_IDAAS_SSO_CALLBACK_URL: `${serverOrigin}/api/liclick/account-binding/callback`,
   });
   const server = startProcess(process.execPath, ['apps/server/dist/index.js'], {
@@ -182,10 +183,11 @@ async function main() {
     const bindingSsoRequest = new URL(bindingSsoUrl);
     if (
       !bindingSsoRequest.searchParams.get('target_url') ||
-      bindingSsoRequest.searchParams.has('redirect_uri') ||
+      bindingSsoRequest.searchParams.get('redirect_uri') !==
+        `${serverOrigin}/api/liclick/account-binding/callback` ||
       bindingSsoRequest.searchParams.has('state')
     ) {
-      throw new Error(`Account binding did not use the JWT target_url flow: ${bindingSsoUrl}`);
+      throw new Error(`Account binding did not use the fixed callback + JWT target_url flow: ${bindingSsoUrl}`);
     }
     const sessionCookie = cookiePair(setCookie, 'liclick_3d_session');
 

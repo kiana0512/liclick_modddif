@@ -15,7 +15,6 @@ export function finishResidentUvPresentation(root: Object3D) {
 
 /** Generation references must not freeze the previous UV while a new state is pending. */
 export async function waitForResidentUvPresentation(scene: Object3D, objectId: string) {
-  const deadline = performance.now() + 60_000;
   await waitForBrowserPaint();
   for (;;) {
     let waiting = false;
@@ -26,7 +25,9 @@ export async function waitForResidentUvPresentation(scene: Object3D, objectId: s
       waiting = true;
     });
     if (!waiting) return;
-    if (performance.now() >= deadline) throw new Error('UV 预览尚未更新完成，请稍后重试截图。');
+    // Pending projection is an ordered correctness barrier, not a generation
+    // failure. The scheduler has a background-tab fallback, so keep driving
+    // the resident publication until it completes or publishes its real error.
     await waitForBrowserPaint();
   }
 }

@@ -7,8 +7,8 @@ export const CURRENT_PROTOCOL_VERSIONS = {
   asset: '1.0',
 } as const;
 
-export const RUNTIME_MODES = ['cloud', 'desktop-legacy', 'development'] as const;
-export const RELEASE_COMPONENTS = ['web', 'server', 'local-agent'] as const;
+export const RUNTIME_MODES = ['cloud', 'development'] as const;
+export const RELEASE_COMPONENTS = ['web', 'server'] as const;
 
 export type RuntimeMode = (typeof RUNTIME_MODES)[number];
 export type ReleaseComponent = (typeof RELEASE_COMPONENTS)[number];

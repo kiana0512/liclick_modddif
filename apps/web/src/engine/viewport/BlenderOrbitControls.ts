@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 
 type SupportedCamera = THREE.PerspectiveCamera | THREE.OrthographicCamera;
-type PointerAction = 'orbit' | 'pan' | 'dolly';
+type PointerAction = 'orbit' | 'pan';
 
 const WORLD_UP = new THREE.Vector3(0, 1, 0);
 const MIN_ORTHOGRAPHIC_ZOOM = 0.01;
@@ -172,8 +172,7 @@ export class BlenderOrbitControls {
     this.pointerY = event.clientY;
 
     if (this.pointerAction === 'orbit') this.orbit(deltaX, deltaY);
-    else if (this.pointerAction === 'pan') this.pan(deltaX, deltaY);
-    else this.dolly(deltaY);
+    else this.pan(deltaX, deltaY);
     event.preventDefault();
   };
 
@@ -246,12 +245,11 @@ export class BlenderOrbitControls {
   }
 
   private getPointerAction(event: PointerEvent): PointerAction | undefined {
-    // Keep the existing left-drag orbit interaction. Plain MMB pans the view
-    // directly as requested; Ctrl/Cmd+MMB remains available for dolly.
-    if (event.button === 0) return 'orbit';
-    if (event.button === 1 && (event.ctrlKey || event.metaKey)) return 'dolly';
+    // Primary input is reserved for the active paint/eraser tool. Navigation
+    // follows the editor contract regardless of modifier keys: MMB pans and
+    // RMB orbits. Wheel input remains the exclusive dolly gesture.
     if (event.button === 1) return 'pan';
-    if (event.button === 2) return 'pan';
+    if (event.button === 2) return 'orbit';
     return undefined;
   }
 
@@ -299,10 +297,6 @@ export class BlenderOrbitControls {
     this.camera.position.add(this.panOffset);
     this.target.add(this.panOffset);
     this.update();
-  }
-
-  private dolly(deltaY: number) {
-    this.zoomByFactor(Math.exp(deltaY * 0.01));
   }
 
   private zoomByFactor(factor: number) {

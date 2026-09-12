@@ -51,6 +51,48 @@ type LiclickImageParam = {
 
 const uploadedImageAssetCache = new Map<string, Promise<string>>();
 const maxUploadedImageAssetCacheEntries = 128;
+const atlasAssetUploadMaximumAttempts = 5;
+
+export function isRetryableAtlasAssetUploadError(error: unknown) {
+  const message = errorMessage(error).toLowerCase();
+  return /http\s+(?:408|429|5\d\d)|backend tools\/call failed|upstream connect error|bad gateway|service unavailable|temporarily unavailable|timeout|timed out|econn|enotfound|socket|fetch failed|暂时异常|服务繁忙|稍后重试/.test(
+    message,
+  );
+}
+
+type AtlasAssetUploadRetryOptions = {
+  maximumAttempts?: number;
+  wait?: (delayMs: number) => Promise<void>;
+  onRetry?: (attempt: number, error: unknown, delayMs: number) => void;
+};
+
+/**
+ * LICLICK-ASSET-UPLOAD-RETRY/1.0.0
+ * Retry only the pre-submission asset upload. Never wrap generate_image here:
+ * retrying an ambiguous generation response could create duplicate paid tasks.
+ */
+export async function retryAtlasAssetUpload<T>(
+  operation: () => Promise<T>,
+  options: AtlasAssetUploadRetryOptions = {},
+): Promise<T> {
+  const maximumAttempts = Math.max(1, options.maximumAttempts ?? atlasAssetUploadMaximumAttempts);
+  const wait = options.wait ?? ((delayMs: number) => new Promise<void>((resolve) => setTimeout(resolve, delayMs)));
+
+  for (let attempt = 1; attempt <= maximumAttempts; attempt += 1) {
+    try {
+      return await operation();
+    } catch (error) {
+      if (!isRetryableAtlasAssetUploadError(error) || attempt >= maximumAttempts) {
+        throw error;
+      }
+      const delayMs = Math.min(8_000, 1_000 * 2 ** (attempt - 1));
+      options.onRetry?.(attempt, error, delayMs);
+      await wait(delayMs);
+    }
+  }
+
+  throw new Error('参考图上传重试状态异常。');
+}
 
 export type LiclickImageTaskResult = {
   status: string;
@@ -673,12 +715,22 @@ async function uploadReference(
   let uploadPromise = uploadedImageAssetCache.get(cacheKey);
   if (!uploadPromise) {
     uploadPromise = (async () => {
-      const upload = await callAtlasToolJson(
-        'liclick',
-        'upload_asset',
-        toolArguments,
-        10 * 60 * 1000,
-        personalAtlasHomeDir,
+      const upload = await retryAtlasAssetUpload(
+        () =>
+          callAtlasToolJson(
+            'liclick',
+            'upload_asset',
+            toolArguments,
+            10 * 60 * 1000,
+            personalAtlasHomeDir,
+          ),
+        {
+          onRetry: (attempt, error, delayMs) => {
+            console.warn(
+              `[liclick] reference upload transient failure; retry ${attempt + 1}/${atlasAssetUploadMaximumAttempts} in ${delayMs}ms: ${trimOutput(errorMessage(error))}`,
+            );
+          },
+        },
       );
       const parsed = parseJsonFromOutput(upload.stdout);
       const assetId =

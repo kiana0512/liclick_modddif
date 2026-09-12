@@ -28,8 +28,27 @@ export function yieldToBrowserTask() {
   });
 }
 
-function isDocumentVisible() {
+export function isBrowserDocumentVisible() {
   return typeof document === 'undefined' || document.visibilityState !== 'hidden';
+}
+
+/** Wait until a background tab can present frames again. Rendering-dependent
+ * pipelines pause here instead of consuming their correctness timeout while
+ * Chromium suspends requestAnimationFrame. */
+export function waitForBrowserForeground() {
+  if (typeof document === 'undefined' || isBrowserDocumentVisible()) return Promise.resolve();
+  return new Promise<void>((resolve) => {
+    const finishIfVisible = () => {
+      if (!isBrowserDocumentVisible()) return;
+      document.removeEventListener('visibilitychange', finishIfVisible);
+      window.removeEventListener('focus', finishIfVisible);
+      window.removeEventListener('pageshow', finishIfVisible);
+      resolve();
+    };
+    document.addEventListener('visibilitychange', finishIfVisible);
+    window.addEventListener('focus', finishIfVisible);
+    window.addEventListener('pageshow', finishIfVisible);
+  });
 }
 
 /**
@@ -58,13 +77,13 @@ export function scheduleAfterBrowserPaint(
     callback();
   };
 
-  if (isDocumentVisible() && typeof window.requestAnimationFrame === 'function') {
+  if (isBrowserDocumentVisible() && typeof window.requestAnimationFrame === 'function') {
     frameId = window.requestAnimationFrame(() => {
       // Resume after every rAF subscriber has submitted its presentation work.
       postPaintId = window.setTimeout(finish, 0);
     });
   }
-  const fallbackId = window.setTimeout(finish, isDocumentVisible() ? fallbackMs : 0);
+  const fallbackId = window.setTimeout(finish, isBrowserDocumentVisible() ? fallbackMs : 0);
 
   return () => {
     if (settled) return;
@@ -86,7 +105,7 @@ export function waitForBrowserPaint(fallbackMs = DEFAULT_FRAME_FALLBACK_MS) {
 export async function waitForBrowserIdle(timeoutMs = 800) {
   if (typeof window === 'undefined') return;
   await waitForBrowserPaint(Math.min(timeoutMs, DEFAULT_FRAME_FALLBACK_MS));
-  if (!isDocumentVisible() || typeof window.requestIdleCallback !== 'function') {
+  if (!isBrowserDocumentVisible() || typeof window.requestIdleCallback !== 'function') {
     await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
     return;
   }

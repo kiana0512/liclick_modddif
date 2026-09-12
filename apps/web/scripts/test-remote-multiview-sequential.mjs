@@ -142,7 +142,7 @@ assert.match(
 );
 assert.match(
   flow,
-  /waitForProjectedMaterialResident\(objectId, signal\)[\s\S]*?addGenerationAsProjectedLayer[\s\S]*?await residentWait\.promise[\s\S]*?projectedGenerationCount \+= 1/,
+  /waitForProjectedMaterialResident\(objectId, signal,[\s\S]*?addGenerationAsProjectedLayer[\s\S]*?await residentWait\.promise[\s\S]*?projectedGenerationCount \+= 1/,
   'each returned image must be projected and GPU-resident before the next iteration',
 );
 assert.doesNotMatch(

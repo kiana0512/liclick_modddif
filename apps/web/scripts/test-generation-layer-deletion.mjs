@@ -4,8 +4,9 @@ import { readFile } from 'node:fs/promises';
 import ts from 'typescript';
 
 const read = (file) => readFile(new URL(`../src/${file}`, import.meta.url), 'utf8');
-const [policySource, panel, editor, generate] = await Promise.all([
+const [policySource, visibilitySource, panel, editor, generate] = await Promise.all([
   read('engine/layers/generationLayerDeletionPolicy.ts'),
+  read('engine/layers/layerVisibility.ts'),
   read('components/panels/LayersPanel.tsx'), read('routes/EditorPage.tsx'),
   read('components/panels/GeneratePanel.tsx'),
 ]);
@@ -14,6 +15,8 @@ const compile = (source) => ts.transpileModule(source, {
 }).outputText;
 const policy = {};
 new Function('exports', compile(policySource))(policy);
+const visibilityPolicy = {};
+new Function('exports', compile(visibilitySource))(visibilityPolicy);
 const unlocked = { contentAwareRepairRunning: false, snapshotPreparing: false,
   localInputsPreparing: false, localRequestPending: false };
 assert.equal(policy.isGenerationLayerDeletionLocked(unlocked), false);
@@ -47,7 +50,17 @@ const makeDelete = (scope) => new Function(...Object.keys(scope),
   `${compile(`const ${deleteBinding};`)}; return deleteSelectedLayers;`)(...Object.values(scope));
 for (const locked of [true, false]) {
   for (const local of [true, false]) {
-    let rows = [{ id: 'keep' }, { id: 'delete', local }, ...(local ? [{ id: 'draft' }] : [])];
+    let rows = [
+      { id: 'keep' },
+      local
+        ? {
+            id: 'delete',
+            role: 'local-repaint-overlay',
+            replacementTargetLayerId: 'draft',
+          }
+        : { id: 'delete' },
+      ...(local ? [{ id: 'draft', role: 'local-repaint-draft' }] : []),
+    ];
     const history = [], frames = [], visibility = [], resets = [];
     const scene = {
       localRepaintProjectionSource: { targetLayerId: 'draft' },
@@ -63,8 +76,8 @@ for (const locked of [true, false]) {
       describeLayerSelection: () => 'delete',
       useSceneStore: { getState: () => scene },
       useLayerStore: { getState: () => ({ layers: rows }) },
-      expandLocalRepaintVisibilityIds: (_rows, ids) => local ? [...ids, 'draft'] : ids,
-      isLocalRepaintVisibilityLayer: (row) => Boolean(row.local),
+      expandAuthoredLayerVisibilityIds: visibilityPolicy.expandAuthoredLayerVisibilityIds,
+      isLocalRepaintVisibilityLayer: visibilityPolicy.isLocalRepaintVisibilityLayer,
       setLayerVisibility: (ids) => visibility.push(ids),
       deleteLayers: (ids) => { rows = rows.filter((row) => !ids.includes(row.id)); },
       setMenu: () => {}, setSelectedLayerIds: () => {}, setLastSelectedLayerId: () => {},

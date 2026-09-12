@@ -7,6 +7,7 @@ import type { Layer, LayerAdjustments } from '@/types/layer';
 import { markPerformanceEvent } from '@/engine/performance/performanceTimeline';
 import { isContentAwareEraserUnderlay } from '@/engine/paint/eraserTargetPolicy';
 import { prepareUvMergeConsumption } from '@/engine/layers/uvMergeConsumption';
+import { expandAuthoredLayerVisibilityIds } from '@/engine/layers/layerVisibility';
 import { isViewportInteractionBusy } from '@/engine/viewport/viewportInteractionState';
 import { SINGLE_VIEW_MINIMUM_PROJECTION_FACING } from '@/engine/projection/projectionTypes';
 import { useSceneStore } from './sceneStore';
@@ -396,19 +397,28 @@ export const useLayerStore = create<LayerStore>((set, get) => ({
   },
   toggleLayer: (layerId) => {
     const target = get().layers.find((layer) => layer.id === layerId);
+    if (!target) return;
+    const affectedIds = expandAuthoredLayerVisibilityIds(get().layers, [layerId]);
+    const affectedIdSet = new Set(affectedIds);
+    const nextVisible = !target.visible;
     markPerformanceEvent('layers', 'toggle-layer', {
       layerId,
       layerType: target?.type,
-      nextVisible: !target?.visible,
+      affectedLayerIds: affectedIds,
+      nextVisible,
     });
-    if (target?.visible && get().activeProjectedLayerId === layerId) {
+    if (
+      !nextVisible &&
+      get().activeProjectedLayerId &&
+      affectedIdSet.has(get().activeProjectedLayerId!)
+    ) {
       useSceneStore.getState().setPaintTool('none');
     }
     set((state) => {
-      const target = state.layers.find((layer) => layer.id === layerId);
-      const nextVisible = !target?.visible;
       const layers = state.layers.map((layer) =>
-        layer.id === layerId ? { ...layer, visible: nextVisible } : layer,
+        affectedIdSet.has(layer.id) && layer.visible !== nextVisible
+          ? { ...layer, visible: nextVisible }
+          : layer,
       );
       const activeLayer = layers.find(
         (layer) => layer.id === state.activeProjectedLayerId && layer.visible,
@@ -421,6 +431,10 @@ export const useLayerStore = create<LayerStore>((set, get) => ({
   },
   setLayerVisibility: (layerIds, visible) => {
     const currentLayers = get().layers;
+    const layerIdSet = new Set(layerIds);
+    if (!currentLayers.some((layer) => layerIdSet.has(layer.id) && layer.visible !== visible)) {
+      return;
+    }
     markPerformanceEvent('layers', 'set-layer-visibility', {
       layerIds,
       layerTypes: layerIds.map(
@@ -436,9 +450,8 @@ export const useLayerStore = create<LayerStore>((set, get) => ({
       useSceneStore.getState().setPaintTool('none');
     }
     set((state) => {
-      const layerIdSet = new Set(layerIds);
       const layers = state.layers.map((layer) =>
-        layerIdSet.has(layer.id) ? { ...layer, visible } : layer,
+        layerIdSet.has(layer.id) && layer.visible !== visible ? { ...layer, visible } : layer,
       );
       const activeLayer = layers.find(
         (layer) => layer.id === state.activeProjectedLayerId && layer.visible,

@@ -105,6 +105,7 @@ import type { Capture } from '@/types/capture';
 import { usesUnlitRenderedColor } from './renderedLayerColor';
 import { getPreviewLighting } from './previewLighting';
 import { isPerformanceLabEnabled } from '@/dev/performanceLabPolicy';
+import { waitForBrowserPaint } from '@/utils/browserScheduling';
 
 const RESOLUTION_TO_SIZE = {
   '1K': 1024,
@@ -152,11 +153,14 @@ function getProjectedProgramWarmupMap(renderer: THREE.WebGLRenderer) {
 function waitForProjectionVisibilityIdle(delayMs: number, timeoutMs = 1200) {
   return new Promise<void>((resolve) => {
     window.setTimeout(() => {
-      if (typeof window.requestIdleCallback === 'function') {
+      if (
+        document.visibilityState !== 'hidden' &&
+        typeof window.requestIdleCallback === 'function'
+      ) {
         window.requestIdleCallback(() => resolve(), { timeout: timeoutMs });
         return;
       }
-      window.requestAnimationFrame(() => resolve());
+      void waitForBrowserPaint().then(resolve);
     }, delayMs);
   });
 }
@@ -736,7 +740,7 @@ function useCompositedUvTextureState(
 
     const waitForInteractionIdle = async () => {
       while (!cancelled && isSharedViewportInteractionBusy()) {
-        await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+        await waitForBrowserPaint();
       }
     };
 
@@ -1219,7 +1223,7 @@ function TopologyWireframeOverlay({
       // mode switch a visibility/uniform-only operation.
       await waitForProjectionVisibilityIdle(0);
       while (!cancelled && isSharedViewportInteractionBusy(250)) {
-        await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+        await waitForBrowserPaint();
       }
       if (cancelled) return;
       const warmTarget = new THREE.WebGLRenderTarget(1, 1, {
@@ -1640,7 +1644,8 @@ const ImportedModel = memo(function ImportedModel({
             paintTool === 'inpaint-subtract' ||
             paintTool === 'inpaint-apply';
           if (!busy) return;
-          await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+          if (document.visibilityState === 'hidden') return;
+          await waitForBrowserPaint();
         }
       };
       const completedVisibility: Record<string, { depthUrl: string; normalUrl: string }> = {};
@@ -2645,6 +2650,34 @@ const ImportedModel = memo(function ImportedModel({
           tone: 'error', dedupeKey: `resident-uv:${importedObjectId}` });
       },
     });
+    // UV composition is an algorithm task, not a presentation-frame callback.
+    // Start it from the request itself and keep a bounded task-driven retry
+    // lease until its exact signature is ready. This is essential in Chromium
+    // background tabs where rAF/useFrame can remain suspended until the tab is
+    // previewed, even though timers, Workers and WebGL commands can still run.
+    let driveCancelled = false;
+    let driveTimer: number | undefined;
+    const drive = () => {
+      driveTimer = undefined;
+      if (driveCancelled || !compositor.hasPendingWork(progressiveBackgroundSignature)) return;
+      const interaction = projectedPreviewInteractionRef.current;
+      const backgrounded = document.visibilityState !== 'visible' || !document.hasFocus();
+      const isInteracting =
+        !backgrounded &&
+        (isSharedViewportInteractionBusy(180) ||
+          interaction.pointerDown ||
+          performance.now() - interaction.lastMovedAt < 140);
+      if (!isInteracting) compositor.step();
+      if (compositor.hasPendingWork(progressiveBackgroundSignature)) {
+        driveTimer = window.setTimeout(drive, backgrounded ? 250 : 50);
+      }
+    };
+    queueMicrotask(drive);
+    invalidate();
+    return () => {
+      driveCancelled = true;
+      if (driveTimer !== undefined) window.clearTimeout(driveTimer);
+    };
   }, [
     allPreviewProjectedLayers,
     gl,
@@ -2652,6 +2685,7 @@ const ImportedModel = memo(function ImportedModel({
     canUseProgressiveUvFallback,
     importedModel,
     importedObjectId,
+    invalidate,
     progressiveBackgroundInputs,
     progressiveBackgroundSignature,
     projectedPreviewNeedsComposition,
@@ -3550,7 +3584,7 @@ const ImportedModel = memo(function ImportedModel({
             gl2.flush();
             try {
               while (!nextBuild.cancelled) {
-                await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+                await waitForBrowserPaint();
                 const status = gl2.clientWaitSync(sync, 0, 0);
                 if (
                   status === gl2.ALREADY_SIGNALED ||
@@ -3712,7 +3746,8 @@ const ImportedModel = memo(function ImportedModel({
     };
     const waitForViewportInteractionIdle = async () => {
       while (!cancelled && isViewportInteractionBusy()) {
-        await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+        if (document.visibilityState === 'hidden') return;
+        await waitForBrowserPaint();
       }
     };
     const precompileProjectedMaterial = async (
@@ -3831,9 +3866,7 @@ const ImportedModel = memo(function ImportedModel({
                 try {
                   while (!cancelled) {
                     await waitForViewportInteractionIdle();
-                    await new Promise<void>((resolve) =>
-                      window.requestAnimationFrame(() => resolve()),
-                    );
+                    await waitForBrowserPaint();
                     const status = gl2.clientWaitSync(sync, 0, 0);
                     if (status === gl2.ALREADY_SIGNALED || status === gl2.CONDITION_SATISFIED)
                       break;

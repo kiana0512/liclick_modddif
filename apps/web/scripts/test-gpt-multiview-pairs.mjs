@@ -65,7 +65,29 @@ assert.equal(hasResidentGptLayers(root, ['new']), false, 'warmup bindings cannot
 let frames = 0;
 await waitForGptPairPresentation(() => true, () => {}, async () => { frames++; });
 assert.equal(frames, 2);
-await assert.rejects(waitForGptPairPresentation(() => false, () => {}, async () => {}, 0), /视口尚未完成显示/);
+let backgroundSettled = false;
+const backgroundWait = waitForGptPairPresentation(
+  () => true,
+  () => {},
+  async () => { frames++; },
+  0,
+).then(() => { backgroundSettled = true; });
+await new Promise((resolve) => setTimeout(resolve, 10));
+assert.equal(backgroundSettled, true, 'A background lifecycle must not wait for foreground visibility');
+await backgroundWait;
+let delayed = 0;
+let delayedReady = false;
+const delayedWait = waitForGptPairPresentation(
+  () => delayedReady,
+  () => {},
+  async () => {},
+  0,
+  () => { delayed++; },
+);
+await new Promise((resolve) => setTimeout(resolve, 70));
+assert.equal(delayed, 1, 'A delayed renderer reports waiting without failing a completed generation');
+delayedReady = true;
+await delayedWait;
 await assert.rejects(waitForGptPairPresentation(() => true, () => { throw new Error('cancelled'); }, async () => {}), /cancelled/);
 
 // Execute both production panel adapters with controlled network/GPU ports.

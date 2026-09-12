@@ -5298,10 +5298,6 @@ export function EditorPage({
   }
 
   function handleOpenBake(requestedHandoff?: TextureBakeHandoff) {
-    if (generationConflictLocked) {
-      showGenerationConflict('进入烘焙工作区');
-      return;
-    }
     if (publishingToBakeRef.current || manualBakeRunningRef.current) return;
     const objectId = requestedHandoff?.objectId ?? selectedObjectId ?? importedModel?.objectId;
     if (!project || !objectId) {
@@ -5336,10 +5332,6 @@ export function EditorPage({
   }
 
   function handleOpenUv() {
-    if (generationConflictLocked) {
-      showGenerationConflict('进入 UV 工作区');
-      return;
-    }
     onOpenUv();
   }
 
@@ -5421,10 +5413,6 @@ export function EditorPage({
   });
 
   async function handlePublishToRetopology() {
-    if (generationConflictLocked) {
-      showGenerationConflict('进入拓扑工作区');
-      return;
-    }
     if (!project || publishingToRetopology) return;
     const sourceObjectId = selectedObjectId ?? importedModel?.objectId;
     if (!sourceObjectId) {
@@ -8131,6 +8119,7 @@ export function EditorPage({
               }}
               importDisabled={modelImportBusy || modelMutationLocked}
               isActive={isActive}
+              keepRuntimeActive={generationConflictLocked || contentAwareRepairTaskActive}
             />
           }
           panels={panelDefinitions}

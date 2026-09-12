@@ -44,9 +44,10 @@ assert.match(
   'A blocked editor action must open the shared generation cancellation dialog directly.',
 );
 assert.match(editor, /showGenerationConflict\('返回项目列表'\)/);
-assert.match(editor, /showGenerationConflict\('进入 UV 工作区'\)/);
-assert.match(editor, /showGenerationConflict\('进入烘焙工作区'\)/);
-assert.match(editor, /showGenerationConflict\('进入拓扑工作区'\)/);
+assert.doesNotMatch(editor, /showGenerationConflict\('进入 UV 工作区'\)/);
+assert.doesNotMatch(editor, /showGenerationConflict\('进入烘焙工作区'\)/);
+assert.doesNotMatch(editor, /showGenerationConflict\('进入拓扑工作区'\)/);
+assert.match(editor, /keepRuntimeActive=\{generationConflictLocked \|\| contentAwareRepairTaskActive\}/);
 
 for (const action of ['切换当前模型', '切换模型显隐', '删除模型', '复制模型', '排列模型']) {
   assert.ok(objectsPanel.includes(`onMutationLocked?.('${action}')`), `${action} must be guarded.`);

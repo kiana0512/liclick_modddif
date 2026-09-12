@@ -290,7 +290,7 @@ const runContextMenu = new Function('isInpaintMode', 'isLocalRepaintApplyMode', 
 for (const mask of [false, true]) for (const apply of [false, true]) {
   let prevented = false;
   runContextMenu(mask, apply, { preventDefault: () => { prevented = true; } });
-  assert.equal(prevented, mask || apply, 'Both repaint brushes suppress the context menu; navigation retains it.');
+  assert.equal(prevented, true, 'RMB orbit always suppresses the browser context menu.');
 }
 assert.match(
   viewportCanvasInteractionSource,
@@ -698,8 +698,13 @@ const viewportCanvasSource = readFileSync(
 );
 assert.match(
   viewportCanvasSource,
-  /const localRepaintEraseContact =\s*isLocalRepaintApplyMode &&[\s\S]*?event\.button === 2 \|\|[\s\S]*?penEraserContact \|\|[\s\S]*?isEditingPersistedLocalRepaint && event\.button === 0/,
-  'Button 3, pen erasers, and the primary eraser gesture must subtract local repaint.',
+  /const localRepaintEraseContact =\s*isLocalRepaintApplyMode &&[\s\S]*?penEraserContact \|\|[\s\S]*?isEditingPersistedLocalRepaint && event\.button === 0/,
+  'Pen erasers and the selected primary eraser gesture must subtract local repaint.',
+);
+assert.doesNotMatch(
+  viewportCanvasSource.match(/const localRepaintEraseContact =[\s\S]*?;\n/)?.[0] ?? '',
+  /event\.button === 2/,
+  'RMB must remain exclusively available for viewport orbit.',
 );
 assert.match(
   viewportCanvasSource,
@@ -873,8 +878,8 @@ assert.match(
 );
 assert.match(
   viewportCanvasSource,
-  /strokePaintToolRef\.current === 'inpaint-apply-erase';[\s\S]*?event\.buttons & \(usesSecondaryButton \? 2 : 1\)/,
-  'A right-button local repaint stroke must remain active throughout pointer movement.',
+  /const isPointerContactActive =[\s\S]*?event\.pointerType === 'pen'[\s\S]*?return \(event\.buttons & 1\) !== 0;/,
+  'A selected left-button local repaint eraser stroke must remain active throughout pointer movement.',
 );
 assert.match(
   viewportCanvasSource,
@@ -889,7 +894,7 @@ assert.match(
 assert.match(
   viewportCanvasSource,
   /erasesLocalRepaint && paintTool === 'eraser'[\s\S]*?paintToolSettings\.eraserFeather[\s\S]*?: featherPercent/,
-  'The dedicated eraser must use its own feather while right-button erase keeps the repaint brush feather.',
+  'The selected dedicated eraser must use its own feather while repaint apply keeps its brush feather.',
 );
 assert.match(
   viewportCanvasSource,
@@ -1269,6 +1274,49 @@ try {
       ?.visible,
     true,
     'Two immediate toggles must round-trip visibility without reading a stale frame.',
+  );
+  const linkedVisibilityLayers = [
+    {
+      id: 'local-repaint-projection-visible-row',
+      type: 'projected',
+      role: 'local-repaint-overlay',
+      replacementTargetLayerId: 'local-repaint-uv-merge-target',
+      visible: true,
+      order: 0,
+    },
+    {
+      id: 'local-repaint-uv-merge-target',
+      type: 'uv',
+      visible: true,
+      order: 1,
+    },
+  ];
+  layerStore.useLayerStore.setState({
+    layers: linkedVisibilityLayers,
+    activeProjectedLayerId: 'local-repaint-projection-visible-row',
+  });
+  sceneStore.useSceneStore.getState().setPaintTool('eraser');
+  layerStore.useLayerStore.getState().toggleLayer('local-repaint-projection-visible-row');
+  assert.deepEqual(
+    layerStore.useLayerStore.getState().layers.map((layer) => layer.visible),
+    [false, false],
+    'Keyboard/store visibility must hide both representations of one local repaint result.',
+  );
+  assert.equal(sceneStore.useSceneStore.getState().paintTool, 'none');
+  layerStore.useLayerStore.getState().toggleLayer('local-repaint-projection-visible-row');
+  assert.deepEqual(
+    layerStore.useLayerStore.getState().layers.map((layer) => layer.visible),
+    [true, true],
+    'Linked local repaint visibility must round-trip atomically.',
+  );
+  const stableVisibilityLayers = layerStore.useLayerStore.getState().layers;
+  layerStore.useLayerStore
+    .getState()
+    .setLayerVisibility(['local-repaint-projection-visible-row'], true);
+  assert.equal(
+    layerStore.useLayerStore.getState().layers,
+    stableVisibilityLayers,
+    'A repeated visibility set must preserve the layers array and avoid recomposition.',
   );
   layerStore.useLayerStore.setState({ layers: [], activeProjectedLayerId: undefined });
   const generatedSourceAlphaLayer = layerStore.useLayerStore
