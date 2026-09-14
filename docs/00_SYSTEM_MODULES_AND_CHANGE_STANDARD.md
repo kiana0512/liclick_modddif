@@ -1,6 +1,6 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
-> 文档版本：`2.20.89`
+> 文档版本：`2.20.90`
 >
 > 生效日期：`2026-09-14`
 >
@@ -9,6 +9,8 @@
 > 基线仓库：`E:\Liclick 3D Texture Modernization`
 >
 > 审计口径：`0a2519d + 607e82f + 2568e40`，不包含错误文档提交 `2bde8c6/e03bab2/d1c5f78`
+
+2026-09-14 M07，协作 UI-06/M06/M08/M09：`PERF-UV-SOURCE-PREPARE-001` v1.11.0 / `UV-DISPLAY-DERIVED-CACHE` v1.3.0。投影转 UV 对已有 `linear-view` 深度且带 16 项捕获对象矩阵的层复用捕获空间可见性；GPU/CPU 原有 `capture * inverse(current)` 变换保证对象后续平移、旋转或缩放后采样点仍严格回到原捕获空间，缺矩阵、旧编码、缺 depth/所需 normal 继续保守重建。图层眼睛按钮删除全可见性 React 重复派生和普通 active-layer 模型订阅，常驻命中只更新 uniform；冷缓存、材质未接收、内容/结构/局部重绘路由变化仍强制完整重建。两组非平凡矩阵与三组点的捕获空间误差 `<=1e-9`，570 个常驻转换、60 次恢复及冷回退通过。完整分辨率、QA、GPU/CPU/Worker/shader 像素公式、Schema、Command/CAS/ownership、持久化与导出不变，无迁移。当前本地工程无真实 projected 层，S4/S5 实机门禁仍需含真实投影栈工程。详见 [图层显隐与深度复用变更卡](changes/CHG-20260914-UV-VISIBILITY-HOTPATH-AND-CAPTURE-DEPTH-REUSE.md)。
 
 2026-09-14 M08，协作 M03/M06：`ALG-ERASE-001` 调度修订 v1.5.2。普通投影橡皮后台预热不得抢占局部重绘选区 owner、选区绘制/应用或生图准备；直接检查运行时 ref 覆盖 store 尚未更新的窗口，并取消过期 effect 的异步预览发布。正常预热及显式橡皮准备保留，不新增双份 GPU 缓存；绘制/捕获像素、CPU/Worker/shader、完整分辨率、Schema、Command/CAS/ownership、持久化与导出不变，无迁移。已释放的旧会话选区需重画，不能伪造恢复。生产回调专项、类型与 lint 通过；未整包构建、推送或部署，发布前须最终集成验证。详见 [蒙版预热所有权变更卡](changes/CHG-20260914-INPAINT-PREWARM-OWNERSHIP.md)。
 
