@@ -11,6 +11,7 @@ type ReferenceInput = {
 };
 
 export type GenerateImageInput = {
+  referencePipeline?: 'six-view-delight-v1';
   clientGenerationId?: string;
   projectId?: string;
   workflow?: 'liclick' | 'texture-map' | 'local-repaint';

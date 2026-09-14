@@ -407,6 +407,13 @@ export function cloneCameraForCaptureAspect(source: THREE.Camera, aspect: number
   return camera;
 }
 
+export function isCaptureTargetMesh(object: THREE.Object3D, objectId: string): object is THREE.Mesh {
+  const data = object.userData;
+  return object instanceof THREE.Mesh && data.liclickObjectId === objectId &&
+    !data.liclickRestorePlaceholder && !data.liclickViewportHelper && !data.liclickPaintOverlay &&
+    !data.liclickSelectionGlow && !data.liclickWireframeOverlay;
+}
+
 export function applyTargetOnlyMaterial(
   scene: THREE.Scene,
   objectId: string,
@@ -417,16 +424,7 @@ export function applyTargetOnlyMaterial(
   const targetAncestors = new Set<THREE.Object3D>([scene]);
 
   scene.traverse((object) => {
-    if (!(object instanceof THREE.Mesh)) return;
-    if (object.userData.liclickObjectId !== objectId) return;
-    if (
-      object.userData.liclickRestorePlaceholder ||
-      object.userData.liclickViewportHelper ||
-      object.userData.liclickPaintOverlay ||
-      object.userData.liclickSelectionGlow ||
-      object.userData.liclickWireframeOverlay
-    )
-      return;
+    if (!isCaptureTargetMesh(object, objectId)) return;
     targetMeshes.add(object);
     let parent: THREE.Object3D | null = object.parent;
     while (parent) {

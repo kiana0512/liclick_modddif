@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { useSceneStore } from '@/stores/sceneStore';
-import { getTargetBounds, createFitObjectCamera } from './captureCurrentView';
+import { getTargetBounds, createFitObjectCamera, vectorFromTuple } from './captureCurrentView';
 import { animateCaptureCamera } from './animateCaptureCamera';
-function vectorFromTuple(tuple?: [number, number, number]) { return tuple ? new THREE.Vector3(...tuple) : undefined; }
+import { fitGeometryCapture, verifyTightCapture } from './tightCaptureFraming';
 
 /** Fit once at submission, then share the immutable camera across every input. */
 export async function frameGenerationCapture(
@@ -11,6 +11,7 @@ export async function frameGenerationCapture(
   viewDirection?: [number, number, number],
   viewUp?: [number, number, number],
   signal?: AbortSignal,
+  animate = true,
 ) {
   const viewport = useSceneStore.getState().viewport;
   if (!viewport) throw new Error('视口尚未准备完成，请稍后重试。');
@@ -23,11 +24,16 @@ export async function frameGenerationCapture(
     throw new Error('当前模型尚未准备好，无法调整生成取景。');
   }
   const safeAspect = Number.isFinite(aspect) && aspect > 0 ? aspect : 1;
-  const fitted = createFitObjectCamera(source, bounds, safeAspect, 0.88,
+  const fallback = createFitObjectCamera(source, bounds, safeAspect, 0.88,
     viewport.controls?.target, vectorFromTuple(viewDirection), vectorFromTuple(viewUp));
+  const startPosition = source.position.clone(), startQuaternion = source.quaternion.clone();
+  const startZoom = source.zoom;
+  const candidate = await fitGeometryCapture(viewport.scene, objectId, fallback, safeAspect, signal);
+  const fitted = await verifyTightCapture(viewport, objectId, candidate, fallback, safeAspect, signal);
+  if (!source.position.equals(startPosition) || !source.quaternion.equals(startQuaternion) || source.zoom !== startZoom)
+    throw new Error('相机已移动，已取消生成取景。');
   // Keep the live viewport's aspect/frustum; its square capture frame uses the
   // same vertical extent as the frozen input camera. Never stretch the viewport.
-  await animateCaptureCamera(viewport, fitted.camera, fitted.target, signal);
+  if (animate) await animateCaptureCamera(viewport, fitted.camera, fitted.target, signal);
   return { camera: fitted.camera, target: fitted.target, aspect: safeAspect };
 }
-

@@ -1,6 +1,6 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
-> 文档版本：`2.20.88`
+> 文档版本：`2.20.89`
 >
 > 生效日期：`2026-09-14`
 >
@@ -10,6 +10,8 @@
 >
 > 审计口径：`0a2519d + 607e82f + 2568e40`，不包含错误文档提交 `2bde8c6/e03bab2/d1c5f78`
 
+2026-09-14 M08，协作 M03/M06：`ALG-ERASE-001` 调度修订 v1.5.2。普通投影橡皮后台预热不得抢占局部重绘选区 owner、选区绘制/应用或生图准备；直接检查运行时 ref 覆盖 store 尚未更新的窗口，并取消过期 effect 的异步预览发布。正常预热及显式橡皮准备保留，不新增双份 GPU 缓存；绘制/捕获像素、CPU/Worker/shader、完整分辨率、Schema、Command/CAS/ownership、持久化与导出不变，无迁移。已释放的旧会话选区需重画，不能伪造恢复。生产回调专项、类型与 lint 通过；未整包构建、推送或部署，发布前须最终集成验证。详见 [蒙版预热所有权变更卡](changes/CHG-20260914-INPAINT-PREWARM-OWNERSHIP.md)。
+
 2026-09-14 UI-16 → M14，协作 M01/M02/M12/M13/M15：ASSET-LIFECYCLE-GC v0.3.3 增加 Workspace 隔离区主动永久清空。UI 必须输入“永久删除”完成第二次确认；服务端以用户级单飞幂等 purge job 先原子 rename 整个 `storage-quarantine` 到独立 `storage-purge/<jobId>`，立即从可恢复业务路径摘除，再用异步递归删除释放磁盘，不在 HTTP 请求或 React 主线程中遍历百万文件；服务重启继续未完成 purge。Cleanup job 账本记录被 purge job 认领的批次，扫描不再把已完成物理删除的字节计入 trash。真实 4517 验证中，高密度目录快速隔离 156,104 个文件 / 137,976,470,315 B 耗时 8.55s，随后扫描耗时 1.3s；最终物理释放耗时仍由文件系统决定。Cloud 只暴露不可用原因，未伪装执行；正式对象存储永久删除仍须独立生命周期 Worker、分页锁和批量 DeleteObjects。Schema 仅新增 Purge Job/Quarantine Status 契约，不更改 Project/Revision/Asset Transfer；回滚时停止 purge，保留 `storage-purge` 中未完成目录并移除新增路由/UI，绝不能把其误判为空目录直接删除。
 
 2026-09-14 UI-16 → M14，协作 M01/M02/M12/M13/M15：`STORAGE-INVENTORY-001/3` / ASSET-LIFECYCLE-GC v0.3.2 修复百万文件清理的任务风暴与随机元数据 I/O。每用户 cleanup start 采用单飞锁，重复确认和刷新复用同一活动 job；4517 启动时把遗留 running/queued job 明确标记为中断并触发剩余资产重扫，不伪装继续运行。扫描把最近 60 分钟修改的未引用资产归入保护集合，并把 size/mtime 写入候选证明；隔离区容量改由 cleanup job 账本汇总，不再为每次扫描重复 stat 近百万个已隔离文件。Workspace 高密度目录在重新读取引用、路径/mtime/size/符号链接门禁通过后，为少量保护文件创建同卷硬链接快照，再以两次目录 rename 原子交换，最后移除隔离侧保护链接；扫描后新增的引用单独进入保护快照，不再导致整组退化，Windows `EPERM`/`EBUSY` 短暂占用进行有限重试，门禁不满足才回退有界逐文件移动。资产写入与目录交换共享 project/category mutation lock。Cloud 继续使用 PostgreSQL 集合式逻辑隔离，生产物理删除仍要求分页、`SKIP LOCKED`、对象存储批量删除和独立 Worker 门禁，本次未连接生产库或执行 DeleteObject。Schema/Asset Transfer/Revision CAS/ownership/verified assets 不变；旧 /2 快照自动重扫，无数据迁移。回滚 /2 会失去近期保护和快速路径，应先停止 cleanup，再删除孤立 `storage/cleanup-staging`（仅限核对为空或硬链接 staging）并重扫。
@@ -17,6 +19,12 @@
 2026-09-14 UI-16 → M14，协作 M01/M02/M12/M13/M15：`STORAGE-INVENTORY-001/2` 与 ASSET-LIFECYCLE-GC v0.3.1 Phase 1 已在本地实现但未部署。首页账号菜单按需加载“存储与清理”，统一 `GET /api/storage`、后台 `POST /api/storage/scans`、幂等 cleanup job 与查询协议；未知快照显示扫描中，不伪报 0 B。4517 Workspace 适配器以有界并发流式盘点元数据/资产并报告进度，当前工程、历史/Command 回执与 recoveries 受保护；扫描原子保存 scanId 候选 NDJSON，清理不再重复遍历百万文件，而是刷新引用后逐项核对路径、引用、文件类型和长度，扫描后新增文件不处理、恢复引用或发生变化的候选跳过，其余候选并发原子移入用户隔离区。Cloud 适配器从 PostgreSQL verified transfers 与 current/history/trash Revision 重建引用图，在 `004_asset_storage_v2_shadow.sql` 影子表中保存快照、候选、幂等任务和逻辑隔离，不更改 Asset Transfer v1、Revision CAS、ownership 或 verified asset 下载。当前未执行数据库迁移、未连接正式站、未物理删除对象，也未启用内容去重、配额或图片重编码；这些仍受下一阶段兼容门禁约束。迁移仅使旧本地快照缺少候选清单而要求重扫一次；回滚到 /1 时删除 `storage/inventory-candidates`，移除 UI/路由/服务并保留或删除空影子表即可，已移入 Workspace 隔离区的文件按 manifest 原路径恢复。Node/PGlite 双端契约、漂移保护、类型、lint 与 production build 通过。
 
 2026-09-14 UI-16 → M14，协作 M01/M02/M10/M12/M13/M15：先行设计把资产生命周期扩展为 4517 Workspace 文件与 Cloud PostgreSQL/对象存储的统一端口、双适配器和首页“存储与清理”入口，候选 ASSET-CONTENT-DEDUP、ASSET-LIFECYCLE-GC、ASSET-QUOTA-RESERVATION、ASSET-ROLE-COMPRESSION 升级为 v0.2.0。账号菜单只显示已用/可清理摘要，管理弹窗规划后台扫描、手动隔离清理、恢复和独立图片优化任务；无完整快照时不得显示 0 B 或允许清理。图片 canonical 不按 Accept 静默转换、不原地覆盖；PNG 仅在 Sharp 与真实浏览器 RGBA/ICC/方向兼容门禁通过后无损切换，JPEG 原件不二次有损，Mask/Depth/Normal/PBR 只允许专用无损验证，WebP 先限于显式 UI 预览变体，AVIF 暂不进入生产资产协议。4517 仅为当前浏览器一体服务的开发验收适配，不恢复 4618/安装器/本地凭据或端点切换。详细阶段与回滚门禁见 [资产生命周期设计卡](changes/CHG-20260914-ASSET-LIFECYCLE-COMPRESSION-DESIGN.md)。
+
+2026-09-14 UI-05（M04）：生成区独立状态提示框隐藏“第一步/第二步”的六视图与去光阶段文案，继续显示实际错误与异常提示。按钮进度、两轮模型/质量/提示词、服务端轮询与取消恢复不变；仅展示修订，无算法或 Schema 变更，无数据迁移。回滚 GeneratePanel 的提示过滤即可恢复原展示。
+
+2026-09-14 M04/UI-05：`MULTIVIEW-REFERENCE-PIPELINE` v1.0.0 / `MULTIVIEW-REFERENCE-PROMPT` v2.0.0 按用户实测流程，将单视图派生六视图改为 Sunburst low 生六视图 → Sunburst medium 对整张六视图去光照。两段提示词采用用户原文，第二轮仅引用第一轮结果并沿用尺寸档位；前端统一 3:2 布局，只发布第二轮成功结果。两轮共用服务端任务身份、个人莉刻账号、取消与后台恢复；生成日志增加可选 referenceDelight 阶段记录，第二次付费提交前先持久化意图，响应不确定时不自动重提。历史无标记任务维持单轮，已存在多视图不自动重生成。Project Schema、Command、Revision CAS、ownership、verified assets、投影/UV/GPU/CPU/Worker/shader 与导出不变，无工程迁移。发布前需排空或终止双阶段活动任务才可回滚旧服务，避免旧代码把第一轮结果当作完成。参数与控制流已用隔离夹具验证，未额外运行付费生图，不承诺实际耗时或严格 Albedo。详见 [两阶段参考图变更卡](changes/CHG-20260914-REFERENCE-DELIGHT-PIPELINE.md)。
+
+2026-09-14 主模块 M03，协作 M04/M08/M06：`ALG-CAP-007` v1.1.0。单视图、局部重绘及多视图按实际提交顶点适配相机，目标限制尺寸 92%，保留 4% 边距；256px 轮廓安全检查不替代正式分辨率。各角度独立冻结相机，已有纹理、白模、蒙版、深度和后续投影共用该角度相机，明确快照不再被二次取景覆盖。无有效几何、变形不支持、超出扫描上限或轮廓校验失败时保留原包围盒取景；纵深限制时允许占比低于 92%。共用目标网格筛选，取景代码并入编辑器模块以减少重复模块依赖开销，包体预算不变。GPU/CPU/Worker/shader 投影公式、UV/export、分辨率、QA、Schema、Command/CAS/ownership/资产协议不变，无数据迁移。详见 [紧凑取景变更卡](changes/CHG-20260914-TIGHT-CAPTURE-FRAMING.md)。
 
 2026-09-12 UI-05 → M04：模型入口收起时保留 `GPT-Image 2.5` 前缀，与弹窗共用完整标签，窄栏只省略尾部。仅展示文案变更，算法、请求值、质量、默认设置和 Schema 不变，无迁移；回滚标签即可恢复简称。见 [生成区变更卡](changes/CHG-20260912-GENERATION-ACTION-FAST.md)。
 
@@ -860,6 +868,10 @@ Bake 设置包含 resolution、frontal/rear distance、distance/cage、cage infl
 
 ## 11. 输入、捕获、生成与输出算法
 
+`MULTIVIEW-REFERENCE-PROMPT` v1.1.0 的完整 UTF-8 模板放在 `services/multiviewReferencePrompt.txt`，Vite 输出带内容哈希的同源静态资源，按需共享加载并缓存成功文本，10 秒超时；HTTP 失败或空文本阻断本次提交并允许重试，不降级为旧模板。`buildMultiviewPrompt` 位于 services，面板等待完整模板后创建 Generation。保留现有 JavaScript 包体上限，不修改模板原文。加载、并发复用、补充要求、失败重试及与用户确认文本逐字一致性已独立检查；部署核验包含文本资源与 HTTP SHA256。
+
+2026-09-14 UI-05 → M04：`MULTIVIEW-REFERENCE-PROMPT` v1.1.0（Six-view material reference prompt / 六视图材质参考提示词，production，实施 Codex，用户确认模板）以 Base Color / Albedo 无光照要求替代旧棚拍模板。输入为单张参考图与可选补充要求，输出仍为一张横向 2×3 拼图（正面、左前45°、顶部 / 左侧、右侧、底部）。手动及自动补全共用 `buildMultiviewPrompt`，要求去除方向明暗、高光、反射、投影、接触阴影和 AO，保留固有色、掉漆、锈迹、污渍及纹理，统一六面和内腔的材质亮度。仅替换既有文本，无新增像素、矩阵、单位、颜色空间转换或阈值；CPU/GPU/Worker/shader、投影/UV/export 不变。最终文本仍保存到 Generation.prompt；Schema、Project Command 幂等性、Revision CAS、ownership 与 verified assets 不变。旧配对继续复用，须新生成才使用新模板，无数据迁移；回滚仅还原模板。发布验证使用 M04 回归、Web/Server 回归和 verify:prepush；这些检查不证明实际模型的去光效果。
+
 | ALG ID | 名称 | 当前规则 |
 | --- | --- | --- |
 | `ALG-IN-001` 格式路由导入 | GLB/GLTF 正式，FBX/OBJ 兼容；按扩展名/loader 解析为统一 LoadedModel |
@@ -1079,6 +1091,7 @@ M15 / CLOUD-DEPLOYMENT v1.0.0（2026-09-03）：正常合并 release 部署历�
 
 | 版本 | 日期 | 基线 | 变更 |
 | --- | --- | --- | --- |
+| `2.20.83` | 2026-09-14 | `6f26336 + 本次六视图模板更新` | M04/UI-05、`MULTIVIEW-REFERENCE-PROMPT` v1.1.0：使用用户确认的 Base Color / Albedo 模板去除参考光影，保留材质纹理、六视图布局、补充要求和旧结果复用。无数据迁移；实际生图效果另行验收。 |
 | `2.20.81` | 2026-09-12 | `c1b948f + 本地待提交` | `ALG-ERASE-001` v1.5.1 / `UV-DISPLAY-BUFFER` v1.3.1：当前 projected 层常驻预热中性 GPU mask 与 exact stack；异步准备期间的首笔屏幕段在接管前完整补放，活动手势无缝继续，已完成手势不回弹。图层/模型/分辨率变化释放重建；Schema/资产不变，无迁移。同步验证 #630458 对应的 projection-performance 共享预算门禁。见 CHG-20260912-ERASER-RESIDENT-PREWARM。 |
 | `2.20.80` | 2026-09-12 | `251700e + 0c0ff44` | `GPT-MULTIVIEW-PAIR-SEQUENCE` v1.4.0：固定 2+4 分组并发并整合生成区布局；同时保留 `ALG-ERASE-001` v1.5.0 的全分辨率 GPU 跟手蒙版。投影/UV/export、分辨率、质量与资产协议不变，无迁移。见 CHG-20260912-GENERATION-ACTION-FAST。 |
 | `2.20.79` | 2026-09-12 | `ec629a7 + 本地待提交` | UI-06/UI-10 → M08，协作 M06/M07，`ALG-ERASE-001` v1.5.0 / `UV-DISPLAY-BUFFER` v1.3.0：projected 橡皮以项目完整分辨率 GPU keep-mask 增量盖章并接入安全 exact stack，交互期不再执行 Resident 全图重合成/readback/Worker/整图上传；修复 V 轴镜像。512 仅为不可见持久化草稿，GPU 失败回退完整分辨率 Canvas。Schema/资产不变，无迁移。见 CHG-20260912-ERASER-GPU-MASK。 |
