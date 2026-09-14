@@ -123,6 +123,44 @@ try {
     assert(contextMenu.defaultPrevented, 'RMB orbit must suppress the browser context menu');
     controls.dispose();
   }
+  // Reproduce a restored capture with tight clipping, then inspect actual NDC
+  // depth while navigating. No geometry picking is needed to repair the planes.
+  for (const orthographic of [false, true]) for (const gesture of ['wheel', 'orbit', 'pan']) {
+    const input = new InputTarget();
+    const camera = orthographic
+      ? new THREE.OrthographicCamera(-1, 1, 1, -1, 2, 8)
+      : new THREE.PerspectiveCamera(45, 1, 2, 8);
+    camera.position.z = 5;
+    camera.updateMatrixWorld();
+    const controls = new BlenderOrbitControls(camera, input);
+    const frozenCapture = camera.clone();
+    const frozenProjection = frozenCapture.projectionMatrix.clone();
+    controls.update();
+    assert.equal(camera.near, 2, 'restoring a snapshot stays exact until user navigation');
+    const frontPoint = () => new THREE.Vector3(0, 0, -0.02).applyMatrix4(camera.matrixWorld).project(camera);
+    assert(frontPoint().z < -1, 'old capture planes reproduce missing nearby surfaces');
+    if (gesture === 'wheel') {
+      input.emit('wheel', { deltaY: -2000 });
+      for (let i = 0; i < 300; i++) {
+        controls.updateWheelTransition(1 / 60);
+        assert(frontPoint().z >= -1 && frontPoint().z <= 1, 'nearby surfaces remain inside the clip range during zoom');
+      }
+      input.emit('wheel', { deltaY: 10000 });
+      for (let i = 0; i < 300; i++) controls.updateWheelTransition(1 / 60);
+    } else {
+      const button = gesture === 'orbit' ? 2 : 1;
+      input.emit('pointerdown', { button });
+      input.emit('pointermove', { button, clientX: 55, clientY: 55 });
+      input.emit('pointerup', { button });
+    }
+    assert(frontPoint().z >= -1 && frontPoint().z <= 1);
+    const focusDepth = controls.target.clone().project(camera).z;
+    assert(focusDepth >= -1 && focusDepth <= 1, 'zooming out must not lose the focus to a capture far plane');
+    assert(frozenCapture.projectionMatrix.equals(frozenProjection));
+    assert.equal(frozenCapture.near, 2);
+    assert.equal(frozenCapture.far, 8);
+    controls.dispose();
+  }
   const baseline = makeScene(events);
   for (let i = 0; i < 1021; i++) baseline.target.emit('wheel');
   assert.equal(baseline.counts().raycasts, 1021, 'Baseline must reproduce one needless pick per packet');

@@ -6,6 +6,10 @@ import { projectRepository } from '../repositories/projectRepository.js';
 import type { AssetCategory, SavedAsset } from '../types/asset.js';
 import { writeFileAtomically } from './atomicFileService.js';
 import {
+  runWithWorkspaceAssetMutationLock,
+  workspaceAssetMutationKey,
+} from './workspaceAssetMutationCoordinator.js';
+import {
   ensureDir,
   getUserDir,
   getUserProjectDir,
@@ -109,8 +113,17 @@ async function writeAsset(input: {
   const name = uniqueAssetName(input.filename, extensionFromMime(input.mime));
   const relativePath = path.posix.join('assets', input.category, name);
   const absolutePath = path.join(getUserProjectDir(input.userId, slug), 'assets', input.category, name);
-  await ensureDir(path.dirname(absolutePath));
-  await writeFileAtomically(absolutePath, input.buffer);
+  await runWithWorkspaceAssetMutationLock(
+    workspaceAssetMutationKey({
+      userId: input.userId,
+      projectSlug: slug,
+      category: input.category,
+    }),
+    async () => {
+      await ensureDir(path.dirname(absolutePath));
+      await writeFileAtomically(absolutePath, input.buffer);
+    },
+  );
   return {
     category: input.category,
     relativePath,

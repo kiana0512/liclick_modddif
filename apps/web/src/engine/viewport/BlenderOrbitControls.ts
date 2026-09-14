@@ -63,6 +63,18 @@ export class BlenderOrbitControls {
     domElement.addEventListener('wheel', this.handleWheel, { passive: true });
   }
 
+  // VIEWPORT-CLIPPING/1.0.0: captures may restore tight depth planes. Repair
+  // only on navigation; programmatic snapshot restoration must remain exact.
+  private prepareNavigationClipping() {
+    const distance = this.camera.position.distanceTo(this.target);
+    const near = Math.min(this.camera.near, 0.01, Math.max(distance * 0.01, 1e-6));
+    const far = Math.max(this.camera.far, 100, distance * 4);
+    if (near === this.camera.near && far === this.camera.far) return;
+    this.camera.near = near;
+    this.camera.far = far;
+    this.camera.updateProjectionMatrix();
+  }
+
   private syncCameraTransform() {
     this.camera.lookAt(this.target);
     this.camera.updateMatrixWorld();
@@ -92,6 +104,7 @@ export class BlenderOrbitControls {
       const nextZoom = this.stepWheelZoomSpring(currentZoom, targetZoom, frameDelta);
       const settled = Math.abs(nextZoom - targetZoom) <= Math.max(targetZoom * 0.0005, 1e-6);
       this.camera.zoom = settled ? targetZoom : nextZoom;
+      this.prepareNavigationClipping();
       this.camera.updateProjectionMatrix();
       if (settled) {
         this.targetOrthographicZoom = undefined;
@@ -118,6 +131,7 @@ export class BlenderOrbitControls {
     if (this.offset.lengthSq() < Number.EPSILON) this.offset.set(0, 0, targetDistance);
     else this.offset.setLength(settled ? targetDistance : nextDistance);
     this.camera.position.copy(this.target).add(this.offset);
+    this.prepareNavigationClipping();
     // Dolly keeps the existing viewing direction. Avoid rebuilding the
     // quaternion on every transition frame; only refresh the camera matrix.
     this.camera.updateMatrixWorld();
@@ -270,6 +284,7 @@ export class BlenderOrbitControls {
     this.offset.applyQuaternion(this.yawRotation).applyQuaternion(this.pitchRotation);
     this.camera.up.applyQuaternion(this.yawRotation).applyQuaternion(this.pitchRotation).normalize();
     this.camera.position.copy(this.target).add(this.offset);
+    this.prepareNavigationClipping();
     this.update();
   }
 
@@ -296,6 +311,7 @@ export class BlenderOrbitControls {
       .addScaledVector(this.up, deltaY * verticalScale * this.panSpeed);
     this.camera.position.add(this.panOffset);
     this.target.add(this.panOffset);
+    this.prepareNavigationClipping();
     this.update();
   }
 
@@ -308,6 +324,7 @@ export class BlenderOrbitControls {
         MIN_ORTHOGRAPHIC_ZOOM,
         MAX_ORTHOGRAPHIC_ZOOM,
       );
+      this.prepareNavigationClipping();
       this.camera.updateProjectionMatrix();
       return;
     }
@@ -317,6 +334,7 @@ export class BlenderOrbitControls {
     if (this.offset.lengthSq() < Number.EPSILON) this.offset.set(0, 0, distance);
     else this.offset.setLength(distance);
     this.camera.position.copy(this.target).add(this.offset);
+    this.prepareNavigationClipping();
     // Perspective dolly changes only the camera distance. View-cube listeners
     // care about orientation, and notifying them on every coalesced wheel frame
     // performs redundant model/camera math during the hottest zoom path.

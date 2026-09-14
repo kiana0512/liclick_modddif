@@ -33,6 +33,11 @@ const budgets = [
     prefixes: ['projectPipeline-', 'exportUtils-'],
     maxBytes: 850_000,
   },
+  {
+    label: 'storage management lazy route',
+    prefix: 'StorageManagementDialog-',
+    maxBytes: 18_000,
+  },
 ];
 // Repaint selection consumption adds ~4.9 KiB of shader/history code: the cloud
 // candidate measures 3,144,697 bytes (previous 3,139,864). Grant only this feature's
@@ -90,7 +95,11 @@ const budgets = [
 // only 2,000 bytes; all per-chunk, resolution, correctness and QA gates remain.
 // CHG-20260912-ERASER-RESIDENT-PREWARM: resident preparation plus first-stroke
 // replay adds under 500 bytes. Keep the allowance exact and every other gate.
-const maxTotalJavaScriptBytes = 3_226_500;
+// CHG-20260914-ASSET-LIFECYCLE-COMPRESSION-DESIGN: the independently loaded
+// storage management route plus the integrated reference-delight/tight-framing
+// master delta measure 20,125 bytes. Allocate 21,000 bytes while retaining the
+// shell/editor/bake/shared hot-path limits and the dedicated 18,000-byte route gate.
+const maxTotalJavaScriptBytes = 3_247_500;
 
 let entries;
 try {

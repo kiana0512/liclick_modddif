@@ -171,7 +171,12 @@ async function fixture(failedView, fullyCovered = false, mode = 'stable', preset
         resident.userData.liclickProjectedLayerStackState = { bindings: rows.map((layer) => ({ layerId: layer.id })) };
       },
     }) },
-    getTextureMapMultiviewCaptures: async (views) => {
+    frameGenerationCapture: async (_objectId, _aspect, direction, _up, _signal, animate) => {
+      assert.equal(animate, false, 'batch framing must not animate the live camera');
+      return { camera: { direction }, target: {}, aspect: 1 };
+    },
+    getTextureMapMultiviewCaptures: async (views, _signal, options) => {
+      if (rows.length) for (const view of views) assert(options.viewSnapshots.has(view.id), 'clay reuses each effect camera');
       active(); assert(views.length <= (captures.length ? 4 : 2)); captures.push(views.map((view) => view.id));
       // Clearing transient white mode does not synchronously restore SceneRoot's
       // resident texture material. Model the gap that the old adapter captured.
@@ -184,6 +189,7 @@ async function fixture(failedView, fullyCovered = false, mode = 'stable', preset
       assert.equal(whitePresentation, false, 'authored colour must be frozen BEFORE asynchronous clay presentation');
       assert.equal(input.resolution, 2048);
       assert.equal(input.colorMode, 'flat-target-coverage');
+      assert(input.cameraSnapshot, 'effect receives its frozen camera');
       return { colorUrl: `effect:${rows.map((row) => row.id)}` };
     },
     prepareSingleViewTextureCompletion: async (input) => ({ hasVisibleTexture: true, imageUrl: fullyCovered ? undefined : input.currentEffectUrl, uncoveredPixelCount: fullyCovered ? 0 : 10 }),

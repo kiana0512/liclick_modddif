@@ -57,6 +57,7 @@ import {
   rasterizeUvTopologyMaskWithWebGpu,
   type WebGpuUvTopologyRasterResult,
 } from './webGpuUvTopologyRaster';
+import { canReuseAuthoredProjectionVisibility } from './projectionVisibilityReuse';
 
 const UNPROJECTED_TEXTURE_FILL: [number, number, number] = [8, 9, 13];
 const MIN_VALID_COVERAGE_RATIO = 0.001;
@@ -1147,10 +1148,10 @@ async function bakeVisibleProjectedLayersToTextureUnlocked(
 
   const gpuFallbackWarnings: string[] = [];
   const viewportRenderer = useSceneStore.getState().viewport?.gl;
-  // The live viewport builds visibility from the current model pose. Rebuild
-  // that same depth capture immediately before UV baking so merge/export cannot
-  // fall back to stale capture depth. Geometric-normal rejection is opt-in:
-  // using its flat per-triangle result as output alpha creates grazing combs.
+  // Reuse verified capture-space visibility whenever its authored transform is
+  // available. Only legacy/incomplete rows need a fresh capture. Geometric-
+  // normal rejection is opt-in: using its flat per-triangle result as output
+  // alpha creates grazing combs.
   const runtimeDepthStartedAt = performance.now();
   markUvBakePerformancePhase('runtime-depth');
   if (viewportRenderer && !input.debugIgnoreDepth) {
@@ -1163,23 +1164,19 @@ async function bakeVisibleProjectedLayersToTextureUnlocked(
     const captureById = new Map(
       currentProject?.captures.map((capture) => [capture.id, capture] as const) ?? [],
     );
-    importedModel.group.updateMatrixWorld(true);
-    const currentObjectMatrixWorld = importedModel.group.matrixWorld.toArray();
-    const matrixMatches = (captured?: number[]) =>
-      captured?.length === 16 &&
-      captured.every(
-        (value, index) => Math.abs(value - currentObjectMatrixWorld[index]) <= 1e-6,
-      );
     let reusedVisibilityLayerCount = 0;
     let regeneratedVisibilityLayerCount = 0;
     layers = await Promise.all(
       layers.map(async (layer) => {
-        if (
-          layer.depthUrl &&
-          (!runtimeVisibilityIncludeNormal || layer.normalUrl) &&
-          layer.depthEncoding === 'linear-view' &&
-          matrixMatches(layer.objectMatrixWorld)
-        ) {
+        // Linear depth is authored in the frozen capture camera/object space.
+        // The GPU and CPU rasterizers transform today's model pose back through
+        // layer.objectMatrixWorld before sampling it, so a later rigid model
+        // transform does not invalidate these pixels. Comparing that capture
+        // matrix with the current world matrix regenerated one full depth pass
+        // per layer after an ordinary move/rotate/scale, despite consuming the
+        // same capture-space result. Legacy rows without a captured matrix keep
+        // the conservative regeneration path.
+        if (canReuseAuthoredProjectionVisibility(layer, runtimeVisibilityIncludeNormal)) {
           reusedVisibilityLayerCount += 1;
           return runtimeVisibilityIncludeNormal ? layer : { ...layer, normalUrl: undefined };
         }

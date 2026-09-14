@@ -61,6 +61,7 @@ export type PromptPolishImageInput = {
 };
 
 export type LiclickGenerateTextureSingleViewInput = GenerateTextureInput & {
+  referencePipeline?: 'six-view-delight-v1';
   clientGenerationId?: string;
   projectId?: string;
   prompt: string;
@@ -243,6 +244,7 @@ export function createLiclickApiClient(config: LiclickApiConfig = {}): LiclickAp
           aspectRatio: input.aspectRatio,
           imageSize: input.imageSize,
           quality: input.quality,
+          referencePipeline: input.referencePipeline,
           count: input.count,
           references: preparedReferences.map(({ id, name, url }) => ({ id, name, url })),
         }),

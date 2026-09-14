@@ -495,7 +495,6 @@ export function LayersPanel({
   const selectedObjectId = useSceneStore((state) => state.selectedObjectId);
   const setLayerVisibility = useLayerStore((state) => state.setLayerVisibility);
   const setOpacity = useLayerStore((state) => state.setOpacity);
-  const setBlendMode = useLayerStore((state) => state.setBlendMode);
   const activeProjectedLayerId = useLayerStore((state) => state.activeProjectedLayerId);
   const setActiveLayer = useLayerStore((state) => state.setActiveLayer);
   const deleteLayers = useLayerStore((state) => state.deleteLayers);
@@ -1021,11 +1020,6 @@ export function LayersPanel({
             }}
             onVisibilityPointerEnter={() => continueVisibilityDrag(layer.id)}
             onOpacityPointerDown={(event) => beginOpacityDrag(layer, event)}
-            onBlendClick={(event) => {
-              event.stopPropagation();
-              captureHistory(`切换图层混合模式：${layer.name}`);
-              setBlendMode(layer.id, layer.blendMode === 'overlay' ? 'normal' : 'overlay');
-            }}
             onAdjustClick={(event) => {
               event.stopPropagation();
               setActiveLayer(layer.id);
@@ -1428,7 +1422,6 @@ function LayerRow({
   onVisibilityPointerDown,
   onVisibilityPointerEnter,
   onOpacityPointerDown,
-  onBlendClick,
   onAdjustClick,
   onMenu,
   onContextMenu,
@@ -1447,7 +1440,6 @@ function LayerRow({
   onVisibilityPointerDown: PointerEventHandler<HTMLButtonElement>;
   onVisibilityPointerEnter: PointerEventHandler<HTMLButtonElement>;
   onOpacityPointerDown: PointerEventHandler<HTMLButtonElement>;
-  onBlendClick: MouseEventHandler<HTMLButtonElement>;
   onAdjustClick: MouseEventHandler<HTMLButtonElement>;
   onMenu: MouseEventHandler<HTMLButtonElement>;
   onContextMenu: MouseEventHandler<HTMLDivElement>;
@@ -1458,8 +1450,6 @@ function LayerRow({
 }) {
   // LAYER-ERASER-MASK-INDICATOR v1.0.0: capture/repaint masks are not eraser edits.
   const hasMask = hasClearableProjectedEraserMask(layer);
-  const modeLabel =
-    layer.blendMode === 'overlay' ? 'Overlay above other layers' : 'Blend with other layers';
   const opacityLabel = `Layer opacity ${Math.round(layer.opacity * 100)}%. Drag up or down to adjust.`;
 
   return (
@@ -1528,12 +1518,6 @@ function LayerRow({
             onPointerDown={onOpacityPointerDown}
             icon={<LayerOpacityGlyph opacity={layer.opacity} />}
           />
-          <SmallLayerToggle
-            active={layer.blendMode === 'overlay'}
-            label={modeLabel}
-            onClick={onBlendClick}
-            icon={layer.blendMode === 'overlay' ? <LayerOverlayGlyph /> : <LayerBlendGlyph />}
-          />
           {hasMask ? (
             <SmallLayerToggle
               active
@@ -1567,24 +1551,6 @@ function LayerOpacityGlyph({ opacity }: { opacity: number }) {
       className="h-3.5 w-3.5 rounded-full border border-current bg-current"
       style={{ opacity: 0.32 + clampedOpacity * 0.68 }}
     />
-  );
-}
-
-function LayerBlendGlyph() {
-  return (
-    <span className="relative h-3.5 w-4">
-      <span className="absolute left-0 top-1 h-2.5 w-2.5 rounded-full border-2 border-current" />
-      <span className="absolute right-0 top-1 h-2.5 w-2.5 rounded-full border-2 border-current bg-black/40" />
-    </span>
-  );
-}
-
-function LayerOverlayGlyph() {
-  return (
-    <span className="relative h-3.5 w-4">
-      <span className="absolute left-0.5 top-1.5 h-2.5 w-2.5 rounded-[2px] border-2 border-current" />
-      <span className="absolute right-0.5 top-0 h-2.5 w-2.5 rounded-[2px] border-2 border-current bg-current/30" />
-    </span>
   );
 }
 

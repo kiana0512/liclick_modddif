@@ -1,3 +1,4 @@
+import { advanceReferenceDelight, referenceStageMessage } from '../services/referenceDelightPipeline.js';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -29,7 +30,8 @@ import { polishPrompt, type PromptPolishInput } from '../services/promptPolishSe
 import { serverConfig } from '../config.js';
 import { getPathSegments, readJsonBody, sendJson } from './httpUtils.js';
 
-type GenerationJob = {
+export type GenerationJob = {
+  referenceDelight?: { stage: 'submitting' | 'running' | 'complete'; inputUrl: string; sourceTaskId?: string; prompt: string };
   id: string;
   userId: string;
   projectId: string;
@@ -210,7 +212,7 @@ function loadGenerationJobs() {
   return jobsLoadPromise;
 }
 
-async function saveGenerationJobs() {
+async function saveGenerationJobs(strict = false) {
   await fs.promises.mkdir(serverConfig.workspaceDir, { recursive: true });
   const sortedJobs = [...generationJobs.values()].sort((a, b) =>
     b.updatedAt.localeCompare(a.updatedAt),
@@ -226,6 +228,7 @@ async function saveGenerationJobs() {
     .then(() => writeJobsFileWithRetry(jobsFile(), `${JSON.stringify(jobs, null, 2)}\n`))
     .catch((error: unknown) => {
       console.warn('[Liclick Workspace Server] Could not persist generation jobs.', error);
+      if (strict) throw error;
     });
   writeQueue = task.then(
     () => undefined,
@@ -276,7 +279,7 @@ function getJobResponse(job: GenerationJob) {
     uploadedReferences: job.uploadedReferences,
     startedAt: job.startedAt,
     updatedAt: job.updatedAt,
-    message: job.message,
+    message: job.message ?? referenceStageMessage(job),
   };
 }
 
@@ -376,6 +379,7 @@ async function applySubmission(job: GenerationJob, submission: LiclickImageSubmi
   job.uploadedReferences = submission.uploadedReferences;
   job.raw = submission.raw;
   job.updatedAt = new Date().toISOString();
+  if (await advanceReferenceDelight(job, submission, saveGenerationJobs)) return;
   if (submission.resultUrl) {
     job.status = 'succeeded';
     job.resultUrl = submission.resultUrl;
@@ -416,6 +420,7 @@ async function pollAndUpdateJob(job: GenerationJob) {
       job.message = undefined;
       job.nextPollAt = undefined;
       if (result.resultUrl) {
+        if (await advanceReferenceDelight(job, result, saveGenerationJobs)) return job;
         job.updatedAt = new Date().toISOString();
         job.raw = result.raw;
         job.status = 'succeeded';
@@ -530,10 +535,14 @@ async function pollAndUpdateEditJob(job: EditImageJob) {
 }
 
 function startGenerationJob(job: GenerationJob) {
+  if (job.pollPromise) return;
   if (job.promise || job.status === 'succeeded' || job.status === 'failed') return;
   job.promise = (async () => {
     try {
       assertJobUsesPersonalLiclickAccount(job);
+      if (job.referenceDelight?.stage === 'submitting') {
+        throw new Error('去光照提交状态未确认，已保留第一轮记录；为避免重复计费，不会自动重新提交。');
+      }
       if (!job.taskId && job.status === 'submitting') {
         const submission = await submitLiclickImageJob(job.input, {
           atlasHomeDir: job.atlasHomeDir,
@@ -603,6 +612,7 @@ function createGenerationJob(
   user: AuthUser,
   input: GenerateImageInput,
 ): GenerationJob {
+  if (input.referencePipeline === 'six-view-delight-v1') input = { ...input, model: 'gpt-image-2.5-sunburst', quality: 'low', count: 1 };
   const now = new Date().toISOString();
   const job: GenerationJob = {
     id: jobId,
@@ -687,7 +697,7 @@ function getJobListResponse(job: GenerationJob) {
             'Liclick image generation failed. Please try again later.',
           )
         : undefined,
-    message: job.message,
+    message: job.message ?? referenceStageMessage(job),
   };
 }
 
@@ -1149,6 +1159,9 @@ export async function handleLiclickRoute(
       }
     }
     const input = await readJsonBody<GenerateImageInput>(request);
+    if (input.referencePipeline && (input.referencePipeline !== 'six-view-delight-v1' || input.workflow !== 'liclick')) {
+      sendJson(response, 400, { error: 'Invalid multiview reference pipeline.' }); return true;
+    }
     const projectId = input.projectId ?? 'default';
     const workflow = input.workflow === 'local-repaint' ? 'local-repaint' : input.workflow === 'texture-map' ? 'texture-map' : 'liclick';
     // Texture-map multiview generation intentionally creates one independently

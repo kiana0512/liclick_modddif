@@ -42,7 +42,22 @@ type Request = {
   onError: (error: unknown) => void;
 };
 
-/** UV-DISPLAY-BUFFER/1.2.1. The display owns derived UV buffers, never layers/assets.
+let projectedUvBakeKernelPromise:
+  | Promise<typeof import('@/engine/bake/bakeProjectedLayerToTexture')>
+  | undefined;
+
+/** Decode/parse the exact UV kernel before the first eye interaction. */
+export function preloadProjectedUvBakeKernel() {
+  projectedUvBakeKernelPromise ??= import('@/engine/bake/bakeProjectedLayerToTexture').catch(
+    (error) => {
+      projectedUvBakeKernelPromise = undefined;
+      throw error;
+    },
+  );
+  return projectedUvBakeKernelPromise;
+}
+
+/** UV-DISPLAY-BUFFER/1.4.0. The display owns derived UV buffers, never layers/assets.
  * Use the same resident Top-K and exact postprocess path as explicit UV merge.
  * Keep the front buffer until its replacement has uploaded and been bound.
  */
@@ -168,8 +183,7 @@ export class ResidentProjectedUvDisplay {
       }
       guard();
       stages.cacheLookupMs = performance.now() - startedAt;
-      const { bakeVisibleProjectedLayersToTexture } =
-        await import('@/engine/bake/bakeProjectedLayerToTexture');
+      const { bakeVisibleProjectedLayersToTexture } = await preloadProjectedUvBakeKernel();
       guard();
       let sourceLayers = request.sourceLayers.filter(layer => layer.visible && layer.opacity > 0);
       const prepareStartedAt = performance.now();

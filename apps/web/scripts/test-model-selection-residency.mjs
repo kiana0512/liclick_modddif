@@ -161,7 +161,7 @@ assert.notDeepEqual(lines[0].geometry.attributes.position.array, positions, 'Tra
 // happen after a new selection/material commit. Its finally must not roll back.
 const captureSource = fs.readFileSync(new URL('../src/engine/capture/renderTargetUtils.ts', import.meta.url), 'utf8');
 const captureAst = ts.createSourceFile('capture.ts', captureSource, ts.ScriptTarget.Latest, true);
-const targetOnlySource = captureAst.statements.find((node) => ts.isFunctionDeclaration(node) && node.name?.text === 'applyTargetOnlyMaterial').getText(captureAst);
+const targetOnlySource = captureAst.statements.filter(node => ts.isFunctionDeclaration(node) && ['isCaptureTargetMesh', 'applyTargetOnlyMaterial'].includes(node.name?.text)).map(node => node.getText(captureAst).replace(/^export /, '')).join('\n');
 const applyTargetOnlyMaterial = compile(`${targetOnlySource.replace(/^export /, '')}\nconst run = applyTargetOnlyMaterial;`, { THREE });
 const captureScene = new THREE.Scene();
 models.forEach(({ group, objectId }, i) => {

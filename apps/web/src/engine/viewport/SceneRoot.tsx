@@ -28,6 +28,7 @@ import {
 } from '@/engine/projection/ProjectedLayerMaterial';
 import {
   ResidentProjectedUvDisplay as ProjectedLayerPreviewCompositor,
+  preloadProjectedUvBakeKernel,
   type ProjectedPreviewComposite,
 } from '@/engine/projection/ResidentProjectedUvDisplay';
 import {
@@ -85,7 +86,6 @@ import {
   markViewportInteractionActivity,
 } from './viewportInteractionState';
 import { getTransientLocalRepaintLayerId } from './localRepaintResidentHandoff';
-import { getEraserTargetPolicy } from '@/engine/paint/eraserTargetPolicy';
 import {
   createWorkerBackedPreviewTexture,
   getReadyResidentPreviewTexture,
@@ -129,7 +129,6 @@ const RUNTIME_PROJECTION_PREVIEW_MAX_SIDE = 1024;
 // before the nominal 16-unit ceiling is reached. Switch as soon as the safety
 // boundary is reached, so the fourth fully sampled projection uses arrays instead
 // of attempting an unstable 12-sampler direct material.
-const PROJECTED_ARRAY_DIRECT_SAMPLER_HEADROOM_RATIO = 0.75;
 
 // All model roots share one WebGL renderer. During a cold multi-model restore
 // they also request the same projected shader shape at nearly the same time.
@@ -1348,10 +1347,27 @@ const ImportedModel = memo(function ImportedModel({
   const resolution = useSettingsStore((state) => state.resolution);
   const localRepaintPreviewLayer = useSceneStore((state) => state.localRepaintPreviewLayer);
   const localRepaintPaintTool = useSceneStore((state) => state.paintTool);
-  const activeLayerId = useLayerStore((state) => state.activeProjectedLayerId);
+  // Selecting or hiding an ordinary layer does not change renderer inputs.
+  // Subscribe only to the two active-layer facts that can affect paint/mask
+  // presentation; otherwise the eye button needlessly rerendered ImportedModel.
+  const localRepaintPreviewActive = useLayerStore(
+    (state) =>
+      Boolean(localRepaintPreviewLayer?.id) &&
+      state.activeProjectedLayerId === localRepaintPreviewLayer?.id,
+  );
+  const activeUvMaskLayerId = useLayerStore((state) => {
+    const activeLayer = state.layers.find(
+      (layer) => layer.id === state.activeProjectedLayerId,
+    );
+    return activeLayer?.type === 'projected' &&
+      activeLayer.maskSpace === 'uv' &&
+      Boolean(activeLayer.maskUrl)
+      ? activeLayer.id
+      : undefined;
+  });
   const localRepaintLiveFeedbackRequested =
     localRepaintPaintTool === 'inpaint-apply' ||
-    (localRepaintPaintTool === 'eraser' && localRepaintPreviewLayer?.id === activeLayerId);
+    (localRepaintPaintTool === 'eraser' && localRepaintPreviewActive);
   const transientWhitePresentationObjectId = useSceneStore(
     (state) => state.transientWhitePresentationObjectId,
   );
@@ -1405,10 +1421,6 @@ const ImportedModel = memo(function ImportedModel({
       importedModel.objectId,
     ),
   );
-  const projectedUvDisplaySignature = useLayerStore((state) => state.layers
-    // A merged UV eye also changes which projections belong in the derived buffer.
-    .filter(layer => !layer.objectId || layer.objectId === importedModel.objectId)
-    .map(layer => layerPreviewSignature(layer)).join('|'));
   // Structural UV signatures intentionally omit eye state so a visibility
   // toggle does not rebuild/upload a 4K texture. Content-aware underlays still
   // need a live display snapshot, otherwise their cached `visible` flag can
@@ -1430,20 +1442,13 @@ const ImportedModel = memo(function ImportedModel({
   const layers = useMemo(
     () =>
       readAuthoritativeLocalRepaintLayers(
-        `${layerRenderSignature}|${projectedUvDisplaySignature}`,
+        layerRenderSignature,
         uvVisibilityRenderRevision,
         importedModel.objectId,
       ),
-    [importedModel.objectId, layerRenderSignature, uvVisibilityRenderRevision, projectedUvDisplaySignature],
+    [importedModel.objectId, layerRenderSignature, uvVisibilityRenderRevision],
   );
   const liveSurfacePaintPreview = useLiveSurfacePaintPreview();
-  const projectedEraserArmed = Boolean(
-    (localRepaintPaintTool === 'eraser' &&
-      getEraserTargetPolicy(layers.find((layer) => layer.id === activeLayerId)).kind ===
-        'projected-mask') ||
-      (liveSurfacePaintPreview?.target === 'projected-mask' &&
-        liveSurfacePaintPreview.objectId === importedModel.objectId),
-  );
   const visibleMergedUvBoundaryOrder = useMemo(
     () => getVisibleMergedUvBoundaryOrder(layers, importedModel.objectId),
     [importedModel.objectId, layers],
@@ -1775,7 +1780,11 @@ const ImportedModel = memo(function ImportedModel({
   const lastProjectedSamplerWarningRef = useRef('');
   const activatedLocalRepaintPreviewKeyRef = useRef('');
   const projectedPreviewCompositorRef = useRef<ProjectedLayerPreviewCompositor>();
-  const residentUvDisplayEnabled = gl.capabilities.isWebGL2;
+  // UV-DISPLAY-BUFFER/1.4.0: authored projections are calculation inputs only.
+  // Every supported renderer presents the last verified UV buffer while its
+  // replacement is generated; WebGL capability only selects the bake backend,
+  // never a projected-material display fallback.
+  const residentUvDisplayEnabled = true;
   const [progressiveProjectedPreview, setProgressiveProjectedPreview] =
     useState<ProjectedPreviewComposite>();
   const [failedProjectedTextureArraySignature, setFailedProjectedTextureArraySignature] =
@@ -1813,6 +1822,39 @@ const ImportedModel = memo(function ImportedModel({
     texturedRestoreReady,
     visibleMergedUvBoundaryOrder,
   ]);
+  const hasAuthoredProjectedUvSources = useMemo(
+    () =>
+      layers.some(
+        (layer) =>
+          layer.type === 'projected' &&
+          Boolean(layer.imageUrl) &&
+          (!layer.objectId || layer.objectId === importedObjectId),
+      ),
+    [importedObjectId, layers],
+  );
+  useEffect(() => {
+    if (!workspaceVisible || !texturedRestoreReady || !hasAuthoredProjectedUvSources) return;
+    let cancelled = false;
+    let retryTimer: number | undefined;
+    // Module parse/initialization caused the first real eye toggle's only
+    // repeatable Long Task. Warm code while the restored project is idle; no
+    // texture, framebuffer or derived UV allocation happens in this step.
+    const prewarmWhenIdle = () => {
+      void waitForProjectionVisibilityIdle(250, 2_000).then(() => {
+        if (cancelled) return;
+        if (isSharedViewportInteractionBusy(240)) {
+          retryTimer = window.setTimeout(prewarmWhenIdle, 500);
+          return;
+        }
+        return preloadProjectedUvBakeKernel();
+      }).catch(() => undefined);
+    };
+    prewarmWhenIdle();
+    return () => {
+      cancelled = true;
+      if (retryTimer !== undefined) window.clearTimeout(retryTimer);
+    };
+  }, [hasAuthoredProjectedUvSources, texturedRestoreReady, workspaceVisible]);
   const projectedDisplayCapacity = projectionDisplayCapacity(gl.capabilities.maxFragmentUniforms);
   const previewProjectedLayers = useMemo(
     () => residentUvDisplayEnabled ? allPreviewProjectedLayers : allPreviewProjectedLayers.slice(0, projectedDisplayCapacity),
@@ -2047,16 +2089,6 @@ const ImportedModel = memo(function ImportedModel({
           Boolean(layer.imageUrl) &&
           (!layer.objectId || layer.objectId === importedModel.objectId),
       );
-      const reopenedUvLayer = objectUvLayers.some(
-        (layer) => layer.visible && previousLayerVisibilityById.get(layer.id) === false,
-      );
-      const reopenedProjectedLayer = state.layers.some(
-        (layer) =>
-          layer.type === 'projected' &&
-          layer.visible &&
-          previousLayerVisibilityById.get(layer.id) === false &&
-          (!layer.objectId || layer.objectId === importedModel.objectId),
-      );
       const visibleUvContentChanged = objectUvLayers.some((layer) => {
         if (!layer.visible) return false;
         const previousLayer = previousLayerById.get(layer.id);
@@ -2192,16 +2224,21 @@ const ImportedModel = memo(function ImportedModel({
         visibleOrdinaryUvLayers.length > 0 ||
         visibleLocalRepaintUvLayers.length > 0 ||
         visibleContentAwareUvLayers.length > 0;
-      const hasVisibleProjectedContribution = displayLayers.some((layer) => layer.visible);
+      // Closing the final eye must also retire the previous composed atlas.
+      const hasVisibleProjectedContribution = displayLayers.some(
+        (layer) => layer.visible || previousLayerVisibilityById.get(layer.layerId),
+      );
       if (
-        reopenedUvLayer ||
         // Repaint routing and mixed lower composites need an exact rebind on
         // either eye direction; a uniform cannot remove one composite member.
         objectUvLayers.some((layer) =>
           (hasLowerRepaintUv || isRenderedLocalRepaintLayer(layer)) &&
           previousLayerVisibilityById.get(layer.id) !== layer.visible,
         ) ||
-        reopenedProjectedLayer ||
+        // Merged UV visibility changes which projected layers belong to the
+        // composition even when every projected eye remains unchanged.
+        currentMergedUvBoundaryOrder !==
+          getVisibleMergedUvBoundaryOrder(previousState.layers, importedModel.objectId) ||
         visibleUvContentChanged ||
         visibleProjectedContentChanged
       ) {
@@ -2479,49 +2516,8 @@ const ImportedModel = memo(function ImportedModel({
       }),
     [gl.capabilities.maxTextures, hasResidentUvOverlaySampler, previewProjectionInputs],
   );
-  const projectedProgramWarmupDirectSamplerBudget = useMemo(
-    () =>
-      getProjectedLayerSamplerBudget(projectedProgramWarmupInputs, gl.capabilities.maxTextures, {
-        useBaseMap: true,
-        useUvOverlayMap: hasResidentUvOverlaySampler,
-      }),
-    [gl.capabilities.maxTextures, hasResidentUvOverlaySampler, projectedProgramWarmupInputs],
-  );
-  const projectedProgramWarmupArraySamplerBudget = useMemo(
-    () =>
-      getProjectedLayerSamplerBudget(projectedProgramWarmupInputs, gl.capabilities.maxTextures, {
-        useBaseMap: true,
-        useUvOverlayMap: hasResidentUvOverlaySampler,
-        useTextureArrays: true,
-      }),
-    [gl.capabilities.maxTextures, hasResidentUvOverlaySampler, projectedProgramWarmupInputs],
-  );
-  const directProjectedSamplerHeadroom = Math.max(
-    1,
-    Math.floor(gl.capabilities.maxTextures * PROJECTED_ARRAY_DIRECT_SAMPLER_HEADROOM_RATIO),
-  );
-  const directProjectedSamplerStable = Boolean(
-    directProjectedSamplerBudget.withinBudget &&
-    directProjectedSamplerBudget.required < directProjectedSamplerHeadroom,
-  );
-  const useProjectedTextureArrays = Boolean(
-    (!residentUvDisplayEnabled || projectedEraserArmed) &&
-    gl.capabilities.isWebGL2 &&
-    previewProjectionInputs.length > 1 &&
-    projectedTextureArraySamplerBudget.withinBudget &&
-    !directProjectedSamplerStable,
-  );
-  const projectedProgramWarmupDirectStable = Boolean(
-    projectedProgramWarmupDirectSamplerBudget.withinBudget &&
-    projectedProgramWarmupDirectSamplerBudget.required < directProjectedSamplerHeadroom,
-  );
-  const useProjectedProgramWarmupTextureArrays = Boolean(
-    !residentUvDisplayEnabled &&
-    gl.capabilities.isWebGL2 &&
-    projectedProgramWarmupInputs.length > 1 &&
-    projectedProgramWarmupArraySamplerBudget.withinBudget &&
-    !projectedProgramWarmupDirectStable,
-  );
+  const useProjectedTextureArrays = false;
+  const useProjectedProgramWarmupTextureArrays = false;
   const projectedTextureArrayStructureSignature = useMemo(
     () =>
       previewProjectionInputs
@@ -2557,53 +2553,19 @@ const ImportedModel = memo(function ImportedModel({
     (failedProjectedTextureArraySignature === projectedTextureArrayStructureSignature ||
       !isProjectedUniformBudgetSafe(previewProjectionInputs.length, gl.capabilities.maxFragmentUniforms)),
   );
-  const directProjectedStackSafe = Boolean(
-    directProjectedSamplerBudget.withinBudget &&
-      isProjectedUniformBudgetSafe(
-        previewProjectionInputs.length,
-        gl.capabilities.maxFragmentUniforms,
-      ),
-  );
-  const canUseDirectVisibleStackAfterArrayFailure = Boolean(
-    // Once the array path has failed, correctness is more important than the
-    // normal headroom preference. A six-view image+depth stack needs most of the
-    // 16 available samplers on common WebGL2 devices and is still a valid exact
-    // material. Sending it to the progressive compositor instead can leave the
-    // last UV/bootstrap material resident if that asynchronous publication is
-    // superseded by an eye toggle or eraser clear.
-    textureArrayCompositionFallbackRequired && directProjectedStackSafe,
-  );
-  const canUseExactProjectedEraserStack = Boolean(
-    projectedEraserArmed &&
-      ((useProjectedTextureArrays && !textureArrayCompositionFallbackRequired) ||
-        directProjectedStackSafe),
-  );
-  // Projections are calculation inputs. Every normal viewport frame samples UV.
-  // A projected eraser edits one keep-mask. Keep the authored layer stack on
-  // the GPU while the tool is armed so each input frame only changes that mask
-  // uniform; the resident UV compositor remains the exact idle/commit path.
-  const canUseProgressiveUvFallback =
-    residentUvDisplayEnabled && !canUseExactProjectedEraserStack;
+  const canUseDirectVisibleStackAfterArrayFailure = false;
+  const canUseExactProjectedEraserStack = false;
+  // Projected eraser revisions also generate a derived UV buffer. Keeping the
+  // previous verified front buffer prevents an unverified partial projection
+  // from reaching the viewport while the latest revision is in flight.
+  const canUseProgressiveUvFallback = residentUvDisplayEnabled;
   const projectedPreviewNeedsComposition = Boolean(
     previewProjectionInputs.length > 0 || !projectedSamplerBudget.withinBudget ||
     (textureArrayCompositionFallbackRequired && !canUseDirectVisibleStackAfterArrayFailure),
   );
-  // Selection is only a compositor input when that fallback is enabled. An
-  // unused active-row array must not restart the resident material effect.
-  // UV-DISPLAY-BUFFER/1.0.0: selection does not keep a projected layer in
-  // the per-frame shader. Every authored layer participates in the UV buffer.
-  const progressiveActiveLayerId = undefined;
-  const activeProjectedPreviewInputs = useMemo(() => {
-    const active = previewProjectionInputs.find(
-      (layer) => layer.layerId === progressiveActiveLayerId && layer.visible,
-    );
-    return active ? [active] : [];
-  }, [progressiveActiveLayerId, previewProjectionInputs]);
-  const progressiveBackgroundInputs = useMemo(() => {
-    if (activeProjectedPreviewInputs.length === 0) return previewProjectionInputs;
-    const activeIds = new Set(activeProjectedPreviewInputs.map((layer) => layer.layerId));
-    return previewProjectionInputs.filter((layer) => !activeIds.has(layer.layerId));
-  }, [activeProjectedPreviewInputs, previewProjectionInputs]);
+  // Selection never removes a source from the derived UV calculation. Every
+  // visible authored projection participates in the same exact UV signature.
+  const progressiveBackgroundInputs = previewProjectionInputs;
   const progressiveBackgroundSignature = [
     importedObjectId, importedModel.group.uuid, resolution,
     layerStackPreviewSignature(allPreviewProjectedLayers),
@@ -3091,10 +3053,10 @@ const ImportedModel = memo(function ImportedModel({
   );
   const liveSurfaceMaskTexture = useMemo(() => {
     if (exactBakedTextureRecord) return undefined;
-    const layer = layers.find((item) => item.id === activeLayerId);
+    const layer = layers.find((item) => item.id === activeUvMaskLayerId);
     if (layer?.type !== 'projected' || layer.maskSpace !== 'uv' || !layer.maskUrl) return undefined;
     return getLiveProjectedCanvasTexture(layer.maskUrl, THREE.NoColorSpace, { flipY: false });
-  }, [activeLayerId, exactBakedTextureRecord, layers]);
+  }, [activeUvMaskLayerId, exactBakedTextureRecord, layers]);
   const hasLiveProjectedPreview = useMemo(
     () =>
       stableVisibleProjectedLayers.some(
@@ -3977,9 +3939,10 @@ const ImportedModel = memo(function ImportedModel({
       model.group.updateMatrixWorld(true);
       const useProjectedTextureArrayMaterial =
         useProjectedTextureArrays && !textureArrayCompositionFallbackRequired;
-      const materialProjectionInputs = canUseProgressivePreviewBase
-        ? activeProjectedPreviewInputs
-        : previewProjectionInputs;
+      // Projection inputs are consumed exclusively by ResidentProjectedUvDisplay.
+      // Until that exact signature is ready, retain the last verified UV/base
+      // material instead of publishing direct or texture-array projection.
+      const materialProjectionInputs = [] as typeof previewProjectionInputs;
       const showGeometryOnlyDisplay = displayMode === 'normal' || displayMode === 'wire';
       const hasResidentProjectionInputs = Boolean(
         canPreviewProjectedLayers && materialProjectionInputs.length > 0,
@@ -5234,7 +5197,6 @@ const ImportedModel = memo(function ImportedModel({
     stableVisibleProjectedLayers,
     textureArrayCompositionFallbackRequired,
     useProjectedTextureArrays,
-    activeProjectedPreviewInputs,
     stablePreviewProjectedLayers,
     topUvProjectedOverlayInput,
     uvOverlayOpacity,

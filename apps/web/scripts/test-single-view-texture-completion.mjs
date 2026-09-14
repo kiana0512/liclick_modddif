@@ -93,29 +93,29 @@ assert.equal(request.aspectRatio, '1:1');
 assert.equal(request.quality, 'max');
 assert.equal(request.model, 'gpt-image-2.5-flare');
 assert.match(panel, /return submitGptTextureView\(\s*generationId,\s*pendingGeneration.prompt,\s*modelViewReference,\s*materialReference,\s*capture/);
-assert.match(textureMapPrompts, /只在图一上进行材质补全，不重新生成物体/);
+assert.match(textureMapPrompts, /只在图一指定的待补全区域绘制材质，不重新生成物体/);
 assert.match(
   textureMapPrompts,
-  /只修改图一中的白色、浅灰色、Clay、Primer或未贴图区域/,
+  /只修改图一中的白模、Clay、Primer或指定待补全区域/,
   'completion must fill every unfinished white-model region',
 );
 assert.match(
   textureMapPrompts,
-  /最终外轮廓、内部孔洞、真实部件边界、视图数量和排版必须与图一严格一致/,
+  /外轮廓、内部孔洞、零件边界、遮挡关系、视图数量和排版必须严格不变/,
   'low-poly smoothing must remain an interior material operation and never reshape the silhouette',
 );
 assert.match(
   textureMapPrompts,
-  /轮廓对齐高于所有其他要求/,
+  /轮廓对齐优先于材质表现/,
 );
 assert.match(
   textureMapPrompts,
-  /图一中已有材质的区域、背景和透明区域必须保持原始颜色、纹理和光影不变/,
+  /已经贴好的纹理区域保持不变，不对整张图重新调色、打光或去光照。保留原有背景及透明区域/,
   'single-view and multiview GPT2 generation must preserve every pixel outside white-model regions',
 );
 assert.match(
   textureMapPrompts,
-  /准确参考图二特有的Base Color、颜色变化、纹理颗粒、尺度、方向、粗糙度和磨损；不要只生成普通的同类材质/,
+  /图二只提供材质固有颜色、颜色分区、纹理颗粒、图案、文字、锈迹、污渍、掉漆和磨损/,
   'the material completion must preserve the reference-specific appearance rather than a generic category material',
 );
 assert.doesNotMatch(

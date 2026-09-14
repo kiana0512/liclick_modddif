@@ -496,6 +496,36 @@ assert.match(
   /const uvMaterialUpdated = syncProjectedLayerResidentTextureVisibilityInObject\([\s\S]*?const projectedMaterialUpdated = syncProjectedLayerMaterialDisplayStateInObject\([\s\S]*?hasVisibleUvContribution[\s\S]*?!uvMaterialUpdated[\s\S]*?!projectedMaterialUpdated[\s\S]*?setUvVisibilityRenderRevision/,
   'Opening an eye after an all-hidden cold restore must schedule a material pass when no resident shader accepted the uniform update.',
 );
+assert.doesNotMatch(
+  sceneRootSource,
+  /projectedUvDisplaySignature|reopenedProjectedLayer|reopenedUvLayer/,
+  'A resident eye toggle must not force a duplicate full React material reconciliation.',
+);
+assert.match(
+  sceneRootSource,
+  /readAuthoritativeLocalRepaintLayers\(\s*layerRenderSignature,\s*uvVisibilityRenderRevision/,
+  'React material derivation must rerun only for structure/content changes or an explicit cold-cache revision.',
+);
+assert.doesNotMatch(
+  sceneRootSource,
+  /const activeLayerId = useLayerStore\(\(state\) => state\.activeProjectedLayerId\)/,
+  'ordinary active-layer changes must not rerender every imported model',
+);
+assert.match(
+  sceneRootSource,
+  /const activeUvMaskLayerId = useLayerStore[\s\S]*?activeLayer\.maskSpace === 'uv'/,
+  'renderer subscriptions must retain the active UV-mask correctness gate',
+);
+assert.doesNotMatch(
+  sceneRootSource,
+  /activeLayerUsesProjectedEraser|projectedEraserArmed/,
+  'arming the projected eraser must not switch the viewport back to projected material display',
+);
+assert.match(
+  sceneRootSource,
+  /const residentUvDisplayEnabled = true;[\s\S]*?const useProjectedTextureArrays = false;[\s\S]*?const materialProjectionInputs = \[\] as typeof previewProjectionInputs;/,
+  'projected layers must be UV-generation inputs only; viewport material inputs stay UV-only',
+);
 assert.match(
   sceneRootSource,
   /Eye\/opacity controls and display modes must update the resident material[\s\S]*?const authoritativeProjectionLayers = useLayerStore\.getState\(\)\.layers;[\s\S]*?const authoritativeProjectionDisplayInputs = authoritativeProjectionLayers[\s\S]*?syncProjectedLayerMaterialDisplayStateInObject\([\s\S]*?authoritativeProjectionDisplayInputs/,
@@ -784,7 +814,7 @@ assert.equal(requiresExactPresentation(false, false, false), false,
   'An idle persisted layer without a live owner uses the formal material.');
 assert.match(
   sceneRootSource,
-  /const localRepaintLiveFeedbackRequested =\s*localRepaintPaintTool === 'inpaint-apply' \|\|\s*\(localRepaintPaintTool === 'eraser' && localRepaintPreviewLayer\?\.id === activeLayerId\)/,
+  /const localRepaintLiveFeedbackRequested =\s*localRepaintPaintTool === 'inpaint-apply' \|\|\s*\(localRepaintPaintTool === 'eraser' && localRepaintPreviewActive\)/,
   'SceneRoot must keep the resident repaint row muted until the eraser overlay handoff completes.',
 );
 assert.match(
@@ -2000,6 +2030,25 @@ try {
     mergedUvMaterial.uniforms.keyLightDirection.value.equals(expectedUvLightDirection),
     'Changing PBR light azimuth must update the merged UV key-light direction.',
   );
+  mergedUvMaterial.userData.liclickResidentUvProjectionLayers = ['atlas-layer'];
+  assert.equal(
+    projection.syncProjectedLayerMaterialDisplayState(mergedUvMaterial, [], false, false, {
+      enabled: true,
+      exposure: 0.8,
+      ambientIntensity: 0.45,
+      keyLightIntensity: 1.4,
+      keyLightDirection: updatedUvLightDirection,
+    }),
+    false,
+    'Updating atlas lighting cannot acknowledge a removed projection contribution.',
+  );
+  assert.equal(mergedUvMaterial.uniforms.previewExposure.value, 0.8);
+  assert.match(sceneRootSource,
+    /layer.visible \|\| previousLayerVisibilityById.get\(layer.layerId\)/,
+    'Closing the last projected eye must still reconcile the old atlas');
+  assert.match(sceneRootSource,
+    /currentMergedUvBoundaryOrder !==\s*getVisibleMergedUvBoundaryOrder\(previousState.layers, importedModel.objectId\)/,
+    'Changing the merged UV boundary must reconcile projected contributions');
   projection.disposeGeneratedMaterialTree(mergedUvMaterial);
 
   const wholeRenderedUvMaterial = projection.createUvOverlayPreviewMaterial({

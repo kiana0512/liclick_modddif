@@ -2671,7 +2671,9 @@ export function syncProjectedLayerMaterialDisplayState(
         candidate.uniforms.keyLightIntensity.value = resolvedPreviewLighting.keyLightIntensity;
       if (candidate.uniforms.keyLightDirection)
         candidate.uniforms.keyLightDirection.value.copy(resolvedPreviewLighting.keyLightDirection);
-      updated = true;
+      // A composed projection atlas has no per-layer visibility uniforms.
+      // Lighting updates cannot acknowledge its layer-display reconciliation.
+      updated = !candidate.userData.liclickResidentUvProjectionLayers || updated;
       continue;
     }
     for (const binding of state.bindings) {

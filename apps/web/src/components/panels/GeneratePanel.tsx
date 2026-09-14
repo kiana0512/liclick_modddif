@@ -1,3 +1,4 @@
+import { buildMultiviewPrompt } from '../../services/multiviewReferencePrompt';
 import { usesCaptureMaskTextureProjection, preservesGeneratedSourceAlpha, textureProjectionIgnoresSourceAlpha } from '@/engine/generation/textureProjectionPolicy';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
@@ -47,6 +48,8 @@ import { serializeCamera } from '@/engine/projection/ProjectionCamera';
 import { ReferenceGroupPicker } from '@/components/panels/ReferenceGroupPicker';
 import {
   referenceGroupId,
+  latestPairedGenerations,
+  replacePairedReference,
   type ReferenceGroupGenerationState,
 } from '@/components/panels/referenceGroup';
 import { devLogin } from '@/services/authApiClient';
@@ -97,7 +100,7 @@ import { getRegisteredObjectUrlBlob, revokeRegisteredObjectUrl } from '@/utils/b
 import { createId } from '@/utils/id';
 import { waitForBrowserPaint } from '@/utils/browserScheduling';
 import { downloadImageAsset } from '@/utils/downloadImage';
-import { generationBelongsToProject, generationIdentityIds } from '@/utils/generationIdentity';
+import { generationBelongsToProject, generationIdentityIds, generationMetadataString } from '@/utils/generationIdentity';
 import {
   getGenerationStartedAt,
   mergeGenerationMetadataPreservingStartedAt,
@@ -328,14 +331,12 @@ function generationPollToastKey(jobId: string) {
   return `generation-poll-retrying:${jobId}`;
 }
 
-function isVerboseProjectionWaitNotice(message: string) {
-  return (
-    message.includes('本组回贴后再生成下一组') ||
-    message.includes('等待回贴与合成渲染完成')
-  );
+function isVerboseGenerationNotice(message: string) {
+  return /^第[一二]步：|本组回贴后再生成下一组|等待回贴与合成渲染完成/.test(message);
 }
 
 function compactTextureProgressButtonLabel(label: string) {
+  if (/^第[一二]步：/.test(label)) return '生成多视图中';
   const pair = label.match(/第 \d+\/\d+ 组$/);
   return pair && /^(?:提交纹理任务|准备多视图快照|结果已保存)/.test(label)
     ? pair[0]
@@ -466,25 +467,10 @@ function hasVisibleTextureLayerCandidate(objectId: string) {
     );
 }
 
-const multiviewDefaultPrompt = `以输入图片中的主要物体为唯一参考，生成一张用于3D建模的六视图展示图。
 
-严格保持物体的造型、比例、结构、零件、颜色、材质和纹理一致。所有视图必须来自同一个结构固定的三维物体。不可见区域根据对称性和结构逻辑进行最少量补全，不要添加参考图中不存在的细节。
-
-输出横向2×3布局：
-第一排：正面、左前45°、顶部；
-第二排：左侧、右侧、底部。
-
-正交视图减少透视畸变，所有物体保持相同比例、状态和方向，完整居中且不裁切。使用纯黑背景和统一的柔和棚拍光照。
-
-不要出现结构变化、零件错位、重复视角、背景元素、文字、边框、Logo或水印。`;
 const multiviewGenerationFailureFallback = '多视图生成失败，请稍后重试。';
 
-function buildMultiviewPrompt(userPrompt: string) {
-  const trimmedPrompt = userPrompt.trim();
-  return trimmedPrompt
-    ? `${multiviewDefaultPrompt}\n\n用户补充要求：${trimmedPrompt}`
-    : multiviewDefaultPrompt;
-}
+
 
 function isMultiviewReference(reference: ReferenceImage) {
   return reference.referenceRole === 'multi-view';
@@ -873,9 +859,7 @@ export function GeneratePanel({
       )
         return false;
       const generationProjectId =
-        typeof generation.metadata.projectId === 'string'
-          ? generation.metadata.projectId
-          : undefined;
+        generationMetadataString(generation, 'projectId');
       return !currentProjectId || !generationProjectId || generationProjectId === currentProjectId;
     });
     const candidates = projectCandidates.filter((generation) =>
@@ -1009,7 +993,7 @@ export function GeneratePanel({
   }, [workspaceActive, generatePanelExpanded, portalRoot]);
   const tabGenerations = generations.filter((generation) => {
     const projectId =
-      typeof generation.metadata.projectId === 'string' ? generation.metadata.projectId : undefined;
+      generationMetadataString(generation, 'projectId');
     const belongsToProject = !currentProject?.id || !projectId || projectId === currentProject.id;
     return belongsToProject && generationMatchesTab(generation, tab);
   });
@@ -1018,13 +1002,13 @@ export function GeneratePanel({
   );
   const activeAnyProjectGeneration = generations.find((generation) => {
     const projectId =
-      typeof generation.metadata.projectId === 'string' ? generation.metadata.projectId : undefined;
+      generationMetadataString(generation, 'projectId');
     const belongsToProject = !currentProject?.id || !projectId || projectId === currentProject.id;
     return belongsToProject && isRunningGeneration(generation);
   });
   const activeReferenceGeneration = generations.find((generation) => {
     const projectId =
-      typeof generation.metadata.projectId === 'string' ? generation.metadata.projectId : undefined;
+      generationMetadataString(generation, 'projectId');
     const belongsToProject = !currentProject?.id || !projectId || projectId === currentProject.id;
     return (
       belongsToProject &&
@@ -1722,17 +1706,11 @@ export function GeneratePanel({
       return undefined;
     }
     const taskId =
-      typeof generationToPoll.metadata.taskId === 'string'
-        ? generationToPoll.metadata.taskId
-        : undefined;
+      generationMetadataString(generationToPoll, 'taskId');
     const clientGenerationId =
-      typeof generationToPoll.metadata.clientGenerationId === 'string'
-        ? generationToPoll.metadata.clientGenerationId
-        : undefined;
+      generationMetadataString(generationToPoll, 'clientGenerationId');
     const serverJobId =
-      typeof generationToPoll.metadata.serverJobId === 'string'
-        ? generationToPoll.metadata.serverJobId
-        : undefined;
+      generationMetadataString(generationToPoll, 'serverJobId');
     const jobId = serverJobId ?? taskId ?? clientGenerationId ?? generationToPoll.id;
     if (cancelledGenerationIdsRef.current.has(jobId)) return undefined;
     let cancelled = false;
@@ -1888,24 +1866,17 @@ export function GeneratePanel({
   ]);
 
   useEffect(() => {
-    const completedReferenceGeneration = generations.find((generation) => {
+    const completedReferenceGeneration = latestPairedGenerations(generations, currentProject?.id).find((generation) => {
       if (
         generation.status !== 'succeeded' ||
         !generation.resultUrl ||
-        generation.metadata.referenceRole !== 'multi-view'
+        generation.metadata.referenceBindingApplied
       ) {
         return false;
       }
-      const projectId =
-        typeof generation.metadata.projectId === 'string'
-          ? generation.metadata.projectId
-          : undefined;
       const sourceReferenceId =
-        typeof generation.metadata.sourceReferenceId === 'string'
-          ? generation.metadata.sourceReferenceId
-          : undefined;
+        generationMetadataString(generation, 'sourceReferenceId');
       return (
-        (!currentProject?.id || !projectId || projectId === currentProject.id) &&
         Boolean(
           sourceReferenceId &&
           references.some(
@@ -1918,9 +1889,7 @@ export function GeneratePanel({
     });
     if (!completedReferenceGeneration) return;
     const sourceReferenceId =
-      typeof completedReferenceGeneration.metadata.sourceReferenceId === 'string'
-        ? completedReferenceGeneration.metadata.sourceReferenceId
-        : undefined;
+      generationMetadataString(completedReferenceGeneration, 'sourceReferenceId');
     const sourceReference = references.find(
       (reference) => reference.id === sourceReferenceId && !isMultiviewReference(reference),
     );
@@ -1937,6 +1906,7 @@ export function GeneratePanel({
         );
       })
       .catch((error) => {
+        if (isGenerationCancellation(error)) return;
         const message = getUserFacingGenerationError(error, '多视图结果写回失败，请重试。');
         setReferenceGroupGenerationState({
           groupId: referenceGroupId(sourceReference),
@@ -2170,15 +2140,11 @@ export function GeneratePanel({
 
   function getGenerationJobId(generation: Generation) {
     const taskId =
-      typeof generation.metadata.taskId === 'string' ? generation.metadata.taskId : undefined;
+      generationMetadataString(generation, 'taskId');
     const serverJobId =
-      typeof generation.metadata.serverJobId === 'string'
-        ? generation.metadata.serverJobId
-        : undefined;
+      generationMetadataString(generation, 'serverJobId');
     const clientGenerationId =
-      typeof generation.metadata.clientGenerationId === 'string'
-        ? generation.metadata.clientGenerationId
-        : undefined;
+      generationMetadataString(generation, 'clientGenerationId');
     return serverJobId ?? taskId ?? clientGenerationId ?? generation.id;
   }
 
@@ -2242,9 +2208,7 @@ export function GeneratePanel({
     const isTextureMap = isTextureMapGeneration(generationToCancel);
     const isLocalRepaint = isLocalRepaintGeneration(generationToCancel);
     const textureBatchId =
-      typeof generationToCancel.metadata.textureBatchId === 'string'
-        ? generationToCancel.metadata.textureBatchId
-        : undefined;
+      generationMetadataString(generationToCancel, 'textureBatchId');
     if (textureBatchId) cancelledTextureBatchIdsRef.current.add(textureBatchId);
     if (isTextureMap) {
       const pipelineController = texturePipelineAbortControllerRef.current;
@@ -2261,9 +2225,7 @@ export function GeneratePanel({
             if (isTextureMap && !isTextureMapGeneration(generation)) return false;
             if (isLocalRepaint && !isLocalRepaintGeneration(generation)) return false;
             const generationProjectId =
-              typeof generation.metadata.projectId === 'string'
-                ? generation.metadata.projectId
-                : undefined;
+              generationMetadataString(generation, 'projectId');
             const sameProject =
               !currentProjectId || !generationProjectId || generationProjectId === currentProjectId;
             const sameBatch =
@@ -2439,9 +2401,15 @@ export function GeneratePanel({
   async function getTextureMapMultiviewCaptures(
     views: CameraViewItem[],
     signal?: AbortSignal,
-    options: { cameraSnapshot?: SerializedCameraInput } = {},
+    options: { cameraSnapshot?: SerializedCameraInput; viewSnapshots?: Map<string, SerializedCameraInput> } = {},
   ) {
     if (!captureObjectId) throw new Error(t('importModelFirst'));
+    const viewSnapshots = options.viewSnapshots ?? new Map<string, SerializedCameraInput>();
+    for (const view of views) {
+      throwIfTexturePipelineCancelled(signal);
+      if (!viewSnapshots.has(view.id)) viewSnapshots.set(view.id, options.cameraSnapshot ??
+        await frameGenerationCapture(captureObjectId, 1, view.viewDirection, view.viewUp, signal, false));
+    }
     return withStableClayTargetPresentation(captureObjectId, async () => {
       const captures: Partial<Record<string, Capture>> = {};
       for (let index = 0; index < views.length; index += 1) {
@@ -2453,7 +2421,7 @@ export function GeneratePanel({
         try {
           const capture = await captureTextureMapCameraView(view, {
             setAsLastCapture: false,
-            cameraSnapshot: options.cameraSnapshot,
+            cameraSnapshot: viewSnapshots.get(view.id),
           });
           throwIfTexturePipelineCancelled(signal);
           captures[view.id] = capture;
@@ -2476,6 +2444,7 @@ export function GeneratePanel({
           cameraView: view.value ?? 'custom',
           label: view.label,
           capture: captures[view.id],
+          cameraSnapshot: viewSnapshots.get(view.id),
         }))
         .filter(
           (
@@ -2485,12 +2454,13 @@ export function GeneratePanel({
             cameraView: ObjectViewPreset | 'custom';
             label: string;
             capture: Capture;
+            cameraSnapshot: SerializedCameraInput | undefined;
           } => Boolean(item.capture),
         );
     });
   }
 
-  async function waitForLiclickGeneration(generation: Generation) {
+  async function waitForLiclickGeneration(generation: Generation, onMessage?: (label: string) => void) {
     if (generation.resultUrl) return generation;
     const client = createLiclickApiClient();
     const jobId = getGenerationJobId(generation);
@@ -2516,6 +2486,7 @@ export function GeneratePanel({
         await new Promise((resolve) => window.setTimeout(resolve, 3500));
         continue;
       }
+      if (result.message) onMessage?.(result.message);
       if (result.status === 'failed') {
         throw new Error(
           getUserFacingGenerationError(result.error, '纹理贴图生成失败，请稍后重试。'),
@@ -2530,6 +2501,7 @@ export function GeneratePanel({
             ...generation.metadata,
             taskId: result.taskId ?? generation.metadata.taskId,
             resultUrls: result.resultUrls,
+            extraParams: result.extraParams ?? generation.metadata.extraParams,
             completedAt: result.updatedAt ?? new Date().toISOString(),
           },
         };
@@ -2709,6 +2681,7 @@ export function GeneratePanel({
             framing: 'fit-object',
             colorMode: 'flat-target-coverage',
             fillRatio: 0.88,
+            cameraSnapshot: capturedView.cameraSnapshot,
             viewDirection: view.viewDirection,
             viewUp: view.viewUp,
           });
@@ -3152,15 +3125,18 @@ export function GeneratePanel({
       throwIfTexturePipelineCancelled(signal);
     }
     const pairCurrentEffects = new Map<string, string>();
+    const viewSnapshots = new Map<string, SerializedCameraInput>();
     if (pairContext && hasVisibleTextureLayerCandidate(objectId)) {
       // Freeze authored colour BEFORE white presentation replaces the resident
       // material. Clearing that flag later does not synchronously restore it.
       updateTexturePipelineProgress(20, '准备多视图快照 · 保存已有纹理');
       for (const view of requestedViews) {
         throwIfTexturePipelineCancelled(signal);
+        const snapshot = await frameGenerationCapture(objectId, 1, view.viewDirection, view.viewUp, signal, false);
+        viewSnapshots.set(view.id, snapshot);
         const effect = await captureCurrentColorPreview({
           objectId, resolution: resolutionToSize[resolution], framing: 'fit-object',
-          colorMode: 'flat-target-coverage', fillRatio: 0.88,
+          colorMode: 'flat-target-coverage', fillRatio: 0.88, cameraSnapshot: snapshot,
           viewDirection: view.viewDirection, viewUp: view.viewUp,
         });
         pairCurrentEffects.set(view.id, effect.colorUrl);
@@ -3168,7 +3144,7 @@ export function GeneratePanel({
     }
     updateTexturePipelineProgress(24, isMultiviewRequest ? '准备多视角快照' : '准备当前单视图');
     let capturedViews = await getTextureMapMultiviewCaptures(requestedViews, signal, {
-      cameraSnapshot: singleViewCameraSnapshot,
+      cameraSnapshot: singleViewCameraSnapshot, viewSnapshots,
     });
     throwIfTexturePipelineCancelled(signal);
     if (capturedViews.length === 0) {
@@ -4439,7 +4415,6 @@ export function GeneratePanel({
     generation: Generation,
   ) {
     if (!generation.resultUrl) throw new Error('多视图任务完成，但没有返回可用图片。');
-    const groupId = referenceGroupId(singleReference);
     const referenceId = createId('reference');
     const size = await getImageSize(generation.resultUrl);
     const persistedUrl = await persistGeneratedImage(
@@ -4454,21 +4429,18 @@ export function GeneratePanel({
       width: size.width,
       height: size.height,
       isPrimary: false,
-      referenceGroupId: groupId,
-      referenceRole: 'multi-view',
-      derivedFromReferenceId: singleReference.id,
       referenceSource: 'generated',
       generationId: generation.id,
     };
     const referenceStore = useReferenceStore.getState();
     const latestReferences = referenceStore.references;
-    const nextReferences = [
-      multiviewReference,
-      ...latestReferences.filter(
-        (reference) =>
-          !(isMultiviewReference(reference) && referenceGroupId(reference) === groupId),
-      ),
-    ];
+    const source = latestReferences.find(reference => reference.id === singleReference.id);
+    if (!source || useProjectStore.getState().currentProjectId !== currentProject?.id ||
+      !latestPairedGenerations(useGenerationStore.getState().generations, currentProject?.id)
+        .some(candidate => candidate.id === generation.id)) {
+      throw new DOMException('多视图结果已过期。', 'AbortError');
+    }
+    const nextReferences = replacePairedReference(latestReferences, source, multiviewReference);
     referenceStore.setReferences(nextReferences);
     // A single-view reference is only the input to this job. Once its paired
     // multi-view result exists, make that result the active material reference
@@ -4476,9 +4448,10 @@ export function GeneratePanel({
     // pipeline state, not a navigation request: single-view generation must
     // remain on single view after the background reference step completes.
     referenceStore.setSelectedReferences([multiviewReference.id]);
+    syncGeneration({ ...generation, metadata: { ...generation.metadata, referenceBindingApplied: true } });
     setProjectReferences(nextReferences);
     await saveCriticalProjectState({ references: nextReferences });
-    return multiviewReference;
+    return nextReferences[0]!;
   }
   persistPairedMultiviewReferenceRef.current = persistPairedMultiviewReference;
 
@@ -4493,7 +4466,7 @@ export function GeneratePanel({
       onProgress?.(8, '检查多视图参考');
       await requirePersonalLiclickAccount();
       onProgress?.(16, '提交多视图参考');
-      const submittedPrompt = buildMultiviewPrompt(liclickPrompt);
+      const submittedPrompt = await buildMultiviewPrompt(liclickPrompt);
       const generationId = createId('reference-multiview');
       pendingGeneration = {
         id: generationId,
@@ -4506,7 +4479,7 @@ export function GeneratePanel({
           workflow: 'liclick',
           clientGenerationId: generationId,
           projectId: currentProject?.id,
-          model: imageModel,
+          model: 'gpt-image-2.5-sunburst',
           resolution,
           referenceGroupId: groupId,
           sourceReferenceId: singleReference.id,
@@ -4530,13 +4503,11 @@ export function GeneratePanel({
         textureMode: 'realistic',
         visibleOnly: true,
         upscale: false,
-        model: imageModel,
-        aspectRatio: resolveRequestAspectRatio(
-          imageModel,
-          aspectRatio,
-          resolveRequestImageSize(imageSize, aspectRatio),
-        ),
-        imageSize: resolveRequestImageSize(imageSize, aspectRatio),
+        model: 'gpt-image-2.5-sunburst',
+        quality: 'low',
+        referencePipeline: 'six-view-delight-v1',
+        aspectRatio: '3:2',
+        imageSize: resolveRequestImageSize(imageSize, '3:2'),
         count: 1,
       });
       const alignedGeneration: Generation = {
@@ -4579,7 +4550,7 @@ export function GeneratePanel({
         throw new Error('用户已终止纹理贴图生成任务。');
       }
       syncGeneration(alignedGeneration);
-      const completedGeneration = await waitForLiclickGeneration(alignedGeneration);
+      const completedGeneration = await waitForLiclickGeneration(alignedGeneration, (label) => onProgress?.(60, label));
       onProgress?.(88, '保存多视图参考');
       pairedGenerationPersistenceRef.current.add(completedGeneration.id);
       syncGeneration(completedGeneration);
@@ -5803,7 +5774,7 @@ export function GeneratePanel({
               </section>
             )}
 
-            {generateNotice && !isVerboseProjectionWaitNotice(generateNotice.message) && (
+            {generateNotice && !isVerboseGenerationNotice(generateNotice.message) && (
               <div
                 role={generateNotice.tone === 'error' ? 'alert' : 'status'}
                 aria-live="polite"

@@ -40,6 +40,86 @@ const sceneStoreSource = await readFile(
   new URL('../src/stores/sceneStore.ts', import.meta.url),
   'utf8',
 );
+const uvBakeSource = await readFile(
+  new URL('../src/engine/bake/bakeProjectedLayerToTexture.ts', import.meta.url),
+  'utf8',
+);
+const visibilityReuseSource = await readFile(
+  new URL('../src/engine/bake/projectionVisibilityReuse.ts', import.meta.url),
+  'utf8',
+);
+
+const visibilityReuseJs = ts.transpileModule(visibilityReuseSource, {
+  compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
+}).outputText;
+const visibilityReuseExports = {};
+new Function('exports', visibilityReuseJs)(visibilityReuseExports);
+const { canReuseAuthoredProjectionVisibility } = visibilityReuseExports;
+const authoredVisibility = {
+  depthUrl: 'depth.png',
+  depthEncoding: 'linear-view',
+  objectMatrixWorld: new Array(16).fill(0),
+};
+assert.equal(canReuseAuthoredProjectionVisibility(authoredVisibility, false), true);
+assert.equal(canReuseAuthoredProjectionVisibility(authoredVisibility, true), false);
+assert.equal(
+  canReuseAuthoredProjectionVisibility({ ...authoredVisibility, normalUrl: 'normal.png' }, true),
+  true,
+);
+assert.equal(
+  canReuseAuthoredProjectionVisibility({ ...authoredVisibility, objectMatrixWorld: undefined }, false),
+  false,
+  'legacy rows without an authored object transform must regenerate visibility',
+);
+assert.equal(
+  canReuseAuthoredProjectionVisibility({ ...authoredVisibility, depthEncoding: 'legacy-rgba' }, false),
+  false,
+  'non-linear legacy depth must never enter the capture-space reuse path',
+);
+
+// GPU and CPU use capture * inverse(current) as their object-space delta.
+// Prove that applying the current object transform and then that delta lands on
+// the exact authored capture-space point for multiple non-trivial transforms.
+const captureMatrix = new THREE.Matrix4().compose(
+  new THREE.Vector3(4, -2, 7),
+  new THREE.Quaternion().setFromEuler(new THREE.Euler(0.3, -0.7, 0.2)),
+  new THREE.Vector3(1.4, 0.8, 1.1),
+);
+for (const currentMatrix of [
+  new THREE.Matrix4().makeTranslation(-6, 3, 2),
+  new THREE.Matrix4().compose(
+    new THREE.Vector3(2, 5, -3),
+    new THREE.Quaternion().setFromEuler(new THREE.Euler(-0.5, 0.25, 1.1)),
+    new THREE.Vector3(0.75, 1.25, 1.5),
+  ),
+]) {
+  const objectMatrixDelta = captureMatrix.clone().multiply(currentMatrix.clone().invert());
+  for (const localPoint of [
+    new THREE.Vector3(0, 0, 0),
+    new THREE.Vector3(2.5, -1.25, 0.75),
+    new THREE.Vector3(-4, 3, 9),
+  ]) {
+    const expected = localPoint.clone().applyMatrix4(captureMatrix);
+    const actual = localPoint.clone().applyMatrix4(currentMatrix).applyMatrix4(objectMatrixDelta);
+    assert.ok(actual.distanceTo(expected) <= 1e-9, 'capture-space depth transform must be invariant');
+  }
+}
+
+assert.match(
+  visibilityReuseSource,
+  /layer\.depthEncoding === 'linear-view' &&\s*layer\.objectMatrixWorld\?\.length === 16/,
+  'authored capture-space linear depth must survive later rigid model transforms',
+);
+assert.doesNotMatch(
+  uvBakeSource,
+  /matrixMatches\(layer\.objectMatrixWorld\)|currentObjectMatrixWorld\[index\]/,
+  'projection-to-UV must not regenerate every capture depth after a rigid model transform',
+);
+assert.match(
+  uvBakeSource,
+  /captureObjectMatrixWorld: layer\.objectMatrixWorld/,
+  'legacy or missing depth regeneration must still render in the authored capture matrix',
+);
 
 // Execute the production cold-warmup gate and promise registration.
 const sceneAst = ts.createSourceFile('SceneRoot.tsx', sceneRootSource, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
@@ -62,36 +142,28 @@ const uniformBudgetJs = ts.transpileModule(uniformBudgetSource, {
 const budgetExports = {};
 new Function('exports', uniformBudgetJs)(budgetExports);
 const { isProjectedUniformBudgetSafe } = budgetExports;
-// The GPU eraser refactor shares the direct-stack budget gate. Execute both
-// consumers so the renamed predicate cannot accidentally drop either limit.
-const budgetGateNames = ['directProjectedStackSafe', 'canUseDirectVisibleStackAfterArrayFailure', 'canUseExactProjectedEraserStack'];
-const budgetGateNodes = findNodes(node => ts.isVariableDeclaration(node) && budgetGateNames.includes(node.name.getText(sceneAst)));
-assert.equal(budgetGateNodes.length, 3);
-const evaluateStackBudget = new Function('samplers', 'uniforms', 'failed', 'armed', 'arrays', 'isProjectedUniformBudgetSafe', `
-  const directProjectedSamplerBudget = {withinBudget:samplers}, gl = {capabilities:{maxFragmentUniforms:uniforms}};
-  const previewProjectionInputs = Array(14), textureArrayCompositionFallbackRequired = failed;
-  const projectedEraserArmed = armed, useProjectedTextureArrays = arrays;
-  ${budgetGateNodes.map(node => `const ${node.getText(sceneAst)};`).join('\n')}
-  return [canUseDirectVisibleStackAfterArrayFailure, canUseExactProjectedEraserStack];
-`);
-for (const samplers of [false,true]) for (const uniforms of [256,1024]) for (const failed of [false,true])
-for (const armed of [false,true]) for (const arrays of [false,true]) {
-  const direct = samplers && isProjectedUniformBudgetSafe(14,uniforms);
-  assert.deepEqual(evaluateStackBudget(samplers,uniforms,failed,armed,arrays,isProjectedUniformBudgetSafe),
-    [failed && direct, armed && ((arrays && !failed) || direct)]);
-}
+assert.match(sceneRootSource, /const residentUvDisplayEnabled = true;/,
+  'every supported viewport must consume a verified UV display buffer');
+assert.match(sceneRootSource, /const useProjectedTextureArrays = false;/,
+  'authored projections must not enter a texture-array display material');
+assert.match(sceneRootSource, /const canUseDirectVisibleStackAfterArrayFailure = false;/,
+  'array failure must retain the verified UV front buffer instead of publishing a direct projection');
+assert.match(sceneRootSource, /const canUseExactProjectedEraserStack = false;/,
+  'the projected eraser must also publish through its derived UV path');
+assert.match(sceneRootSource, /const materialProjectionInputs = \[\] as typeof previewProjectionInputs;/,
+  'the material publisher must never receive authored projection inputs');
 assert.equal(isProjectedUniformBudgetSafe(34, 1024), false, 'reported 34-layer shader must not reach the driver');
 assert.equal(isProjectedUniformBudgetSafe(14, 1024), true);
 assert.equal(isProjectedUniformBudgetSafe(14, 256), false, 'limits follow the actual device');
 const evaluateWarm = new Function('stage', 'visible', 'selected', 'isProjectedUniformBudgetSafe', `
   const importedModel = { restoreStage: stage }, workspaceVisible = visible;
-  const residentUvDisplayEnabled = false;
+  const residentUvDisplayEnabled = true;
   const gl = { compileAsync() {}, capabilities: { maxFragmentUniforms: 1024 } }, projectedProgramWarmupInputs = [{}, {}];
   const projectedProgramWarmupSignature = 'test';
   return !(${gate.expression.getText(sceneAst)});
 `);
 const shouldWarm = (...args) => evaluateWarm(...args, isProjectedUniformBudgetSafe);
-assert.equal(shouldWarm('outline', true, true), true);
+assert.equal(shouldWarm('outline', true, true), false, 'UV-only display must not compile projected preview shaders');
 for (const stage of ['bounds', 'proxy', 'full', undefined]) {
   assert.equal(shouldWarm(stage, true, true), false, 'editing a resident stack must not start speculative compilation');
 }
@@ -297,8 +369,8 @@ assert.match(
 );
 assert.match(
   sceneRootSource,
-  /canUseDirectVisibleStackAfterArrayFailure[\s\S]*?textureArrayCompositionFallbackRequired && directProjectedStackSafe/,
-  'an array failure must use the complete direct stack whenever the GPU can carry it',
+  /const canUseDirectVisibleStackAfterArrayFailure = false;/,
+  'an obsolete projected-array failure must retain the last verified UV buffer',
 );
 assert.doesNotMatch(
   compositorSource,
@@ -337,8 +409,8 @@ assert.ok(
 );
 assert.match(
   viewportSource,
-  /perfSuppressProjectLayerSync = '1';[\s\S]*?setLayerVisibility\(targetIds, true\)[\s\S]*?waitForProjectedResidentReady/,
-  'S7 must acquire its read-only lock before the resident projected-stack preflight mutates layers',
+  /perfSuppressProjectLayerSync = '1';[\s\S]*?setLayerVisibility\(targetIds, true\)[\s\S]*?waitForProjectedUvReady/,
+  'S7 must acquire its read-only lock before the exact UV preflight mutates layers',
 );
 assert.doesNotMatch(
   viewportSource,
@@ -347,8 +419,13 @@ assert.doesNotMatch(
 );
 assert.match(
   viewportSource,
-  /performanceScenarioOccludingUvIds\(originalLayers, selectedObjectId\), false,[\s\S]*?await waitForProjectedResidentReady\(\);[\s\S]*?viewportLayerStressRunningRef\.current = true;[\s\S]*?perfViewportStressMeasuring = '1'/,
-  'S7 must uncover projected layers and complete prewarm before reserving the interaction budget',
+  /performanceScenarioOccludingUvIds\(originalLayers, selectedObjectId\), false,[\s\S]*?await waitForProjectedUvReady\(\);[\s\S]*?viewportLayerStressRunningRef\.current = true;[\s\S]*?perfViewportStressMeasuring = '1'/,
+  'S7 must uncover projection inputs and complete exact UV prewarm before reserving the interaction budget',
+);
+assert.match(
+  viewportSource,
+  /const uvUpdatePending =[\s\S]*?readResidentUvProjectionState\(\)\.status === 'computing';[\s\S]*?!uvUpdatePending/,
+  'S7 must permit the previous verified UV only while a latest-wins UV update is pending',
 );
 assert.match(
   editorSource,

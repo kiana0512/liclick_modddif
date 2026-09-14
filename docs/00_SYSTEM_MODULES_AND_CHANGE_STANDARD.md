@@ -1,16 +1,54 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
-> 文档版本：`2.20.83`
+2026-09-14 UI-05/M04：六视图参考生成按钮将第一步/第二步的服务端阶段标签统一显示为“生成多视图中”，隐藏 Sunburst、质量与去光照实现信息，保留进度百分比和取消能力。只修改按钮文案映射；提示词、两阶段流程、模型参数、错误提示和持久化不变，无算法或 Schema 修订，无数据迁移。回滚 compactTextureProgressButtonLabel 的阶段映射即可。
+
+2026-09-14 UI-05 → M04（协作 M08）：`ALG-GEN-001/002` 提示词修订 v1.3.0。GPT 单视图、多视图贴图与 GPT 局部重绘共用用户确认的弱光影模板，仅待补全区域抑制强明暗、高光和反射，保留真实纹理及非常轻微的接触明暗，已贴纹理/几何/背景/透明区不变；补充要求仍追加。服务端识别新旧模板，不为新版附加整图光影约束。六视图参考生成/第二步去光、原 ModelView 重绘、模型参数、GPU/CPU/Worker/shader、UV/export 与持久化协议不变；只影响新构造请求，无 Schema 或数据迁移。回滚恢复模板与识别分支，保留历史。未运行付费生图，不承诺模型必然达到目标效果；详见 [弱光影提示词变更卡](changes/CHG-20260914-GPT-TEXTURE-WEAK-LIGHT-PROMPT.md)。
+
+> 文档版本：`2.20.99`
 >
-> 生效日期：`2026-09-12`
+> 生效日期：`2026-09-14`
 >
-> 代码盘点基线：`9e69980 + 单视图成功结果自动投影恢复`
+> 代码盘点基线：`6f26336 + 资产盘点与手动隔离清理 Phase 1（本地未部署）`
 >
 > 基线仓库：`E:\Liclick 3D Texture Modernization`
 >
 > 审计口径：`0a2519d + 607e82f + 2568e40`，不包含错误文档提交 `2bde8c6/e03bab2/d1c5f78`
 
+2026-09-14 master/release 集成（M15，`CLOUD-DEPLOYMENT` v1.0.0）：master 流水线 #631284 对提交 `ba5954d8` 的 verify、build、containerize 全部通过后，将该提交正常合入 release；保留 release `ad569f3` 的生产 K8s、Nginx、Ceph 完整性、对象存储、数据库、IDaaS 和部署资源配置。投影仍只作为生成 UV 的输入，视口仅发布已验证 UV；完整分辨率、Top-K、QA、Project Command、Revision CAS、ownership、verified assets、持久化与导出不放宽。release 合并提交以 `[deploy]` 触发同一不可变 SHA 镜像和串行部署；失败时回滚至 `ad569f3` 对应镜像，保留数据库、工程、对象资产和 PVC，无 Schema 或资产迁移。
+
 2026-09-12 master/release 集成（M15，`CLOUD-DEPLOYMENT` v1.0.0）：在 master 流水线 #630472 对提交 `6f263364` 的 8 项 verify/build/container 检查全部通过后，将 `origin/master` 合入 release；保留 release `b8b3644` 的生产 K8s、Nginx、Ceph 完整性、对象存储、数据库和部署配置。业务源码与算法版本采用 master 变更卡，Project Command、Revision CAS、ownership、verified assets、完整分辨率和 QA 不放宽，无新增 Schema 或资产迁移。release 提交以 `[deploy]` 触发 server/web 同一不可变 SHA 镜像和 K8s 串行发布；失败时 server/web/db-push 一同回滚至 `b8b3644` 对应镜像，保留数据库、工程、对象资产和 PVC。线上结果以 release 流水线及 `/api/release`、health、ready 核验为准。
+
+2026-09-14 M07，协作 UI-06/M03/M04/M06/M08/M09/M11：`UV-DISPLAY-BUFFER` v1.4.0 / `PERF-UV-SOURCE-PREPARE-001` v1.12.0。投影数据只作为生成 UV 的输入，PBR/平面视口不再发布 direct 或 texture-array 投影材质；普通显隐、投影橡皮与采样器失败均保留上一张已验证 UV，最新完整分辨率 UV 完成上传后再原子替换。Detached WebGL 的 128K 精确上传保持原条带大小，改为最多 8 条或累计 4ms 后让出任务，仍逐条检查取消/交互并恢复 GL 状态。生成链路继续在 `flat-target-coverage` 截图前等待 Resident UV 屏障，因此下一轮单视图/多视图生图输入包含模型上此前全部已发布效果。真实 4K 工程 S7 共 800 次模式/图层操作：P95 16.8ms、最大 33.4ms、状态/覆盖错误 0、材质重建 0；热缓存 14 层开关 P95/最大 16.8/16.9ms。隔离 WebGL 512/13、4K/6 与 retained-raster 对照 RGBA/coverage 差异 0；首次 4K 派生仍观察到 116.8ms 峰值，不宣称冷启动已消除。完整分辨率、Top-K、QA、接缝/gutter、CPU/Worker/shader 像素公式、Project Command/CAS/ownership、持久化、资产和导出不变，无迁移。详见 [UV-only 显示与 detached 上传变更卡](changes/CHG-20260914-UV-ONLY-DISPLAY-AND-DETACHED-UPLOAD.md)。
+
+2026-09-14 M04/UI-05：`REFERENCE-DELIGHT-PROMPT` v1.2.0 继续收紧第二步保色约束，明确正常中间调保色 > 去高光反射 > 减弱阴影；先消亮带，暗部只做必要局部补偿，不整片填亮，不全局压暗。无法同时保色和彻底去阴影时允许微弱残留明暗，因此不承诺严格 Albedo。只调整提示词，阶段/质量/参考输入/持久化/Schema 不变；新进入第二步生效，已有第二步快照不重写，无迁移，回滚恢复原提示词。尚未运行真实生图验收。
+
+2026-09-14 M04/UI-05：`REFERENCE-DELIGHT-PROMPT` v1.1.0 将六视图第二步去光提示词替换为用户确认的基础色优先版本：以正常中间调锁定色相、饱和度和明度，仅局部去除光照，不整体调色，不确定的色差优先保留。第一步提示词、Sunburst low → medium、两阶段调度及仅返回最终图不变。新进入第二步的任务使用新模板，已持久化的第二步提示词和已生成资产不改写，无 Schema/工程迁移；回滚仅恢复 referenceDelightPrompt 文本。提示词不保证生成模型严格锁色，未额外运行付费生图。
+
+2026-09-14 UI-06/M06/M07：`UV-DISPLAY-DERIVED-CACHE` v1.3.1 修复发布前 4K 浏览器检查发现的合成投影图层显隐停滞：UV atlas 的光照 uniform 更新不再被视为逐层显隐已应用；关闭最后一个投影层时也根据旧可见状态触发精确预览更新。独立投影 uniform 快路径和普通 UV 的灯光更新保留，CPU/Worker/shader 像素公式、完整分辨率、QA、持久化与导出不变，无迁移。恢复这两处判定可回滚，但会重新引入眼睛状态与画面不同步；验证见 [显隐更新补充记录](changes/CHG-20260914-UV-VISIBILITY-HOTPATH-AND-CAPTURE-DEPTH-REUSE.md)。
+
+2026-09-14 M07，协作 UI-06/M06/M08/M09：`PERF-UV-SOURCE-PREPARE-001` v1.11.0 / `UV-DISPLAY-DERIVED-CACHE` v1.3.0。投影转 UV 对已有 `linear-view` 深度且带 16 项捕获对象矩阵的层复用捕获空间可见性；GPU/CPU 原有 `capture * inverse(current)` 变换保证对象后续平移、旋转或缩放后采样点仍严格回到原捕获空间，缺矩阵、旧编码、缺 depth/所需 normal 继续保守重建。图层眼睛按钮删除全可见性 React 重复派生和普通 active-layer 模型订阅，常驻命中只更新 uniform；冷缓存、材质未接收、内容/结构/局部重绘路由变化仍强制完整重建。两组非平凡矩阵与三组点的捕获空间误差 `<=1e-9`，570 个常驻转换、60 次恢复及冷回退通过。完整分辨率、QA、GPU/CPU/Worker/shader 像素公式、Schema、Command/CAS/ownership、持久化与导出不变，无迁移。当前本地工程无真实 projected 层，S4/S5 实机门禁仍需含真实投影栈工程。详见 [图层显隐与深度复用变更卡](changes/CHG-20260914-UV-VISIBILITY-HOTPATH-AND-CAPTURE-DEPTH-REUSE.md)。
+
+2026-09-14 UI-06 → M03（协作 M04）：`VIEWPORT-CLIPPING` v1.0.0。生成取景动画不再将捕获专用的紧 near/far 写回自由预览；预览保留已有较宽范围，near 不大于 0.01、far 不小于 100。用户滚轮/旋转/平移时修复旧捕获视角的裁剪范围，并按目标距离向内扩展近面、向外扩展远面；程序化恢复在导航前仍精确。独立生成相机及深度快照、CPU/Worker/shader/UV/export 公式不变，无资产或 Schema 迁移。修复过大的近面导致的切片，不提供实体碰撞或相机进入模型后的完整显示保证。详见 [预览裁剪变更卡](changes/CHG-20260914-VIEWPORT-CLIPPING.md)。
+
+2026-09-14 UI-06 → M05：暂时移除图层列表的 Blend Mode 按钮、提示、点击回调和专用图标，避免显示当前无实际作用的操作入口。不透明度、显隐、蒙版及图层菜单保留；既有 blendMode 数据、合成算法、持久化和导出不变，无算法或 Schema 修订，无数据迁移。回滚 LayersPanel 的按钮与回调即可恢复原入口。
+
+2026-09-14 UI-05 → M04/M08：`REFERENCE-GROUP-BINDING` v1.1.0。新生成多视图成功后替换来源单视图的旧配对并持久化新选择；恢复只检查同来源最新发起的任务，避免旧图被移除后旧历史再次写回覆盖新图。提交时间优先，完成/轮询顺序不作为新旧依据；新任务失败时保留现有绑定。写回前重查工程、来源与任务新旧关系；Generation.metadata 增加可选 referenceBindingApplied 标志，已写回结果删除后不自动复活。来源分组、参考资产与任务历史保留既有格式，Project Command/CAS/ownership/verified assets 不变，无批量迁移；详见 [最新多视图绑定变更卡](changes/CHG-20260914-REFERENCE-BINDING.md)。
+
+2026-09-14 M08，协作 M03/M06：`ALG-ERASE-001` 调度修订 v1.5.2。普通投影橡皮后台预热不得抢占局部重绘选区 owner、选区绘制/应用或生图准备；直接检查运行时 ref 覆盖 store 尚未更新的窗口，并取消过期 effect 的异步预览发布。正常预热及显式橡皮准备保留，不新增双份 GPU 缓存；绘制/捕获像素、CPU/Worker/shader、完整分辨率、Schema、Command/CAS/ownership、持久化与导出不变，无迁移。已释放的旧会话选区需重画，不能伪造恢复。生产回调专项、类型与 lint 通过；未整包构建、推送或部署，发布前须最终集成验证。详见 [蒙版预热所有权变更卡](changes/CHG-20260914-INPAINT-PREWARM-OWNERSHIP.md)。
+
+2026-09-14 UI-16 → M14，协作 M01/M02/M12/M13/M15：ASSET-LIFECYCLE-GC v0.3.3 增加 Workspace 隔离区主动永久清空。UI 必须输入“永久删除”完成第二次确认；服务端以用户级单飞幂等 purge job 先原子 rename 整个 `storage-quarantine` 到独立 `storage-purge/<jobId>`，立即从可恢复业务路径摘除，再用异步递归删除释放磁盘，不在 HTTP 请求或 React 主线程中遍历百万文件；服务重启继续未完成 purge。Cleanup job 账本记录被 purge job 认领的批次，扫描不再把已完成物理删除的字节计入 trash。真实 4517 验证中，高密度目录快速隔离 156,104 个文件 / 137,976,470,315 B 耗时 8.55s，随后扫描耗时 1.3s；最终物理释放耗时仍由文件系统决定。Cloud 只暴露不可用原因，未伪装执行；正式对象存储永久删除仍须独立生命周期 Worker、分页锁和批量 DeleteObjects。存储管理保持独立懒加载，合并远程 reference-delight/tight-framing 后总 JS 实测增量 20,125 B，新增 18,000 B 独立路由门禁并把总预算精确增加 21,000 B，主壳/Editor/Bake/共享 3D 热路径预算不变。Schema 仅新增 Purge Job/Quarantine Status 契约，不更改 Project/Revision/Asset Transfer；回滚时停止 purge，保留 `storage-purge` 中未完成目录并移除新增路由/UI，绝不能把其误判为空目录直接删除。
+
+2026-09-14 UI-16 → M14，协作 M01/M02/M12/M13/M15：`STORAGE-INVENTORY-001/3` / ASSET-LIFECYCLE-GC v0.3.2 修复百万文件清理的任务风暴与随机元数据 I/O。每用户 cleanup start 采用单飞锁，重复确认和刷新复用同一活动 job；4517 启动时把遗留 running/queued job 明确标记为中断并触发剩余资产重扫，不伪装继续运行。扫描把最近 60 分钟修改的未引用资产归入保护集合，并把 size/mtime 写入候选证明；隔离区容量改由 cleanup job 账本汇总，不再为每次扫描重复 stat 近百万个已隔离文件。Workspace 高密度目录在重新读取引用、路径/mtime/size/符号链接门禁通过后，为少量保护文件创建同卷硬链接快照，再以两次目录 rename 原子交换，最后移除隔离侧保护链接；扫描后新增的引用单独进入保护快照，不再导致整组退化，Windows `EPERM`/`EBUSY` 短暂占用进行有限重试，门禁不满足才回退有界逐文件移动。资产写入与目录交换共享 project/category mutation lock。Cloud 继续使用 PostgreSQL 集合式逻辑隔离，生产物理删除仍要求分页、`SKIP LOCKED`、对象存储批量删除和独立 Worker 门禁，本次未连接生产库或执行 DeleteObject。Schema/Asset Transfer/Revision CAS/ownership/verified assets 不变；旧 /2 快照自动重扫，无数据迁移。回滚 /2 会失去近期保护和快速路径，应先停止 cleanup，再删除孤立 `storage/cleanup-staging`（仅限核对为空或硬链接 staging）并重扫。
+
+2026-09-14 UI-16 → M14，协作 M01/M02/M12/M13/M15：`STORAGE-INVENTORY-001/2` 与 ASSET-LIFECYCLE-GC v0.3.1 Phase 1 已在本地实现但未部署。首页账号菜单按需加载“存储与清理”，统一 `GET /api/storage`、后台 `POST /api/storage/scans`、幂等 cleanup job 与查询协议；未知快照显示扫描中，不伪报 0 B。4517 Workspace 适配器以有界并发流式盘点元数据/资产并报告进度，当前工程、历史/Command 回执与 recoveries 受保护；扫描原子保存 scanId 候选 NDJSON，清理不再重复遍历百万文件，而是刷新引用后逐项核对路径、引用、文件类型和长度，扫描后新增文件不处理、恢复引用或发生变化的候选跳过，其余候选并发原子移入用户隔离区。Cloud 适配器从 PostgreSQL verified transfers 与 current/history/trash Revision 重建引用图，在 `004_asset_storage_v2_shadow.sql` 影子表中保存快照、候选、幂等任务和逻辑隔离，不更改 Asset Transfer v1、Revision CAS、ownership 或 verified asset 下载。当前未执行数据库迁移、未连接正式站、未物理删除对象，也未启用内容去重、配额或图片重编码；这些仍受下一阶段兼容门禁约束。迁移仅使旧本地快照缺少候选清单而要求重扫一次；回滚到 /1 时删除 `storage/inventory-candidates`，移除 UI/路由/服务并保留或删除空影子表即可，已移入 Workspace 隔离区的文件按 manifest 原路径恢复。Node/PGlite 双端契约、漂移保护、类型、lint 与 production build 通过。
+
+2026-09-14 UI-16 → M14，协作 M01/M02/M10/M12/M13/M15：先行设计把资产生命周期扩展为 4517 Workspace 文件与 Cloud PostgreSQL/对象存储的统一端口、双适配器和首页“存储与清理”入口，候选 ASSET-CONTENT-DEDUP、ASSET-LIFECYCLE-GC、ASSET-QUOTA-RESERVATION、ASSET-ROLE-COMPRESSION 升级为 v0.2.0。账号菜单只显示已用/可清理摘要，管理弹窗规划后台扫描、手动隔离清理、恢复和独立图片优化任务；无完整快照时不得显示 0 B 或允许清理。图片 canonical 不按 Accept 静默转换、不原地覆盖；PNG 仅在 Sharp 与真实浏览器 RGBA/ICC/方向兼容门禁通过后无损切换，JPEG 原件不二次有损，Mask/Depth/Normal/PBR 只允许专用无损验证，WebP 先限于显式 UI 预览变体，AVIF 暂不进入生产资产协议。4517 仅为当前浏览器一体服务的开发验收适配，不恢复 4618/安装器/本地凭据或端点切换。详细阶段与回滚门禁见 [资产生命周期设计卡](changes/CHG-20260914-ASSET-LIFECYCLE-COMPRESSION-DESIGN.md)。
+
+2026-09-14 UI-05（M04）：生成区独立状态提示框隐藏“第一步/第二步”的六视图与去光阶段文案，继续显示实际错误与异常提示。按钮进度、两轮模型/质量/提示词、服务端轮询与取消恢复不变；仅展示修订，无算法或 Schema 变更，无数据迁移。回滚 GeneratePanel 的提示过滤即可恢复原展示。
+
+2026-09-14 M04/UI-05：`MULTIVIEW-REFERENCE-PIPELINE` v1.0.0 / `MULTIVIEW-REFERENCE-PROMPT` v2.0.0 按用户实测流程，将单视图派生六视图改为 Sunburst low 生六视图 → Sunburst medium 对整张六视图去光照。两段提示词采用用户原文，第二轮仅引用第一轮结果并沿用尺寸档位；前端统一 3:2 布局，只发布第二轮成功结果。两轮共用服务端任务身份、个人莉刻账号、取消与后台恢复；生成日志增加可选 referenceDelight 阶段记录，第二次付费提交前先持久化意图，响应不确定时不自动重提。历史无标记任务维持单轮，已存在多视图不自动重生成。Project Schema、Command、Revision CAS、ownership、verified assets、投影/UV/GPU/CPU/Worker/shader 与导出不变，无工程迁移。发布前需排空或终止双阶段活动任务才可回滚旧服务，避免旧代码把第一轮结果当作完成。参数与控制流已用隔离夹具验证，未额外运行付费生图，不承诺实际耗时或严格 Albedo。详见 [两阶段参考图变更卡](changes/CHG-20260914-REFERENCE-DELIGHT-PIPELINE.md)。
+
+2026-09-14 主模块 M03，协作 M04/M08/M06：`ALG-CAP-007` v1.1.0。单视图、局部重绘及多视图按实际提交顶点适配相机，目标限制尺寸 92%，保留 4% 边距；256px 轮廓安全检查不替代正式分辨率。各角度独立冻结相机，已有纹理、白模、蒙版、深度和后续投影共用该角度相机，明确快照不再被二次取景覆盖。无有效几何、变形不支持、超出扫描上限或轮廓校验失败时保留原包围盒取景；纵深限制时允许占比低于 92%。共用目标网格筛选，取景代码并入编辑器模块以减少重复模块依赖开销，包体预算不变。GPU/CPU/Worker/shader 投影公式、UV/export、分辨率、QA、Schema、Command/CAS/ownership/资产协议不变，无数据迁移。详见 [紧凑取景变更卡](changes/CHG-20260914-TIGHT-CAPTURE-FRAMING.md)。
 
 2026-09-12 UI-05 → M04：模型入口收起时保留 `GPT-Image 2.5` 前缀，与弹窗共用完整标签，窄栏只省略尾部。仅展示文案变更，算法、请求值、质量、默认设置和 Schema 不变，无迁移；回滚标签即可恢复简称。见 [生成区变更卡](changes/CHG-20260912-GENERATION-ACTION-FAST.md)。
 
@@ -520,6 +558,7 @@ LI3D Cloud 控制面（无状态 Node.js App）
 | `UI-13` | UV/拓扑页 | 真实 Asset V4 任务、QA 状态、已验证产物下载 | Job + artifact + Pipeline Revision |
 | `UI-14` | Bake 页 | 素材、对齐、Substance Bake、检查、PBR、发布 | Bake job + channel manifest |
 | `UI-15` | 性能实验室云端记录 | `perfLab=1` 下复用人工录制按钮，显示客户端采集/上传状态；维护员按飞书身份查看记录 | PERF-LAB-REPORT v2 + browser chunks |
+| `UI-16` | 首页存储与清理 | 用户菜单占用摘要、管理弹窗、后台扫描、手动隔离/恢复、图片优化；调用 M14，不在 React 扫描或删除 | Storage Overview + Scan/Cleanup/Compression Job |
 
 `UI-05` 生成面板与 `UI-10` 底部工具条必须共用局部生图运行态：从同步提交锁建立开始，到 Generation 行创建、远端执行与结果融合结束，两个入口都显示运行中。禁止仅以 Generation 行是否存在判定面板按钮状态，因为蒙版/视角捕获发生在该行创建之前。
 
@@ -860,6 +899,10 @@ Bake 设置包含 resolution、frontal/rear distance、distance/cage、cage infl
 
 ## 11. 输入、捕获、生成与输出算法
 
+`MULTIVIEW-REFERENCE-PROMPT` v1.1.0 的完整 UTF-8 模板放在 `services/multiviewReferencePrompt.txt`，Vite 输出带内容哈希的同源静态资源，按需共享加载并缓存成功文本，10 秒超时；HTTP 失败或空文本阻断本次提交并允许重试，不降级为旧模板。`buildMultiviewPrompt` 位于 services，面板等待完整模板后创建 Generation。保留现有 JavaScript 包体上限，不修改模板原文。加载、并发复用、补充要求、失败重试及与用户确认文本逐字一致性已独立检查；部署核验包含文本资源与 HTTP SHA256。
+
+2026-09-14 UI-05 → M04：`MULTIVIEW-REFERENCE-PROMPT` v1.1.0（Six-view material reference prompt / 六视图材质参考提示词，production，实施 Codex，用户确认模板）以 Base Color / Albedo 无光照要求替代旧棚拍模板。输入为单张参考图与可选补充要求，输出仍为一张横向 2×3 拼图（正面、左前45°、顶部 / 左侧、右侧、底部）。手动及自动补全共用 `buildMultiviewPrompt`，要求去除方向明暗、高光、反射、投影、接触阴影和 AO，保留固有色、掉漆、锈迹、污渍及纹理，统一六面和内腔的材质亮度。仅替换既有文本，无新增像素、矩阵、单位、颜色空间转换或阈值；CPU/GPU/Worker/shader、投影/UV/export 不变。最终文本仍保存到 Generation.prompt；Schema、Project Command 幂等性、Revision CAS、ownership 与 verified assets 不变。旧配对继续复用，须新生成才使用新模板，无数据迁移；回滚仅还原模板。发布验证使用 M04 回归、Web/Server 回归和 verify:prepush；这些检查不证明实际模型的去光效果。
+
 | ALG ID | 名称 | 当前规则 |
 | --- | --- | --- |
 | `ALG-IN-001` 格式路由导入 | GLB/GLTF 正式，FBX/OBJ 兼容；按扩展名/loader 解析为统一 LoadedModel |
@@ -874,8 +917,8 @@ Bake 设置包含 resolution、frontal/rear distance、distance/cage、cage infl
 | `ALG-CAP-005` Normal 捕获 | 默认 view normal，编码 `n×0.5+0.5` |
 | `ALG-CAP-006` 捕获状态隔离 v1.0.0 | 首次及逐 tile/pass 的 await 前归还共享 renderer/背景；每个同步 draw 重绑捕获 target/clear，保留像素与分辨率 |
 | `CAPTURE-MATERIAL-ISOLATION` v1.0.0 | flat 材质/uniforms 仅在每个同步 tile draw 内借用，逐 tile 恢复；材质身份变化拒绝混合截图，已有纹理在 clay 展示前冻结 |
-| `ALG-GEN-001` 单视图生成 | `1.2.0`；当前相机 Capture + 材质参考 → Generation；GPT2 初始白模与已有贴图补全共用图一几何锁定/图二材质参考模板；结果先生成原捕获尺寸的边缘去污染投影源，再与独立 capture mask/depth 一起创建普通质量合成 projected layer |
-| `ALG-GEN-002` 多视图批次 | `1.2.0`；N 个捕获共享 batch；GPT2 与单视图共用同一材质补全模板；完成层串行 commit，整批结束一次发布新投影栈 |
+| `ALG-GEN-001` 单视图生成 | `1.3.0`；当前相机 Capture + 材质参考 → Generation；GPT 初始白模与已有贴图补全共用图一几何锁定/图二材质参考的局部弱光影模板，GPT 局部重绘复用；结果按既有 Alpha 策略与独立 capture mask/depth 创建投影图层 |
+| `ALG-GEN-002` 多视图批次 | `1.3.0`；N 个捕获共享 batch；GPT 与单视图共用局部弱光影材质补全模板；完成层串行 commit，整批结束一次发布新投影栈 |
 | `ALG-GEN-003` 任务身份归一 | clientGenerationId/serverJobId/taskId 合并，避免恢复时重复 running 行 |
 | `ALG-GEN-004` ModelView 远端单视图 | `1.1.0`；当前视角白模 + 多视图材质参考 + 可选提示词 → `modelview-single-view` → Generation；结果使用 `ALG-PROJ-005` v3 捕获适配并进入统一质量合成 |
 | `ALG-GEN-005` 提示词智能润色 | `1.10.0`；UI-05 经同源 `/api/liclick/prompt-polish` 分流。普通单/多视图保持莉刻 `data-analysis` A2A；局部重绘空输入由 `qwen3-vl-plus` 在一次请求中输出诊断和英文正文，诊断与正文分别校验；显式输入跳过诊断，保持统一 Qwen → Klein 转换模板。服务端用未外扩原始 mask 定位，并从干净 Image 1 自动裁出带上下文的第四图供 Qwen 看清选中部件；完整参考图仍只提供有证据的结构/材质，第四图不改变编辑范围或 ModelView 输入。模板先用 Image 2、第四图和 mask 外邻域共同确定真实结构与材质；仅当三者证明选区为未完成的白灰占位时，要求 Klein 用明确目标材质完整替换 clay/primer/flat placeholder/untextured surface，真实浅色材质不受此规则影响。模板以 100–180 词、2–3 段英文为生成目标；段数、词数、语言和 Markdown 偏差只记脱敏告警，不阻断也不触发格式修正。若首段缺少明确 mask 范围，服务端确定性追加固定保护句。仅最终正文写入 Generation，诊断不持久化、不回填文本框；显式输入与空输入均一次 Qwen，保持 65 秒 deadline。模板策略进入所有局部重绘指纹，升级后首次重新解析、后续继续复用 |
@@ -1079,7 +1122,9 @@ M15 / CLOUD-DEPLOYMENT v1.0.0（2026-09-03）：正常合并 release 部署历�
 
 | 版本 | 日期 | 基线 | 变更 |
 | --- | --- | --- | --- |
+| `2.20.99` | 2026-09-14 | `ad569f3 + ba5954d8` | M15 release 集成：master 流水线 #631284 的 verify/build/containerize 全部通过后正常合入 release，保留生产部署、对象存储、数据库、IDaaS 和资源配置；以 `[deploy]` 触发不可变 SHA 发布。算法、完整分辨率、QA、Schema、CAS、ownership、verified assets 与导出不放宽，无迁移；失败回滚至 `ad569f3`。 |
 | `2.20.83` | 2026-09-12 | `b8b3644 + 6f263364` | M15 release 集成：master 流水线 #630472 全绿后合入 release，保留既有生产 K8s/Nginx/Ceph/对象存储/数据库部署链；以 `[deploy]` 发布 server/web 同一不可变 SHA。算法语义、完整分辨率、QA、Schema、CAS、ownership 与 verified assets 不变，无迁移；失败时整组回滚至 `b8b3644`，保留数据库、工程资产和 PVC。 |
+| `2.20.83` | 2026-09-14 | `6f26336 + 本次六视图模板更新` | M04/UI-05、`MULTIVIEW-REFERENCE-PROMPT` v1.1.0：使用用户确认的 Base Color / Albedo 模板去除参考光影，保留材质纹理、六视图布局、补充要求和旧结果复用。无数据迁移；实际生图效果另行验收。 |
 | `2.20.81` | 2026-09-12 | `c1b948f + 本地待提交` | `ALG-ERASE-001` v1.5.1 / `UV-DISPLAY-BUFFER` v1.3.1：当前 projected 层常驻预热中性 GPU mask 与 exact stack；异步准备期间的首笔屏幕段在接管前完整补放，活动手势无缝继续，已完成手势不回弹。图层/模型/分辨率变化释放重建；Schema/资产不变，无迁移。同步验证 #630458 对应的 projection-performance 共享预算门禁。见 CHG-20260912-ERASER-RESIDENT-PREWARM。 |
 | `2.20.80` | 2026-09-12 | `251700e + 0c0ff44` | `GPT-MULTIVIEW-PAIR-SEQUENCE` v1.4.0：固定 2+4 分组并发并整合生成区布局；同时保留 `ALG-ERASE-001` v1.5.0 的全分辨率 GPU 跟手蒙版。投影/UV/export、分辨率、质量与资产协议不变，无迁移。见 CHG-20260912-GENERATION-ACTION-FAST。 |
 | `2.20.79` | 2026-09-12 | `ec629a7 + 本地待提交` | UI-06/UI-10 → M08，协作 M06/M07，`ALG-ERASE-001` v1.5.0 / `UV-DISPLAY-BUFFER` v1.3.0：projected 橡皮以项目完整分辨率 GPU keep-mask 增量盖章并接入安全 exact stack，交互期不再执行 Resident 全图重合成/readback/Worker/整图上传；修复 V 轴镜像。512 仅为不可见持久化草稿，GPU 失败回退完整分辨率 Canvas。Schema/资产不变，无迁移。见 CHG-20260912-ERASER-GPU-MASK。 |
