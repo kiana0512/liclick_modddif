@@ -5,6 +5,11 @@ import {
   type AssetUploadIntent,
   type ProjectCommand,
   type ProjectRevision,
+  type StartStorageScanResponse,
+  type StorageCleanupJob,
+  type StorageOverview,
+  type StoragePurgeJob,
+  type StorageQuarantineStatus,
 } from '@liclick/contracts';
 import type { Project } from '@/types/project';
 import { getProjectApiBase } from '@/platform/projectApiBase';
@@ -186,6 +191,64 @@ export async function getWorkspaceHealth() {
     {
       timeoutMs: 900,
     },
+  );
+}
+
+export function getStorageOverview() {
+  return requestJson<{ overview: StorageOverview }>('/api/storage', {
+    cache: 'no-store',
+    timeoutMs: 10_000,
+  });
+}
+
+export function startStorageScan() {
+  return requestJson<StartStorageScanResponse>('/api/storage/scans', {
+    method: 'POST',
+    timeoutMs: 10_000,
+  });
+}
+
+export function startStorageCleanup(input: { scanId: string; idempotencyKey: string }) {
+  return requestJson<{ job: StorageCleanupJob }>('/api/storage/cleanup', {
+    method: 'POST',
+    body: JSON.stringify(input),
+    timeoutMs: 30_000,
+  });
+}
+
+export function getStorageCleanupJob(jobId: string) {
+  return requestJson<{ job: StorageCleanupJob }>(
+    `/api/storage/cleanup/${encodeURIComponent(jobId)}`,
+    { cache: 'no-store', timeoutMs: 10_000 },
+  );
+}
+
+export function getActiveStorageCleanupJob() {
+  return requestJson<{ job?: StorageCleanupJob }>('/api/storage/cleanup/active', {
+    cache: 'no-store',
+    timeoutMs: 10_000,
+  });
+}
+
+export function getStorageQuarantineStatus() {
+  return requestJson<{ quarantine: StorageQuarantineStatus }>('/api/storage/quarantine', {
+    cache: 'no-store',
+    timeoutMs: 10_000,
+  });
+}
+
+export function startStoragePurge(input: { idempotencyKey: string }) {
+  return requestJson<{ job: StoragePurgeJob }>('/api/storage/quarantine/purge', {
+    method: 'POST',
+    body: JSON.stringify(input),
+    timeoutMs: 30_000,
+  });
+}
+
+export function getStoragePurgeJob(jobId: string) {
+  return requestJson<{ job: StoragePurgeJob }>(
+    `/api/storage/quarantine/purge/${encodeURIComponent(jobId)}`,
+    { cache: 'no-store', timeoutMs: 10_000 },
   );
 }
 

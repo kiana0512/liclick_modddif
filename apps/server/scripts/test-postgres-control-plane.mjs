@@ -16,6 +16,7 @@ const migrations = await Promise.all([
   fs.readFile(new URL('../sql/001_project_documents_postgres.sql', import.meta.url), 'utf8'),
   fs.readFile(new URL('../sql/002_shared_control_plane.sql', import.meta.url), 'utf8'),
   fs.readFile(new URL('../sql/003_performance_lab_sessions.sql', import.meta.url), 'utf8'),
+  fs.readFile(new URL('../sql/004_asset_storage_v2_shadow.sql', import.meta.url), 'utf8'),
 ]);
 const temporaryRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'li3d-control-plane-'));
 const databasePath = path.join(temporaryRoot, 'pgdata');

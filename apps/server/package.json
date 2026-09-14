@@ -20,6 +20,7 @@
     "test:performance-lab-persistence": "node scripts/clean-dist.mjs && tsc -p tsconfig.json && node scripts/test-performance-lab-persistence.mjs",
     "test:modelview-proxy": "node scripts/clean-dist.mjs && tsc -p tsconfig.json && node scripts/test-modelview-connection-lifecycle.mjs && node ../../scripts/smoke-modelview-inpaint.mjs",
     "test:asset-transfer": "node scripts/clean-dist.mjs && tsc -p tsconfig.json && node scripts/test-asset-transfer.mjs",
+    "test:storage-management": "node scripts/clean-dist.mjs && tsc -p tsconfig.json && node scripts/test-storage-management.mjs",
     "test:telemetry": "node scripts/clean-dist.mjs && tsc -p tsconfig.json && node scripts/test-telemetry-aggregation.mjs",
     "test:prompt-polish": "node scripts/clean-dist.mjs && tsc -p tsconfig.json && node scripts/test-prompt-polish.mjs",
     "test:liclick-personal-account": "node scripts/clean-dist.mjs && tsc -p tsconfig.json && node scripts/test-liclick-personal-account-boundary.mjs",
