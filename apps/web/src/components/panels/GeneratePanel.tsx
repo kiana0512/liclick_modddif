@@ -336,6 +336,7 @@ function isVerboseGenerationNotice(message: string) {
 }
 
 function compactTextureProgressButtonLabel(label: string) {
+  if (/^第[一二]步：/.test(label)) return '生成多视图中';
   const pair = label.match(/第 \d+\/\d+ 组$/);
   return pair && /^(?:提交纹理任务|准备多视图快照|结果已保存)/.test(label)
     ? pair[0]
