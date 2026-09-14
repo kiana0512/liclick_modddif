@@ -329,11 +329,8 @@ function generationPollToastKey(jobId: string) {
   return `generation-poll-retrying:${jobId}`;
 }
 
-function isVerboseProjectionWaitNotice(message: string) {
-  return (
-    message.includes('本组回贴后再生成下一组') ||
-    message.includes('等待回贴与合成渲染完成')
-  );
+function isVerboseGenerationNotice(message: string) {
+  return /^第[一二]步：|本组回贴后再生成下一组|等待回贴与合成渲染完成/.test(message);
 }
 
 function compactTextureProgressButtonLabel(label: string) {
@@ -5801,7 +5798,7 @@ export function GeneratePanel({
               </section>
             )}
 
-            {generateNotice && !isVerboseProjectionWaitNotice(generateNotice.message) && (
+            {generateNotice && !isVerboseGenerationNotice(generateNotice.message) && (
               <div
                 role={generateNotice.tone === 'error' ? 'alert' : 'status'}
                 aria-live="polite"

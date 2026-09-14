@@ -2,7 +2,7 @@
 
 2026-09-14 M08，协作 M03/M06：`ALG-ERASE-001` 调度修订 v1.5.2。普通投影橡皮后台预热不得抢占局部重绘选区 owner、选区绘制/应用或生图准备；直接检查运行时 ref 覆盖 store 尚未更新的窗口，并取消过期 effect 的异步预览发布。正常预热及显式橡皮准备保留，不新增双份 GPU 缓存；绘制/捕获像素、CPU/Worker/shader、完整分辨率、Schema、Command/CAS/ownership、持久化与导出不变，无迁移。已释放的旧会话选区需重画，不能伪造恢复。生产回调专项、类型与 lint 通过；未整包构建、推送或部署，发布前须最终集成验证。详见 [蒙版预热所有权变更卡](changes/CHG-20260914-INPAINT-PREWARM-OWNERSHIP.md)。
 
-> 文档版本：`2.20.86`
+> 文档版本：`2.20.87`
 >
 > 生效日期：`2026-09-14`
 >
@@ -11,6 +11,8 @@
 > 基线仓库：`E:\Liclick 3D Texture Modernization`
 >
 > 审计口径：`0a2519d + 607e82f + 2568e40`，不包含错误文档提交 `2bde8c6/e03bab2/d1c5f78`
+
+2026-09-14 UI-05（M04）：生成区独立状态提示框隐藏“第一步/第二步”的六视图与去光阶段文案，继续显示实际错误与异常提示。按钮进度、两轮模型/质量/提示词、服务端轮询与取消恢复不变；仅展示修订，无算法或 Schema 变更，无数据迁移。回滚 GeneratePanel 的提示过滤即可恢复原展示。
 
 2026-09-14 M04/UI-05：`MULTIVIEW-REFERENCE-PIPELINE` v1.0.0 / `MULTIVIEW-REFERENCE-PROMPT` v2.0.0 按用户实测流程，将单视图派生六视图改为 Sunburst low 生六视图 → Sunburst medium 对整张六视图去光照。两段提示词采用用户原文，第二轮仅引用第一轮结果并沿用尺寸档位；前端统一 3:2 布局，只发布第二轮成功结果。两轮共用服务端任务身份、个人莉刻账号、取消与后台恢复；生成日志增加可选 referenceDelight 阶段记录，第二次付费提交前先持久化意图，响应不确定时不自动重提。历史无标记任务维持单轮，已存在多视图不自动重生成。Project Schema、Command、Revision CAS、ownership、verified assets、投影/UV/GPU/CPU/Worker/shader 与导出不变，无工程迁移。发布前需排空或终止双阶段活动任务才可回滚旧服务，避免旧代码把第一轮结果当作完成。参数与控制流已用隔离夹具验证，未额外运行付费生图，不承诺实际耗时或严格 Albedo。详见 [两阶段参考图变更卡](changes/CHG-20260914-REFERENCE-DELIGHT-PIPELINE.md)。
 
