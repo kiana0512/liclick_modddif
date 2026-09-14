@@ -1,6 +1,10 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
-> 文档版本：`2.20.93`
+2026-09-14 UI-05/M04：六视图参考生成按钮将第一步/第二步的服务端阶段标签统一显示为“生成多视图中”，隐藏 Sunburst、质量与去光照实现信息，保留进度百分比和取消能力。只修改按钮文案映射；提示词、两阶段流程、模型参数、错误提示和持久化不变，无算法或 Schema 修订，无数据迁移。回滚 compactTextureProgressButtonLabel 的阶段映射即可。
+
+2026-09-14 UI-05 → M04（协作 M08）：`ALG-GEN-001/002` 提示词修订 v1.3.0。GPT 单视图、多视图贴图与 GPT 局部重绘共用用户确认的弱光影模板，仅待补全区域抑制强明暗、高光和反射，保留真实纹理及非常轻微的接触明暗，已贴纹理/几何/背景/透明区不变；补充要求仍追加。服务端识别新旧模板，不为新版附加整图光影约束。六视图参考生成/第二步去光、原 ModelView 重绘、模型参数、GPU/CPU/Worker/shader、UV/export 与持久化协议不变；只影响新构造请求，无 Schema 或数据迁移。回滚恢复模板与识别分支，保留历史。未运行付费生图，不承诺模型必然达到目标效果；详见 [弱光影提示词变更卡](changes/CHG-20260914-GPT-TEXTURE-WEAK-LIGHT-PROMPT.md)。
+
+> 文档版本：`2.20.98`
 >
 > 生效日期：`2026-09-14`
 >
@@ -11,6 +15,12 @@
 > 审计口径：`0a2519d + 607e82f + 2568e40`，不包含错误文档提交 `2bde8c6/e03bab2/d1c5f78`
 
 2026-09-14 M07，协作 UI-06/M03/M04/M06/M08/M09/M11：`UV-DISPLAY-BUFFER` v1.4.0 / `PERF-UV-SOURCE-PREPARE-001` v1.12.0。投影数据只作为生成 UV 的输入，PBR/平面视口不再发布 direct 或 texture-array 投影材质；普通显隐、投影橡皮与采样器失败均保留上一张已验证 UV，最新完整分辨率 UV 完成上传后再原子替换。Detached WebGL 的 128K 精确上传保持原条带大小，改为最多 8 条或累计 4ms 后让出任务，仍逐条检查取消/交互并恢复 GL 状态。生成链路继续在 `flat-target-coverage` 截图前等待 Resident UV 屏障，因此下一轮单视图/多视图生图输入包含模型上此前全部已发布效果。真实 4K 工程 S7 共 800 次模式/图层操作：P95 16.8ms、最大 33.4ms、状态/覆盖错误 0、材质重建 0；热缓存 14 层开关 P95/最大 16.8/16.9ms。隔离 WebGL 512/13、4K/6 与 retained-raster 对照 RGBA/coverage 差异 0；首次 4K 派生仍观察到 116.8ms 峰值，不宣称冷启动已消除。完整分辨率、Top-K、QA、接缝/gutter、CPU/Worker/shader 像素公式、Project Command/CAS/ownership、持久化、资产和导出不变，无迁移。详见 [UV-only 显示与 detached 上传变更卡](changes/CHG-20260914-UV-ONLY-DISPLAY-AND-DETACHED-UPLOAD.md)。
+
+2026-09-14 M04/UI-05：`REFERENCE-DELIGHT-PROMPT` v1.2.0 继续收紧第二步保色约束，明确正常中间调保色 > 去高光反射 > 减弱阴影；先消亮带，暗部只做必要局部补偿，不整片填亮，不全局压暗。无法同时保色和彻底去阴影时允许微弱残留明暗，因此不承诺严格 Albedo。只调整提示词，阶段/质量/参考输入/持久化/Schema 不变；新进入第二步生效，已有第二步快照不重写，无迁移，回滚恢复原提示词。尚未运行真实生图验收。
+
+2026-09-14 M04/UI-05：`REFERENCE-DELIGHT-PROMPT` v1.1.0 将六视图第二步去光提示词替换为用户确认的基础色优先版本：以正常中间调锁定色相、饱和度和明度，仅局部去除光照，不整体调色，不确定的色差优先保留。第一步提示词、Sunburst low → medium、两阶段调度及仅返回最终图不变。新进入第二步的任务使用新模板，已持久化的第二步提示词和已生成资产不改写，无 Schema/工程迁移；回滚仅恢复 referenceDelightPrompt 文本。提示词不保证生成模型严格锁色，未额外运行付费生图。
+
+2026-09-14 UI-06/M06/M07：`UV-DISPLAY-DERIVED-CACHE` v1.3.1 修复发布前 4K 浏览器检查发现的合成投影图层显隐停滞：UV atlas 的光照 uniform 更新不再被视为逐层显隐已应用；关闭最后一个投影层时也根据旧可见状态触发精确预览更新。独立投影 uniform 快路径和普通 UV 的灯光更新保留，CPU/Worker/shader 像素公式、完整分辨率、QA、持久化与导出不变，无迁移。恢复这两处判定可回滚，但会重新引入眼睛状态与画面不同步；验证见 [显隐更新补充记录](changes/CHG-20260914-UV-VISIBILITY-HOTPATH-AND-CAPTURE-DEPTH-REUSE.md)。
 
 2026-09-14 M07，协作 UI-06/M06/M08/M09：`PERF-UV-SOURCE-PREPARE-001` v1.11.0 / `UV-DISPLAY-DERIVED-CACHE` v1.3.0。投影转 UV 对已有 `linear-view` 深度且带 16 项捕获对象矩阵的层复用捕获空间可见性；GPU/CPU 原有 `capture * inverse(current)` 变换保证对象后续平移、旋转或缩放后采样点仍严格回到原捕获空间，缺矩阵、旧编码、缺 depth/所需 normal 继续保守重建。图层眼睛按钮删除全可见性 React 重复派生和普通 active-layer 模型订阅，常驻命中只更新 uniform；冷缓存、材质未接收、内容/结构/局部重绘路由变化仍强制完整重建。两组非平凡矩阵与三组点的捕获空间误差 `<=1e-9`，570 个常驻转换、60 次恢复及冷回退通过。完整分辨率、QA、GPU/CPU/Worker/shader 像素公式、Schema、Command/CAS/ownership、持久化与导出不变，无迁移。当前本地工程无真实 projected 层，S4/S5 实机门禁仍需含真实投影栈工程。详见 [图层显隐与深度复用变更卡](changes/CHG-20260914-UV-VISIBILITY-HOTPATH-AND-CAPTURE-DEPTH-REUSE.md)。
 
@@ -896,8 +906,8 @@ Bake 设置包含 resolution、frontal/rear distance、distance/cage、cage infl
 | `ALG-CAP-005` Normal 捕获 | 默认 view normal，编码 `n×0.5+0.5` |
 | `ALG-CAP-006` 捕获状态隔离 v1.0.0 | 首次及逐 tile/pass 的 await 前归还共享 renderer/背景；每个同步 draw 重绑捕获 target/clear，保留像素与分辨率 |
 | `CAPTURE-MATERIAL-ISOLATION` v1.0.0 | flat 材质/uniforms 仅在每个同步 tile draw 内借用，逐 tile 恢复；材质身份变化拒绝混合截图，已有纹理在 clay 展示前冻结 |
-| `ALG-GEN-001` 单视图生成 | `1.2.0`；当前相机 Capture + 材质参考 → Generation；GPT2 初始白模与已有贴图补全共用图一几何锁定/图二材质参考模板；结果先生成原捕获尺寸的边缘去污染投影源，再与独立 capture mask/depth 一起创建普通质量合成 projected layer |
-| `ALG-GEN-002` 多视图批次 | `1.2.0`；N 个捕获共享 batch；GPT2 与单视图共用同一材质补全模板；完成层串行 commit，整批结束一次发布新投影栈 |
+| `ALG-GEN-001` 单视图生成 | `1.3.0`；当前相机 Capture + 材质参考 → Generation；GPT 初始白模与已有贴图补全共用图一几何锁定/图二材质参考的局部弱光影模板，GPT 局部重绘复用；结果按既有 Alpha 策略与独立 capture mask/depth 创建投影图层 |
+| `ALG-GEN-002` 多视图批次 | `1.3.0`；N 个捕获共享 batch；GPT 与单视图共用局部弱光影材质补全模板；完成层串行 commit，整批结束一次发布新投影栈 |
 | `ALG-GEN-003` 任务身份归一 | clientGenerationId/serverJobId/taskId 合并，避免恢复时重复 running 行 |
 | `ALG-GEN-004` ModelView 远端单视图 | `1.1.0`；当前视角白模 + 多视图材质参考 + 可选提示词 → `modelview-single-view` → Generation；结果使用 `ALG-PROJ-005` v3 捕获适配并进入统一质量合成 |
 | `ALG-GEN-005` 提示词智能润色 | `1.10.0`；UI-05 经同源 `/api/liclick/prompt-polish` 分流。普通单/多视图保持莉刻 `data-analysis` A2A；局部重绘空输入由 `qwen3-vl-plus` 在一次请求中输出诊断和英文正文，诊断与正文分别校验；显式输入跳过诊断，保持统一 Qwen → Klein 转换模板。服务端用未外扩原始 mask 定位，并从干净 Image 1 自动裁出带上下文的第四图供 Qwen 看清选中部件；完整参考图仍只提供有证据的结构/材质，第四图不改变编辑范围或 ModelView 输入。模板先用 Image 2、第四图和 mask 外邻域共同确定真实结构与材质；仅当三者证明选区为未完成的白灰占位时，要求 Klein 用明确目标材质完整替换 clay/primer/flat placeholder/untextured surface，真实浅色材质不受此规则影响。模板以 100–180 词、2–3 段英文为生成目标；段数、词数、语言和 Markdown 偏差只记脱敏告警，不阻断也不触发格式修正。若首段缺少明确 mask 范围，服务端确定性追加固定保护句。仅最终正文写入 Generation，诊断不持久化、不回填文本框；显式输入与空输入均一次 Qwen，保持 65 秒 deadline。模板策略进入所有局部重绘指纹，升级后首次重新解析、后续继续复用 |

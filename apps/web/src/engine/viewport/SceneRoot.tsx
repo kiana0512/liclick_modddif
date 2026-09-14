@@ -2224,7 +2224,10 @@ const ImportedModel = memo(function ImportedModel({
         visibleOrdinaryUvLayers.length > 0 ||
         visibleLocalRepaintUvLayers.length > 0 ||
         visibleContentAwareUvLayers.length > 0;
-      const hasVisibleProjectedContribution = displayLayers.some((layer) => layer.visible);
+      // Closing the final eye must also retire the previous composed atlas.
+      const hasVisibleProjectedContribution = displayLayers.some(
+        (layer) => layer.visible || previousLayerVisibilityById.get(layer.layerId),
+      );
       if (
         // Repaint routing and mixed lower composites need an exact rebind on
         // either eye direction; a uniform cannot remove one composite member.
@@ -2232,6 +2235,10 @@ const ImportedModel = memo(function ImportedModel({
           (hasLowerRepaintUv || isRenderedLocalRepaintLayer(layer)) &&
           previousLayerVisibilityById.get(layer.id) !== layer.visible,
         ) ||
+        // Merged UV visibility changes which projected layers belong to the
+        // composition even when every projected eye remains unchanged.
+        currentMergedUvBoundaryOrder !==
+          getVisibleMergedUvBoundaryOrder(previousState.layers, importedModel.objectId) ||
         visibleUvContentChanged ||
         visibleProjectedContentChanged
       ) {
