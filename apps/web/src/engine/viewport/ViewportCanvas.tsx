@@ -8253,9 +8253,8 @@ function SurfacePaintOverlay() {
 
   const prepareProjectedEraserGpuPreview = useCallback(
     (layer: UvPaintLayer, model: SurfacePaintTarget) => {
-      if (layer.target !== 'projected-mask' || layer.eraserGpu)
+      if (layer.target !== 'projected-mask' || layer.eraserGpu || layer.eraserGpuReady)
         return layer.eraserGpuReady ?? Promise.resolve();
-      if (layer.eraserGpuReady) return layer.eraserGpuReady;
       const work = (async () => {
         const { UvRepaint: GpuUvMask } = await import('@/engine/localRepaint/uvRepaint');
         if (layerRef.current !== layer) return;
