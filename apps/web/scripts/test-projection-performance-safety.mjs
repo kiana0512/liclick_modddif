@@ -40,6 +40,86 @@ const sceneStoreSource = await readFile(
   new URL('../src/stores/sceneStore.ts', import.meta.url),
   'utf8',
 );
+const uvBakeSource = await readFile(
+  new URL('../src/engine/bake/bakeProjectedLayerToTexture.ts', import.meta.url),
+  'utf8',
+);
+const visibilityReuseSource = await readFile(
+  new URL('../src/engine/bake/projectionVisibilityReuse.ts', import.meta.url),
+  'utf8',
+);
+
+const visibilityReuseJs = ts.transpileModule(visibilityReuseSource, {
+  compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
+}).outputText;
+const visibilityReuseExports = {};
+new Function('exports', visibilityReuseJs)(visibilityReuseExports);
+const { canReuseAuthoredProjectionVisibility } = visibilityReuseExports;
+const authoredVisibility = {
+  depthUrl: 'depth.png',
+  depthEncoding: 'linear-view',
+  objectMatrixWorld: new Array(16).fill(0),
+};
+assert.equal(canReuseAuthoredProjectionVisibility(authoredVisibility, false), true);
+assert.equal(canReuseAuthoredProjectionVisibility(authoredVisibility, true), false);
+assert.equal(
+  canReuseAuthoredProjectionVisibility({ ...authoredVisibility, normalUrl: 'normal.png' }, true),
+  true,
+);
+assert.equal(
+  canReuseAuthoredProjectionVisibility({ ...authoredVisibility, objectMatrixWorld: undefined }, false),
+  false,
+  'legacy rows without an authored object transform must regenerate visibility',
+);
+assert.equal(
+  canReuseAuthoredProjectionVisibility({ ...authoredVisibility, depthEncoding: 'legacy-rgba' }, false),
+  false,
+  'non-linear legacy depth must never enter the capture-space reuse path',
+);
+
+// GPU and CPU use capture * inverse(current) as their object-space delta.
+// Prove that applying the current object transform and then that delta lands on
+// the exact authored capture-space point for multiple non-trivial transforms.
+const captureMatrix = new THREE.Matrix4().compose(
+  new THREE.Vector3(4, -2, 7),
+  new THREE.Quaternion().setFromEuler(new THREE.Euler(0.3, -0.7, 0.2)),
+  new THREE.Vector3(1.4, 0.8, 1.1),
+);
+for (const currentMatrix of [
+  new THREE.Matrix4().makeTranslation(-6, 3, 2),
+  new THREE.Matrix4().compose(
+    new THREE.Vector3(2, 5, -3),
+    new THREE.Quaternion().setFromEuler(new THREE.Euler(-0.5, 0.25, 1.1)),
+    new THREE.Vector3(0.75, 1.25, 1.5),
+  ),
+]) {
+  const objectMatrixDelta = captureMatrix.clone().multiply(currentMatrix.clone().invert());
+  for (const localPoint of [
+    new THREE.Vector3(0, 0, 0),
+    new THREE.Vector3(2.5, -1.25, 0.75),
+    new THREE.Vector3(-4, 3, 9),
+  ]) {
+    const expected = localPoint.clone().applyMatrix4(captureMatrix);
+    const actual = localPoint.clone().applyMatrix4(currentMatrix).applyMatrix4(objectMatrixDelta);
+    assert.ok(actual.distanceTo(expected) <= 1e-9, 'capture-space depth transform must be invariant');
+  }
+}
+
+assert.match(
+  visibilityReuseSource,
+  /layer\.depthEncoding === 'linear-view' &&\s*layer\.objectMatrixWorld\?\.length === 16/,
+  'authored capture-space linear depth must survive later rigid model transforms',
+);
+assert.doesNotMatch(
+  uvBakeSource,
+  /matrixMatches\(layer\.objectMatrixWorld\)|currentObjectMatrixWorld\[index\]/,
+  'projection-to-UV must not regenerate every capture depth after a rigid model transform',
+);
+assert.match(
+  uvBakeSource,
+  /captureObjectMatrixWorld: layer\.objectMatrixWorld/,
+  'legacy or missing depth regeneration must still render in the authored capture matrix',
+);
 
 // Execute the production cold-warmup gate and promise registration.
 const sceneAst = ts.createSourceFile('SceneRoot.tsx', sceneRootSource, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);

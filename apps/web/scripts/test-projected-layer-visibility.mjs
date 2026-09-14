@@ -496,6 +496,26 @@ assert.match(
   /const uvMaterialUpdated = syncProjectedLayerResidentTextureVisibilityInObject\([\s\S]*?const projectedMaterialUpdated = syncProjectedLayerMaterialDisplayStateInObject\([\s\S]*?hasVisibleUvContribution[\s\S]*?!uvMaterialUpdated[\s\S]*?!projectedMaterialUpdated[\s\S]*?setUvVisibilityRenderRevision/,
   'Opening an eye after an all-hidden cold restore must schedule a material pass when no resident shader accepted the uniform update.',
 );
+assert.doesNotMatch(
+  sceneRootSource,
+  /projectedUvDisplaySignature|reopenedProjectedLayer|reopenedUvLayer/,
+  'A resident eye toggle must not force a duplicate full React material reconciliation.',
+);
+assert.match(
+  sceneRootSource,
+  /readAuthoritativeLocalRepaintLayers\(\s*layerRenderSignature,\s*uvVisibilityRenderRevision/,
+  'React material derivation must rerun only for structure/content changes or an explicit cold-cache revision.',
+);
+assert.doesNotMatch(
+  sceneRootSource,
+  /const activeLayerId = useLayerStore\(\(state\) => state\.activeProjectedLayerId\)/,
+  'ordinary active-layer changes must not rerender every imported model',
+);
+assert.match(
+  sceneRootSource,
+  /const activeUvMaskLayerId = useLayerStore[\s\S]*?activeLayer\.maskSpace === 'uv'[\s\S]*?const activeLayerUsesProjectedEraser = useLayerStore/,
+  'renderer subscriptions must retain active UV-mask and projected-eraser correctness gates',
+);
 assert.match(
   sceneRootSource,
   /Eye\/opacity controls and display modes must update the resident material[\s\S]*?const authoritativeProjectionLayers = useLayerStore\.getState\(\)\.layers;[\s\S]*?const authoritativeProjectionDisplayInputs = authoritativeProjectionLayers[\s\S]*?syncProjectedLayerMaterialDisplayStateInObject\([\s\S]*?authoritativeProjectionDisplayInputs/,
@@ -784,7 +804,7 @@ assert.equal(requiresExactPresentation(false, false, false), false,
   'An idle persisted layer without a live owner uses the formal material.');
 assert.match(
   sceneRootSource,
-  /const localRepaintLiveFeedbackRequested =\s*localRepaintPaintTool === 'inpaint-apply' \|\|\s*\(localRepaintPaintTool === 'eraser' && localRepaintPreviewLayer\?\.id === activeLayerId\)/,
+  /const localRepaintLiveFeedbackRequested =\s*localRepaintPaintTool === 'inpaint-apply' \|\|\s*\(localRepaintPaintTool === 'eraser' && localRepaintPreviewActive\)/,
   'SceneRoot must keep the resident repaint row muted until the eraser overlay handoff completes.',
 );
 assert.match(

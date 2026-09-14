@@ -1348,10 +1348,34 @@ const ImportedModel = memo(function ImportedModel({
   const resolution = useSettingsStore((state) => state.resolution);
   const localRepaintPreviewLayer = useSceneStore((state) => state.localRepaintPreviewLayer);
   const localRepaintPaintTool = useSceneStore((state) => state.paintTool);
-  const activeLayerId = useLayerStore((state) => state.activeProjectedLayerId);
+  // Selecting or hiding an ordinary layer does not change renderer inputs.
+  // Subscribe only to the two active-layer facts that can affect paint/mask
+  // presentation; otherwise the eye button needlessly rerendered ImportedModel.
+  const localRepaintPreviewActive = useLayerStore(
+    (state) =>
+      Boolean(localRepaintPreviewLayer?.id) &&
+      state.activeProjectedLayerId === localRepaintPreviewLayer?.id,
+  );
+  const activeUvMaskLayerId = useLayerStore((state) => {
+    const activeLayer = state.layers.find(
+      (layer) => layer.id === state.activeProjectedLayerId,
+    );
+    return activeLayer?.type === 'projected' &&
+      activeLayer.maskSpace === 'uv' &&
+      Boolean(activeLayer.maskUrl)
+      ? activeLayer.id
+      : undefined;
+  });
+  const activeLayerUsesProjectedEraser = useLayerStore((state) => {
+    if (localRepaintPaintTool !== 'eraser') return false;
+    const activeLayer = state.layers.find(
+      (layer) => layer.id === state.activeProjectedLayerId,
+    );
+    return getEraserTargetPolicy(activeLayer).kind === 'projected-mask';
+  });
   const localRepaintLiveFeedbackRequested =
     localRepaintPaintTool === 'inpaint-apply' ||
-    (localRepaintPaintTool === 'eraser' && localRepaintPreviewLayer?.id === activeLayerId);
+    (localRepaintPaintTool === 'eraser' && localRepaintPreviewActive);
   const transientWhitePresentationObjectId = useSceneStore(
     (state) => state.transientWhitePresentationObjectId,
   );
@@ -1405,10 +1429,6 @@ const ImportedModel = memo(function ImportedModel({
       importedModel.objectId,
     ),
   );
-  const projectedUvDisplaySignature = useLayerStore((state) => state.layers
-    // A merged UV eye also changes which projections belong in the derived buffer.
-    .filter(layer => !layer.objectId || layer.objectId === importedModel.objectId)
-    .map(layer => layerPreviewSignature(layer)).join('|'));
   // Structural UV signatures intentionally omit eye state so a visibility
   // toggle does not rebuild/upload a 4K texture. Content-aware underlays still
   // need a live display snapshot, otherwise their cached `visible` flag can
@@ -1430,17 +1450,15 @@ const ImportedModel = memo(function ImportedModel({
   const layers = useMemo(
     () =>
       readAuthoritativeLocalRepaintLayers(
-        `${layerRenderSignature}|${projectedUvDisplaySignature}`,
+        layerRenderSignature,
         uvVisibilityRenderRevision,
         importedModel.objectId,
       ),
-    [importedModel.objectId, layerRenderSignature, uvVisibilityRenderRevision, projectedUvDisplaySignature],
+    [importedModel.objectId, layerRenderSignature, uvVisibilityRenderRevision],
   );
   const liveSurfacePaintPreview = useLiveSurfacePaintPreview();
   const projectedEraserArmed = Boolean(
-    (localRepaintPaintTool === 'eraser' &&
-      getEraserTargetPolicy(layers.find((layer) => layer.id === activeLayerId)).kind ===
-        'projected-mask') ||
+    activeLayerUsesProjectedEraser ||
       (liveSurfacePaintPreview?.target === 'projected-mask' &&
         liveSurfacePaintPreview.objectId === importedModel.objectId),
   );
@@ -2047,16 +2065,6 @@ const ImportedModel = memo(function ImportedModel({
           Boolean(layer.imageUrl) &&
           (!layer.objectId || layer.objectId === importedModel.objectId),
       );
-      const reopenedUvLayer = objectUvLayers.some(
-        (layer) => layer.visible && previousLayerVisibilityById.get(layer.id) === false,
-      );
-      const reopenedProjectedLayer = state.layers.some(
-        (layer) =>
-          layer.type === 'projected' &&
-          layer.visible &&
-          previousLayerVisibilityById.get(layer.id) === false &&
-          (!layer.objectId || layer.objectId === importedModel.objectId),
-      );
       const visibleUvContentChanged = objectUvLayers.some((layer) => {
         if (!layer.visible) return false;
         const previousLayer = previousLayerById.get(layer.id);
@@ -2194,14 +2202,12 @@ const ImportedModel = memo(function ImportedModel({
         visibleContentAwareUvLayers.length > 0;
       const hasVisibleProjectedContribution = displayLayers.some((layer) => layer.visible);
       if (
-        reopenedUvLayer ||
         // Repaint routing and mixed lower composites need an exact rebind on
         // either eye direction; a uniform cannot remove one composite member.
         objectUvLayers.some((layer) =>
           (hasLowerRepaintUv || isRenderedLocalRepaintLayer(layer)) &&
           previousLayerVisibilityById.get(layer.id) !== layer.visible,
         ) ||
-        reopenedProjectedLayer ||
         visibleUvContentChanged ||
         visibleProjectedContentChanged
       ) {
@@ -3091,10 +3097,10 @@ const ImportedModel = memo(function ImportedModel({
   );
   const liveSurfaceMaskTexture = useMemo(() => {
     if (exactBakedTextureRecord) return undefined;
-    const layer = layers.find((item) => item.id === activeLayerId);
+    const layer = layers.find((item) => item.id === activeUvMaskLayerId);
     if (layer?.type !== 'projected' || layer.maskSpace !== 'uv' || !layer.maskUrl) return undefined;
     return getLiveProjectedCanvasTexture(layer.maskUrl, THREE.NoColorSpace, { flipY: false });
-  }, [activeLayerId, exactBakedTextureRecord, layers]);
+  }, [activeUvMaskLayerId, exactBakedTextureRecord, layers]);
   const hasLiveProjectedPreview = useMemo(
     () =>
       stableVisibleProjectedLayers.some(
