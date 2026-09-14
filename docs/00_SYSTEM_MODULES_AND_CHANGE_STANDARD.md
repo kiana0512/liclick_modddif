@@ -851,6 +851,8 @@ Bake 设置包含 resolution、frontal/rear distance、distance/cage、cage infl
 
 ## 11. 输入、捕获、生成与输出算法
 
+`MULTIVIEW-REFERENCE-PROMPT` v1.1.0 的完整 UTF-8 模板放在 `services/multiviewReferencePrompt.txt`，Vite 输出带内容哈希的同源静态资源，按需共享加载并缓存成功文本，10 秒超时；HTTP 失败或空文本阻断本次提交并允许重试，不降级为旧模板。`buildMultiviewPrompt` 位于 services，面板等待完整模板后创建 Generation。保留现有 JavaScript 包体上限，不修改模板原文。加载、并发复用、补充要求、失败重试及与用户确认文本逐字一致性已独立检查；部署核验包含文本资源与 HTTP SHA256。
+
 2026-09-14 UI-05 → M04：`MULTIVIEW-REFERENCE-PROMPT` v1.1.0（Six-view material reference prompt / 六视图材质参考提示词，production，实施 Codex，用户确认模板）以 Base Color / Albedo 无光照要求替代旧棚拍模板。输入为单张参考图与可选补充要求，输出仍为一张横向 2×3 拼图（正面、左前45°、顶部 / 左侧、右侧、底部）。手动及自动补全共用 `buildMultiviewPrompt`，要求去除方向明暗、高光、反射、投影、接触阴影和 AO，保留固有色、掉漆、锈迹、污渍及纹理，统一六面和内腔的材质亮度。仅替换既有文本，无新增像素、矩阵、单位、颜色空间转换或阈值；CPU/GPU/Worker/shader、投影/UV/export 不变。最终文本仍保存到 Generation.prompt；Schema、Project Command 幂等性、Revision CAS、ownership 与 verified assets 不变。旧配对继续复用，须新生成才使用新模板，无数据迁移；回滚仅还原模板。发布验证使用 M04 回归、Web/Server 回归和 verify:prepush；这些检查不证明实际模型的去光效果。
 
 | ALG ID | 名称 | 当前规则 |
