@@ -2484,7 +2484,7 @@ export function GeneratePanel({
     });
   }
 
-  async function waitForLiclickGeneration(generation: Generation) {
+  async function waitForLiclickGeneration(generation: Generation, onMessage?: (label: string) => void) {
     if (generation.resultUrl) return generation;
     const client = createLiclickApiClient();
     const jobId = getGenerationJobId(generation);
@@ -2510,6 +2510,7 @@ export function GeneratePanel({
         await new Promise((resolve) => window.setTimeout(resolve, 3500));
         continue;
       }
+      if (result.message) onMessage?.(result.message);
       if (result.status === 'failed') {
         throw new Error(
           getUserFacingGenerationError(result.error, '纹理贴图生成失败，请稍后重试。'),
@@ -2524,6 +2525,7 @@ export function GeneratePanel({
             ...generation.metadata,
             taskId: result.taskId ?? generation.metadata.taskId,
             resultUrls: result.resultUrls,
+            extraParams: result.extraParams ?? generation.metadata.extraParams,
             completedAt: result.updatedAt ?? new Date().toISOString(),
           },
         };
@@ -4504,7 +4506,7 @@ export function GeneratePanel({
           workflow: 'liclick',
           clientGenerationId: generationId,
           projectId: currentProject?.id,
-          model: imageModel,
+          model: 'gpt-image-2.5-sunburst',
           resolution,
           referenceGroupId: groupId,
           sourceReferenceId: singleReference.id,
@@ -4528,13 +4530,11 @@ export function GeneratePanel({
         textureMode: 'realistic',
         visibleOnly: true,
         upscale: false,
-        model: imageModel,
-        aspectRatio: resolveRequestAspectRatio(
-          imageModel,
-          aspectRatio,
-          resolveRequestImageSize(imageSize, aspectRatio),
-        ),
-        imageSize: resolveRequestImageSize(imageSize, aspectRatio),
+        model: 'gpt-image-2.5-sunburst',
+        quality: 'low',
+        referencePipeline: 'six-view-delight-v1',
+        aspectRatio: '3:2',
+        imageSize: resolveRequestImageSize(imageSize, '3:2'),
         count: 1,
       });
       const alignedGeneration: Generation = {
@@ -4577,7 +4577,7 @@ export function GeneratePanel({
         throw new Error('用户已终止纹理贴图生成任务。');
       }
       syncGeneration(alignedGeneration);
-      const completedGeneration = await waitForLiclickGeneration(alignedGeneration);
+      const completedGeneration = await waitForLiclickGeneration(alignedGeneration, (label) => onProgress?.(60, label));
       onProgress?.(88, '保存多视图参考');
       pairedGenerationPersistenceRef.current.add(completedGeneration.id);
       syncGeneration(completedGeneration);
