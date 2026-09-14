@@ -50,7 +50,11 @@ async function run(failure, flipY, fast = false, mask = false, allowWhileInterac
   const scope = {
     THREE: { RedFormat: 'red' },
     window: { location: { search: fast ? '' : '?perfLab=1&perfResidentQuality=0' } },
-    yieldToBrowserTask: async () => { taskYields++; await new Promise(resolve => setImmediate(resolve)); },
+    yieldToBrowserTask: async () => {
+      taskYields++;
+      if (failure === 'detached-yield') cancelled = true;
+      await new Promise(resolve => setImmediate(resolve));
+    },
     exports: {}, ImageBitmap: Bitmap, document: { body: { dataset: {} } },
     previewTextureReadyRenderers: new WeakMap(), previewTextureUploadPromises: new WeakMap(),
     markPreviewTextureUploadStarted: () => uploads++, markPreviewTextureUploadFinished: () => uploads--,
@@ -77,7 +81,10 @@ async function run(failure, flipY, fast = false, mask = false, allowWhileInterac
       return { pixels: new Uint8Array(2 * height * (mask === true ? 1 : 4)), width: 2, height };
     },
     markPreviewUploadStep() {}, invalidatePreviewTextureAfterUploadFailure: () => invalidations++,
-    PREVIEW_TEXTURE_UPLOAD_STRIPES_PER_FLUSH: 4, DETACHED_PREVIEW_TEXTURE_UPLOAD_PIXELS_PER_FRAME: 4,
+    PREVIEW_TEXTURE_UPLOAD_STRIPES_PER_FLUSH: 4,
+    DETACHED_PREVIEW_TEXTURE_UPLOAD_PIXELS_PER_FRAME: 4,
+    DETACHED_PREVIEW_TEXTURE_UPLOAD_STRIPES_PER_YIELD: 2,
+    DETACHED_PREVIEW_TEXTURE_UPLOAD_SYNCHRONOUS_BUDGET_MS: 4,
   };
   if (failure === 'late-crop') context.texSubImage2D = () => { throw new Error('submit failed'); };
   try {
@@ -131,7 +138,8 @@ await run(undefined, false, true, true, true);
 const visibleBatch = await run(undefined, false, true, false, false, true);
 assert.equal(visibleBatch.taskYields, 0, 'healthy visible uploads batch sub-budget stripes without one macrotask per stripe');
 const detachedBatch = await run(undefined, false, true, false, false, false);
-assert.equal(detachedBatch.taskYields, 4, 'detached uploads continue yielding once per exact stripe');
+assert.equal(detachedBatch.taskYields, 1, 'detached uploads yield once per bounded exact-stripe batch');
+await run('detached-yield', false, true, false, false, false);
 const deferredVisibleBatch = await run(undefined, false, true, false, false, true, true);
 assert.equal(deferredVisibleBatch.waitCount, 0, 'private visible batches may defer their per-texture presentation barrier');
-console.log('Preview upload cleanup passed: RGBA bitmap/bytes and R8 mask success/cancel/failure cases; visible sub-budget batching and deferred barrier, detached task yields, idle gating, late/rejected stripes, GL state, source ownership, orientation and zero live monitors/uploads.');
+console.log('Preview upload cleanup passed: RGBA bitmap/bytes and R8 mask success/cancel/failure cases; visible and detached bounded batching, deferred barrier, idle/cancel gating, late/rejected stripes, GL state, source ownership, orientation and zero live monitors/uploads.');

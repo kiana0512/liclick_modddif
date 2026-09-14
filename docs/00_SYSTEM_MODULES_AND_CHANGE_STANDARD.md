@@ -1,6 +1,6 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
-> 文档版本：`2.20.92`
+> 文档版本：`2.20.93`
 >
 > 生效日期：`2026-09-14`
 >
@@ -9,6 +9,8 @@
 > 基线仓库：`E:\Liclick 3D Texture Modernization`
 >
 > 审计口径：`0a2519d + 607e82f + 2568e40`，不包含错误文档提交 `2bde8c6/e03bab2/d1c5f78`
+
+2026-09-14 M07，协作 UI-06/M03/M04/M06/M08/M09/M11：`UV-DISPLAY-BUFFER` v1.4.0 / `PERF-UV-SOURCE-PREPARE-001` v1.12.0。投影数据只作为生成 UV 的输入，PBR/平面视口不再发布 direct 或 texture-array 投影材质；普通显隐、投影橡皮与采样器失败均保留上一张已验证 UV，最新完整分辨率 UV 完成上传后再原子替换。Detached WebGL 的 128K 精确上传保持原条带大小，改为最多 8 条或累计 4ms 后让出任务，仍逐条检查取消/交互并恢复 GL 状态。生成链路继续在 `flat-target-coverage` 截图前等待 Resident UV 屏障，因此下一轮单视图/多视图生图输入包含模型上此前全部已发布效果。真实 4K 工程 S7 共 800 次模式/图层操作：P95 16.8ms、最大 33.4ms、状态/覆盖错误 0、材质重建 0；热缓存 14 层开关 P95/最大 16.8/16.9ms。隔离 WebGL 512/13、4K/6 与 retained-raster 对照 RGBA/coverage 差异 0；首次 4K 派生仍观察到 116.8ms 峰值，不宣称冷启动已消除。完整分辨率、Top-K、QA、接缝/gutter、CPU/Worker/shader 像素公式、Project Command/CAS/ownership、持久化、资产和导出不变，无迁移。详见 [UV-only 显示与 detached 上传变更卡](changes/CHG-20260914-UV-ONLY-DISPLAY-AND-DETACHED-UPLOAD.md)。
 
 2026-09-14 M07，协作 UI-06/M06/M08/M09：`PERF-UV-SOURCE-PREPARE-001` v1.11.0 / `UV-DISPLAY-DERIVED-CACHE` v1.3.0。投影转 UV 对已有 `linear-view` 深度且带 16 项捕获对象矩阵的层复用捕获空间可见性；GPU/CPU 原有 `capture * inverse(current)` 变换保证对象后续平移、旋转或缩放后采样点仍严格回到原捕获空间，缺矩阵、旧编码、缺 depth/所需 normal 继续保守重建。图层眼睛按钮删除全可见性 React 重复派生和普通 active-layer 模型订阅，常驻命中只更新 uniform；冷缓存、材质未接收、内容/结构/局部重绘路由变化仍强制完整重建。两组非平凡矩阵与三组点的捕获空间误差 `<=1e-9`，570 个常驻转换、60 次恢复及冷回退通过。完整分辨率、QA、GPU/CPU/Worker/shader 像素公式、Schema、Command/CAS/ownership、持久化与导出不变，无迁移。当前本地工程无真实 projected 层，S4/S5 实机门禁仍需含真实投影栈工程。详见 [图层显隐与深度复用变更卡](changes/CHG-20260914-UV-VISIBILITY-HOTPATH-AND-CAPTURE-DEPTH-REUSE.md)。
 
