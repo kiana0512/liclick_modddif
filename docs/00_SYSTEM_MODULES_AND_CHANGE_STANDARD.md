@@ -1,8 +1,8 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
-> 文档版本：`2.20.82`
+> 文档版本：`2.20.83`
 >
-> 生效日期：`2026-09-12`
+> 生效日期：`2026-09-14`
 >
 > 代码盘点基线：`9e69980 + 单视图成功结果自动投影恢复`
 >
@@ -851,6 +851,8 @@ Bake 设置包含 resolution、frontal/rear distance、distance/cage、cage infl
 
 ## 11. 输入、捕获、生成与输出算法
 
+2026-09-14 UI-05 → M04：`MULTIVIEW-REFERENCE-PROMPT` v1.1.0（Six-view material reference prompt / 六视图材质参考提示词，production，实施 Codex，用户确认模板）以 Base Color / Albedo 无光照要求替代旧棚拍模板。输入为单张参考图与可选补充要求，输出仍为一张横向 2×3 拼图（正面、左前45°、顶部 / 左侧、右侧、底部）。手动及自动补全共用 `buildMultiviewPrompt`，要求去除方向明暗、高光、反射、投影、接触阴影和 AO，保留固有色、掉漆、锈迹、污渍及纹理，统一六面和内腔的材质亮度。仅替换既有文本，无新增像素、矩阵、单位、颜色空间转换或阈值；CPU/GPU/Worker/shader、投影/UV/export 不变。最终文本仍保存到 Generation.prompt；Schema、Project Command 幂等性、Revision CAS、ownership 与 verified assets 不变。旧配对继续复用，须新生成才使用新模板，无数据迁移；回滚仅还原模板。发布验证使用 M04 回归、Web/Server 回归和 verify:prepush；这些检查不证明实际模型的去光效果。
+
 | ALG ID | 名称 | 当前规则 |
 | --- | --- | --- |
 | `ALG-IN-001` 格式路由导入 | GLB/GLTF 正式，FBX/OBJ 兼容；按扩展名/loader 解析为统一 LoadedModel |
@@ -1070,6 +1072,7 @@ M15 / CLOUD-DEPLOYMENT v1.0.0（2026-09-03）：正常合并 release 部署历�
 
 | 版本 | 日期 | 基线 | 变更 |
 | --- | --- | --- | --- |
+| `2.20.83` | 2026-09-14 | `6f26336 + 本次六视图模板更新` | M04/UI-05、`MULTIVIEW-REFERENCE-PROMPT` v1.1.0：使用用户确认的 Base Color / Albedo 模板去除参考光影，保留材质纹理、六视图布局、补充要求和旧结果复用。无数据迁移；实际生图效果另行验收。 |
 | `2.20.81` | 2026-09-12 | `c1b948f + 本地待提交` | `ALG-ERASE-001` v1.5.1 / `UV-DISPLAY-BUFFER` v1.3.1：当前 projected 层常驻预热中性 GPU mask 与 exact stack；异步准备期间的首笔屏幕段在接管前完整补放，活动手势无缝继续，已完成手势不回弹。图层/模型/分辨率变化释放重建；Schema/资产不变，无迁移。同步验证 #630458 对应的 projection-performance 共享预算门禁。见 CHG-20260912-ERASER-RESIDENT-PREWARM。 |
 | `2.20.80` | 2026-09-12 | `251700e + 0c0ff44` | `GPT-MULTIVIEW-PAIR-SEQUENCE` v1.4.0：固定 2+4 分组并发并整合生成区布局；同时保留 `ALG-ERASE-001` v1.5.0 的全分辨率 GPU 跟手蒙版。投影/UV/export、分辨率、质量与资产协议不变，无迁移。见 CHG-20260912-GENERATION-ACTION-FAST。 |
 | `2.20.79` | 2026-09-12 | `ec629a7 + 本地待提交` | UI-06/UI-10 → M08，协作 M06/M07，`ALG-ERASE-001` v1.5.0 / `UV-DISPLAY-BUFFER` v1.3.0：projected 橡皮以项目完整分辨率 GPU keep-mask 增量盖章并接入安全 exact stack，交互期不再执行 Resident 全图重合成/readback/Worker/整图上传；修复 V 轴镜像。512 仅为不可见持久化草稿，GPU 失败回退完整分辨率 Canvas。Schema/资产不变，无迁移。见 CHG-20260912-ERASER-GPU-MASK。 |
