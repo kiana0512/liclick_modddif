@@ -37,8 +37,9 @@ export async function animateCaptureCamera(
     camera.up.lerpVectors(startUp, fitted.up, t).normalize();
     camera.zoom = Math.exp(Math.log(startZoom) * (1 - t) + Math.log(endZoom) * t);
     viewport.controls?.target.lerpVectors(startTarget, target, t);
-    camera.near = Math.min(camera.near, fitted.near);
-    camera.far = Math.max(camera.far, fitted.far);
+    // Keep navigation planes broad; the separate fitted camera owns capture depth.
+    camera.near = Math.min(camera.near, fitted.near, 0.01);
+    camera.far = Math.max(camera.far, fitted.far, 100);
     camera.updateProjectionMatrix();
     camera.updateMatrixWorld(true);
     expectedPosition.copy(camera.position);
@@ -46,8 +47,6 @@ export async function animateCaptureCamera(
     expectedZoom = camera.zoom;
   } while (progress < 1);
   camera.zoom = endZoom;
-  camera.near = fitted.near;
-  camera.far = fitted.far;
   camera.updateProjectionMatrix();
   viewport.controls?.update();
   await waitForBrowserPaint();

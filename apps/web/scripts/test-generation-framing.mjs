@@ -81,6 +81,8 @@ for (const orthographic of [false, true]) {
         const originalQuaternion = camera.quaternion.clone();
         const snapshot = await exports.frameGenerationCapture('model', aspect);
         assert.equal(notifications, 2);
+        assert(camera.near <= 0.01, 'capture fit must not raise the interactive near plane');
+        assert(camera.far >= 10000, 'capture fit must not shrink the interactive far plane');
         assert(camera.quaternion.angleTo(originalQuaternion) < 1e-7);
         assert.equal(camera instanceof THREE.PerspectiveCamera ? camera.aspect : camera.right, orthographic ? 800 : 16 / 9);
         const points = [];

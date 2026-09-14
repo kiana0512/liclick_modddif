@@ -1,8 +1,12 @@
 import type { Generation } from '@/types/generation';
 
-function metadataId(generation: Generation, key: string) {
+export function generationMetadataString(generation: Generation, key: string) {
   const value = generation.metadata[key];
-  return typeof value === 'string' && value.length > 0 ? value : undefined;
+  return typeof value === 'string' ? value : undefined;
+}
+
+function metadataId(generation: Generation, key: string) {
+  return generationMetadataString(generation, key) || undefined;
 }
 
 function metadataValuesDoNotConflict(left: Generation, right: Generation, key: string) {

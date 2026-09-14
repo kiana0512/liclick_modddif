@@ -48,6 +48,8 @@ import { serializeCamera } from '@/engine/projection/ProjectionCamera';
 import { ReferenceGroupPicker } from '@/components/panels/ReferenceGroupPicker';
 import {
   referenceGroupId,
+  latestPairedGenerations,
+  replacePairedReference,
   type ReferenceGroupGenerationState,
 } from '@/components/panels/referenceGroup';
 import { devLogin } from '@/services/authApiClient';
@@ -98,7 +100,7 @@ import { getRegisteredObjectUrlBlob, revokeRegisteredObjectUrl } from '@/utils/b
 import { createId } from '@/utils/id';
 import { waitForBrowserPaint } from '@/utils/browserScheduling';
 import { downloadImageAsset } from '@/utils/downloadImage';
-import { generationBelongsToProject, generationIdentityIds } from '@/utils/generationIdentity';
+import { generationBelongsToProject, generationIdentityIds, generationMetadataString } from '@/utils/generationIdentity';
 import {
   getGenerationStartedAt,
   mergeGenerationMetadataPreservingStartedAt,
@@ -856,9 +858,7 @@ export function GeneratePanel({
       )
         return false;
       const generationProjectId =
-        typeof generation.metadata.projectId === 'string'
-          ? generation.metadata.projectId
-          : undefined;
+        generationMetadataString(generation, 'projectId');
       return !currentProjectId || !generationProjectId || generationProjectId === currentProjectId;
     });
     const candidates = projectCandidates.filter((generation) =>
@@ -992,7 +992,7 @@ export function GeneratePanel({
   }, [workspaceActive, generatePanelExpanded, portalRoot]);
   const tabGenerations = generations.filter((generation) => {
     const projectId =
-      typeof generation.metadata.projectId === 'string' ? generation.metadata.projectId : undefined;
+      generationMetadataString(generation, 'projectId');
     const belongsToProject = !currentProject?.id || !projectId || projectId === currentProject.id;
     return belongsToProject && generationMatchesTab(generation, tab);
   });
@@ -1001,13 +1001,13 @@ export function GeneratePanel({
   );
   const activeAnyProjectGeneration = generations.find((generation) => {
     const projectId =
-      typeof generation.metadata.projectId === 'string' ? generation.metadata.projectId : undefined;
+      generationMetadataString(generation, 'projectId');
     const belongsToProject = !currentProject?.id || !projectId || projectId === currentProject.id;
     return belongsToProject && isRunningGeneration(generation);
   });
   const activeReferenceGeneration = generations.find((generation) => {
     const projectId =
-      typeof generation.metadata.projectId === 'string' ? generation.metadata.projectId : undefined;
+      generationMetadataString(generation, 'projectId');
     const belongsToProject = !currentProject?.id || !projectId || projectId === currentProject.id;
     return (
       belongsToProject &&
@@ -1705,17 +1705,11 @@ export function GeneratePanel({
       return undefined;
     }
     const taskId =
-      typeof generationToPoll.metadata.taskId === 'string'
-        ? generationToPoll.metadata.taskId
-        : undefined;
+      generationMetadataString(generationToPoll, 'taskId');
     const clientGenerationId =
-      typeof generationToPoll.metadata.clientGenerationId === 'string'
-        ? generationToPoll.metadata.clientGenerationId
-        : undefined;
+      generationMetadataString(generationToPoll, 'clientGenerationId');
     const serverJobId =
-      typeof generationToPoll.metadata.serverJobId === 'string'
-        ? generationToPoll.metadata.serverJobId
-        : undefined;
+      generationMetadataString(generationToPoll, 'serverJobId');
     const jobId = serverJobId ?? taskId ?? clientGenerationId ?? generationToPoll.id;
     if (cancelledGenerationIdsRef.current.has(jobId)) return undefined;
     let cancelled = false;
@@ -1871,24 +1865,17 @@ export function GeneratePanel({
   ]);
 
   useEffect(() => {
-    const completedReferenceGeneration = generations.find((generation) => {
+    const completedReferenceGeneration = latestPairedGenerations(generations, currentProject?.id).find((generation) => {
       if (
         generation.status !== 'succeeded' ||
         !generation.resultUrl ||
-        generation.metadata.referenceRole !== 'multi-view'
+        generation.metadata.referenceBindingApplied
       ) {
         return false;
       }
-      const projectId =
-        typeof generation.metadata.projectId === 'string'
-          ? generation.metadata.projectId
-          : undefined;
       const sourceReferenceId =
-        typeof generation.metadata.sourceReferenceId === 'string'
-          ? generation.metadata.sourceReferenceId
-          : undefined;
+        generationMetadataString(generation, 'sourceReferenceId');
       return (
-        (!currentProject?.id || !projectId || projectId === currentProject.id) &&
         Boolean(
           sourceReferenceId &&
           references.some(
@@ -1901,9 +1888,7 @@ export function GeneratePanel({
     });
     if (!completedReferenceGeneration) return;
     const sourceReferenceId =
-      typeof completedReferenceGeneration.metadata.sourceReferenceId === 'string'
-        ? completedReferenceGeneration.metadata.sourceReferenceId
-        : undefined;
+      generationMetadataString(completedReferenceGeneration, 'sourceReferenceId');
     const sourceReference = references.find(
       (reference) => reference.id === sourceReferenceId && !isMultiviewReference(reference),
     );
@@ -1920,6 +1905,7 @@ export function GeneratePanel({
         );
       })
       .catch((error) => {
+        if (isGenerationCancellation(error)) return;
         const message = getUserFacingGenerationError(error, '多视图结果写回失败，请重试。');
         setReferenceGroupGenerationState({
           groupId: referenceGroupId(sourceReference),
@@ -2153,15 +2139,11 @@ export function GeneratePanel({
 
   function getGenerationJobId(generation: Generation) {
     const taskId =
-      typeof generation.metadata.taskId === 'string' ? generation.metadata.taskId : undefined;
+      generationMetadataString(generation, 'taskId');
     const serverJobId =
-      typeof generation.metadata.serverJobId === 'string'
-        ? generation.metadata.serverJobId
-        : undefined;
+      generationMetadataString(generation, 'serverJobId');
     const clientGenerationId =
-      typeof generation.metadata.clientGenerationId === 'string'
-        ? generation.metadata.clientGenerationId
-        : undefined;
+      generationMetadataString(generation, 'clientGenerationId');
     return serverJobId ?? taskId ?? clientGenerationId ?? generation.id;
   }
 
@@ -2225,9 +2207,7 @@ export function GeneratePanel({
     const isTextureMap = isTextureMapGeneration(generationToCancel);
     const isLocalRepaint = isLocalRepaintGeneration(generationToCancel);
     const textureBatchId =
-      typeof generationToCancel.metadata.textureBatchId === 'string'
-        ? generationToCancel.metadata.textureBatchId
-        : undefined;
+      generationMetadataString(generationToCancel, 'textureBatchId');
     if (textureBatchId) cancelledTextureBatchIdsRef.current.add(textureBatchId);
     if (isTextureMap) {
       const pipelineController = texturePipelineAbortControllerRef.current;
@@ -2244,9 +2224,7 @@ export function GeneratePanel({
             if (isTextureMap && !isTextureMapGeneration(generation)) return false;
             if (isLocalRepaint && !isLocalRepaintGeneration(generation)) return false;
             const generationProjectId =
-              typeof generation.metadata.projectId === 'string'
-                ? generation.metadata.projectId
-                : undefined;
+              generationMetadataString(generation, 'projectId');
             const sameProject =
               !currentProjectId || !generationProjectId || generationProjectId === currentProjectId;
             const sameBatch =
@@ -4436,7 +4414,6 @@ export function GeneratePanel({
     generation: Generation,
   ) {
     if (!generation.resultUrl) throw new Error('多视图任务完成，但没有返回可用图片。');
-    const groupId = referenceGroupId(singleReference);
     const referenceId = createId('reference');
     const size = await getImageSize(generation.resultUrl);
     const persistedUrl = await persistGeneratedImage(
@@ -4451,21 +4428,18 @@ export function GeneratePanel({
       width: size.width,
       height: size.height,
       isPrimary: false,
-      referenceGroupId: groupId,
-      referenceRole: 'multi-view',
-      derivedFromReferenceId: singleReference.id,
       referenceSource: 'generated',
       generationId: generation.id,
     };
     const referenceStore = useReferenceStore.getState();
     const latestReferences = referenceStore.references;
-    const nextReferences = [
-      multiviewReference,
-      ...latestReferences.filter(
-        (reference) =>
-          !(isMultiviewReference(reference) && referenceGroupId(reference) === groupId),
-      ),
-    ];
+    const source = latestReferences.find(reference => reference.id === singleReference.id);
+    if (!source || useProjectStore.getState().currentProjectId !== currentProject?.id ||
+      !latestPairedGenerations(useGenerationStore.getState().generations, currentProject?.id)
+        .some(candidate => candidate.id === generation.id)) {
+      throw new DOMException('多视图结果已过期。', 'AbortError');
+    }
+    const nextReferences = replacePairedReference(latestReferences, source, multiviewReference);
     referenceStore.setReferences(nextReferences);
     // A single-view reference is only the input to this job. Once its paired
     // multi-view result exists, make that result the active material reference
@@ -4473,9 +4447,10 @@ export function GeneratePanel({
     // pipeline state, not a navigation request: single-view generation must
     // remain on single view after the background reference step completes.
     referenceStore.setSelectedReferences([multiviewReference.id]);
+    syncGeneration({ ...generation, metadata: { ...generation.metadata, referenceBindingApplied: true } });
     setProjectReferences(nextReferences);
     await saveCriticalProjectState({ references: nextReferences });
-    return multiviewReference;
+    return nextReferences[0]!;
   }
   persistPairedMultiviewReferenceRef.current = persistPairedMultiviewReference;
 
