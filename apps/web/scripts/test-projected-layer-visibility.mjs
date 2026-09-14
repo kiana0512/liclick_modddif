@@ -2020,6 +2020,25 @@ try {
     mergedUvMaterial.uniforms.keyLightDirection.value.equals(expectedUvLightDirection),
     'Changing PBR light azimuth must update the merged UV key-light direction.',
   );
+  mergedUvMaterial.userData.liclickResidentUvProjectionLayers = ['atlas-layer'];
+  assert.equal(
+    projection.syncProjectedLayerMaterialDisplayState(mergedUvMaterial, [], false, false, {
+      enabled: true,
+      exposure: 0.8,
+      ambientIntensity: 0.45,
+      keyLightIntensity: 1.4,
+      keyLightDirection: updatedUvLightDirection,
+    }),
+    false,
+    'Updating atlas lighting cannot acknowledge a removed projection contribution.',
+  );
+  assert.equal(mergedUvMaterial.uniforms.previewExposure.value, 0.8);
+  assert.match(sceneRootSource,
+    /layer.visible \|\| previousLayerVisibilityById.get\(layer.layerId\)/,
+    'Closing the last projected eye must still reconcile the old atlas');
+  assert.match(sceneRootSource,
+    /currentMergedUvBoundaryOrder !==\s*getVisibleMergedUvBoundaryOrder\(previousState.layers, importedModel.objectId\)/,
+    'Changing the merged UV boundary must reconcile projected contributions');
   projection.disposeGeneratedMaterialTree(mergedUvMaterial);
 
   const wholeRenderedUvMaterial = projection.createUvOverlayPreviewMaterial({
