@@ -23,7 +23,9 @@ import { handleModelviewRoute } from './routes/modelview.js';
 import { handlePerformanceLabRoute } from './routes/performanceLab.js';
 import { corsHeaders, isAllowedRequestOrigin, sendJson, sendNoContent, sendRequestFailure } from './routes/httpUtils.js';
 import { handleProjectsRoute } from './routes/projects.js';
+import { handleStorageRoute } from './routes/storage.js';
 import { initializeWorkspace } from './services/workspaceService.js';
+import { initializeStorageManagement } from './services/storageManagementService.js';
 import { identityTelemetryStorage } from './services/identityTelemetryService.js';
 import { syncTelemetryAggregateToBitable } from './services/feishuPlatformService.js';
 import { publicWorkspaceFilePattern } from './services/publicWorkspaceFile.js';
@@ -223,6 +225,7 @@ async function handleWorkspaceRequest(
   if (url.pathname.startsWith('/api/projects') && (await handleExportRoute(request, response, url))) return;
   if (url.pathname.startsWith('/api/projects') && (await handleProjectsRoute(request, response, url))) return;
   if (url.pathname.startsWith('/api/folders') && (await handleFoldersRoute(request, response, url))) return;
+  if (url.pathname.startsWith('/api/storage') && (await handleStorageRoute(request, response, url))) return;
   if (!url.pathname.startsWith('/api/') && (await serveWebFrontend(request, response, url))) return;
   sendJson(response, 404, { error: 'Route not found.' });
 }
@@ -305,6 +308,7 @@ async function startServer() {
     serverConfig.assetServiceCaCertManaged,
   );
   await initializeWorkspace();
+  await initializeStorageManagement();
   await identityTelemetryStorage.initialize();
   const stopTelemetryAggregateWorker = startTelemetryAggregateWorker();
 

@@ -1,5 +1,7 @@
-import { useEffect, useState } from 'react';
-import { KeyRound, LogIn, LogOut, Unlink } from 'lucide-react';
+import { lazy, Suspense, useEffect, useState } from 'react';
+import type { StorageOverview } from '@liclick/contracts';
+import { HardDrive, KeyRound, LogIn, LogOut, Unlink } from 'lucide-react';
+import { formatStorageBytes } from '@/features/storage/storagePresentation';
 import { devLogin, logout } from '@/services/authApiClient';
 import { runFeishuLoginFlow } from '@/services/feishuLoginFlow';
 import { getWorkspaceApiBase } from '@/services/workspaceApiBase';
@@ -7,6 +9,7 @@ import { useAuthStore } from '@/stores/authStore';
 import { useGenerationStore } from '@/stores/generationStore';
 import { useT } from '@/stores/i18nStore';
 import { useToastStore } from '@/stores/toastStore';
+import { getStorageOverview } from '@/services/workspaceApiClient';
 
 type UserMenuProps = { onLogout: () => void };
 
@@ -26,6 +29,11 @@ type LiclickBindingStatus = {
 };
 
 const workspaceApiBase = getWorkspaceApiBase(import.meta.env.VITE_LICLICK_WORKSPACE_API);
+const StorageManagementDialog = lazy(() =>
+  import('@/features/storage/StorageManagementDialog').then((module) => ({
+    default: module.StorageManagementDialog,
+  })),
+);
 
 async function liclickAccountRequest<T>(path: string, init?: RequestInit) {
   const response = await fetch(`${workspaceApiBase}${path}`, {
@@ -42,6 +50,8 @@ export function UserMenu({ onLogout }: UserMenuProps) {
   const [busy, setBusy] = useState(false);
   const [loginStatus, setLoginStatus] = useState('');
   const [liclickAccount, setLiclickAccount] = useState<LiclickAccountStatus>();
+  const [storageOverview, setStorageOverview] = useState<StorageOverview>();
+  const [storageOpen, setStorageOpen] = useState(false);
   const t = useT();
   const user = useAuthStore((state) => state.user);
   const localProfile = useAuthStore((state) => state.localProfile);
@@ -61,6 +71,13 @@ export function UserMenu({ onLogout }: UserMenuProps) {
       })
       .catch(() => {
         if (!cancelled) setLiclickAccount({ bound: false, reason: '账号状态读取失败' });
+      });
+    void getStorageOverview()
+      .then(({ overview }) => {
+        if (!cancelled) setStorageOverview(overview);
+      })
+      .catch(() => {
+        if (!cancelled) setStorageOverview(undefined);
       });
     return () => {
       cancelled = true;
@@ -285,6 +302,31 @@ export function UserMenu({ onLogout }: UserMenuProps) {
               <Unlink className="h-4 w-4" />解除当前用户的莉刻账号
             </button>
           )}
+          <button
+            type="button"
+            onClick={() => {
+              setOpen(false);
+              setStorageOpen(true);
+            }}
+            className="mt-1 flex w-full items-center justify-between gap-3 rounded px-3 py-2 text-left text-sm text-white/76 transition hover:bg-white/10 hover:text-white"
+          >
+            <span className="inline-flex min-w-0 items-start gap-2">
+              <HardDrive className="mt-0.5 h-4 w-4 shrink-0" />
+              <span className="min-w-0">
+                <span className="block font-medium text-white/88">存储空间</span>
+                <span className="block truncate text-xs text-white/44">
+                  {storageOverview?.status === 'ready'
+                    ? `已用 ${formatStorageBytes(storageOverview.usedBytes)} · 可清理 ${formatStorageBytes(storageOverview.reclaimableBytes)}`
+                    : storageOverview?.status === 'failed'
+                      ? '读取失败'
+                      : storageOverview?.status === 'scanning'
+                        ? '正在扫描...'
+                        : '待扫描'}
+                </span>
+              </span>
+            </span>
+            <span className="shrink-0 text-xs font-semibold text-liclick-pink">管理</span>
+          </button>
           {user.performanceLabAdmin && (
             <a href={`${import.meta.env.BASE_URL}performance-lab-admin`}
               className="mt-1 block rounded px-3 py-2 text-sm text-white/76 hover:bg-white/10">
@@ -296,6 +338,15 @@ export function UserMenu({ onLogout }: UserMenuProps) {
           </button>
         </div>
       )}
+      {storageOpen ? (
+        <Suspense fallback={null}>
+          <StorageManagementDialog
+            initialOverview={storageOverview}
+            onOverviewChange={setStorageOverview}
+            onClose={() => setStorageOpen(false)}
+          />
+        </Suspense>
+      ) : null}
     </div>
   );
 }

@@ -1,12 +1,10 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
-2026-09-14 M08，协作 M03/M06：`ALG-ERASE-001` 调度修订 v1.5.2。普通投影橡皮后台预热不得抢占局部重绘选区 owner、选区绘制/应用或生图准备；直接检查运行时 ref 覆盖 store 尚未更新的窗口，并取消过期 effect 的异步预览发布。正常预热及显式橡皮准备保留，不新增双份 GPU 缓存；绘制/捕获像素、CPU/Worker/shader、完整分辨率、Schema、Command/CAS/ownership、持久化与导出不变，无迁移。已释放的旧会话选区需重画，不能伪造恢复。生产回调专项、类型与 lint 通过；未整包构建、推送或部署，发布前须最终集成验证。详见 [蒙版预热所有权变更卡](changes/CHG-20260914-INPAINT-PREWARM-OWNERSHIP.md)。
-
-> 文档版本：`2.20.90`
+> 文档版本：`2.20.91`
 >
 > 生效日期：`2026-09-14`
 >
-> 代码盘点基线：`9e69980 + 单视图成功结果自动投影恢复`
+> 代码盘点基线：`6f26336 + 资产盘点与手动隔离清理 Phase 1（本地未部署）`
 >
 > 基线仓库：`E:\Liclick 3D Texture Modernization`
 >
@@ -17,6 +15,16 @@
 2026-09-14 UI-06 → M05：暂时移除图层列表的 Blend Mode 按钮、提示、点击回调和专用图标，避免显示当前无实际作用的操作入口。不透明度、显隐、蒙版及图层菜单保留；既有 blendMode 数据、合成算法、持久化和导出不变，无算法或 Schema 修订，无数据迁移。回滚 LayersPanel 的按钮与回调即可恢复原入口。
 
 2026-09-14 UI-05 → M04/M08：`REFERENCE-GROUP-BINDING` v1.1.0。新生成多视图成功后替换来源单视图的旧配对并持久化新选择；恢复只检查同来源最新发起的任务，避免旧图被移除后旧历史再次写回覆盖新图。提交时间优先，完成/轮询顺序不作为新旧依据；新任务失败时保留现有绑定。写回前重查工程、来源与任务新旧关系；Generation.metadata 增加可选 referenceBindingApplied 标志，已写回结果删除后不自动复活。来源分组、参考资产与任务历史保留既有格式，Project Command/CAS/ownership/verified assets 不变，无批量迁移；详见 [最新多视图绑定变更卡](changes/CHG-20260914-REFERENCE-BINDING.md)。
+
+2026-09-14 M08，协作 M03/M06：`ALG-ERASE-001` 调度修订 v1.5.2。普通投影橡皮后台预热不得抢占局部重绘选区 owner、选区绘制/应用或生图准备；直接检查运行时 ref 覆盖 store 尚未更新的窗口，并取消过期 effect 的异步预览发布。正常预热及显式橡皮准备保留，不新增双份 GPU 缓存；绘制/捕获像素、CPU/Worker/shader、完整分辨率、Schema、Command/CAS/ownership、持久化与导出不变，无迁移。已释放的旧会话选区需重画，不能伪造恢复。生产回调专项、类型与 lint 通过；未整包构建、推送或部署，发布前须最终集成验证。详见 [蒙版预热所有权变更卡](changes/CHG-20260914-INPAINT-PREWARM-OWNERSHIP.md)。
+
+2026-09-14 UI-16 → M14，协作 M01/M02/M12/M13/M15：ASSET-LIFECYCLE-GC v0.3.3 增加 Workspace 隔离区主动永久清空。UI 必须输入“永久删除”完成第二次确认；服务端以用户级单飞幂等 purge job 先原子 rename 整个 `storage-quarantine` 到独立 `storage-purge/<jobId>`，立即从可恢复业务路径摘除，再用异步递归删除释放磁盘，不在 HTTP 请求或 React 主线程中遍历百万文件；服务重启继续未完成 purge。Cleanup job 账本记录被 purge job 认领的批次，扫描不再把已完成物理删除的字节计入 trash。真实 4517 验证中，高密度目录快速隔离 156,104 个文件 / 137,976,470,315 B 耗时 8.55s，随后扫描耗时 1.3s；最终物理释放耗时仍由文件系统决定。Cloud 只暴露不可用原因，未伪装执行；正式对象存储永久删除仍须独立生命周期 Worker、分页锁和批量 DeleteObjects。存储管理保持独立懒加载，合并远程 reference-delight/tight-framing 后总 JS 实测增量 20,125 B，新增 18,000 B 独立路由门禁并把总预算精确增加 21,000 B，主壳/Editor/Bake/共享 3D 热路径预算不变。Schema 仅新增 Purge Job/Quarantine Status 契约，不更改 Project/Revision/Asset Transfer；回滚时停止 purge，保留 `storage-purge` 中未完成目录并移除新增路由/UI，绝不能把其误判为空目录直接删除。
+
+2026-09-14 UI-16 → M14，协作 M01/M02/M12/M13/M15：`STORAGE-INVENTORY-001/3` / ASSET-LIFECYCLE-GC v0.3.2 修复百万文件清理的任务风暴与随机元数据 I/O。每用户 cleanup start 采用单飞锁，重复确认和刷新复用同一活动 job；4517 启动时把遗留 running/queued job 明确标记为中断并触发剩余资产重扫，不伪装继续运行。扫描把最近 60 分钟修改的未引用资产归入保护集合，并把 size/mtime 写入候选证明；隔离区容量改由 cleanup job 账本汇总，不再为每次扫描重复 stat 近百万个已隔离文件。Workspace 高密度目录在重新读取引用、路径/mtime/size/符号链接门禁通过后，为少量保护文件创建同卷硬链接快照，再以两次目录 rename 原子交换，最后移除隔离侧保护链接；扫描后新增的引用单独进入保护快照，不再导致整组退化，Windows `EPERM`/`EBUSY` 短暂占用进行有限重试，门禁不满足才回退有界逐文件移动。资产写入与目录交换共享 project/category mutation lock。Cloud 继续使用 PostgreSQL 集合式逻辑隔离，生产物理删除仍要求分页、`SKIP LOCKED`、对象存储批量删除和独立 Worker 门禁，本次未连接生产库或执行 DeleteObject。Schema/Asset Transfer/Revision CAS/ownership/verified assets 不变；旧 /2 快照自动重扫，无数据迁移。回滚 /2 会失去近期保护和快速路径，应先停止 cleanup，再删除孤立 `storage/cleanup-staging`（仅限核对为空或硬链接 staging）并重扫。
+
+2026-09-14 UI-16 → M14，协作 M01/M02/M12/M13/M15：`STORAGE-INVENTORY-001/2` 与 ASSET-LIFECYCLE-GC v0.3.1 Phase 1 已在本地实现但未部署。首页账号菜单按需加载“存储与清理”，统一 `GET /api/storage`、后台 `POST /api/storage/scans`、幂等 cleanup job 与查询协议；未知快照显示扫描中，不伪报 0 B。4517 Workspace 适配器以有界并发流式盘点元数据/资产并报告进度，当前工程、历史/Command 回执与 recoveries 受保护；扫描原子保存 scanId 候选 NDJSON，清理不再重复遍历百万文件，而是刷新引用后逐项核对路径、引用、文件类型和长度，扫描后新增文件不处理、恢复引用或发生变化的候选跳过，其余候选并发原子移入用户隔离区。Cloud 适配器从 PostgreSQL verified transfers 与 current/history/trash Revision 重建引用图，在 `004_asset_storage_v2_shadow.sql` 影子表中保存快照、候选、幂等任务和逻辑隔离，不更改 Asset Transfer v1、Revision CAS、ownership 或 verified asset 下载。当前未执行数据库迁移、未连接正式站、未物理删除对象，也未启用内容去重、配额或图片重编码；这些仍受下一阶段兼容门禁约束。迁移仅使旧本地快照缺少候选清单而要求重扫一次；回滚到 /1 时删除 `storage/inventory-candidates`，移除 UI/路由/服务并保留或删除空影子表即可，已移入 Workspace 隔离区的文件按 manifest 原路径恢复。Node/PGlite 双端契约、漂移保护、类型、lint 与 production build 通过。
+
+2026-09-14 UI-16 → M14，协作 M01/M02/M10/M12/M13/M15：先行设计把资产生命周期扩展为 4517 Workspace 文件与 Cloud PostgreSQL/对象存储的统一端口、双适配器和首页“存储与清理”入口，候选 ASSET-CONTENT-DEDUP、ASSET-LIFECYCLE-GC、ASSET-QUOTA-RESERVATION、ASSET-ROLE-COMPRESSION 升级为 v0.2.0。账号菜单只显示已用/可清理摘要，管理弹窗规划后台扫描、手动隔离清理、恢复和独立图片优化任务；无完整快照时不得显示 0 B 或允许清理。图片 canonical 不按 Accept 静默转换、不原地覆盖；PNG 仅在 Sharp 与真实浏览器 RGBA/ICC/方向兼容门禁通过后无损切换，JPEG 原件不二次有损，Mask/Depth/Normal/PBR 只允许专用无损验证，WebP 先限于显式 UI 预览变体，AVIF 暂不进入生产资产协议。4517 仅为当前浏览器一体服务的开发验收适配，不恢复 4618/安装器/本地凭据或端点切换。详细阶段与回滚门禁见 [资产生命周期设计卡](changes/CHG-20260914-ASSET-LIFECYCLE-COMPRESSION-DESIGN.md)。
 
 2026-09-14 UI-05（M04）：生成区独立状态提示框隐藏“第一步/第二步”的六视图与去光阶段文案，继续显示实际错误与异常提示。按钮进度、两轮模型/质量/提示词、服务端轮询与取消恢复不变；仅展示修订，无算法或 Schema 变更，无数据迁移。回滚 GeneratePanel 的提示过滤即可恢复原展示。
 
@@ -525,6 +533,7 @@ LI3D Cloud 控制面（无状态 Node.js App）
 | `UI-13` | UV/拓扑页 | 真实 Asset V4 任务、QA 状态、已验证产物下载 | Job + artifact + Pipeline Revision |
 | `UI-14` | Bake 页 | 素材、对齐、Substance Bake、检查、PBR、发布 | Bake job + channel manifest |
 | `UI-15` | 性能实验室云端记录 | `perfLab=1` 下复用人工录制按钮，显示客户端采集/上传状态；维护员按飞书身份查看记录 | PERF-LAB-REPORT v2 + browser chunks |
+| `UI-16` | 首页存储与清理 | 用户菜单占用摘要、管理弹窗、后台扫描、手动隔离/恢复、图片优化；调用 M14，不在 React 扫描或删除 | Storage Overview + Scan/Cleanup/Compression Job |
 
 `UI-05` 生成面板与 `UI-10` 底部工具条必须共用局部生图运行态：从同步提交锁建立开始，到 Generation 行创建、远端执行与结果融合结束，两个入口都显示运行中。禁止仅以 Generation 行是否存在判定面板按钮状态，因为蒙版/视角捕获发生在该行创建之前。
 
