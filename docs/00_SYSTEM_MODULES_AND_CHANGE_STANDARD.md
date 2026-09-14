@@ -1,6 +1,8 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
-> 文档版本：`2.20.84`
+2026-09-14 M08，协作 M03/M06：`ALG-ERASE-001` 调度修订 v1.5.2。普通投影橡皮后台预热不得抢占局部重绘选区 owner、选区绘制/应用或生图准备；直接检查运行时 ref 覆盖 store 尚未更新的窗口，并取消过期 effect 的异步预览发布。正常预热及显式橡皮准备保留，不新增双份 GPU 缓存；绘制/捕获像素、CPU/Worker/shader、完整分辨率、Schema、Command/CAS/ownership、持久化与导出不变，无迁移。已释放的旧会话选区需重画，不能伪造恢复。生产回调专项、类型与 lint 通过；未整包构建、推送或部署，发布前须最终集成验证。详见 [蒙版预热所有权变更卡](changes/CHG-20260914-INPAINT-PREWARM-OWNERSHIP.md)。
+
+> 文档版本：`2.20.86`
 >
 > 生效日期：`2026-09-14`
 >
@@ -9,6 +11,8 @@
 > 基线仓库：`E:\Liclick 3D Texture Modernization`
 >
 > 审计口径：`0a2519d + 607e82f + 2568e40`，不包含错误文档提交 `2bde8c6/e03bab2/d1c5f78`
+
+2026-09-14 M04/UI-05：`MULTIVIEW-REFERENCE-PIPELINE` v1.0.0 / `MULTIVIEW-REFERENCE-PROMPT` v2.0.0 按用户实测流程，将单视图派生六视图改为 Sunburst low 生六视图 → Sunburst medium 对整张六视图去光照。两段提示词采用用户原文，第二轮仅引用第一轮结果并沿用尺寸档位；前端统一 3:2 布局，只发布第二轮成功结果。两轮共用服务端任务身份、个人莉刻账号、取消与后台恢复；生成日志增加可选 referenceDelight 阶段记录，第二次付费提交前先持久化意图，响应不确定时不自动重提。历史无标记任务维持单轮，已存在多视图不自动重生成。Project Schema、Command、Revision CAS、ownership、verified assets、投影/UV/GPU/CPU/Worker/shader 与导出不变，无工程迁移。发布前需排空或终止双阶段活动任务才可回滚旧服务，避免旧代码把第一轮结果当作完成。参数与控制流已用隔离夹具验证，未额外运行付费生图，不承诺实际耗时或严格 Albedo。详见 [两阶段参考图变更卡](changes/CHG-20260914-REFERENCE-DELIGHT-PIPELINE.md)。
 
 2026-09-14 主模块 M03，协作 M04/M08/M06：`ALG-CAP-007` v1.1.0。单视图、局部重绘及多视图按实际提交顶点适配相机，目标限制尺寸 92%，保留 4% 边距；256px 轮廓安全检查不替代正式分辨率。各角度独立冻结相机，已有纹理、白模、蒙版、深度和后续投影共用该角度相机，明确快照不再被二次取景覆盖。无有效几何、变形不支持、超出扫描上限或轮廓校验失败时保留原包围盒取景；纵深限制时允许占比低于 92%。共用目标网格筛选，取景代码并入编辑器模块以减少重复模块依赖开销，包体预算不变。GPU/CPU/Worker/shader 投影公式、UV/export、分辨率、QA、Schema、Command/CAS/ownership/资产协议不变，无数据迁移。详见 [紧凑取景变更卡](changes/CHG-20260914-TIGHT-CAPTURE-FRAMING.md)。
 

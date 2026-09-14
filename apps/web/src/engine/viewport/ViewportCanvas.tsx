@@ -8081,29 +8081,28 @@ function SurfacePaintOverlay() {
             : 'inpaint-mask';
       const layerId = selectedLayer?.id ?? `inpaint:${model.objectId}`;
       const paintResolution =
-        target === 'uv-image'
-          ? UV_TEXTURE_RESOLUTION[textureResolutionSetting]
-          : target === 'projected-mask'
-            ? UV_TEXTURE_RESOLUTION[textureResolutionSetting]
-            : UV_PAINT_RESOLUTION;
+        target === 'inpaint-mask'
+          ? UV_PAINT_RESOLUTION
+          : UV_TEXTURE_RESOLUTION[textureResolutionSetting];
+      const currentLayer = layerRef.current;
       if (
-        layerRef.current?.objectId === model.objectId &&
-        layerRef.current.layerId === layerId &&
-        layerRef.current.target === target &&
-        layerRef.current.paintDefaultResolution === paintResolution
+        currentLayer?.objectId === model.objectId &&
+        currentLayer.layerId === layerId &&
+        currentLayer.target === target &&
+        currentLayer.paintDefaultResolution === paintResolution
       ) {
         // Keep paint layers created by an older HMR generation compatible with
         // the per-mesh selection ownership guard.
-        const needsAccumulatedMeshMigration = !layerRef.current.accumulatedMaskMeshes;
-        layerRef.current.accumulatedMaskMeshes ??= new Set();
-        layerRef.current.currentProjectionMeshes ??= new Set();
-        layerRef.current.pendingPaintCommits ??= 0;
-        if (needsAccumulatedMeshMigration && layerRef.current.accumulatedMaskReady) {
+        const needsAccumulatedMeshMigration = !currentLayer.accumulatedMaskMeshes;
+        currentLayer.accumulatedMaskMeshes ??= new Set();
+        currentLayer.currentProjectionMeshes ??= new Set();
+        currentLayer.pendingPaintCommits ??= 0;
+        if (needsAccumulatedMeshMigration && currentLayer.accumulatedMaskReady) {
           getPaintableMeshes(model).forEach((mesh) =>
             layerRef.current?.accumulatedMaskMeshes.add(mesh),
           );
         }
-        return layerRef.current;
+        return currentLayer;
       }
       deactivateLiveInpaintScreenPreview();
       disposeUvPaintLayer(layerRef.current);
@@ -8308,20 +8307,32 @@ function SurfacePaintOverlay() {
   );
 
   useLayoutEffect(() => {
+    // Speculative eraser warmup must not take ownership of an authored
+    // selection. getUvPaintLayer replaces/disposes the current session.
+    // Check the live owner too: pointer input can precede the store rerender.
     if (
+      isInpaintMode ||
+      isLocalRepaintApplyMode ||
+      paintMaskHasContent ||
+      localRepaintGenerationPresentationActive ||
+      layerRef.current?.target === 'inpaint-mask' ||
       !canUseSurfacePaint ||
       getEraserTargetPolicy(activePaintLayer).kind !== 'projected-mask'
     )
       return;
     const model = getTargetModel();
     if (!model) return;
+    let cancelled = false;
     const layer = getUvPaintLayer(model, true);
     void prepareProjectedEraserGpuPreview(layer, model).then(() => {
-      if (layerRef.current !== layer || !layer.eraserGpu) return;
+      if (cancelled || layerRef.current !== layer || !layer.eraserGpu) return;
       beginLiveEraserPreview(layer, model.group);
       invalidate();
     });
-  }, [activePaintLayer, canUseSurfacePaint, getTargetModel, getUvPaintLayer, invalidate, prepareProjectedEraserGpuPreview]);
+    return () => { cancelled = true; };
+  }, [activePaintLayer, canUseSurfacePaint, getTargetModel, getUvPaintLayer, invalidate,
+    isInpaintMode, isLocalRepaintApplyMode, paintMaskHasContent,
+    localRepaintGenerationPresentationActive, prepareProjectedEraserGpuPreview]);
 
   useLayoutEffect(() => {
     if (
