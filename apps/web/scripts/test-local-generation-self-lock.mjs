@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { stdout } from 'node:process';
 import { fileURLToPath } from 'node:url';
+import './test-texture-weak-light-prompt.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const [editorPage, generatePanel, textureMapPrompts, liclickGenerationService, styles] = await Promise.all([
@@ -24,27 +25,27 @@ assert.match(
 );
 assert.match(
   textureMapPrompts,
-  /只修改图一中的白色、浅灰色、Clay、Primer或未贴图区域/,
+  /只修改图一中的白模、Clay、Primer或指定待补全区域/,
   'The texture prompt must completely replace every unfinished white-model region.',
 );
 assert.match(
   textureMapPrompts,
-  /不要保留白模内部的三角面灰度、Flat Shading或硬法线明暗/,
+  /不要沿用白模的灰度渐变、三角面明暗或硬法线色块/,
   'The texture prompt must reject low-poly shading artifacts as material evidence.',
 );
 assert.match(
   textureMapPrompts,
-  /材质必须自然跨越低模面，连续、平滑、无多边形色块、接缝、白边、光晕或重复纹理/,
+  /不得移动、缩放、旋转、变形、平滑或重建结构[\s\S]*?不要模糊、磨皮/,
   'Material smoothing must not be interpreted as permission to reshape the target silhouette.',
 );
 assert.match(
   textureMapPrompts,
-  /图二只提供材质外观，不提供形状和构图[\s\S]*?忽略图二的几何、轮廓、相机、背景、光照、多视图排版和额外部件/,
+  /图二只提供材质固有颜色[\s\S]*?不提供形状、构图或照明/,
   'The material reference must not influence geometry or composition.',
 );
 assert.match(
   textureMapPrompts,
-  /图一中已有材质的区域、背景和透明区域必须保持原始颜色、纹理和光影不变/,
+  /已经贴好的纹理区域保持不变，不对整张图重新调色、打光或去光照。保留原有背景及透明区域/,
   'Existing material pixels must be absolutely locked.',
 );
 assert.match(
