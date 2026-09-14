@@ -13,7 +13,7 @@ const declarations = (source, names) => {
   return ast.statements.filter((node) => ts.isFunctionDeclaration(node) && names.includes(node.name?.text))
     .map((node) => node.getText(ast).replace(/^export /, '')).join('\n');
 };
-const source = declarations(await read('renderTargetUtils.ts'), ['applyTargetOnlyMaterial']) + '\n' +
+const source = declarations(await read('renderTargetUtils.ts'), ['isCaptureTargetMesh', 'applyTargetOnlyMaterial']) + '\n' +
   declarations(capture, ['createFlatTargetCaptureMaterial', 'prepareFlatTargetCapture', 'captureFlatTarget']);
 const compiled = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
 

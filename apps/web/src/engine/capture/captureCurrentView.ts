@@ -1,4 +1,6 @@
 import { captureColor } from './captureColor';
+import { fitGeometryCapture, verifyTightCapture } from './tightCaptureFraming';
+export { frameGenerationCapture } from './generationFraming';
 import { flushLiveUvCommits } from '@/engine/projection/liveProjectedCanvasTextureRegistry';
 import { waitForResidentUvPresentation } from '@/engine/projection/residentUvPresentation';
 import { captureDepth } from './captureDepth';
@@ -12,6 +14,7 @@ import type {
 } from './captureTypes';
 import {
   applyTargetOnlyMaterial,
+  isCaptureTargetMesh,
   cloneCameraForCaptureAspect,
   renderSceneToPngUrl,
 } from './renderTargetUtils';
@@ -80,16 +83,7 @@ export function getTargetBounds(scene: THREE.Scene, objectId: string) {
   let found = false;
   scene.updateMatrixWorld(true);
   scene.traverse((object) => {
-    if (!(object instanceof THREE.Mesh)) return;
-    if (object.userData.liclickObjectId !== objectId) return;
-    if (
-      object.userData.liclickRestorePlaceholder ||
-      object.userData.liclickViewportHelper ||
-      object.userData.liclickPaintOverlay ||
-      object.userData.liclickSelectionGlow ||
-      object.userData.liclickWireframeOverlay
-    )
-      return;
+    if (!isCaptureTargetMesh(object, objectId)) return;
     box.expandByObject(object);
     found = true;
   });
@@ -212,11 +206,6 @@ function vectorFromTuple(tuple?: [number, number, number]) {
   return tuple ? new THREE.Vector3(tuple[0], tuple[1], tuple[2]) : undefined;
 }
 
-/** Load generation-only framing on demand; ordinary captures remain unchanged. */
-export async function frameGenerationCapture(...args: Parameters<typeof import('./generationFraming').frameGenerationCapture>) {
-  return (await import('./generationFraming')).frameGenerationCapture(...args);
-}
-
 async function resolveCaptureCamera(request: CaptureCurrentViewRequest, aspect: number) {
   const viewport = useSceneStore.getState().viewport;
   if (!viewport) throw new Error('视口尚未准备完成，请稍后重试。');
@@ -228,17 +217,19 @@ async function resolveCaptureCamera(request: CaptureCurrentViewRequest, aspect: 
     viewport.controls?.target?.clone() ??
     new THREE.Vector3();
 
-  if (request.framing === 'fit-object') {
+  if (request.framing === 'fit-object' && !request.cameraSnapshot) {
     const targetBounds = await getTargetBoundsWhenReady(viewport.scene, request.objectId);
-    const fitted = createFitObjectCamera(
+    const fallback = createFitObjectCamera(
       sourceCamera,
       targetBounds,
       aspect,
       request.fillRatio ?? defaultFillRatio,
-      request.cameraSnapshot?.target ?? viewport.controls?.target,
+      viewport.controls?.target,
       vectorFromTuple(request.viewDirection),
       vectorFromTuple(request.viewUp),
     );
+    const candidate = await fitGeometryCapture(viewport.scene, request.objectId, fallback, aspect);
+    const fitted = await verifyTightCapture(viewport, request.objectId, candidate, fallback, aspect);
     captureCamera = fitted.camera;
     captureTarget = fitted.target;
   }

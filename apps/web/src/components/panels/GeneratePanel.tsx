@@ -2425,9 +2425,15 @@ export function GeneratePanel({
   async function getTextureMapMultiviewCaptures(
     views: CameraViewItem[],
     signal?: AbortSignal,
-    options: { cameraSnapshot?: SerializedCameraInput } = {},
+    options: { cameraSnapshot?: SerializedCameraInput; viewSnapshots?: Map<string, SerializedCameraInput> } = {},
   ) {
     if (!captureObjectId) throw new Error(t('importModelFirst'));
+    const viewSnapshots = options.viewSnapshots ?? new Map<string, SerializedCameraInput>();
+    for (const view of views) {
+      throwIfTexturePipelineCancelled(signal);
+      if (!viewSnapshots.has(view.id)) viewSnapshots.set(view.id, options.cameraSnapshot ??
+        await frameGenerationCapture(captureObjectId, 1, view.viewDirection, view.viewUp, signal, false));
+    }
     return withStableClayTargetPresentation(captureObjectId, async () => {
       const captures: Partial<Record<string, Capture>> = {};
       for (let index = 0; index < views.length; index += 1) {
@@ -2439,7 +2445,7 @@ export function GeneratePanel({
         try {
           const capture = await captureTextureMapCameraView(view, {
             setAsLastCapture: false,
-            cameraSnapshot: options.cameraSnapshot,
+            cameraSnapshot: viewSnapshots.get(view.id),
           });
           throwIfTexturePipelineCancelled(signal);
           captures[view.id] = capture;
@@ -2462,6 +2468,7 @@ export function GeneratePanel({
           cameraView: view.value ?? 'custom',
           label: view.label,
           capture: captures[view.id],
+          cameraSnapshot: viewSnapshots.get(view.id),
         }))
         .filter(
           (
@@ -2471,6 +2478,7 @@ export function GeneratePanel({
             cameraView: ObjectViewPreset | 'custom';
             label: string;
             capture: Capture;
+            cameraSnapshot: SerializedCameraInput | undefined;
           } => Boolean(item.capture),
         );
     });
@@ -2695,6 +2703,7 @@ export function GeneratePanel({
             framing: 'fit-object',
             colorMode: 'flat-target-coverage',
             fillRatio: 0.88,
+            cameraSnapshot: capturedView.cameraSnapshot,
             viewDirection: view.viewDirection,
             viewUp: view.viewUp,
           });
@@ -3138,15 +3147,18 @@ export function GeneratePanel({
       throwIfTexturePipelineCancelled(signal);
     }
     const pairCurrentEffects = new Map<string, string>();
+    const viewSnapshots = new Map<string, SerializedCameraInput>();
     if (pairContext && hasVisibleTextureLayerCandidate(objectId)) {
       // Freeze authored colour BEFORE white presentation replaces the resident
       // material. Clearing that flag later does not synchronously restore it.
       updateTexturePipelineProgress(20, '准备多视图快照 · 保存已有纹理');
       for (const view of requestedViews) {
         throwIfTexturePipelineCancelled(signal);
+        const snapshot = await frameGenerationCapture(objectId, 1, view.viewDirection, view.viewUp, signal, false);
+        viewSnapshots.set(view.id, snapshot);
         const effect = await captureCurrentColorPreview({
           objectId, resolution: resolutionToSize[resolution], framing: 'fit-object',
-          colorMode: 'flat-target-coverage', fillRatio: 0.88,
+          colorMode: 'flat-target-coverage', fillRatio: 0.88, cameraSnapshot: snapshot,
           viewDirection: view.viewDirection, viewUp: view.viewUp,
         });
         pairCurrentEffects.set(view.id, effect.colorUrl);
@@ -3154,7 +3166,7 @@ export function GeneratePanel({
     }
     updateTexturePipelineProgress(24, isMultiviewRequest ? '准备多视角快照' : '准备当前单视图');
     let capturedViews = await getTextureMapMultiviewCaptures(requestedViews, signal, {
-      cameraSnapshot: singleViewCameraSnapshot,
+      cameraSnapshot: singleViewCameraSnapshot, viewSnapshots,
     });
     throwIfTexturePipelineCancelled(signal);
     if (capturedViews.length === 0) {
