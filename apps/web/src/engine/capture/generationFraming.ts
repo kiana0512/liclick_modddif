@@ -1,9 +1,8 @@
 import * as THREE from 'three';
 import { useSceneStore } from '@/stores/sceneStore';
-import { getTargetBounds, createFitObjectCamera } from './captureCurrentView';
+import { getTargetBounds, createFitObjectCamera, vectorFromTuple } from './captureCurrentView';
 import { animateCaptureCamera } from './animateCaptureCamera';
 import { fitGeometryCapture, verifyTightCapture } from './tightCaptureFraming';
-function vectorFromTuple(tuple?: [number, number, number]) { return tuple ? new THREE.Vector3(...tuple) : undefined; }
 
 /** Fit once at submission, then share the immutable camera across every input. */
 export async function frameGenerationCapture(

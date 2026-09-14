@@ -16,9 +16,8 @@ export async function fitGeometryCapture(
   signal?.throwIfAborted();
   const camera = fallback.camera.clone();
   camera.updateMatrixWorld(true);
-  const right = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 0);
-  const up = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 1);
-  const back = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 2);
+  const [right, up, back] = [0, 1, 2].map(axis =>
+    new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, axis)) as [THREE.Vector3, THREE.Vector3, THREE.Vector3];
   const perspective = camera instanceof THREE.PerspectiveCamera;
   const ty = perspective ? Math.tan(THREE.MathUtils.degToRad(camera.getEffectiveFOV()) / 2) * 0.92 : 0;
   const tx = ty * aspect;

@@ -36,16 +36,11 @@ const defaultFillRatio = 0.96;
 const localRepaintInteractiveCaptureSize = maxCaptureSize;
 
 function getBoxCorners(box: THREE.Box3) {
-  return [
-    new THREE.Vector3(box.min.x, box.min.y, box.min.z),
-    new THREE.Vector3(box.min.x, box.min.y, box.max.z),
-    new THREE.Vector3(box.min.x, box.max.y, box.min.z),
-    new THREE.Vector3(box.min.x, box.max.y, box.max.z),
-    new THREE.Vector3(box.max.x, box.min.y, box.min.z),
-    new THREE.Vector3(box.max.x, box.min.y, box.max.z),
-    new THREE.Vector3(box.max.x, box.max.y, box.min.z),
-    new THREE.Vector3(box.max.x, box.max.y, box.max.z),
-  ];
+  const corners: THREE.Vector3[] = [];
+  for (const x of [box.min.x, box.max.x])
+    for (const y of [box.min.y, box.max.y])
+      for (const z of [box.min.z, box.max.z]) corners.push(new THREE.Vector3(x, y, z));
+  return corners;
 }
 
 function getViewFrame(box: THREE.Box3, viewDirection: THREE.Vector3, sourceUp: THREE.Vector3) {
@@ -57,37 +52,29 @@ function getViewFrame(box: THREE.Box3, viewDirection: THREE.Vector3, sourceUp: T
   right.normalize();
   const up = direction.clone().cross(right).normalize();
 
-  let halfWidth = 0;
-  let halfHeight = 0;
-  let halfDepth = 0;
-  for (const corner of getBoxCorners(box)) {
-    const offset = corner.sub(center);
-    halfWidth = Math.max(halfWidth, Math.abs(offset.dot(right)));
-    halfHeight = Math.max(halfHeight, Math.abs(offset.dot(up)));
-    halfDepth = Math.max(halfDepth, Math.abs(offset.dot(direction)));
-  }
+  const halfSize = box.getSize(new THREE.Vector3()).multiplyScalar(0.5);
+  const span = (axis: THREE.Vector3) => Math.max(0.001,
+    halfSize.x * Math.abs(axis.x) + halfSize.y * Math.abs(axis.y) + halfSize.z * Math.abs(axis.z));
 
   return {
     center,
     direction,
     right,
     up,
-    halfWidth: Math.max(halfWidth, 0.001),
-    halfHeight: Math.max(halfHeight, 0.001),
-    halfDepth: Math.max(halfDepth, 0.001),
+    halfWidth: span(right),
+    halfHeight: span(up),
+    halfDepth: span(direction),
   };
 }
 
 export function getTargetBounds(scene: THREE.Scene, objectId: string) {
   const box = new THREE.Box3();
-  let found = false;
   scene.updateMatrixWorld(true);
   scene.traverse((object) => {
     if (!isCaptureTargetMesh(object, objectId)) return;
     box.expandByObject(object);
-    found = true;
   });
-  if (!found || box.isEmpty()) return undefined;
+  if (box.isEmpty()) return undefined;
   return box;
 }
 
@@ -153,57 +140,52 @@ export function createFitObjectCamera(
   const center = frame.center;
   const safeFillRatio = THREE.MathUtils.clamp(fillRatio, 0.2, 0.98);
 
+  let camera: THREE.PerspectiveCamera | THREE.OrthographicCamera;
   if (sourceCamera instanceof THREE.OrthographicCamera) {
     const halfHeight = Math.max(frame.halfHeight, frame.halfWidth / aspect) / safeFillRatio;
     const halfWidth = halfHeight * aspect;
-    const camera = new THREE.OrthographicCamera(-halfWidth, halfWidth, halfHeight, -halfHeight);
+    camera = new THREE.OrthographicCamera(-halfWidth, halfWidth, halfHeight, -halfHeight);
     camera.position.copy(center).add(direction.multiplyScalar(frame.halfDepth + halfHeight * 2));
-    camera.up.copy(upSource);
     camera.near = 0.01;
     camera.far = Math.max(frame.halfDepth * 8 + halfHeight * 4, 100);
     camera.zoom = 1;
-    camera.lookAt(center);
-    camera.updateProjectionMatrix();
-    camera.updateMatrixWorld(true);
-    return { camera, target: center.clone() };
-  }
+  } else {
+    const sourcePerspective =
+      sourceCamera instanceof THREE.PerspectiveCamera ? sourceCamera : undefined;
+    const fov = sourcePerspective?.fov ?? 35;
+    const zoom = sourcePerspective?.zoom ?? 1;
+    const fovRad = THREE.MathUtils.degToRad(sourcePerspective?.getEffectiveFOV() ?? fov);
+    const tanHalfVerticalFov = Math.max(Math.tan(fovRad * 0.5), 0.0001);
+    const tanHalfHorizontalFov = Math.max(Math.tan(fovRad * 0.5) * aspect, 0.0001);
 
-  const sourcePerspective =
-    sourceCamera instanceof THREE.PerspectiveCamera ? sourceCamera : undefined;
-  const fov = sourcePerspective?.fov ?? 35;
-  const zoom = sourcePerspective?.zoom ?? 1;
-  const fovRad = THREE.MathUtils.degToRad(sourcePerspective?.getEffectiveFOV() ?? fov);
-  const horizontalFovRad = 2 * Math.atan(Math.tan(fovRad * 0.5) * aspect);
-  const tanHalfVerticalFov = Math.max(Math.tan(fovRad * 0.5), 0.0001);
-  const tanHalfHorizontalFov = Math.max(Math.tan(horizontalFovRad * 0.5), 0.0001);
-
-  // Fit every depth-aware corner instead of fitting only the box width/height.
-  // A corner closer to the camera occupies more screen space; ignoring that
-  // perspective term made deep/asymmetric models touch or cross a capture edge.
-  let distance = 0.001;
-  for (const corner of getBoxCorners(box)) {
-    const offset = corner.sub(center);
-    const towardCamera = offset.dot(frame.direction);
-    distance = Math.max(
-      distance,
-      towardCamera + Math.abs(offset.dot(frame.up)) / (tanHalfVerticalFov * safeFillRatio),
-      towardCamera + Math.abs(offset.dot(frame.right)) / (tanHalfHorizontalFov * safeFillRatio),
-    );
+    // Fit every depth-aware corner instead of fitting only the box width/height.
+    // A corner closer to the camera occupies more screen space; ignoring that
+    // perspective term made deep/asymmetric models touch or cross a capture edge.
+    let distance = 0.001;
+    for (const corner of getBoxCorners(box)) {
+      const offset = corner.sub(center);
+      const towardCamera = offset.dot(frame.direction);
+      distance = Math.max(
+        distance,
+        towardCamera + Math.abs(offset.dot(frame.up)) / (tanHalfVerticalFov * safeFillRatio),
+        towardCamera + Math.abs(offset.dot(frame.right)) / (tanHalfHorizontalFov * safeFillRatio),
+      );
+    }
+    camera = new THREE.PerspectiveCamera(fov, aspect);
+    camera.position.copy(center).add(direction.multiplyScalar(distance));
+    camera.zoom = zoom;
+    camera.near = Math.max(0.01, distance - frame.halfDepth * 3);
+    camera.far = Math.max(distance + frame.halfDepth * 5, 100);
   }
-  const camera = new THREE.PerspectiveCamera(fov, aspect);
-  camera.position.copy(center).add(direction.multiplyScalar(distance));
   camera.up.copy(upSource);
-  camera.zoom = zoom;
-  camera.near = Math.max(0.01, distance - frame.halfDepth * 3);
-  camera.far = Math.max(distance + frame.halfDepth * 5, 100);
   camera.lookAt(center);
   camera.updateProjectionMatrix();
   camera.updateMatrixWorld(true);
   return { camera, target: center.clone() };
 }
 
-function vectorFromTuple(tuple?: [number, number, number]) {
-  return tuple ? new THREE.Vector3(tuple[0], tuple[1], tuple[2]) : undefined;
+export function vectorFromTuple(tuple?: [number, number, number]) {
+  return tuple ? new THREE.Vector3(...tuple) : undefined;
 }
 
 async function resolveCaptureCamera(request: CaptureCurrentViewRequest, aspect: number) {
