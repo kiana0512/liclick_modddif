@@ -12,6 +12,19 @@ const oracle=ts.transpileModule(frozen.slice(frozen.indexOf('const TOP_K'),froze
 const server=await createServer({root,logLevel:'error',plugins:[{
   name:'resident-cpu-oracle',
   configureServer(server) {
+    server.middlewares.use('/__quality_test', (_req, res) => {
+      res.setHeader('Content-Type', 'text/html');
+      res.end(`<!doctype html><meta charset="utf-8"><title>UV quality parity</title>
+        <button>验证 UV 质量解析</button><pre>Ready</pre><script type="module">
+        import {run} from '/scripts/resident-quality-browser-fixture.mjs';
+        document.querySelector('button').onclick=async()=>{
+          const result=document.querySelector('pre');result.textContent='Running';
+          document.querySelector('button').disabled=true;
+          try{result.textContent=JSON.stringify([await run(128,23),await run(128,1)],null,2)}
+          catch(e){result.textContent=e.stack;console.error(e)}
+          finally{document.querySelector('button').disabled=false}
+        };</script>`);
+    });
     server.middlewares.use('/__resident_test',(_req,res)=>{res.setHeader('Content-Type','text/html');res.end('<!doctype html><html><head><title>UV contribution regression</title><link rel="icon" href="data:,"></head><body><button id="run">Test UV contributions</button><pre id="result">Ready</pre><script type="module">import {run} from "/scripts/uv-contribution-browser-fixture.mjs";document.querySelector("#run").onclick=async()=>{document.querySelector("#result").textContent="Running";try{document.querySelector("#result").textContent=JSON.stringify(await run(),null,2)}catch(e){document.querySelector("#result").textContent=e.stack;console.error(e)}};</script></body></html>');});
   },
   resolveId(id){if(id==='virtual:resident-cpu-oracle')return '\0resident-cpu-oracle';},

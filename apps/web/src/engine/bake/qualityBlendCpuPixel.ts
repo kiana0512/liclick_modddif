@@ -14,6 +14,7 @@ const COVERAGE_THRESHOLD = 0.02;
 // of thousands of times; per-pixel nested arrays cause avoidable GC stalls.
 const pixelCoverages = [0, 0, 0];
 const pixelQualities = [0, 0, 0];
+const pixelStrongWeights = [0, 0, 0];
 const pixelColors = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
 
 
@@ -62,10 +63,6 @@ export function resolvePixelCpu(topK: TopK, pixelIndex: number, preserveAlpha: b
     qualities[slot] = topK.qualities[slot][pixelIndex];
     remaining *= 1 - Math.max(0, Math.min(1, coverage));
     if (coverage > COVERAGE_THRESHOLD) candidateCount += 1;
-    const packed = topK.colors[slot][pixelIndex];
-    colors[slot][0] = SRGB_BYTE_TO_LINEAR[packed & 255];
-    colors[slot][1] = SRGB_BYTE_TO_LINEAR[(packed >>> 8) & 255];
-    colors[slot][2] = SRGB_BYTE_TO_LINEAR[(packed >>> 16) & 255];
   }
   const alpha = preserveAlpha ? clampByte((1 - remaining) * 255) : 255;
   if (candidateCount === 1) {
@@ -81,6 +78,10 @@ export function resolvePixelCpu(topK: TopK, pixelIndex: number, preserveAlpha: b
   let baseGreen = 0;
   let baseBlue = 0;
   for (let slot = 0; slot < TOP_K; slot += 1) {
+    const packed = topK.colors[slot][pixelIndex];
+    colors[slot][0] = SRGB_BYTE_TO_LINEAR[packed & 255];
+    colors[slot][1] = SRGB_BYTE_TO_LINEAR[(packed >>> 8) & 255];
+    colors[slot][2] = SRGB_BYTE_TO_LINEAR[(packed >>> 16) & 255];
     const quality = qualities[slot];
     if (quality <= 0) continue;
     totalQuality += quality;
@@ -108,7 +109,9 @@ export function resolvePixelCpu(topK: TopK, pixelIndex: number, preserveAlpha: b
   let sumStrong = 0;
   let sumSoft = 0;
   for (let slot = 0; slot < TOP_K; slot += 1) {
-    sumStrong += Math.max(0, qualities[slot]) ** BLEND_POWER;
+    const strong = Math.max(0, qualities[slot]) ** BLEND_POWER;
+    pixelStrongWeights[slot] = strong;
+    sumStrong += strong;
     sumSoft += Math.max(0, coverages[slot]);
   }
   if (sumSoft <= 0.000001) return false;
@@ -116,10 +119,9 @@ export function resolvePixelCpu(topK: TopK, pixelIndex: number, preserveAlpha: b
   let finalGreen = 0;
   let finalBlue = 0;
   for (let slot = 0; slot < TOP_K; slot += 1) {
-    const quality = Math.max(0, qualities[slot]);
     const coverage = Math.max(0, coverages[slot]);
     if (coverage <= 0) continue;
-    const strongWeight = quality ** BLEND_POWER / Math.max(sumStrong, 0.000001);
+    const strongWeight = pixelStrongWeights[slot] / Math.max(sumStrong, 0.000001);
     const softWeight = coverage / sumSoft;
     const weight = strongWeight * (1 - RESIDUAL_MIX) + softWeight * RESIDUAL_MIX;
     finalRed += colors[slot][0] * weight;
