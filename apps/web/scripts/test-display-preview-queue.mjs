@@ -103,7 +103,7 @@ const panel = read('components/panels/GeneratePanel.tsx');
 assert.match(panel, /!previewProcessingVisible \|\| !sourceUrl \|\| !previewProcessingMode/);
 assert.match(panel, /generatePanelExpanded && displayedTexturePreviewMode !== 'multi'/);
 assert.match(panel, /cancelled = true;\s*controller.abort\(\);/);
-assert.match(read('engine/localRepaint/resultPreviewUtils.ts'), /\['display', sourceUrl, depthUrl, request.revision\]/);
+assert.match(read('engine/localRepaint/resultPreviewUtils.ts'), /\['display', sourceUrl, depthUrl, request.revision, preserveAlpha\]/);
 console.log('Display preview scheduling, cancellation, LRU/byte budget and panel ownership passed.');
 
 // Run the real panel hook: thumbnail and zoom consumers stay separate, and
@@ -137,6 +137,7 @@ requests[2].resolve(value('current')); await tick();
 assert.equal(render({...revised,imageUrl:'replacement'},true).fittedUrl,'current');
 assert.equal(render(layer,false),undefined); effects();
 assert.equal(requests.at(-1).kind,'full','Zoom keeps the original complete display pipeline');
+assert.equal(requests.at(-1).args[3],false,'The thumbnail projected flag must not enable alpha-only mode for legacy layer zoom');
 requests.at(-1).resolve(value('full')); await tick();
 assert.equal(render(layer,false).fittedUrl,'full');
 for (const excluded of [{...layer,localRepaintMaskUrl:'author-mask'}, {...layer,type:'uv',imageUrl:'live:canvas'}]) {

@@ -28,34 +28,16 @@ export function findContentFraming(
   if (x1 < x0) throw new Error('未找到模型轮廓，未提交生成任务。');
   const w = x1 - x0 + 1,
     h = y1 - y0 + 1;
-  const border = Math.max(2, Math.ceil(Math.max(w, h) * 0.03));
+  const border = Math.max(2, Math.ceil(Math.max(w, h) * 0.01));
   const content = {
     left: x0 - border,
     top: y0 - border,
     width: w + border * 2,
     height: h + border * 2,
   };
-  // UI-like ratio controls (at most 100), NOT image pixel dimensions.
-  const ratio = Math.max(1 / 3, Math.min(3, content.width / content.height));
-  let rw = ratio >= 1 ? 100 : Math.round(100 * ratio);
-  let rh = ratio >= 1 ? Math.round(100 / ratio) : 100;
-  if (rw > rh * 3) {
-    rw = 3;
-    rh = 1;
-  }
-  if (rh > rw * 3) {
-    rw = 1;
-    rh = 3;
-  }
-  const output = generationOutputSize(rw, rh, imageSize);
-  let a = output.width,
-    b = output.height;
-  while (b) [a, b] = [b, a % b];
-  const pw = output.width / a,
-    ph = output.height / a;
-  const k = Math.ceil(Math.max(content.width / pw, content.height / ph));
-  const cw = pw * k,
-    ch = ph * k;
+  // Square input and square generation; preserve source pixels by padding only.
+  const output = generationOutputSize(1, 1, imageSize);
+  const cw = Math.max(content.width, content.height), ch = cw;
   return validateGenerationFraming({
     version: 2,
     sourceWidth: width,
@@ -66,8 +48,8 @@ export function findContentFraming(
     height: ch,
     cropBounds: content,
     subject: { left: x0, top: y0, width: w, height: h },
-    ratioWidth: rw,
-    ratioHeight: rh,
+    ratioWidth: 1,
+    ratioHeight: 1,
     outputWidth: output.width,
     outputHeight: output.height,
   });

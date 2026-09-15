@@ -137,6 +137,16 @@ const paddedJob = await module.exports.roundtrip({
   input: paddedInput,
 });
 assert.deepEqual(paddedJob.input.framing, padded);
+const square = { ...padded, width: 1507, height: 1507, ratioWidth: 1, ratioHeight: 1, outputWidth: 2048, outputHeight: 2048 };
+// Preserve all of the crop while centering it inside a square.
+square.left = padded.cropBounds.left;
+square.top = padded.cropBounds.top - 400;
+for (const model of ['gpt-image-2', 'gpt-image-2.5-sunburst', 'gpt-image-2.5-flare']) {
+  const output = buildExtraParams({ ...paddedInput, model, framing: square }, []).extraParams;
+  assert.equal(output.aspect_ratio_w, 1);
+  assert.equal(output.aspect_ratio_h, 1);
+  assert.equal(output.background, 'transparent');
+}
 console.log(
   'GPT framing persistence: production sanitization + disk restart preserve exact coordinates.',
 );
