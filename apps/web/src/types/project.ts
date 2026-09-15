@@ -47,6 +47,8 @@ export type ProjectSettings = {
     /** Legacy setting retained for old projects; new GPT batches always use accelerated groups. */
     textureMultiviewMode?: 'stable' | 'fast';
     localRepaintProvider?: 'modelview' | 'gpt';
+    /** Missing/false uses only the composite and geometry normal in GPT repaint. */
+    gptRepaintUseMaterialReference?: boolean;
     model: string;
     aspectRatio: string;
     imageSize: string;

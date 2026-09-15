@@ -1,0 +1,202 @@
+<!doctype html><meta charset="UTF-8" /><title>GPT crop pixel regression</title>
+<pre id="result">Running pixel checks…</pre>
+<script type="module">
+  import {
+    prepareContentFraming,
+    restoreContentFraming,
+  } from '/src/engine/generation/contentFramingImages.ts';
+  import { findContentFraming } from '/src/engine/generation/contentFraming.ts';
+  import * as THREE from 'three';
+  import { captureMask } from '/src/engine/capture/captureMask.ts';
+  import { captureNormal } from '/src/engine/capture/captureNormal.ts';
+  const result = document.getElementById('result');
+  const check = (test, message) => {
+    if (!test) throw new Error(message);
+  };
+  function fixture(normal = false) {
+    const c = document.createElement('canvas');
+    c.width = 200;
+    c.height = 200;
+    const x = c.getContext('2d');
+    if (!normal) {
+      x.fillStyle = '#ffffff';
+      x.fillRect(60, 90, 80, 30);
+    } else {
+      x.fillStyle = 'rgb(0,120,255)';
+      x.fillRect(60, 90, 80, 30);
+    }
+    return c.toDataURL();
+  }
+  async function pixels(url) {
+    const image = new Image();
+    image.src = url;
+    await image.decode();
+    const c = document.createElement('canvas');
+    c.width = image.width;
+    c.height = image.height;
+    const x = c.getContext('2d');
+    x.drawImage(image, 0, 0);
+    return x.getImageData(0, 0, c.width, c.height);
+  }
+  try {
+    const renderer = new THREE.WebGLRenderer();
+    renderer.setSize(128, 128);
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color('#ffffff');
+    const mesh = new THREE.Mesh(
+      new THREE.BoxGeometry(1.8, 0.8, 0.2),
+      new THREE.MeshBasicMaterial({ color: '#000000' }),
+    );
+    mesh.userData.liclickObjectId = 'fixture';
+    scene.add(mesh);
+    const other = new THREE.Mesh(new THREE.BoxGeometry(8, 8, 8), new THREE.MeshBasicMaterial());
+    other.position.z = -5;
+    scene.add(other);
+    const camera = new THREE.OrthographicCamera(-2, 2, 2, -2, 0.1, 100);
+    camera.position.z = 5;
+    camera.updateMatrixWorld();
+    const request = { gl: renderer, scene, camera, objectId: 'fixture', width: 128, height: 128 };
+    const maskPass = await captureMask(request);
+    const normalPass = await captureNormal(
+      { ...request, clearAlpha: 0 },
+      { geometryGuide: true, space: 'view' },
+    );
+    const mb = findContentFraming(await pixels(maskPass.url)),
+      nb = findContentFraming(await pixels(normalPass.url), true);
+    check(mb.width < 90 && mb.height < 50, 'white viewport background polluted geometry mask');
+    check(JSON.stringify(mb) === JSON.stringify(nb), 'actual normal/mask bounds differ');
+    check(
+      scene.background.getHexString() === 'ffffff' && other.visible,
+      'capture leaked scene state',
+    );
+    renderer.dispose();
+    mesh.geometry.dispose();
+    mesh.material.dispose();
+    other.geometry.dispose();
+    other.material.dispose();
+    URL.revokeObjectURL(maskPass.url);
+    URL.revokeObjectURL(normalPass.url);
+    const mask = fixture(),
+      normal = fixture(true),
+      guide = fixture();
+    const references = [
+      { id: 'guide', name: 'guide', url: guide },
+      { id: 'normal', name: 'normal', url: normal },
+      { id: 'material', name: 'material', url: mask },
+    ];
+    const input = {
+      workflow: 'local-repaint',
+      capture: { width: 200, height: 200, maskUrl: mask, normalUrl: normal },
+      referenceImages: references,
+    };
+    const prepared = await prepareContentFraming(input);
+    const expected = findContentFraming(await pixels(normal), true);
+    check(JSON.stringify(prepared.framing) === JSON.stringify(expected), 'crop mismatch');
+    check(prepared.references[2] === references[2], 'material reference was cropped');
+    const crop = await pixels(prepared.references[0].url),
+      cn = await pixels(prepared.references[1].url);
+    check(crop.width === cn.width && crop.height === cn.height, 'normal alignment');
+    for (let i = 3; i < crop.data.length; i += 4)
+      check(crop.data[i] === cn.data[i], 'coverage alignment');
+    const restored = await pixels(
+      await restoreContentFraming(prepared.references[0].url, prepared.framing),
+    );
+    const original = await pixels(guide);
+    check(restored.width === 200 && restored.height === 200, 'restore dimensions');
+    check(
+      restored.data.every((v, i) => v === original.data[i]),
+      'roundtrip pixel drift',
+    );
+    let failed = false;
+    try {
+      await restoreContentFraming(guide, prepared.framing);
+    } catch {
+      failed = true;
+    }
+    check(failed, 'bad ratio accepted');
+    const controller = new AbortController();
+    controller.abort();
+    failed = false;
+    try {
+      await prepareContentFraming({ ...input, signal: controller.signal });
+    } catch {
+      failed = true;
+    }
+    check(failed, 'cancel accepted');
+    const texture = await prepareContentFraming({
+      ...input,
+      workflow: 'texture-map',
+      referenceImages: [references[0], references[2]],
+    });
+    check(texture.references[1] === references[2], 'texture reference changed');
+    check(
+      JSON.stringify(texture.framing) === JSON.stringify(prepared.framing),
+      'texture/repaint bounds mismatch',
+    );
+    // Actual 2K PNG path, edge-touching geometry, alpha and enlarged provider return.
+    const large = document.createElement('canvas');
+    large.width = 2048;
+    large.height = 2048;
+    const lc = large.getContext('2d');
+    lc.fillStyle = '#ffffff';
+    lc.fillRect(0, 300, 1400, 700);
+    lc.fillStyle = 'rgba(120,80,40,0.5)';
+    lc.fillRect(400, 500, 300, 200);
+    const largeUrl = large.toDataURL();
+    const largePrepared = await prepareContentFraming({
+      workflow: 'texture-map',
+      capture: { width: 2048, height: 2048, maskUrl: largeUrl },
+      referenceImages: [{ id: 'large', name: 'large', url: largeUrl }],
+    });
+    check(largePrepared.framing.left < 0, 'edge margin lost');
+    const largeRestored = await pixels(
+      await restoreContentFraming(largePrepared.references[0].url, largePrepared.framing),
+    );
+    const largeOriginal = await pixels(largeUrl);
+    check(
+      largeRestored.data.every((v, i) => v === largeOriginal.data[i]),
+      '2K alpha/edge roundtrip drift',
+    );
+    const smallCrop = new Image();
+    smallCrop.src = prepared.references[0].url;
+    await smallCrop.decode();
+    const doubled = document.createElement('canvas');
+    doubled.width = smallCrop.width * 2;
+    doubled.height = smallCrop.height * 2;
+    const dc = doubled.getContext('2d');
+    dc.imageSmoothingEnabled = false;
+    dc.drawImage(smallCrop, 0, 0, doubled.width, doubled.height);
+    const doubledRestored = await pixels(
+      await restoreContentFraming(doubled.toDataURL(), prepared.framing),
+    );
+    check(
+      doubledRestored.width === 400 && doubledRestored.height === 400,
+      'provider detail was downscaled',
+    );
+    for (let y = 0; y < 400; y++)
+      for (let x = 0; x < 400; x++)
+        check(
+          doubledRestored.data[(y * 400 + x) * 4 + 3] ===
+            (x >= 120 && x < 280 && y >= 180 && y < 240 ? 255 : 0),
+          'scaled result location mismatch',
+        );
+    result.textContent = JSON.stringify({
+      ok: true,
+      checks: [
+        'real WebGL white-background geometry capture',
+        'pixel-exact roundtrip',
+        'normal alignment',
+        'reference unchanged',
+        'precise crop',
+        'wrong ratio blocked',
+        'cancel',
+        'single/multiview shared path',
+        '2K RGBA and edge margin',
+        'larger return keeps detail and placement',
+      ],
+      framing: prepared.framing,
+    });
+  } catch (error) {
+    result.textContent = JSON.stringify({ ok: false, error: String(error), stack: error.stack });
+  }
+</script>

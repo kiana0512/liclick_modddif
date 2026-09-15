@@ -154,12 +154,12 @@ assert.match(
 );
 assert.match(
   generatePanel,
-  /let materialReference = resolveLocalRepaintMaterialReference\(\{[\s\S]*?selectedReferenceIds: referenceStateAtSubmission\.selectedReferenceIds,[\s\S]*?historicalReferenceId:/,
+  /\}\) : resolveLocalRepaintMaterialReference\(\{[\s\S]*?selectedReferenceIds: referenceStateAtSubmission\.selectedReferenceIds,[\s\S]*?historicalReferenceId:/,
   'Local repaint must resolve the currently selected single-view or multiview reference before historical fallback.',
 );
 assert.match(
   generatePanel,
-  /if \(!isGptLocalRepaint && !isMultiviewReference\(materialReference\)\) \{[\s\S]*?materialReference = await generatePairedMultiviewReference\(materialReference\)/,
+  /if \(!isGptLocalRepaint && materialReference && !isMultiviewReference\(materialReference\)\) \{[\s\S]*?materialReference = await generatePairedMultiviewReference\(materialReference\)/,
   'The original ModelView branch must convert single-view references while holding the repaint lock; GPT must not.',
 );
 

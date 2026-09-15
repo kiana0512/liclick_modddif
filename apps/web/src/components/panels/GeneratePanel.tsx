@@ -12,6 +12,7 @@ import {
   captureCurrentDepthPreview,
   captureCurrentLocalRepaintView,
   captureCurrentNormalPreview,
+  captureCurrentNormalGuide,
   captureCurrentView,
   frameGenerationCapture,
   withStableClayTargetPresentation,
@@ -59,6 +60,7 @@ import { runFeishuLoginFlow } from '@/services/feishuLoginFlow';
 import { resolveLiclickAuthStrategy } from '@/services/liclickAuthStrategy';
 import {
   createLiclickApiClient,
+  restoreFramedJobResult,
   LiclickApiError,
   type GenerationJobListItem,
   type LiclickAspectRatio,
@@ -67,6 +69,7 @@ import {
 } from '@/services/liclickApiClient';
 import { getUserFacingGenerationError, isGenerationCancellation } from '@/services/generationErrorMessage';
 import { resolveLocalRepaintMaterialReference } from '@/services/localRepaintMaterialReference';
+import { resolveGptRepaintReference } from '@/engine/localRepaint/gptRepaintReference';
 import {
   resolveLocalRepaintUserPrompt,
   LOCAL_REPAINT_PROMPT_TEMPLATE_POLICY,
@@ -346,6 +349,7 @@ const defaultImageGenerationSettings = {
   textureGptModel: 'gpt-image-2.5-sunburst',
   textureGptQuality: 'high',
   localRepaintProvider: 'modelview' as 'modelview' | 'gpt',
+  gptRepaintUseMaterialReference: false,
   model: 'gpt-image-2' as LiclickImageModel,
   aspectRatio: 'auto' as LiclickAspectRatio,
   imageSize: 'auto' as LiclickImageSize,
@@ -666,7 +670,7 @@ export function GeneratePanel({
   const promptPolishRequestRef = useRef(0);
   const promptValueRef = useRef({ key: '', value: '' });
   const localRepaintResolvedPromptCacheRef = useRef(
-    new Map<string, { prompt: string; source: 'user-request' | 'default-seam' | 'single-view-template' }>(),
+    new Map<string, { prompt: string; source: 'user-request' | 'default-seam' | 'single-view-template' | 'geometry-normal-v1' }>(),
   );
   const [previewImageOpen, setPreviewImageOpen] = useState(false);
   const [subjectFilledPreview, setSubjectFilledPreview] = useState<{
@@ -800,6 +804,7 @@ export function GeneratePanel({
   const textureGptModel = resolveGptTextureModel(generationSettings.textureGptModel);
   const textureGptQuality = resolveGptTextureQuality(generationSettings.textureGptQuality, textureGptModel);
   const isGptLocalRepaint = generationSettings.localRepaintProvider === 'gpt';
+  const gptRepaintUseMaterialReference = generationSettings.gptRepaintUseMaterialReference === true;
   const imageModel = isTextureMapTab || (isLocalRepaintTab && isGptLocalRepaint)
     ? textureGptModel
     : (generationSettings.model as LiclickImageModel);
@@ -1361,8 +1366,12 @@ export function GeneratePanel({
       const workspaceResultUrl = [projectGeneration?.resultUrl, storeGeneration?.resultUrl].find(
         (url): url is string => typeof url === 'string' && isWorkspaceAssetUrl(url),
       );
-      const resultUrl =
+      let resultUrl =
         workspaceResultUrl ?? existing?.resultUrl ?? fallback?.resultUrl ?? job.resultUrl;
+      if (!workspaceResultUrl && job.framing && resultUrl === job.resultUrl) {
+        resultUrl = (await restoreFramedJobResult(job)).resultUrl;
+        if (cancelled) return { changed: false, needsPersist: false };
+      }
       const status = resultUrl ? ('succeeded' as const) : job.status;
       let generation: Generation = {
         id: existing?.id ?? fallback?.id ?? job.clientGenerationId ?? job.id,
@@ -1390,6 +1399,8 @@ export function GeneratePanel({
           resultUrls: job.resultUrls ?? existingMetadata.resultUrls,
           extraParams: job.extraParams ?? existingMetadata.extraParams,
           uploadedReferences: job.uploadedReferences ?? existingMetadata.uploadedReferences,
+          generationFraming: job.framing ?? existingMetadata.generationFraming,
+          framingRestored: job.framing && resultUrl ? true : existingMetadata.framingRestored,
           aspectRatio: job.params?.aspectRatio ?? existingMetadata.aspectRatio,
           imageSize: job.params?.imageSize ?? existingMetadata.imageSize,
           quality: job.params?.quality ?? existingMetadata.quality,
@@ -3788,13 +3799,17 @@ export function GeneratePanel({
           return recency(right) - recency(left);
         });
       const historicalReferenceId = textureMapCandidates[0]?.metadata.materialReferenceId;
-      let materialReference = resolveLocalRepaintMaterialReference({
+      let materialReference = isGptLocalRepaint ? resolveGptRepaintReference({
+        enabled: gptRepaintUseMaterialReference,
+        references: referencesAtSubmission,
+        selectedReferenceIds: referenceStateAtSubmission.selectedReferenceIds,
+      }) : resolveLocalRepaintMaterialReference({
         references: referencesAtSubmission,
         selectedReferenceIds: referenceStateAtSubmission.selectedReferenceIds,
         historicalReferenceId:
           typeof historicalReferenceId === 'string' ? historicalReferenceId : undefined,
       });
-      if (!materialReference) {
+      if (!isGptLocalRepaint && !materialReference) {
         setGenerateNotice({
           tone: 'warning',
           message: '请先在纹理贴图中选择一张单视图或多视图材质参考图。',
@@ -3820,7 +3835,7 @@ export function GeneratePanel({
       // next request prepares detached browser snapshots.
       useSceneStore.getState().setLocalRepaintGenerationPresentationActive(true);
       if (authStatus !== 'authenticated' && !(await requireFeishuLogin())) return false;
-      if (!isGptLocalRepaint && !isMultiviewReference(materialReference)) {
+      if (!isGptLocalRepaint && materialReference && !isMultiviewReference(materialReference)) {
         setLocalRepaintPreparation((current) => ({
           startedAt: current?.startedAt ?? Date.now(),
           detail: '正在准备多视图材质参考',
@@ -3991,7 +4006,8 @@ export function GeneratePanel({
         promptSource: rawUserPrompt ? 'user-request' : 'default-seam',
         projectId: currentProject.id,
         objectId,
-        referenceId: materialReference.id,
+        referenceId: materialReference?.id,
+        gptRepaintUseMaterialReference: isGptLocalRepaint ? gptRepaintUseMaterialReference : undefined,
         paintMaskRevision: currentPaintMaskRevision,
         camera: capture.camera,
         objectMatrixWorld: captureObjectMatrixWorld,
@@ -3999,7 +4015,7 @@ export function GeneratePanel({
         sourceComposition: isGptLocalRepaint ? 'gpt-clay-selection-coverage-v1' : 'flat-clay-mask-v1',
       });
       let resolvedPrompt = isGptLocalRepaint
-        ? { prompt: (await import('@/engine/generation/textureMapPrompts')).buildTextureMapCompletionPrompt(rawUserPrompt), source: 'single-view-template' as const }
+        ? { prompt: (await import('@/engine/localRepaint/gptRepaintPrompt')).buildGptRepaintPrompt(rawUserPrompt, gptRepaintUseMaterialReference), source: 'geometry-normal-v1' as const }
         : localRepaintResolvedPromptCacheRef.current.get(promptFingerprint);
       if (!resolvedPrompt) {
         const persistedResolution = useGenerationStore
@@ -4021,6 +4037,7 @@ export function GeneratePanel({
         }
       }
       if (!resolvedPrompt) {
+        if (!materialReference) throw new Error('缺少材质参考图。');
         setLocalRepaintPreparation((current) => ({
           startedAt: current?.startedAt ?? Date.now(),
           detail: '正在优化局部重绘提示词',
@@ -4083,7 +4100,7 @@ export function GeneratePanel({
         id: generationId,
         mode: 'inpaint',
         prompt: effectivePrompt,
-        referenceIds: [materialReference.id],
+        referenceIds: materialReference ? [materialReference.id] : [],
         captureId: capture.id,
         status: 'running',
         metadata: {
@@ -4094,7 +4111,9 @@ export function GeneratePanel({
           clientGenerationId: generationId,
           projectId: currentProject.id,
           objectId,
-          materialReferenceId: materialReference.id,
+          materialReferenceId: materialReference?.id,
+          gptRepaintInputPolicy: isGptLocalRepaint ? 'geometry-normal-v1' : undefined,
+          gptRepaintUseMaterialReference: isGptLocalRepaint ? gptRepaintUseMaterialReference : undefined,
           paintMaskRevision: currentPaintMaskRevision,
           paintMaskSource: 'user',
           authoredMaskUrl: currentPaintMaskDataUrl,
@@ -4123,7 +4142,9 @@ export function GeneratePanel({
       setLastCapture(capture);
       setGenerateNotice({
         tone: 'info',
-        message: isGptLocalRepaint ? '正在提交白模组合图、材质参考图和提示词。' : '正在提交当前效果图、材质参考图、蒙版和提示词。',
+        message: isGptLocalRepaint
+          ? `正在提交结合图、法线图${materialReference ? '、材质参考图' : ''}和提示词。`
+          : '正在提交当前效果图、材质参考图、蒙版和提示词。',
       });
       if (localRepaintPreparationAbortControllerRef.current === requestAbortController) {
         localRepaintPreparationAbortControllerRef.current = undefined;
@@ -4131,7 +4152,7 @@ export function GeneratePanel({
       generationAbortControllersRef.current.set(generationId, requestAbortController);
       const [currentEffectDataUrl, materialReferenceDataUrl, maskDataUrl] = await Promise.all([
         urlToDataUrl(capture.colorUrl),
-        urlToDataUrl(materialReference.url),
+        materialReference ? urlToDataUrl(materialReference.url) : Promise.resolve(''),
         isGptLocalRepaint ? Promise.resolve('') : urlToDataUrl(preparedGenerationInput.submittedMaskUrl),
       ]);
       let depthPreviewPromise: ReturnType<typeof captureRepaintDepth> | undefined;
@@ -4142,6 +4163,14 @@ export function GeneratePanel({
         const depth = await (depthPreviewPromise ??= captureRepaintDepth());
         if (!depth) throw new Error('深度截图失败，未提交 GPT 任务，请重试。');
         capture = { ...capture, depthUrl: depth.depthUrl, depthEncoding: depth.depthEncoding };
+        if (requestAbortController!.signal.aborted) throw new DOMException('已终止局部生图。', 'AbortError');
+        const normal = await captureCurrentNormalGuide({
+          objectId, resolution: LOCAL_REPAINT_INPUT_RESOLUTION, framing: 'current',
+          aspect: captureAspect, cameraSnapshot: captureCameraSnapshot,
+        });
+        if (normal.width !== capture.width || normal.height !== capture.height)
+          throw new Error('法线图与结合图尺寸不一致，未提交 GPT 任务。');
+        capture = { ...capture, normalUrl: normal.normalUrl };
         const recoveryCaptures = [
           { ...capture, maskUrl: authoredMaskUrl },
           ...(useProjectStore.getState().projects.find((item) => item.id === currentProject.id)?.captures ?? [])
@@ -4154,7 +4183,9 @@ export function GeneratePanel({
         if (requestAbortController!.signal.aborted) throw new DOMException('已终止局部生图。', 'AbortError');
         const submitted = await createLiclickApiClient().generateTextureSingleView(buildGptLocalRepaintRequest({
           generationId, projectId: currentProject.id, prompt: effectivePrompt,
-          guideUrl: currentEffectDataUrl, reference: { ...materialReference!, url: materialReferenceDataUrl },
+          guideUrl: currentEffectDataUrl, normalUrl: await urlToDataUrl(normal.normalUrl),
+          reference: materialReference ? { ...materialReference, url: materialReferenceDataUrl } : undefined,
+          signal: requestAbortController!.signal,
           capture, object: objects.find((item) => item.id === objectId), model: textureGptModel,
           quality: textureGptQuality,
           resolution,
@@ -4176,16 +4207,16 @@ export function GeneratePanel({
           projectId: currentProject.id,
           captureId: capture.id,
           objectId,
-          materialReferenceId: materialReference.id,
-          materialReferenceGroupId: referenceGroupId(materialReference),
-          materialReferenceName: materialReference.name,
-          materialReferenceRole: isMultiviewReference(materialReference)
+          materialReferenceId: materialReference!.id,
+          materialReferenceGroupId: referenceGroupId(materialReference!),
+          materialReferenceName: materialReference!.name,
+          materialReferenceRole: isMultiviewReference(materialReference!)
             ? 'multi-view'
             : 'single-view',
           prompt: effectivePrompt,
           image: { path: 'current-effect.png', dataUrl: currentEffectDataUrl },
           materialImage: {
-            path: `${generationId}-${materialReference.id}-material-reference.png`,
+            path: `${generationId}-${materialReference!.id}-material-reference.png`,
             dataUrl: materialReferenceDataUrl,
           },
           mask: { path: `${generationId}-mask.png`, dataUrl: maskDataUrl },
@@ -5505,6 +5536,23 @@ export function GeneratePanel({
                 className="mb-2"
               />
             )}
+            {isLocalRepaintTab && isGptLocalRepaint && (
+              <div className="mb-2 flex items-center justify-between gap-2 text-xs text-white/75">
+                <span>使用材质参考图</span>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-label="使用材质参考图"
+                  aria-checked={gptRepaintUseMaterialReference}
+                  disabled={workflowConfigurationLocked || workflowSubmissionLocked}
+                  title={gptRepaintUseMaterialReference ? '结合图＋法线图＋选中的材质参考图' : '结合图＋法线图，不提交材质参考图'}
+                  onClick={() => updateGenerationSettings({ gptRepaintUseMaterialReference: !gptRepaintUseMaterialReference })}
+                  className={`relative h-5 w-9 shrink-0 rounded-full transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-fuchsia-400 disabled:opacity-40 ${gptRepaintUseMaterialReference ? 'bg-fuchsia-500' : 'bg-white/20'}`}
+                >
+                  <span className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-transform ${gptRepaintUseMaterialReference ? 'left-0.5 translate-x-4' : 'left-0.5'}`} />
+                </button>
+              </div>
+            )}
           </div>
         )}
         <div className="gen-preview-body">
@@ -5702,7 +5750,7 @@ export function GeneratePanel({
                 </span>
                 {isLocalRepaintTab ? (
                   <span className="text-[11px] font-medium text-white/46">
-                    {isGptLocalRepaint ? '使用单视图提示词' : '生成时优化提示词'}
+                    {isGptLocalRepaint ? '法线辅助局部修复' : '生成时优化提示词'}
                   </span>
                 ) : (
                   <button
@@ -5749,7 +5797,7 @@ export function GeneratePanel({
               />
             </section>
 
-            {(isTextureMapTab || isLocalRepaintTab) && (
+            {(isTextureMapTab || (isLocalRepaintTab && (!isGptLocalRepaint || gptRepaintUseMaterialReference))) && (
               <section
                 data-texture-onboarding="reference-images"
                 data-onboarding-complete={activeSelectedReferenceIds.length > 0 ? 'true' : 'false'}

@@ -33,20 +33,29 @@ function createEncodedNormalMaterial(space: NormalCaptureSpace) {
 
 export async function captureNormal(
   request: CapturePassRequest,
-  options: { space?: NormalCaptureSpace } = {},
+  options: { space?: NormalCaptureSpace; geometryGuide?: boolean } = {},
 ): Promise<CapturePassOutput> {
+  const materials: THREE.Material[] = [];
   const restore = applyTargetOnlyMaterial(
     request.scene,
     request.objectId,
-    () => createEncodedNormalMaterial(options.space ?? 'view'),
+    () => {
+      const material = createEncodedNormalMaterial(options.space ?? 'view');
+      materials.push(material);
+      return material;
+    },
   );
 
   try {
     return {
-      url: await renderSceneToPngUrl(request, { onRenderSubmitted: restore }),
+      url: await renderSceneToPngUrl(request, {
+        onRenderSubmitted: restore,
+        ...(options.geometryGuide ? { dataTexture: true, ignoreSceneBackground: true, samples: 0 } : {}),
+      }),
       warnings: [],
     };
   } finally {
     restore();
+    materials.forEach((material) => material.dispose());
   }
 }

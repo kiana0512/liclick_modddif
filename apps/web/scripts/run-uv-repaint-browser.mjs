@@ -62,6 +62,34 @@ try {
       (await import('/scripts/uv-repaint-viewport-fixture.mjs')).setup(),
     );
     const box = await page.locator('canvas').first().boundingBox();
+    for (const button of ['left', 'middle', 'right']) {
+      const before = await page.evaluate(() => window.uvFixture.navigationState());
+      await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+      await page.keyboard.down('Alt');
+      await page.mouse.down({ button });
+      await page.mouse.move(box.x + box.width / 2 + 35, box.y + box.height / 2 + 20, { steps: 5 });
+      await page.keyboard.up('Alt');
+      await page.mouse.up({ button });
+      const after = await page.evaluate(() => window.uvFixture.navigationState());
+      if (JSON.stringify(before) === JSON.stringify(after)) throw Error(`Alt+${button} did not navigate`);
+      if ((await page.evaluate(() => window.uvFixture.state())).painted !== 0) throw Error('Alt navigation painted the model');
+      await page.evaluate(() => window.uvFixture.resetNavigation());
+    }
+    for (const angle of [0, Math.PI / 3, Math.PI * 4 / 9]) {
+      await page.evaluate(angle => window.uvFixture.setSurfaceTilt(angle), angle);
+      await page.mouse.move(box.x + box.width / 2 + 1, box.y + box.height / 2);
+      await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+      await page.waitForTimeout(100);
+      const axes = await page.evaluate(() => {
+        const circle = document.querySelector('circle[vector-effect="non-scaling-stroke"][visibility="visible"]');
+        if (!circle) throw Error('Brush cursor missing');
+        const m = circle.transform.baseVal.consolidate().matrix;
+        return [Math.hypot(m.a,m.b),Math.hypot(m.c,m.d),m.b,m.c];
+      });
+      if (Math.abs(axes[0]-axes[1]) > .01 || Math.abs(axes[2]) > .01 || Math.abs(axes[3]) > .01)
+        throw Error(`Brush cursor tilted with surface: ${angle}, ${axes}`);
+    }
+    await page.evaluate(() => window.uvFixture.setSurfaceTilt(0));
     const click = () => page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
     await click();
     await page.mouse.move(20, 20);

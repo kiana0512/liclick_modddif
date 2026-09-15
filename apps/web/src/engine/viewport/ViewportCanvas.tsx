@@ -1,3 +1,4 @@
+import { computeViewAlignedSurfaceTangents } from '@/engine/paint/viewAlignedBrush';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { Bvh } from '@react-three/drei';
 import { beginEraserUvDraft, getEraserUvDraft, clearEraserUvDraft, applyEraserUvPatch } from '@/engine/paint/eraserUvDraft';
@@ -4284,6 +4285,8 @@ const surfaceBrushScratch = {
 function computeUvBrushTransform(
   mesh: THREE.Mesh,
   face: THREE.Face,
+  hitPoint: THREE.Vector3,
+  camera: THREE.Camera,
   worldRadius: number,
   fallbackRadius: number,
 ) {
@@ -4346,10 +4349,9 @@ function computeUvBrushTransform(
     return createCircularBrushTransform(fallbackRadius);
   }
 
-  tangentX.copy(edge1).normalize();
   normal.crossVectors(edge1, edge2).normalize();
-  if (normal.lengthSq() < 0.5) return createCircularBrushTransform(fallbackRadius);
-  tangentY.crossVectors(normal, tangentX).normalize();
+  if (!computeViewAlignedSurfaceTangents(normal, hitPoint, camera, tangentX, tangentY))
+    return createCircularBrushTransform(fallbackRadius);
   const inverseMetric00 = metric11 / metricDeterminant;
   const inverseMetric01 = -metric01 / metricDeterminant;
   const inverseMetric11 = metric00 / metricDeterminant;
@@ -4375,32 +4377,16 @@ function computeUvBrushTransform(
 }
 
 function computeScreenBrushTransform(
-  mesh: THREE.Mesh,
-  face: THREE.Face,
   hitPoint: THREE.Vector3,
   camera: THREE.Camera,
   worldRadius: number,
   fallbackRadius: number,
 ) {
-  const position = mesh.geometry.getAttribute('position');
-  if (!(position instanceof THREE.BufferAttribute)) {
-    return createCircularBrushTransform(fallbackRadius);
-  }
-
-  const { p0, p1, p2, edge1, edge2, tangentX, tangentY, normal, delta } = surfaceBrushScratch;
-  p0.fromBufferAttribute(position, face.a).applyMatrix4(mesh.matrixWorld);
-  p1.fromBufferAttribute(position, face.b).applyMatrix4(mesh.matrixWorld);
-  p2.fromBufferAttribute(position, face.c).applyMatrix4(mesh.matrixWorld);
-  edge1.copy(p1).sub(p0);
-  edge2.copy(p2).sub(p0);
-  if (edge1.lengthSq() < 1e-16 || edge2.lengthSq() < 1e-16) {
-    return createCircularBrushTransform(fallbackRadius);
-  }
-  tangentX.copy(edge1).normalize();
-  normal.crossVectors(edge1, edge2).normalize();
-  if (normal.lengthSq() < 0.5) return createCircularBrushTransform(fallbackRadius);
-  tangentY.crossVectors(normal, tangentX).normalize();
-
+  const { tangentX, tangentY, delta } = surfaceBrushScratch;
+  // The cursor and screen-space stamps share camera-facing axes. Surface
+  // normals must not flatten or rotate the footprint at hard edges.
+  tangentX.setFromMatrixColumn(camera.matrixWorld, 0).normalize();
+  tangentY.setFromMatrixColumn(camera.matrixWorld, 1).normalize();
   const projectToScreen = (point: THREE.Vector3) => {
     const projected = surfaceBrushScratch.projected.copy(point).project(camera);
     return new THREE.Vector2((projected.x + 1) * 0.5, (1 - projected.y) * 0.5);
@@ -6467,6 +6453,7 @@ function computeLocalRepaintBrushTransform(
   mesh: THREE.Mesh,
   face: THREE.Face,
   hitPoint: THREE.Vector3,
+  camera: THREE.Camera,
   worldToSourceClip: THREE.Matrix4,
   worldRadius: number,
   fallbackRadius: number,
@@ -6482,10 +6469,9 @@ function computeLocalRepaintBrushTransform(
   edge2.copy(p2).sub(p0);
   if (edge1.lengthSq() < 1e-16 || edge2.lengthSq() < 1e-16)
     return createCircularBrushTransform(fallbackRadius);
-  tangentX.copy(edge1).normalize();
   normal.crossVectors(edge1, edge2).normalize();
-  if (normal.lengthSq() < 0.5) return createCircularBrushTransform(fallbackRadius);
-  tangentY.crossVectors(normal, tangentX).normalize();
+  if (!computeViewAlignedSurfaceTangents(normal, hitPoint, camera, tangentX, tangentY))
+    return createCircularBrushTransform(fallbackRadius);
 
   const center = projectWorldPointToLocalRepaintUv(
     hitPoint,
@@ -10401,10 +10387,15 @@ function SurfacePaintOverlay() {
       const brushTransforms = {
         uvBrush: isSurfaceMaskBrush
           ? createCircularBrushTransform(fallbackTextureRadius)
-          : computeUvBrushTransform(hit.object, hit.face, worldRadius, fallbackTextureRadius),
+          : computeUvBrushTransform(
+              hit.object,
+              hit.face,
+              hit.point,
+              camera,
+              worldRadius,
+              fallbackTextureRadius,
+            ),
         screenBrush: computeScreenBrushTransform(
-          hit.object,
-          hit.face,
           hit.point,
           camera,
           worldRadius,
@@ -12002,6 +11993,7 @@ function SurfacePaintOverlay() {
                 result.hit.object,
                 result.hit.face,
                 result.hit.point,
+                camera,
                 composite.worldToSourceClip,
                 result.worldRadius,
                 result.textureRadius,
@@ -15124,15 +15116,21 @@ function SurfacePaintOverlay() {
       }
       if (!enabled) return;
       cancelPendingHoverCursor();
+      // Alt navigation owns the contact even when it begins on the model.
+      // Return before picking/painting and let the native camera listener run.
+      if (event.altKey) {
+        cursorCircleRef.current?.setAttribute('visibility', 'hidden');
+        canvas.style.cursor = '';
+        return;
+      }
       const penEraserContact =
         event.pointerType === 'pen' &&
         (event.button === 2 || event.button === 5) &&
         event.pressure > 0;
       const strokeCanvasRect = canvas.getBoundingClientRect();
       const result = raycastModel(event, strokeCanvasRect);
-      // ALG-VIEW-INPUT-001 v1.2.0: an RMB drag that begins on paintable model
-      // geometry is the explicit erase gesture. An RMB drag that begins on
-      // the background is not consumed here and reaches orbit controls.
+      // Unmodified RMB on paintable geometry remains the erase gesture;
+      // Alt contacts have already been reserved for camera navigation above.
       const rightModelEraseContact =
         event.pointerType === 'mouse' && event.button === 2 && Boolean(result);
       const localRepaintEraseContact =
@@ -15149,8 +15147,8 @@ function SurfacePaintOverlay() {
       if (!isPaintButton) return;
 
       // In paint modes the model surface belongs exclusively to the brush.
-      // OrbitControls remains available only when the drag begins on the
-      // background. stopImmediatePropagation is necessary because both input
+      // Alt navigation has already returned above. stopImmediatePropagation
+      // is necessary because both input
       // systems have native listeners on this same canvas element.
       if (!result) return;
       setViewportPaintPointer(canvas, event.pointerId);
@@ -15352,7 +15350,7 @@ function SurfacePaintOverlay() {
       if (!isPaintingRef.current) gl.domElement.style.cursor = '';
     };
     const handleContextMenu = (event: MouseEvent) => {
-      // RMB is always viewport orbit, including while a paint tool is active.
+      // Both RMB erase and Alt+RMB dolly suppress the browser context menu.
       event.preventDefault();
     };
     canvas.addEventListener('pointermove', handlePointerMove, true);

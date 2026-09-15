@@ -1,15 +1,17 @@
 import { events } from '@react-three/fiber';
 
 const paintPointers = new WeakMap<EventTarget, number | undefined>();
+const navigationPointers = new WeakMap<EventTarget, number | undefined>();
 
 // Native brush ownership survives pointer capture release and tool changes
 // until the next non-paint contact. No scene/store subscription is needed.
 export function setViewportPaintPointer(target: EventTarget, pointerId?: number) {
   paintPointers.set(target, pointerId);
+  if (pointerId !== undefined) navigationPointers.delete(target);
 }
 
 /**
- * M03 / ALG-VIEW-INPUT-001 v1.1.0.
+ * M03 / ALG-VIEW-INPUT-001 v1.3.0.
  * Wheel navigation belongs to BlenderOrbitControls' native, frame-batched
  * listener. R3F otherwise raycasts every clickable model for every wheel
  * packet, even though the scene has no onWheel handlers.
@@ -24,10 +26,24 @@ export const createViewportEvents: typeof events = (store) => {
   const handlers = manager.handlers;
   if (handlers) {
     handlers.onWheel = () => {};
+    const pointerDown = handlers.onPointerDown;
+    handlers.onPointerDown = (event) => {
+      const pointer = event as PointerEvent;
+      const navigates = pointer.altKey && pointer.button >= 0 && pointer.button <= 2 && pointer.pointerType !== 'touch';
+      navigationPointers.set(event.target!, navigates ? pointer.pointerId : undefined);
+      if (!navigates) pointerDown?.(event);
+    };
+    const pointerMove = handlers.onPointerMove;
+    handlers.onPointerMove = (event) => {
+      const pointerId = navigationPointers.get(event.target!);
+      // Keep the click tail reserved, but resume hover as soon as buttons lift.
+      if (pointerId !== undefined && pointerId === (event as PointerEvent).pointerId && (event as PointerEvent).buttons !== 0) return;
+      pointerMove?.(event);
+    };
     for (const key of ['onPointerUp', 'onClick', 'onDoubleClick', 'onContextMenu'] as const) {
       const handle = handlers[key];
       handlers[key] = (event) => {
-        const pointerId = paintPointers.get(event.target!);
+        const pointerId = navigationPointers.get(event.target!) ?? paintPointers.get(event.target!);
         if (
           pointerId !== undefined &&
           ((event as PointerEvent).pointerId ?? pointerId) === pointerId &&

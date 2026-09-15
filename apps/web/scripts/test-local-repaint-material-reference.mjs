@@ -102,7 +102,7 @@ const localRepaintFlow = panel.slice(
 );
 assert.match(
   localRepaintFlow,
-  /if \(!isGptLocalRepaint && !isMultiviewReference\(materialReference\)\) \{[\s\S]*materialReference = await generatePairedMultiviewReference\(materialReference\)/,
+  /if \(!isGptLocalRepaint && materialReference && !isMultiviewReference\(materialReference\)\) \{[\s\S]*materialReference = await generatePairedMultiviewReference\(materialReference\)/,
   'the original ModelView path must still prepare multiview input; GPT uses the selected reference directly',
 );
 assert.ok(
@@ -117,7 +117,7 @@ assert.match(
 );
 assert.match(
   panel,
-  /path: `\$\{generationId\}-\$\{materialReference\.id\}-material-reference\.png`/,
+  /path: `\$\{generationId\}-\$\{materialReference!\.id\}-material-reference\.png`/,
   'each task must use a reference-identifying multipart filename',
 );
 

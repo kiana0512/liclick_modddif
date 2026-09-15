@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef } from 'react';
 import { TransformControls } from '@react-three/drei';
-import { useFrame } from '@react-three/fiber';
+import { useFrame, useThree } from '@react-three/fiber';
+import type { TransformControls as TransformControlsImpl } from 'three-stdlib';
 import * as THREE from 'three';
 import {
   alignTransformPivotToObjectCenter,
@@ -41,8 +42,40 @@ function CenteredObjectTransformControls({
     return next;
   }, [importedModel.group]);
   const draggingRef = useRef(false);
+  const controlsRef = useRef<TransformControlsImpl>(null);
+  const { gl } = useThree();
   const snapshotRef = useRef<CenteredTransformSnapshot>();
   const lastModelMatrixWorldRef = useRef(importedModel.group.matrixWorld.clone());
+
+  useEffect(() => {
+    const controls = controlsRef.current;
+    if (!controls) return;
+    // three-stdlib exposes this property at runtime (and through Drei props),
+    // but its declaration marks it private.
+    const inputControls = controls as unknown as { enabled: boolean };
+    let navigationPointer: number | undefined;
+    const release = (event?: PointerEvent) => {
+      if (navigationPointer === undefined || (event && event.pointerId !== navigationPointer)) return;
+      navigationPointer = undefined;
+      inputControls.enabled = true;
+    };
+    const reserveNavigation = (event: PointerEvent) => {
+      if (!event.altKey || event.pointerType === 'touch' || event.button < 0 || event.button > 2 || draggingRef.current || !inputControls.enabled) return;
+      navigationPointer = event.pointerId;
+      inputControls.enabled = false;
+    };
+    gl.domElement.addEventListener('pointerdown', reserveNavigation, true);
+    window.addEventListener('pointerup', release, true);
+    window.addEventListener('pointercancel', release, true);
+    gl.domElement.addEventListener('lostpointercapture', release);
+    return () => {
+      release();
+      gl.domElement.removeEventListener('pointerdown', reserveNavigation, true);
+      window.removeEventListener('pointerup', release, true);
+      window.removeEventListener('pointercancel', release, true);
+      gl.domElement.removeEventListener('lostpointercapture', release);
+    };
+  }, [gl]);
 
   const alignPivot = useCallback(() => {
     if (draggingRef.current) return;
@@ -66,6 +99,7 @@ function CenteredObjectTransformControls({
 
   return (
     <TransformControls
+      ref={controlsRef}
       object={pivot}
       mode={mode}
       size={0.9}

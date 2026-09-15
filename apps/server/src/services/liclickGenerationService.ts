@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
+import { generationFramingRatio, type GenerationFraming } from '@liclick/contracts';
 import { callAtlasToolJson, parseJsonFromOutput } from '../auth/atlasAuthService.js';
 
 type ReferenceInput = {
@@ -11,6 +12,7 @@ type ReferenceInput = {
 };
 
 export type GenerateImageInput = {
+  framing?: GenerationFraming;
   referencePipeline?: 'six-view-delight-v1';
   clientGenerationId?: string;
   projectId?: string;
@@ -521,6 +523,13 @@ export function buildExtraParams(input: GenerateImageInput, uploadedReferences: 
     } else if (model === 'nano_banana_2' || model === 'nano_banana_pro') {
       extraParams.image_size = imageSize === 'auto' ? '1K' : imageSize;
     }
+  }
+  if (input.framing) {
+    if (!(isGpt25 || model === 'gpt-image-2') || !['texture-map', 'local-repaint'].includes(input.workflow ?? '') || input.referencePipeline || imageSize === 'auto')
+      throw new Error('自适应裁切仅适用于明确分辨率的 GPT 贴图或局部重绘。');
+    const ratio = generationFramingRatio(input.framing);
+    extraParams.aspect_ratio_w = ratio.width;
+    extraParams.aspect_ratio_h = ratio.height;
   }
   return { model, extraParams };
 }

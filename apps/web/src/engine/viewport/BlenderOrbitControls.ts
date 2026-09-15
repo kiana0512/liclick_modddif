@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 
 type SupportedCamera = THREE.PerspectiveCamera | THREE.OrthographicCamera;
-type PointerAction = 'orbit' | 'pan';
+type PointerAction = 'orbit' | 'pan' | 'dolly';
 
 const WORLD_UP = new THREE.Vector3(0, 1, 0);
 const MIN_ORTHOGRAPHIC_ZOOM = 0.01;
@@ -57,6 +57,7 @@ export class BlenderOrbitControls {
     domElement.addEventListener('pointermove', this.handlePointerMove);
     domElement.addEventListener('pointerup', this.handlePointerUp);
     domElement.addEventListener('pointercancel', this.handlePointerUp);
+    domElement.addEventListener('lostpointercapture', this.handlePointerUp);
     // The editor viewport is non-scrollable. Keeping this listener passive lets
     // Chromium route precision-wheel input without waiting on a scroll-blocking
     // main-thread acknowledgement for every raw device event.
@@ -152,7 +153,12 @@ export class BlenderOrbitControls {
     this.domElement.removeEventListener('pointermove', this.handlePointerMove);
     this.domElement.removeEventListener('pointerup', this.handlePointerUp);
     this.domElement.removeEventListener('pointercancel', this.handlePointerUp);
+    this.domElement.removeEventListener('lostpointercapture', this.handlePointerUp);
     this.domElement.removeEventListener('wheel', this.handleWheel);
+    if (this.activePointerId !== undefined && this.domElement.hasPointerCapture(this.activePointerId))
+      this.domElement.releasePointerCapture(this.activePointerId);
+    this.activePointerId = undefined;
+    this.pointerAction = undefined;
     this.cancelWheelTransition();
     this.changeListeners.clear();
   }
@@ -186,7 +192,8 @@ export class BlenderOrbitControls {
     this.pointerY = event.clientY;
 
     if (this.pointerAction === 'orbit') this.orbit(deltaX, deltaY);
-    else this.pan(deltaX, deltaY);
+    else if (this.pointerAction === 'pan') this.pan(deltaX, deltaY);
+    else this.zoomByFactor(Math.exp(THREE.MathUtils.clamp((deltaX + deltaY) * 0.005, -4, 4)));
     event.preventDefault();
   };
 
@@ -259,11 +266,12 @@ export class BlenderOrbitControls {
   }
 
   private getPointerAction(event: PointerEvent): PointerAction | undefined {
-    // Primary input is reserved for the active paint/eraser tool. Navigation
-    // follows the editor contract regardless of modifier keys: MMB pans and
-    // RMB orbits. Wheel input remains the exclusive dolly gesture.
+    // ALG-VIEW-INPUT-001 v1.3.0: latch Alt navigation at contact so releasing
+    // the modifier during a drag cannot switch its owner to a paint tool.
+    if (!event.altKey || event.pointerType === 'touch') return undefined;
+    if (event.button === 0) return 'orbit';
     if (event.button === 1) return 'pan';
-    if (event.button === 2) return 'orbit';
+    if (event.button === 2) return 'dolly';
     return undefined;
   }
 

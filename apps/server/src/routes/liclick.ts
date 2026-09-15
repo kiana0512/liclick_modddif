@@ -21,6 +21,7 @@ import {
   pollLiclickImageTask,
   submitLiclickImageEdit,
   submitLiclickImageJob,
+  buildExtraParams,
   type EditImageInput,
   type GenerateImageInput,
   type LiclickImageSubmission,
@@ -248,6 +249,7 @@ function getJobResponse(job: GenerationJob) {
       status: 'succeeded',
       resultUrl: job.resultUrl,
       resultUrls: job.resultUrls,
+      framing: job.input.framing,
       taskId: job.taskId,
       workflow: job.workflow,
       model: job.model,
@@ -272,6 +274,7 @@ function getJobResponse(job: GenerationJob) {
   return {
     id: job.id,
     status: 'running',
+    framing: job.input.framing,
     taskId: job.taskId,
     workflow: job.workflow,
     model: job.model,
@@ -672,6 +675,7 @@ function getJobListResponse(job: GenerationJob) {
     id: job.id,
     projectId: job.projectId,
     clientGenerationId: job.input.clientGenerationId,
+    framing: job.input.framing,
     prompt: job.input.prompt,
     referenceIds,
     status: job.status === 'submitting' ? 'running' : job.status,
@@ -1159,6 +1163,10 @@ export async function handleLiclickRoute(
       }
     }
     const input = await readJsonBody<GenerateImageInput>(request);
+    if (input.framing) {
+      try { buildExtraParams(input, []); }
+      catch (error) { sendJson(response, 400, { error: error instanceof Error ? error.message : 'Invalid generation framing.' }); return true; }
+    }
     if (input.referencePipeline && (input.referencePipeline !== 'six-view-delight-v1' || input.workflow !== 'liclick')) {
       sendJson(response, 400, { error: 'Invalid multiview reference pipeline.' }); return true;
     }

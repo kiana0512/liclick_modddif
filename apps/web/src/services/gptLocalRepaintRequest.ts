@@ -8,16 +8,24 @@ import { getGptTextureRequestParameters } from '@/engine/generation/gptTextureMo
 /** Deliberately no mask/expanded selection in the provider contract. */
 export function buildGptLocalRepaintRequest(input: {
   generationId: string; projectId: string; prompt: string; model: GptTextureModel;
-  guideUrl: string; reference: ReferenceImage; capture: Capture; object?: SceneObject;
+  guideUrl: string; normalUrl: string; reference?: ReferenceImage; capture: Capture; object?: SceneObject;
   quality?: string;
   resolution: string;
+  signal?: AbortSignal;
 }): LiclickGenerateTextureSingleViewInput {
-  const guide: ReferenceImage = { ...input.reference, id: `${input.generationId}-guide`,
-    name: 'current-view-clay-selection.png', url: input.guideUrl };
+  if (!input.normalUrl) throw new Error('缺少同视角法线图，未提交 GPT 局部重绘任务。');
+  const guide: ReferenceImage = { id: `${input.generationId}-guide`,
+    name: 'image-1-current-view-clay-selection.png', url: input.guideUrl,
+    width: input.capture.width, height: input.capture.height, isPrimary: true };
+  const normal: ReferenceImage = { ...guide, id: `${input.generationId}-normal`,
+    name: 'image-2-geometry-view-normal.png', url: input.normalUrl, isPrimary: false };
+  const referenceImages = [guide, normal, ...(input.reference ? [{ ...input.reference }] : [])];
   return {
     clientGenerationId: input.generationId, projectId: input.projectId,
     workflow: 'local-repaint', mode: 'single', prompt: input.prompt,
-    referenceIds: [guide.id, input.reference.id], referenceImages: [guide, input.reference],
+    referenceIds: referenceImages.map((image) => image.id), referenceImages,
+    pixelExactReferenceIds: [guide.id, normal.id],
+    signal: input.signal,
     capture: input.capture, object: input.object, model: input.model,
     ...getGptTextureRequestParameters(input.resolution, input.quality, input.model), visibleOnly: true, upscale: false,
   };
