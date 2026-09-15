@@ -47,6 +47,25 @@ try {
   const auth = await server.ssrLoadModule('/src/services/authApiClient.ts');
   const generationTiming = await server.ssrLoadModule('/src/utils/generationTiming.ts');
   const generationIdentity = await server.ssrLoadModule('/src/utils/generationIdentity.ts');
+  const { sameGenerationRecovery } = await server.ssrLoadModule('/src/services/generationRecoveryComparison.ts');
+  const image = 'data:image/png;base64,' + 'a'.repeat(8 * 1024 * 1024);
+  const comparison = { id: 'compare', prompt: '', referenceIds: ['ref'], status: 'succeeded',
+    resultUrl: image, metadata: { projectId: 'project-1', resultUrls: [image] } };
+  const identical = { ...comparison, referenceIds: ['ref'], metadata: { ...comparison.metadata, resultUrls: [image] } };
+  assert.equal(sameGenerationRecovery(comparison, identical), true);
+  assert.equal(sameGenerationRecovery(undefined, comparison), false);
+  for (const [key, value] of Object.entries({ id: 'changed', prompt: 'changed', referenceIds: [], captureId: 'changed', resultUrl: image + 'b', status: 'failed' })) {
+    assert.equal(sameGenerationRecovery(comparison, { ...identical, [key]: value }), false, key);
+  }
+  for (const key of ['clientGenerationId', 'serverJobId', 'projectId', 'workflow', 'taskId', 'model', 'resultUrls', 'startedAt', 'completedAt', 'error', 'serverSubmitted']) {
+    assert.equal(sameGenerationRecovery(comparison, { ...identical, metadata: { ...identical.metadata, [key]: key === 'resultUrls' ? [image + 'b'] : 'changed' } }), false, key);
+  }
+  const stringify = JSON.stringify;
+  JSON.stringify = () => { throw new Error('Recovery must not serialize images'); };
+  try { for (let i = 0; i < 1000; i++) assert.equal(sameGenerationRecovery(comparison, identical), true); }
+  finally { JSON.stringify = stringify; }
+  const { getUserFacingGenerationError } = await server.ssrLoadModule('/src/services/generationErrorMessage.ts');
+  assert.equal(getUserFacingGenerationError('左后视角提交失败：暂时无法连接生成服务，请检查网络后重试。'), '左后视角提交失败：暂时无法连接生成服务，请检查网络后重试。');
   const generationStore = await server.ssrLoadModule('/src/stores/generationStore.ts');
   const { isRetryableGenerationPollError } = await server.ssrLoadModule('/src/services/generationErrorMessage.ts');
   for (const status of [0, 408, 429, 500, 502, 503]) assert.equal(isRetryableGenerationPollError({ status }), true);

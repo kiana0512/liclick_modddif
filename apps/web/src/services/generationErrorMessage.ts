@@ -20,8 +20,10 @@ export function isRetryableGenerationPollError(error: unknown) {
 export function getUserFacingGenerationError(
   error: unknown,
   fallback = '生成服务暂时无法完成请求，请稍后重试。',
-) {
+): string {
   const message = getRawMessage(error).replace(/\s+/g, ' ').trim();
+  const viewFailure = /^([^：]{1,32}视角(?:提交|生成|回贴)失败)：(.+)$/.exec(message);
+  if (viewFailure) return `${viewFailure[1]}：${getUserFacingGenerationError(viewFailure[2], fallback)}`;
   const normalized = message.toLowerCase();
 
   if (isGenerationCancellation(error)) return '生成任务已终止。';

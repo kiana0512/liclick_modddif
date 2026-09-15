@@ -1,3 +1,4 @@
+import { sameGenerationRecovery } from '@/services/generationRecoveryComparison';
 import { buildMultiviewPrompt } from '../../services/multiviewReferencePrompt';
 import { usesCaptureMaskTextureProjection, preservesGeneratedSourceAlpha, textureProjectionIgnoresSourceAlpha } from '@/engine/generation/textureProjectionPolicy';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
@@ -531,32 +532,6 @@ function throwIfTexturePipelineCancelled(signal?: AbortSignal) {
   if (signal?.aborted) {
     throw new DOMException('用户已终止多视图快照。', 'AbortError');
   }
-}
-
-function generationRecoverySignature(generation: Generation | undefined) {
-  if (!generation) return undefined;
-  const metadata = generation.metadata;
-  return JSON.stringify({
-    id: generation.id,
-    prompt: generation.prompt,
-    referenceIds: generation.referenceIds,
-    captureId: generation.captureId,
-    resultUrl: generation.resultUrl,
-    status: generation.status,
-    metadata: {
-      clientGenerationId: metadata.clientGenerationId,
-      serverJobId: metadata.serverJobId,
-      projectId: metadata.projectId,
-      workflow: metadata.workflow,
-      taskId: metadata.taskId,
-      model: metadata.model,
-      resultUrls: metadata.resultUrls,
-      startedAt: metadata.startedAt,
-      completedAt: metadata.completedAt,
-      error: metadata.error,
-      serverSubmitted: metadata.serverSubmitted,
-    },
-  });
 }
 
 function isGenerationSubmittedToServer(generation: Generation) {
@@ -1418,12 +1393,11 @@ export function GeneratePanel({
       generation = await prepareCloudRepaintCompletion(generation, liveProject?.captures ?? []);
       if (cancelled || generationIdentityIds(generation).some((id) => cancelledGenerationIdsRef.current.has(id)))
         return { changed: false, needsPersist: false };
-      const nextSignature = generationRecoverySignature(generation);
       const needsPersist =
         Boolean(generation.resultUrl) && !isWorkspaceAssetUrl(generation.resultUrl);
       if (
-        generationRecoverySignature(projectGeneration) === nextSignature &&
-        generationRecoverySignature(storeGeneration) === nextSignature
+        sameGenerationRecovery(projectGeneration, generation) &&
+        sameGenerationRecovery(storeGeneration, generation)
       )
         return { changed: false, needsPersist };
       syncGeneration(generation);
@@ -3506,7 +3480,7 @@ export function GeneratePanel({
       if (textureBatchWasCancelled() || isCancelledGeneration(pending.pendingGeneration)) return;
       const failureMessage =
         result.reason instanceof Error ? result.reason.message : `${pending.label} 视角提交失败。`;
-      failureMessages.push(getUserFacingGenerationError(failureMessage));
+      failureMessages.push(`${pending.label}视角提交失败：${getUserFacingGenerationError(failureMessage)}`);
       syncGeneration(
         createFailedGeneration(pending.pendingGeneration, failureMessage, {
           cameraView: pending.cameraView,
@@ -3615,7 +3589,7 @@ export function GeneratePanel({
               : isMultiviewRequest
                 ? '多视角纹理贴图任务失败。'
                 : '当前单视图纹理贴图任务失败。';
-          failureMessages.push(getUserFacingGenerationError(failureMessage));
+          failureMessages.push(`${String(submitted.metadata.cameraViewLabel ?? '当前')}视角生成失败：${getUserFacingGenerationError(failureMessage)}`);
           syncGeneration(createFailedGeneration(submitted, failureMessage));
         }
       });
