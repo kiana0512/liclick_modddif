@@ -17,14 +17,14 @@ for (const visible of [true, false]) {
     async readRenderTargetPixelsAsync(target, x, y, width, height, buffer) {
       assert.equal(buffer.byteOffset, y * width * 4);
       assert.equal(buffer.byteLength, width * height * 4);
-      assert(buffer.byteLength<=1024*1024,'each driver copy stays within the input-blocking budget');
+      assert(buffer.byteLength<=(visible?1:2)*1024*1024,'each driver copy stays within the input-blocking budget');
       destinations.push(buffer);
       buffer.fill(++calls);
     },
   }, {}, 1537);
-  assert.equal(calls, 10); assert.equal(yields, 9);
+  assert.equal(calls, visible?10:5); assert.equal(yields, calls-1);
   assert(destinations.every(part => part.buffer === result.buffer));
-  assert.equal(result[0], 1); assert.equal(result.at(-1), 10);
+  assert.equal(result[0], 1); assert.equal(result.at(-1), calls);
   assert.equal(result.length, 1537 * 1537 * 4);
 }
 await assert.rejects(read({ domElement: { isConnected: false }, async readRenderTargetPixelsAsync() {
@@ -35,7 +35,7 @@ for (const [width, height] of [[2048, 1537], [1537, 2048], [4096, 512]]) {
   const bytes = await read({ domElement: { isConnected: false },
     async readRenderTargetPixelsAsync(_target, x, y, w, h, buffer) {
       assert.equal(x, 0); assert.equal(y, rows); assert.equal(w, width);
-      assert(buffer.byteLength <= 1024 * 1024);
+      assert(buffer.byteLength <= 2 * 1024 * 1024);
       for (let row = 0; row < h; row++) buffer.fill((y + row) % 251, row * w * 4, (row + 1) * w * 4);
       rows += h;
     },
@@ -56,11 +56,11 @@ for (const visible of [true,false]) {
         buffer.fill(index+1);
       } finally {active--;completed++;activeBytes-=buffer.byteLength;}
     }},{},2049);
-    if(failure<0){const result=await job;assert.equal(result[0],1);assert.equal(result.at(-1),17);}
+    if(failure<0){const result=await job;assert.equal(result[0],1);assert.equal(result.at(-1),calls);}
     else await assert.rejects(job,new RegExp(`stripe ${failure}`));
     assert.equal(active,0,'a failed read drains every outstanding stripe before target cleanup');
     assert.equal(completed,calls);
-    assert.equal(maximum,visible?1:8,'only isolated renderers overlap bounded stripes');
+    assert.equal(maximum,visible?1:4,'only isolated renderers overlap bounded stripes');
   }
 }
 console.log('UV readback passed: exact destinations/tail, bounded isolated overlap, visible paint boundaries, out-of-order success/failure and cleanup.');

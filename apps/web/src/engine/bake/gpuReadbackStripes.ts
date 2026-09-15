@@ -1,8 +1,8 @@
 import type * as THREE from 'three';
 import { waitForBrowserPaint, yieldToBrowserTask } from '@/utils/browserScheduling';
 
-// UV-READBACK-SCHEDULING/1.1.1: square UV and rectangular capture readback.
-// Private contexts pipeline eight stripes while retaining at most 8 MiB of PBOs.
+// UV-READBACK-SCHEDULING/1.2.0: private contexts pipeline four 2 MiB stripes;
+// visible contexts retain one 1 MiB stripe. At most 8 MiB of private PBOs.
 const GPU_READBACK_STRIPE_BYTES = 1024 * 1024;
 
 export async function readRenderTargetPixelsInStripes(
@@ -12,16 +12,17 @@ export async function readRenderTargetPixelsInStripes(
   height = resolution,
 ) {
   const pixels = new Uint8Array(resolution * height * 4);
+  const usesVisibleRenderer = renderer.domElement.isConnected;
+  const stripeBytes = GPU_READBACK_STRIPE_BYTES * (usesVisibleRenderer ? 1 : 2);
   const rowsPerStripe = Math.max(
     1,
-    Math.min(height, Math.floor(GPU_READBACK_STRIPE_BYTES / (resolution * 4))),
+    Math.min(height, Math.floor(stripeBytes / (resolution * 4))),
   );
   let maximumStripeMs = 0;
   const startedAt = performance.now();
-  const usesVisibleRenderer = renderer.domElement.isConnected;
   // Pipeline only the isolated bake context. The onscreen renderer keeps its
   // original one-stripe paint boundary; private work holds at most 8 MiB of PBOs.
-  const depth = usesVisibleRenderer ? 1 : 8;
+  const depth = usesVisibleRenderer ? 1 : 4;
   const pending: Array<Promise<{ error?: unknown }>> = [];
   let nextY = 0;
   const submit = () => {

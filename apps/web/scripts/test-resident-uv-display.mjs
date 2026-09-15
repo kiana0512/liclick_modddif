@@ -56,6 +56,16 @@ const { ResidentQualityComposite } = load('residentQualityComposite', {
   '@/utils/browserScheduling': { yieldToBrowserTask: async () => {} },
   './uvBakeDebugControls': { isLegacyUvBakeDiagnosticEnabled: () => false },
 });
+{
+  // Similar colors/alpha must not be mistaken for the internal correction marker.
+  sentinels = new Uint8Array(4 * 4 * 4);
+  sentinels.set([255, 0, 254, 0, 255, 0, 255, 1, 254, 0, 255, 0, 255, 255, 255, 255]);
+  const probe = Object.create(ResidentQualityComposite.prototype);
+  Object.assign(probe, { resolution: 4, resolve: () => ({}) });
+  const result = await probe.readCorrected(true);
+  assert.deepEqual(result.output, new Uint8ClampedArray(sentinels));
+  assert.equal(result.correctedPixels, 0);
+}
 for (const preserveAlpha of [false, true])
   for (const runMarkers of [false, true]) {
     const resolution = 64,

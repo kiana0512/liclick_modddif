@@ -70,11 +70,12 @@ function convertColor(request: ConversionRequest) {
     }
     let coveredPixels = 0;
     let cleanup: number[] | undefined = [];
+    const words = new Uint32Array(request.pixels);
     for (let index = 0; index < coverage.length; index++) {
-      const offset=index*4,alpha=pixels[offset+3];
+      const word=words[index],alpha=word>>>24;
       if (alpha > 0) { coverage[index] = 1; coveredPixels++; }
       if (cleanup && alpha <= MIN_TRANSPARENT_OUTPUT_ALPHA &&
-        (alpha || pixels[offset] || pixels[offset+1] || pixels[offset+2])) {
+        word !== 0) {
         if(cleanup.length<16384) cleanup.push(index); else cleanup=undefined;
       }
     }

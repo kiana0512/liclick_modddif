@@ -365,12 +365,13 @@ export class ResidentQualityComposite {
   async readCorrected(preserveAlpha: boolean) {
     const bytes=await readRenderTargetPixelsInStripes(this.renderer,this.resolve(preserveAlpha,true),this.resolution);
     const output=new Uint8ClampedArray(bytes.buffer);
+    const outputWords = new Uint32Array(output.buffer);
     const indices:number[]=[];
     let scanStarted=performance.now();
     for(let first=0;first<output.length;first+=1048576) {
       const end=Math.min(output.length,first+1048576);
       for(let i=first;i<end;i+=4) {
-        if(output[i+3]===0 && output[i]===255 && output[i+2]===255) indices.push(i/4);
+        if((outputWords[i/4]&0xffff00ff)===0x00ff00ff) indices.push(i/4);
       }
       if(end<output.length && performance.now()-scanStarted>=4) {
         await yieldToBrowserTask();scanStarted=performance.now();
@@ -399,7 +400,6 @@ export class ResidentQualityComposite {
         coverage:new Uint8Array([1]),writtenTexels:1};
       const pixel=new Uint8ClampedArray(4);
       const pixelWord = new Uint32Array(pixel.buffer);
-      const outputWords = new Uint32Array(output.buffer, output.byteOffset, output.length / 4);
       const repeatedMarker = new Uint32Array(new Uint8Array([254, 0, 255, 0]).buffer)[0];
       const previous = new Uint32Array(4);
       const memo = this.correctedTuples ??= new Uint32Array(262144 * 5);

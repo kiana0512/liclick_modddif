@@ -30,7 +30,9 @@
 
 2026-09-15 M03（协作 M04/M06/M08）：CAPTURE-NORMAL-ISOLATION/1.1.0 在真实模型挂载后复制离屏场景，取消过时预览，复用同模型已完成视角；180ms 合并快速预设切换。原尺寸、拟合 QA 和持久化/导出不变；无数据迁移，回滚及验证见 [离屏采集变更卡](changes/CHG-20260915-CAPTURE-OFFSCREEN.md)。
 
-> 文档版本：`2.20.119`
+2026-09-15 M07（协作 M03/M06/M08/M09）：UV-READBACK-SCHEDULING/1.2.0 将独立上下文回读改为四个 2MiB 段，在途仍不超过 8MiB，可见上下文保持原 1MiB 绘制边界。UV-READBACK-SCAN/1.0.1 减少 RGBA 标记与 coverage 的重复读取。原像素/质量/持久化语义保持，无迁移；真实 4K 全字节对照、范围与回滚见 [UV 回读延迟变更卡](changes/CHG-20260915-UV-READBACK-LATENCY.md)。
+
+> 文档版本：`2.20.120`
 
 2026-09-15 M03/M08：`ALG-VIEW-INPUT-001/1.3.1` 让原生画笔悬停复用 Alt 导航所有权，取消导航中的逐帧模型拾取；三类拖动 600 个事件均零多余拾取，松手恢复，绘制及相机轨迹保持。详见 [Alt 悬停变更卡](changes/CHG-20260915-ALT-BRUSH-HOVER.md)。
 
