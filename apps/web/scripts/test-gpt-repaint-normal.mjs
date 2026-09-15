@@ -121,9 +121,19 @@ const captureFns = functions('../src/engine/capture/captureCurrentView.ts', [
   'captureCurrentNormalPreview', 'captureCurrentNormalGuide', 'captureNormalView',
 ]);
 const calls = [];
-const captureApi = evaluate(`const { resolveCaptureCamera, captureNormal, serializeCamera, createId } = require('fixture');\n${captureFns}`, {
-  fixture: { resolveCaptureCamera: async (request, aspect) => ({ viewport: { gl: {}, scene: {} },
-    captureCamera: request.cameraSnapshot.camera, captureTarget: aspect }),
+const sourceViewport = { scene: {} };
+const isolatedViewport = { gl: {}, scene: {} };
+const captureApi = evaluate(`const { resolveCaptureCamera, captureNormal, serializeCamera, createId, useSceneStore, withIsolatedNormalCapture, getTargetBoundsWhenReady } = require('fixture');\n${captureFns}`, {
+  fixture: {
+  useSceneStore: { getState: () => ({ viewport: sourceViewport }) },
+  getTargetBoundsWhenReady: async (scene) => { assert.equal(scene, sourceViewport.scene); },
+  withIsolatedNormalCapture: async (source, capture, options) => {
+    assert.equal(source, sourceViewport); await options.beforeClone(); return capture(isolatedViewport);
+  },
+  resolveCaptureCamera: async (request, aspect, viewport) => {
+    assert.equal(viewport, isolatedViewport);
+    return { viewport, captureCamera: request.cameraSnapshot.camera, captureTarget: aspect };
+  },
   captureNormal: async (request, options) => { calls.push({ request, options }); return { url: 'normal-png', warnings: [] }; },
   serializeCamera: (camera) => camera, createId: () => 'normal-capture' },
 });

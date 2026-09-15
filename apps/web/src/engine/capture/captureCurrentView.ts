@@ -99,11 +99,12 @@ export function snapshotCurrentCaptureCamera(aspect = 1) {
   };
 }
 
-async function getTargetBoundsWhenReady(scene: THREE.Scene, objectId: string) {
+async function getTargetBoundsWhenReady(scene: THREE.Scene, objectId: string, signal?: AbortSignal) {
   // Switching objects updates the Zustand selection before React Three Fiber has
   // necessarily attached the new model group to the viewport scene. Wait through
   // the short reconciliation window instead of capturing with the previous ID.
   for (let attempt = 0; attempt < 180; attempt += 1) {
+    signal?.throwIfAborted();
     const targetBounds = getTargetBounds(scene, objectId);
     if (targetBounds) return targetBounds;
     await waitForViewportFrame();
@@ -201,7 +202,7 @@ async function resolveCaptureCamera(request: CaptureCurrentViewRequest, aspect: 
     new THREE.Vector3();
 
   if (request.framing === 'fit-object' && !request.cameraSnapshot) {
-    const targetBounds = await getTargetBoundsWhenReady(viewport.scene, request.objectId);
+    const targetBounds = await getTargetBoundsWhenReady(viewport.scene, request.objectId, request.signal);
     const fallback = createFitObjectCamera(
       sourceCamera,
       targetBounds,
@@ -211,8 +212,8 @@ async function resolveCaptureCamera(request: CaptureCurrentViewRequest, aspect: 
       vectorFromTuple(request.viewDirection),
       vectorFromTuple(request.viewUp),
     );
-    const candidate = await fitGeometryCapture(viewport.scene, request.objectId, fallback, aspect);
-    const fitted = await verifyTightCapture(viewport, request.objectId, candidate, fallback, aspect);
+    const candidate = await fitGeometryCapture(viewport.scene, request.objectId, fallback, aspect, request.signal);
+    const fitted = await verifyTightCapture(viewport, request.objectId, candidate, fallback, aspect, request.signal);
     captureCamera = fitted.camera;
     captureTarget = fitted.target;
   }
@@ -748,11 +749,13 @@ export async function captureCurrentNormalGuide(
 }
 
 async function captureNormalView(request: CaptureCurrentViewRequest, size: number, geometryGuide: boolean) {
-  return withIsolatedNormalCapture(useSceneStore.getState().viewport, async (isolated) => {
+  const source = useSceneStore.getState().viewport;
+  return withIsolatedNormalCapture(source, async (isolated) => {
   const aspect = Number.isFinite(request.aspect) && (request.aspect ?? 0) > 0 ? request.aspect! : 1;
   const width = aspect >= 1 ? size : Math.max(1, Math.round(size * aspect));
   const height = aspect >= 1 ? Math.max(1, Math.round(size / aspect)) : size;
   const { viewport, captureCamera, captureTarget } = await resolveCaptureCamera(request, aspect, isolated);
+  request.signal?.throwIfAborted();
   const passRequest: CapturePassRequest = {
     gl: viewport.gl,
     scene: viewport.scene,
@@ -773,5 +776,8 @@ async function captureNormalView(request: CaptureCurrentViewRequest, size: numbe
     createdAt: new Date().toISOString(),
     warnings: normal.warnings,
   };
+  }, {
+    signal: request.signal,
+    beforeClone: source ? () => getTargetBoundsWhenReady(source.scene, request.objectId, request.signal) : undefined,
   });
 }

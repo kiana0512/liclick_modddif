@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 import * as THREE from 'three';
-import { SkeletonUtils } from 'three-stdlib';
+import { clone as cloneSkeleton } from 'three/examples/jsm/utils/SkeletonUtils.js';
 import ts from 'typescript';
 
 // Execute the production capture loops and state helpers. The renderer models
@@ -158,13 +158,15 @@ class Driver {
   dispose() { disposes++; }
   forceContextLoss() { lost++; }
 }
-const isolated = new Function('THREE', 'SkeletonUtils', 'waitForViewportInteractionIdle', 'document', 'setTimeout', 'clearTimeout',
-  isolatedCode + ';return withIsolatedNormalCapture;')({ ...THREE, WebGLRenderer: Driver }, SkeletonUtils, async () => {},
+const isolated = new Function('THREE', 'cloneSkeleton', 'waitForViewportInteractionIdle', 'document', 'setTimeout', 'clearTimeout',
+  isolatedCode + ';return withIsolatedNormalCapture;')({ ...THREE, WebGLRenderer: Driver }, cloneSkeleton, async () => {},
   { body: { dataset: {} } }, callback => { timers.set(++nextTimer, callback); return nextTimer; }, id => timers.delete(id));
 const live = new THREE.Scene();
 const authoredMaterial = new THREE.MeshBasicMaterial({ color: 'blue' });
 const authoredGeometry = new THREE.BoxGeometry();
 const authored = new THREE.Mesh(authoredGeometry, authoredMaterial); authored.userData.liclickObjectId = 'model'; live.add(authored);
+const metadataTexture = { toJSON() { throw new Error('Capture must never serialize runtime images'); } };
+authored.userData.runtimeTexture = metadataTexture;
 const bone = new THREE.Bone();
 const skinned = new THREE.SkinnedMesh(authoredGeometry, authoredMaterial); skinned.add(bone); skinned.bind(new THREE.Skeleton([bone])); live.add(skinned);
 let active = 0;
@@ -173,6 +175,9 @@ const inspect = async candidate => {
   assert.equal(++active, 1, 'Independent captures serialize their private GPU owner');
   assert.notEqual(candidate.scene, live); assert.notEqual(candidate.gl, viewport.gl); assert.notEqual(candidate.camera, viewport.camera);
   const copy = candidate.scene.children[0];
+  assert.notEqual(copy.userData, authored.userData);
+  assert.equal(copy.userData.runtimeTexture, metadataTexture);
+  assert.equal(copy.userData.liclickObjectId, 'model');
   assert.equal(copy.geometry, authoredGeometry, 'Immutable geometry is shared without copying vertex buffers');
   assert.notEqual(candidate.scene.children[1].skeleton, skinned.skeleton);
   copy.visible = false; copy.material = new THREE.MeshNormalMaterial();
@@ -183,6 +188,24 @@ const inspect = async candidate => {
 assert.deepEqual(await Promise.all([isolated(viewport, inspect), isolated(viewport, inspect)]), ['captured', 'captured']);
 await assert.rejects(isolated(viewport, async () => { throw new Error('capture failure'); }), /capture failure/);
 assert.equal(await isolated(viewport, inspect), 'captured', 'A failed capture cannot poison the queue');
+// Superseded button requests must leave the queue before scene cloning/draw.
+let staleCaptures = 0, readyChecks = 0;
+const stale = Array.from({ length: 1000 }, () => {
+  const controller = new AbortController();
+  const job = isolated(viewport, async () => { staleCaptures++; }, {
+    signal: controller.signal, beforeClone: async () => { readyChecks++; },
+  });
+  controller.abort();
+  return job;
+});
+const results = await Promise.allSettled(stale);
+assert.equal(results.filter(result => result.status === 'rejected' && result.reason.name === 'AbortError').length, 1000);
+assert.equal(staleCaptures, 0); assert.equal(readyChecks, 0);
+const lateMesh = new THREE.Mesh(authoredGeometry, authoredMaterial);
+await isolated(viewport, async candidate => {
+  assert.ok(candidate.scene.getObjectByName('late-model'), 'Wait for live attachment before taking an immutable clone');
+}, { beforeClone: async () => { await Promise.resolve(); lateMesh.name = 'late-model'; live.add(lateMesh); } });
+live.remove(lateMesh);
 assert.equal(creates, 1);
 for (const callback of timers.values()) callback();
 assert.equal(disposes, 1); assert.equal(lost, 1);

@@ -35,15 +35,11 @@ export async function captureNormal(
   request: CapturePassRequest,
   options: { space?: NormalCaptureSpace; geometryGuide?: boolean } = {},
 ): Promise<CapturePassOutput> {
-  const materials: THREE.Material[] = [];
+  const material = createEncodedNormalMaterial(options.space ?? 'view');
   const restore = applyTargetOnlyMaterial(
     request.scene,
     request.objectId,
-    () => {
-      const material = createEncodedNormalMaterial(options.space ?? 'view');
-      materials.push(material);
-      return material;
-    },
+    () => material,
   );
 
   try {
@@ -56,6 +52,6 @@ export async function captureNormal(
     };
   } finally {
     restore();
-    materials.forEach((material) => material.dispose());
+    material.dispose();
   }
 }

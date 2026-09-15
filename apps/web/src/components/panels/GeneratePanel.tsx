@@ -1584,18 +1584,24 @@ export function GeneratePanel({
     if (missingViews.length === 0) return undefined;
 
     let cancelled = false;
+    const previewAbort = new AbortController();
     capturingCameraViewsRef.current = new Set([
       ...capturingCameraViewsRef.current,
       ...missingViews.map((view) => view.id),
     ]);
-    setCapturingCameraViews(
-      (current) => new Set([...current, ...missingViews.map((view) => view.id)]),
-    );
+    const publishPending = () => setCapturingCameraViews(new Set(capturingCameraViewsRef.current));
+    const clearPending = () => {
+      missingViews.forEach((view) => capturingCameraViewsRef.current.delete(view.id));
+      publishPending();
+    };
+    publishPending();
 
     async function captureMissingViews() {
       try {
         for (const view of missingViews) {
+          if (cancelled) return;
           const preview = await captureCurrentNormalPreview({
+            signal: previewAbort.signal,
             objectId: currentCaptureObjectId,
             resolution: 512,
             framing: 'fit-object',
@@ -1608,52 +1614,36 @@ export function GeneratePanel({
             ...cameraViewPreviewsRef.current,
             [view.id]: preview,
           };
-          setCameraViewPreviews((current) => ({ ...current, [view.id]: preview }));
+          setCameraViewPreviews(cameraViewPreviewsRef.current);
           capturingCameraViewsRef.current.delete(view.id);
-          setCapturingCameraViews((current) => {
-            const next = new Set(current);
-            next.delete(view.id);
-            return next;
-          });
+          publishPending();
         }
       } catch (error) {
         if (!cancelled) {
-          console.warn(
-            '[Liclick 3D Texture] Could not capture multiview normal thumbnails:',
-            error,
-          );
+          console.warn('[Capture] Normal preview failed:', error);
+          const message = error instanceof Error ? error.message : '无法生成多视图法线预览。';
           setGenerateNotice({
             tone: 'warning',
-            message: error instanceof Error ? error.message : '无法生成多视图法线预览。',
+            message,
           });
           pushToast({
             tone: 'warning',
             title: '多视图预览生成失败',
-            description: error instanceof Error ? error.message : '无法生成多视图法线预览。',
+            description: message,
             dedupeKey: 'multiview-preview-failed',
           });
         }
       } finally {
-        if (!cancelled) {
-          missingViews.forEach((view) => capturingCameraViewsRef.current.delete(view.id));
-          setCapturingCameraViews((current) => {
-            const next = new Set(current);
-            missingViews.forEach((view) => next.delete(view.id));
-            return next;
-          });
-        }
+        if (!cancelled) clearPending();
       }
     }
 
-    void captureMissingViews();
+    const previewTimer = setTimeout(() => void captureMissingViews(), 180);
     return () => {
       cancelled = true;
-      missingViews.forEach((view) => capturingCameraViewsRef.current.delete(view.id));
-      setCapturingCameraViews((current) => {
-        const next = new Set(current);
-        missingViews.forEach((view) => next.delete(view.id));
-        return next;
-      });
+      clearTimeout(previewTimer);
+      previewAbort.abort();
+      clearPending();
     };
   }, [cameraViews, captureObjectId, isTextureMapTab, pushToast, setGenerateNotice, viewport]);
 
@@ -2038,6 +2028,7 @@ export function GeneratePanel({
   }
 
   function handleCameraViewPresetSelect(selection: CameraViewPresetSelection) {
+    if (selection === selectedCameraViewPreset) return;
     if (workflowConfigurationLocked) {
       notifyWorkflowOperationLocked();
       return;
@@ -2046,10 +2037,6 @@ export function GeneratePanel({
       selection === 'custom'
         ? createCameraViewsFromValues(customCameraViewPreset.views, t)
         : createCameraViewsForPreset(selection, t);
-    cameraViewPreviewsRef.current = {};
-    capturingCameraViewsRef.current = new Set();
-    setCameraViewPreviews({});
-    setCapturingCameraViews(new Set());
     setSelectedCameraViewPreset(selection);
     setCameraViews(nextViews);
     setActiveCameraViewId(nextViews[0]?.id ?? '');
