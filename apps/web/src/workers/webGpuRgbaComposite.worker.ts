@@ -64,6 +64,7 @@ type CompositeResources = {
   underlay: GpuBuffer;
   params: GpuBuffer;
   readback: GpuBuffer;
+  underlaySource?: WeakRef<ArrayBuffer>;
 };
 
 type CompositeRequest = {
@@ -369,10 +370,11 @@ async function copyToReadbackInBudgetedChunks(
   return output;
 }
 
-function compositeOnCpu(frontBuffer: ArrayBuffer, underlayBuffer: ArrayBuffer, opacity: number, frontOpacity = 1) {
+function compositeOnCpu(frontBuffer: ArrayBuffer, underlayBuffer: ArrayBuffer, opacity: number, frontOpacity = 1,
+  firstOffset = 0, endOffset = frontBuffer.byteLength) {
   const front = new Uint8ClampedArray(frontBuffer);
   const underlay = new Uint8ClampedArray(underlayBuffer);
-  for (let offset = 0; offset < front.length; offset += 4) {
+  for (let offset = firstOffset; offset < endOffset; offset += 4) {
     const frontAlpha = (front[offset + 3] / 255) * frontOpacity;
     const underlayAlpha = (underlay[offset + 3] / 255) * opacity;
     const visibleUnderlayAlpha = underlayAlpha * (1 - frontAlpha);
@@ -405,42 +407,15 @@ async function compositeOnCpuBudgeted(
   opacity: number,
   request: NormalizedCompositeRequest,
 ) {
-  const front = new Uint8ClampedArray(frontBuffer);
-  const underlay = new Uint8ClampedArray(underlayBuffer);
   // A quarter mebibyte of RGBA per slice keeps this worker from monopolising a
   // CPU core while the viewport is being orbited. The arithmetic is deliberately
   // byte-for-byte identical to the canonical CPU composite above.
   const sliceBytes = 256 * 1024;
-  for (let firstOffset = 0; firstOffset < front.length; firstOffset += sliceBytes) {
+  for (let firstOffset = 0; firstOffset < frontBuffer.byteLength; firstOffset += sliceBytes) {
     throwIfCancelled(request);
-    const endOffset = Math.min(front.length, firstOffset + sliceBytes);
-    for (let offset = firstOffset; offset < endOffset; offset += 4) {
-      const frontAlpha = (front[offset + 3] / 255) * (request.frontOpacity ?? 1);
-      const underlayAlpha = (underlay[offset + 3] / 255) * opacity;
-      const visibleUnderlayAlpha = underlayAlpha * (1 - frontAlpha);
-      const outputAlpha = frontAlpha + visibleUnderlayAlpha;
-      if (outputAlpha <= 0) {
-        if (front[offset] === 0 && front[offset + 1] === 0 && front[offset + 2] === 0) {
-          front[offset] = underlay[offset];
-          front[offset + 1] = underlay[offset + 1];
-          front[offset + 2] = underlay[offset + 2];
-        }
-        continue;
-      }
-      front[offset] = Math.round(
-        (front[offset] * frontAlpha + underlay[offset] * visibleUnderlayAlpha) / outputAlpha,
-      );
-      front[offset + 1] = Math.round(
-        (front[offset + 1] * frontAlpha + underlay[offset + 1] * visibleUnderlayAlpha) /
-          outputAlpha,
-      );
-      front[offset + 2] = Math.round(
-        (front[offset + 2] * frontAlpha + underlay[offset + 2] * visibleUnderlayAlpha) /
-          outputAlpha,
-      );
-      front[offset + 3] = Math.round(outputAlpha * 255);
-    }
-    if (endOffset < front.length) await yieldGpuBudget();
+    const endOffset = Math.min(frontBuffer.byteLength, firstOffset + sliceBytes);
+    compositeOnCpu(frontBuffer,underlayBuffer,opacity,request.frontOpacity,firstOffset,endOffset);
+    if (endOffset < frontBuffer.byteLength) await yieldGpuBudget();
   }
   return frontBuffer;
 }
@@ -559,7 +534,12 @@ async function runComposite(rawRequest: CompositeRequest) {
     const target = getResources(device, request.front.byteLength);
     const uploadStartedAt = performance.now();
     await uploadInBudgetedChunks(device, target.front, request.front, request);
-    await uploadInBudgetedChunks(device, target.underlay, request.underlay, request);
+    const reusedUnderlay = target.underlaySource?.deref() === request.underlay;
+    if (!reusedUnderlay) {
+      target.underlaySource = undefined;
+      await uploadInBudgetedChunks(device, target.underlay, request.underlay, request);
+      if (underlayCache?.pixels === request.underlay) target.underlaySource = new WeakRef(request.underlay);
+    }
     const uploadMs = performance.now() - uploadStartedAt;
     const computeStartedAt = performance.now();
     await computeInBudgetedChunks(device, target, request.opacity, request);
@@ -574,7 +554,7 @@ async function runComposite(rawRequest: CompositeRequest) {
         computeMs,
         readbackMs,
         totalMs: performance.now() - startedAt,
-        bytesTransferred: request.front.byteLength * 3,
+        bytesTransferred: request.front.byteLength * (reusedUnderlay ? 2 : 3),
         chunkBytes: activeChunkBytes(request),
         backend: 'webgpu-worker' as const,
       },
