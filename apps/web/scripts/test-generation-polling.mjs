@@ -48,6 +48,13 @@ try {
   const generationTiming = await server.ssrLoadModule('/src/utils/generationTiming.ts');
   const generationIdentity = await server.ssrLoadModule('/src/utils/generationIdentity.ts');
   const generationStore = await server.ssrLoadModule('/src/stores/generationStore.ts');
+  const { isRetryableGenerationPollError } = await server.ssrLoadModule('/src/services/generationErrorMessage.ts');
+  for (const status of [0, 408, 429, 500, 502, 503]) assert.equal(isRetryableGenerationPollError({ status }), true);
+  for (const status of [400, 401, 403, 404, 413, 600]) assert.equal(isRetryableGenerationPollError({ status }), false);
+  assert.equal(isRetryableGenerationPollError(new Error('莉刻生图服务响应超时，请稍后重试。')), true);
+  assert.equal(isRetryableGenerationPollError(new Error('远端返回图片比例与提交比例不一致，已停止回贴，未拉伸图片。')), false);
+  assert.equal(isRetryableGenerationPollError(new Error('结构引导图经原尺寸无损编码后仍超过 Atlas 上传限制')), false);
+  assert.equal(isRetryableGenerationPollError(new DOMException('aborted', 'AbortError')), false);
 
   const staleRepaint = {
     id: 'local-repaint-client-id',

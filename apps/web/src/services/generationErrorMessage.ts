@@ -8,6 +8,15 @@ export function isGenerationCancellation(error: unknown, signal?: AbortSignal) {
   return /用户已终止|用户已取消|任务已终止/.test(getRawMessage(error));
 }
 
+/** GEN-POLL-CLASSIFICATION/1.0.0: retry transport failures, not result validation. */
+export function isRetryableGenerationPollError(error: unknown) {
+  if (isGenerationCancellation(error)) return false;
+  if (error && typeof error === 'object' && 'status' in error && typeof error.status === 'number') {
+    return [0, 408, 429].includes(error.status) || (error.status >= 500 && error.status <= 599);
+  }
+  return /响应超时|无法连接云端莉刻生图服务|暂时无法连接生成服务|failed to fetch|fetch failed|networkerror|econn/i.test(getRawMessage(error));
+}
+
 export function getUserFacingGenerationError(
   error: unknown,
   fallback = '生成服务暂时无法完成请求，请稍后重试。',

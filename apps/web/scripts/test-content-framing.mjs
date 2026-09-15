@@ -74,6 +74,16 @@ const exact = {
 assert.deepEqual(contracts.generationFramingRatio(exact), { width: 57, height: 49 });
 assert.throws(() => restoredFrameLayout(exact, 2048, 2048), /比例/);
 assert.doesNotThrow(() => restoredFrameLayout(exact, 1711, 1470));
+const bottomFrame = { ...exact, left: 25, top: 253, width: 1998, height: 1542 };
+const roundedBottom = restoredFrameLayout(bottomFrame, 2336, 1792);
+assert.equal(roundedBottom.patchWidth, 2336);
+assert.equal(roundedBottom.patchHeight, 1792);
+assert.ok(Number.isInteger(roundedBottom.left) && Number.isInteger(roundedBottom.top));
+assert.ok(roundedBottom.left >= 0 && roundedBottom.top >= 0);
+assert.ok(roundedBottom.left + 2336 <= roundedBottom.width);
+assert.ok(roundedBottom.top + 1792 <= roundedBottom.height);
+assert.throws(() => restoredFrameLayout(bottomFrame, 2416, 1792), /比例/);
+assert.throws(() => restoredFrameLayout(bottomFrame, 2335, 1792), /比例/);
 assert.throws(() => findContentFraming(coverage(10, 10, { x: 0, y: 0, w: 0, h: 0 })), /轮廓/);
 assert.throws(() => restoredFrameLayout({ ...exact, width: 10, height: 10 }, 2048, 2048), /安全/);
 for (const change of [

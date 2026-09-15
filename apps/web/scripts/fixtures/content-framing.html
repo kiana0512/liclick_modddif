@@ -5,7 +5,7 @@
     prepareContentFraming,
     restoreContentFraming,
   } from '/src/engine/generation/contentFramingImages.ts';
-  import { findContentFraming } from '/src/engine/generation/contentFraming.ts';
+  import { findContentFraming, restoredFrameLayout } from '/src/engine/generation/contentFraming.ts';
   import * as THREE from 'three';
   import { captureMask } from '/src/engine/capture/captureMask.ts';
   import { captureNormal } from '/src/engine/capture/captureNormal.ts';
@@ -180,6 +180,23 @@
             (x >= 120 && x < 280 && y >= 180 && y < 240 ? 255 : 0),
           'scaled result location mismatch',
         );
+    const roundedFrame = { version: 1, sourceWidth: 2048, sourceHeight: 2048, left: 25, top: 253, width: 1998, height: 1542 };
+    const native = document.createElement('canvas'); native.width = 2336; native.height = 1792;
+    const nativeCtx = native.getContext('2d');
+    const nativePixels = nativeCtx.createImageData(native.width, native.height);
+    for (let i = 0; i < nativePixels.data.length; i += 4) {
+      nativePixels.data.set([i % 251, Math.floor(i / 7) % 253, Math.floor(i / 23) % 255, 255], i);
+    }
+    nativeCtx.putImageData(nativePixels, 0, 0);
+    const roundedLayout = restoredFrameLayout(roundedFrame, native.width, native.height);
+    const roundedPixels = await pixels(await restoreContentFraming(native.toDataURL(), roundedFrame));
+    let roundedDifferences = 0;
+    for (let y = 0; y < native.height; y++) for (let x = 0; x < native.width; x++) for (let channel = 0; channel < 4; channel++) {
+      const source = (y * native.width + x) * 4 + channel;
+      const dest = ((y + roundedLayout.top) * roundedPixels.width + x + roundedLayout.left) * 4 + channel;
+      roundedDifferences += Number(nativePixels.data[source] !== roundedPixels.data[dest]);
+    }
+    check(roundedDifferences === 0, 'rounded provider output was stretched or cropped');
     result.textContent = JSON.stringify({
       ok: true,
       checks: [
@@ -193,6 +210,7 @@
         'single/multiview shared path',
         '2K RGBA and edge margin',
         'larger return keeps detail and placement',
+        'nearest-16 provider output: all native RGBA bytes retained without resize',
       ],
       framing: prepared.framing,
     });

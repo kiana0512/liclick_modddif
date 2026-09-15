@@ -67,7 +67,7 @@ import {
   type LiclickImageModel,
   type LiclickImageSize,
 } from '@/services/liclickApiClient';
-import { getUserFacingGenerationError, isGenerationCancellation } from '@/services/generationErrorMessage';
+import { getUserFacingGenerationError, isGenerationCancellation, isRetryableGenerationPollError } from '@/services/generationErrorMessage';
 import { resolveLocalRepaintMaterialReference } from '@/services/localRepaintMaterialReference';
 import { resolveGptRepaintReference } from '@/engine/localRepaint/gptRepaintReference';
 import {
@@ -1819,10 +1819,15 @@ export function GeneratePanel({
             );
           return;
         }
+        if (!isRetryableGenerationPollError(error)) {
+          clearPollRetryFeedback();
+          markGenerationFailed(generationToPoll, getUserFacingGenerationError(error));
+          return;
+        }
         const failureCount = (generationPollFailureCountsRef.current.get(jobId) ?? 0) + 1;
         generationPollFailureCountsRef.current.set(jobId, failureCount);
         if (failureCount >= 2) {
-          const retryMessage = '与本地生成服务的连接暂时不稳定，后台任务没有丢失，正在自动重试。';
+          const retryMessage = '与生成服务的连接暂时不稳定，后台任务没有丢失，正在自动重试。';
           setGenerateNotice({ tone: 'warning', message: retryMessage });
           console.warn('[Liclick 3D Texture] Background generation reconnecting:', retryMessage);
         }
@@ -2481,6 +2486,7 @@ export function GeneratePanel({
         if (isCancelledGeneration(generation)) throw new Error('用户已终止纹理贴图生成任务。');
         const message = error instanceof Error ? error.message : String(error);
         if (/Generation job not found|生成任务已失效|没有找到.*任务/i.test(message)) throw error;
+        if (!isRetryableGenerationPollError(error)) throw error;
         transientFailures += 1;
         if (transientFailures >= 2) {
           setGenerateNotice({
@@ -5330,26 +5336,32 @@ export function GeneratePanel({
     for (const generationId of autoProjectionFailureNoticeRef.current.keys()) {
       if (!pendingIds.has(generationId)) autoProjectionFailureNoticeRef.current.delete(generationId);
     }
-    for (const generation of pending) {
-      if (
-        useProjectStore.getState().currentProjectId !== currentProjectId ||
-        submitLocksRef.current.size > 0
-      ) return;
-      try {
-        const layer = await addGenerationAsProjectedLayer(generation, { automatic: true });
-        if (layer) {
-          autoProjectionFailureNoticeRef.current.delete(generation.id);
-          dismissToastByDedupeKey(`auto-project:${generation.id}`);
+    const multiviewRecovery = pending.some((generation) => generation.mode === 'multiview');
+    if (multiviewRecovery) useLayerStore.getState().beginProjectedPreviewBatch();
+    try {
+      for (const generation of pending) {
+        if (
+          useProjectStore.getState().currentProjectId !== currentProjectId ||
+          submitLocksRef.current.size > 0
+        ) return;
+        try {
+          const layer = await addGenerationAsProjectedLayer(generation, { automatic: true });
+          if (layer) {
+            autoProjectionFailureNoticeRef.current.delete(generation.id);
+            dismissToastByDedupeKey(`auto-project:${generation.id}`);
+          }
+        } catch (error) {
+          const message = error instanceof Error ? error.message : '请保持网络连接，无需重新生图。';
+          if (autoProjectionFailureNoticeRef.current.get(generation.id) === message) continue;
+          autoProjectionFailureNoticeRef.current.set(generation.id, message);
+          console.warn('[generation] Automatic projection recovery remains pending', {
+            generationId: generation.id,
+            message,
+          });
         }
-      } catch (error) {
-        const message = error instanceof Error ? error.message : '请保持网络连接，无需重新生图。';
-        if (autoProjectionFailureNoticeRef.current.get(generation.id) === message) continue;
-        autoProjectionFailureNoticeRef.current.set(generation.id, message);
-        console.warn('[generation] Automatic projection recovery remains pending', {
-          generationId: generation.id,
-          message,
-        });
       }
+    } finally {
+      if (multiviewRecovery) useLayerStore.getState().endProjectedPreviewBatch();
     }
   };
 
