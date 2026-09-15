@@ -61,6 +61,9 @@ export type PromptPolishImageInput = {
 };
 
 export type LiclickGenerateTextureSingleViewInput = GenerateTextureInput & {
+  /** Local preparation only: aligned geometry guides must not be resampled. */
+  pixelExactReferenceIds?: string[];
+  signal?: AbortSignal;
   referencePipeline?: 'six-view-delight-v1';
   clientGenerationId?: string;
   projectId?: string;
@@ -120,11 +123,14 @@ export type GenerationJobListItem = GenerationJobResult & {
 async function prepareReferences(
   references: ReferenceImage[] = [],
   onReferencePreprocessed?: (result: ReferencePreprocessingResult) => void,
+  pixelExactReferenceIds: string[] = [],
 ) {
   // Large references are decoded into full RGBA bitmaps. Limiting preparation
   // concurrency prevents several 4K images from freezing or exhausting the UI
   // process while preserving the same reference order and output.
-  const prepared = await mapWithConcurrency(references, 2, prepareReferenceForAtlas);
+  const prepared = await mapWithConcurrency(references, 2, (reference) =>
+    prepareReferenceForAtlas(reference, { preservePixels: pixelExactReferenceIds.includes(reference.id) }),
+  );
   for (const reference of prepared) {
     if (reference.preprocessing) onReferencePreprocessed?.(reference.preprocessing);
   }
@@ -216,10 +222,13 @@ export function createLiclickApiClient(config: LiclickApiConfig = {}): LiclickAp
       return result.polishedPrompt.trim();
     },
     async generateTextureSingleView(input) {
+      input.signal?.throwIfAborted();
       const preparedReferences = await prepareReferences(
         input.referenceImages,
         config.onReferencePreprocessed,
+        input.pixelExactReferenceIds,
       );
+      input.signal?.throwIfAborted();
       const result = await requestJson<{
         id: string;
         taskId?: string;
@@ -235,6 +244,7 @@ export function createLiclickApiClient(config: LiclickApiConfig = {}): LiclickAp
         startedAt?: string;
       }>(await getTransport(), '/api/liclick/generate-image', {
         method: 'POST',
+        signal: input.signal,
         body: JSON.stringify({
           clientGenerationId: input.clientGenerationId,
           projectId: input.projectId,

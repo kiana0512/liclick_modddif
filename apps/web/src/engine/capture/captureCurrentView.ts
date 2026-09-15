@@ -736,7 +736,17 @@ export async function captureCurrentView(request: CaptureCurrentViewRequest): Pr
 export async function captureCurrentNormalPreview(
   request: CaptureCurrentViewRequest,
 ): Promise<CaptureNormalPreview> {
-  const size = Math.min(request.resolution, 1024);
+  return captureNormalView(request, Math.min(request.resolution, 1024), false);
+}
+
+/** Full-resolution geometry guidance; independent of the lightweight UI preview. */
+export async function captureCurrentNormalGuide(
+  request: CaptureCurrentViewRequest,
+): Promise<CaptureNormalPreview> {
+  return captureNormalView(request, request.resolution, true);
+}
+
+async function captureNormalView(request: CaptureCurrentViewRequest, size: number, geometryGuide: boolean) {
   const aspect = Number.isFinite(request.aspect) && (request.aspect ?? 0) > 0 ? request.aspect! : 1;
   const width = aspect >= 1 ? size : Math.max(1, Math.round(size * aspect));
   const height = aspect >= 1 ? Math.max(1, Math.round(size / aspect)) : size;
@@ -748,8 +758,9 @@ export async function captureCurrentNormalPreview(
     objectId: request.objectId,
     width,
     height,
+    ...(geometryGuide ? { clearAlpha: 0 } : {}),
   };
-  const normal = await captureNormal(passRequest, { space: 'world' });
+  const normal = await captureNormal(passRequest, { space: geometryGuide ? 'view' : 'world', geometryGuide });
   return {
     id: createId('normal-preview'),
     objectId: request.objectId,

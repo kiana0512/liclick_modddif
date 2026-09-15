@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import ts from 'typescript';
+import './test-gpt-repaint-normal.mjs';
 
 function load(relative, dependencies = {}) {
   const source = readFileSync(new URL(relative, import.meta.url), 'utf8');
@@ -44,7 +45,7 @@ const { GPT_TEXTURE_MODELS, resolveGptTextureModel, GPT_TEXTURE_QUALITIES,
 const { buildGptLocalRepaintRequest } = load('../src/services/gptLocalRepaintRequest.ts', {
   '@/engine/generation/gptTextureModels': gptOptions,
 });
-const { buildTextureMapCompletionPrompt, buildTextureMapPrompt } = load('../src/engine/generation/textureMapPrompts.ts');
+const { buildGptRepaintPrompt } = load('../src/engine/localRepaint/gptRepaintPrompt.ts');
 assert.equal(resolveGptTextureModel('gpt-image-2'), 'gpt-image-2');
 assert.equal(GPT_TEXTURE_MODELS.length, 3);
 assert.deepEqual(getGptTextureQualities('gpt-image-2').map(({value}) => value), ['low', 'medium', 'high']);
@@ -57,15 +58,16 @@ for (const { value: model } of GPT_TEXTURE_MODELS) for (const resolution of ['1K
   const expectedQuality = model === 'gpt-image-2' && ['xhigh', 'max'].includes(quality) ? 'high' : quality;
   const expectedImageSize = resolution === '4K' ? '2K' : resolution;
   assert.equal(resolveGptTextureModel(model), model);
-  const capture = { id: 'capture', maskUrl: 'private-authored-mask', camera: {}, depthUrl: 'private-depth' };
+  const capture = { id: 'capture', width: 2048, height: 2048, maskUrl: 'private-authored-mask', camera: {}, depthUrl: 'private-depth' };
   const reference = { id: 'reference', name: 'reference.png', url: 'material-image' };
   const input = buildGptLocalRepaintRequest({ generationId: 'job', projectId: 'project', model,
-    prompt: buildTextureMapCompletionPrompt('保持原色'), capture, reference, guideUrl: 'guide-image', resolution, quality });
+    prompt: buildGptRepaintPrompt('保持原色', true), capture, reference, guideUrl: 'guide-image', normalUrl: 'normal-image', resolution, quality });
   assert.equal(input.model, model);
   assert.equal(input.workflow, 'local-repaint');
-  assert.equal(input.prompt, buildTextureMapPrompt('保持原色'));
-  assert.deepEqual(input.referenceImages.map((item) => item.url), ['guide-image', 'material-image']);
-  assert.equal(input.referenceImages.length, 2);
+  assert.equal(input.prompt, buildGptRepaintPrompt('保持原色', true));
+  assert.deepEqual(input.referenceImages.map((item) => item.url), ['guide-image', 'normal-image', 'material-image']);
+  assert.equal(input.referenceImages.length, 3);
+  assert.deepEqual(input.pixelExactReferenceIds, ['job-guide', 'job-normal']);
   assert.equal(input.capture.maskUrl, 'private-authored-mask');
   assert.equal(input.mask, undefined);
   assert.equal(input.aspectRatio, '1:1');
@@ -126,10 +128,10 @@ const client = readFileSync(new URL('../src/services/liclickApiClient.ts', impor
 assert.match(client, /quality: input.quality/);
 assert.match(panel, /gptGuide: isGptLocalRepaint/);
 assert.match(panel, /colorMode: isGptLocalRepaint \? 'flat-target-coverage'/);
-assert.match(panel, /if \(!isGptLocalRepaint && !isMultiviewReference/);
+assert.match(panel, /if \(!isGptLocalRepaint && materialReference && !isMultiviewReference/);
 assert.match(panel, /maskUrl: currentPaintMaskDataUrl/);
 assert.match(panel, /prepareRepaintResult\(\s*generation.resultUrl, capture.depthUrl, isGptLocalRepaint/);
 const editor = readFileSync(new URL('../src/routes/EditorPage.tsx', import.meta.url), 'utf8');
 assert.match(editor, /if \(preservesRepaintResultAlpha\(metadata\) && generation.resultUrl\)/);
 assert.equal((editor.match(/ignoreSourceAlpha: !preservesRepaintResultAlpha\(latestLocalRepaintGeneration.metadata\)/g) || []).length, 2);
-console.log('GPT 2.5: clay/texture pixels, two-image request, model selection, unchanged prompt and safe recovery passed.');
+console.log('GPT: clay/texture pixels, aligned guides + optional reference, model selection, prompt and safe recovery passed.');
