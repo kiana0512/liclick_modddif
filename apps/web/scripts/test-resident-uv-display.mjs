@@ -511,6 +511,7 @@ globalThis.window = { caches: {} };
 globalThis.fetch = async () => new Response(new Uint8Array([sourceByte]));
 try {
   const { persistentMergeKey } = load('persistentMergePreparation', {
+    '@/utils/browserScheduling': { yieldToBrowserTask: async () => {} },
     '@/stores/authStore': { useAuthStore: { getState: () => ({ user: userId ? { id: userId } : undefined }) } },
     './uvBakeDebugControls': { getDebugUvBakeStatus: () => ({}) },
     '@/engine/layers/mergeUvComposition': { getMergeUvPostprocessOptions: () => ({}) },

@@ -76,3 +76,51 @@ assert(fetchSignals[0].aborted, 'Cancel aborts the in-flight fetch');
 assert.deepEqual(responses.map(({ id, type }) => [id, type]), [[201, 'error'], [202, 'result']]);
 assert.deepEqual(new Uint8Array(responses[1].output), new Uint8Array([9, 8, 7, 255, 9, 8, 7, 255, 9, 8, 7, 255, 9, 8, 7, 255]));
 console.log('Worker underlay fetch cancellation: blocked stale response aborted; latest full pixels published without waiting.');
+
+// Exercise the production dispatch with observable GPU transport. Decoded bytes
+// are immutable; only the verified cache object may become an upload hit.
+const uploads=[];
+let target={front:{},underlay:{}};
+const gpuApi=new Function('self','yieldWorkerTask',`${compiled};
+ getDevice=async()=>({});
+ getResources=()=>target();
+ uploadInBudgetedChunks=async(_device,buffer,bytes)=>upload(buffer,bytes);
+ computeInBudgetedChunks=async()=>{};
+ copyToReadbackInBudgetedChunks=async(_device,_target,request)=>request.front.slice(0);
+ return {run:runComposite, cpu:compositeOnCpu, budgeted:compositeOnCpuBudgeted,
+ cache: pixels=>{underlayCache={key:'verified',pixels};},
+ bind:(getTarget,onUpload)=>{target=getTarget;upload=onUpload;}};
+ var target,upload;
+` )({navigator:{},postMessage(){}},async()=>{});
+gpuApi.bind(()=>target,(buffer,bytes)=>uploads.push({buffer,bytes}));
+const backdrop=new Uint8Array(16).fill(99).buffer;
+gpuApi.cache(backdrop);
+const gpuRequest={...queuedRequest(500),underlay:backdrop};
+assert.equal((await gpuApi.run(gpuRequest)).metrics.bytesTransferred,48);
+assert.equal((await gpuApi.run({...gpuRequest,opacity:0.4})).metrics.bytesTransferred,32);
+assert.equal(uploads.filter(value=>value.buffer===target.underlay).length,1,'unchanged verified UV skips only underlay upload');
+const replacement=backdrop.slice(0);gpuApi.cache(replacement);
+await gpuApi.run({...gpuRequest,underlay:replacement});
+assert.equal(uploads.filter(value=>value.buffer===target.underlay).length,2,'new verified bytes invalidate GPU upload');
+const originalTarget=target;target={front:{},underlay:{}};
+await gpuApi.run({...gpuRequest,underlay:replacement});
+assert.equal(uploads.filter(value=>value.buffer===target.underlay).length,1,'new device resources require upload');
+const raw=backdrop.slice(0);
+await gpuApi.run({...gpuRequest,underlay:raw});await gpuApi.run({...gpuRequest,underlay:raw});
+assert.equal(uploads.filter(value=>value.buffer===target.underlay).length,3,'unverified mutable input is never reused');
+assert(originalTarget.underlaySource instanceof WeakRef,'GPU metadata must not pin a retired CPU decode');
+gpuApi.cache(backdrop);
+gpuApi.bind(()=>target,(buffer)=>{if(buffer===target.underlay)throw Error('upload failed');});
+assert.equal((await gpuApi.run({...gpuRequest,front:gpuRequest.front.slice(0)})).metrics.backend,'cpu-worker');
+assert.equal(target.underlaySource,undefined,'failed or partial uploads cannot become cache hits');
+gpuApi.bind(()=>target,(buffer,bytes)=>uploads.push({buffer,bytes}));
+await gpuApi.run({...gpuRequest,front:gpuRequest.front.slice(0)});
+assert.equal(target.underlaySource.deref(),backdrop,'successful retry restores exact verified identity');
+for(const size of [4,1028,262148,524300])for(const opacity of [0,0.37,1])for(const frontOpacity of [0,0.51,1]){
+ const front=Uint8Array.from({length:size},(_,i)=>(i*37+(i>>>8))&255).buffer;
+ const under=Uint8Array.from({length:size},(_,i)=>(i*71)&255).buffer;
+ const expected=gpuApi.cpu(front.slice(0),under,opacity,frontOpacity);
+ const actual=await gpuApi.budgeted(front.slice(0),under,opacity,{...gpuRequest,frontOpacity});
+ assert.deepEqual(new Uint8Array(actual),new Uint8Array(expected));
+}
+console.log('UV GPU underlay upload: exact verified identity, changed bytes/resources, mutable inputs, transfer metrics and budgeted CPU parity passed.');
