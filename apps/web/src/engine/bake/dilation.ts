@@ -257,11 +257,20 @@ function* padUvIslandGutterSteps(
   let prepared = immutableTopology && !cached ? new ChunkedUint32Queue() : undefined;
   if (cached?.spans) {
     let scanned = 0;
+    const coverageWords = coverage.byteOffset % 4 === 0
+      ? new Uint32Array(coverage.buffer, coverage.byteOffset, Math.floor(coverage.length / 4)) : undefined;
     for (let i = 0; i < cached.spans.length; i += 2) {
       const end = cached.spans.get(i + 1);
       for (let index = cached.spans.get(i); index < end; index++) {
-        if (++scanned % 8192 === 0) yield;
-        if (coverage[index]) currentFrontier.push(index);
+        // Empty atlas spans contain no donor. Skip only proven zero coverage;
+        // retain the exact row-major order for every nonempty candidate.
+        if (coverageWords && index % 4 === 0 && index + 4 <= end && coverageWords[index / 4] === 0) {
+          index += 3;scanned += 4;
+        } else {
+          scanned++;
+          if (coverage[index]) currentFrontier.push(index);
+        }
+        if (scanned >= 8192) {scanned = 0;yield;}
       }
     }
   } else {
