@@ -4248,12 +4248,16 @@ function computeUvBrushTransform(
   worldRadius: number,
   fallbackRadius: number,
 ) {
+  const position = mesh.geometry.getAttribute('position');
   const uv = mesh.geometry.getAttribute('uv');
-  if (!(uv instanceof THREE.BufferAttribute) || !readSurfaceBrushEdges(mesh, face)) {
+  if (!(position instanceof THREE.BufferAttribute) || !(uv instanceof THREE.BufferAttribute)) {
     return createCircularBrushTransform(fallbackRadius);
   }
 
   const {
+    p0,
+    p1,
+    p2,
     edge1,
     edge2,
     dpdu,
@@ -4269,9 +4273,14 @@ function computeUvBrushTransform(
     uvAxisX,
     uvAxisY,
   } = surfaceBrushScratch;
+  p0.fromBufferAttribute(position, face.a).applyMatrix4(mesh.matrixWorld);
+  p1.fromBufferAttribute(position, face.b).applyMatrix4(mesh.matrixWorld);
+  p2.fromBufferAttribute(position, face.c).applyMatrix4(mesh.matrixWorld);
   uv0.fromBufferAttribute(uv, face.a);
   uv1.fromBufferAttribute(uv, face.b);
   uv2.fromBufferAttribute(uv, face.c);
+  edge1.copy(p1).sub(p0);
+  edge2.copy(p2).sub(p0);
   uvEdge1.copy(uv1).sub(uv0);
   uvEdge2.copy(uv2).sub(uv0);
   const determinant = uvEdge1.x * uvEdge2.y - uvEdge1.y * uvEdge2.x;
@@ -4331,59 +4340,11 @@ function computeScreenBrushTransform(
   worldRadius: number,
   fallbackRadius: number,
 ) {
-  const { tangentX, tangentY } = surfaceBrushScratch;
+  const { tangentX, tangentY, delta } = surfaceBrushScratch;
   // The cursor and screen-space stamps share camera-facing axes. Surface
   // normals must not flatten or rotate the footprint at hard edges.
   tangentX.setFromMatrixColumn(camera.matrixWorld, 0).normalize();
   tangentY.setFromMatrixColumn(camera.matrixWorld, 1).normalize();
-  return projectScreenBrush(hitPoint, camera, worldRadius, fallbackRadius);
-}
-
-function readSurfaceBrushEdges(mesh: THREE.Mesh, face: THREE.Face) {
-  const position = mesh.geometry.getAttribute('position');
-  if (!(position instanceof THREE.BufferAttribute)) {
-    return false;
-  }
-
-  const { p0, p1, p2, edge1, edge2 } = surfaceBrushScratch;
-  p0.fromBufferAttribute(position, face.a).applyMatrix4(mesh.matrixWorld);
-  p1.fromBufferAttribute(position, face.b).applyMatrix4(mesh.matrixWorld);
-  p2.fromBufferAttribute(position, face.c).applyMatrix4(mesh.matrixWorld);
-  edge1.copy(p1).sub(p0);
-  edge2.copy(p2).sub(p0);
-  return true;
-}
-
-function prepareSurfaceBrushBasis(mesh: THREE.Mesh, face: THREE.Face) {
-  if (!readSurfaceBrushEdges(mesh, face)) return false;
-  const { edge1, edge2, tangentX, tangentY, normal } = surfaceBrushScratch;
-  if (edge1.lengthSq() < 1e-16 || edge2.lengthSq() < 1e-16) {
-    return false;
-  }
-  tangentX.copy(edge1).normalize();
-  normal.crossVectors(edge1, edge2).normalize();
-  if (normal.lengthSq() < 0.5) return false;
-  tangentY.crossVectors(normal, tangentX).normalize();
-
-  return true;
-}
-
-function computeLocalRepaintScreenBrushTransform(
-  mesh: THREE.Mesh,
-  face: THREE.Face,
-  hitPoint: THREE.Vector3,
-  camera: THREE.Camera,
-  worldRadius: number,
-  fallbackRadius: number,
-) {
-  if (!prepareSurfaceBrushBasis(mesh, face)) return createCircularBrushTransform(fallbackRadius);
-  return projectScreenBrush(hitPoint, camera, worldRadius, fallbackRadius);
-}
-
-function projectScreenBrush(
-  hitPoint: THREE.Vector3, camera: THREE.Camera, worldRadius: number, fallbackRadius: number,
-) {
-  const { tangentX, tangentY, delta } = surfaceBrushScratch;
   const projectToScreen = (point: THREE.Vector3) => {
     const projected = surfaceBrushScratch.projected.copy(point).project(camera);
     return new THREE.Vector2((projected.x + 1) * 0.5, (1 - projected.y) * 0.5);
@@ -6450,12 +6411,25 @@ function computeLocalRepaintBrushTransform(
   mesh: THREE.Mesh,
   face: THREE.Face,
   hitPoint: THREE.Vector3,
+  camera: THREE.Camera,
   worldToSourceClip: THREE.Matrix4,
   worldRadius: number,
   fallbackRadius: number,
 ) {
-  if (!prepareSurfaceBrushBasis(mesh, face)) return createCircularBrushTransform(fallbackRadius);
-  const { tangentX, tangentY, delta } = surfaceBrushScratch;
+  const position = mesh.geometry.getAttribute('position');
+  if (!(position instanceof THREE.BufferAttribute))
+    return createCircularBrushTransform(fallbackRadius);
+  const { p0, p1, p2, edge1, edge2, tangentX, tangentY, normal, delta } = surfaceBrushScratch;
+  p0.fromBufferAttribute(position, face.a).applyMatrix4(mesh.matrixWorld);
+  p1.fromBufferAttribute(position, face.b).applyMatrix4(mesh.matrixWorld);
+  p2.fromBufferAttribute(position, face.c).applyMatrix4(mesh.matrixWorld);
+  edge1.copy(p1).sub(p0);
+  edge2.copy(p2).sub(p0);
+  if (edge1.lengthSq() < 1e-16 || edge2.lengthSq() < 1e-16)
+    return createCircularBrushTransform(fallbackRadius);
+  normal.crossVectors(edge1, edge2).normalize();
+  if (!computeViewAlignedSurfaceTangents(normal, hitPoint, camera, tangentX, tangentY))
+    return createCircularBrushTransform(fallbackRadius);
 
   const center = projectWorldPointToLocalRepaintUv(
     hitPoint,
@@ -10379,9 +10353,7 @@ function SurfacePaintOverlay() {
               worldRadius,
               fallbackTextureRadius,
             ),
-        screenBrush: isSurfaceMaskBrush ? computeLocalRepaintScreenBrushTransform(
-          hit.object, hit.face, hit.point, camera, worldRadius, fallbackTextureRadius,
-        ) : computeScreenBrushTransform(
+        screenBrush: computeScreenBrushTransform(
           hit.point,
           camera,
           worldRadius,
@@ -11979,6 +11951,7 @@ function SurfacePaintOverlay() {
                 result.hit.object,
                 result.hit.face,
                 result.hit.point,
+                camera,
                 composite.worldToSourceClip,
                 result.worldRadius,
                 result.textureRadius,
