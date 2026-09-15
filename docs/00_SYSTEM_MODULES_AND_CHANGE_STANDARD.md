@@ -32,7 +32,7 @@
 
 2026-09-15 M04，协作 M08/M12/M14：`PIXEL-EXACT-REFERENCE-UPLOAD/1.0.0` 修复 exact 引导图在前端按 Atlas JSON 预算过早拒绝的问题。原尺寸 PNG 先经无损编码和逐 RGBA 验证，仍超限时用所属工程 verified 对象资产及短期签名下载上传，原 Atlas 预算保持；未配置对象存储且无损后仍超限明确阻断。完整分辨率、QA、GPU/CPU/Worker/shader、保存/CAS 与导出保持，无 Schema 迁移，前后端成套回滚。详见 [原尺寸引导图上传变更卡](changes/CHG-20260915-PIXEL-EXACT-REFERENCE-UPLOAD.md)。
 
-2026-09-15 M15：`SHADER-TEMPLATE-FORMAT/1.4.0` 仅在构建期压缩实际 Three.js ShaderChunk 注册字符串的空白，保持 GLSL token、指令、行数及其他 JavaScript；Terser ecma 与 es2022 target 对齐。实际 141 字符串等价回归通过，最终 SHA 必须通过正式产物预算。分辨率、QA、GPU/CPU/Worker 数学、持久化、导出与预算保持，无迁移。详见 [发布 shader 空白变更卡](changes/CHG-20260915-RELEASE-SHADER-WHITESPACE.md)。
+2026-09-15 M15：`SHADER-TEMPLATE-FORMAT/1.4.0` 仅在构建期压缩实际 Three.js ShaderChunk 注册字符串的空白，保持 GLSL token、指令、行数及其他 JavaScript；Terser ecma 使用 Vite 类型支持的 2020，es2022 target 保持。实际 141 字符串等价回归通过，最终 SHA 必须通过正式产物预算。分辨率、QA、GPU/CPU/Worker 数学、持久化、导出与预算保持，无迁移。详见 [发布 shader 空白变更卡](changes/CHG-20260915-RELEASE-SHADER-WHITESPACE.md)。
 >
 > 生效日期：`2026-09-15`
 >

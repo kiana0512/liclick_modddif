@@ -14,7 +14,7 @@ assert.equal(config.build.minify, 'terser');
 assert.equal(config.build.terserOptions.compress.drop_console, false);
 assert.equal(config.build.terserOptions.compress.unsafe, false);
 assert.equal(config.build.terserOptions.mangle.properties, false);
-assert.equal(config.build.terserOptions.ecma, 2022);
+assert.equal(config.build.terserOptions.ecma, 2020);
 assert.equal(config.build.target, 'es2022');
 
 // Exercise the real production minifier through Vite, without writing dist.
