@@ -20,7 +20,8 @@ const budgets = [
   // guard + authored-before-clay sequencing measures 498,829 bytes. Allow
   // 512 bytes here; retain the existing 3,160,000-byte total and other limits.
   { label: 'editor route', prefix: 'EditorPage-', maxBytes: 499_024 },
-  { label: 'GPT adaptive framing lazy module', prefix: 'contentFramingImages-', maxBytes: 5_000 },
+  // GPT-CONTENT-FRAMING/2: validated input padding + alpha bounds, measured 6,748.
+  { label: 'GPT adaptive framing lazy module', prefix: 'contentFramingImages-', maxBytes: 7_000 },
   // CHG-20260910-UV-REPAINT: lazy UV engine/session, shared visibility and
   // viewport adapters measured ~701,300 bytes before integration. The merged
   // resident graph measures 702,997; allow 3,500 bytes including release metadata.
@@ -103,7 +104,10 @@ const budgets = [
 // GPT-CONTENT-FRAMING/1 adds geometry cropping, exact ratio and recoverable
 // inverse placement (~5 KiB). Allocate 6,000 bytes for this new capability,
 // with its own 5,000-byte lazy gate; all existing hot-path limits stay unchanged.
-const maxTotalJavaScriptBytes = 3_253_500;
+// GPT-CONTENT-FRAMING/2 adds 2,664 bytes over the previous total allowance:
+// Cloud candidate 3,256,164. Bound the new lazy feature to 3,000 bytes;
+// retain all shell/editor/shared/QA/pixel gates, no unrelated module exemptions.
+const maxTotalJavaScriptBytes = 3_256_500;
 
 let entries;
 try {
