@@ -5,6 +5,7 @@ import { createHash } from 'node:crypto';
 import { generationFramingRatio, generationOutputSize, type GenerationFraming } from '@liclick/contracts';
 import { callAtlasToolJson, parseJsonFromOutput } from '../auth/atlasAuthService.js';
 import { preparePixelExactUploadArguments } from './pixelExactReferenceUpload.js';
+import { prepareRepaintColorUploadArguments } from './repaintColorReferenceUpload.js';
 
 type ReferenceInput = {
   id?: string;
@@ -732,6 +733,7 @@ async function uploadReference(
   reference: ReferenceInput,
   _tempDir: string,
   atlasContext: LiclickAtlasContext = {},
+  repaintColorGuide = false,
 ): Promise<UploadedReference> {
   const personalAtlasHomeDir = atlasContext.atlasHomeDir?.trim();
   if (!personalAtlasHomeDir) {
@@ -742,7 +744,7 @@ async function uploadReference(
   if (reference.url.startsWith('data:')) {
     const { buffer } = dataUrlToBuffer(reference.url);
     const digest = createHash('sha256').update(buffer).digest('hex');
-    cacheKey = `${personalAtlasHomeDir}:image:${digest}`;
+    cacheKey = `${personalAtlasHomeDir}:image:${repaintColorGuide ? 'repaint-color-v1:' : ''}${digest}`;
   } else {
     cacheKey = `${personalAtlasHomeDir}:image-url:${reference.url}`;
     toolArguments.url = reference.url;
@@ -752,7 +754,15 @@ async function uploadReference(
   if (!uploadPromise) {
     uploadPromise = (async () => {
       if (reference.url.startsWith('data:')) {
-        Object.assign(toolArguments, await preparePixelExactUploadArguments(reference.url, atlasContext));
+        Object.assign(toolArguments, repaintColorGuide
+          ? await prepareRepaintColorUploadArguments(reference.url)
+          : await preparePixelExactUploadArguments(reference.url, atlasContext));
+      }
+      // Include JSON and Base64 overhead. Never submit an oversized envelope,
+      // including when a future adapter returns a long download URL.
+      const envelope = { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'upload_asset', arguments: toolArguments } };
+      if (Buffer.byteLength(JSON.stringify(envelope)) >= 4_000_000) {
+        throw new Error('参考图上传请求超过 4MB 限制，未提交生成任务。');
       }
       const upload = await retryAtlasAssetUpload(
         () =>
@@ -816,6 +826,14 @@ export async function pollLiclickImageTask(
   return parseLiclickImageTaskOutput(poll.stdout);
 }
 
+/** Existing GPT request contract: combined guide first, geometry normal second. */
+export function isGptRepaintColorGuide(input: GenerateImageInput, index: number) {
+  return index === 0 && input.workflow === 'local-repaint' &&
+    ['gpt-image-2', 'gpt-image-2.5-sunburst', 'gpt-image-2.5-flare'].includes(input.model ?? '') &&
+    input.references?.[0]?.name === 'image-1-current-view-clay-selection.png' &&
+    input.references?.[1]?.name === 'image-2-geometry-view-normal.png';
+}
+
 export async function submitLiclickImageJob(
   input: GenerateImageInput,
   atlasContext: LiclickAtlasContext = {},
@@ -826,7 +844,8 @@ export async function submitLiclickImageJob(
   return withTempDir(async (tempDir) => {
     const references = (input.references ?? []).slice(0, 10);
     const uploadedReferences = await Promise.all(
-      references.map((reference) => uploadReference(reference, tempDir, atlasContext)),
+      references.map((reference, index) => uploadReference(reference, tempDir, atlasContext,
+        isGptRepaintColorGuide(input, index))),
     );
     const { model, extraParams } = buildExtraParams(input, uploadedReferences);
     const prompt = buildSubmissionPrompt(input, model);
