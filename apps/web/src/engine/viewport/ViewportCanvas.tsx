@@ -7373,6 +7373,7 @@ function SurfacePaintOverlay() {
           role: layer.role,
           generationId: layer.generationId,
           contentRevision: layer.contentRevision,
+          isBaked: layer.isBaked,
           visible: layer.visible,
         })),
       );
@@ -7380,46 +7381,51 @@ function SurfacePaintOverlay() {
         new Promise<number>((resolve) => window.requestAnimationFrame(resolve));
       const wait = (durationMs: number) =>
         new Promise<void>((resolve) => window.setTimeout(resolve, durationMs));
-      const waitForProjectedResidentReady = async (timeoutMs = 20_000) => {
+      const readResidentUvProjectionState = () => ({
+        status: document.body.dataset.residentUvProjectionStatus,
+      });
+      const waitForProjectedUvReady = async (timeoutMs = 20_000) => {
         const deadline = performance.now() + timeoutMs;
-        // S7 validates resident eye-state uniforms. Starting the interaction
-        // window while the cold bootstrap material is still presented both
-        // reports false visibility failures and makes `isViewportInteractionBusy`
-        // pause the authoritative texture-array upload indefinitely.
+        // Projection rows are UV-generation inputs only. Establish one exact
+        // derived UV front buffer before reserving the interaction window;
+        // later rapid state changes may retain that verified front until the
+        // latest UV signature is ready.
         await waitForFrame();
         await waitForFrame();
         while (performance.now() < deadline) {
-          let selectedModelHasResidentMaterial = false;
+          let selectedModelHasResidentUvMaterial = false;
           for (const model of useSceneStore.getState().importedModels) {
             if (selectedObjectId && model.objectId !== selectedObjectId) continue;
             model.group.traverse((child) => {
-              if (selectedModelHasResidentMaterial || !(child instanceof THREE.Mesh)) return;
+              if (selectedModelHasResidentUvMaterial || !(child instanceof THREE.Mesh)) return;
               const materials = Array.isArray(child.material) ? child.material : [child.material];
-              selectedModelHasResidentMaterial = materials.some(
+              selectedModelHasResidentUvMaterial = materials.some(
                 (material) =>
                   material instanceof THREE.ShaderMaterial &&
-                  Boolean(material.userData.liclickProjectedLayerStackState) &&
-                  !material.userData.liclickLiveLocalRepaintOverlayMaterial,
+                  material.name === 'LiclickUvOverlayPreview' &&
+                  !material.userData.liclickLiveLocalRepaintOverlayMaterial &&
+                  (Number(material.uniforms.useBaseMap?.value ?? 0) > 0 ||
+                    Number(material.uniforms.useUvOverlayMap?.value ?? 0) > 0),
               );
             });
           }
-          const pipelineIdle = document.body.dataset.projectedArrayPipelineStatus !== 'building';
-          const finalMaterialReady = document.body.dataset.textureRestoreProjectedReady === '1';
+          const residentUvState = readResidentUvProjectionState();
+          const uvPipelineReady =
+            residentUvState.status !== 'computing' && residentUvState.status !== 'error';
           const uvCombinationsReady = document.body.dataset.residentUvCombinationReady !== '0';
           const uvToggleTexturesReady = document.body.dataset.residentUvToggleReady !== '0';
           const wireframeReady = document.body.dataset.topologyWireframeReady !== '0';
           if (
-            pipelineIdle &&
-            finalMaterialReady &&
+            uvPipelineReady &&
             uvCombinationsReady &&
             uvToggleTexturesReady &&
             wireframeReady &&
-            selectedModelHasResidentMaterial
+            selectedModelHasResidentUvMaterial
           )
             return;
           await waitForFrame();
         }
-        throw new Error('S7 投影材质预热超时，测试未开始。');
+        throw new Error('S7 投影转 UV 预热超时，测试未开始。');
       };
       const modeMismatchDetails: string[] = [];
       const modeMaterialSnapshots: Array<{
@@ -7569,9 +7575,16 @@ function SurfacePaintOverlay() {
             if (modeMismatchDetails.length < 100)
               modeMismatchDetails.push(`${phase}:missing-wire-material`);
           }
+          // Rapid eye changes are latest-wins. While an exact derived UV is
+          // pending, keeping the previous verified UV is valid and protects
+          // interaction frames. Never require an unverified projected shader
+          // to imitate the requested intermediate state.
+          const uvUpdatePending =
+            readResidentUvProjectionState().status === 'computing';
           if (
             expectedSurfaceColor !== undefined &&
-            (expectedMode === 'pbr' || expectedMode === 'flat')
+            (expectedMode === 'pbr' || expectedMode === 'flat') &&
+            !uvUpdatePending
           ) {
             if (expectedSurfaceColor && !modelUsesSurfaceColorMaterial) {
               mismatches += 1;
@@ -7602,10 +7615,9 @@ function SurfacePaintOverlay() {
         return mismatches;
       };
 
-      // Establish one authoritative resident stack before reserving the frame
-      // budget for the stress run. Eye toggles then update uniforms only and do
-      // not depend on a cold background material build that interaction
-      // throttling is designed to defer.
+      // Establish one authoritative resident UV before reserving the frame
+      // budget for the stress run. Projection data never enters viewport
+      // materials, including during preflight and latest-wins transitions.
       const inheritedProjectLayerSyncSuppression =
         document.body.dataset.perfSuppressProjectLayerSync === '1';
       document.body.dataset.perfSuppressProjectLayerSync = '1';
@@ -7617,7 +7629,7 @@ function SurfacePaintOverlay() {
         useLayerStore.getState().setLayerVisibility(
           performanceScenarioOccludingUvIds(originalLayers, selectedObjectId), false,
         );
-        await waitForProjectedResidentReady();
+        await waitForProjectedUvReady();
       } catch (error) {
         useLayerStore.getState().setLayers(originalLayers);
         if (originalActiveLayerId) useLayerStore.getState().setActiveLayer(originalActiveLayerId);
@@ -7685,10 +7697,17 @@ function SurfacePaintOverlay() {
               const targetLayer = targets.find((layer) => layer.id === id);
               // Local repaint is renderer-owned: it intentionally sits outside
               // the resident projected stack and has its own visibility probe.
-              // Requiring the main stack to expose colour for this target alone
-              // reports a false failure even when the overlay is correct.
+              // Projection rows are UV-generation inputs. S7 deliberately
+              // pauses background publication while measuring, so opening one
+              // cannot synchronously expose new colour; S4 validates the exact
+              // generated UV. Only a resident UV row owns an immediate colour
+              // assertion inside this interaction-only window.
               const expectsMainSurfaceColor =
-                targetLayer && !isRendererOwnedLocalRepaintLayer(targetLayer) ? true : undefined;
+                targetLayer &&
+                !isRendererOwnedLocalRepaintLayer(targetLayer) &&
+                targetLayer.type === 'uv'
+                  ? true
+                  : undefined;
               const targetKind = `${targetIndex}-${targetLayer?.type ?? 'unknown'}-${targetLayer?.role ?? 'normal'}`;
               document.body.dataset.perfViewportStressPhase = `s7-${mode}-${targetKind}-layer-on`;
               useLayerStore.getState().setLayerVisibility([id], true);

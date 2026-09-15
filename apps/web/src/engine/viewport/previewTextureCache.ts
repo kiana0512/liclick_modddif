@@ -30,10 +30,15 @@ const previewTextureUploadPromises = new WeakMap<
 >();
 const previewTextureReadyRenderers = new WeakMap<THREE.Texture, WeakSet<THREE.WebGLRenderer>>();
 const activePreviewTextureUploads = new WeakMap<THREE.WebGLRenderer, number>();
-// Detached contexts stay at roughly 0.5MB. Larger detached submissions did
-// not improve S9 wall time and increased long frames on NVIDIA/Windows. The
-// visible renderer instead uses the frame-budget governor below.
+// Detached contexts stay at roughly 0.5MB per exact GL submission. Larger
+// submissions did not improve S9 wall time and increased long frames on
+// NVIDIA/Windows. The isolated context may, however, submit a bounded batch
+// before yielding: paying one macrotask per 128K stripe dominated cold 4K UV
+// generation while the individual submissions stayed far below the frame
+// budget. Interaction is still checked at every stripe boundary.
 const DETACHED_PREVIEW_TEXTURE_UPLOAD_PIXELS_PER_FRAME = INITIAL_TEXTURE_UPLOAD_PIXELS;
+const DETACHED_PREVIEW_TEXTURE_UPLOAD_STRIPES_PER_YIELD = 8;
+const DETACHED_PREVIEW_TEXTURE_UPLOAD_SYNCHRONOUS_BUDGET_MS = 4;
 // Flush visible uploads every four stripes without polling a WebGL fence:
 // timeout-zero clientWaitSync still blocked the UI thread for 134-150ms on
 // NVIDIA under load. Both renderer paths rely on exact same-context ordering.
@@ -622,6 +627,7 @@ export function uploadPreviewTextureInStripes(
     const startedAt = performance.now();
     let maximumStripeMs = 0;
     let submittedSinceFlush = 0;
+    let detachedSubmittedSinceYield = 0;
     let stripeCount = 0;
     let minimumUploadPixels = uploadBudget.pixels;
     let maximumUploadPixels = uploadBudget.pixels;
@@ -702,11 +708,18 @@ export function uploadPreviewTextureInStripes(
           await waitForBrowserPaint();
           batchSynchronousMs = 0;
           presentationRequired = false;
-        } else if (!usesVisibleRenderer) {
-          // The detached renderer has independent GL state. A macrotask yield
-          // lets pointer/rAF work run without adding a mandatory 16.7ms wait to
-          // every exact upload stripe (hundreds of waits in a 14-view 4K bake).
+        } else if (
+          !usesVisibleRenderer &&
+          (detachedSubmittedSinceYield >= DETACHED_PREVIEW_TEXTURE_UPLOAD_STRIPES_PER_YIELD ||
+            batchSynchronousMs >= DETACHED_PREVIEW_TEXTURE_UPLOAD_SYNCHRONOUS_BUDGET_MS)
+        ) {
+          // The detached renderer has independent GL state. Yield after a
+          // bounded batch, not before every sub-millisecond stripe. This keeps
+          // pointer/rAF work responsive without adding hundreds of avoidable
+          // macrotask round trips to a 14-view 4K UV generation.
           await yieldToBrowserTask();
+          detachedSubmittedSinceYield = 0;
+          batchSynchronousMs = 0;
         }
         throwIfCancelled();
         // Input may arrive between the idle check and the next animation frame.
@@ -772,6 +785,7 @@ export function uploadPreviewTextureInStripes(
           maximumStripeMs = Math.max(maximumStripeMs, stripeSubmitMs);
           stripeCount += 1;
           submittedSinceFlush += 1;
+          if (!usesVisibleRenderer) detachedSubmittedSinceYield += 1;
           if (
             usesVisibleRenderer &&
             submittedSinceFlush >= PREVIEW_TEXTURE_UPLOAD_STRIPES_PER_FLUSH

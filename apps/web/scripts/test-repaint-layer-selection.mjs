@@ -111,14 +111,13 @@ layerStore.setState({ layers: [] });
 assert.equal(syncs, 7, 'Unmount detaches the listener');
 
 // Use actual React memo bodies/dependencies rather than a copy of the policy.
-const start = scene.indexOf('  const progressiveActiveLayerId =') >= 0
-  ? scene.indexOf('  const progressiveActiveLayerId =') : scene.indexOf('  const activeProjectedPreviewInputs =');
+const start = scene.indexOf('  const progressiveBackgroundInputs =');
 const memos = scene.slice(start, scene.indexOf('  const progressiveBackgroundSignature =', start));
 const inputs = [layerA, layerB].map((layer) => ({ layerId: layer.id, visible: true }));
 let cursor = 0;
 const slots = [];
 const runMemos = compile(`return (activeLayerId, canUseProgressiveUvFallback, previewProjectionInputs) => {
-  ${memos}\nreturn { activeProjectedPreviewInputs, progressiveBackgroundInputs }; };`, {
+  ${memos}\nreturn { progressiveBackgroundInputs }; };`, {
   useMemo: (fn, deps) => {
     const index = cursor++;
     if (!slots[index] || deps.some((value, i) => value !== slots[index].deps[i])) {
@@ -131,13 +130,10 @@ const render = (id, enabled = false, layers = inputs) => { cursor = 0; return ru
 const first = render(uv.id);
 for (let i = 0; i < 100; i++) {
   const next = render([uv, layerA, layerB][i % 3].id);
-  assert.equal(next.activeProjectedPreviewInputs, first.activeProjectedPreviewInputs,
-    'Disabled progressive preview cannot invalidate material dependencies on selection');
   assert.equal(next.progressiveBackgroundInputs, first.progressiveBackgroundInputs);
 }
 const enabled = render(layerA.id, true);
-assert.deepEqual(enabled.activeProjectedPreviewInputs, []);
 assert.deepEqual(enabled.progressiveBackgroundInputs, inputs, 'Selection must leave every layer in the resident UV buffer');
 assert.notEqual(render(layerA.id, false, [...inputs]).progressiveBackgroundInputs, first.progressiveBackgroundInputs,
   'Real stack changes still invalidate material inputs');
-console.log('Repaint layer selection passed: 400 source-stable selections, 100 presentation-stable selections, 100 material-stable selections; eraser ownership, stale completion, visibility, edits, deletion and cleanup preserved.');
+console.log('Repaint layer selection passed: 400 source-stable selections, 100 presentation-stable selections, 100 UV-input-stable selections; eraser ownership, stale completion, visibility, edits, deletion and cleanup preserved.');

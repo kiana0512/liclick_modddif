@@ -513,8 +513,18 @@ assert.doesNotMatch(
 );
 assert.match(
   sceneRootSource,
-  /const activeUvMaskLayerId = useLayerStore[\s\S]*?activeLayer\.maskSpace === 'uv'[\s\S]*?const activeLayerUsesProjectedEraser = useLayerStore/,
-  'renderer subscriptions must retain active UV-mask and projected-eraser correctness gates',
+  /const activeUvMaskLayerId = useLayerStore[\s\S]*?activeLayer\.maskSpace === 'uv'/,
+  'renderer subscriptions must retain the active UV-mask correctness gate',
+);
+assert.doesNotMatch(
+  sceneRootSource,
+  /activeLayerUsesProjectedEraser|projectedEraserArmed/,
+  'arming the projected eraser must not switch the viewport back to projected material display',
+);
+assert.match(
+  sceneRootSource,
+  /const residentUvDisplayEnabled = true;[\s\S]*?const useProjectedTextureArrays = false;[\s\S]*?const materialProjectionInputs = \[\] as typeof previewProjectionInputs;/,
+  'projected layers must be UV-generation inputs only; viewport material inputs stay UV-only',
 );
 assert.match(
   sceneRootSource,
