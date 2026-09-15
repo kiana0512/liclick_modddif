@@ -5,6 +5,8 @@ import { createServer } from 'vite';
 import * as THREE from 'three';
 
 const sourceRoot = new URL('../src/', import.meta.url);
+assert.match(await readFile(new URL('components/localRepaint/LocalRepaintDialog.tsx', sourceRoot), 'utf8'),
+  /const DEFAULT_LOCAL_REPAINT_BRUSH_SIZE = 30;/, 'Standalone repaint canvas also defaults to 30');
 const [
   sessionLayer,
   generatePanel,
@@ -192,6 +194,10 @@ try {
   initialBrushState.setPaintMaskSettings({ brushSize: 20 });
   assert.equal(useSceneStore.getState().paintMaskSettings.brushSize, 20);
   assert.equal(useSceneStore.getState().localRepaintBrushSettings.brushSize, 30);
+  initialBrushState.setLocalRepaintBrushSettings({ brushSize: 24 });
+  assert.equal(useSceneStore.getState().localRepaintBrushSettings.brushSize, 24,
+    'Default 30 must not override later user adjustments');
+  initialBrushState.setLocalRepaintBrushSettings({ brushSize: 30 });
   initialBrushState.setPaintMaskSettings({ brushSize: 45 });
   const uvRow = useLayerStore.getState().addEmptyLayer({ objectId: 'selection-model' });
   const projectionRow = { ...uvRow, id: 'hidden-projection', type: 'projected', visible: false };
