@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { uvTileIndex, uploadUvRgba, withUvRenderTarget, type UvContributionTiles } from './uvContributionTiles';
 import { yieldToBrowserTask } from '@/utils/browserScheduling';
+import { createId } from '@/utils/id';
 import type { GpuLayerSourceSize } from './gpuUvBakeRenderer';
 
 type Input = {
@@ -21,7 +22,7 @@ type Record = {
 /** Session-owned, lossless spill tier. A known UV may fail restoration, but must
  * never silently fall through to projection. No project assets/commands change. */
 export class UvContributionArchive {
-  private readonly owner = crypto.randomUUID();
+  private readonly owner = createId();
   private known = new Set<string>();
   private db?: Promise<IDBDatabase>;
   private disposed = false;

@@ -28,7 +28,9 @@
 
 2026-09-15 M04/UI-05，协作 M03/M07：`GEN-CANCEL-CLASSIFICATION/1` 不再把所有 AbortError 或包含“已取消”的内部错误当成用户意图；多视图入口检查自己的取消 signal，意外中断保留错误提示和 toast，错误/警告不受精简进度文案过滤。`ALG-CAP-007/1.1.1` 固定方向且不驱动视口动画的批次相机已独立冻结，因此不再因屏幕相机微小变化停止下一组；交互取景/无固定方向仍检查相机变更，主动取消仍有效。分组 2+4+4 / 2+4+4+4、前组 UV 呈现屏障、原分辨率和 GPU/CPU/Worker/shader 像素算法、持久化与导出不变；不重新投影、不自动重提付费请求，不修改历史成功图片。无需数据迁移，回滚恢复取消分类和实时相机比较分支即可。单元覆盖首组成功后中断、前六张成功后第三组中断、固定相机移动和显式取消；实际付费全流程与用户本次根因仍待控制台证据核实。
 
-> 文档版本：`2.20.114`
+> 文档版本：`2.20.115`
+
+2026-09-15 M07（协作 M03/M15）：`UV-ARCHIVE-HTTP-ID/1.0.1` 修复内网 HTTP 下 UV 会话缓存构造时直接调用不可用的 crypto.randomUUID 导致编辑器崩溃；改用已有 createId 兼容入口。实际构造函数回归覆盖无 crypto、缺少 randomUUID 和原生 UUID 三种环境，保留会话隔离。GPU/CPU/Worker/shader、完整像素与分辨率、QA、生成、持久化/CAS 和导出均不变，无 Schema 或历史资产迁移；详见 [HTTP 缓存初始化修复](changes/CHG-20260915-UV-ARCHIVE-HTTP-ID.md)。
 
 2026-09-15 M04，协作 M03/M08/M12：`GPT-CONTENT-FRAMING/1.0.1` / `GEN-POLL-CLASSIFICATION/1.0.0` / `SINGLE-VIEW-AUTO-PROJECTION/1.2.0` 修复原生输出网格取整被误判为断网的问题；保留全部原生像素、整数平移补透明，不重提付费任务。显式预期回贴的成功多视图通过既有事务恢复；用户本批十视图全部 succeeded 且各自提交图层存在，Saved。GPU/CPU/Worker/shader、QA、投影/UV、Command/CAS/ownership 和导出保持，无 Schema 迁移；详见 [十视图恢复变更卡](changes/CHG-20260915-GENERATION-FRAMING-RECOVERY.md)。
 
