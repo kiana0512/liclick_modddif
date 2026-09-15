@@ -2,7 +2,12 @@ import type { GenerationFraming } from '@liclick/contracts';
 import type { LiclickGenerateTextureSingleViewInput } from '@/services/liclickApiClient';
 import { urlToDataUrl } from '@/services/workspaceApiClient';
 import { blobToDataUrl, urlToImageData } from '@/engine/localRepaint/imageUtils';
-import { findContentFraming, restoredFrameLayout } from './contentFraming';
+import {
+  findContentFraming,
+  restoredFrameLayout,
+  validateFramedSilhouette,
+} from './contentFraming';
+import { yieldToBrowserTask } from '@/utils/browserScheduling';
 
 async function load(url: string, signal?: AbortSignal) {
   signal?.throwIfAborted();
@@ -45,7 +50,8 @@ export async function prepareContentFraming(input: LiclickGenerateTextureSingleV
   });
   if (coverage.width !== capture.width || coverage.height !== capture.height)
     throw new Error('模型轮廓与截图尺寸不一致。');
-  const framing = findContentFraming(coverage, normal);
+  const framing = findContentFraming(coverage, normal, input.imageSize ?? '2K');
+  restoredFrameLayout(framing, framing.outputWidth!, framing.outputHeight!);
   const references = [...(input.referenceImages ?? [])];
   const alignedCount = normal ? 2 : 1;
   if (references.length < alignedCount) throw new Error('缺少生成引导图。');
@@ -60,6 +66,10 @@ export async function prepareContentFraming(input: LiclickGenerateTextureSingleV
       const ctx = canvas.getContext('2d');
       if (!ctx) throw new Error('无法创建裁切画布。');
       // Integer translation only: no resize, no colour/alpha replacement, same crop for both guides.
+      const c = framing.cropBounds!;
+      ctx.beginPath();
+      ctx.rect(c.left - framing.left, c.top - framing.top, c.width, c.height);
+      ctx.clip();
       ctx.drawImage(image, -framing.left, -framing.top);
       references[index] = {
         ...references[index],
@@ -82,6 +92,17 @@ export async function restoreContentFraming(
 ) {
   const image = await load(url, signal);
   const layout = restoredFrameLayout(framing, image.naturalWidth, image.naturalHeight);
+  if (framing.version === 2) {
+    const pixels = await urlToImageData(image.src, undefined, undefined, {
+      cooperative: true,
+      signal,
+    });
+    await validateFramedSilhouette(framing, pixels, async () => {
+      signal?.throwIfAborted();
+      await yieldToBrowserTask();
+    });
+    signal?.throwIfAborted();
+  }
   const canvas = document.createElement('canvas');
   canvas.width = layout.width;
   canvas.height = layout.height;

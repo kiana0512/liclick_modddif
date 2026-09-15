@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-import { generationFramingRatio, type GenerationFraming } from '@liclick/contracts';
+import { generationFramingRatio, generationOutputSize, type GenerationFraming } from '@liclick/contracts';
 import { callAtlasToolJson, parseJsonFromOutput } from '../auth/atlasAuthService.js';
 import { preparePixelExactUploadArguments } from './pixelExactReferenceUpload.js';
 
@@ -531,6 +531,12 @@ export function buildExtraParams(input: GenerateImageInput, uploadedReferences: 
     if (!(isGpt25 || model === 'gpt-image-2') || !['texture-map', 'local-repaint'].includes(input.workflow ?? '') || input.referencePipeline || imageSize === 'auto')
       throw new Error('自适应裁切仅适用于明确分辨率的 GPT 贴图或局部重绘。');
     const ratio = generationFramingRatio(input.framing);
+    if (input.framing.version === 2) {
+      const expected = generationOutputSize(ratio.width, ratio.height, imageSize);
+      if (expected.width !== input.framing.outputWidth || expected.height !== input.framing.outputHeight)
+        throw new Error('生成补边画布与分辨率不一致，未提交任务。');
+    }
+    delete extraParams.aspect_ratio;
     extraParams.aspect_ratio_w = ratio.width;
     extraParams.aspect_ratio_h = ratio.height;
   }

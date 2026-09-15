@@ -29,6 +29,7 @@ for (const model of ['gpt-image-2', 'gpt-image-2.5-sunburst', 'gpt-image-2.5-fla
     ]);
     assert.equal(extraParams.aspect_ratio_w, 57);
     assert.equal(extraParams.aspect_ratio_h, 49);
+    assert.equal(extraParams.aspect_ratio, undefined);
     assert.equal(extraParams.background, 'transparent');
     assert.equal(extraParams.image_size, '2K');
     assert.deepEqual(
@@ -94,6 +95,48 @@ const restored = await module.exports.roundtrip({
 assert.deepEqual(restored.input.framing, framing);
 assert.equal(restored.promise, undefined);
 assert.equal(restored.status, 'running');
+const padded = {
+  version: 2,
+  sourceWidth: 2048,
+  sourceHeight: 2048,
+  left: 300,
+  top: 700,
+  width: 1616,
+  height: 648,
+  cropBounds: { left: 350, top: 725, width: 1507, height: 597 },
+  subject: { left: 395, top: 770, width: 1417, height: 507 },
+  ratioWidth: 100,
+  ratioHeight: 40,
+  outputWidth: 3232,
+  outputHeight: 1296,
+};
+const paddedInput = {
+  model: 'gpt-image-2.5-sunburst',
+  workflow: 'texture-map',
+  prompt: 'fixture',
+  imageSize: '2K',
+  aspectRatio: '1:1',
+  framing: padded,
+};
+const params = buildExtraParams(paddedInput, []).extraParams;
+assert.equal(params.aspect_ratio_w, 5);
+assert.equal(params.aspect_ratio_h, 2);
+assert.equal(params.aspect_ratio, undefined);
+assert.throws(() => buildExtraParams({ ...paddedInput, imageSize: '1K' }, []));
+for (const change of [
+  { ratioWidth: 1507 },
+  { outputWidth: 3248 },
+  { subject: undefined },
+  { cropBounds: { ...padded.cropBounds, left: -500 } },
+])
+  assert.throws(() => buildExtraParams({ ...paddedInput, framing: { ...padded, ...change } }, []));
+const paddedJob = await module.exports.roundtrip({
+  id: 'padded-job',
+  workflow: 'texture-map',
+  status: 'running',
+  input: paddedInput,
+});
+assert.deepEqual(paddedJob.input.framing, padded);
 console.log(
   'GPT framing persistence: production sanitization + disk restart preserve exact coordinates.',
 );
