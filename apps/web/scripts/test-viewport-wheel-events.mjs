@@ -160,6 +160,11 @@ try {
   }
   for(const button of [0,1,2]) {
     const navigation=makeScene(createViewportEvents);
+    navigation.mesh.__r3f.handlers.onPointerMove = () => {};
+    // The modifier is pressed before the mouse contact. R3F must not perform
+    // a cold model pick on that first hover, or on the next held-Alt hover.
+    for (let i=0;i<120;i++) navigation.target.emit('pointermove',{altKey:true,buttons:0});
+    assert.equal(navigation.counts().raycasts,0,'Held Alt before contact must not raycast');
     for(const type of ['pointerdown','pointermove','pointerup','click','dblclick','contextmenu'])
       navigation.target.emit(type,{button,buttons:type==='pointermove' ? [1,4,2][button] : 0,altKey:type==='pointerdown'});
     assert.equal(navigation.counts().raycasts,0,'Alt navigation and released-modifier tails do not pick/select');

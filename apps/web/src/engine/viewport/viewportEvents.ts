@@ -3,7 +3,7 @@ import { events } from '@react-three/fiber';
 const paintPointers = new WeakMap<EventTarget, number | undefined>();
 const navigationPointers = new WeakMap<EventTarget, number | undefined>();
 
-/** ALG-VIEW-INPUT-001/1.3.1: native brush hover shares navigation ownership. */
+/** ALG-VIEW-INPUT-001/1.3.2: both hover paths share pre-contact Alt ownership. */
 export function isViewportNavigationPointer(target: EventTarget, event: Pick<PointerEvent, 'altKey' | 'pointerId' | 'buttons'>) {
   const pointerId = navigationPointers.get(target);
   return event.altKey || (pointerId !== undefined && pointerId === event.pointerId && event.buttons !== 0);
@@ -41,9 +41,9 @@ export const createViewportEvents: typeof events = (store) => {
     };
     const pointerMove = handlers.onPointerMove;
     handlers.onPointerMove = (event) => {
-      const pointerId = navigationPointers.get(event.target!);
-      // Keep the click tail reserved, but resume hover as soon as buttons lift.
-      if (pointerId !== undefined && pointerId === (event as PointerEvent).pointerId && (event as PointerEvent).buttons !== 0) return;
+      // Reserve the first held-Alt hover too, before pointerdown latches an id.
+      // Ordinary hover resumes after both the modifier and buttons lift.
+      if (isViewportNavigationPointer(event.target!, event as PointerEvent)) return;
       pointerMove?.(event);
     };
     for (const key of ['onPointerUp', 'onClick', 'onDoubleClick', 'onContextMenu'] as const) {
