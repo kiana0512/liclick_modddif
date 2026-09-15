@@ -11,7 +11,8 @@ export async function captureMask(request: CapturePassRequest): Promise<CaptureP
 
   try {
     return {
-      url: await renderSceneToPngUrl(request, { onRenderSubmitted: restore }),
+      // Geometry coverage must not contain the viewport's configurable background.
+      url: await renderSceneToPngUrl(request, { ignoreSceneBackground: true, onRenderSubmitted: restore }),
       warnings: [],
     };
   } finally {

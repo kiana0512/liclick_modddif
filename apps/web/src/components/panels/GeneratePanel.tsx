@@ -60,6 +60,7 @@ import { runFeishuLoginFlow } from '@/services/feishuLoginFlow';
 import { resolveLiclickAuthStrategy } from '@/services/liclickAuthStrategy';
 import {
   createLiclickApiClient,
+  restoreFramedJobResult,
   LiclickApiError,
   type GenerationJobListItem,
   type LiclickAspectRatio,
@@ -1371,8 +1372,12 @@ export function GeneratePanel({
       const workspaceResultUrl = [projectGeneration?.resultUrl, storeGeneration?.resultUrl].find(
         (url): url is string => typeof url === 'string' && isWorkspaceAssetUrl(url),
       );
-      const resultUrl =
+      let resultUrl =
         workspaceResultUrl ?? existing?.resultUrl ?? fallback?.resultUrl ?? job.resultUrl;
+      if (!workspaceResultUrl && job.framing && resultUrl === job.resultUrl) {
+        resultUrl = (await restoreFramedJobResult(job)).resultUrl;
+        if (cancelled) return { changed: false, needsPersist: false };
+      }
       const status = resultUrl ? ('succeeded' as const) : job.status;
       let generation: Generation = {
         id: existing?.id ?? fallback?.id ?? job.clientGenerationId ?? job.id,
@@ -1400,6 +1405,8 @@ export function GeneratePanel({
           resultUrls: job.resultUrls ?? existingMetadata.resultUrls,
           extraParams: job.extraParams ?? existingMetadata.extraParams,
           uploadedReferences: job.uploadedReferences ?? existingMetadata.uploadedReferences,
+          generationFraming: job.framing ?? existingMetadata.generationFraming,
+          framingRestored: job.framing && resultUrl ? true : existingMetadata.framingRestored,
           aspectRatio: job.params?.aspectRatio ?? existingMetadata.aspectRatio,
           imageSize: job.params?.imageSize ?? existingMetadata.imageSize,
           quality: job.params?.quality ?? existingMetadata.quality,

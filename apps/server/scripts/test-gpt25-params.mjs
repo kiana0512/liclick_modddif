@@ -48,3 +48,4 @@ for (const model of ['gpt-image-2', 'gpt-image-2.5-sunburst', 'gpt-image-2.5-fla
 }
 assert.equal(buildExtraParams({ model: 'nano_banana_2', workflow: 'texture-map', prompt: 'test' }, []).extraParams.background, undefined);
 console.log('GPT 2.5 registry parameter contracts and GPT2 compatibility passed (no remote generation).');
+import './test-content-framing.mjs';

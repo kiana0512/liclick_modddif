@@ -1,4 +1,5 @@
 import type { GenerateTextureInput, Generation } from '@/types/generation';
+import type { GenerationFraming } from '@liclick/contracts';
 import type { ReferenceImage } from '@/types/project';
 import type { ProviderStatus } from './authApiClient';
 import { resolveLiclickTransport, type LiclickTransport } from './liclickTransport';
@@ -91,6 +92,8 @@ export type LiclickApiClient = {
 };
 
 export type GenerationJobResult = {
+  framing?: GenerationFraming;
+  framingRestored?: boolean;
   id: string;
   taskId?: string;
   status: Generation['status'];
@@ -204,6 +207,15 @@ async function requestJson<T>(
   return payload as T;
 }
 
+export async function restoreFramedJobResult<T extends { resultUrl?: string; resultUrls?: string[]; framing?: GenerationFraming; framingRestored?: boolean }>(result: T, signal?: AbortSignal): Promise<T> {
+  if (!result.resultUrl || !result.framing || result.framingRestored) return result;
+  const { restoreContentFraming } = await import('@/engine/generation/contentFramingImages');
+  const urls = [...new Set([result.resultUrl, ...(result.resultUrls ?? [])])];
+  const restored = await mapWithConcurrency(urls, 1, url => restoreContentFraming(url, result.framing!, signal));
+  signal?.throwIfAborted();
+  return { ...result, resultUrl: restored[0], resultUrls: restored, framingRestored: true };
+}
+
 export function createLiclickApiClient(config: LiclickApiConfig = {}): LiclickApiClient {
   const getTransport = () => resolveLiclickTransport(config.providerStatus, config.baseUrl);
 
@@ -223,13 +235,19 @@ export function createLiclickApiClient(config: LiclickApiConfig = {}): LiclickAp
     },
     async generateTextureSingleView(input) {
       input.signal?.throwIfAborted();
+      const adaptive = input.capture && !input.referencePipeline &&
+        ['texture-map', 'local-repaint'].includes(input.workflow ?? '') &&
+        ['gpt-image-2', 'gpt-image-2.5-sunburst', 'gpt-image-2.5-flare'].includes(input.model ?? '');
+      const framed = adaptive ? await (await import('@/engine/generation/contentFramingImages')).prepareContentFraming(input) : undefined;
       const preparedReferences = await prepareReferences(
-        input.referenceImages,
+        framed?.references ?? input.referenceImages,
         config.onReferencePreprocessed,
-        input.pixelExactReferenceIds,
+        framed?.exactIds ?? input.pixelExactReferenceIds,
       );
       input.signal?.throwIfAborted();
-      const result = await requestJson<{
+      const response = await requestJson<{
+        framing?: GenerationFraming;
+        framingRestored?: boolean;
         id: string;
         taskId?: string;
         status: Generation['status'];
@@ -252,6 +270,7 @@ export function createLiclickApiClient(config: LiclickApiConfig = {}): LiclickAp
           prompt: input.prompt,
           model: input.model,
           aspectRatio: input.aspectRatio,
+          framing: framed?.framing,
           imageSize: input.imageSize,
           quality: input.quality,
           referencePipeline: input.referencePipeline,
@@ -259,6 +278,7 @@ export function createLiclickApiClient(config: LiclickApiConfig = {}): LiclickAp
           references: preparedReferences.map(({ id, name, url }) => ({ id, name, url })),
         }),
       });
+      const result = await restoreFramedJobResult(response, input.signal);
       const generationId = input.clientGenerationId ?? result.id;
       return {
         id: generationId,
@@ -272,6 +292,8 @@ export function createLiclickApiClient(config: LiclickApiConfig = {}): LiclickAp
           provider: 'liclick-atlas',
           clientGenerationId: input.clientGenerationId,
           serverJobId: result.id,
+          generationFraming: result.framing,
+          framingRestored: result.framingRestored,
           projectId: input.projectId,
           workflow: input.workflow ?? result.workflow,
           taskId: result.taskId,
@@ -293,7 +315,7 @@ export function createLiclickApiClient(config: LiclickApiConfig = {}): LiclickAp
       };
     },
     async getGenerationJob(jobId, options = {}) {
-      return requestJson<GenerationJobResult>(
+      const result = await requestJson<GenerationJobResult>(
         await getTransport(),
         `/api/liclick/generate-image/${encodeURIComponent(jobId)}`,
         {
@@ -303,6 +325,7 @@ export function createLiclickApiClient(config: LiclickApiConfig = {}): LiclickAp
           timeoutMs: 12_000,
         },
       );
+      return restoreFramedJobResult(result, options.signal);
     },
     async listGenerationJobs(projectId) {
       const result = await requestJson<{ jobs: GenerationJobListItem[] }>(

@@ -74,6 +74,8 @@ globalThis.fetch = async (url, init) => {
 };
 let abortDuringPrepare;
 const { createLiclickApiClient } = load('../src/services/liclickApiClient.ts', {
+  // Crop pixels and recovery mapping have their own real-image regression.
+  '@/engine/generation/contentFramingImages': { prepareContentFraming: async (input) => ({ references: input.referenceImages, exactIds: input.pixelExactReferenceIds }) },
   './liclickTransport': { resolveLiclickTransport: async () => ({ baseUrl: 'https://fixture.invalid', credentials: 'include' }) },
   './generationErrorMessage': { getUserFacingGenerationError: (message) => message },
   './referenceImagePreprocessor': { ...preprocessor, prepareReferenceForAtlas: async (...args) => {

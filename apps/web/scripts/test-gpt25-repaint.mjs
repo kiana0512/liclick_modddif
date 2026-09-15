@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import ts from 'typescript';
-import './test-gpt-repaint-normal.mjs';
+// Browser-global fixtures must finish before the next module installs its mocks.
+await import('./test-gpt-repaint-normal.mjs');
 
 function load(relative, dependencies = {}) {
   const source = readFileSync(new URL(relative, import.meta.url), 'utf8');
@@ -135,3 +136,4 @@ const editor = readFileSync(new URL('../src/routes/EditorPage.tsx', import.meta.
 assert.match(editor, /if \(preservesRepaintResultAlpha\(metadata\) && generation.resultUrl\)/);
 assert.equal((editor.match(/ignoreSourceAlpha: !preservesRepaintResultAlpha\(latestLocalRepaintGeneration.metadata\)/g) || []).length, 2);
 console.log('GPT: clay/texture pixels, aligned guides + optional reference, model selection, prompt and safe recovery passed.');
+await import('./test-content-framing.mjs');
