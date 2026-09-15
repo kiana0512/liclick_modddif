@@ -145,7 +145,8 @@ let devicePromise: Promise<GpuDevice | undefined> | undefined;
 let resources: CompositeResources | undefined;
 let workQueue: Promise<void> = Promise.resolve();
 const cancelledRequestIds = new Set<number>();
-// UV-UNDERLAY-DECODE/1: one byte-verified, readonly 4K RGBA, never a final blend.
+const fetchControllers = new Map<number, AbortController>();
+// UV-UNDERLAY-DECODE/1.0.1: byte-verified readonly 4K RGBA; obsolete fetches abort.
 // Re-fetch before comparing, so mutable URLs and ownership failures cannot reuse
 // stale bytes. Source-over consumes its front buffer and therefore receives a copy.
 let underlayCache: { key: string; pixels: ArrayBuffer } | undefined;
@@ -450,7 +451,7 @@ async function loadUnderlayInWorker(request: CompositeRequest) {
     throw new Error('Composite underlay source is missing.');
   }
   const generation=underlayCacheGeneration;
-  const response = await fetch(request.underlayUrl);
+  const response = await fetch(request.underlayUrl, { signal: fetchControllers.get(request.id)?.signal });
   if (!response.ok) throw new Error(`Could not load UV underlay (${response.status}).`);
   throwIfCancelled(request);
   const blob=await response.blob();
@@ -646,6 +647,7 @@ scope.onmessage = (event) => {
   }
   if (request.type === 'cancel') {
     cancelledRequestIds.add(request.id);
+    fetchControllers.get(request.id)?.abort();
     return;
   }
   if (request.type === 'release') {
@@ -656,6 +658,7 @@ scope.onmessage = (event) => {
   workQueue = workQueue.then(async () => {
     try {
       throwIfCancelled(request);
+      fetchControllers.set(request.id, new AbortController());
       const normalizedRequest: NormalizedCompositeRequest = {
         ...request,
         underlay: await loadUnderlayInWorker(request),
@@ -721,6 +724,7 @@ scope.onmessage = (event) => {
       };
       scope.postMessage(response);
     } finally {
+      fetchControllers.delete(request.id);
       cancelledRequestIds.delete(request.id);
     }
   });

@@ -59,13 +59,14 @@ export function preloadProjectedUvBakeKernel() {
   return projectedUvBakeKernelPromise;
 }
 
-/** UV-DISPLAY-BUFFER/1.4.1. The display owns derived UV buffers, never layers/assets.
+/** UV-DISPLAY-BUFFER/1.4.2. The display owns derived UV buffers, never layers/assets.
  * Use the same resident Top-K and exact postprocess path as explicit UV merge.
  * Keep the front buffer until its replacement has uploaded and been bound.
  */
 export class ResidentProjectedUvDisplay {
   private requested?: Request;
   private active = false;
+  private underlayAbort?: AbortController;
   private interactiveOnly = false;
   private revision = 0;
   private disposed = false;
@@ -74,6 +75,7 @@ export class ResidentProjectedUvDisplay {
   private renderer?: THREE.WebGLRenderer;
   private readonly contextLost = () => {
     this.revision++;
+    this.underlayAbort?.abort();
     this.retries = 0;
     this.retryAt = 0;
     if (this.requested)
@@ -99,6 +101,7 @@ export class ResidentProjectedUvDisplay {
       this.clearBuffers();
     }
     if (this.requested?.signature === request.signature) return;
+    this.underlayAbort?.abort();
     if (this.requested && this.requested.sourceModel.group !== request.sourceModel.group)
       releaseResidentUvManagement(this.requested.sourceModel.group);
     this.requested = request;
@@ -276,6 +279,8 @@ export class ResidentProjectedUvDisplay {
       const underlayStartedAt = performance.now();
       if (!restored && request.underlayLayers?.length) {
         const { compositeRgbaUrlUnderWithWebGpu } = await import('@/engine/performance/webGpuRgbaComposite');
+        guard();
+        const abort = this.underlayAbort = new AbortController();
         for (const layer of request.underlayLayers) {
           guard();
           const rgba = result.imageData.data;
@@ -286,7 +291,7 @@ export class ResidentProjectedUvDisplay {
             await yieldToBrowserTask(); guard();
           }
           const combined = await compositeRgbaUrlUnderWithWebGpu(rgba, layer.imageUrl,
-            request.resolution, request.resolution, layer.opacity);
+            request.resolution, request.resolution, layer.opacity, abort.signal);
           guard();
           result.imageData = new ImageData(combined.data, request.resolution, request.resolution);
           if (alpha && mask) for (let start = 0; start < alpha.length; start += 262144) {
@@ -402,6 +407,7 @@ export class ResidentProjectedUvDisplay {
         sourcesClosed = true;
         transientSources.forEach(revokeRegisteredObjectUrl);
         this.active = false;
+        this.underlayAbort = undefined;
         if (snapshot && snapshotUrl) {
           releaseLiveProjectedCanvasTexture(snapshotUrl, snapshot);
           snapshot.width = snapshot.height = 1;
@@ -459,6 +465,7 @@ export class ResidentProjectedUvDisplay {
     }
   }
   cancelPending() {
+    this.underlayAbort?.abort();
     this.persistAfterPresentation = undefined;
     this.rawComposite = undefined;
     this.previousPixels = undefined;

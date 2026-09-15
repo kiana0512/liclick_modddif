@@ -55,7 +55,7 @@ await assert.rejects(idle(240, () => {
 assert.equal(paints, 1, 'busy camera cannot hold an obsolete upload until release');
 
 for (const busy of [false, true]) {
-  const events = [], jobs = [], ready = [], datasets = {};
+  const events = [], jobs = [], ready = [], datasets = {}, composites = [];
   let acknowledge = true;
   const model = { group: new THREE.Group(), objectId: 'o' };
   const renderer = { domElement: { addEventListener() {}, removeEventListener() {} },
@@ -95,6 +95,14 @@ for (const busy of [false, true]) {
     './createMaskedProjectedImage': {},
     '@/engine/bake/persistentMergePreparation': { persistentMergeKey: async () => {
       events.push('hash'); return 'verified-key';
+    } },
+    '@/engine/performance/webGpuRgbaComposite': { compositeRgbaUrlUnderWithWebGpu: (pixels, url, width, height, opacity, signal) => {
+      assert.equal(typeof signal?.addEventListener, 'function', 'Resident eye changes must cancel obsolete underlay work');
+      return new Promise((resolve, reject) => {
+        const task = { signal, resolve: () => resolve({ data: pixels.slice() }), url, width, height, opacity };
+        signal.addEventListener('abort', () => reject(new DOMException('superseded underlay', 'AbortError')), { once: true });
+        composites.push(task);
+      });
     } },
   }, { document: { body: { dataset: datasets } }, ImageData, ImageBitmap: Bitmap,
     createImageBitmap: async () => new Bitmap() });
@@ -143,6 +151,23 @@ for (const busy of [false, true]) {
     assert.equal(ready.length, published + 1);
     assert.equal(ready.at(-1).signature, `burst-${round}-39`, 'last click wins across repeated bursts');
   }
-  display.dispose();
+  const underlayRequest = signature => ({ ...request(signature), underlayLayers: [{ id: 'underlay', imageUrl: 'verified-underlay', opacity: 1 }] });
+  const published = ready.length;
+  display.request(underlayRequest('underlay-old')); display.step(false); await flush();
+  jobs.at(-1).resolve(pixels()); await flush();
+  assert.equal(composites.length, 1);
+  display.request(underlayRequest('underlay-intermediate')); display.request(underlayRequest('underlay-latest'));
+  await flush();
+  assert(composites[0].signal.aborted, 'Old underlay is cancelled without waiting for its result');
+  assert.equal(jobs.at(-1).input.transientLayers[0].id, 'underlay-latest');
+  assert.equal(ready.length, published, 'Cancelled pixels never publish');
+  jobs.at(-1).resolve(pixels()); await flush();
+  composites.at(-1).resolve(); await flush();
+  assert.equal(ready.at(-1).signature, 'underlay-latest');
+  assert.deepEqual(ready.at(-1).layerIds, ['underlay-latest']);
+  display.request(underlayRequest('underlay-dispose')); display.step(false); await flush();
+  jobs.at(-1).resolve(pixels()); await flush();
+  display.dispose(); await flush();
+  assert(composites.at(-1).signal.aborted, 'Disposal cancels the pending worker operation');
 }
 console.log('Resident UV visibility: bound source-set proof, cancellable busy-camera idle, latest-wins wake, deferred verified persistence and cache-hit publication passed.');

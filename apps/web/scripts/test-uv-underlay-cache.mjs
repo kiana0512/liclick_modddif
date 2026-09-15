@@ -50,3 +50,29 @@ scope.onmessage({data:{type:'release'}});open();await pending;decodeGate=undefin
 await load(request);assert.equal(decodes,6,'release during decode prevents old cache repopulation');
 assert.equal(closed,decodes,'every decoded bitmap is closed');
 console.log('UV underlay cache: exact bytes, unchanged decode reuse, changed content/dimensions, source-over ownership, permission failure, cancellation and release races passed.');
+
+// Exercise the actual Worker queue: an obsolete network fetch must abort,
+// allowing the final eye state to run without waiting for the old response.
+const responses = [], fetchSignals = [];
+const queueScope = { navigator: {}, postMessage: response => responses.push(response) };
+const queued = new Function('self', 'fetch', 'createImageBitmap', 'OffscreenCanvas', 'crypto', 'yieldWorkerTask',
+  `${compiled};return { drain: () => workQueue };`)(queueScope, async (url, options) => {
+    fetchSignals.push(options.signal);
+    if (url === 'blocked-underlay') return new Promise((_resolve, reject) => {
+      options.signal.addEventListener('abort', () => reject(new DOMException('fetch aborted', 'AbortError')), { once: true });
+    });
+    return { ok: true, blob: async () => new Blob([new Uint8Array([9, 8, 7, 255])], { type: 'image/png' }) };
+  }, async blob => ({ bytes: new Uint8Array(await blob.arrayBuffer()), width: 2, height: 2, close() {} }),
+  Canvas, webcrypto, async () => {});
+const queuedRequest = id => ({ ...request, id, front: new Uint8Array(16).buffer,
+  verify: true, interactive: false, interactiveChunkBytes: 1048576, idleChunkBytes: 8388608 });
+queueScope.onmessage({ data: { ...queuedRequest(201), underlayUrl: 'blocked-underlay' } });
+for (let tick = 0; tick < 10; tick++) await Promise.resolve();
+assert.equal(fetchSignals.length, 1);
+queueScope.onmessage({ data: { type: 'cancel', id: 201 } });
+queueScope.onmessage({ data: { ...queuedRequest(202), underlayUrl: 'latest-underlay' } });
+await queued.drain();
+assert(fetchSignals[0].aborted, 'Cancel aborts the in-flight fetch');
+assert.deepEqual(responses.map(({ id, type }) => [id, type]), [[201, 'error'], [202, 'result']]);
+assert.deepEqual(new Uint8Array(responses[1].output), new Uint8Array([9, 8, 7, 255, 9, 8, 7, 255, 9, 8, 7, 255, 9, 8, 7, 255]));
+console.log('Worker underlay fetch cancellation: blocked stale response aborted; latest full pixels published without waiting.');
