@@ -549,6 +549,8 @@ function startGenerationJob(job: GenerationJob) {
       if (!job.taskId && job.status === 'submitting') {
         const submission = await submitLiclickImageJob(job.input, {
           atlasHomeDir: job.atlasHomeDir,
+          userId: job.userId,
+          projectId: job.projectId,
         });
         if (job.status !== 'submitting') return;
         await applySubmission(job, submission);

@@ -4,6 +4,7 @@
   "version": "0.1.3",
   "type": "module",
   "scripts": {
+    "test:pixel-exact-reference-upload": "node scripts/clean-dist.mjs && tsc -p tsconfig.json && node scripts/test-pixel-exact-reference-upload.mjs",
     "test:reference-delight-pipeline": "node scripts/test-reference-delight-pipeline.mjs",
     "test:gpt25-params": "node scripts/clean-dist.mjs && tsc -p tsconfig.json && node scripts/test-gpt25-params.mjs",
     "predev": "corepack pnpm --filter @liclick/contracts build",

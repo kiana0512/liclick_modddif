@@ -139,7 +139,9 @@ try {
   assert.equal(calls[1].request.referencePipeline, undefined);
   assert.equal(calls[1].request.prompt, api.referenceDelightPrompt);
   assert.deepEqual(calls[1].request.references.map(r => r.url), [first]);
-  assert.deepEqual(calls[0].context, calls[1].context, 'Both stages use the same personal account');
+  assert.equal(calls[0].context.atlasHomeDir, calls[1].context.atlasHomeDir, 'Both stages use the same personal account');
+  assert.equal(calls[0].context.userId, 'owner', 'Uploads carry the authenticated asset owner');
+  assert.equal(calls[0].context.projectId, 'project', 'Uploads carry the owned project');
   assert.equal(api.getJobResponse(normal).resultUrl, final);
   assert.equal(normal.referenceDelight.stage, 'complete');
   assert.equal(normal.extraParams.quality, 'medium');

@@ -4,6 +4,7 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { generationFramingRatio, type GenerationFraming } from '@liclick/contracts';
 import { callAtlasToolJson, parseJsonFromOutput } from '../auth/atlasAuthService.js';
+import { preparePixelExactUploadArguments } from './pixelExactReferenceUpload.js';
 
 type ReferenceInput = {
   id?: string;
@@ -41,6 +42,8 @@ export type EditImageInput = {
 
 export type LiclickAtlasContext = {
   atlasHomeDir?: string;
+  userId?: string;
+  projectId?: string;
 };
 
 type UploadedReference = {
@@ -734,7 +737,6 @@ async function uploadReference(
     const { buffer } = dataUrlToBuffer(reference.url);
     const digest = createHash('sha256').update(buffer).digest('hex');
     cacheKey = `${personalAtlasHomeDir}:image:${digest}`;
-    toolArguments.file_path = reference.url;
   } else {
     cacheKey = `${personalAtlasHomeDir}:image-url:${reference.url}`;
     toolArguments.url = reference.url;
@@ -743,6 +745,9 @@ async function uploadReference(
   let uploadPromise = uploadedImageAssetCache.get(cacheKey);
   if (!uploadPromise) {
     uploadPromise = (async () => {
+      if (reference.url.startsWith('data:')) {
+        Object.assign(toolArguments, await preparePixelExactUploadArguments(reference.url, atlasContext));
+      }
       const upload = await retryAtlasAssetUpload(
         () =>
           callAtlasToolJson(

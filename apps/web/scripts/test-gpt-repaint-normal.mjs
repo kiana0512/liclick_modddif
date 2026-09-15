@@ -101,7 +101,9 @@ try {
     assert.deepEqual(input.referenceImages.slice(0, 2).map(({width, height}) => [width, height]), [[2048, 2048], [2048, 2048]]);
   }
   const tooLarge = { ...material, id: 'oversized-normal', url: `data:image/png;base64,${'A'.repeat(preprocessor.ATLAS_REFERENCE_SAFE_DATA_URL_LENGTH + 4)}` };
-  await assert.rejects(() => preprocessor.prepareReferenceForAtlas(tooLarge, { preservePixels: true }), /不会自动压缩或缩小/);
+  assert.equal((await preprocessor.prepareReferenceForAtlas(tooLarge, { preservePixels: true })).url, tooLarge.url, 'Atlas JSON budget must not reject exact pixels before control-plane preparation');
+  const beyondImageLimit = { ...tooLarge, id: 'too-large', url: `data:image/png;base64,${'A'.repeat(24 * 1024 * 1024)}` };
+  await assert.rejects(() => preprocessor.prepareReferenceForAtlas(beyondImageLimit, { preservePixels: true }), /16 MiB/);
   const controller = new globalThis.AbortController();
   controller.abort();
   await assert.rejects(() => createLiclickApiClient().generateTextureSingleView({ ...buildGptLocalRepaintRequest(base), signal: controller.signal }), /abort/i);

@@ -184,7 +184,12 @@ async function prepareReferenceUncached(
       url: sourceDataUrl,
     };
   }
-  if (preservePixels) throw new Error('局部重绘结构引导图超过上传大小限制，未提交任务；为保持像素对齐，不会自动压缩或缩小图片。');
+  if (preservePixels) {
+    if (sourceBlob.size > 16 * 1024 * 1024) throw new Error('局部重绘结构引导图超过 16 MiB，未提交任务；不会自动压缩或缩小图片。');
+    // The control plane validates lossless PNG compression and, if needed,
+    // uploads a verified object URL. Atlas's JSON limit is not our HTTP limit.
+    return { id: reference.id, name: reference.name, url: sourceDataUrl };
+  }
   return compressReference(reference, sourceBlob, safeDataUrlLength);
 }
 
