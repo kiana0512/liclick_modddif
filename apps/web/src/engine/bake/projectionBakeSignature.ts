@@ -3,6 +3,8 @@ import type {Layer} from '@/types/layer';
 import type {BakeReport,UvBakeResolution} from './uvBakeTypes';
 import {getProjectedLayerStackSignature} from './layerStackCache';
 import {getDebugUvBakeStatus} from './uvBakeDebugControls';
+import {yieldToBrowserTask} from '@/utils/browserScheduling';
+import {waitForViewportInteractionIdle} from '@/engine/viewport/viewportInteractionState';
 const attributeIdentities=new WeakMap<object,number>();
 let nextAttributeIdentity=1;
 function attributeIdentity(value:object|undefined|null) {
@@ -91,6 +93,19 @@ export function createReusableProjectionBakeSignature(input: {
   ].join('||');
 }
 
-export function cloneProjectionBakeImageData(imageData: ImageData) {
-  return new ImageData(new Uint8ClampedArray(imageData.data), imageData.width, imageData.height);
+/** UV-SNAPSHOT-COPY/1.1.0: source is a completed, immutable bake/cache image. */
+export async function cloneProjectionBakeImageData(imageData: ImageData, checkCancelled?: () => void) {
+  const rgba = new Uint8ClampedArray(imageData.data.length);
+  let sliceStarted = performance.now();
+  for (let offset = 0; offset < rgba.length; offset += 1048576) {
+    checkCancelled?.();
+    rgba.set(imageData.data.subarray(offset, offset + 1048576), offset);
+    if (performance.now() - sliceStarted >= 4 && offset + 1048576 < rgba.length) {
+      await yieldToBrowserTask();
+      await waitForViewportInteractionIdle(180, checkCancelled);
+      sliceStarted = performance.now();
+    }
+  }
+  checkCancelled?.();
+  return new ImageData(rgba, imageData.width, imageData.height);
 }

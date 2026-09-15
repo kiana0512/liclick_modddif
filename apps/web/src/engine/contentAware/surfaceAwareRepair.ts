@@ -766,33 +766,43 @@ function blendLocalBoundaryColors(
   const scratch = new Uint8ClampedArray(count * 3);
   const iterations = Math.min(64, Math.max(8, input.maxDistance * 2));
   const colorDistanceLimit = 3 * 48 * 48;
+  // LOCAL-BOUNDARY-REPAIR/1.2.1: topology, owners and original donor colors
+  // are immutable throughout Jacobi blending. Cache four accepted edges in
+  // one byte per repaired pixel; preserve direction order and every iteration.
+  const edges = new Uint8Array(count);
+  for (let slot = 0; slot < count; slot += 1) {
+    const index = queue[slot];
+    const sourceOffset = owner[index] * 4;
+    const x = index % input.width, y = Math.floor(index / input.width);
+    for (let direction = 0; direction < 4 && sourceOffset >= 0; direction += 1) {
+      const nx = x + FOUR_NEIGHBOR_X[direction], ny = y + FOUR_NEIGHBOR_Y[direction];
+      if (nx < 0 || ny < 0 || nx >= input.width || ny >= input.height) continue;
+      const neighbor = ny * input.width + nx;
+      if (!input.topologyMask[neighbor] || (input.topologyRegionIds &&
+        input.topologyRegionIds[index] !== input.topologyRegionIds[neighbor])) continue;
+      const repaired = repairedMask[neighbor] === 255;
+      if (!repaired && (input.writeMask[neighbor] ||
+        (owner[neighbor] !== -2 && owner[neighbor] !== neighbor))) continue;
+      const neighborSource = repaired ? owner[neighbor] : neighbor;
+      if (neighborSource < 0) continue;
+      const anchor = neighborSource * 4;
+      const dr = input.rgba[sourceOffset] - input.rgba[anchor];
+      const dg = input.rgba[sourceOffset + 1] - input.rgba[anchor + 1];
+      const db = input.rgba[sourceOffset + 2] - input.rgba[anchor + 2];
+      if (dr * dr + dg * dg + db * db <= colorDistanceLimit) edges[slot] |= 1 << direction;
+    }
+    if ((slot & 0x3fff) === 0) checkAbort();
+  }
   for (let iteration = 0; iteration < iterations; iteration += 1) {
     for (let slot = 0; slot < count; slot += 1) {
       const index = queue[slot];
       const offset = index * 4;
-      const sourceOffset = owner[index] * 4;
       let red = output[offset], green = output[offset + 1], blue = output[offset + 2];
       let weight = 1;
-      const x = index % input.width, y = Math.floor(index / input.width);
-      for (let direction = 0; direction < 4 && sourceOffset >= 0; direction += 1) {
-        const nx = x + FOUR_NEIGHBOR_X[direction], ny = y + FOUR_NEIGHBOR_Y[direction];
-        if (nx < 0 || ny < 0 || nx >= input.width || ny >= input.height) continue;
-        const neighbor = ny * input.width + nx;
-        if (!input.topologyMask[neighbor] || (input.topologyRegionIds &&
-          input.topologyRegionIds[index] !== input.topologyRegionIds[neighbor])) continue;
-        const repaired = repairedMask[neighbor] === 255;
-        // Only original eligible donors anchor the boundary. Weak/excluded
-        // pixels, unresolved gaps and propagated non-write texels cannot seed it.
-        if (!repaired && (input.writeMask[neighbor] ||
-          (owner[neighbor] !== -2 && owner[neighbor] !== neighbor))) continue;
-        const neighborSource = repaired ? owner[neighbor] : neighbor;
-        if (neighborSource < 0) continue;
-        const anchor = neighborSource * 4;
-        const dr = input.rgba[sourceOffset] - input.rgba[anchor];
-        const dg = input.rgba[sourceOffset + 1] - input.rgba[anchor + 1];
-        const db = input.rgba[sourceOffset + 2] - input.rgba[anchor + 2];
-        if (dr * dr + dg * dg + db * db > colorDistanceLimit) continue;
-        const colors = repaired ? output : input.rgba;
+      for (let direction = 0; direction < 4; direction += 1) {
+        if (!(edges[slot] & (1 << direction))) continue;
+        const neighbor = index + FOUR_NEIGHBOR_Y[direction] * input.width + FOUR_NEIGHBOR_X[direction];
+        const colors = repairedMask[neighbor] === 255 ? output : input.rgba;
         const sample = neighbor * 4;
         red += colors[sample]; green += colors[sample + 1]; blue += colors[sample + 2];
         weight += 1;

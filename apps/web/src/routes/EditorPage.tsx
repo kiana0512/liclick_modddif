@@ -4988,7 +4988,7 @@ export function EditorPage({
       const readbackStartedAt = performance.now();
       let mergedImageData = projectionBakeCacheHit
         ? (preparedFinalHit ? reusableProjectionBake.imageData
-          : cloneProjectionBakeImageData(reusableProjectionBake.imageData))
+          : await cloneProjectionBakeImageData(reusableProjectionBake.imageData))
         : bakeResult?.imageData;
       if (!mergedImageData) {
         const outputContext = outputCanvas.getContext('2d', { willReadFrequently: true });
@@ -5001,7 +5001,7 @@ export function EditorPage({
       if (!preparedFinalHit && layersToBake.length > 0 && !projectionBakeCacheHit && bakeResult) {
         reusableProjectionBakeCacheRef.current.set('merge-uv', {
           signature: projectionBakeSignature,
-          imageData: cloneProjectionBakeImageData(mergedImageData),
+          imageData: await cloneProjectionBakeImageData(mergedImageData),
           report: bakeResult.report,
         });
       }
@@ -6990,9 +6990,9 @@ export function EditorPage({
         });
         delete document.body.dataset.perfUvBakePhase;
         let workingImageData = memoryProjectionBakeHit
-          ? cloneProjectionBakeImageData(reusableProjectionBake.imageData)
+          ? await cloneProjectionBakeImageData(reusableProjectionBake.imageData)
           : persistentProjectionBake
-            ? cloneProjectionBakeImageData(persistentProjectionBake)
+            ? await cloneProjectionBakeImageData(persistentProjectionBake)
             : bakeResult?.imageData;
         if (!workingImageData) {
           const bakeContext = bakeResult?.canvas.getContext('2d', { willReadFrequently: true });
@@ -7002,7 +7002,7 @@ export function EditorPage({
         if (!projectionBakeCacheHit && bakeResult) {
           reusableProjectionBakeCacheRef.current.set('content-aware-repair', {
             signature: projectionBakeSignature,
-            imageData: cloneProjectionBakeImageData(workingImageData),
+            imageData: await cloneProjectionBakeImageData(workingImageData),
             report: bakeResult.report,
           });
           // Persistence runs after the full-quality result is available and is
@@ -7012,7 +7012,7 @@ export function EditorPage({
         } else if (persistentProjectionBake && !memoryProjectionBakeHit) {
           reusableProjectionBakeCacheRef.current.set('content-aware-repair', {
             signature: projectionBakeSignature,
-            imageData: cloneProjectionBakeImageData(persistentProjectionBake),
+            imageData: await cloneProjectionBakeImageData(persistentProjectionBake),
             report: {
               id: createId('persistent-projection-bake-report'),
               objectId,

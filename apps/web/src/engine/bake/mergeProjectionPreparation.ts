@@ -35,8 +35,8 @@ export function mergePreparationSignature(input:Request) {
 
 export function prepareMergeProjection(input:Request,onProgress?:(progress:BakeProgress)=>void,readOnly=false) {
   const signature=mergePreparationSignature(input);
-  const copy=(result:BakeProjectedLayerResult)=>readOnly ? result : ({...result,
-    imageData:result.imageData ? cloneProjectionBakeImageData(result.imageData) : undefined});
+  const copy=async(result:BakeProjectedLayerResult)=>readOnly ? result : ({...result,
+    imageData:result.imageData ? await cloneProjectionBakeImageData(result.imageData) : undefined});
   if(ready?.signature===signature) {
     document.body.dataset.uvMergePreparation='ready';
     if(!readOnly) document.body.dataset.uvMergePreparationRead='ready-hit';
