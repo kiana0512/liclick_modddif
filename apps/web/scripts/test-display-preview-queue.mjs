@@ -137,6 +137,7 @@ requests[2].resolve(value('current')); await tick();
 assert.equal(render({...revised,imageUrl:'replacement'},true).fittedUrl,'current');
 assert.equal(render(layer,false),undefined); effects();
 assert.equal(requests.at(-1).kind,'full','Zoom keeps the original complete display pipeline');
+assert.equal(requests.at(-1).args[3],false,'The thumbnail projected flag must not enable alpha-only mode for legacy layer zoom');
 requests.at(-1).resolve(value('full')); await tick();
 assert.equal(render(layer,false).fittedUrl,'full');
 for (const excluded of [{...layer,localRepaintMaskUrl:'author-mask'}, {...layer,type:'uv',imageUrl:'live:canvas'}]) {
