@@ -331,7 +331,7 @@ try {
   assert.match(viewport, /activePointerIdRef.current = event.pointerId;\s*setViewportPaintPointer\(canvas, event.pointerId\);\s*try/, 'Recovered pen contact must rebind its pointer identity');
   assert.match(viewport, /pointerListenerGenerationRef.current !== listenerGeneration\) return;\s*setViewportPaintPointer\(canvas\);/, 'Final unmount clears ownership, effect replacement preserves it');
   assert.match(viewport, /<Canvas\s[\s\S]*?events=\{createViewportEvents\}/, 'The live viewport must use the tested event manager');
-  const altGuard=viewport.match(/if \(event.altKey\) \{([\s\S]*?)\n      \}/)?.[0];
+  const altGuard=viewport.match(/if \(event.altKey\) \{([\s\S]*?)\n {6}\}/)?.[0];
   assert(altGuard);
   const checkAltGuard=new Function('event','cursorCircleRef','canvas',altGuard+" return 'paint';");
   for(const button of [0,1,2]) {
