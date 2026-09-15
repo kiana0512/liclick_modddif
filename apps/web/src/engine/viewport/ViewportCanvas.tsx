@@ -76,7 +76,7 @@ import { restoreLocalRepaintLayerSelection } from '@/engine/localRepaint/session
 import { SceneRoot } from './SceneRoot';
 import { getPreviewLighting } from './previewLighting';
 import { CameraController } from './CameraController';
-import { createViewportEvents, setViewportPaintPointer } from './viewportEvents';
+import { createViewportEvents, setViewportPaintPointer, isViewportNavigationPointer } from './viewportEvents';
 import { ViewCube } from './ViewCube';
 import {
   isLocalRepaintOverlayVisible,
@@ -14754,6 +14754,12 @@ function SurfacePaintOverlay() {
       hoverCursorFrame = 0;
     };
     const scheduleHoverCursor = (event: globalThis.PointerEvent) => {
+      if (isViewportNavigationPointer(canvas, event)) {
+        cancelPendingHoverCursor();
+        cursorCircleRef.current?.setAttribute('visibility', 'hidden');
+        if (canvas.style.cursor !== '') canvas.style.cursor = '';
+        return;
+      }
       // Raw mouse/pen streams can exceed the display refresh rate by an order
       // of magnitude. Hover feedback only needs the newest point for the next
       // presented frame; raycasting and writing SVG attributes for discarded

@@ -90,7 +90,7 @@ const server = await createServer({
   appType: 'custom', logLevel: 'silent', server: { middlewareMode: true, watch: { ignored: () => true } },
 });
 try {
-  const { createViewportEvents, setViewportPaintPointer } = await server.ssrLoadModule('/src/engine/viewport/viewportEvents.ts');
+  const { createViewportEvents, setViewportPaintPointer, isViewportNavigationPointer } = await server.ssrLoadModule('/src/engine/viewport/viewportEvents.ts');
   const { BlenderOrbitControls } = await server.ssrLoadModule('/src/engine/viewport/BlenderOrbitControls.ts');
   {
     const target = new InputTarget();
@@ -332,6 +332,34 @@ try {
   assert.match(viewport, /pointerListenerGenerationRef.current !== listenerGeneration\) return;\s*setViewportPaintPointer\(canvas\);/, 'Final unmount clears ownership, effect replacement preserves it');
   assert.match(viewport, /<Canvas\s[\s\S]*?events=\{createViewportEvents\}/, 'The live viewport must use the tested event manager');
   const altGuard=viewport.match(/if \(event.altKey\) \{([\s\S]*?)\n {6}\}/)?.[0];
+  const hoverStart = viewport.indexOf('    let hoverCursorFrame = 0;');
+  const hoverEnd = viewport.indexOf('    // Both selection and generated', hoverStart);
+  assert(hoverStart > 0 && hoverEnd > hoverStart);
+  const hoverCode = ts.transpile(viewport.slice(hoverStart, hoverEnd));
+  for (const button of [0, 1, 2]) {
+    const nav = makeScene(createViewportEvents);
+    nav.target.style = { cursor: 'none' };
+    let picks = 0, frame;
+    const paintRef = { current: false };
+    const hover = new Function('window', 'canvas', 'isViewportNavigationPointer', 'cursorCircleRef', 'isPaintingRef', 'updateCursor',
+      hoverCode + '; return scheduleHoverCursor;')({ requestAnimationFrame(callback) { frame = callback; return 1; }, cancelAnimationFrame() { frame = undefined; } },
+      nav.target, isViewportNavigationPointer, { current: { setAttribute() {} } }, paintRef, () => { picks++; });
+    const flush = () => { const callback = frame; frame = undefined; callback?.(); };
+    hover({ pointerId: 1, buttons: 0, clientX: 10, clientY: 10 });
+    nav.target.emit('pointerdown', { button, altKey: true });
+    for (let i = 0; i < 200; i++) {
+      hover({ pointerId: 1, buttons: [1,4,2][button], altKey: i < 100, clientX: i, clientY: i });
+      flush();
+    }
+    assert.equal(picks, 0, 'Native brush hover must not pick during any Alt drag, including modifier release');
+    nav.target.emit('pointerup', { button });
+    hover({ pointerId: 1, buttons: 0, altKey: false, clientX: 50, clientY: 50 }); flush();
+    assert.equal(picks, 1, 'Hover must resume on release');
+    paintRef.current = true;
+    hover({ pointerId: 1, buttons: 0, clientX: 50, clientY: 50 }); flush();
+    assert.equal(picks, 1, 'Active painting remains owned by the stroke handler');
+    nav.dispose();
+  }
   assert(altGuard);
   const checkAltGuard=new Function('event','cursorCircleRef','canvas',altGuard+" return 'paint';");
   for(const button of [0,1,2]) {
