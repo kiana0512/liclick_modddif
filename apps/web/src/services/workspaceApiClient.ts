@@ -583,6 +583,27 @@ type SavedAssetResponse = {
   asset: { category: AssetCategory; relativePath: string; url: string };
 };
 
+// WORKSPACE-API-DEDUP/1.0.0: shared encoding/progress only; transport unchanged.
+function blobUploadUrl(input: SaveBlobAssetInput) {
+  const params = new URLSearchParams({
+    format: 'blob', category: input.category, filename: input.filename,
+  });
+  return `${workspaceApiBase}/api/projects/${input.projectId}/assets?${params.toString()}`;
+}
+
+function bindUploadProgress(
+  request: XMLHttpRequest,
+  blob: Blob,
+  onProgress?: SaveBlobAssetInput['onProgress'],
+) {
+  const report = (loadedBytes: number, totalBytes = blob.size) => onProgress?.({ loadedBytes, totalBytes });
+  request.upload.onloadstart = () => report(0);
+  request.upload.onprogress = (event) => report(
+    event.loaded, event.lengthComputable && event.total > 0 ? event.total : blob.size,
+  );
+  return () => report(blob.size);
+}
+
 async function blobSha256(blob: Blob) {
   // Asset hashing is only needed after a user selects a file. Keeping the
   // fallback implementation out of the application shell avoids charging
@@ -603,13 +624,7 @@ function putDirectAsset(
     Object.entries(intent.upload.headers).forEach(([name, value]) => {
       request.setRequestHeader(name, value);
     });
-    request.upload.onloadstart = () => onProgress?.({ loadedBytes: 0, totalBytes: blob.size });
-    request.upload.onprogress = (event) => {
-      onProgress?.({
-        loadedBytes: event.loaded,
-        totalBytes: event.lengthComputable && event.total > 0 ? event.total : blob.size,
-      });
-    };
+    const completeProgress = bindUploadProgress(request, blob, onProgress);
     request.onload = () => {
       if (request.status < 200 || request.status >= 300) {
         reject(
@@ -620,7 +635,7 @@ function putDirectAsset(
         );
         return;
       }
-      onProgress?.({ loadedBytes: blob.size, totalBytes: blob.size });
+      completeProgress();
       resolve();
     };
     request.onerror = () =>
@@ -677,28 +692,12 @@ async function saveDirectBlobAsset(input: SaveBlobAssetInput) {
 
 function saveBlobAssetWithProgress(input: SaveBlobAssetInput) {
   return new Promise<SavedAssetResponse>((resolve, reject) => {
-    const params = new URLSearchParams({
-      format: 'blob',
-      category: input.category,
-      filename: input.filename,
-    });
     const request = new XMLHttpRequest();
-    request.open(
-      'POST',
-      `${workspaceApiBase}/api/projects/${input.projectId}/assets?${params.toString()}`,
-    );
+    request.open('POST', blobUploadUrl(input));
     request.withCredentials = true;
     request.timeout = 60_000;
     request.setRequestHeader('content-type', input.blob.type || 'application/octet-stream');
-    request.upload.onprogress = (event) => {
-      input.onProgress?.({
-        loadedBytes: event.loaded,
-        totalBytes: event.lengthComputable && event.total > 0 ? event.total : input.blob.size,
-      });
-    };
-    request.upload.onloadstart = () => {
-      input.onProgress?.({ loadedBytes: 0, totalBytes: input.blob.size });
-    };
+    const completeProgress = bindUploadProgress(request, input.blob, input.onProgress);
     request.onload = () => {
       let payload: unknown;
       try {
@@ -711,7 +710,7 @@ function saveBlobAssetWithProgress(input: SaveBlobAssetInput) {
         reject(new WorkspaceApiError(request.status, message));
         return;
       }
-      input.onProgress?.({ loadedBytes: input.blob.size, totalBytes: input.blob.size });
+      completeProgress();
       resolve(payload as SavedAssetResponse);
     };
     request.onerror = () => {
@@ -762,15 +761,10 @@ async function uploadBlobAsset(input: SaveBlobAssetInput) {
   if (input.onProgress) return saveBlobAssetWithProgress(input);
   const controller = new AbortController();
   const timeout = window.setTimeout(() => controller.abort(), 60_000);
-  const params = new URLSearchParams({
-    format: 'blob',
-    category: input.category,
-    filename: input.filename,
-  });
   let response: Response;
   try {
     response = await fetch(
-      `${workspaceApiBase}/api/projects/${input.projectId}/assets?${params.toString()}`,
+      blobUploadUrl(input),
       {
         method: 'POST',
         body: input.blob,
@@ -814,11 +808,15 @@ export async function exportProjectPackage(projectId: string) {
 }
 
 export async function fileToDataUrl(file: File) {
+  return readBlobDataUrl(file, 'Could not read file.');
+}
+
+function readBlobDataUrl(blob: Blob, fallbackMessage: string) {
   return new Promise<string>((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve(String(reader.result));
-    reader.onerror = () => reject(reader.error ?? new Error('Could not read file.'));
-    reader.readAsDataURL(file);
+    reader.onerror = () => reject(reader.error ?? new Error(fallbackMessage));
+    reader.readAsDataURL(blob);
   });
 }
 
@@ -851,12 +849,7 @@ export async function urlToBlob(url: string) {
 export async function urlToDataUrl(url: string) {
   if (url.startsWith('data:')) return url;
   const blob = await urlToBlob(url);
-  return new Promise<string>((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result));
-    reader.onerror = () => reject(reader.error ?? new Error('Could not read asset URL.'));
-    reader.readAsDataURL(blob);
-  });
+  return readBlobDataUrl(blob, 'Could not read asset URL.');
 }
 
 export function isWorkspaceAssetUrl(url?: string) {

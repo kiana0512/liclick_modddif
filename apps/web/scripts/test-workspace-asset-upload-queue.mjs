@@ -84,3 +84,46 @@ try {
   }
 }
 console.log('Shared asset queue: FIFO, max 3, failures/recovery, both API modes, cross-project mixed transports and exact Blob bytes passed.');
+
+// Execute the actual deduplicated helpers, including error identity and the
+// progress fallback for unknown/zero-length transport totals.
+const ast = ts.createSourceFile('workspaceApiClient.ts', source, ts.ScriptTarget.Latest, true);
+const helpers = ast.statements.filter(node => ts.isFunctionDeclaration(node) &&
+  ['blobUploadUrl','bindUploadProgress','readBlobDataUrl'].includes(node.name?.text));
+assert.equal(helpers.length, 3);
+const helperCode = ts.transpileModule(helpers.map(node => node.getText(ast)).join('\n'), {
+  compilerOptions: {target:ts.ScriptTarget.ES2022},
+}).outputText;
+const readers = [];
+class Reader {
+  constructor() { readers.push(this); }
+  readAsDataURL(value) { this.blob = value; }
+}
+const api = new Function('workspaceApiBase','FileReader', `${helperCode}\nreturn {blobUploadUrl,bindUploadProgress,readBlobDataUrl};`)('/base',Reader);
+assert.equal(api.blobUploadUrl({projectId:'p',category:'captures',filename:'法线 + &.png'}),
+  '/base/api/projects/p/assets?format=blob&category=captures&filename=%E6%B3%95%E7%BA%BF+%2B+%26.png');
+const request = {upload:{}};
+const progress = [];
+const complete = api.bindUploadProgress(request,blob,event=>progress.push(event));
+request.upload.onloadstart();
+for (const event of [
+  {loaded:2,total:10,lengthComputable:true},
+  {loaded:3,total:0,lengthComputable:true},
+  {loaded:4,total:100,lengthComputable:false},
+]) request.upload.onprogress(event);
+complete();
+assert.deepEqual(progress,[{loadedBytes:0,totalBytes:6},{loadedBytes:2,totalBytes:10},
+  {loadedBytes:3,totalBytes:6},{loadedBytes:4,totalBytes:6},{loadedBytes:6,totalBytes:6}]);
+api.bindUploadProgress(request,blob)();
+const read = api.readBlobDataUrl(blob,'fallback');
+assert.equal(readers.at(-1).blob,blob);
+readers.at(-1).result='data:image/png;base64,AP9/BAAS';
+readers.at(-1).onload();
+assert.equal(await read,'data:image/png;base64,AP9/BAAS');
+for(const error of [null,new Error('reader failed')]) {
+  const failed=api.readBlobDataUrl(blob,'fallback');
+  readers.at(-1).error=error;
+  readers.at(-1).onerror();
+  await assert.rejects(failed,value=>error ? value===error : value.message==='fallback');
+}
+console.log('Deduplicated API helpers: exact URL encoding, progress values, Blob identity and reader errors passed.');

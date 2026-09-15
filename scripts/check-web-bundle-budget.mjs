@@ -108,6 +108,15 @@ const budgets = [
 // Cloud candidate 3,256,164. Bound the new lazy feature to 3,000 bytes;
 // retain all shell/editor/shared/QA/pixel gates, no unrelated module exemptions.
 const maxTotalJavaScriptBytes = 3_256_500;
+// Local release checks require headroom without relaxing the CI hard limit.
+const reserveArg = process.argv.slice(2);
+if (reserveArg.length > 1 || (reserveArg.length && !/^--reserve-bytes=\d+$/.test(reserveArg[0]))) {
+  throw new Error('Usage: check-web-bundle-budget.mjs [--reserve-bytes=N]');
+}
+const reserveBytes = reserveArg.length ? Number(reserveArg[0].split('=')[1]) : 0;
+if (!Number.isSafeInteger(reserveBytes) || reserveBytes > maxTotalJavaScriptBytes) {
+  throw new Error('Invalid bundle reserve.');
+}
 
 let entries;
 try {
@@ -160,6 +169,9 @@ if (totalJavaScriptBytes > maxTotalJavaScriptBytes) {
   failures.push(
     `total JavaScript: ${totalJavaScriptBytes} bytes exceeds ${maxTotalJavaScriptBytes}`,
   );
+}
+if (reserveBytes && totalJavaScriptBytes > maxTotalJavaScriptBytes - reserveBytes) {
+  failures.push(`total JavaScript: require ${reserveBytes} bytes of release metadata headroom`);
 }
 
 if (failures.length > 0) {

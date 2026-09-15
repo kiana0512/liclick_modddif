@@ -13,6 +13,29 @@ import { validateRuntimeEnv } from '../deploy/validate-runtime-env.mjs';
 const root = path.resolve(import.meta.dirname, '..');
 const read = p => fs.readFileSync(path.join(root, p), 'utf8');
 const parse = p => yaml.load(read(p));
+test('Bundle gate keeps its hard limit and local release headroom', () => {
+  const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'li3d-bundle-gate-'));
+  try {
+    const assets = path.join(temporary, 'apps/web/dist/assets');
+    fs.mkdirSync(assets, {recursive:true});
+    const chunks = {'index-test.js':100001, 'EditorPage-test.js':1,
+      'contentFramingImages-test.js':1, 'bakeHighSnapshot-test.js':1,
+      'projectPipeline-test.js':100001, 'StorageManagementDialog-test.js':1};
+    for (const [name,size] of Object.entries(chunks)) fs.writeFileSync(path.join(assets,name), Buffer.alloc(size));
+    const fixed = Object.values(chunks).reduce((a,b)=>a+b,0);
+    const run = (...args) => spawnSync(process.execPath,
+      [path.join(root,'scripts/check-web-bundle-budget.mjs'),...args], {cwd:temporary,encoding:'utf8'});
+    for(const remaining of [-8,-4,0,255,256,430]) {
+      fs.writeFileSync(path.join(assets,'other.js'),Buffer.alloc(3256500-fixed-remaining));
+      assert.equal(run().status,remaining>=0 ? 0 : 1);
+      assert.equal(run('--reserve-bytes=256').status,remaining>=256 ? 0 : 1);
+    }
+    for(const invalid of ['--reserve-bytes=-1','--reserve-bytes=NaN','--reserve-bytes=999999999999999999']) {
+      assert.notEqual(run(invalid).status,0);
+    }
+    assert.match(read('scripts/verify-prepush.mjs'), /check:web-bundle-budget --reserve-bytes=256/);
+  } finally { fs.rmSync(temporary,{recursive:true,force:true}); }
+});
 const valid = {
   LICLICK_RUNTIME_MODE: 'cloud', LICLICK_PROJECT_REPOSITORY: 'postgres',
   AUTH_MODE: 'feishu-oauth', SESSION_COOKIE_SECURE: 'true',
