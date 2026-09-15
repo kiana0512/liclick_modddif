@@ -37,7 +37,9 @@
 
 2026-09-15 M03：ALG-VIEW-INPUT-001/1.3.2 在鼠标接触前即让 R3F 悬停遵守 Alt 所有权；保留普通 hover 和已锁定拖动。旧实现拾取回归失败、新实现通过，用户实际首帧延迟需继续录制。无像素/持久化迁移，见 [Alt 悬停变更卡](changes/CHG-20260915-ALT-BRUSH-HOVER.md)。
 
-> 文档版本：`2.20.131`
+> 文档版本：`2.20.132`
+
+2026-09-15 M07（协作 M06/M09）：UV-UNDERLAY-FENCE/1.0.0 删除空闲计算及映射前冗余整队列等待，mapAsync 继续保证此前 buffer 写入完成；活动交互/8MiB 映射/yield/完整像素/QA/shader/持久化/导出保持。哈希隔离基线热总耗时 67–75→60–64ms，部分 GPU 等待转移到 readback，不能以 computeMs 作为净收益。无迁移，验证和回滚见 [UV 底图变更卡](changes/CHG-20260915-UV-GUTTER-SEED-SCAN.md)。
 
 2026-09-15 M07（协作 M03/M06/M08/M09）：UV-READBACK-SCHEDULING/1.2.1 在独立上下文完成回读段后先补位、再让步，保持可见 paint gate、完整 RGBA、四槽 8MiB 上限和失败排空。真实 4K 新旧 12 次全字节零差异，热中位数 80.4→76.0ms；不代表整体显隐延迟。GPU/CPU/Worker/shader、QA、持久化/导出保持，无迁移，回滚见 [UV 回读延迟](changes/CHG-20260915-UV-READBACK-LATENCY.md)。
 

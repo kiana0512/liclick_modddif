@@ -124,3 +124,43 @@ for(const size of [4,1028,262148,524300])for(const opacity of [0,0.37,1])for(con
  assert.deepEqual(new Uint8Array(actual),new Uint8Array(expected));
 }
 console.log('UV GPU underlay upload: exact verified identity, changed bytes/resources, mutable inputs, transfer metrics and budgeted CPU parity passed.');
+
+// Queue-wide waits must not gate bounded mapping. A mapping itself waits until
+// this buffer's submitted copy has completed; mapped memory is never read early.
+const readbackApi = new Function('self', 'yieldWorkerTask', `${compiled}; return copyToReadbackInBudgetedChunks;`)(
+  {navigator: {}, postMessage() {}}, async () => {},
+);
+for (const size of [4, 8 * 1024 * 1024 + 4, 16 * 1024 * 1024]) {
+  const expected = Uint8Array.from({length: size}, (_, i) => (i * 37 + (i >>> 17)) & 255);
+  const storage = new Uint8Array(size);
+  let mapped = false, command, mappings = 0;
+  const device = {
+    createCommandEncoder: () => ({
+      copyBufferToBuffer(_src, sourceOffset, _dst, destinationOffset, length) {
+        command = {sourceOffset, destinationOffset, length};
+      }, finish: () => command,
+    }),
+    queue: {
+      submit: commands => {command = commands[0];},
+      onSubmittedWorkDone: () => {throw Error('Redundant queue-wide fence');},
+    },
+  };
+  const readback = {
+    async mapAsync(_mode, offset, length) {
+      assert.equal(mapped, false); assert.equal(offset, command.destinationOffset);
+      assert.equal(length, command.length); assert(length <= 8 * 1024 * 1024);
+      await Promise.resolve();
+      storage.set(expected.subarray(command.sourceOffset, command.sourceOffset + length), offset);
+      mapped = true; mappings++;
+    },
+    getMappedRange(offset, length) {
+      assert(mapped, 'GPU-owned memory cannot be read before mapAsync completes');
+      return storage.slice(offset, offset + length).buffer;
+    },
+    unmap() { assert(mapped); mapped = false; },
+  };
+  const actual = await readbackApi(device, {front: {}, readback, byteLength: size}, gpuRequest);
+  assert.deepEqual(new Uint8Array(actual), expected);
+  assert.equal(mapped, false); assert.equal(mappings, Math.ceil(size / (8 * 1024 * 1024)));
+}
+console.log('UV bounded mapping: buffer completion without redundant queue fences, full/tail bytes and unmap passed.');

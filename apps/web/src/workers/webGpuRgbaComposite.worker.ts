@@ -340,7 +340,7 @@ async function computeInBudgetedChunks(
     if (interactive) await device.queue.onSubmittedWorkDone();
     if (firstPixel < totalPixels) await yieldGpuBudget();
   }
-  await device.queue.onSubmittedWorkDone();
+  if (interactive) await device.queue.onSubmittedWorkDone();
 }
 
 async function copyToReadbackInBudgetedChunks(
@@ -360,7 +360,8 @@ async function copyToReadbackInBudgetedChunks(
     const encoder = device.createCommandEncoder();
     encoder.copyBufferToBuffer(target.front, offset, target.readback, offset, size);
     device.queue.submit([encoder.finish()]);
-    await device.queue.onSubmittedWorkDone();
+    // mapAsync waits for prior uses of this buffer on the queue. A separate
+    // queue-wide completion roundtrip before every mapping is redundant.
     await target.readback.mapAsync(GPU_MAP_MODE_READ, offset, size);
     outputBytes.set(new Uint8Array(target.readback.getMappedRange(offset, size)), offset);
     target.readback.unmap();

@@ -1,9 +1,12 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 const dist=path.resolve(import.meta.dirname,'../dist');
 const baseline=process.argv[2];
 if(!baseline)throw Error('Pass the previous built, standalone RGBA worker path.');
-fs.copyFileSync(baseline,path.join(dist,'underlay-baseline.js'));
+const baselineBytes=fs.readFileSync(baseline);
+const baselineName=`underlay-baseline-${createHash('sha256').update(baselineBytes).digest('hex').slice(0,16)}.js`;
+fs.writeFileSync(path.join(dist,baselineName),baselineBytes);
 const current=fs.readdirSync(path.join(dist,'assets')).find(file=>file.startsWith('webGpuRgbaComposite.worker-'));
 fs.writeFileSync(path.join(dist,'underlay-upload-benchmark.html'),`<!doctype html><html><meta charset="utf-8"><title>UV underlay transport A/B</title><button>Test 4K UV underlay</button><pre>Ready</pre><script>
 document.querySelector('button').onclick=async()=>{
@@ -11,7 +14,7 @@ document.querySelector('button').onclick=async()=>{
  const canvas=document.createElement('canvas');canvas.width=canvas.height=4096;
  const ctx=canvas.getContext('2d');ctx.fillStyle='#638fa7';ctx.fillRect(0,0,4096,4096);
  const blob=await new Promise(r=>canvas.toBlob(r,'image/png'));const url=URL.createObjectURL(blob);
- try {for(const [label,src] of [['old','/underlay-baseline.js'],['new','/assets/${current}']]){
+ try {for(const [label,src] of [['old','/${baselineName}'],['new','/assets/${current}']]){
   const worker=new Worker(src,{type:'module'});
   try {for(let run=0;run<3;run++){
    const front=new Uint8Array(4096*4096*4);

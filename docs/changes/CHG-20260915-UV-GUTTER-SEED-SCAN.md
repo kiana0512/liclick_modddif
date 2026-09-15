@@ -19,3 +19,9 @@ UV-UNDERLAY-UPLOAD/1.0.0：复用既有 GPU underlay buffer，不新增 GPU 缓�
 CPU 分时后备复用原逐像素内核的范围参数，原方向、舍入、RGBA/透明 RGB、opacity、分块调度和 QA 不变。测试覆盖身份/字节变化、资源更换、非缓存输入、失败后重传、传输统计，以及 36 组含尾段的分时/原内核完整对照；此前权限、取消、decode/release 竞态回归继续通过。
 
 内置浏览器真实 4096² WebGPU：旧版冷/热总计 209.2/86.4/81.4ms，复用版 204.8/71.9/65.2ms；热上传 9.7/10.3→4.7/6.0ms，传输量 192→128MiB；六次完整 GPU/CPU QA 零差异。该指标不包含输入 PNG 解码与 QA 比对，不代表整个图层点击延迟。保留质量解析/全幅回读瓶颈，未宣称首切达到 150ms。回滚删除 underlaySource 身份记录，恢复每次上传；无存储格式或资产迁移。
+
+## UV 底图同步等待裁剪
+
+UV-UNDERLAY-FENCE/1.0.0（M07，协作 M06/M09）：空闲计算不再先等待一次整条 GPU queue 完成，每个有界映射前也不再额外等待整队列；`mapAsync` 本身等待此前使用该 buffer 的命令完成。[W3C WebGPU 映射规范](https://www.w3.org/TR/webgpu/#buffer-mapping)与 [MDN 队列接口说明](https://developer.mozilla.org/en-US/docs/Web/API/GPUQueue/onSubmittedWorkDone)支持此依赖关系。活动交互的原 CPU 分时路线及 GPU 预算门禁保持；8MiB 映射、逐段 yield、完整读回、取消、shader 和 CPU/GPU QA 不变。解析计时现在包括 CPU 提交，不代表 GPU 执行已完成；计算的 GPU 等待计入后续 readback，不能把 computeMs 的下降作为净收益。
+
+修正独立基准的固定 baseline Worker 地址，文件名改为实际内容 SHA 前缀，防止前轮旧脚本缓存被计入本轮收益。首次错误基线表现为热传输 192MiB，与正常缓存命中不符，已排除。哈希隔离重测：旧冷/热总耗时 207.9/74.9/67.3ms，新 189.1/64.3/59.9ms；双方热传输均 128MiB、六次完整 GPU/CPU 零差异。新旧 readback 热样本分别 53.0/50.2ms 与 59.4/55.1ms，反映等待转移，并非回读本身大幅提速。无 Schema/资产迁移；回滚恢复两个队列等待点。确定性回归验证 mapAsync 完成后才访问字节、完整/末段 8MiB 范围与 unmap，原权限/缓存/资源/取消回归通过。
