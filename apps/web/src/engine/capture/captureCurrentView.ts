@@ -21,7 +21,8 @@ import {
 import { serializeCamera } from '@/engine/projection/ProjectionCamera';
 import { createClayModelMaterial } from '@/engine/materials/clayModelMaterial';
 import { useProjectStore } from '@/stores/projectStore';
-import { useSceneStore } from '@/stores/sceneStore';
+import { useSceneStore, type ViewportRuntime } from '@/stores/sceneStore';
+import { withIsolatedNormalCapture } from './isolatedNormalCapture';
 import type { Capture } from '@/types/capture';
 import { createId } from '@/utils/id';
 import { waitForBrowserPaint } from '@/utils/browserScheduling';
@@ -188,8 +189,8 @@ export function vectorFromTuple(tuple?: [number, number, number]) {
   return tuple ? new THREE.Vector3(...tuple) : undefined;
 }
 
-async function resolveCaptureCamera(request: CaptureCurrentViewRequest, aspect: number) {
-  const viewport = useSceneStore.getState().viewport;
+async function resolveCaptureCamera(request: CaptureCurrentViewRequest, aspect: number, isolated?: ViewportRuntime) {
+  const viewport = isolated ?? useSceneStore.getState().viewport;
   if (!viewport) throw new Error('视口尚未准备完成，请稍后重试。');
 
   const sourceCamera = request.cameraSnapshot?.camera ?? viewport.camera;
@@ -747,10 +748,11 @@ export async function captureCurrentNormalGuide(
 }
 
 async function captureNormalView(request: CaptureCurrentViewRequest, size: number, geometryGuide: boolean) {
+  return withIsolatedNormalCapture(useSceneStore.getState().viewport, async (isolated) => {
   const aspect = Number.isFinite(request.aspect) && (request.aspect ?? 0) > 0 ? request.aspect! : 1;
   const width = aspect >= 1 ? size : Math.max(1, Math.round(size * aspect));
   const height = aspect >= 1 ? Math.max(1, Math.round(size / aspect)) : size;
-  const { viewport, captureCamera, captureTarget } = await resolveCaptureCamera(request, aspect);
+  const { viewport, captureCamera, captureTarget } = await resolveCaptureCamera(request, aspect, isolated);
   const passRequest: CapturePassRequest = {
     gl: viewport.gl,
     scene: viewport.scene,
@@ -771,4 +773,5 @@ async function captureNormalView(request: CaptureCurrentViewRequest, size: numbe
     createdAt: new Date().toISOString(),
     warnings: normal.warnings,
   };
+  });
 }

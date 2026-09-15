@@ -30,6 +30,19 @@ for (const visible of [true, false]) {
 await assert.rejects(read({ domElement: { isConnected: false }, async readRenderTargetPixelsAsync() {
   throw new Error('GPU readback failed');
 } }, {}, 4), /GPU readback failed/);
+for (const [width, height] of [[2048, 1537], [1537, 2048], [4096, 512]]) {
+  let rows = 0;
+  const bytes = await read({ domElement: { isConnected: false },
+    async readRenderTargetPixelsAsync(_target, x, y, w, h, buffer) {
+      assert.equal(x, 0); assert.equal(y, rows); assert.equal(w, width);
+      assert(buffer.byteLength <= 1024 * 1024);
+      for (let row = 0; row < h; row++) buffer.fill((y + row) % 251, row * w * 4, (row + 1) * w * 4);
+      rows += h;
+    },
+  }, {}, width, height);
+  assert.equal(rows, height); assert.equal(bytes.length, width * height * 4);
+  for (let i = 0; i < bytes.length; i++) assert.equal(bytes[i], Math.floor(i / (width * 4)) % 251);
+}
 for (const visible of [true,false]) {
   for (const failure of [-1,0,1,7]) {
     let active=0,maximum=0,calls=0,completed=0,activeBytes=0;

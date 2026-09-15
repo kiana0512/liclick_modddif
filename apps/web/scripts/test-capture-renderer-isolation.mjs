@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 import * as THREE from 'three';
+import { SkeletonUtils } from 'three-stdlib';
 import ts from 'typescript';
 
 // Execute the production capture loops and state helpers. The renderer models
@@ -9,6 +10,7 @@ import ts from 'typescript';
 const source = process.argv.includes('--baseline')
   ? execFileSync('git', ['show', 'HEAD:apps/web/src/engine/capture/renderTargetUtils.ts'], { encoding: 'utf8' })
   : await readFile(new URL('../src/engine/capture/renderTargetUtils.ts', import.meta.url), 'utf8');
+const readbackSource = await readFile(new URL('../src/engine/bake/gpuReadbackStripes.ts', import.meta.url), 'utf8');
 const ast = ts.createSourceFile('capture.ts', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
 const names = ['captureSharedRendererState', 'restoreSharedRendererState', 'renderSceneToPngUrl', 'renderScenePassesToPngUrl'];
 const functions = names.map((name) => {
@@ -16,7 +18,9 @@ const functions = names.map((name) => {
   assert(declaration, name);
   return declaration.getText(ast).replace(/^export /, '');
 }).join('\n');
-const compiled = ts.transpileModule(functions, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None } }).outputText;
+const compiled = ts.transpileModule('const yieldToBrowserTask = waitForBrowserPaint;\n' +
+  readbackSource.replace(/import[^;]+;/g, '').replace('export async', 'async') + '\n' + functions,
+  { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None } }).outputText;
 
 async function check({ width = 5, height = 3, tileSize = 2, passes = 0, fail, display = false } = {}) {
   const originalTarget = new THREE.WebGLRenderTarget(7, 9);
@@ -38,6 +42,7 @@ async function check({ width = 5, height = 3, tileSize = 2, passes = 0, fail, di
   const tiles = [];
   const buffers = new Map();
   const gl = {
+    domElement: { isConnected: true },
     autoClear: true, xr: { enabled: false },
     getRenderTarget: () => target,
     getClearColor: (out) => out.copy(clearColor), getClearAlpha: () => clearAlpha,
@@ -140,4 +145,46 @@ for (const fail of ['idle', 'render', 'fence', 'readback']) {
   await check({ fail });
   await check({ passes: 3, fail });
 }
+// Actual scene/skeleton cloning and production queue; only the WebGL driver is
+// substituted so this ownership regression can run without touching a UI.
+const isolatedSource = await readFile(new URL('../src/engine/capture/isolatedNormalCapture.ts', import.meta.url), 'utf8');
+const isolatedCode = ts.transpileModule(isolatedSource.replace(/import[\s\S]*?;/g, '').replace('export function', 'function'),
+  { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None } }).outputText;
+let creates = 0, disposes = 0, lost = 0, nextTimer = 0;
+const timers = new Map();
+class Driver {
+  constructor() { creates++; }
+  getContext() { return { isContextLost: () => false }; }
+  dispose() { disposes++; }
+  forceContextLoss() { lost++; }
+}
+const isolated = new Function('THREE', 'SkeletonUtils', 'waitForViewportInteractionIdle', 'document', 'setTimeout', 'clearTimeout',
+  isolatedCode + ';return withIsolatedNormalCapture;')({ ...THREE, WebGLRenderer: Driver }, SkeletonUtils, async () => {},
+  { body: { dataset: {} } }, callback => { timers.set(++nextTimer, callback); return nextTimer; }, id => timers.delete(id));
+const live = new THREE.Scene();
+const authoredMaterial = new THREE.MeshBasicMaterial({ color: 'blue' });
+const authoredGeometry = new THREE.BoxGeometry();
+const authored = new THREE.Mesh(authoredGeometry, authoredMaterial); authored.userData.liclickObjectId = 'model'; live.add(authored);
+const bone = new THREE.Bone();
+const skinned = new THREE.SkinnedMesh(authoredGeometry, authoredMaterial); skinned.add(bone); skinned.bind(new THREE.Skeleton([bone])); live.add(skinned);
+let active = 0;
+const viewport = { scene: live, gl: { outputColorSpace: THREE.SRGBColorSpace, toneMappingExposure: 1 }, camera: new THREE.PerspectiveCamera() };
+const inspect = async candidate => {
+  assert.equal(++active, 1, 'Independent captures serialize their private GPU owner');
+  assert.notEqual(candidate.scene, live); assert.notEqual(candidate.gl, viewport.gl); assert.notEqual(candidate.camera, viewport.camera);
+  const copy = candidate.scene.children[0];
+  assert.equal(copy.geometry, authoredGeometry, 'Immutable geometry is shared without copying vertex buffers');
+  assert.notEqual(candidate.scene.children[1].skeleton, skinned.skeleton);
+  copy.visible = false; copy.material = new THREE.MeshNormalMaterial();
+  await Promise.resolve();
+  assert.equal(authored.visible, true); assert.equal(authored.material, authoredMaterial);
+  copy.material.dispose(); active--; return 'captured';
+};
+assert.deepEqual(await Promise.all([isolated(viewport, inspect), isolated(viewport, inspect)]), ['captured', 'captured']);
+await assert.rejects(isolated(viewport, async () => { throw new Error('capture failure'); }), /capture failure/);
+assert.equal(await isolated(viewport, inspect), 'captured', 'A failed capture cannot poison the queue');
+assert.equal(creates, 1);
+for (const callback of timers.values()) callback();
+assert.equal(disposes, 1); assert.equal(lost, 1);
+authoredGeometry.dispose(); authoredMaterial.dispose(); skinned.skeleton.dispose();
 console.log('Capture renderer isolation passed: first/per-tile/per-pass idle, GPU/readback/encode waits; exact edge tiles, full output, display path and failure cleanup.');
