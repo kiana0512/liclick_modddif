@@ -162,6 +162,31 @@ try {
     }, upload);
     assert.equal(blobSaved.layers[0].imageUrl, blobSaved.layers[0].maskUrl, 'shared URL uploaded once');
   } finally { URL.revokeObjectURL(temporary); }
+  const inlineBytes = Buffer.alloc(1024 * 1024, 137);
+  const inline = `data:image/png;base64,${inlineBytes.toString('base64')}`;
+  const generationSnapshot = { ...snapshot, id: 'generation-assets-project', layers: [], generations: [
+    { id: 'generated', resultUrl: inline, metadata: { resultUrls: [inline, 'https://provider.test/existing'], framingRestored: true } },
+  ] };
+  let generationUploadCount = 0;
+  const uploadGeneration = async (blob, filename, category) => {
+    generationUploadCount++;
+    assert.equal(category, 'generations');
+    assert.deepEqual(Buffer.from(await blob.arrayBuffer()), inlineBytes);
+    return `https://assets.test/${filename}`;
+  };
+  const compactGenerationProject = await persistRuntimeLayerAssets(generationSnapshot, uploadGeneration);
+  assert.equal(generationUploadCount, 1, 'Duplicate result and metadata bytes upload once');
+  assert.equal(compactGenerationProject.generations[0].resultUrl, compactGenerationProject.generations[0].metadata.resultUrls[0]);
+  assert.equal(generationSnapshot.generations[0].resultUrl, inline, 'Do not mutate live generation or its metadata');
+  assert.ok(JSON.stringify(compactGenerationProject).length < 2048, 'Images must not be duplicated inside project JSON');
+  assert.deepEqual(await persistRuntimeLayerAssets(generationSnapshot, uploadGeneration), compactGenerationProject);
+  assert.equal(generationUploadCount, 1, 'A repeated snapshot reuses the verified project-scoped SHA upload');
+  await persistRuntimeLayerAssets({ ...generationSnapshot, id: 'another-owned-project' }, uploadGeneration);
+  assert.equal(generationUploadCount, 2, 'Asset cache must not cross project ownership');
+  const failedGenerationProject = { ...generationSnapshot, id: 'failed-generation-assets' };
+  await assert.rejects(persistRuntimeLayerAssets(failedGenerationProject, async () => { throw Error('generation upload failed'); }), /generation upload failed/);
+  await assert.rejects(persistRuntimeLayerAssets(failedGenerationProject, async () => inline), /尚未持久化/);
+  await persistRuntimeLayerAssets(failedGenerationProject, uploadGeneration);
   const apiSource = await readFile(new URL('../src/services/workspaceApiClient.ts', import.meta.url), 'utf8');
   assert.match(apiSource, /async function saveProjectDirect[\s\S]*?await persistRuntimeLayerAssets[\s\S]*?executeProjectCommand/,
     'both saveProject and updateLatestProject must persist runtime assets before document CAS');

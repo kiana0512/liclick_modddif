@@ -438,8 +438,8 @@ export async function moveProject(
 }
 
 async function saveProjectDirect(project: Project) {
-  project = await persistRuntimeLayerAssets(project, async (blob, filename) =>
-    (await saveBlobAsset({ projectId: project.id, category: 'layers', blob, filename })).asset.url,
+  project = await persistRuntimeLayerAssets(project, async (blob, filename, category = 'layers') =>
+    (await saveBlobAsset({ projectId: project.id, category, blob, filename })).asset.url,
   );
   if (isCloudBuild) {
     const document = {
