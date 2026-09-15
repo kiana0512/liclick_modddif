@@ -5,7 +5,7 @@ import type { Layer } from './layer';
 import type { DisplayMode, ProjectionMode, SceneObject } from './model';
 import type { BakedTexture } from '@/engine/bake/uvBakeTypes';
 
-export type WorkspaceMode = 'none' | 'file-system-access' | 'download-fallback' | 'local-server';
+export type WorkspaceMode = 'none' | 'file-system-access' | 'download-fallback' | 'local-server' | 'cloud-server';
 
 export type AssetManifest = {
   models: string[];

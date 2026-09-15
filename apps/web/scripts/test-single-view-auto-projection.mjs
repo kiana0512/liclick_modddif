@@ -10,6 +10,7 @@ const compile = (source) => ts.transpileModule(source, {
 const policy = {};
 new Function('exports', compile(await read('engine/generation/singleViewAutoProjection.ts')))(policy);
 new Function('exports', compile(await read('engine/generation/textureProjectionPolicy.ts')))(policy);
+new Function('exports', compile(await read('services/isServerWorkspace.ts')))(policy);
 const base = { id: 'g1', mode: 'single', status: 'succeeded', resultUrl: 'data:image/png;base64,result',
   captureId: 'capture', metadata: { projectId: 'p', workflow: 'texture-map' } };
 assert(policy.needsSingleViewAutoProjection(base, 'p'));

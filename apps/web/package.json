@@ -4,6 +4,7 @@
   "version": "0.1.3",
   "type": "module",
   "scripts": {
+    "test:generation-server-persistence": "node scripts/test-generation-server-persistence.mjs",
     "test:workspace-asset-upload-queue": "node scripts/test-workspace-asset-upload-queue.mjs",
     "test:incremental-uv": "node scripts/test-incremental-uv.mjs",
     "test:gpt25-repaint": "node scripts/test-gpt25-repaint.mjs",

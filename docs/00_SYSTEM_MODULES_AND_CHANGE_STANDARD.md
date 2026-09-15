@@ -1,5 +1,7 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
+2026-09-15 M12（协作 M04/M08）：`GENERATION-SERVER-PERSISTENCE/1.0.0` 修复生成面板只识别 local-server、跳过 cloud-server 原始选区上传和关键保存的问题。统一识别两种服务端项目，覆盖生成图片、四平面 Capture、参考图、关键状态保存和投影结果保存；关键保存保留服务器返回的 workspaceMode，不把云端项目改写成 local-server。作者 mask、冻结相机、normal/depth、保存成功后才付费提交、取消和 Command/CAS/ownership 门禁保持；GPU/CPU/Worker/shader、投影/UV/export 像素与分辨率不变。兼容已有云端枚举，无数据库/资产迁移；验证与回滚见 [云端重绘保存修复](changes/CHG-20260915-GENERATION-CLOUD-PERSISTENCE.md)。
+
 2026-09-15 M14/M12（协作 M04/M08）：`PROJECT-ASSET-LOOKUP/1.0.0` 使资源上传目录校验只查询 slug，保留 user/project/deleted_at 条件，不读取 document_json。`WORKSPACE-ASSET-UPLOAD-QUEUE/1.0.0` 在浏览器共用资源入口限制最多 3 个活动上传，生成与自动保存、不同项目共用 FIFO；保留 Blob/JSON/直传/代理和原错误、重试规则。图片字节、GPU/CPU/Worker/shader、法线/蒙版、投影/UV/export、Command/CAS/ownership 均不变，不调数据库内存、不迁移历史资产。验证及回滚见 [上传数据库峰值修复](changes/CHG-20260915-ASSET-UPLOAD-DB-PRESSURE.md)。
 
 2026-09-15 M04（协作 M08/M12/M14）：`REPAINT-COLOR-REFERENCE-UPLOAD/1.0.0` 按维护者授权为 GPT 局部重绘结合参考图加入原尺寸 RGB 自适应 WebP 压缩；只在无损预算耗尽后启用。法线/蒙版仍走原像素路径，尺寸和 alpha 逐字节验证，完整上传 JSON 严格小于 4MB，缓存策略隔离。原 Capture、回贴/UV/QA、输出分辨率、Command/CAS/ownership、持久化与导出不变，无 Schema 迁移；不可压缩 alpha 明确阻断。构建与新旧上传、GPT 裁切/参数/上传重试回归通过，未付费生图。部署和回滚详见 [变更卡](changes/CHG-20260915-REPAINT-COLOR-UPLOAD-BUDGET.md)。
@@ -46,7 +48,7 @@
 
 2026-09-15 M03：ALG-VIEW-INPUT-001/1.3.2 在鼠标接触前即让 R3F 悬停遵守 Alt 所有权；保留普通 hover 和已锁定拖动。旧实现拾取回归失败、新实现通过，用户实际首帧延迟需继续录制。无像素/持久化迁移，见 [Alt 悬停变更卡](changes/CHG-20260915-ALT-BRUSH-HOVER.md)。
 
-> 文档版本：`2.20.138`
+> 文档版本：`2.20.139`
 
 2026-09-15 UI-06 → M03：`ALG-VIEW-SELECT-001/1.0.5` 将常驻线框预热绑定到 renderer/模型生命周期，透视/正交相机替换不重新编译或释放同一辅助材质，避免旧编译完成后释放当前材质。16 次相机替换旧实现启动 17 次编译，新实现一次；71 次显隐及卸载清理保持。GPU 线框/CPU 几何/Worker/shader、捕获/UV/重绘/导出、分辨率和 QA、持久化/Schema 均不变，无迁移。其他工具切换仍有长帧，不宣称全操作无卡顿，验证和回滚见 [线框相机生命周期变更卡](changes/CHG-20260915-WIREFRAME-CAMERA-LIFETIME.md)。
 

@@ -1,4 +1,5 @@
 import { sameGenerationRecovery } from '@/services/generationRecoveryComparison';
+import { isServerWorkspace } from '@/services/isServerWorkspace';
 import { buildMultiviewPrompt } from '../../services/multiviewReferencePrompt';
 import { usesCaptureMaskTextureProjection, preservesGeneratedSourceAlpha, textureProjectionIgnoresSourceAlpha } from '@/engine/generation/textureProjectionPolicy';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
@@ -4726,7 +4727,7 @@ export function GeneratePanel({
       .projects.find((project) => project.id === targetProjectId);
     if (
       !targetProject ||
-      targetProject.workspaceMode !== 'local-server' ||
+      !isServerWorkspace(targetProject.workspaceMode) ||
       (isWorkspaceAssetUrl(url) &&
         (!isCloudBuild ||
           !isLegacyWorkspaceAssetUrl(url) ||
@@ -4796,7 +4797,7 @@ export function GeneratePanel({
     const targetProject = useProjectStore
       .getState()
       .projects.find((project) => project.id === targetProjectId);
-    if (!targetProject || targetProject.workspaceMode !== 'local-server') return captures;
+    if (!targetProject || !isServerWorkspace(targetProject.workspaceMode)) return captures;
     let changed = false;
     const persistedCaptures = await Promise.all(
       captures.map(async (capture) => {
@@ -4855,7 +4856,7 @@ export function GeneratePanel({
     const targetProject = useProjectStore
       .getState()
       .projects.find((project) => project.id === targetProjectId);
-    if (!targetProject || targetProject.workspaceMode !== 'local-server') {
+    if (!targetProject || !isServerWorkspace(targetProject.workspaceMode)) {
       return referencesToPersist;
     }
     let changed = false;
@@ -4890,7 +4891,7 @@ export function GeneratePanel({
     if (!targetProjectId) return;
     const projectState = useProjectStore.getState();
     const project = projectState.projects.find((item) => item.id === targetProjectId);
-    if (!project || project.workspaceMode !== 'local-server') return;
+    if (!project || !isServerWorkspace(project.workspaceMode)) return;
     const isTargetProjectActive = projectState.currentProjectId === targetProjectId;
     // Captures and references do not depend on one another. Persisting them in
     // series charged both asset walks to the button-2 critical path and could
@@ -4940,7 +4941,7 @@ export function GeneratePanel({
         settings: project.settings,
         updatedAt: new Date().toISOString(),
         dirty: false,
-        workspaceMode: 'local-server' as const,
+        workspaceMode: latest.workspaceMode,
       }),
       5,
     );
@@ -4966,7 +4967,7 @@ export function GeneratePanel({
       sameIds(latestProject.references, savedProjectSnapshot.references),
     );
     updateProjectById(targetProjectId, {
-      workspaceMode: 'local-server',
+      workspaceMode: savedProjectSnapshot.workspaceMode,
       workspaceName: result.slug,
       lastSavedAt: result.project.lastSavedAt,
       dirty: !savedLatestSnapshot,
@@ -5103,7 +5104,7 @@ export function GeneratePanel({
       targetProjectId,
     } = prepared;
     let persistedGenerationCapture = generationCapture;
-    if (currentProject?.workspaceMode === 'local-server') {
+    if (currentProject && isServerWorkspace(currentProject.workspaceMode)) {
       const currentCaptures =
         useProjectStore.getState().projects.find((project) => project.id === currentProject.id)
           ?.captures ?? currentProject.captures;
