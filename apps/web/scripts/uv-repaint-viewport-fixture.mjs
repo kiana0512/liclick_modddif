@@ -129,6 +129,10 @@ export async function setup() {
   await tick();
   await tick();
   window.uvFixture = {
+    setSurfaceTilt(angle) {
+      group.children.find(child => child.isMesh).rotation.y = angle;
+      group.updateMatrixWorld(true);
+    },
     async nextLayer(generationId = 'fixture-gen-second', color = '#22bb44') {
       const frozen = useSceneStore.getState().localRepaintProjectionSource;
       useSceneStore.getState().setPaintTool('none');

@@ -6,6 +6,7 @@ import { createServer } from 'vite';
 import ts from 'typescript';
 import * as THREE from 'three';
 import './test-inpaint-prewarm-ownership.mjs';
+import './test-view-aligned-brush.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const server = await createServer({
