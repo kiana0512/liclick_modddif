@@ -186,12 +186,12 @@ try {
   const { useSceneStore } = await server.ssrLoadModule('/src/stores/sceneStore.ts');
   const initialBrushState = useSceneStore.getState();
   assert.equal(initialBrushState.paintMaskSettings.brushSize, 45);
-  assert.equal(initialBrushState.localRepaintBrushSettings.brushSize, 15);
+  assert.equal(initialBrushState.localRepaintBrushSettings.brushSize, 30);
   assert.equal(initialBrushState.paintToolSettings.brushSize, 32);
   assert.equal(initialBrushState.paintToolSettings.eraserSize, 42);
   initialBrushState.setPaintMaskSettings({ brushSize: 20 });
   assert.equal(useSceneStore.getState().paintMaskSettings.brushSize, 20);
-  assert.equal(useSceneStore.getState().localRepaintBrushSettings.brushSize, 15);
+  assert.equal(useSceneStore.getState().localRepaintBrushSettings.brushSize, 30);
   initialBrushState.setPaintMaskSettings({ brushSize: 45 });
   const uvRow = useLayerStore.getState().addEmptyLayer({ objectId: 'selection-model' });
   const projectionRow = { ...uvRow, id: 'hidden-projection', type: 'projected', visible: false };
