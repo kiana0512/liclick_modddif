@@ -1,6 +1,17 @@
 import ts from 'typescript';
 
-// SHADER-TEMPLATE-FORMAT/1.4.0: the bundled Three registry identifies GLSL
+function compactStaticGlsl(source, skipFirstLine = false) {
+  if (/\/\/|\/\*|\\/.test(source)) return source;
+  return source.split(/(\r?\n)/).map((line, lineIndex) => (skipFirstLine && lineIndex === 0) || line.startsWith('#') ? line :
+    line.replace(/[\t ]+/g, (gap, index, text) => {
+      if (index === 0 || index + gap.length === text.length) return gap;
+      const left = text[index - 1], right = text[index + gap.length];
+      return /[\w.]/.test(left) && /[\w.]/.test(right) ||
+        /[+\-*/<>=!&|^%]/.test(left) && /[+\-*/<>=!&|^%]/.test(right) ? ' ' : '';
+    })).join('');
+}
+
+// SHADER-TEMPLATE-FORMAT/1.4.1: the bundled Three registry identifies GLSL
 // string literals explicitly. Never transform other vendor or application text.
 export function compactThreeShaderChunks(source) {
   const ast = ts.createSourceFile('three.js', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
@@ -31,19 +42,9 @@ export function compactThreeShaderChunks(source) {
     }
     const before = literal.text;
     let after = before.replace(/(\r?\n)[\t ]+/g, '$1');
-    // Keep every physical newline and directive. Comments/continuations are
-    // conservative: only indentation is changed in these ambiguous strings.
-    if (!/\/\/|\/\*|\\/.test(after)) {
-      after = after.split(/(\r?\n)/).map(line => line.startsWith('#') ? line :
-        line.replace(/[\t ]+/g, (gap, index, text) => {
-          if (index === 0 || index + gap.length === text.length) return gap;
-          const left = text[index - 1], right = text[index + gap.length];
-          // Preserve word/numeric separators and neighboring operators, so
-          // a + +b cannot become a++b and 1 .0 cannot become 1.0.
-          return /[\w.]/.test(left) && /[\w.]/.test(right) ||
-            /[+\-*/<>=!&|^%]/.test(left) && /[+\-*/<>=!&|^%]/.test(right) ? ' ' : '';
-        })).join('');
-    }
+    // Keep every physical newline and directive; ambiguous comments and
+    // continuations prevent horizontal formatting of the entire string.
+    after = compactStaticGlsl(after);
     if (after !== before) edits.push({ start: literal.getStart(ast), end: literal.end, after: JSON.stringify(after) });
   }
   if (declarations.filter(node => names.has(node.name.getText(ast))).length !== names.size) {
@@ -76,6 +77,18 @@ export function compactShaderTemplateIndentation(source) {
       if (node.kind === ts.SyntaxKind.NoSubstitutionTemplateLiteral &&
           !before.includes('/*') && !before.includes('\\')) {
         after = after.replace(/(\r?\n)\/\/[^\r\n]*/g, '$1');
+      }
+      // Format GLSL template pieces only inside a recognizable shader. Keep
+      // whitespace at each interpolation boundary and the unknown first-line
+      // preprocessor/comment context after an expression verbatim.
+      let owner = node;
+      while (owner.parent && !ts.isTemplateExpression(owner) && !ts.isNoSubstitutionTemplateLiteral(owner)) owner = owner.parent;
+      if (/\b(?:void\s+main|gl_Position|gl_FragColor|uniform\s+\w+)\b/.test(owner.getText(ast))) {
+        const head = node.kind === ts.SyntaxKind.TemplateHead;
+        const middle = node.kind === ts.SyntaxKind.TemplateMiddle;
+        const suffixLength = head || middle ? 2 : 1;
+        const body = after.slice(1, -suffixLength);
+        after = after.slice(0, 1) + compactStaticGlsl(body, !head && node.kind !== ts.SyntaxKind.NoSubstitutionTemplateLiteral) + after.slice(-suffixLength);
       }
       if (before !== after) edits.push({ start, end, after });
     }

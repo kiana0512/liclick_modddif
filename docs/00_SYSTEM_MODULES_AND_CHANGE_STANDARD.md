@@ -28,7 +28,17 @@
 
 2026-09-15 M04/UI-05，协作 M03/M07：`GEN-CANCEL-CLASSIFICATION/1` 不再把所有 AbortError 或包含“已取消”的内部错误当成用户意图；多视图入口检查自己的取消 signal，意外中断保留错误提示和 toast，错误/警告不受精简进度文案过滤。`ALG-CAP-007/1.1.1` 固定方向且不驱动视口动画的批次相机已独立冻结，因此不再因屏幕相机微小变化停止下一组；交互取景/无固定方向仍检查相机变更，主动取消仍有效。分组 2+4+4 / 2+4+4+4、前组 UV 呈现屏障、原分辨率和 GPU/CPU/Worker/shader 像素算法、持久化与导出不变；不重新投影、不自动重提付费请求，不修改历史成功图片。无需数据迁移，回滚恢复取消分类和实时相机比较分支即可。单元覆盖首组成功后中断、前六张成功后第三组中断、固定相机移动和显式取消；实际付费全流程与用户本次根因仍待控制台证据核实。
 
-> 文档版本：`2.20.110`
+> 文档版本：`2.20.114`
+
+2026-09-15 M04，协作 M03/M08/M12：`GPT-CONTENT-FRAMING/1.0.1` / `GEN-POLL-CLASSIFICATION/1.0.0` / `SINGLE-VIEW-AUTO-PROJECTION/1.2.0` 修复原生输出网格取整被误判为断网的问题；保留全部原生像素、整数平移补透明，不重提付费任务。显式预期回贴的成功多视图通过既有事务恢复；用户本批十视图全部 succeeded 且各自提交图层存在，Saved。GPU/CPU/Worker/shader、QA、投影/UV、Command/CAS/ownership 和导出保持，无 Schema 迁移；详见 [十视图恢复变更卡](changes/CHG-20260915-GENERATION-FRAMING-RECOVERY.md)。
+
+2026-09-15 M12，协作 M01/M14：`GENERATION-ASSET-REFERENCE/1.0.0` 在共同保存入口上传原字节生成 Blob 到所属工程 verified 资产并替换重复内联地址；工程隔离 SHA 小键有界缓存，失败禁止 CAS。实际工程约 59 MB 降至约 3.8 MB，主 resultUrl 无 data URI，历史和十视图提交记录保留。不改变图片/分辨率/QA、GPU/CPU/Worker/shader 或导出，下一次成功保存渐进归一化；详见 [生成资产引用变更卡](changes/CHG-20260915-GENERATION-ASSET-REFERENCE.md)。
+
+2026-09-15 M15：`SHADER-TEMPLATE-FORMAT/1.4.1` 在既有应用 shader 白名单压缩静态模板片段空白，保留插值分隔、未知首行上下文、指令、注释保护、换行及非 shader 字符串；独立 GLSL/运行时/AST 对照通过。原 Three 141 字符串保持；预算不提高，最终已提交 SHA 须正式 prepush。详见 [shader 构建变更卡](changes/CHG-20260915-RELEASE-SHADER-WHITESPACE.md)。
+
+2026-09-15 M06，协作 M07/M15：`UV-QUALITY-SCHEDULING/1.0.0` / `UV-DEVICE-CALIBRATION/1.1.1` 将纯评分表准备、设备校准输入与完整字节 QA 分段让出主线程；共享只读 Float32 表，GPU 纹理所有权独立。旧上下文校验不得批准新上下文，所有消费者等待校验完成。4K 独立实际 Resident 路径未缓存中层切换 264.3ms、最大帧间隔 33.3ms、长任务 0；新组合回读/修正/上传成本保留。算法像素、分辨率、QA、GPU/CPU/Worker/shader、持久化和导出不变，无迁移，详见 [主线程调度变更卡](changes/CHG-20260915-UV-QUALITY-MAINTHREAD.md)。
+
+同卡 `UV-READBACK-SCHEDULING/1.1.0` 将同步驱动读取限制为 1 MiB，独立上下文八条并行/PBO 最多 8 MiB，可见上下文仍保留绘制边界；失败排空在途工作再释放。真实 4K 67,108,864 RGBA 字节零差异。实际工程一轮 S7 已结束，状态/覆盖/材质重建错误均零，但 P95 33.4ms、峰值 283.5ms，卡顿尚未完全消除；用户要求交还手测，停止进一步自动压测，4517 最新构建已加载。
 
 2026-09-15 M07，协作 M06/M08/M09：`UV-DISPLAY-BUFFER/1.4.2` / `UV-UNDERLAY-DECODE/1.0.1` 将连续显隐中已过期的底图合成信号传到 Worker，并中止旧 fetch；相同签名/缓存、最新状态接续、完整像素与发布门禁保持。实际 Worker 队列与独立 4K 阻塞旧请求对照通过，不宣称首次组合实时。GPU/CPU/Worker/shader、QA、保存/CAS 与导出不变，无迁移。详见 [过期底图取消变更卡](changes/CHG-20260915-VISIBILITY-UNDERLAY-CANCEL.md)。
 

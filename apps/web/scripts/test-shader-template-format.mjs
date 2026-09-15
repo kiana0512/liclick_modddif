@@ -21,7 +21,9 @@ const fixture = [
 ].join('\n');
 const load = code => import('data:text/javascript;base64,' + Buffer.from(code).toString('base64'));
 const before = await load(fixture), after = await load(compact(fixture));
-assert.equal(after.shader, before.shader.replace(/(\r?\n)[\t ]+/g, '$1'));
+assert.deepEqual(glslTokens(after.shader), glslTokens(before.shader));
+assert.deepEqual(directiveLines(after.shader), directiveLines(before.shader));
+assert.equal(after.shader.split('\n').length, before.shader.split('\n').length);
 assert.ok(after.shader.includes('float value;'));
 assert.ok(after.shader.includes('// Preserve comment newline\nfloat'));
 assert.ok(compact(fixture).includes('const ordinary = "  UI text"'));
@@ -56,7 +58,8 @@ function tokens(code, scriptKind = ts.ScriptKind.TS) {
             !raw.includes('/*') && !raw.includes('\\')) {
           expected = expected.replace(/(\r?\n)\/\/[^\r\n]*/g, '$1');
         }
-        text = text.slice(0, text.length - raw.length) + expected;
+        const normalized = JSON.stringify({ tokens: glslTokens(expected), directives: directiveLines(expected), lines: expected.split('\n').length });
+        text = text.slice(0, text.length - raw.length) + normalized;
       }
       out.push([node.kind, text]);
     }
@@ -137,8 +140,8 @@ stdout.write(`Shader formatting preserves actual module tokens and GLSL line bou
 
 // Independently tokenize GLSL, including compound operators and numeric
 // literals. Compare the actual pinned vendor module, not a replacement kernel.
-const glslTokens = text => text.match(/\/\*[\s\S]*?\*\/|\/\/[^\r\n]*|[A-Za-z_]\w*|0[xX][\dA-Fa-f]+[uU]?|(?:\d+\.\d*|\.\d+|\d+)(?:[eE][+-]?\d+)?[fFuU]?|<<=|>>=|\+\+|--|&&|\|\||\^\^|<<|>>|<=|>=|==|!=|\+=|-=|\*=|\/=|%=|&=|\|=|\^=|[^\s]/g) ?? [];
-const directiveLines = text => text.split(/\r?\n/).filter(line => line.trimStart().startsWith('#')).map(line => line.trimStart());
+function glslTokens(text) { return text.match(/\/\*[\s\S]*?\*\/|\/\/[^\r\n]*|[A-Za-z_]\w*|0[xX][\dA-Fa-f]+[uU]?|(?:\d+\.\d*|\.\d+|\d+)(?:[eE][+-]?\d+)?[fFuU]?|<<=|>>=|\+\+|--|&&|\|\||\^\^|<<|>>|<=|>=|==|!=|\+=|-=|\*=|\/=|%=|&=|\|=|\^=|[^\s]/g) ?? []; }
+function directiveLines(text) { return text.split(/\r?\n/).filter(line => line.trimStart().startsWith('#')).map(line => line.trimStart()); }
 const threeFile = new URL('../node_modules/three/build/three.module.js', import.meta.url);
 const threeSource = fs.readFileSync(threeFile, 'utf8');
 const threeResult = compactThreeShaderChunks(threeSource);
@@ -178,4 +181,6 @@ assert.ok(formattedFixture.includes('const ui = "  UI text"'));
 assert.deepEqual(vendorLeaves(formattedFixture).filter(node => node.value !== undefined).map(node => glslTokens(node.value)), vendorLeaves(vendorFixture).filter(node => node.value !== undefined).map(node => glslTokens(node.value)));
 assert.throws(() => compactThreeShaderChunks('const ShaderChunk = { shader: 1 };'), /audit/);
 assert.throws(() => compactThreeShaderChunks('const shader = compute(); const ShaderChunk = { shader: shader };'), /audit/);
+const commentFixture = 'const shader = ' + JSON.stringify('// standalone\n#define P 1\n/* block\n// inside block\n*/\nfloat a = 1.;\n') + '; const ShaderChunk = { shader: shader };';
+assert.ok(compactThreeShaderChunks(commentFixture).includes('standalone'), 'Block-comment ambiguity must disable comment removal');
 stdout.write(`Three registered shaders retain all GLSL tokens, directives and line counts: ${changedShaders} strings; ${Buffer.byteLength(threeSource) - Buffer.byteLength(threeResult)} source bytes removed.\n`);
