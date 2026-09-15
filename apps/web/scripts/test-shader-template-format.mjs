@@ -132,6 +132,26 @@ for (const relativeFile of additionalShaderFiles) {
   verifyTemplate(ast);
 }
 assert.ok(additionalSaved >= 1500, `Expected bundle headroom savings, got ${additionalSaved}`);
+// GLSL token equivalence alone does not verify JavaScript shader assembly.
+// Exercise the real repaint vertex splice before and after the build transform.
+const repaintSource = fs.readFileSync(new URL('../src/engine/localRepaint/uvRepaint.ts', import.meta.url), 'utf8');
+function assembledRepaintVertex(code) {
+  const ast = ts.createSourceFile('uvRepaint.ts', code, ts.ScriptTarget.Latest, true);
+  let vertex, assembly;
+  const visit = node => {
+    if (ts.isVariableDeclaration(node) && node.name.getText(ast) === 'vertex' && node.initializer && ts.isNoSubstitutionTemplateLiteral(node.initializer)) vertex = node.initializer.getText(ast);
+    if (ts.isBinaryExpression(node) && node.left.getText(ast) === 'this.brush.vertexShader' && node.right.getText(ast).includes('paintSourceVertex')) assembly = node.right.getText(ast);
+    ts.forEachChild(node, visit);
+  };
+  visit(ast);
+  assert.ok(vertex && assembly, 'Exercise the production repaint shader assembly');
+  return new Function('material', `const vertex = ${vertex}; return (${assembly});`)({vertexShader: 'void main(){gl_Position=vec4(position,1.0);}'});
+}
+for (const code of [repaintSource, compact(repaintSource)]) {
+  const shader = assembledRepaintVertex(code);
+  assert.match(shader, /void\s+main\s*\(\)\s*\{\s*paintSourceVertex\s*\(/, 'The UV paint entry must invoke the frozen source projection after production formatting');
+  assert.equal((shader.match(/void\s+main\s*\(/g) ?? []).length, 1);
+}
 assert.equal(
   plugin.transform(compositorSource, new URL('../src/engine/projection/ProjectedLayerPreviewCompositor.ts', import.meta.url).pathname),
   undefined,

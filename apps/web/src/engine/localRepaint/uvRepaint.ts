@@ -5,7 +5,7 @@ import {
   type UvRepaintPatch,
 } from './uvRepaintState';
 
-// ALG-LR-UV-PAINT v1.1.4. Shared UV pixels intentionally share color/alpha.
+// ALG-LR-UV-PAINT v1.1.5. Shared UV pixels intentionally share color/alpha.
 type Tile = { bounds: Rect; surfaces: Array<{ mesh: THREE.Mesh; box: THREE.Box3 }> };
 type Stroke = {
   before?: Map<number, Promise<Uint8Array<ArrayBuffer>>>;
@@ -446,7 +446,7 @@ export class UvRepaint {
       this.brush.defines = { ...material.defines };
       this.brush.vertexShader =
         material.vertexShader.replace(/void main\(\)\s*\{/, 'void paintSourceVertex() {') +
-        vertex.replace('void main() {', 'void main() { paintSourceVertex();');
+        vertex.replace(/void main\(\)\s*\{/, 'void main() { paintSourceVertex();');
       this.brush.fragmentShader =
         material.fragmentShader.replace(/void main\(\)\s*\{/, 'void paintSourceFragment() {') +
         paintFragment +
