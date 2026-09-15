@@ -4,6 +4,7 @@ import type {BakeProjectedLayerResult,UvBakeResolution} from './uvBakeTypes';
 import {useAuthStore} from '@/stores/authStore';
 import {getDebugUvBakeStatus} from './uvBakeDebugControls';
 import {getMergeUvPostprocessOptions} from '@/engine/layers/mergeUvComposition';
+import {yieldToBrowserTask} from '@/utils/browserScheduling';
 const CACHE='li3d-verified-merge-preparation-v1';
 const hash=async(bytes:Uint8Array<ArrayBuffer>)=>Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',bytes)),b=>b.toString(16).padStart(2,'0')).join('');
 const textBytes=(value:unknown)=>new TextEncoder().encode(JSON.stringify(value));
@@ -94,11 +95,24 @@ export async function writePersistentMerge(key:string|undefined,result:BakeProje
   if(!key || !result.imageData) return;
   try {
     const metadata=textBytes({report:result.report,bakedTexture:result.bakedTexture});
+    const chunk=1048576;
     const bytes=new Uint8Array(4+metadata.length+result.imageData.data.length);
-    new DataView(bytes.buffer).setUint32(0,metadata.length,true);bytes.set(metadata,4);bytes.set(result.imageData.data,4+metadata.length);
+    new DataView(bytes.buffer).setUint32(0,metadata.length,true);bytes.set(metadata,4);
+    // UV-CACHE-WRITE/1.1.0: completed bake pixels are immutable. Keep a private
+    // verified snapshot, but bound each main-thread copy and response chunk.
+    for(let offset=0;offset<result.imageData.data.length;offset+=chunk) {
+      bytes.set(result.imageData.data.subarray(offset,offset+chunk),4+metadata.length+offset);
+      await yieldToBrowserTask();
+    }
     const digest=await hash(bytes);
     const cache=await caches.open(CACHE);
-    await cache.put(requestFor(key),new Response(bytes,{headers:{'content-type':'application/octet-stream','x-li3d-sha256':digest}}));
+    let offset=0;
+    const body=new ReadableStream<Uint8Array>({pull(controller){
+      controller.enqueue(bytes.subarray(offset,offset+chunk));
+      offset+=chunk;
+      if(offset>=bytes.length) controller.close();
+    }});
+    await cache.put(requestFor(key),new Response(body,{headers:{'content-type':'application/octet-stream','x-li3d-sha256':digest}}));
     const keys=await cache.keys();
     for(const old of keys.slice(0,Math.max(0,keys.length-2))) await cache.delete(old);
   } catch { /* Optional derived cache: authoritative project assets are unchanged. */ }
