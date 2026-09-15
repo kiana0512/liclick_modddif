@@ -1,0 +1,26 @@
+# Alt 视角导航
+
+- 日期：2026-09-15
+- 主模块：UI-06 → M03，协作 M08
+- 算法：ALG-VIEW-INPUT-001 v1.3.0
+- 状态：本地修改，尚未推送或部署。
+
+## 行为
+
+Alt＋左键拖动旋转，Alt＋中键拖动平移，Alt＋右键拖动缩放。右键向右/下拖动拉远，向左/上拖动拉近；保留原滚轮缩放。透视相机改变目标距离，正交相机改变 zoom，沿用原上下限及预览裁剪修复。
+
+按下时确定导航归属，途中松开 Alt 不切换到绘制或选择；释放、取消、失去 pointer capture 和卸载时结束。普通左键绘制/选择与模型上的右键擦除保持；不按 Alt 的中键或背景右键不再移动相机。
+
+表面绘制在 Alt 导航开始时退出，不落笔；R3F 跳过导航拖动及点击尾事件，抬键后恢复悬停，新笔画可覆盖旧导航归属。原生 TransformControls 在 Alt 导航时暂时禁用并恢复，已有对象拖动不被中途抢占。
+
+## 验证
+
+- `test-viewport-wheel-events.mjs`：实际相机与 R3F 事件，覆盖三种 Alt 操作、普通按键、透视/正交缩放界限、途中释放 Alt、取消、失去捕获、清理、悬停恢复、导航后压感笔绘制，以及生产变换工具事件回调恢复。
+- `run-uv-repaint-browser.mjs --viewport --dpr=2`：真实 Edge 中三种导航均改变相机且不产生笔迹；原有斜面光标、4K 回贴/擦除/撤销、PNG/FBX 与重新打开检查通过。
+- TypeScript 与相关文件 ESLint 通过。
+
+## 兼容与回滚
+
+不修改 GPU/CPU/Worker/shader 绘制像素、QA、完整分辨率、UV/export、Project Command/CAS/ownership 或 verified assets，无 Schema/资产迁移。
+
+回滚恢复 BlenderOrbitControls 原按键映射，去除绘制、R3F 和变换工具的 Alt 导航归属保护，同步恢复对应输入回归。历史工程和纹理资产无需处理。

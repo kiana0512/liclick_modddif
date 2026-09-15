@@ -15075,15 +15075,21 @@ function SurfacePaintOverlay() {
       }
       if (!enabled) return;
       cancelPendingHoverCursor();
+      // Alt navigation owns the contact even when it begins on the model.
+      // Return before picking/painting and let the native camera listener run.
+      if (event.altKey) {
+        cursorCircleRef.current?.setAttribute('visibility', 'hidden');
+        canvas.style.cursor = '';
+        return;
+      }
       const penEraserContact =
         event.pointerType === 'pen' &&
         (event.button === 2 || event.button === 5) &&
         event.pressure > 0;
       const strokeCanvasRect = canvas.getBoundingClientRect();
       const result = raycastModel(event, strokeCanvasRect);
-      // ALG-VIEW-INPUT-001 v1.2.0: an RMB drag that begins on paintable model
-      // geometry is the explicit erase gesture. An RMB drag that begins on
-      // the background is not consumed here and reaches orbit controls.
+      // Unmodified RMB on paintable geometry remains the erase gesture;
+      // Alt contacts have already been reserved for camera navigation above.
       const rightModelEraseContact =
         event.pointerType === 'mouse' && event.button === 2 && Boolean(result);
       const localRepaintEraseContact =
@@ -15100,8 +15106,8 @@ function SurfacePaintOverlay() {
       if (!isPaintButton) return;
 
       // In paint modes the model surface belongs exclusively to the brush.
-      // OrbitControls remains available only when the drag begins on the
-      // background. stopImmediatePropagation is necessary because both input
+      // Alt navigation has already returned above. stopImmediatePropagation
+      // is necessary because both input
       // systems have native listeners on this same canvas element.
       if (!result) return;
       setViewportPaintPointer(canvas, event.pointerId);
@@ -15303,7 +15309,7 @@ function SurfacePaintOverlay() {
       if (!isPaintingRef.current) gl.domElement.style.cursor = '';
     };
     const handleContextMenu = (event: MouseEvent) => {
-      // RMB is always viewport orbit, including while a paint tool is active.
+      // Both RMB erase and Alt+RMB dolly suppress the browser context menu.
       event.preventDefault();
     };
     canvas.addEventListener('pointermove', handlePointerMove, true);
