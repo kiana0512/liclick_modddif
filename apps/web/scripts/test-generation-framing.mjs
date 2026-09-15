@@ -61,7 +61,7 @@ scene.updateMatrixWorld(true);
 const box = new THREE.Box3().setFromObject(model);
 const center = box.getCenter(new THREE.Vector3());
 let checks = 0;
-for (const orthographic of [false, true]) {
+for (const orthographic of [false, true]) for (const fill of [0.92, 0.98]) {
   for (const direction of [new THREE.Vector3(0, 0, 1), new THREE.Vector3(1, 2, 3).normalize(),
     new THREE.Vector3(0, 1, 0), new THREE.Vector3(0, -1, 0)]) {
     for (const aspect of [0.5, 1, 2]) {
@@ -79,7 +79,7 @@ for (const orthographic of [false, true]) {
         let notifications = 0;
         viewport = { camera, scene, controls: { target: center.clone(), update: () => { notifications++; } } };
         const originalQuaternion = camera.quaternion.clone();
-        const snapshot = await exports.frameGenerationCapture('model', aspect);
+        const snapshot = await exports.frameGenerationCapture('model', aspect, undefined, undefined, undefined, true, fill);
         assert.equal(notifications, 2);
         assert(camera.near <= 0.01, 'capture fit must not raise the interactive near plane');
         assert(camera.far >= 10000, 'capture fit must not shrink the interactive far plane');
@@ -88,11 +88,11 @@ for (const orthographic of [false, true]) {
         const points = [];
         for (let i = 0; i < model.geometry.attributes.position.count; i++) {
           const projected = model.getVertexPosition(i, new THREE.Vector3()).applyMatrix4(model.matrixWorld).project(snapshot.camera);
-          assert(Math.abs(projected.x) <= 0.920001 && Math.abs(projected.y) <= 0.920001);
+          assert(Math.abs(projected.x) <= fill + 0.000001 && Math.abs(projected.y) <= fill + 0.000001);
           assert(projected.z >= -1 && projected.z <= 1);
           points.push(projected.x, projected.y);
         }
-        assert(Math.max(...points.map(Math.abs)) >= 0.919999, 'limiting silhouette must reach 92%');
+        assert(Math.max(...points.map(Math.abs)) >= fill - 0.000001, 'limiting silhouette must reach the requested fill');
         if (previousProjection) points.forEach((value, index) => assert(Math.abs(value - previousProjection[index]) < 1e-7));
         previousProjection = points;
         const frozenPosition = snapshot.camera.position.clone();
@@ -106,7 +106,16 @@ for (const orthographic of [false, true]) {
 const fallback = { camera: viewport.camera.clone(), target: center.clone() };
 const candidate = { camera: viewport.camera.clone(), target: center.clone() };
 assert.equal(await tight.verifyTightCapture(viewport, 'model', candidate, fallback, 1), candidate);
+maskPixels.data.set([255,255,255,255], (50 * 100 + 1) * 4);
+assert.equal(await tight.verifyTightCapture(viewport, 'model', candidate, fallback, 1, undefined, 0.005), candidate,
+  '1% square border is valid, not a reason to return to loose framing');
+assert.equal(await tight.verifyTightCapture(viewport, 'model', candidate, fallback, 1), fallback,
+  'Original non-GPT verification margin remains unchanged');
+maskPixels.data.fill(0);
+maskPixels.data.set([255,255,255,255], (50 * 100 + 50) * 4);
 maskPixels.data.set([255, 255, 255, 255], 0);
+assert.equal(await tight.verifyTightCapture(viewport, 'model', candidate, fallback, 1, undefined, 0.005), fallback,
+  'Square mode still rejects genuinely clipped border pixels');
 assert.equal(await tight.verifyTightCapture(viewport, 'model', candidate, fallback, 1), fallback, 'border pixel falls back');
 maskPixels.data.fill(0);
 assert.equal(await tight.verifyTightCapture(viewport, 'model', candidate, fallback, 1), fallback, 'empty mask falls back');

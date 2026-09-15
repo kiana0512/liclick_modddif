@@ -1173,14 +1173,16 @@ export function GeneratePanel({
       isTextureMapGeneration(displayedPreviewGeneration))
       ? previewCapture?.maskUrl
       : undefined;
-  const previewProcessingMode = displayedPreviewGeneration && !preservesGeneratedSourceAlpha(displayedPreviewGeneration)
-    ? isLocalRepaintGeneration(displayedPreviewGeneration)
-      ? 'generated-display'
-      : isTextureMapGeneration(displayedPreviewGeneration)
-        ? capturePreviewMaskUrl
-          ? 'capture-mask'
+  const previewProcessingMode = displayedPreviewGeneration
+    ? preservesGeneratedSourceAlpha(displayedPreviewGeneration)
+      ? 'source-alpha'
+      : isLocalRepaintGeneration(displayedPreviewGeneration)
+        ? 'generated-display'
+        : isTextureMapGeneration(displayedPreviewGeneration)
+          ? capturePreviewMaskUrl
+            ? 'capture-mask'
+            : undefined
           : undefined
-        : undefined
     : undefined;
   // A local-repaint result is a normal generated image, not the editor's
   // selection mask.  Keeping that mask in the preview cache key made an old
@@ -1214,7 +1216,7 @@ export function GeneratePanel({
     const previewPromise =
       previewProcessingMode === 'capture-mask'
         ? createCaptureMaskedPreview(sourceUrl, capturePreviewMaskUrl!, previewRequest)
-        : createGeneratedDisplayPreview(sourceUrl, previewProcessingDepthUrl, previewRequest).then(
+        : createGeneratedDisplayPreview(sourceUrl, previewProcessingDepthUrl, previewRequest, previewProcessingMode === 'source-alpha').then(
             (preview) => preview.fittedUrl,
           );
     void previewPromise
@@ -2412,7 +2414,8 @@ export function GeneratePanel({
     for (const view of views) {
       throwIfTexturePipelineCancelled(signal);
       if (!viewSnapshots.has(view.id)) viewSnapshots.set(view.id, options.cameraSnapshot ??
-        await frameGenerationCapture(captureObjectId, 1, view.viewDirection, view.viewUp, signal, false));
+        await frameGenerationCapture(captureObjectId, 1, view.viewDirection, view.viewUp, signal, false,
+          singleViewProvider === 'remote' && !usesGptTextureGeneration(view) ? 0.92 : 0.98));
     }
     return withStableClayTargetPresentation(captureObjectId, async () => {
       const captures: Partial<Record<string, Capture>> = {};
@@ -3109,7 +3112,7 @@ export function GeneratePanel({
     const shouldInspectExistingSingleViewTexture =
       !isMultiviewRequest && hasVisibleTextureLayerCandidate(objectId);
     const singleViewCameraSnapshot = !isMultiviewRequest
-      ? await frameGenerationCapture(objectId, 1, requestedViews[0]?.viewDirection, requestedViews[0]?.viewUp, signal)
+      ? await frameGenerationCapture(objectId, 1, requestedViews[0]?.viewDirection, requestedViews[0]?.viewUp, signal, true, usesRemoteSingleView ? 0.92 : 0.98)
       : undefined;
     let currentSingleViewEffectUrl: string | undefined;
     if (shouldInspectExistingSingleViewTexture) {
@@ -3136,7 +3139,7 @@ export function GeneratePanel({
       updateTexturePipelineProgress(20, '准备多视图快照 · 保存已有纹理');
       for (const view of requestedViews) {
         throwIfTexturePipelineCancelled(signal);
-        const snapshot = await frameGenerationCapture(objectId, 1, view.viewDirection, view.viewUp, signal, false);
+        const snapshot = await frameGenerationCapture(objectId, 1, view.viewDirection, view.viewUp, signal, false, 0.98);
         viewSnapshots.set(view.id, snapshot);
         const effect = await captureCurrentColorPreview({
           objectId, resolution: resolutionToSize[resolution], framing: 'fit-object',
@@ -3829,7 +3832,7 @@ export function GeneratePanel({
         startedAt: current?.startedAt ?? Date.now(),
         detail: '正在调整生成取景',
       }));
-      const captureCameraSnapshot = await frameGenerationCapture(objectId, captureAspect, undefined, undefined, requestAbortController.signal);
+      const captureCameraSnapshot = await frameGenerationCapture(objectId, captureAspect, undefined, undefined, requestAbortController.signal, true, isGptLocalRepaint ? 0.98 : 0.92);
       // Keep the previous completed repaint on its resident GPU path while the
       // next request prepares detached browser snapshots.
       useSceneStore.getState().setLocalRepaintGenerationPresentationActive(true);
@@ -5366,7 +5369,9 @@ export function GeneratePanel({
       ? 'texture_map'
       : 'liclick_generation';
     const downloaded = await downloadImageAsset(
-      previewResultUrl ?? displayedPreviewGeneration.resultUrl,
+      previewProcessingMode === 'source-alpha'
+        ? displayedPreviewGeneration.resultUrl
+        : previewResultUrl ?? displayedPreviewGeneration.resultUrl,
       `liclick_${kind}_${displayedPreviewGeneration.id}`,
     );
     if (!downloaded) return;

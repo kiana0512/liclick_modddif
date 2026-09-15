@@ -8,10 +8,10 @@ import { waitForBrowserPaint } from '@/utils/browserScheduling';
 
 type Fitted = { camera: THREE.PerspectiveCamera | THREE.OrthographicCamera; target: THREE.Vector3 };
 
-/** ALG-CAP-007/1.1.0: every submitted vertex constrains the camera, not empty AABB corners. */
+/** ALG-CAP-007/1.2.0: fit submitted vertices; GPT uses 98% square coverage. */
 export async function fitGeometryCapture(
   scene: THREE.Scene, objectId: string, fallback: Fitted, aspect: number,
-  signal?: AbortSignal,
+  signal?: AbortSignal, fillRatio = 0.92,
 ): Promise<Fitted> {
   signal?.throwIfAborted();
   const camera = fallback.camera.clone();
@@ -19,7 +19,8 @@ export async function fitGeometryCapture(
   const [right, up, back] = [0, 1, 2].map(axis =>
     new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, axis)) as [THREE.Vector3, THREE.Vector3, THREE.Vector3];
   const perspective = camera instanceof THREE.PerspectiveCamera;
-  const ty = perspective ? Math.tan(THREE.MathUtils.degToRad(camera.getEffectiveFOV()) / 2) * 0.92 : 0;
+  const fill = Math.min(0.98, Math.max(0.1, Number.isFinite(fillRatio) ? fillRatio : 0.92));
+  const ty = perspective ? Math.tan(THREE.MathUtils.degToRad(camera.getEffectiveFOV()) / 2) * fill : 0;
   const tx = ty * aspect;
   const meshes: THREE.Mesh[] = [];
   scene.updateMatrixWorld(true);
@@ -72,7 +73,7 @@ export async function fitGeometryCapture(
   if (camera instanceof THREE.PerspectiveCamera) {
     distance = Math.max(hiZ + extent * 0.01, (hiX - loX) / (2 * tx), (hiY - loY) / (2 * ty));
   } else {
-    const halfHeight = Math.max((hiY - loY) / 2, (hiX - loX) / (2 * aspect)) / 0.92;
+    const halfHeight = Math.max((hiY - loY) / 2, (hiX - loX) / (2 * aspect)) / fill;
     camera.top = halfHeight; camera.bottom = -halfHeight;
     camera.left = -halfHeight * aspect; camera.right = halfHeight * aspect;
     camera.zoom = 1;
@@ -87,7 +88,7 @@ export async function fitGeometryCapture(
 /** Additional raster check; never use this low-resolution image as a generation input. */
 export async function verifyTightCapture(
   viewport: ViewportRuntime, objectId: string, fitted: Fitted, fallback: Fitted,
-  aspect: number, signal?: AbortSignal,
+  aspect: number, signal?: AbortSignal, edgeMargin = 0.025,
 ): Promise<Fitted> {
   if (fitted === fallback) return fallback;
   let url: string | undefined;
@@ -105,8 +106,8 @@ export async function verifyTightCapture(
       const i = (y * pixels.width + x) * 4;
       if (pixels.data[i]! < 32 || pixels.data[i + 3]! < 32) continue;
       found = true;
-      if (x < pixels.width * 0.025 || x >= pixels.width * 0.975 ||
-        y < pixels.height * 0.025 || y >= pixels.height * 0.975) return fallback;
+      if (x < pixels.width * edgeMargin || x >= pixels.width * (1 - edgeMargin) ||
+        y < pixels.height * edgeMargin || y >= pixels.height * (1 - edgeMargin)) return fallback;
     }
     return found ? fitted : fallback;
   } catch {

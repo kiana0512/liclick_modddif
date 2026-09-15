@@ -1,5 +1,7 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
+2026-09-15 回退基线定向恢复：以 6dcdec1+c2edfae 为基础，M03（协作 M04/M08）ALG-CAP-007 v1.2.0 仅对 GPT 取景使用 98% 长边占比与固定 1:1，结合图/法线/作者 mask/depth 共用冻结相机；保留触边检查和保守回退。GPT-ALPHA-PREVIEW-CROP v1.0.0 仅裁透明结果预览、外扩 8px，原图/下载/回贴坐标不变。LOCAL-REPAINT-BRUSH-DEFAULT v1.1.0 默认 30，不包含 Alt 导航。保存、数据库、投影/UV/export、分辨率策略与资产不变，无迁移。详见 [定向恢复变更卡](changes/CHG-20260915-BASELINE-SQUARE-PREVIEW.md)。
+
 2026-09-15 UI-05 → M08（协作 M03/M04/M12）：`GPT-REPAINT-NORMAL` v1.0.0 将新 GPT 局部重绘默认输入改为结合图＋同视角几何法线图，独立通用修复提示词不再复用单视图材质参考模板。“使用材质参考图”小开关默认关闭，开启仅追加显式选中的第三图，不从历史或配对图自动替代。法线用冻结相机与结合图同尺寸捕获，排除其他物体/网格/背景及材质 normal/bump，正式引导不走 1K 世界法线预览；前两张图禁止自动有损压缩或缩图，超过原上传预算明确失败。正常 PNG/Worker 编码、作者 mask、depth、透明回图、投影/UV/GPU/CPU/shader/导出公式保持；法线随 Capture 持久化，付费提交前保存与取消门禁保留。Project 设置仅新增可选 `gptRepaintUseMaterialReference`，缺失按 false；历史任务不改写，无批量迁移。回滚恢复旧 GPT 输入构建器/模板/面板，忽略新设置并保留资产。未运行付费生图或部署；详见 [GPT 法线修复变更卡](changes/CHG-20260915-GPT-REPAINT-NORMAL.md)。
 
 2026-09-15 UI-06/UI-10 → M08（协作 M06/M07）：`VIEW-ALIGNED-BRUSH` v1.0.0 将笔刷圆环和屏幕笔迹由表面法线对齐改为当前相机对齐，斜面和硬边保持正圆；普通 UV 与旧回贴范围沿观察方向换算到命中面。GPU 可见性、羽化、深度、Worker、完整分辨率、QA、持久化和导出协议不变；只影响后续笔迹，无 Schema 或资产迁移。32 组真实函数及 Edge 斜面圆环、4K 曲面/遮挡、回贴擦除/撤销/PNG/FBX/重新打开检查通过。回滚恢复原切线范围；本次发布合并 master 的 UV-only 显示与上传优化，实际发布结果以部署记录为准。详见 [视角对齐笔刷变更卡](changes/CHG-20260915-VIEW-ALIGNED-BRUSH.md)。
@@ -8,7 +10,7 @@
 
 2026-09-14 UI-05 → M04（协作 M08）：`ALG-GEN-001/002` 提示词修订 v1.3.0。GPT 单视图、多视图贴图与 GPT 局部重绘共用用户确认的弱光影模板，仅待补全区域抑制强明暗、高光和反射，保留真实纹理及非常轻微的接触明暗，已贴纹理/几何/背景/透明区不变；补充要求仍追加。服务端识别新旧模板，不为新版附加整图光影约束。六视图参考生成/第二步去光、原 ModelView 重绘、模型参数、GPU/CPU/Worker/shader、UV/export 与持久化协议不变；只影响新构造请求，无 Schema 或数据迁移。回滚恢复模板与识别分支，保留历史。未运行付费生图，不承诺模型必然达到目标效果；详见 [弱光影提示词变更卡](changes/CHG-20260914-GPT-TEXTURE-WEAK-LIGHT-PROMPT.md)。
 
-> 文档版本：`2.20.101`
+> 文档版本：`2.20.102`
 >
 > 生效日期：`2026-09-15`
 >
@@ -908,6 +910,9 @@ Bake 设置包含 resolution、frontal/rear distance、distance/cage、cage infl
 | `ALG-CAP-003` Mask 捕获 | 目标白色 BasicMaterial、黑背景；灰度×alpha 作为连续 mask |
 | `ALG-CAP-004` Depth 捕获 | `(-viewZ-near)/(far-near)` linear-view，RGB packing，alpha=1 |
 | `ALG-CAP-005` Normal 捕获 | 默认 view normal，编码 `n×0.5+0.5` |
+| `ALG-CAP-007` 生成取景 | v1.2.0；GPT 固定方图、98% 长边占比；ModelView 保持原拟合；捕获与回贴共用相机，保守回退不裁模型 |
+| `GPT-ALPHA-PREVIEW-CROP` | v1.0.0；仅透明结果预览副本，轮廓外扩 8px，原图/下载/回贴不变 |
+| `LOCAL-REPAINT-BRUSH-DEFAULT` | v1.1.0；视口和独立画布初始大小 30，用户后续调整不覆盖 |
 | `ALG-CAP-006` 捕获状态隔离 v1.0.0 | 首次及逐 tile/pass 的 await 前归还共享 renderer/背景；每个同步 draw 重绑捕获 target/clear，保留像素与分辨率 |
 | `CAPTURE-MATERIAL-ISOLATION` v1.0.0 | flat 材质/uniforms 仅在每个同步 tile draw 内借用，逐 tile 恢复；材质身份变化拒绝混合截图，已有纹理在 clay 展示前冻结 |
 | `ALG-GEN-001` 单视图生成 | `1.3.0`；当前相机 Capture + 材质参考 → Generation；GPT 初始白模与已有贴图补全共用图一几何锁定/图二材质参考的局部弱光影模板；GPT 局部重绘现独立使用 `GPT-REPAINT-NORMAL` v1.0.0。结果按既有 Alpha 策略与独立 capture mask/depth 创建投影图层 |

@@ -216,7 +216,8 @@ try {
   assert.doesNotMatch(generatePanelSource, /projectionEdgeBlendMode:\s*'distance-field-v1'/);
   assert.match(generatePanelSource, /if \(captureMaskTexture && generationCapture.maskUrl && !preservesGeneratedSourceAlpha\(generation\)\)/,
     'Transparent results bypass RGB matting and preserve source canvas');
-  assert.match(generatePanelSource, /previewProcessingMode = displayedPreviewGeneration && !preservesGeneratedSourceAlpha\(displayedPreviewGeneration\)/);
+  assert.match(generatePanelSource, /preservesGeneratedSourceAlpha\(displayedPreviewGeneration\)\s*\? 'source-alpha'/,
+    'Transparent preview uses crop-only mode, not depth or color matting');
   const thumbnailSource = readFileSync(new URL('../src/components/panels/LayersPanel.tsx', import.meta.url), 'utf8');
   assert.match(thumbnailSource, /type === 'projected' && !preserveSource/,
     'Transparent layer display must not run a second matte');
