@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import { setImmediate } from 'node:timers';
 import ts from 'typescript';
 import * as oldCleanup from './fixtures/uv-cleanup-b3431cb.mjs';
+import { padUvIslandGuttersWithTopology } from '../src/engine/bake/dilation.ts';
 
 const bake = fs.readFileSync(new URL('../src/engine/bake/bakeProjectedLayerToTexture.ts', import.meta.url), 'utf8');
 const cleanup = bake.slice(bake.indexOf('async function fillTransparentTexelsForViewport'), bake.indexOf('function clampByte'));
@@ -31,6 +32,33 @@ for (const width of [1, 17, 257, 2048]) {
   }
 }
 assert(paints > 0, 'large scans allow actual event-loop delivery');
+
+// The skipped second cleanup is an idempotence proof, not a quality shortcut.
+// Include filter-only alpha=0/coverage=2 seeds, which MUST retain that cleanup.
+let closedCases=0, filterCases=0;
+for(let trial=0;trial<300;trial++) {
+  const width=1+random()%47,height=1+random()%41,count=width*height;
+  const data=Uint8ClampedArray.from({length:count*4},()=>random()%256);
+  for(let i=0;i<count;i++)data[i*4+3]=[0,1,5,8,9,64,255][random()%7];
+  const mask=Uint8Array.from({length:count},()=>random()%(trial%2?3:2));
+  const image={width,height,data}, topology=Uint8Array.from({length:count},()=>random()%2);
+  const closed=await next.clearWeakTransparentTexels(image,mask);
+  // Mirror seam's missing-coverage donor transfers in random order.
+  for(let i=0;i<count;i++) {
+    const a=random()%count,b=random()%count;
+    if(mask[a] && data[a*4+3] && !(mask[b] && data[b*4+3])) {
+      data.set(data.subarray(a*4,a*4+4),b*4);mask[b]=1;
+    }
+  }
+  padUvIslandGuttersWithTopology(image,mask,topology,trial%5,true);
+  const expected={...image,data:data.slice()}, expectedMask=mask.slice();
+  await oldCleanup.clearWeakTransparentTexels(expected,expectedMask);
+  if(closed)closedCases++;else {filterCases++;await next.clearWeakTransparentTexels(image,mask);}
+  assert.deepEqual(data,expected.data);assert.deepEqual(mask,expectedMask);
+}
+assert(closedCases>0 && filterCases>0);
+assert.match(bake,/else if \(!copyOnlyAlphaInvariant \|\| input\.enableDilation \|\|\s*\(input\.uvCoverageGapPixels \?\? 0\) > 0 \|\| \(input\.uvInteriorHolePixels \?\? 0\) > 0\)/);
+console.log(`UV alpha closure: ${closedCases} copy-only fast paths, ${filterCases} filter-only fallback cases, zero byte/coverage differences.`);
 
 const imageSource = fs.readFileSync(new URL('../src/engine/bake/imageSampler.ts', import.meta.url), 'utf8');
 const tree = ts.createSourceFile('imageSampler.ts', imageSource, ts.ScriptTarget.Latest, true);
@@ -171,7 +199,9 @@ console.log('Sampling Worker: full dimensions, bitmap ownership, post/crash clea
   const code=ts.transpileModule(source,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS}}).outputText;
   let result;
   const scope={postMessage(message){result=message;}};
-  new Function('self','exports',code)(scope,{});
+  new Function('self','exports','require',code)(scope,{},name=>{
+    assert.equal(name,'../engine/bake/dilation');return {padUvIslandGuttersWithTopology};
+  });
   for(const resolution of [1,17,255,1024]) {
     const pixels=Uint8Array.from({length:resolution*resolution*4},()=>random()%256);
     const data=new Uint8ClampedArray(pixels.length),coverage=new Uint8Array(resolution*resolution);
@@ -179,11 +209,49 @@ console.log('Sampling Worker: full dimensions, bitmap ownership, post/crash clea
     for(let y=0;y<resolution;y++)data.set(pixels.subarray(y*resolution*4,(y+1)*resolution*4),(resolution-1-y)*resolution*4);
     for(let i=0;i<coverage.length;i++)if(data[i*4+3]>0){coverage[i]=1;count++;}
     scope.onmessage({data:{id:1,mode:'resident',pixels:pixels.buffer,resolution}});
+    assert.equal(result.imageData,pixels.buffer,'Resident conversion returns the exclusively transferred buffer without a full RGBA allocation');
     assert.deepEqual(new Uint8ClampedArray(result.imageData),data,'resident output stays straight RGBA including hidden RGB');
     assert.deepEqual(new Uint8Array(result.coverage),coverage);assert.equal(result.coveredPixels,count);
+    const expectedCleanup=[];
+    for(let i=0;i<coverage.length;i++) if(data[i*4+3]<=8 && data.subarray(i*4,i*4+4).some(Boolean)) expectedCleanup.push(i);
+    if(expectedCleanup.length>16384) assert.equal(result.transparentCleanupTexels,undefined,'dense weak coverage uses full cleanup');
+    else {
+      const texels=new Uint32Array(result.transparentCleanupTexels);
+      assert.deepEqual([...texels],expectedCleanup,'bounded weak-texel index is exact');
+      const original={width:resolution,height:resolution,data:data.slice()},actual={width:resolution,height:resolution,data:data.slice()};
+      const goldMask=coverage.slice(),actualMask=coverage.slice();
+      await oldCleanup.clearWeakTransparentTexels(original,goldMask);
+      assert.equal(await next.clearWeakTransparentTexels(actual,actualMask,texels),true);
+      assert.deepEqual(actual.data,original.data);assert.deepEqual(actualMask,goldMask);
+    }
   }
 }
 console.log('Resident readback Worker: frozen full RGBA, Y orientation, alpha coverage and counts passed.');
+{
+  const source=fs.readFileSync(new URL('../src/workers/gpuReadbackConversion.worker.ts',import.meta.url),'utf8');
+  const code=ts.transpileModule(source,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS}}).outputText;
+  let result;
+  const scope={postMessage(message,transfer){result=globalThis.structuredClone(message,{transfer});}};
+  new Function('self','exports','require',code)(scope,{},()=>({padUvIslandGuttersWithTopology}));
+  for(let trial=0;trial<180;trial++) {
+    const width=1+random()%51,height=1+random()%49,iterations=1+trial%5,alphaMode=[false,true,'rgb-only'][trial%3];
+    const topology=Uint8Array.from({length:width*height},()=>random()%3?1:0);
+    for(let repeat=0;repeat<2;repeat++) {
+      const pixels=Uint8ClampedArray.from({length:width*height*4},()=>random()%256);
+      const coverage=Uint8Array.from(topology,()=>random()%3);
+      const gold={width,height,data:pixels.slice()},goldCoverage=coverage.slice();
+      const expected=padUvIslandGuttersWithTopology(gold,goldCoverage,topology,iterations,alphaMode);
+      scope.onmessage({data:{id:trial,mode:'gutter',width,height,pixels:pixels.buffer,coverage:coverage.buffer,
+        topology:repeat?undefined:topology,iterations,alphaMode}});
+      assert.equal(pixels.byteLength,0);assert.equal(coverage.byteLength,0,'Worker returns ownership, retaining no RGBA');
+      assert.equal(result.paddedPixels,expected);assert.deepEqual(new Uint8ClampedArray(result.imageData),gold.data);
+      assert.deepEqual(new Uint8Array(result.coverage),goldCoverage);
+    }
+  }
+  scope.onmessage({data:{id:999,mode:'gutter',width:2,height:2,pixels:new ArrayBuffer(1),coverage:new ArrayBuffer(4),iterations:1,alphaMode:true}});
+  assert.match(result.error,/Invalid/);
+}
+console.log('Gutter Worker: 360 cold/warm topology, RGBA/coverage/count, ownership transfer and invalid-input cases passed.');
 {
   const source=fs.readFileSync(new URL('../src/workers/prepareSamplingBitmap.worker.ts',import.meta.url),'utf8');
   const code=ts.transpileModule(source,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS}}).outputText;

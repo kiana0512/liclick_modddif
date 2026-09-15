@@ -106,6 +106,18 @@ for (let trial = 0; trial < 600; trial++) {
     assert.deepEqual(mask, expectedCoverage, `coverage trial ${trial}`);
     assert.deepEqual(topology, originalTopology, 'topology remains read-only');
   }
+  // Cached topology membership must still evaluate new colors/coverage.
+  for (const changed of [false, true]) {
+    const fresh = Uint8ClampedArray.from(data, value => 255 - value);
+    const mask = coverage.slice();
+    if (changed) mask[trial % mask.length] = (mask[trial % mask.length] + 1) % 3;
+    const expected = { width, height, data: fresh.slice() }, expectedMask = mask.slice();
+    const actual = { width, height, data: fresh };
+    const count = reference(expected, expectedMask, topology, iterations, mode);
+    assert.equal(await indexed(actual, mask, topology, iterations, mode, async () => {}), count);
+    assert.deepEqual(actual.data, expected.data, 'cached topology must not reuse previous RGBA');
+    assert.deepEqual(mask, expectedMask, 'even one changed coverage byte must be evaluated');
+  }
   const nextMask = Uint8Array.from(coverage, value => value ? 0 : 1);
   const nextGold = { width, height, data: data.slice() }, nextActual = { width, height, data: data.slice() };
   const goldMask = nextMask.slice();

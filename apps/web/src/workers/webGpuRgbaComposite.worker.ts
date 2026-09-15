@@ -145,6 +145,11 @@ let devicePromise: Promise<GpuDevice | undefined> | undefined;
 let resources: CompositeResources | undefined;
 let workQueue: Promise<void> = Promise.resolve();
 const cancelledRequestIds = new Set<number>();
+// UV-UNDERLAY-DECODE/1: one byte-verified, readonly 4K RGBA, never a final blend.
+// Re-fetch before comparing, so mutable URLs and ownership failures cannot reuse
+// stale bytes. Source-over consumes its front buffer and therefore receives a copy.
+let underlayCache: { key: string; pixels: ArrayBuffer } | undefined;
+let underlayCacheGeneration = 0;
 
 const shaderSource = `
   struct Params {
@@ -444,9 +449,20 @@ async function loadUnderlayInWorker(request: CompositeRequest) {
   if (!request.underlayUrl || !request.width || !request.height) {
     throw new Error('Composite underlay source is missing.');
   }
+  const generation=underlayCacheGeneration;
   const response = await fetch(request.underlayUrl);
   if (!response.ok) throw new Error(`Could not load UV underlay (${response.status}).`);
-  const bitmap = await createImageBitmap(await response.blob());
+  throwIfCancelled(request);
+  const blob=await response.blob();
+  let key: string | undefined;
+  if(request.underlayUrl.length<=4096 && request.width*request.height*4<=64*1024*1024 &&
+    blob.size<=64*1024*1024 && typeof crypto!=='undefined' && crypto.subtle) {
+    const digest=new Uint8Array(await crypto.subtle.digest('SHA-256',await blob.arrayBuffer()));
+    key=JSON.stringify([request.underlayUrl,request.width,request.height,blob.type,Array.from(digest)]);
+    throwIfCancelled(request);
+    if(underlayCache?.key===key) return request.sourceOver ? underlayCache.pixels.slice(0) : underlayCache.pixels;
+  }
+  const bitmap = await createImageBitmap(blob);
   try {
     const rowsPerSlice = Math.min(request.height, Math.max(1, Math.floor((1 * 1024 * 1024) / (request.width * 4))));
     const canvas = new OffscreenCanvas(request.width, rowsPerSlice);
@@ -454,6 +470,7 @@ async function loadUnderlayInWorker(request: CompositeRequest) {
     if (!context) throw new Error('Could not create UV underlay worker canvas.');
     const output = new Uint8ClampedArray(request.width * request.height * 4);
     for (let y = 0; y < request.height; y += rowsPerSlice) {
+      throwIfCancelled(request);
       const rowCount = Math.min(rowsPerSlice, request.height - y);
       context.clearRect(0, 0, request.width, rowsPerSlice);
       // Rasterize only the rows consumed this turn. A single full 4K drawImage
@@ -476,6 +493,11 @@ async function loadUnderlayInWorker(request: CompositeRequest) {
       if (y + rowCount < request.height) {
         await wait(request.interactive ? INTERACTIVE_GPU_PAUSE_MS : 0);
       }
+    }
+    throwIfCancelled(request);
+    if(key && generation===underlayCacheGeneration) {
+      underlayCache={key,pixels:output.buffer};
+      return request.sourceOver ? output.buffer.slice(0) : output.buffer;
     }
     return output.buffer;
   } finally {
@@ -627,6 +649,7 @@ scope.onmessage = (event) => {
     return;
   }
   if (request.type === 'release') {
+    underlayCache=undefined;underlayCacheGeneration++;
     destroyResources();
     return;
   }

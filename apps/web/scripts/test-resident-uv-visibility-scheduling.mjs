@@ -70,6 +70,7 @@ for (const busy of [false, true]) {
   }
   const api = compile(read('engine/projection/ResidentProjectedUvDisplay'), {
     three: THREE,
+    '@/engine/bake/uvContributionTiles': {uploadUvRgba: async()=>new THREE.DataTexture(new Uint8Array(4),1,1)},
     '@/engine/bake/incrementalUvComposite': {}, './uploadUvDisplayPatch': {},
     '@/engine/layers/mergeUvComposition': { getMergeUvPostprocessOptions: () => ({}) },
     '@/engine/viewport/previewTextureCache': {

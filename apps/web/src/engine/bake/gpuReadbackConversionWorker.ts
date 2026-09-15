@@ -18,8 +18,10 @@ type ConversionResponse =
       imageData: ArrayBuffer;
       coverage: ArrayBuffer;
       coveredPixels: number;
+      transparentCleanupTexels?: ArrayBuffer;
     }
   | { id: number; mode: 'quality'; quality: ArrayBuffer }
+  | { id: number; mode: 'gutter'; imageData: ArrayBuffer; coverage: ArrayBuffer; paddedPixels: number }
   | { id: number; error: string };
 
 type PendingConversion = {
@@ -32,13 +34,14 @@ type WorkerSession = {
   ready: Promise<void>;
   pending: Map<number, PendingConversion>;
   error?: Error;
+  gutterTopology?: Uint8Array;
 };
 
 let session: WorkerSession | undefined;
 let nextRequestId = 1;
 
 function createSession() {
-  // Keep this small import-free kernel with the page, including across deployments.
+  // Keep the exact conversion/postprocess kernel with the page across deployments.
   const instance = new ReadbackWorker();
   let resolveReady!: () => void;
   let rejectReady!: (error: Error) => void;
@@ -152,6 +155,8 @@ export async function convertLayerGpuReadbackInWorker(
     imageData: new ImageData(new Uint8ClampedArray(response.imageData), resolution, resolution),
     coverage: new Uint8Array(response.coverage),
     coveredPixels: response.coveredPixels,
+    transparentCleanupTexels: response.transparentCleanupTexels
+      ? new Uint32Array(response.transparentCleanupTexels) : undefined,
   };
 }
 
@@ -163,4 +168,26 @@ export async function convertQualityGpuReadbackInWorker(
   const response = await convert('quality', pixels, resolution, undefined, packedQuality);
   if ('error' in response || response.mode !== 'quality') throw new Error('Invalid quality readback.');
   return new Float32Array(response.quality);
+}
+
+/** Consumes exclusive composite buffers and returns replacement owners. */
+export async function padResidentUvGutterInWorker(image: ImageData, coverage: Uint8Array<ArrayBuffer>,
+  topology: Uint8Array, iterations: number, alphaMode: boolean | 'rgb-only', check?: () => void) {
+  const current=await getReadySession();check?.();
+  const id=nextRequestId++,pixels=image.data;
+  const rgbaBuffer=pixels.byteOffset===0 && pixels.byteLength===pixels.buffer.byteLength ? pixels.buffer : pixels.slice().buffer;
+  const coverageBuffer=coverage.byteOffset===0 && coverage.byteLength===coverage.buffer.byteLength ? coverage.buffer : coverage.slice().buffer;
+  const mask=current.gutterTopology===topology ? undefined : topology;
+  const response=await new Promise<ConversionResponse>((resolve,reject)=>{
+    current.pending.set(id,{resolve,reject});
+    try {
+      current.instance.postMessage({id,mode:'gutter',pixels:rgbaBuffer,coverage:coverageBuffer,
+        width:image.width,height:image.height,topology:mask,iterations,alphaMode},[rgbaBuffer,coverageBuffer]);
+      current.gutterTopology=topology;
+    } catch(error) {current.pending.delete(id);current.gutterTopology=undefined;reject(error);}
+  });
+  check?.();
+  if('error' in response || response.mode!=='gutter') throw new Error('Invalid UV gutter Worker result.');
+  return {imageData:new ImageData(new Uint8ClampedArray(response.imageData),image.width,image.height),
+    coverage:new Uint8Array(response.coverage),paddedPixels:response.paddedPixels};
 }

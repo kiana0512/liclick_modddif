@@ -124,8 +124,10 @@ const panel = process.argv.includes('--baseline')
   : await read('components/panels/GeneratePanel.tsx');
 const ast = ts.createSourceFile('panel.tsx', panel, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
 const declarations = [];
+let textureEntryDeclaration;
 let compactProgressLabelDeclaration;
 function visit(node) {
+  if (ts.isFunctionDeclaration(node) && node.name?.text === 'handleTextureMapGenerate') textureEntryDeclaration = node.getText(ast);
   if (ts.isFunctionDeclaration(node) && ['handleGptPairedMultiviewGenerate', 'handleTextureMapMultiviewGenerate'].includes(node.name?.text)) declarations.push(node.getText(ast));
   if (ts.isFunctionDeclaration(node) && node.name?.text === 'compactTextureProgressButtonLabel') compactProgressLabelDeclaration = node.getText(ast);
   ts.forEachChild(node, visit);
@@ -140,7 +142,7 @@ assert.equal(
   '第 2/7 组',
 );
 assert.equal(compactProgressLabel('生成纹理贴图 · 第 2/7 组'), '生成纹理贴图 · 第 2/7 组');
-async function fixture(failedView, fullyCovered = false, mode = 'stable', preset = 'custom', names = ['front', 'left', 'back', 'right', 'top', 'bottom']) {
+async function fixture(failedView, fullyCovered = false, mode = 'stable', preset = 'custom', names = ['front', 'left', 'back', 'right', 'top', 'bottom'], captureError) {
   let sequence = 0, rows = [], frozen = false, repairCount = 0, whitePresentation = false;
   const jobs = new Map(), requests = [], captures = [], saved = [];
   const project = { id: 'project', captures: [], settings: { imageGeneration: { textureMultiviewMode: mode } } };
@@ -186,6 +188,7 @@ async function fixture(failedView, fullyCovered = false, mode = 'stable', preset
     },
     captureCurrentColorPreview: async (input) => {
       active();
+      if (captureError && rows.length >= (captureError.after ?? 2)) throw (captureError.error ?? captureError);
       assert.equal(whitePresentation, false, 'authored colour must be frozen BEFORE asynchronous clay presentation');
       assert.equal(input.resolution, 2048);
       assert.equal(input.colorMode, 'flat-target-coverage');
@@ -268,4 +271,65 @@ assert.equal(fastFailure.repairCount, 0);
 assert.doesNotMatch(panel, /textureMultiviewMode|稳定 · 2张并发|aria-label="多视图加速模式"/);
 assert.match(panel, /planGptViewPairs\(requestedViews, selectedCameraViewPreset\)/);
 assert.doesNotMatch(panel, /aria-label="多视图并发策略"|加速 · 最多4张并发/);
+
+// The first group is committed, then the next group's UV capture aborts.
+// This is NOT a user cancellation and must reach the real entry-point notice.
+const generationErrors = {};
+new Function('exports', compile(await read('services/generationErrorMessage.ts')))(generationErrors);
+const internalAbort = new DOMException('UV display superseded.', 'AbortError');
+const interrupted = await fixture(undefined, false, 'fast', 'custom', undefined, internalAbort);
+assert.equal(interrupted.error, internalAbort);
+assert.deepEqual(interrupted.rows.map(row => row.id), ['front', 'back']);
+assert.equal(interrupted.requests.length, 2, 'no next-group submission after failed capture');
+assert.equal(interrupted.repairCount, 0);
+assert.equal(generationErrors.isGenerationCancellation(internalAbort), false);
+assert.equal(generationErrors.isGenerationCancellation(new DOMException('Aborted', 'AbortError')), false);
+assert.equal(generationErrors.isGenerationCancellation(new Error('相机已移动，已取消生成取景。')), false);
+assert.equal(generationErrors.isGenerationCancellation(new Error('用户已终止纹理贴图生成任务。')), true);
+assert.match(generationErrors.getUserFacingGenerationError(internalAbort), /意外中断/);
+
+async function testEntryFailure(error, cancel = false) {
+  const notices = [], toasts = [], logged = [], locks = new Set();
+  let progress, finished = 0, saved = 0;
+  const scope = {
+    ...generationErrors, textureViewMode: 'multi', cameraViews: make(['front', 'back']),
+    workflowSubmissionLocked: false, previewIsGenerating: false,
+    selectedSingleReference: undefined, selectedMultiviewReference: { id: 'reference' },
+    submitLocksRef: { current: locks }, texturePipelineAbortControllerRef: {},
+    setSubmissionActive() {}, setTexturePipelineCancelling() {}, setCancelTextureSnapshotConfirmOpen() {},
+    setTexturePipelineProgress: value => { progress = typeof value === 'function' ? value(progress) : value; },
+    updateTexturePipelineProgress() {}, setGenerateNotice: value => notices.push(value),
+    pushToast: value => toasts.push(value), finish: () => { finished++; },
+    saveGenerationStateBestEffort: async () => { saved++; },
+    console: { error: (...args) => logged.push(args) },
+    handleTextureMapMultiviewGenerate: async (_ref, _views, _mode, signal) => {
+      assert.equal(signal.aborted, false);
+      if (cancel) scope.texturePipelineAbortControllerRef.current.abort('user-cancelled-texture-generation');
+      throw error;
+    },
+  };
+  const entry = new Function(...Object.keys(scope), `${compile(textureEntryDeclaration)}; return handleTextureMapGenerate;`)(...Object.values(scope));
+  await entry();
+  assert.equal(locks.size, 0); assert.equal(finished, 1); assert.equal(progress, undefined);
+  assert.equal(scope.texturePipelineAbortControllerRef.current, undefined);
+  if (cancel) {
+    assert.equal(notices.at(-1), undefined); assert.equal(toasts.length, 0); assert.equal(logged.length, 0);
+  } else {
+    assert.equal(notices.at(-1).tone, 'error'); assert.equal(toasts.at(-1).tone, 'error');
+    assert.equal(logged[0][1], error); assert.equal(saved, 1);
+    assert.equal(notices.at(-1).message, generationErrors.getUserFacingGenerationError(error, '纹理贴图生成失败，请稍后重试。'));
+  }
+}
+await testEntryFailure(interrupted.error);
+const thirdGroupInterrupted = await fixture(undefined, false, 'fast', 'preset-1', expected1.flat(), { after: 6, error: internalAbort });
+assert.equal(thirdGroupInterrupted.error, internalAbort);
+assert.equal(thirdGroupInterrupted.rows.length, 6);
+assert.equal(thirdGroupInterrupted.requests.length, 6, 'third group is not submitted with an invalid guide');
+assert.equal(thirdGroupInterrupted.repairCount, 0);
+await testEntryFailure(thirdGroupInterrupted.error);
+await testEntryFailure(new Error('UV 预览在截图期间发生变化，请重试。'));
+await testEntryFailure(new Error('相机已移动，已取消生成取景。'));
+await testEntryFailure(new Error('network failed'));
+await testEntryFailure(new DOMException('Aborted', 'AbortError'), true);
+assert.match(panel, /generateNotice\.tone !== 'info' \|\| !isVerboseGenerationNotice/);
 console.log('Fixed accelerated GPT groups: defaults, legacy settings, fresh inputs, ordered commits, cancellation and failure contracts passed.');

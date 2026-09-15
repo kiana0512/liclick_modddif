@@ -4,6 +4,7 @@ import type { QualityBlendWorkerResult } from './qualityBlendWorker';
 import { readRenderTargetPixelsInStripes } from './gpuReadbackStripes';
 import { yieldToBrowserTask } from '@/utils/browserScheduling';
 import { isLegacyUvBakeDiagnosticEnabled } from './uvBakeDebugControls';
+import { withUvRenderTarget, type UvContributionTiles } from './uvContributionTiles';
 
 const approvals=new WeakMap<THREE.WebGLRenderer,Map<boolean,boolean>>();
 export function residentQualityPolicy(renderer:THREE.WebGLRenderer,preserveAlpha:boolean) {
@@ -64,12 +65,21 @@ const accumulateShader = `${common}
 uniform sampler2D layerColor;
 uniform sampler2D layerQuality;
 uniform bool qualityIsRed;
+uniform usampler2D contributionIndex;
+uniform bool tiledContribution;
+uniform int contributionColumns;
 uniform sampler2D unpremultiplyTable;
 layout(location=0) out uvec4 result;
 void main() {
   ivec2 p = ivec2(gl_FragCoord.xy);
   result = texelFetch(previousCandidates, p, 0);
   uvec4 selected = result;
+  if(tiledContribution) {
+    uint address=texelFetch(contributionIndex,p/64,0).r;
+    if(address==0u)return;
+    int n=int(address)-1;
+    p=ivec2(n%contributionColumns,n/contributionColumns)*64+p%64;
+  }
   uvec4 color = uvec4(floor(texelFetch(layerColor, p, 0) * 255.0 + 0.5));
   if (color.a>0u) { result.w+=0x01000000u; selected.w=result.w; }
   if (color.a <= 5u) return;
@@ -234,6 +244,10 @@ export class ResidentQualityComposite {
   private readonly mesh: THREE.Mesh;
   private current = 0;
   private initialized = false;
+  // Exact integer tuples only; direct-mapped collisions are verified, never
+  // approximated. One lazy 5 MiB table avoids repeating double-precision repair
+  // for unchanged pixels across different visibility combinations.
+  private correctedTuples?: Uint32Array;
 
   constructor(private readonly renderer: THREE.WebGLRenderer, readonly resolution: number) {
     this.output = new THREE.WebGLRenderTarget(resolution, resolution, { depthBuffer: false });
@@ -262,6 +276,7 @@ export class ResidentQualityComposite {
       uniforms: {
         previousCandidates:{value:null}, scoreTable:{value:this.scoreTexture},
         layerColor:{value:null}, layerQuality:{value:null}, qualityIsRed:{value:false},
+        contributionIndex:{value:null},tiledContribution:{value:false},contributionColumns:{value:1},
         linearTable:{value:this.linearTexture}, preserveAlpha:{value:false},
         markUncertain:{value:false}, coordinates:{value:null}, resolution:{value:resolution},
         counts:{value:null},firstCount:{value:true},
@@ -279,29 +294,10 @@ export class ResidentQualityComposite {
   }
 
   private withTarget(target: THREE.WebGLRenderTarget, draw: () => void) {
-    const renderer=this.renderer;
-    const previous=renderer.getRenderTarget();
-    const face=renderer.getActiveCubeFace(), mip=renderer.getActiveMipmapLevel();
-    const viewport=renderer.getViewport(new THREE.Vector4());
-    const scissor=renderer.getScissor(new THREE.Vector4());
-    const scissorTest=renderer.getScissorTest(), autoClear=renderer.autoClear;
-    const xr=renderer.xr.enabled;
-    try {
-      renderer.xr.enabled=false; renderer.autoClear=false;
-      renderer.setRenderTarget(target); renderer.setViewport(0,0,target.width,target.height);
-      renderer.setScissorTest(false);
-      if (renderer.getContext().checkFramebufferStatus(renderer.getContext().FRAMEBUFFER) !== renderer.getContext().FRAMEBUFFER_COMPLETE) {
-        throw new Error('Resident quality framebuffer is incomplete.');
-      }
-      draw();
-    } finally {
-      renderer.setRenderTarget(previous,face,mip); renderer.setViewport(viewport);
-      renderer.setScissor(scissor); renderer.setScissorTest(scissorTest);
-      renderer.autoClear=autoClear; renderer.xr.enabled=xr;
-    }
+    return withUvRenderTarget(this.renderer,target,draw);
   }
 
-  push(color: THREE.Texture, quality: THREE.Texture) {
+  push(color: THREE.Texture, quality: THREE.Texture, tiles?: UvContributionTiles) {
     if (!this.initialized) {
       this.withTarget(this.targets[this.current],() => {
         const gl=this.renderer.getContext() as WebGL2RenderingContext;
@@ -314,6 +310,9 @@ export class ResidentQualityComposite {
     this.accumulateMaterial.uniforms.layerColor.value=color;
     this.accumulateMaterial.uniforms.layerQuality.value=quality;
     this.accumulateMaterial.uniforms.qualityIsRed.value=quality.format===THREE.RedFormat;
+    this.accumulateMaterial.uniforms.contributionIndex.value=tiles?.index ?? this.targets[this.current].texture;
+    this.accumulateMaterial.uniforms.tiledContribution.value=Boolean(tiles);
+    this.accumulateMaterial.uniforms.contributionColumns.value=tiles?.columns ?? 1;
     this.mesh.material=this.accumulateMaterial;
     this.withTarget(this.targets[next],() => this.renderer.render(this.scene,this.camera));
     this.current=next;
@@ -342,12 +341,15 @@ export class ResidentQualityComposite {
     const bytes=await readRenderTargetPixelsInStripes(this.renderer,this.resolve(preserveAlpha,true),this.resolution);
     const output=new Uint8ClampedArray(bytes.buffer);
     const indices:number[]=[];
+    let scanStarted=performance.now();
     for(let first=0;first<output.length;first+=1048576) {
       const end=Math.min(output.length,first+1048576);
       for(let i=first;i<end;i+=4) {
         if(output[i+3]===0 && output[i]===255 && output[i+2]===255) indices.push(i/4);
       }
-      if(end<output.length) await yieldToBrowserTask();
+      if(end<output.length && performance.now()-scanStarted>=4) {
+        await yieldToBrowserTask();scanStarted=performance.now();
+      }
     }
     if(!indices.length) return {output,correctedPixels:0};
     const width=Math.min(indices.length,Math.floor(this.renderer.capabilities.maxTextureSize/4)), height=Math.ceil(indices.length/width);
@@ -375,12 +377,22 @@ export class ResidentQualityComposite {
       const outputWords = new Uint32Array(output.buffer, output.byteOffset, output.length / 4);
       const repeatedMarker = new Uint32Array(new Uint8Array([254, 0, 255, 0]).buffer)[0];
       const previous = new Uint32Array(4);
+      const memo = this.correctedTuples ??= new Uint32Array(262144 * 5);
+      let memoHits = 0;
       let lastYield = performance.now();
       let correctedPixels = 0;
       for(let i=0;i<indices.length;i+=1) {
         const offset = i * 4;
         if (i === 0 || selected[offset] !== previous[0] || selected[offset + 1] !== previous[1] ||
             selected[offset + 2] !== previous[2] || selected[offset + 3] !== previous[3]) {
+          const a=selected[offset],b=selected[offset+1],c=selected[offset+2];
+          // The high byte is only a coverage counter, not a resolver input.
+          const q=(selected[offset+3]&0xffffff)|(preserveAlpha ? 0x1000000 : 0x2000000);
+          const hash=Math.imul(a^Math.imul(b,1597334677)^Math.imul(c,3812015801)^q,2654435761);
+          const entry=((hash^(hash>>>16))&262143)*5;
+          if(memo[entry]===a && memo[entry+1]===b && memo[entry+2]===c && memo[entry+3]===q) {
+            pixelWord[0]=memo[entry+4];memoHits++;
+          } else {
           for(let slot=0;slot<3;slot+=1) {
             const color=selected[offset+slot], coverage=(color>>>24)/255;
             const quality=(selected[offset+3]>>>(slot*8))&255;
@@ -389,6 +401,8 @@ export class ResidentQualityComposite {
             top.qualities[slot][0]=Math.max(Math.fround(quality/255),coverage*0.08);
           }
           resolvePixelCpu(top,0,preserveAlpha,pixel);
+          memo[entry]=a;memo[entry+1]=b;memo[entry+2]=c;memo[entry+3]=q;memo[entry+4]=pixelWord[0];
+          }
           previous.set(selected.subarray(offset, offset + 4));
         }
         // 254 marks an adjacent texel with the identical integer candidate tuple.
@@ -407,6 +421,7 @@ export class ResidentQualityComposite {
           }
         } while(more);
       }
+      if(typeof document!=='undefined') document.body.dataset.residentUvCorrectionMemoHits=String(memoHits);
       return {output,correctedPixels};
     } finally {texture.dispose();target.dispose();}
   }
@@ -435,6 +450,7 @@ export class ResidentQualityComposite {
   }
 
   dispose() {
+    this.correctedTuples=undefined;
     this.targets.forEach(target => target.dispose()); this.output.dispose();
     this.scoreTexture.dispose(); this.linearTexture.dispose();
     this.unpremultiplyTexture.dispose();

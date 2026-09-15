@@ -9,6 +9,13 @@ const DOMINANCE_MARGIN_END = 0.2;
 const COLOR_CONSISTENCY_SIGMA = 0.22;
 const COVERAGE_THRESHOLD = 0.02;
 
+// Synchronous, non-reentrant kernel: every slot is overwritten before reading.
+// Reuse only scratch, never output. Sparse GPU correction can call this hundreds
+// of thousands of times; per-pixel nested arrays cause avoidable GC stalls.
+const pixelCoverages = [0, 0, 0];
+const pixelQualities = [0, 0, 0];
+const pixelColors = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
+
 
 const SRGB_BYTE_TO_LINEAR = Array.from({ length: 256 }, (_, value) => {
   const color = value / 255;
@@ -46,9 +53,9 @@ export function resolvePixelCpu(topK: TopK, pixelIndex: number, preserveAlpha: b
   const offset = pixelIndex * 4;
   let candidateCount = 0;
   let remaining = 1;
-  const coverages = [0, 0, 0];
-  const qualities = [0, 0, 0];
-  const colors = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
+  const coverages = pixelCoverages;
+  const qualities = pixelQualities;
+  const colors = pixelColors;
   for (let slot = 0; slot < TOP_K; slot += 1) {
     const coverage = topK.coverages[slot][pixelIndex];
     coverages[slot] = coverage;
@@ -128,4 +135,3 @@ export function resolvePixelCpu(topK: TopK, pixelIndex: number, preserveAlpha: b
   output[offset + 3] = alpha;
   return true;
 }
-

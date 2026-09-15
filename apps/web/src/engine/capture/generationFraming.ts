@@ -30,7 +30,12 @@ export async function frameGenerationCapture(
   const startZoom = source.zoom;
   const candidate = await fitGeometryCapture(viewport.scene, objectId, fallback, safeAspect, signal);
   const fitted = await verifyTightCapture(viewport, objectId, candidate, fallback, safeAspect, signal);
-  if (!source.position.equals(startPosition) || !source.quaternion.equals(startQuaternion) || source.zoom !== startZoom)
+  signal?.throwIfAborted();
+  // ALG-CAP-007/1.1.1: a fixed batch direction owns its cloned capture camera.
+  // Orbit damping/navigation cannot invalidate it or cancel the next group.
+  // Interactive framing still must not overwrite a user's newer camera pose.
+  if ((animate || !viewDirection) &&
+      (!source.position.equals(startPosition) || !source.quaternion.equals(startQuaternion) || source.zoom !== startZoom))
     throw new Error('相机已移动，已取消生成取景。');
   // Keep the live viewport's aspect/frustum; its square capture frame uses the
   // same vertical extent as the frozen input camera. Never stretch the viewport.

@@ -65,7 +65,7 @@ import {
   type LiclickImageModel,
   type LiclickImageSize,
 } from '@/services/liclickApiClient';
-import { getUserFacingGenerationError } from '@/services/generationErrorMessage';
+import { getUserFacingGenerationError, isGenerationCancellation } from '@/services/generationErrorMessage';
 import { resolveLocalRepaintMaterialReference } from '@/services/localRepaintMaterialReference';
 import {
   resolveLocalRepaintUserPrompt,
@@ -521,12 +521,6 @@ function isRunningGeneration(generation?: Generation) {
     !generation.resultUrl &&
     (generation.status === 'queued' || generation.status === 'running'),
   );
-}
-
-function isGenerationCancellation(error: unknown) {
-  if (error instanceof DOMException && error.name === 'AbortError') return true;
-  const message = error instanceof Error ? error.message : String(error ?? '');
-  return /用户已终止|任务已终止|已取消|取消生成/.test(message);
 }
 
 function throwIfTexturePipelineCancelled(signal?: AbortSignal) {
@@ -2918,7 +2912,7 @@ export function GeneratePanel({
             `远端多视图 ${stepLabel} · 完成`,
           );
         } catch (error) {
-          if (!isGenerationCancellation(error) && !textureBatchWasCancelled()) {
+          if (!isGenerationCancellation(error, signal) && !textureBatchWasCancelled()) {
             syncGeneration(
               createFailedGeneration(
                 pendingGeneration,
@@ -4689,7 +4683,7 @@ export function GeneratePanel({
         pipelineAbortController.signal,
       );
     } catch (error) {
-      if (isGenerationCancellation(error)) {
+      if (isGenerationCancellation(error, pipelineAbortController?.signal)) {
         setGenerateNotice(undefined);
         setTexturePipelineProgress(undefined);
         finish();
@@ -4701,6 +4695,7 @@ export function GeneratePanel({
         tone: 'error',
         message,
       });
+      pushToast({ tone: 'error', title: '纹理生成流程中断', description: message });
       await saveGenerationStateBestEffort();
       finish();
       setTexturePipelineProgress(undefined);
@@ -5774,7 +5769,7 @@ export function GeneratePanel({
               </section>
             )}
 
-            {generateNotice && !isVerboseGenerationNotice(generateNotice.message) && (
+            {generateNotice && (generateNotice.tone !== 'info' || !isVerboseGenerationNotice(generateNotice.message)) && (
               <div
                 role={generateNotice.tone === 'error' ? 'alert' : 'status'}
                 aria-live="polite"

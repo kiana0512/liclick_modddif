@@ -12,7 +12,8 @@ import {
   releaseTransientPreviewUploadSource,
 } from '@/engine/viewport/previewTextureCache';
 import { yieldToBrowserTask } from '@/utils/browserScheduling';
-import { isViewportInteractionBusy } from '@/engine/viewport/viewportInteractionState';
+import { isViewportInteractionBusy, waitForViewportInteractionIdle } from '@/engine/viewport/viewportInteractionState';
+import { uploadUvRgba } from '@/engine/bake/uvContributionTiles';
 import { markSparseAlphaBaseTexture } from './ProjectedLayerMaterial';
 import { ProjectedUvRasterCache } from '@/engine/bake/ProjectedUvRasterCache';
 import { markResidentUvPending, finishResidentUvPresentation, releaseResidentUvManagement } from './residentUvPresentation';
@@ -84,7 +85,7 @@ export class ResidentProjectedUvDisplay {
   private rawComposite?: RawUvComposite;
   private previousPixels?: { image: ImageData; texture: THREE.Texture };
   private readonly cache = new Map<string, ProjectedPreviewComposite>();
-  private readonly rasters = new ProjectedUvRasterCache();
+  private readonly rasters = new ProjectedUvRasterCache(512 * 1024 * 1024, true);
   private readonly compressed = new ResidentUvCompressedCache();
   private readonly maskedSources = new Map<string, string>();
   private maskedSourceBytes = 0;
@@ -310,20 +311,17 @@ export class ResidentProjectedUvDisplay {
           : result.imageData : undefined;
       // Draft pixels have no persistence/cache consumers. Transfer them directly
       // to the stripe worker instead of creating and cropping a full-size bitmap.
-      const bitmap = patched ? undefined : interactive ? result.imageData : await createImageBitmap(result.imageData, {
-        imageOrientation: 'flipY',
-        premultiplyAlpha: 'none',
-      });
-      if (cancelled()) {
-        if (bitmap instanceof ImageBitmap) bitmap.close();
-        guard();
-      }
-      const colorTexture = patched ?? await createWorkerBackedPreviewTexture(bitmap!);
+      const direct = !interactive ? await uploadUvRgba(request.renderer,result.imageData.data,
+        request.resolution,request.resolution,{flipRows:true,check:guard,
+          beforeStripe:()=>waitForViewportInteractionIdle(240,guard),configure:texture=>{
+            texture.anisotropy=8;markSparseAlphaBaseTexture(texture);
+          }}) : undefined;
+      const colorTexture = patched ?? direct ?? await createWorkerBackedPreviewTexture(result.imageData);
       if (!patched) created.push(colorTexture);
       guard();
       // Establish the sparse base sampler profile before the stripe upload.
       // Changing it after upload reallocates a worker-owned DataTexture with no CPU pixels.
-      markSparseAlphaBaseTexture(colorTexture);
+      if (!direct) markSparseAlphaBaseTexture(colorTexture);
       let renderedColorMaskTexture: THREE.Texture;
       if (mask && hasRenderedColor) {
         renderedColorMaskTexture = await createWorkerBackedMaskPreviewTexture(
@@ -343,7 +341,7 @@ export class ResidentProjectedUvDisplay {
       created.push(renderedColorMaskTexture);
       renderedColorMaskTexture.colorSpace = THREE.NoColorSpace;
       guard();
-      if (!patched) await uploadPreviewTextureInStripes(request.renderer, colorTexture, {
+      if (!patched && !direct) await uploadPreviewTextureInStripes(request.renderer, colorTexture, {
         allowWhileInteracting: interactive,
         shouldCancel: cancelled,
       });
@@ -452,7 +450,7 @@ export class ResidentProjectedUvDisplay {
       }
     }
     for (const [key, value] of this.cache) {
-      if (bytes <= 512 * 1024 * 1024 && this.cache.size <= 32) break;
+      if (bytes <= 256 * 1024 * 1024 && this.cache.size <= 32) break;
       if (value === this.front || key === this.requested?.signature) continue;
       bytes -= size(value);
       value.colorTexture.dispose();

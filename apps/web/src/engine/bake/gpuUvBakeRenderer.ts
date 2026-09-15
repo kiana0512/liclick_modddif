@@ -1707,13 +1707,6 @@ export async function bakeProjectedLayerRastersWithGpu(
   // Mutable brush sources must be sampled again, even when their URL is stable.
   const cacheable = input.layers.map(layer => !getProjectedLayerOverlayMode(layer) &&
     ![layer.imageUrl, layer.maskUrl, layer.depthUrl, layer.normalUrl].some(url => url && isLiveProjectedCanvasUrl(url)));
-  const resolvedKey = input.residentQuality && cacheable.every(Boolean)
-    ? JSON.stringify([keys, input.residentQuality.preserveAlpha]) : undefined;
-  if (rasterCache && resolvedKey && !retainRasters) {
-    const resolved = await rasterCache.getResolved(resolvedKey);
-    document.body.dataset.residentUvNormalBaseHit = String(Boolean(resolved));
-    if (resolved) return resolved;
-  }
   let colorTarget: THREE.WebGLRenderTarget | undefined;
   // UV-QUALITY-R8/1: private weights consume one original byte, not four.
   // Odd/legacy readback paths retain their existing RGBA layout.
@@ -1727,9 +1720,10 @@ export async function bakeProjectedLayerRastersWithGpu(
   const cached = keys.map((key, i) => {
     if (!cacheable[i] || !rasterCache) return;
     const hit = rasterCache.get(key);
-    if (hit || !input.region) return hit;
+    if (hit && (!retainRasters || !hit.tiles)) return hit;
+    if (!input.region) return;
     const full = rasterCache.get(fullKeys[i]);
-    if (!full) return;
+    if (!full || full.tiles) return;
     const color = full.color.textures.length === 2
       ? createLayerMrtTarget(resolution) : createPostprocessTarget(resolution);
     const quality = full.quality ? createPostprocessTarget(resolution,
@@ -1739,7 +1733,7 @@ export async function bakeProjectedLayerRastersWithGpu(
     try {
       copyBakeRegion(renderer, full.color, color, input.region);
       if (quality && full.quality) copyBakeRegion(renderer, full.quality, quality, input.region);
-      const entry = { color, quality, qualityTexture: quality?.texture ?? color.textures[1], sourceSize: full.sourceSize };
+      const entry = { color, quality, qualityTexture: quality?.texture ?? color.textures[1], sourceSize: full.sourceSize, tiles: undefined };
       retained = rasterCache.take(key, entry);
       if (retained) return entry;
     } finally {
@@ -1752,6 +1746,10 @@ export async function bakeProjectedLayerRastersWithGpu(
     document.body.dataset.residentUvRasterMisses = String(cached.filter(value => !value).length);
   }
   const resumeKeys = cacheable.every(Boolean) ? keys : [];
+  const archived = keys.map((key,i) => cacheable[i] && !input.region && !retainRasters &&
+    rasterCache?.hasArchivedContribution(key));
+  if (rasterCache) document.body.dataset.residentUvContributionRestores = String(
+    archived.filter((value,i) => value && !cached[i]).length);
   const residentLease = input.residentQuality && rasterCache
     ? rasterCache.leaseResident(renderer, resolution, resumeKeys)
     : undefined;
@@ -1760,7 +1758,7 @@ export async function bakeProjectedLayerRastersWithGpu(
     : undefined;
   const residentStartIndex = residentLease?.startIndex ?? 0;
   const sources=createLayerTextureLookahead({ ...input, layers: input.layers.filter((_, i) =>
-    i >= residentStartIndex && !cached[i]) });
+    i >= residentStartIndex && !cached[i] && !archived[i]) });
   let activeTextures: THREE.Texture[] = [];
   const activeMaterials: THREE.Material[] = [];
   let previousState = captureRendererState(renderer);
@@ -1799,12 +1797,24 @@ export async function bakeProjectedLayerRastersWithGpu(
       const isOverlay=!!getProjectedLayerOverlayMode(layer);
       const retainLayerRaster=retainRasters || isOverlay;
       const hit = cached[layerIndex];
+      if (!hit && archived[layerIndex]) {
+        const restored = await rasterCache!.restoreContribution(keys[layerIndex], input.checkCancelled);
+        if (!restored || !resident) throw new Error('UV contribution restore failed; projection was not repeated.');
+        try {
+          resident.push(restored.color, restored.quality, restored.tiles);
+          sourceSizes.push(restored.sourceSize);
+          rasterCache!.recordResidentState(keys.slice(0, layerIndex + 1), sourceSizes);
+          processedTriangles += totalTrianglesPerLayer;
+          reportProgress(layer, layerIndex, true);
+        } finally { restored.dispose(); }
+        continue;
+      }
       if (hit) {
         reportProgress(layer, layerIndex, true);
         sourceSizes.push(hit.sourceSize);
         if (resident) {
           const start = performance.now();
-          resident.push(hit.color.texture, hit.qualityTexture);
+          resident.push(hit.color.texture, hit.qualityTexture, hit.tiles);
           rasterCache?.recordResidentState(keys.slice(0, layerIndex + 1), sourceSizes);
           residentAccumulateMs += performance.now() - start;
         }
@@ -1869,6 +1879,8 @@ export async function bakeProjectedLayerRastersWithGpu(
       renderer.clear(true, true, true);
       reportProgress(layer, layerIndex, true);
       renderer.render(bakeScene.scene, camera);
+      if (rasterCache) document.body.dataset.residentUvProjectionDraws = String(
+        Number(document.body.dataset.residentUvProjectionDraws ?? 0) + 1);
       if (input.region) copyBakeRegion(renderer, drawColorTarget, layerColorTarget, input.region);
       const layerRasterPromise = retainLayerRaster
         ? readRenderTargetToLayerImageData(renderer, layerColorTarget, resolution)
@@ -1926,12 +1938,15 @@ export async function bakeProjectedLayerRastersWithGpu(
         coveredPixels: layerRaster.coveredPixels,
       });
       coveredPixels += layerRaster?.coveredPixels ?? 0;
-      if (cacheable[layerIndex] && rasterCache?.take(keys[layerIndex], {
+      const contribution = {
         color: layerColorTarget,
         quality: useMrt ? undefined : qualityTarget,
         qualityTexture: layerQualityTexture,
         sourceSize: textures.sourceSizes,
-      })) {
+      };
+      if (cacheable[layerIndex] && rasterCache && (input.region || !useMrt
+        ? rasterCache.take(keys[layerIndex], contribution)
+        : await rasterCache.retainContribution(keys[layerIndex], contribution, resolution, input.checkCancelled))) {
         // Transfer target ownership; later layers must never overwrite cached UVs.
         if (useMrt) mrtTarget = undefined;
         else { colorTarget = undefined; qualityTarget = undefined; }
@@ -1950,11 +1965,17 @@ export async function bakeProjectedLayerRastersWithGpu(
     if (resident) {
       const started = performance.now();
       const {output,correctedPixels} = await resident.readCorrected(input.residentQuality!.preserveAlpha);
-      const {imageData,coverage,coveredPixels:writtenTexels}=await convertLayerGpuReadbackInWorker(
+      const correctedAt = performance.now();
+      const {imageData,coverage,coveredPixels:writtenTexels,transparentCleanupTexels}=await convertLayerGpuReadbackInWorker(
         new Uint8Array(output.buffer,output.byteOffset,output.byteLength),resolution,true);
+      const convertedAt = performance.now();
       if (!retainRasters) coveredPixels+=await resident.countLayerCoverage();
       const resolveMs=performance.now()-started;
-      residentQuality={imageData,coverage,
+      document.body.dataset.residentUvResolveStages = JSON.stringify({
+        correctedPixels, readAndCorrectMs: correctedAt-started,
+        conversionMs: convertedAt-correctedAt, countMs: performance.now()-convertedAt,
+      });
+      residentQuality={imageData,coverage,transparentCleanupTexels,
         renderedColorMask:new Uint8Array(0),writtenTexels,backend:'webgl-resident',
         accumulateMs:residentAccumulateMs,resolveMs,overlayMs:0,totalMs:residentAccumulateMs+resolveMs};
       // Live canvases and overlay passes are mutable even when their serialized
@@ -1980,7 +2001,6 @@ export async function bakeProjectedLayerRastersWithGpu(
       skippedPixels: resolution * resolution * input.layers.length - coveredPixels,
       warnings,
     };
-    if (rasterCache && resolvedKey) await rasterCache.retainResolved(resolvedKey, result);
     return result;
   } finally {
     if (!rasterCache) resident?.dispose();

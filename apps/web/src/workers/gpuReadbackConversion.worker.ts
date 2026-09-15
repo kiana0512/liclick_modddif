@@ -1,4 +1,4 @@
-export {};
+import { padUvIslandGuttersWithTopology } from '../engine/bake/dilation';
 
 const MIN_TRANSPARENT_OUTPUT_ALPHA = 8;
 const UNPROJECTED_TEXTURE_FILL: [number, number, number] = [8, 9, 13];
@@ -12,6 +12,13 @@ type ConversionRequest = {
   packedQuality?: boolean;
 };
 
+type GutterRequest = {
+  id: number; mode: 'gutter'; pixels: ArrayBuffer; coverage: ArrayBuffer;
+  width: number; height: number; topology?: Uint8Array;
+  iterations: number; alphaMode: boolean | 'rgb-only';
+};
+let gutterTopology: Uint8Array | undefined;
+
 type ConversionResponse =
   | {
       id: number;
@@ -19,12 +26,14 @@ type ConversionResponse =
       imageData: ArrayBuffer;
       coverage: ArrayBuffer;
       coveredPixels: number;
+      transparentCleanupTexels?: ArrayBuffer;
     }
   | { id: number; mode: 'quality'; quality: ArrayBuffer }
+  | { id: number; mode: 'gutter'; imageData: ArrayBuffer; coverage: ArrayBuffer; paddedPixels: number }
   | { id: number; error: string };
 
 const scope = self as unknown as {
-  onmessage: ((event: MessageEvent<ConversionRequest>) => void) | null;
+  onmessage: ((event: MessageEvent<ConversionRequest | GutterRequest>) => void) | null;
   postMessage(message: ConversionResponse | { ready: 1 }, transfer?: Transferable[]): void;
 };
 
@@ -47,6 +56,31 @@ function convertQuality(request: ConversionRequest) {
 
 function convertColor(request: ConversionRequest) {
   const pixels = new Uint8Array(request.pixels);
+  if (request.mode === 'resident') {
+    // The caller transfers sole ownership. Flip rows in place instead of
+    // allocating/copying another full 64 MiB RGBA buffer for every 4K toggle.
+    const size = request.resolution, rowBytes = size * 4;
+    if (pixels.length !== size * rowBytes) throw new Error('Invalid resident readback byte length.');
+    const row = new Uint8Array(rowBytes), coverage = new Uint8Array(size * size);
+    for (let y = 0; y < Math.floor(size / 2); y++) {
+      const top = y * rowBytes, bottom = (size - 1 - y) * rowBytes;
+      row.set(pixels.subarray(top, top + rowBytes));
+      pixels.copyWithin(top, bottom, bottom + rowBytes);
+      pixels.set(row, bottom);
+    }
+    let coveredPixels = 0;
+    let cleanup: number[] | undefined = [];
+    for (let index = 0; index < coverage.length; index++) {
+      const offset=index*4,alpha=pixels[offset+3];
+      if (alpha > 0) { coverage[index] = 1; coveredPixels++; }
+      if (cleanup && alpha <= MIN_TRANSPARENT_OUTPUT_ALPHA &&
+        (alpha || pixels[offset] || pixels[offset+1] || pixels[offset+2])) {
+        if(cleanup.length<16384) cleanup.push(index); else cleanup=undefined;
+      }
+    }
+    return { imageData: request.pixels, coverage: coverage.buffer, coveredPixels,
+      transparentCleanupTexels: cleanup ? new Uint32Array(cleanup).buffer : undefined };
+  }
   const imageData = new Uint8ClampedArray(request.resolution * request.resolution * 4);
   const coverage = new Uint8Array(request.resolution * request.resolution);
   const rowLength = request.resolution * 4;
@@ -54,13 +88,6 @@ function convertColor(request: ConversionRequest) {
   for (let y = 0; y < request.resolution; y += 1) {
     const sourceStart = (request.resolution - 1 - y) * rowLength;
     const targetStart = y * rowLength;
-    if(request.mode==='resident') {
-      imageData.set(pixels.subarray(sourceStart,sourceStart+rowLength),targetStart);
-      for(let x=0;x<request.resolution;x++) if(pixels[sourceStart+x*4+3]>0) {
-        coverage[y*request.resolution+x]=1;coveredPixels++;
-      }
-      continue;
-    }
     for (let x = 0; x < request.resolution; x += 1) {
       const pixelIndex = y * request.resolution + x;
       const sourceOffset = sourceStart + x * 4;
@@ -103,6 +130,17 @@ function convertColor(request: ConversionRequest) {
 scope.onmessage = (event) => {
   const request = event.data;
   try {
+    if (request.mode === 'gutter') {
+      if(request.topology) gutterTopology=request.topology;
+      if(!gutterTopology || request.pixels.byteLength!==request.width*request.height*4)
+        throw new Error('Invalid UV gutter Worker input.');
+      const image={width:request.width,height:request.height,data:new Uint8ClampedArray(request.pixels)} as ImageData;
+      const paddedPixels=padUvIslandGuttersWithTopology(image,new Uint8Array(request.coverage),
+        gutterTopology,request.iterations,request.alphaMode,true);
+      scope.postMessage({id:request.id,mode:'gutter',imageData:request.pixels,coverage:request.coverage,paddedPixels},
+        [request.pixels,request.coverage]);
+      return;
+    }
     if (request.mode === 'quality') {
       const quality = convertQuality(request);
       scope.postMessage({ id: request.id, mode: 'quality', quality }, [quality]);
@@ -111,7 +149,7 @@ scope.onmessage = (event) => {
     const result = convertColor(request);
     scope.postMessage(
       { id: request.id, mode: request.mode, ...result },
-      [result.imageData, result.coverage],
+      [result.imageData, result.coverage, ...(result.transparentCleanupTexels ? [result.transparentCleanupTexels] : [])],
     );
   } catch (error) {
     scope.postMessage({

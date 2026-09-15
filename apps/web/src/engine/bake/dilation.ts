@@ -9,6 +9,7 @@ export type UvGutterAlphaMode = boolean | 'rgb-only';
 const COMPONENT_QUEUE_CHUNK_SIZE = 65_536;
 const MIN_UV_REPAIR_SOURCE_ALPHA = 8;
 const MAX_TOPOLOGY_PINHOLE_RGB_DISTANCE_SQUARED = 64 * 64;
+
 // Only immutable, geometry-validated topology opts in. One atlas, <=1 MiB;
 // dense/fragmented atlases retain the original scan and donor ordering.
 let gutterBoundary: { mask: WeakRef<Uint8Array>; width: number; height: number;
@@ -22,7 +23,6 @@ function getRgbDistanceSquared(data: Uint8ClampedArray, first: number, second: n
   const blue = data[firstOffset + 2] - data[secondOffset + 2];
   return red * red + green * green + blue * blue;
 }
-
 /**
  * A compact grow-only queue for high-resolution atlases. A normal number[] can
  * use several times more memory per texel, while allocating width * height up
@@ -74,6 +74,7 @@ class ChunkedUint32Queue {
     this.length = length;
   }
 }
+
 
 export function rasterizeUvTopologyMask(...args: Parameters<typeof rasterizeUvTopologyMaskSteps>) {
   const steps = rasterizeUvTopologyMaskSteps(...args);
@@ -229,6 +230,7 @@ async function runUvPostprocessSteps<T>(steps: Generator<void, T>, yieldToUi: ()
   return step.value;
 }
 
+
 function* padUvIslandGutterSteps(
   imageData: ImageData,
   coverage: Uint8Array,
@@ -242,12 +244,14 @@ function* padUvIslandGutterSteps(
   if (topology.length !== width * height || coverage.length !== width * height) {
     throw new Error('UV gutter masks must match the image dimensions.');
   }
-  const neighborOffsets = [
-    [-1, -1], [0, -1], [1, -1],
-    [-1, 0],            [1, 0],
-    [-1, 1],  [0, 1],  [1, 1],
-  ] as const;
-  let currentFrontier: number[] = [];
+  // Same row-major donor order, with precomputed linear offsets. The column
+  // check prevents wrapping across rows; the linear bounds handle top/bottom.
+  const neighborSteps = [-width - 1, -width, -width + 1, -1, 1, width - 1, width, width + 1];
+  const neighborColumns = [-1, 0, 1, -1, 1, -1, 0, 1];
+  const words = data.byteOffset % 4 === 0
+    ? new Uint32Array(data.buffer, data.byteOffset, data.length / 4) : undefined;
+  let currentFrontier = new ChunkedUint32Queue();
+  let spareFrontier = new ChunkedUint32Queue();
   const cached = immutableTopology && gutterBoundary?.mask.deref() === topology &&
     gutterBoundary.width === width && gutterBoundary.height === height ? gutterBoundary : undefined;
   let prepared = immutableTopology && !cached ? new ChunkedUint32Queue() : undefined;
@@ -300,18 +304,16 @@ function* padUvIslandGutterSteps(
   let processedSeeds = 0;
 
   for (let iteration = 0; iteration < iterations && currentFrontier.length > 0; iteration += 1) {
-    const nextFrontier: number[] = [];
-    for (const sourceIndex of currentFrontier) {
+    const nextFrontier = spareFrontier;
+    nextFrontier.clear();
+    for (let seed = 0; seed < currentFrontier.length; seed++) {
+      const sourceIndex = currentFrontier.get(seed);
       if (++processedSeeds % 1024 === 0) yield;
       const sourceX = sourceIndex % width;
-      const sourceY = Math.floor(sourceIndex / width);
-      for (let neighbor = 0; neighbor < neighborOffsets.length; neighbor += 1) {
-        const offsetX = neighborOffsets[neighbor][0];
-        const offsetY = neighborOffsets[neighbor][1];
-        const x = sourceX + offsetX;
-        const y = sourceY + offsetY;
-        if (x < 0 || x >= width || y < 0 || y >= height) continue;
-        const targetIndex = y * width + x;
+      for (let neighbor = 0; neighbor < 8; neighbor += 1) {
+        const x = sourceX + neighborColumns[neighbor];
+        const targetIndex = sourceIndex + neighborSteps[neighbor];
+        if (x < 0 || x >= width || targetIndex < 0 || targetIndex >= coverage.length) continue;
         if (
           coverage[targetIndex] ||
           topology[targetIndex]
@@ -323,22 +325,26 @@ function* padUvIslandGutterSteps(
         // order retains the original Map's first-donor and insertion ordering.
         const sourceOffset = sourceIndex * 4;
         const targetOffset = targetIndex * 4;
-        data[targetOffset] = data[sourceOffset];
-        data[targetOffset + 1] = data[sourceOffset + 1];
-        data[targetOffset + 2] = data[sourceOffset + 2];
-        // RGB-only padding must remain transparent and survive weak-alpha cleanup.
-        data[targetOffset + 3] = alphaMode === 'rgb-only' ? 0
-          : alphaMode ? data[sourceOffset + 3] : 255;
+        if (words) words[targetIndex] = words[sourceIndex];
+        else {
+          data[targetOffset] = data[sourceOffset];
+          data[targetOffset + 1] = data[sourceOffset + 1];
+          data[targetOffset + 2] = data[sourceOffset + 2];
+          data[targetOffset + 3] = data[sourceOffset + 3];
+        }
+        if (alphaMode !== true) data[targetOffset + 3] = alphaMode === 'rgb-only' ? 0 : 255;
         coverage[targetIndex] = alphaMode === 'rgb-only' ? 2 : 1;
         nextFrontier.push(targetIndex);
         paddedPixels += 1;
       }
     }
 
+    spareFrontier = currentFrontier;
     currentFrontier = nextFrontier;
   }
   return paddedPixels;
 }
+
 
 export function dilateImageData(...args: Parameters<typeof dilateImageDataSteps>) {
   const steps = dilateImageDataSteps(...args);

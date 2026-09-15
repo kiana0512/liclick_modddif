@@ -42,8 +42,9 @@ const tight = {};
 let maskPixels = { width: 100, height: 100, data: new Uint8ClampedArray(40000) };
 maskPixels.data.set([255, 255, 255, 255], (50 * 100 + 50) * 4);
 let releases = 0;
+let onVerify;
 new Function('exports', 'THREE', 'performance', 'waitForBrowserPaint', 'captureMask', 'urlToImageData', 'revokeRegisteredObjectUrl', tightCode)(
-  tight, THREE, { now: () => clock }, async () => { clock += 16; }, async () => ({ url: 'test-mask' }),
+  tight, THREE, { now: () => clock }, async () => { clock += 16; }, async () => { onVerify?.(); return { url: 'test-mask' }; },
   async () => maskPixels, () => { releases++; });
 new Function('exports', 'THREE', 'useSceneStore', 'animateCaptureCamera', 'fitGeometryCapture', 'verifyTightCapture', code)(exports, THREE,
   { getState: () => ({ viewport }) }, animationExports.animateCaptureCamera, tight.fitGeometryCapture, tight.verifyTightCapture);
@@ -140,6 +141,29 @@ for (const ortho of [false, true]) for (const direction of [[0,0,1],[1,0,0],[0,1
   irregular.geometry.attributes.position.setXYZ(4,999,999,999); irregular.geometry.computeBoundingBox();
 }
 scene.remove(irregular); irregular.geometry.dispose(); irregular.material.dispose();
+// Fixed multi-view cameras remain exact while the visible camera keeps moving.
+for (const ortho of [false, true]) {
+  viewport.camera = ortho ? new THREE.OrthographicCamera(-5,5,5,-5,0.01,10000) : new THREE.PerspectiveCamera(40,1,0.01,10000);
+  viewport.camera.position.set(1,2,10); viewport.camera.lookAt(0,0,0); viewport.camera.updateMatrixWorld(true);
+  const pose = viewport.camera.clone();
+  const fixed = await exports.frameGenerationCapture('model', 1, [1,0,0], undefined, undefined, false);
+  onVerify = () => {
+    viewport.camera.position.addScalar(0.0001);
+    viewport.camera.rotateY(0.0001);
+    viewport.camera.zoom += 0.0001;
+    viewport.camera.updateMatrixWorld(true);
+  };
+  const moving = await exports.frameGenerationCapture('model', 1, [1,0,0], undefined, undefined, false);
+  assert.deepEqual(moving.camera.matrixWorld.elements, fixed.camera.matrixWorld.elements);
+  assert.deepEqual(moving.camera.projectionMatrix.elements, fixed.camera.projectionMatrix.elements);
+  assert.notDeepEqual(viewport.camera.position.toArray(), pose.position.toArray(), 'batch does not overwrite live navigation');
+  await assert.rejects(exports.frameGenerationCapture('model', 1, [1,0,0]), /相机已移动/);
+  await assert.rejects(exports.frameGenerationCapture('model', 1, undefined, undefined, undefined, false), /相机已移动/);
+  const cancelledBatch = new AbortController();
+  onVerify = () => cancelledBatch.abort();
+  await assert.rejects(exports.frameGenerationCapture('model', 1, [1,0,0], undefined, cancelledBatch.signal, false), { name: 'AbortError' });
+  onVerify = undefined;
+}
 const beforeMissing = viewport.camera.position.clone();
 await assert.rejects(exports.frameGenerationCapture('missing'));
 assert(viewport.camera.position.equals(beforeMissing));

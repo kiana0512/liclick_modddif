@@ -1,14 +1,16 @@
 import type * as THREE from 'three';
 import { RedFormat } from 'three';
-import type { GpuLayerSourceSize, GpuLayerRastersBakeOutput } from './gpuUvBakeRenderer';
+import type { GpuLayerSourceSize } from './gpuUvBakeRenderer';
 import { ResidentQualityComposite } from './residentQualityComposite';
-import { yieldToBrowserTask } from '@/utils/browserScheduling';
+import { compactUvContribution, type UvContributionTiles } from './uvContributionTiles';
+import { UvContributionArchive } from './UvContributionArchive';
 
 type Entry = {
   color: THREE.WebGLRenderTarget;
   quality?: THREE.WebGLRenderTarget;
   qualityTexture: THREE.Texture;
   sourceSize: GpuLayerSourceSize;
+  tiles?: UvContributionTiles;
 };
 
 type ResidentState = {
@@ -17,10 +19,11 @@ type ResidentState = {
 };
 
 const entryBytes = (entry: Entry) => entry.color.width * entry.color.height *
-  (entry.qualityTexture.format === RedFormat ? 5 : 8);
+  (entry.qualityTexture.format === RedFormat ? 5 : 8) + (entry.tiles?.index.image.data.byteLength ?? 0);
 const disposeEntry = (entry: Entry) => {
   entry.color.dispose();
   if (entry.quality && entry.quality !== entry.color) entry.quality.dispose();
+  entry.tiles?.index.dispose();
 };
 
 /** Derived, renderer-local full-resolution UV rasters. Never stores project assets.
@@ -35,16 +38,13 @@ export class ProjectedUvRasterCache {
   private bytes = 0;
   private disposed = false;
   private revision = 0;
+  private archive = new UvContributionArchive();
   private resident?: ResidentQualityComposite;
   private residentStates = new Map<number, ResidentState>();
   private residentWorkingStates = new Map<number, ResidentState>();
   private programs = new Map<string, THREE.ShaderMaterial>();
-  private resolved = new Map<
-    string,
-    [result: GpuLayerRastersBakeOutput, bytes: number]
-  >();
   private readonly contextLost = () => this.clear();
-  constructor(private readonly budget = 256 * 1024 * 1024) {}
+  constructor(private readonly budget = 256 * 1024 * 1024, private readonly contributions = false) {}
 
   prepare(renderer: THREE.WebGLRenderer, scope: string, keys: string[]) {
     if (this.disposed) throw new DOMException('UV raster owner disposed.', 'AbortError');
@@ -69,89 +69,6 @@ export class ProjectedUvRasterCache {
     const key = `${material.blending}:${material.depthTest}:${material.transparent}:${JSON.stringify(material.defines)}`;
     if (this.disposed || this.programs.has(key)) material.dispose();
     else this.programs.set(key, material);
-  }
-  async getResolved(key: string) {
-    const entry = this.resolved.get(key);
-    if (!entry) return undefined;
-    this.resolved.delete(key);
-    this.resolved.set(key, entry);
-    const revision = this.revision;
-    const result = await this.copyResolved(entry[0]);
-    return !this.disposed &&
-      revision === this.revision &&
-      this.resolved.get(key) === entry
-      ? result
-      : undefined;
-  }
-  async retainResolved(key: string, result: GpuLayerRastersBakeOutput) {
-    const base = result.residentQuality;
-    if (!base) return;
-    const bytes =
-      base.imageData.data.byteLength + base.coverage.byteLength + base.renderedColorMask.byteLength;
-    if (bytes > this.budget) return;
-    const revision = this.revision;
-    const copy = await this.copyResolved(result);
-    if (this.disposed || revision !== this.revision) return;
-    const existing = this.resolved.get(key);
-    if (existing) {
-      this.bytes -= existing[1];
-      this.resolved.delete(key);
-    }
-    // Aggregate UV replaces individual rasters within the same hard budget.
-    for (const [oldKey, old] of this.entries) {
-      if (this.bytes + bytes <= this.budget) break;
-      this.bytes -= entryBytes(old);
-      disposeEntry(old);
-      this.entries.delete(oldKey);
-    }
-    // Eye toggles most often alternate between exactly two authored states.
-    // Retain both inside the existing hard byte budget; a third state evicts
-    // the least recently used result before it can increase memory ownership.
-    while (this.resolved.size >= 2 || this.bytes + bytes > this.budget) {
-      const oldest = this.resolved.entries().next().value;
-      if (!oldest) break;
-      this.bytes -= oldest[1][1];
-      this.resolved.delete(oldest[0]);
-    }
-    if (this.bytes + bytes > this.budget) return;
-    this.resolved.set(key, [copy, bytes]);
-    this.bytes += bytes;
-  }
-  private async copyResolved(result: GpuLayerRastersBakeOutput) {
-    const base = result.residentQuality!;
-    const color = new Uint8ClampedArray(base.imageData.data.length);
-    const coverage = new Uint8Array(base.coverage.length);
-    const mask = new Uint8Array(base.renderedColorMask.length);
-    let started = performance.now();
-    for (const [target, source] of [
-      [color, base.imageData.data],
-      [coverage, base.coverage],
-      [mask, base.renderedColorMask],
-    ]) {
-      for (let offset = 0; offset < source.length; offset += 1048576) {
-        target.set(source.subarray(offset, offset + 1048576), offset);
-        if (performance.now() - started >= 4) {
-          await yieldToBrowserTask();
-          started = performance.now();
-        }
-      }
-    }
-    return {
-      ...result,
-      rasters: [],
-      sourcePreparationWaitMs: 0,
-      textureUploadMs: 0,
-      layerReadbackWaitMs: 0,
-      residentQuality: {
-        ...base,
-        imageData: new ImageData(color, base.imageData.width, base.imageData.height),
-        coverage,
-        renderedColorMask: mask,
-        accumulateMs: 0,
-        resolveMs: 0,
-        totalMs: 0,
-      },
-    };
   }
   getResident(renderer: THREE.WebGLRenderer, resolution: number) {
     this.prepareResident(renderer, resolution);
@@ -219,6 +136,7 @@ export class ProjectedUvRasterCache {
     for (const [oldKey, old] of this.entries) {
       if (this.bytes + bytes <= this.budget) break;
       if (this.protectedKeys.has(oldKey)) continue;
+      if (this.contributions && !this.archive.has(oldKey)) continue;
       this.bytes -= entryBytes(old);
       disposeEntry(old);
       this.entries.delete(oldKey);
@@ -228,8 +146,47 @@ export class ProjectedUvRasterCache {
     this.bytes += bytes;
     return true;
   }
+  async retainContribution(key: string, entry: Entry, resolution: number, checkCancelled?: () => void) {
+    if (!this.contributions) return this.take(key, entry);
+    const revision = this.revision;
+    const check = () => {
+      checkCancelled?.();
+      if (this.disposed || revision !== this.revision) throw new DOMException('UV contribution owner changed.', 'AbortError');
+    };
+    const compact = await compactUvContribution(this.renderer!, entry.color.texture,
+      entry.qualityTexture, resolution, check);
+    const contribution = compact ? {...compact, sourceSize:entry.sourceSize} : entry;
+    let retained = false;
+    try {
+      check();
+      const bytes = entryBytes(contribution);
+      // Spill before eviction. A visibility change never loses its quantized UV input.
+      for (const [oldKey, old] of this.entries) {
+        if (this.bytes + bytes <= this.budget) break;
+        if (this.protectedKeys.has(oldKey)) continue;
+        await this.archive.store(oldKey, old, this.renderer!, check);
+        check();this.bytes -= entryBytes(old);disposeEntry(old);this.entries.delete(oldKey);
+      }
+      retained = this.take(key, contribution);
+      if (!retained) { await this.archive.store(key, contribution, this.renderer!, check); check(); }
+      document.body.dataset.residentUvContributionBytes = String(this.bytes);
+      document.body.dataset.residentUvContributionCount = String(this.entries.size);
+      return retained && !compact;
+    } finally {
+      if (compact && !retained) disposeEntry(contribution);
+    }
+  }
+  hasArchivedContribution(key: string) { return this.contributions && this.archive.has(key); }
+  async restoreContribution(key: string, checkCancelled?: () => void) {
+    const revision=this.revision;
+    return this.archive.restore(key,this.renderer!,()=>{
+      checkCancelled?.();
+      if(this.disposed || revision!==this.revision)throw new DOMException('UV contribution owner changed.','AbortError');
+    });
+  }
   private clear() {
     this.revision++;
+    this.archive.dispose();this.archive = new UvContributionArchive();
     this.programs.forEach((material) => material.dispose());
     this.programs.clear();
     this.resident?.dispose();
@@ -240,7 +197,6 @@ export class ProjectedUvRasterCache {
       disposeEntry(entry);
     }
     this.entries.clear();
-    this.resolved.clear();
     this.bytes = 0;
   }
   dispose() {

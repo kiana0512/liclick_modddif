@@ -33,7 +33,8 @@ function harness(constructorFailures = 0) {
     () => ({ default: Worker }), exports,
     (fn) => { timers.add(fn); return fn; }, (fn) => timers.delete(fn),
   );
-  return { workers, timers, convert: (bytes = new Uint8Array([255])) => exports.convertQualityGpuReadbackInWorker(bytes, 1, true) };
+  return { workers, timers, gutter: exports.padResidentUvGutterInWorker,
+    convert: (bytes = new Uint8Array([255])) => exports.convertQualityGpuReadbackInWorker(bytes, 1, true) };
 }
 
 {
@@ -93,3 +94,27 @@ for (const mode of ['error', 'messageerror']) {
   assert.equal(h.workers.length, 1, 'invalid conversion remains a request error');
 }
 console.log('Readback Worker: ready-before-transfer, bounded bootstrap retry, failure cleanup and stale-event isolation passed.');
+{
+  globalThis.ImageData ??= class {constructor(data,width,height){Object.assign(this,{data,width,height});}};
+  const h=harness(),topology=new Uint8Array([1]);
+  const image=()=>new ImageData(new Uint8ClampedArray([23,41,67,255]),1,1);
+  const first=image(), mask=new Uint8Array([1]);
+  const pending=h.gutter(first,mask,topology,2,true);
+  assert.equal(first.data.byteLength,4,'Gutter bootstrap must precede ownership transfer');
+  const worker=h.workers[0];worker.ready();await settle();
+  assert.equal(first.data.byteLength,0);assert.equal(mask.byteLength,0);assert.equal(topology.byteLength,1);
+  const answer=(index)=>{const request=worker.messages[index];worker.onmessage({data:{id:request.id,mode:'gutter',
+    imageData:request.pixels,coverage:request.coverage,paddedPixels:0}});};
+  answer(0);const result=await pending;
+  assert.deepEqual([...result.imageData.data],[23,41,67,255]);
+  const warm=h.gutter(image(),new Uint8Array([1]),topology,2,true);await settle();
+  assert.equal(worker.messages[1].topology,undefined,'Immutable topology is cloned only once per Worker session');
+  answer(1);await warm;
+  let cancelled=false;
+  const late=h.gutter(image(),new Uint8Array([1]),topology,2,true,()=>{if(cancelled)throw new DOMException('Superseded','AbortError');});
+  const rejected=assert.rejects(late,{name:'AbortError'});await settle();cancelled=true;answer(2);await rejected;
+  const untouched=image();
+  await assert.rejects(h.gutter(untouched,new Uint8Array([1]),topology,2,true,()=>{throw Error('cancel before transfer');}),/cancel before transfer/);
+  assert.equal(untouched.data.byteLength,4);
+}
+console.log('Gutter Worker client: bootstrap, exclusive transfer, topology reuse and stale-result cancellation passed.');

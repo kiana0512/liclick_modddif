@@ -33,6 +33,7 @@
     "test:performance-lab-stress": "node scripts/test-performance-lab-stress.mjs",
     "test:quality-blend-resources": "node scripts/test-quality-blend-resources.mjs",
     "test:uv-source-scheduling": "node scripts/test-uv-source-scheduling.mjs",
+    "test:uv-underlay-cache": "node scripts/test-uv-underlay-cache.mjs",
     "test:uv-gutter-cooperative": "node scripts/test-uv-gutter-cooperative.mjs",
     "test:uv-readback-stripes": "node scripts/test-uv-readback-stripes.mjs",
     "test:model-silhouette-clip": "node scripts/test-model-silhouette-clip.mjs",
