@@ -28,11 +28,11 @@
 
 2026-09-15 M04/UI-05，协作 M03/M07：`GEN-CANCEL-CLASSIFICATION/1` 不再把所有 AbortError 或包含“已取消”的内部错误当成用户意图；多视图入口检查自己的取消 signal，意外中断保留错误提示和 toast，错误/警告不受精简进度文案过滤。`ALG-CAP-007/1.1.1` 固定方向且不驱动视口动画的批次相机已独立冻结，因此不再因屏幕相机微小变化停止下一组；交互取景/无固定方向仍检查相机变更，主动取消仍有效。分组 2+4+4 / 2+4+4+4、前组 UV 呈现屏障、原分辨率和 GPU/CPU/Worker/shader 像素算法、持久化与导出不变；不重新投影、不自动重提付费请求，不修改历史成功图片。无需数据迁移，回滚恢复取消分类和实时相机比较分支即可。单元覆盖首组成功后中断、前六张成功后第三组中断、固定相机移动和显式取消；实际付费全流程与用户本次根因仍待控制台证据核实。
 
-> 文档版本：`2.20.109`
+> 文档版本：`2.20.110`
 
 2026-09-15 M07，协作 M06/M08/M09：`UV-DISPLAY-BUFFER/1.4.2` / `UV-UNDERLAY-DECODE/1.0.1` 将连续显隐中已过期的底图合成信号传到 Worker，并中止旧 fetch；相同签名/缓存、最新状态接续、完整像素与发布门禁保持。实际 Worker 队列与独立 4K 阻塞旧请求对照通过，不宣称首次组合实时。GPU/CPU/Worker/shader、QA、保存/CAS 与导出不变，无迁移。详见 [过期底图取消变更卡](changes/CHG-20260915-VISIBILITY-UNDERLAY-CANCEL.md)。
 
-2026-09-15 M04，协作 M08/M12/M14：`PIXEL-EXACT-REFERENCE-UPLOAD/1.0.0` 修复 exact 引导图在前端按 Atlas JSON 预算过早拒绝的问题。原尺寸 PNG 先经无损编码和逐 RGBA 验证，仍超限时用所属工程 verified 对象资产及短期签名下载上传，原 Atlas 预算保持；未配置对象存储且无损后仍超限明确阻断。完整分辨率、QA、GPU/CPU/Worker/shader、保存/CAS 与导出保持，无 Schema 迁移，前后端成套回滚。详见 [原尺寸引导图上传变更卡](changes/CHG-20260915-PIXEL-EXACT-REFERENCE-UPLOAD.md)。
+2026-09-15 M04，协作 M08/M12/M14：`PIXEL-EXACT-REFERENCE-UPLOAD/1.1.0` 修复 exact 引导图在前端按 Atlas JSON 预算过早拒绝的问题。原尺寸 PNG 先经无损编码和逐 RGBA 验证；仍超限时尝试原尺寸无损 WebP，包含透明 RGB 的完整字节对照通过才使用。用户工程两张失败视角现已通过实际 Atlas 上传。仍超限时用所属工程 verified 对象资产及短期签名下载上传，原 Atlas 预算保持；未配置对象存储且无损后仍超限明确阻断。完整分辨率、QA、GPU/CPU/Worker/shader、保存/CAS 与导出保持，无 Schema 迁移，前后端成套回滚。详见 [原尺寸引导图上传变更卡](changes/CHG-20260915-PIXEL-EXACT-REFERENCE-UPLOAD.md)。
 
 2026-09-15 M15：`SHADER-TEMPLATE-FORMAT/1.4.0` 仅在构建期压缩实际 Three.js ShaderChunk 注册字符串的空白，保持 GLSL token、指令、行数及其他 JavaScript；Terser ecma 使用 Vite 类型支持的 2020，es2022 target 保持。实际 141 字符串等价回归通过，最终 SHA 必须通过正式产物预算。分辨率、QA、GPU/CPU/Worker 数学、持久化、导出与预算保持，无迁移。详见 [发布 shader 空白变更卡](changes/CHG-20260915-RELEASE-SHADER-WHITESPACE.md)。
 >

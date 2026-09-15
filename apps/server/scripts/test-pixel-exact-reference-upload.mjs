@@ -48,6 +48,28 @@ assert.ok(fourKAfter.data.equals((await decode(fourK)).data));
 // Incompressible pixels cannot be forced into the Atlas envelope. The cloud
 // path uses only a verified, owned object and the download URL; no real upload.
 const { randomBytes } = await import('node:crypto');
+// Structured texture noise exceeds the inline budget as PNG, while lossless
+// WebP fits. Exercise the codec choice without relying on user project files.
+const textureSize = 1536, textureNoise = randomBytes(textureSize * textureSize);
+const texturePixels = Buffer.alloc(textureSize * textureSize * 4);
+for (let i = 0; i < textureNoise.length; i++) {
+  texturePixels[i * 4] = texturePixels[i * 4 + 1] = texturePixels[i * 4 + 2] = textureNoise[i];
+  texturePixels[i * 4 + 3] = 255;
+}
+const texturePng = dataUrl(await sharp(texturePixels, { raw: { width: textureSize, height: textureSize, channels: 4 } }).png({ compressionLevel: 9, adaptiveFiltering: true }).toBuffer());
+assert.ok(texturePng.length > atlasReferenceDataUrlBudget);
+const textureWebp = await losslessReferenceDataUrl(texturePng);
+assert.ok(textureWebp.startsWith('data:image/webp;'));
+assert.ok(textureWebp.length <= atlasReferenceDataUrlBudget);
+assert.ok((await decode(textureWebp)).data.equals(texturePixels));
+assert.deepEqual(await preparePixelExactUploadArguments(texturePng, {}), { file_path: textureWebp });
+
+// RGB underneath transparent pixels is part of the exact contract too.
+const transparentPixels = Buffer.from(texturePixels);
+for (let i = 0; i < textureNoise.length; i++) transparentPixels[i * 4 + 3] = 0;
+const transparentPng = dataUrl(await sharp(transparentPixels, { raw: { width: textureSize, height: textureSize, channels: 4 } }).png({ compressionLevel: 9, adaptiveFiltering: true }).toBuffer());
+const transparentResult = await losslessReferenceDataUrl(transparentPng);
+assert.ok((await decode(transparentResult)).data.equals(transparentPixels), 'Transparent RGB must not be discarded by a lossless codec');
 const noisy = dataUrl(await sharp(randomBytes(1024 * 1024 * 4), { raw: { width: 1024, height: 1024, channels: 4 } }).png({ compressionLevel: 0 }).toBuffer());
 const previousEnabled = serverConfig.objectStorage.enabled;
 serverConfig.objectStorage.enabled = false;

@@ -2,7 +2,7 @@ import sharp from 'sharp';
 import { serverConfig } from '../config.js';
 import { createAssetDownloadUrl, saveProxiedObjectStorageAsset } from './assetTransferService.js';
 
-// PIXEL-EXACT-REFERENCE-UPLOAD/1.0.0. The browser-to-control-plane body is
+// PIXEL-EXACT-REFERENCE-UPLOAD/1.1.0. The browser-to-control-plane body is
 // separate from Atlas's 4 MiB JSON-RPC envelope. Never resize geometry guides.
 export const atlasReferenceDataUrlBudget = 4 * 1024 * 1024 - 512 * 1024;
 const maxImageBytes = 16 * 1024 * 1024;
@@ -24,14 +24,26 @@ export async function losslessReferenceDataUrl(dataUrl: string) {
   // Embedded colour profiles must keep their original encoded bytes.
   if (metadata.icc) return dataUrl;
   const compressed = await decode(original).png({ compressionLevel: 9, adaptiveFiltering: true, palette: false }).toBuffer();
-  if (compressed.length >= original.length) return dataUrl;
   const before = await decode(original).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
-  const after = await decode(compressed).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
-  if (before.info.width !== after.info.width || before.info.height !== after.info.height ||
-      before.info.channels !== after.info.channels || !before.data.equals(after.data)) {
-    throw new Error('结构引导图无损验证失败；未提交生成任务。');
+  const matches = async (candidate: Buffer) => {
+    const after = await decode(candidate).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+    return before.info.width === after.info.width && before.info.height === after.info.height &&
+      before.info.channels === after.info.channels && before.data.equals(after.data);
+  };
+  let best = dataUrl;
+  if (compressed.length < original.length) {
+    if (!await matches(compressed)) throw new Error('结构引导图无损验证失败；未提交生成任务。');
+    best = `data:image/png;base64,${compressed.toString('base64')}`;
   }
-  return `data:image/png;base64,${compressed.toString('base64')}`;
+  if (best.length <= atlasReferenceDataUrlBudget) return best;
+  // Lossless WebP often encodes textured guides better than DEFLATE. Some
+  // encoders discard RGB behind zero alpha: reject those candidates too.
+  if (metadata.width! <= 16383 && metadata.height! <= 16383) {
+    const webp = await decode(original).webp({ lossless: true, effort: 6 }).toBuffer();
+    const candidate = `data:image/webp;base64,${webp.toString('base64')}`;
+    if (candidate.length < best.length && await matches(webp)) best = candidate;
+  }
+  return best;
 }
 
 export async function preparePixelExactUploadArguments(dataUrl: string, context: { userId?: string; projectId?: string }) {
@@ -44,7 +56,8 @@ export async function preparePixelExactUploadArguments(dataUrl: string, context:
   // downloads the exact file instead of embedding its Base64 in JSON-RPC.
   const asset = await saveProxiedObjectStorageAsset({
     userId: context.userId, projectId: context.projectId, category: 'captures',
-    filename: 'pixel-exact-guide.png', mimeType: 'image/png',
+    filename: lossless.startsWith('data:image/webp;') ? 'pixel-exact-guide.webp' : 'pixel-exact-guide.png',
+    mimeType: lossless.startsWith('data:image/webp;') ? 'image/webp' : 'image/png',
     buffer: Buffer.from(lossless.slice(lossless.indexOf(',') + 1), 'base64'),
   });
   const assetId = asset?.relativePath.match(/^objects\/([^/]+)$/)?.[1];
