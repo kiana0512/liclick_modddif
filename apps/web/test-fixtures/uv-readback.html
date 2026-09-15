@@ -19,7 +19,7 @@ try { const { readRenderTargetPixelsInStripes } = await import('/src/engine/bake
  renderer.readRenderTargetPixelsAsync=async (...args)=>{buffers.push(args[5].buffer);offsets.push(args[5].byteOffset);return original(...args);};
  document.getElementById('result').textContent='Striped readback'; const actual=await readRenderTargetPixelsInStripes(renderer,target,resolution);
  let differences=0;for(let i=0;i<actual.length;i++)differences+=Number(actual[i]!==reference[i]);
- if(differences||!buffers.every(b=>b===actual.buffer)||offsets[1]!==8*1024*1024)throw new Error('Parity/ownership failed');
+ if(differences||!buffers.every(b=>b===actual.buffer)||offsets[1]!==1024*1024)throw new Error('Parity/ownership failed');
  document.getElementById('result').textContent='PASS '+JSON.stringify({differences,bytes:actual.length,stripes:buffers.length,offsets,temporaryBytesAvoided:actual.length});
  target.dispose();renderer.dispose();
 }catch(e){document.getElementById('result').textContent='FAIL '+e.stack;}

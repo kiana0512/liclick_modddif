@@ -17,35 +17,37 @@ for (const visible of [true, false]) {
     async readRenderTargetPixelsAsync(target, x, y, width, height, buffer) {
       assert.equal(buffer.byteOffset, y * width * 4);
       assert.equal(buffer.byteLength, width * height * 4);
+      assert(buffer.byteLength<=1024*1024,'each driver copy stays within the input-blocking budget');
       destinations.push(buffer);
       buffer.fill(++calls);
     },
   }, {}, 1537);
-  assert.equal(calls, 2); assert.equal(yields, 1);
+  assert.equal(calls, 10); assert.equal(yields, 9);
   assert(destinations.every(part => part.buffer === result.buffer));
-  assert.equal(result[0], 1); assert.equal(result.at(-1), 2);
+  assert.equal(result[0], 1); assert.equal(result.at(-1), 10);
   assert.equal(result.length, 1537 * 1537 * 4);
 }
 await assert.rejects(read({ domElement: { isConnected: false }, async readRenderTargetPixelsAsync() {
   throw new Error('GPU readback failed');
 } }, {}, 4), /GPU readback failed/);
 for (const visible of [true,false]) {
-  for (const failure of [-1,0,1]) {
-    let active=0,maximum=0,calls=0,completed=0;
+  for (const failure of [-1,0,1,7]) {
+    let active=0,maximum=0,calls=0,completed=0,activeBytes=0;
     const job=read({domElement:{isConnected:visible},async readRenderTargetPixelsAsync(target,x,y,w,h,buffer){
-      const index=calls++;active++;maximum=Math.max(maximum,active);
+      const index=calls++;active++;maximum=Math.max(maximum,active);activeBytes+=buffer.byteLength;
+      assert(activeBytes<=8*1024*1024,'private PBOs stay within eight MiB');
       try {
         // Later reads may complete/fail before the first read.
         await new Promise(resolve=>setTimeout(resolve,index===0?8:1));
         if(index===failure)throw new Error(`stripe ${index}`);
         buffer.fill(index+1);
-      } finally {active--;completed++;}
+      } finally {active--;completed++;activeBytes-=buffer.byteLength;}
     }},{},2049);
-    if(failure<0){const result=await job;assert.equal(result[0],1);assert.equal(result.at(-1),3);}
+    if(failure<0){const result=await job;assert.equal(result[0],1);assert.equal(result.at(-1),17);}
     else await assert.rejects(job,new RegExp(`stripe ${failure}`));
     assert.equal(active,0,'a failed read drains every outstanding stripe before target cleanup');
     assert.equal(completed,calls);
-    assert.equal(maximum,visible?1:2,'only isolated renderers overlap two bounded stripes');
+    assert.equal(maximum,visible?1:8,'only isolated renderers overlap bounded stripes');
   }
 }
 console.log('UV readback passed: exact destinations/tail, bounded isolated overlap, visible paint boundaries, out-of-order success/failure and cleanup.');

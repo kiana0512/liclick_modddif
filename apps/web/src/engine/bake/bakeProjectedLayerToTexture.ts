@@ -1425,7 +1425,7 @@ async function bakeVisibleProjectedLayersToTextureUnlocked(
           const referenceStartedAt=performance.now();
           const reference=await blendProjectedRastersInWorker(normalRasters,compositeResolution,
             input.preserveCoverageConfidenceAlpha ?? false,[],true);
-          residentBase=verifyResidentQuality(renderer,input.preserveCoverageConfidenceAlpha ?? false,residentBase,reference);
+          residentBase=await verifyResidentQuality(renderer,input.preserveCoverageConfidenceAlpha ?? false,residentBase,reference);
           performanceBreakdown.qualityFullReferenceMs=performance.now()-referenceStartedAt;
         }
         const blendOverlays = [

@@ -1,10 +1,9 @@
 import type * as THREE from 'three';
 import { waitForBrowserPaint, yieldToBrowserTask } from '@/utils/browserScheduling';
 
-// Eight 8 MiB stripes for a 4K RGBA target keep each driver readback bounded.
-// The smaller transfer is intentionally retained: stress testing showed a
-// 100.1ms maximum frame versus 433.6ms at 32 MiB, with identical pixels.
-const GPU_READBACK_STRIPE_BYTES = 8 * 1024 * 1024;
+// UV-READBACK-SCHEDULING/1.1.0: bound each synchronous driver copy to 1 MiB.
+// Private contexts pipeline eight stripes while retaining at most 8 MiB of PBOs.
+const GPU_READBACK_STRIPE_BYTES = 1024 * 1024;
 
 export async function readRenderTargetPixelsInStripes(
   renderer: THREE.WebGLRenderer,
@@ -20,8 +19,8 @@ export async function readRenderTargetPixelsInStripes(
   const startedAt = performance.now();
   const usesVisibleRenderer = renderer.domElement.isConnected;
   // Pipeline only the isolated bake context. The onscreen renderer keeps its
-  // original one-stripe paint boundary; private work holds at most 16 MiB of PBOs.
-  const depth = usesVisibleRenderer ? 1 : 2;
+  // original one-stripe paint boundary; private work holds at most 8 MiB of PBOs.
+  const depth = usesVisibleRenderer ? 1 : 8;
   const pending: Array<Promise<{ error?: unknown }>> = [];
   let nextY = 0;
   const submit = () => {

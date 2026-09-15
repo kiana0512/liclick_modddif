@@ -20,17 +20,21 @@ export function residentQualityPolicy(renderer:THREE.WebGLRenderer,preserveAlpha
   return {preserveAlpha,retainRasters:modes.get(preserveAlpha)!==true || params.get('perfQualityGpuAb')==='1'};
 }
 
-export function verifyResidentQuality(renderer:THREE.WebGLRenderer,preserveAlpha:boolean,
+export async function verifyResidentQuality(renderer:THREE.WebGLRenderer,preserveAlpha:boolean,
   candidate:QualityBlendWorkerResult,reference:QualityBlendWorkerResult) {
   const a=candidate.imageData.data,b=reference.imageData.data;
+  const modes=approvals.get(renderer);
   let byteMismatches=0,alphaByteMismatches=0,maximumByteDelta=0;
+  let started=performance.now();
   for(let i=0;i<a.length;i++) {
     const delta=Math.abs(a[i]-b[i]);
     if(delta) {byteMismatches++;maximumByteDelta=Math.max(maximumByteDelta,delta);if(i%4===3)alphaByteMismatches++;}
+    if(i%262144===0 && performance.now()-started>=4) {await yieldToBrowserTask();started=performance.now();}
   }
   const mismatchRatio=byteMismatches/a.length;
   const accepted=a.length===b.length && alphaByteMismatches===0 && maximumByteDelta<=1 && mismatchRatio<=0.00001;
-  approvals.get(renderer)?.set(preserveAlpha,accepted);
+  if(approvals.get(renderer)!==modes) throw new DOMException('UV validation context changed.', 'AbortError');
+  modes?.set(preserveAlpha,accepted);
   if(!accepted && !isLegacyUvBakeDiagnosticEnabled()) {
     throw new Error(`GPU UV quality validation failed (${byteMismatches} differing bytes). Legacy bake is disabled.`);
   }
@@ -201,7 +205,7 @@ void main() {
  * Ranks preserve that asymmetric comparison, including coverage-floor ties.
  * Comparing two rounded shader scores would silently reorder some candidates.
  */
-export function createResidentQualityScoreTable() {
+function* residentQualityScoreSteps() {
   const raw = new Float64Array(65536);
   const values = new Set<number>([0]);
   for (let alpha = 0; alpha < 256; alpha += 1) {
@@ -210,6 +214,7 @@ export function createResidentQualityScoreTable() {
       raw[alpha * 256 + quality] = value;
       values.add(value); values.add(Math.fround(value));
     }
+    yield;
   }
   const ranks = new Map([...values].sort((a,b) => a-b).map((value,index) => [value,index]));
   const table = new Float32Array(65536 * 4);
@@ -218,8 +223,28 @@ export function createResidentQualityScoreTable() {
     table[index * 4 + 1] = ranks.get(Math.fround(raw[index]))!;
     table[index * 4 + 2] = Math.fround(raw[index]);
     table[index * 4 + 3] = Math.fround(Math.floor(index / 256) / 255);
+    if(index%4096===0) yield;
   }
   return table;
+}
+
+let preparedScores: Float32Array<ArrayBuffer> | undefined;
+let scorePreparation: Promise<void> | undefined;
+/** Pure, immutable lookup preparation never blocks an entire input frame. */
+export function prepareResidentQualityScores() {
+  return scorePreparation ??= (async () => {
+    const steps=residentQualityScoreSteps();let started=performance.now();
+    for(let result=steps.next();;result=steps.next()) {
+      if(result.done) {preparedScores=result.value;return;}
+      if(performance.now()-started>=4) {await yieldToBrowserTask();started=performance.now();}
+    }
+  })();
+}
+/** Synchronous gold/test callers retain the exact independent lookup. */
+export function createResidentQualityScoreTable() {
+  const steps=residentQualityScoreSteps();let result=steps.next();
+  while(!result.done) result=steps.next();
+  return result.value;
 }
 
 function tableTexture(data: Float32Array<ArrayBuffer>, width: number, height: number) {
@@ -257,7 +282,7 @@ export class ResidentQualityComposite {
         minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter, depthBuffer: false,
       }));
     }
-    this.scoreTexture = tableTexture(createResidentQualityScoreTable(),256,256);
+    this.scoreTexture = tableTexture(preparedScores ?? createResidentQualityScoreTable(),256,256);
     const linear = new Float32Array(256 * 4);
     for (let i=0; i<256; i+=1) {
       const c=i/255;
