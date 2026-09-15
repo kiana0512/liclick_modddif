@@ -73,6 +73,7 @@ type CompositeRequest = {
   front: ArrayBuffer;
   underlay?: ArrayBuffer;
   underlayUrl?: string;
+  underlayCacheKey?: string;
   width?: number;
   height?: number;
   opacity: number;
@@ -421,12 +422,11 @@ async function compositeOnCpuBudgeted(
   return frontBuffer;
 }
 
-async function loadUnderlayInWorker(request: CompositeRequest) {
+async function loadUnderlayInWorker(request: CompositeRequest, generation = underlayCacheGeneration) {
   if (request.underlay) return request.underlay;
   if (!request.underlayUrl || !request.width || !request.height) {
     throw new Error('Composite underlay source is missing.');
   }
-  const generation=underlayCacheGeneration;
   const response = await fetch(request.underlayUrl, { signal: fetchControllers.get(request.id)?.signal });
   if (!response.ok) throw new Error(`Could not load UV underlay (${response.status}).`);
   throwIfCancelled(request);
@@ -435,7 +435,7 @@ async function loadUnderlayInWorker(request: CompositeRequest) {
   if(request.underlayUrl.length<=4096 && request.width*request.height*4<=64*1024*1024 &&
     blob.size<=64*1024*1024 && typeof crypto!=='undefined' && crypto.subtle) {
     const digest=new Uint8Array(await crypto.subtle.digest('SHA-256',await blob.arrayBuffer()));
-    key=JSON.stringify([request.underlayUrl,request.width,request.height,blob.type,Array.from(digest)]);
+    key=JSON.stringify([request.underlayCacheKey,request.underlayUrl,request.width,request.height,blob.type,Array.from(digest)]);
     throwIfCancelled(request);
     if(underlayCache?.key===key) return request.sourceOver ? underlayCache.pixels.slice(0) : underlayCache.pixels;
   }
@@ -636,13 +636,14 @@ scope.onmessage = (event) => {
     destroyResources();
     return;
   }
+  const generation = underlayCacheGeneration;
   workQueue = workQueue.then(async () => {
     try {
       throwIfCancelled(request);
       fetchControllers.set(request.id, new AbortController());
       const normalizedRequest: NormalizedCompositeRequest = {
         ...request,
-        underlay: await loadUnderlayInWorker(request),
+        underlay: await loadUnderlayInWorker(request, generation),
       };
       if (request.sourceOver) {
         [normalizedRequest.front, normalizedRequest.underlay] = [normalizedRequest.underlay, normalizedRequest.front];

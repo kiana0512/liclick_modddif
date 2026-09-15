@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import ts from 'typescript';
 import * as THREE from 'three';
 import './test-resident-uv-visibility-scheduling.mjs';
+import * as fflate from 'fflate';
 
 const load = (file, dependencies) => {
   const source = fs.readFileSync(new URL(`../src/engine/bake/${file}.ts`, import.meta.url), 'utf8');
@@ -579,7 +580,7 @@ await presentation.waitForResidentUvPresentation(scene, 'other-object');
   }
   const exports = {};
   new Function('require','exports','Worker','window',js)(
-    name => name === './uvSeamGeometrySnapshot' ? load('uvSeamGeometrySnapshot',{})
+    name => name === './uvSeamGeometrySnapshot' ? load('uvSeamGeometrySnapshot',{fflate})
       : ({recordWebGpuProductionDispatch(){}}), exports, RasterWorker,
     {setTimeout,location:{search:''}},
   );

@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { matchesUvSeamGeometry, snapshotUvSeamGeometry,
+import { matchesUvSeamGeometry, snapshotUvSeamGeometry, uvSeamSnapshotByteLength,
   type UvSeamGeometrySnapshot } from './uvSeamGeometrySnapshot';
 
 export type UvSeamEndpoint = {
@@ -28,14 +28,20 @@ type RepairPlan = { snapshot: UvSeamGeometrySnapshot; key: string; chunks: Uint3
   count: number; seamPairs: number };
 let repairPlanCache = new WeakMap<THREE.Object3D, RepairPlan>();
 const REPAIR_CHUNK_WORDS = 32768;
-const MAX_REPAIR_WORDS = 64 * 1024 * 1024 / 4;
+// Geometry and donor addresses share the former address-only budget. Large
+// geometry may borrow unused address space without growing retained memory.
+const MAX_REPAIR_BYTES = 64 * 1024 * 1024;
 
-function* getReusableSeamPairs(root: THREE.Object3D, includeDiscontinuous: boolean) {
+function* getReusableSeamPairs(root: THREE.Object3D, includeDiscontinuous: boolean,
+  preparedSnapshot?: UvSeamGeometrySnapshot | null) {
   const cached = seamPlanCache.get(root);
   if (cached?.includeDiscontinuous === includeDiscontinuous &&
     (yield* matchesUvSeamGeometry(root, cached.snapshot))) return cached.pairs;
-  const snapshot = yield* snapshotUvSeamGeometry(root);
+  const snapshot = preparedSnapshot === undefined ? yield* snapshotUvSeamGeometry(root) : preparedSnapshot;
   const pairs = yield* collectUvSeamPairSteps(root, includeDiscontinuous, true);
+  // Missing-coverage callers publish and validate the compact donor plan below;
+  // retaining/validating a second edge graph and snapshot here duplicates work.
+  if (preparedSnapshot !== undefined) return pairs;
   // Do not cache mixed geometry if the model changed while the cooperative
   // traversal was yielding. Pair objects remain private to this consumer.
   if (snapshot && pairs.length <= 100000 && (yield* matchesUvSeamGeometry(root, snapshot))) {
@@ -281,7 +287,11 @@ function* reconcileUvSeamSteps(
   const cached = options.repairMissingCoverage ? repairPlanCache.get(root) : undefined;
   if (typeof document !== 'undefined') document.body.dataset.residentUvSeamPlanHit = '0';
   if (cached?.key === repairKey && (yield* matchesUvSeamGeometry(root, cached.snapshot))) {
-    if (typeof document !== 'undefined') document.body.dataset.residentUvSeamPlanHit = '1';
+    if (typeof document !== 'undefined') {
+      document.body.dataset.residentUvSeamPlanHit = '1';
+      document.body.dataset.residentUvSeamPlanCached = 'true';
+      document.body.dataset.residentUvSeamPlanWords = String(cached.count);
+    }
     let remaining = cached.count;
     for (const chunk of cached.chunks) {
       const length = Math.min(remaining, chunk.length);
@@ -301,11 +311,14 @@ function* reconcileUvSeamSteps(
     }
     return { seamPairs: cached.seamPairs, adjustedPixels, bandPixels };
   }
-  const snapshot = options.repairMissingCoverage ? yield* snapshotUvSeamGeometry(root) : undefined;
+  const snapshot = options.repairMissingCoverage ? yield* snapshotUvSeamGeometry(root, false, MAX_REPAIR_BYTES) : undefined;
+  const maxRepairWords = snapshot
+    ? Math.floor((MAX_REPAIR_BYTES - uvSeamSnapshotByteLength(snapshot)) / (REPAIR_CHUNK_WORDS * 4)) * REPAIR_CHUNK_WORDS : 0;
   const chunks: Uint32Array[] = [];
   let addressCount = 0;
   let cacheable = Boolean(snapshot);
-  const seamPairs = yield* getReusableSeamPairs(root, Boolean(options.repairMissingCoverage));
+  const seamPairs = yield* getReusableSeamPairs(root, Boolean(options.repairMissingCoverage),
+    options.repairMissingCoverage ? snapshot ?? null : undefined);
 
   for (const [first, second] of seamPairs) {
     const firstStart = toPixel(first.a.uv, width, height);
@@ -356,7 +369,7 @@ function* reconcileUvSeamSteps(
         const firstIndex = firstY * width + firstX;
         const secondIndex = secondY * width + secondX;
         if (cacheable) {
-          if (addressCount === MAX_REPAIR_WORDS) { cacheable = false; chunks.length = 0; }
+          if (addressCount === maxRepairWords) { cacheable = false; chunks.length = 0; }
           else {
             const offset = addressCount % REPAIR_CHUNK_WORDS;
             if (offset === 0) chunks.push(new Uint32Array(REPAIR_CHUNK_WORDS));

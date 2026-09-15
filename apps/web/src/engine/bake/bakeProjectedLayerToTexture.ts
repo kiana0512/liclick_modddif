@@ -1544,15 +1544,19 @@ async function bakeVisibleProjectedLayersToTextureUnlocked(
           dilateImageData(composite, qualityCoverage, dilationPixels);
         }
         const gutterStartedAt = performance.now();
+        const gutterTimings = { gutterBoundaryScanMs: 0, gutterExpansionMs: 0, gutterYieldMs: 0, gutterTopologyRasterMs: 0 };
+        let gutterTopologyWaitMs = 0;
         markUvBakePerformancePhase('gutter');
         if ((input.uvIslandGutterPixels ?? 0) > 0) {
+          const topologyWaitStartedAt = performance.now();
           const topology = await getUvGutterTopology();
+          gutterTopologyWaitMs = performance.now() - topologyWaitStartedAt;
           input.checkCancelled?.();
           const workerGutter = topology && topology.mask.byteLength <= 64 * 1024 * 1024
             ? await padResidentUvGutterInWorker(composite,qualityCoverage,topology.mask,
                 input.uvIslandGutterPixels ?? 0,input.outputAlpha === 'transparent',input.checkCancelled)
             : undefined;
-          if(workerGutter) {composite=workerGutter.imageData;qualityCoverage=workerGutter.coverage;}
+          if(workerGutter) {composite=workerGutter.imageData;qualityCoverage=workerGutter.coverage;Object.assign(gutterTimings,workerGutter.timings);}
           performanceBreakdown.gutterWorkerUsed=Number(!!workerGutter);
           const paddedPixels = workerGutter ? workerGutter.paddedPixels : topology
             ? await padUvIslandGuttersWithTopologyCooperatively(
@@ -1563,6 +1567,7 @@ async function bakeVisibleProjectedLayersToTextureUnlocked(
                 input.outputAlpha === 'transparent',
                 yieldPostprocess,
                 true,
+                gutterTimings,
               )
             : await padUvIslandGuttersCooperatively(
                 composite,
@@ -1571,12 +1576,19 @@ async function bakeVisibleProjectedLayersToTextureUnlocked(
                 input.uvIslandGutterPixels ?? 0,
                 input.outputAlpha === 'transparent',
                 yieldPostprocess,
+                gutterTimings,
               );
           if (paddedPixels > 0) {
             warnings.push(`UV-island gutter padding added ${paddedPixels} filter-only texels.`);
           }
         }
         performanceBreakdown.gutterMs = performance.now() - gutterStartedAt;
+        Object.assign(performanceBreakdown, gutterTimings, { gutterTopologyWaitMs });
+        // Residual orchestration time makes the non-overlapping buckets sum to
+        // gutterMs; the concurrently started topology total is not added again.
+        performanceBreakdown.gutterOtherMs = Math.max(0, performanceBreakdown.gutterMs - gutterTopologyWaitMs -
+          gutterTimings.gutterTopologyRasterMs - gutterTimings.gutterBoundaryScanMs -
+          gutterTimings.gutterExpansionMs - gutterTimings.gutterYieldMs);
         input.checkCancelled?.();
         const finalizeStartedAt = performance.now();
         markUvBakePerformancePhase('finalize-cleanup');

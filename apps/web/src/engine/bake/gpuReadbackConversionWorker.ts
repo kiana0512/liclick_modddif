@@ -1,3 +1,4 @@
+import type { UvGutterTimings } from './dilation';
 import ReadbackWorker from '../../workers/gpuReadbackConversion.worker?worker&inline';
 
 type ConversionMode = 'final' | 'layer' | 'resident' | 'quality';
@@ -21,7 +22,7 @@ type ConversionResponse =
       transparentCleanupTexels?: ArrayBuffer;
     }
   | { id: number; mode: 'quality'; quality: ArrayBuffer }
-  | { id: number; mode: 'gutter'; imageData: ArrayBuffer; coverage: ArrayBuffer; paddedPixels: number }
+  | { id: number; mode: 'gutter'; imageData: ArrayBuffer; coverage: ArrayBuffer; paddedPixels: number; timings: UvGutterTimings }
   | { id: number; error: string };
 
 type PendingConversion = {
@@ -189,5 +190,5 @@ export async function padResidentUvGutterInWorker(image: ImageData, coverage: Ui
   check?.();
   if('error' in response || response.mode!=='gutter') throw new Error('Invalid UV gutter Worker result.');
   return {imageData:new ImageData(new Uint8ClampedArray(response.imageData),image.width,image.height),
-    coverage:new Uint8Array(response.coverage),paddedPixels:response.paddedPixels};
+    coverage:new Uint8Array(response.coverage),paddedPixels:response.paddedPixels,timings:response.timings};
 }

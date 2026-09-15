@@ -15,6 +15,7 @@ async function run(failure, flipY, fast = false, mask = false, allowWhileInterac
   let invalidations = 0;
   const bitmaps = [];
   const submissions = [];
+  const timings = {};
   class Bitmap {
     constructor(width, height, row = -1) { this.width = width; this.height = height; this.row = row; this.closed = 0; }
     close() { assert.equal(this.closed++, 0, 'each owned bitmap closes exactly once'); }
@@ -102,6 +103,7 @@ async function run(failure, flipY, fast = false, mask = false, allowWhileInterac
       shouldCancel: () => cancelled,
       allowWhileInteracting,
       deferVisiblePresentationBarrier: deferBarrier,
+      timings,
     });
     if (failure) await assert.rejects(operation, undefined, `${mask ? 'R8' : 'RGBA'} ${failure}`); else await operation;
     await new Promise(resolve => setTimeout(resolve, 10));
@@ -118,6 +120,16 @@ async function run(failure, flipY, fast = false, mask = false, allowWhileInterac
       [0, 2, 4, 6].map(y => [flipY ? 6 - y : y, mask ? -1 : y, 2, mask === true ? 'red' : 'rgba']),
     );
     if (!failure) assert.equal(idleWaits === 0, allowWhileInteracting, 'Only interactive uploads bypass idle gating');
+    if (!failure) {
+      for (const field of ['allocationMs', 'stripeWaitMs', 'submitMs']) {
+        assert(Number.isFinite(timings[field]) && timings[field] >= 0, `measured ${field}`);
+      }
+      assert.equal(timings.interactionWaitMs === undefined, allowWhileInteracting);
+      assert.equal(timings.presentationWaitMs === undefined, !visible || deferBarrier);
+      assert.equal(timings.yieldMs === undefined, waitCount === (visible && !deferBarrier ? 2 : 0) && taskYields === 0);
+      assert(Object.values(timings).reduce((sum, value) => sum + value, 0) <=
+        Number(scope.document.body.dataset.previewTextureStripedUploadMs) + 0.2, 'exclusive elapsed phases');
+    }
     assert.equal(states.get('active'), 7);
     assert.equal(states.get('binding'), 'original');
     assert.equal(Boolean(states.get('flip')), true);

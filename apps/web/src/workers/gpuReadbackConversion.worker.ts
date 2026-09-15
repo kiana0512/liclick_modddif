@@ -1,3 +1,4 @@
+import type { UvGutterTimings } from '../engine/bake/dilation';
 import { padUvIslandGuttersWithTopology } from '../engine/bake/dilation';
 
 const MIN_TRANSPARENT_OUTPUT_ALPHA = 8;
@@ -29,7 +30,7 @@ type ConversionResponse =
       transparentCleanupTexels?: ArrayBuffer;
     }
   | { id: number; mode: 'quality'; quality: ArrayBuffer }
-  | { id: number; mode: 'gutter'; imageData: ArrayBuffer; coverage: ArrayBuffer; paddedPixels: number }
+  | { id: number; mode: 'gutter'; imageData: ArrayBuffer; coverage: ArrayBuffer; paddedPixels: number; timings: UvGutterTimings }
   | { id: number; error: string };
 
 const scope = self as unknown as {
@@ -136,9 +137,10 @@ scope.onmessage = (event) => {
       if(!gutterTopology || request.pixels.byteLength!==request.width*request.height*4)
         throw new Error('Invalid UV gutter Worker input.');
       const image={width:request.width,height:request.height,data:new Uint8ClampedArray(request.pixels)} as ImageData;
+      const timings = { gutterBoundaryScanMs: 0, gutterExpansionMs: 0, gutterYieldMs: 0, gutterTopologyRasterMs: 0 };
       const paddedPixels=padUvIslandGuttersWithTopology(image,new Uint8Array(request.coverage),
-        gutterTopology,request.iterations,request.alphaMode,true);
-      scope.postMessage({id:request.id,mode:'gutter',imageData:request.pixels,coverage:request.coverage,paddedPixels},
+        gutterTopology,request.iterations,request.alphaMode,true,timings);
+      scope.postMessage({id:request.id,mode:'gutter',imageData:request.pixels,coverage:request.coverage,paddedPixels,timings},
         [request.pixels,request.coverage]);
       return;
     }

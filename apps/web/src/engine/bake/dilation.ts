@@ -5,6 +5,12 @@ export function getUvDilationPixels(resolution: number, requestedPixels: number)
 }
 
 export type UvGutterAlphaMode = boolean | 'rgb-only';
+export type UvGutterTimings = {
+  gutterBoundaryScanMs: number;
+  gutterExpansionMs: number;
+  gutterYieldMs: number;
+  gutterTopologyRasterMs: number;
+};
 
 const COMPONENT_QUEUE_CHUNK_SIZE = 65_536;
 const MIN_UV_REPAIR_SOURCE_ALPHA = 8;
@@ -179,13 +185,26 @@ export async function padUvIslandGuttersCooperatively(
   iterations: number,
   alphaMode: UvGutterAlphaMode,
   yieldToUi: () => Promise<void>,
+  timings?: UvGutterTimings,
 ) {
+  let rasterYieldMs = 0;
+  const rasterStartedAt = timings ? performance.now() : 0;
+  const yieldRaster = timings ? async () => {
+    const startedAt = performance.now();
+    try { await yieldToUi(); } finally { rasterYieldMs += performance.now() - startedAt; }
+  } : yieldToUi;
   const topology = await rasterizeUvTopologyMaskCooperatively(
-    yieldToUi, root, imageData.width, imageData.height,
+    yieldRaster, root, imageData.width, imageData.height,
   );
-  return padUvIslandGuttersWithTopologyCooperatively(
-    imageData, coverage, topology, iterations, alphaMode, yieldToUi,
+  const rasterMs = timings ? performance.now() - rasterStartedAt - rasterYieldMs : 0;
+  const result = await padUvIslandGuttersWithTopologyCooperatively(
+    imageData, coverage, topology, iterations, alphaMode, yieldToUi, false, timings,
   );
+  if (timings) {
+    timings.gutterTopologyRasterMs = Math.max(0, rasterMs);
+    timings.gutterYieldMs += rasterYieldMs;
+  }
+  return result;
 }
 
 /**
@@ -212,17 +231,24 @@ export async function padUvIslandGuttersWithTopologyCooperatively(
   alphaMode: UvGutterAlphaMode,
   yieldToUi: () => Promise<void>,
   immutableTopology = false,
+  timings?: UvGutterTimings,
 ) {
-  const steps = padUvIslandGutterSteps(imageData, coverage, topology, iterations, alphaMode, immutableTopology);
-  return runUvPostprocessSteps(steps, yieldToUi);
+  if (timings) Object.assign(timings, {
+    gutterBoundaryScanMs: 0, gutterExpansionMs: 0, gutterYieldMs: 0, gutterTopologyRasterMs: 0,
+  });
+  const steps = padUvIslandGutterSteps(imageData, coverage, topology, iterations, alphaMode, immutableTopology, timings);
+  return runUvPostprocessSteps(steps, yieldToUi, timings);
 }
 
-async function runUvPostprocessSteps<T>(steps: Generator<void, T>, yieldToUi: () => Promise<void>) {
+async function runUvPostprocessSteps<T>(steps: Generator<void, T>, yieldToUi: () => Promise<void>, timings?: UvGutterTimings) {
   let sliceStartedAt = performance.now();
   let step = steps.next();
   while (!step.done) {
     if (performance.now() - sliceStartedAt >= 8) {
-      await yieldToUi();
+      const yieldStartedAt = timings ? performance.now() : 0;
+      try { await yieldToUi(); } finally {
+        if (timings) timings.gutterYieldMs += performance.now() - yieldStartedAt;
+      }
       sliceStartedAt = performance.now();
     }
     step = steps.next();
@@ -238,12 +264,14 @@ function* padUvIslandGutterSteps(
   iterations: number,
   alphaMode: UvGutterAlphaMode = false,
   immutableTopology = false,
+  timings?: UvGutterTimings,
 ) {
   const { width, height, data } = imageData;
   if (iterations <= 0) return 0;
   if (topology.length !== width * height || coverage.length !== width * height) {
     throw new Error('UV gutter masks must match the image dimensions.');
   }
+  const boundaryStartedAt = timings ? performance.now() : 0;
   // Same row-major donor order, with precomputed linear offsets. The column
   // check prevents wrapping across rows; the linear bounds handle top/bottom.
   const neighborSteps = [-width - 1, -width, -width + 1, -1, 1, width - 1, width, width + 1];
@@ -309,6 +337,9 @@ function* padUvIslandGutterSteps(
   if (immutableTopology && !cached) gutterBoundary = {
     mask: new WeakRef(topology), width, height, spans: prepared,
   };
+  const expansionStartedAt = timings ? performance.now() : 0;
+  const boundaryYieldMs = timings?.gutterYieldMs ?? 0;
+  if (timings) timings.gutterBoundaryScanMs = Math.max(0, expansionStartedAt - boundaryStartedAt - boundaryYieldMs);
   let paddedPixels = 0;
   let processedSeeds = 0;
 
@@ -351,6 +382,8 @@ function* padUvIslandGutterSteps(
     spareFrontier = currentFrontier;
     currentFrontier = nextFrontier;
   }
+  if (timings) timings.gutterExpansionMs = Math.max(0,
+    performance.now() - expansionStartedAt - (timings.gutterYieldMs - boundaryYieldMs));
   return paddedPixels;
 }
 

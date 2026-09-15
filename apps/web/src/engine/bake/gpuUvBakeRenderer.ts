@@ -1964,16 +1964,31 @@ export async function bakeProjectedLayerRastersWithGpu(
     let residentQuality: QualityBlendWorkerResult | undefined;
     if (resident) {
       const started = performance.now();
-      const {output,correctedPixels} = await resident.readCorrected(input.residentQuality!.preserveAlpha);
-      const correctedAt = performance.now();
-      const {imageData,coverage,coveredPixels:writtenTexels,transparentCleanupTexels}=await convertLayerGpuReadbackInWorker(
-        new Uint8Array(output.buffer,output.byteOffset,output.byteLength),resolution,true);
-      const convertedAt = performance.now();
-      if (!retainRasters) coveredPixels+=await resident.countLayerCoverage();
+      let correctedAt = started, convertedAt = started, countMs = 0;
+      const color = (async () => {
+        const {output,correctedPixels} = await resident.readCorrected(input.residentQuality!.preserveAlpha);
+        correctedAt = performance.now();
+        document.body.dataset.residentUvCorrectedReadbackMs = (performance.now() - started).toFixed(1);
+        const converted = await convertLayerGpuReadbackInWorker(
+          new Uint8Array(output.buffer,output.byteOffset,output.byteLength),resolution,true);
+        convertedAt = performance.now();
+        return {correctedPixels, ...converted};
+      })();
+      // Independent reduction shares the ordered GL queue; overlap its wait with
+      // color readback/correction. Drain both before their owner can be released.
+      const pending = [color, retainRasters ? Promise.resolve(0) : (async () => {
+        const countStarted = performance.now();
+        try { return await resident.countLayerCoverage(); }
+        finally { countMs = performance.now() - countStarted; }
+      })()] as const;
+      const [{imageData,coverage,coveredPixels:writtenTexels,correctedPixels,transparentCleanupTexels}, count] = await Promise.all(pending).catch(async error => {
+        await Promise.allSettled(pending); throw error;
+      });
+      coveredPixels += count;
       const resolveMs=performance.now()-started;
       document.body.dataset.residentUvResolveStages = JSON.stringify({
         correctedPixels, readAndCorrectMs: correctedAt-started,
-        conversionMs: convertedAt-correctedAt, countMs: performance.now()-convertedAt,
+        conversionMs: convertedAt-correctedAt, countMs,
       });
       residentQuality={imageData,coverage,transparentCleanupTexels,
         renderedColorMask:new Uint8Array(0),writtenTexels,backend:'webgl-resident',
@@ -1983,12 +1998,12 @@ export async function bakeProjectedLayerRastersWithGpu(
       if (rasterCache && resumeKeys.length === keys.length) {
         rasterCache.commitResident(keys, sourceSizes);
       }
-      warnings.push(`Resident GPU quality: ${correctedPixels} rounding-boundary texels corrected; ${retainRasters ? 'calibration retains reference rasters' : 'no per-layer readbacks'}.`);
+      warnings.push(`GPU quality: ${correctedPixels} rounding corrections; ${retainRasters ? 'reference rasters retained' : 'no per-layer readbacks'}.`);
       if (rasterCache) document.body.dataset.residentUvAggregatePrefixLayers = String(residentStartIndex);
     }
 
     warnings.push(
-      'GPU UV uses quantized sampling; CPU raster is diagnostic-only.',
+      'Quantized GPU UV; CPU raster is diagnostic-only.',
     );
     const result = {
       residentQuality,

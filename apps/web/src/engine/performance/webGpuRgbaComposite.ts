@@ -47,6 +47,7 @@ type CompositeRequest = {
   front: ArrayBuffer;
   underlay?: ArrayBuffer;
   underlayUrl?: string;
+  underlayCacheKey?: string;
   width?: number;
   height?: number;
   opacity: number;
@@ -304,6 +305,7 @@ export function compositeRgbaUrlUnderWithWebGpu(
   opacity = 1,
   signal?: AbortSignal,
   sourceOver = false,
+  underlayCacheKey?: string,
 ) {
   const prepareStartedAt = performance.now();
   if (front.length !== width * height * 4) {
@@ -340,6 +342,7 @@ export function compositeRgbaUrlUnderWithWebGpu(
     id,
     front: frontBuffer,
     underlayUrl,
+    underlayCacheKey,
     sourceOver,
     width,
     height,

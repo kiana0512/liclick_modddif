@@ -10,8 +10,9 @@ import {
   createWorkerBackedPreviewTexture,
   uploadPreviewTextureInStripes,
   releaseTransientPreviewUploadSource,
+  type PreviewTextureUploadTimings,
 } from '@/engine/viewport/previewTextureCache';
-import { yieldToBrowserTask } from '@/utils/browserScheduling';
+import { waitForBrowserPaint, yieldToBrowserTask } from '@/utils/browserScheduling';
 import { isViewportInteractionBusy, waitForViewportInteractionIdle } from '@/engine/viewport/viewportInteractionState';
 import { uploadUvRgba } from '@/engine/bake/uvContributionTiles';
 import { markSparseAlphaBaseTexture } from './ProjectedLayerMaterial';
@@ -59,11 +60,15 @@ export function preloadProjectedUvBakeKernel() {
   return projectedUvBakeKernelPromise;
 }
 
-/** UV-DISPLAY-BUFFER/1.4.2. The display owns derived UV buffers, never layers/assets.
- * Use the same resident Top-K and exact postprocess path as explicit UV merge.
+/** UV-DISPLAY-BUFFER/1.5.1. The display owns derived UV buffers, never layers/assets.
+ * Use resident Top-K and gutter; seam repair is disabled by default for display.
  * Keep the front buffer until its replacement has uploaded and been bound.
  */
 export class ResidentProjectedUvDisplay {
+  // Local opt-in comparison; fixed for this instance so its memory caches agree.
+  private readonly skipUvSeams = !(typeof window !== 'undefined' &&
+    ['127.0.0.1', 'localhost'].includes(window.location.hostname) &&
+    new URLSearchParams(window.location.search).get('skipUvSeams') === '0');
   private requested?: Request;
   private active = false;
   private underlayAbort?: AbortController;
@@ -175,6 +180,7 @@ export class ResidentProjectedUvDisplay {
     const transientSources: string[] = [];
     let sourcesClosed = false;
     document.body.dataset.residentUvProjectionStatus = 'computing';
+    document.body.dataset.residentUvSeamMode = this.skipUvSeams ? 'skipped' : 'enabled-local-test';
     void (async () => {
       let persistentKey: string | undefined;
       let restored = interactive ? undefined : await this.compressed.restore(request.signature);
@@ -185,7 +191,7 @@ export class ResidentProjectedUvDisplay {
           projectId: request.projectId!, objectId: request.sourceModel.objectId,
           resolution: request.resolution, group: request.sourceModel.group,
           layers: [...request.sourceLayers, ...(request.underlayLayers ?? [])].filter(layer => layer.visible && layer.opacity > 0),
-          purpose: 'resident-uv-display-2',
+          purpose: this.skipUvSeams ? 'resident-uv-display-3-no-seams' : 'resident-uv-display-2',
         })).catch(() => undefined) : Promise.resolve(undefined);
       if (!interactive && !restored && !this.front) {
         persistentKey = await keyPromise;
@@ -240,7 +246,7 @@ export class ResidentProjectedUvDisplay {
             enableDilation: false,
             dilationPixels: 0,
             ...getMergeUvPostprocessOptions(request.resolution),
-            repairMissingUvSeams: true,
+            repairMissingUvSeams: !this.skipUvSeams,
             outputAlpha: 'transparent',
             commitToProject: false,
             markSourceLayersBaked: false,
@@ -291,7 +297,8 @@ export class ResidentProjectedUvDisplay {
             await yieldToBrowserTask(); guard();
           }
           const combined = await compositeRgbaUrlUnderWithWebGpu(rgba, layer.imageUrl,
-            request.resolution, request.resolution, layer.opacity, abort.signal);
+            request.resolution, request.resolution, layer.opacity, abort.signal, false,
+            JSON.stringify([layer.id, layer.contentRevision ?? 0]));
           guard();
           result.imageData = new ImageData(combined.data, request.resolution, request.resolution);
           if (alpha && mask) for (let start = 0; start < alpha.length; start += 262144) {
@@ -305,6 +312,10 @@ export class ResidentProjectedUvDisplay {
       }
       stages.underlayCompositeMs = performance.now() - underlayStartedAt;
       const uploadStartedAt = performance.now();
+      const uploadTimings: PreviewTextureUploadTimings = {
+        allocationMs: 0, stripeWaitMs: 0, submitMs: 0,
+        interactionWaitMs: 0, yieldMs: 0, presentationWaitMs: 0,
+      };
       const previousPixels = this.previousPixels?.texture === this.front?.colorTexture ? this.previousPixels : undefined;
       const patched = interactive && previousPixels
         ? await uploadUvDisplayPatch(request.renderer, result.imageData, previousPixels, cancelled) : undefined;
@@ -346,15 +357,34 @@ export class ResidentProjectedUvDisplay {
       created.push(renderedColorMaskTexture);
       renderedColorMaskTexture.colorSpace = THREE.NoColorSpace;
       guard();
+      stages.displayUploadPrepareMs = performance.now() - uploadStartedAt;
       if (!patched && !direct) await uploadPreviewTextureInStripes(request.renderer, colorTexture, {
         allowWhileInteracting: interactive,
         shouldCancel: cancelled,
+        deferVisiblePresentationBarrier: !interactive,
+        timings: uploadTimings,
       });
       await uploadPreviewTextureInStripes(request.renderer, renderedColorMaskTexture, {
         allowWhileInteracting: interactive,
         shouldCancel: cancelled,
+        deferVisiblePresentationBarrier: !interactive,
+        timings: uploadTimings,
       });
       guard();
+      // Both private textures share the renderer's ordered command stream.
+      // Pay the existing presentation barrier once, then publish them together.
+      if (!interactive && request.renderer.domElement.isConnected) {
+        for (let frame = 0; frame < 2; frame++) {
+          const paintStarted = performance.now();
+          await waitForBrowserPaint();
+          uploadTimings.presentationWaitMs += performance.now() - paintStarted;
+          guard();
+          const idleStarted = performance.now();
+          await waitForViewportInteractionIdle(240, guard);
+          uploadTimings.interactionWaitMs += performance.now() - idleStarted;
+          guard();
+        }
+      }
       this.previousPixels = retainedImage ? { image: retainedImage, texture: colorTexture } : undefined;
       draft?.acknowledge(draftRevision);
       releaseTransientPreviewUploadSource(request.renderer, colorTexture);
@@ -373,6 +403,11 @@ export class ResidentProjectedUvDisplay {
       this.cache.set(key, buffer);
       created.length = 0;
       stages.displayUploadMs = performance.now() - uploadStartedAt;
+      for (const [name, elapsed] of Object.entries(uploadTimings)) {
+        stages[`displayUpload${name[0].toUpperCase()}${name.slice(1)}`] = elapsed;
+      }
+      stages.displayUploadOtherMs = Math.max(0, stages.displayUploadMs - stages.displayUploadPrepareMs -
+        Object.values(uploadTimings).reduce((sum, elapsed) => sum + elapsed, 0));
       document.body.dataset.residentUvProjectionDurationMs = (
         performance.now() - startedAt
       ).toFixed(1);

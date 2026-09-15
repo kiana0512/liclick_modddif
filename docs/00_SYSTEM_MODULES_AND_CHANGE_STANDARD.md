@@ -1,5 +1,9 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
+2026-09-15 M07（协作 M06/M09）：显隐优化 rebase 集成到 `c1f412c`，保留上游逐层贡献、直接 RGBA 上传、可取消交互等待、底图 SHA-256 校验及 GPU 缓冲复用；底图内容 revision 只补充校验键，不替代读取权限与字节验证。留边保留上游跨度缓存、分块队列和线性寻址，合入分段计时并从 Worker 回传；不恢复旧 seed 列表或替换为另一套位图缓存。回读与覆盖归约重叠时保留弱透明清理索引，countMs 为独立并行时段，不能与 readAndCorrectMs/conversionMs 相加当总耗时。直接颜色上传含在 displayUploadPrepareMs，细节仍见 residentUvUploadStages；遮罩/普通条带继续细分并共用可取消呈现屏障。前述独立分支基准保留为历史数据，不代表合并后的性能。像素公式、分辨率、QA、显式导出与持久化保持，无 Schema/资产迁移；回滚本次 rebase 提交可恢复上游实现。
+
+集成验证：类型、Lint、显隐/底图/拓扑/留边/回读/取消/导出回归通过；隔离 2K 浏览器显隐最终像素与岛边对照零差异。生产构建成功，但总 JS 3,264,191 字节超过现有 3,256,500 上限 7,691 字节，256 字节发布余量检查也未通过；本次解决冲突不提高预算、不推送或部署，发布前仍须处理包体。
+
 2026-09-15 M15（协作 M14）：`WORKSPACE-API-DEDUP/1.0.0` 合并相同 Blob 上传 URL、XHR 进度及 FileReader 编码实现，保持传输、超时、错误、原字节、三并发和保存门禁。`RELEASE-PREPUSH/1.1.0` 使用带 UTC 偏移的时间元数据，并在原 CI 命令后要求至少 256 字节包体余量；原 CI 硬上限 3,256,500 字节不变。无图像算法、GPU/CPU/Worker/shader、Schema、Command/CAS/ownership 或资产变更，无迁移。验证与回滚见 [CI 包体余量修复](changes/CHG-20260915-CI-BUNDLE-HEADROOM.md)。
 
 2026-09-15 M12（协作 M04/M08）：`GENERATION-SERVER-PERSISTENCE/1.0.0` 修复生成面板只识别 local-server、跳过 cloud-server 原始选区上传和关键保存的问题。统一识别两种服务端项目，覆盖生成图片、四平面 Capture、参考图、关键状态保存和投影结果保存；关键保存保留服务器返回的 workspaceMode，不把云端项目改写成 local-server。作者 mask、冻结相机、normal/depth、保存成功后才付费提交、取消和 Command/CAS/ownership 门禁保持；GPU/CPU/Worker/shader、投影/UV/export 像素与分辨率不变。兼容已有云端枚举，无数据库/资产迁移；验证与回滚见 [云端重绘保存修复](changes/CHG-20260915-GENERATION-CLOUD-PERSISTENCE.md)。
@@ -20,6 +24,22 @@
 2026-09-15 回退基线定向恢复：以 6dcdec1+c2edfae 为基础，M03（协作 M04/M08）ALG-CAP-007 v1.2.0 仅对 GPT 取景使用 98% 长边占比与固定 1:1，结合图/法线/作者 mask/depth 共用冻结相机；保留触边检查和保守回退。GPT-ALPHA-PREVIEW-CROP v1.0.0 仅裁透明结果预览、外扩 8px，原图/下载/回贴坐标不变。LOCAL-REPAINT-BRUSH-DEFAULT v1.1.0 默认 30，不包含 Alt 导航。保存、数据库、投影/UV/export、分辨率策略与资产不变，无迁移。详见 [定向恢复变更卡](changes/CHG-20260915-BASELINE-SQUARE-PREVIEW.md)。
 
 2026-09-15 UI-05 → M08（协作 M03/M04/M12）：`GPT-REPAINT-NORMAL` v1.0.0 将新 GPT 局部重绘默认输入改为结合图＋同视角几何法线图，独立通用修复提示词不再复用单视图材质参考模板。“使用材质参考图”小开关默认关闭，开启仅追加显式选中的第三图，不从历史或配对图自动替代。法线用冻结相机与结合图同尺寸捕获，排除其他物体/网格/背景及材质 normal/bump，正式引导不走 1K 世界法线预览；前两张图禁止自动有损压缩或缩图，超过原上传预算明确失败。正常 PNG/Worker 编码、作者 mask、depth、透明回图、投影/UV/GPU/CPU/shader/导出公式保持；法线随 Capture 持久化，付费提交前保存与取消门禁保留。Project 设置仅新增可选 `gptRepaintUseMaterialReference`，缺失按 false；历史任务不改写，无批量迁移。回滚恢复旧 GPT 输入构建器/模板/面板，忽略新设置并保留资产。未运行付费生图或部署；详见 [GPT 法线修复变更卡](changes/CHG-20260915-GPT-REPAINT-NORMAL.md)。
+
+2026-09-15 M07：`UV-RESIDENT-RESOLVE` v1.0.0（关联 ALG-UV-003/008，调度实现修订）让覆盖数量归约与最终 RGBA 回读/校正/Worker 转换重叠，任一失败均排空在途读回后再释放；校正标记扫描由每 1MiB 固定让出改为约 4ms 预算让出。2K 七层隔离热轮中位 42.9→38.0ms，RGBA/coverage/覆盖数量一致；不是用户模型完整显隐收益。完整分辨率、8MiB 双 PBO 上限、CPU 精确校正、GPU/Worker/shader 公式、QA、持久化/导出与 Schema 不变，无迁移。详见 [Resident 回读调度优化](changes/CHG-20260915-UV-RESOLVE-OVERLAP.md)。
+
+2026-09-15 M07，协作 M06：`UV-DISPLAY-BUFFER` v1.5.1 合并普通 Resident UV 颜色/遮罩上传的末尾绘制屏障：原来每张各等两次，现在两张提交完共等两次，再原子发布；交互式橡皮路径、分块预算、240ms 交互避让及取消检查保留。`displayUploadMs` 拆分准备、分配、分块等待、CPU 上传调用、交互等待、分块让出、末尾绘制等待及其他开销。GPU/CPU/Worker/shader 像素、完整分辨率、QA、持久化/导出、缓存身份与 Schema 不变，无迁移。取消/资源回收回归、2K 浏览器及包体门禁通过；详见 [上传计时与共同等待](changes/CHG-20260915-UV-UPLOAD-BARRIER.md)。
+
+2026-09-15 M07，协作 M06/M09：`ALG-UV-005` v2.0.8（实现 Patch）让超 32 MiB 的拓扑源直接与已保留的 Float32 三角形逐位核对，跳过额外压缩快照与热轮解压；未标记 needsUpdate 的有效 UV/index 修改仍失效。小源原始快照、大模型接缝压缩缓存及其预算保留。用户模型经导入/BVH 重排后的独立准备基准：冷轮 2729.1→184.6ms，三轮热轮中位 1061.5→87.9ms，24 MB 三角形输入逐字节一致；不是整次显隐耗时。完整分辨率、GPU/CPU/Worker/shader 像素、QA、持久化/导出与 Schema 不变，无数据迁移。专项与 2K 浏览器显隐回归通过；详见 [拓扑准备复用](changes/CHG-20260915-UV-TOPOLOGY-REUSE.md)。
+
+2026-09-15 M07：`UV-GUTTER-TIMING` v1.0.0 为现有 Resident UV 留边阶段新增互斥计时：等待已启动的拓扑准备、边缘查找、颜色扩展、主动调度等待；兼容拓扑生成与其他编排开销单列，六项合计等于原 gutterMs。共享内核仍沿原顺序执行，计算阶段扣除主动调度等待；完整分辨率、像素、QA、接缝策略、Worker/shader、持久化/导出、Schema 与缓存版本不变，无迁移。计时、像素、取消回归与浏览器输出验证通过；详见 [留边分段计时](changes/CHG-20260915-UV-GUTTER-TIMING.md)。
+
+2026-09-15 M07，协作 M06/M09：用户确认屏蔽接缝后视觉无差异，`UV-DISPLAY-BUFFER` v1.5.0 默认跳过常驻预览的 `ALG-UV-005` 接缝修复步骤，所有地址无需诊断参数。保留 Top-K、留边、完整分辨率与 QA；派生缓存 purpose 升为 `resident-uv-display-3-no-seams`，避免混用旧像素，恢复新结果的持久缓存。显式合并/导出及共享 CPU/GPU/Worker/shader 内核保留；本地 `skipUvSeams=0` 可恢复接缝对照。无工程/资产/Schema 迁移；回滚默认值及 purpose 即可。详见 [默认跳过记录](changes/CHG-20260915-UV-SEAM-BYPASS.md)。
+
+2026-09-15 M07，协作 M06/M09：`ALG-UV-005` 本地诊断修订 `seam-bypass/1`。本地地址带 `skipUvSeams=1` 时，Resident UV 临时跳过接缝修复，以对比显隐耗时和画面；保留完整分辨率、留边与 QA。开关固定于显示实例，试验不读写持久派生缓存；正式地址、显式 UV 合并/导出与 CPU/GPU/Worker/shader 算法默认行为不变。无 Schema/资产迁移；移除参数并刷新恢复。详见 [接缝屏蔽对照记录](changes/CHG-20260915-UV-SEAM-BYPASS.md)。
+
+2026-09-15 M07，协作 M06/M09：`ALG-UV-005` v2.0.7 为大模型几何增加无损分块快照；快照与修补地址共享原 64 MiB 地址预算，整体缓存上限不增加。热轮还原全部字节精确比较，直接修改位置/法线/UV/索引仍失效。修补顺序、像素、完整分辨率、QA、shader、持久化/导出及 Schema/Command/CAS/ownership 不变。缺失覆盖修补共用一份快照，取消重复压缩与中间接缝对象缓存登记。BVH 重排模型热轮通过完整像素对照，首次压缩有额外成本；无数据迁移。详见 [大模型接缝缓存变更卡](changes/CHG-20260915-LARGE-UV-SEAM-CACHE.md)。
+
+2026-09-15 M07，协作 M06/M09：`ALG-UV-006` v2.1.1 / `ALG-UV-005` v2.0.6 实现底图复用与留边缓存优化。Resident UV 明确传入底图内容身份；Worker 按层 ID/内容 revision、URL、宽高只保留一份最多 64 MiB 解码 RGBA，release/取消/失败及 source-over 所有权均有门禁。不可变拓扑改用最多 2 MiB 单图资格位图，热路径跳过全空 coverage 和内部区域，保持原顺序传播及全部 Alpha 字节。4K 隔离中位耗时：留边热轮 105.5→28.4ms，浏览器底图 GPU 487.1→373.6ms；冷留边 102.6→112.3ms，GPU 有单轮波动，均不代表用户工程端到端延迟。像素对照、类型、lint、浏览器合成与显隐、生产打包通过；完整分辨率、QA、shader、持久化/导出、Schema/Command/CAS/ownership/verified assets 不变，无数据迁移，未提交或部署。详见 [底图复用与留边变更卡](changes/CHG-20260915-UNDERLAY-GUTTER-REUSE.md)。
 
 2026-09-15 UI-06/UI-10 → M08（协作 M06/M07）：`VIEW-ALIGNED-BRUSH` v1.0.0 将笔刷圆环和屏幕笔迹由表面法线对齐改为当前相机对齐，斜面和硬边保持正圆；普通 UV 与旧回贴范围沿观察方向换算到命中面。GPU 可见性、羽化、深度、Worker、完整分辨率、QA、持久化和导出协议不变；只影响后续笔迹，无 Schema 或资产迁移。32 组真实函数及 Edge 斜面圆环、4K 曲面/遮挡、回贴擦除/撤销/PNG/FBX/重新打开检查通过。回滚恢复原切线范围；本次发布合并 master 的 UV-only 显示与上传优化，实际发布结果以部署记录为准。详见 [视角对齐笔刷变更卡](changes/CHG-20260915-VIEW-ALIGNED-BRUSH.md)。
 
@@ -50,7 +70,7 @@
 
 2026-09-15 M03：ALG-VIEW-INPUT-001/1.3.2 在鼠标接触前即让 R3F 悬停遵守 Alt 所有权；保留普通 hover 和已锁定拖动。旧实现拾取回归失败、新实现通过，用户实际首帧延迟需继续录制。无像素/持久化迁移，见 [Alt 悬停变更卡](changes/CHG-20260915-ALT-BRUSH-HOVER.md)。
 
-> 文档版本：`2.20.140`
+> 文档版本：`2.20.141`
 
 2026-09-15 UI-06 → M03：`ALG-VIEW-SELECT-001/1.0.5` 将常驻线框预热绑定到 renderer/模型生命周期，透视/正交相机替换不重新编译或释放同一辅助材质，避免旧编译完成后释放当前材质。16 次相机替换旧实现启动 17 次编译，新实现一次；71 次显隐及卸载清理保持。GPU 线框/CPU 几何/Worker/shader、捕获/UV/重绘/导出、分辨率和 QA、持久化/Schema 均不变，无迁移。其他工具切换仍有长帧，不宣称全操作无卡顿，验证和回滚见 [线框相机生命周期变更卡](changes/CHG-20260915-WIREFRAME-CAMERA-LIFETIME.md)。
 
@@ -863,7 +883,7 @@ UI-09 剪刀
 | `ALG-UV-002` Runtime 可见性补获 | `2.0.0` | stale/missing depth 按原 capture camera 重新捕获，完整捕获上限 2048，不改变最终 UV 分辨率 |
 | `ALG-UV-003` Top-3 质量合成 | `2.0.1` | 与第 6 节常量一致；输出 authored color、coverage confidence、rendered-color mask |
 | `ALG-UV-004` 有序 Overlay | `4.0.0` | 仅用户显式 overlay 使用 feathered=`coverage×(0.75+0.25×qualityFade)`；局部重绘 literal=`coverage`。普通单/多视图均先进入 Top-3，不再拥有 priority overlay；实时与 GPU UV bake 同义 |
-| `ALG-UV-005` 拓扑约束后处理 | `2.0.3` | gutter/gap=`clamp(ceil(res/512),2,8)`；hole=`clamp(ceil(res/2048),1,3)`；seam=`clamp(ceil(res/1024),2,4)`，不得跨无关 island |
+| `ALG-UV-005` 拓扑约束后处理 | `2.0.8` | gutter/gap=`clamp(ceil(res/512),2,8)`；hole=`clamp(ceil(res/2048),1,3)`；seam=`clamp(ceil(res/1024),2,4)`，不得跨无关 island |
 | `ALG-UV-006` Under 合成 | `2.0.0` | 投影在前、content-aware 在下；straight alpha：`Aout=Af+Au(1-Af)` |
 | `ALG-UV-007` PBR 预览光照固化 | `4.0.0` | 依据 UV 法线、环境预设、曝光、环境强度、主光强度/方位计算 deterministic preview light；rendered-color 像素权重 1 时保持原色 |
 | `ALG-UV-008` Straight-RGBA 发布 | `2.0.0` | RGB 不预乘；透明 texel 的 padding RGB 可保留；PNG 与 Layer 在资产就绪后原子发布 |

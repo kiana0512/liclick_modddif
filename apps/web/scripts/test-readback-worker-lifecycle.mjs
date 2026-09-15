@@ -103,9 +103,11 @@ console.log('Readback Worker: ready-before-transfer, bounded bootstrap retry, fa
   assert.equal(first.data.byteLength,4,'Gutter bootstrap must precede ownership transfer');
   const worker=h.workers[0];worker.ready();await settle();
   assert.equal(first.data.byteLength,0);assert.equal(mask.byteLength,0);assert.equal(topology.byteLength,1);
+  const timings={gutterBoundaryScanMs:3,gutterExpansionMs:4,gutterYieldMs:0,gutterTopologyRasterMs:0};
   const answer=(index)=>{const request=worker.messages[index];worker.onmessage({data:{id:request.id,mode:'gutter',
-    imageData:request.pixels,coverage:request.coverage,paddedPixels:0}});};
+    imageData:request.pixels,coverage:request.coverage,paddedPixels:0,timings}});};
   answer(0);const result=await pending;
+  assert.deepEqual(result.timings,timings,'Worker timing buckets reach the caller unchanged');
   assert.deepEqual([...result.imageData.data],[23,41,67,255]);
   const warm=h.gutter(image(),new Uint8Array([1]),topology,2,true);await settle();
   assert.equal(worker.messages[1].topology,undefined,'Immutable topology is cloned only once per Worker session');
