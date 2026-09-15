@@ -43,6 +43,16 @@ export function estimateMissedFramePercent(
   return refreshOpportunities > 0 ? (missedFrames / refreshOpportunities) * 100 : 0;
 }
 
+/** Same 60 Hz scenario summary for S2–S9; never omit slow samples. */
+export function summarizeScenarioFrames(samples: readonly DurationSample[]) {
+  const durations = samples.map((sample) => sample.durationMs).sort((a, b) => a - b);
+  return {
+    p95: durations[Math.max(0, Math.ceil(durations.length * 0.95) - 1)] ?? 0,
+    max: durations.length > 0 ? Math.max(...durations) : 0,
+    dropped: estimateMissedFramePercent(samples, 1000 / 60),
+  };
+}
+
 export function summarizeDurationSamples(
   samples: readonly DurationSample[],
   thresholdMs: number,

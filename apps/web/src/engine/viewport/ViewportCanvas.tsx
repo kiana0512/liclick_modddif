@@ -128,7 +128,7 @@ import {
 } from '@/engine/performance/performanceTimeline';
 import {
   estimateMissedFrameCount,
-  estimateMissedFramePercent,
+  summarizeScenarioFrames as summarizeFrames,
   sumDurationSamples,
   summarizeDurationSamples,
   summarizeFramePacing,
@@ -2016,14 +2016,7 @@ function PerformanceTestHud() {
       let previewBatchOpen = false;
       let simulatedInteraction = false;
 
-      const summarizeFrames = (samples: PerformanceFrameSample[]) => {
-        const durations = samples.map((sample) => sample.durationMs);
-        return {
-          p95: percentile(durations, 0.95),
-          max: durations.length > 0 ? Math.max(...durations) : 0,
-          dropped: estimateMissedFramePercent(samples, STRICT_60_HZ_FRAME_BUDGET_MS),
-        };
-      };
+
 
       projectedLayerRampRunningRef.current = true;
       document.body.dataset.perfScenarioMeasuring = '1';
@@ -2229,14 +2222,7 @@ function PerformanceTestHud() {
           await waitForFrame();
         }
       };
-      const summarizeFrames = (samples: PerformanceFrameSample[]) => {
-        const durations = samples.map((sample) => sample.durationMs);
-        return {
-          p95: percentile(durations, 0.95),
-          max: durations.length > 0 ? Math.max(...durations) : 0,
-          dropped: estimateMissedFramePercent(samples, STRICT_60_HZ_FRAME_BUDGET_MS),
-        };
-      };
+
       const ids = targets.map((layer) => layer.id);
       const iterations = scenario === 'projected' ? 1 : 7;
       const operations = scenario === 'uv-projected' ? iterations * 4 : ids.length * iterations * 2;
@@ -2423,14 +2409,7 @@ function PerformanceTestHud() {
       LiclickPerfUvMerge?: { run: () => Promise<unknown> };
     };
     if (!target.LiclickPerfUvMerge) throw new Error('S4 合成基准尚未就绪。');
-    const summarizeFrames = (samples: PerformanceFrameSample[]) => {
-      const durations = samples.map((sample) => sample.durationMs);
-      return {
-        p95: percentile(durations, 0.95),
-        max: durations.length > 0 ? Math.max(...durations) : 0,
-        dropped: estimateMissedFramePercent(samples, STRICT_60_HZ_FRAME_BUDGET_MS),
-      };
-    };
+
     setUvMergeBenchmarkRunning(true);
     clearReport(true);
     document.body.dataset.perfUvMergeMeasuring = '1';
@@ -2538,14 +2517,7 @@ function PerformanceTestHud() {
     if (!target.LiclickPerfLocalRepaint) {
       throw new Error('S6 局部重绘模拟器尚未就绪。');
     }
-    const summarizeFrames = (samples: PerformanceFrameSample[]) => {
-      const durations = samples.map((sample) => sample.durationMs);
-      return {
-        p95: percentile(durations, 0.95),
-        max: durations.length > 0 ? Math.max(...durations) : 0,
-        dropped: estimateMissedFramePercent(samples, STRICT_60_HZ_FRAME_BUDGET_MS),
-      };
-    };
+
     const memory = (performance as Performance & { memory?: { usedJSHeapSize: number } }).memory;
     const heapStartedBytes = memory?.usedJSHeapSize ?? 0;
     setLocalRepaintBenchmarkRunning(true);
@@ -2641,8 +2613,8 @@ function PerformanceTestHud() {
             (!selectedObjectId || !layer.objectId || layer.objectId === selectedObjectId),
         )
         .slice(0, 14);
-      if (projectedLayers.length < 14) {
-        throw new Error(`当前对象只有 ${projectedLayers.length} 个可用投影图层，需要 14 个。`);
+      if (projectedLayers.length === 0) {
+        throw new Error('当前对象没有可用投影图层。');
       }
       const projectedIds = new Set(projectedLayers.map((layer) => layer.id));
       const benchmarkLayers = originalLayers.map((layer) => {
@@ -2657,14 +2629,7 @@ function PerformanceTestHud() {
       });
       const waitForFrame = () =>
         new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
-      const summarizeFrames = (samples: PerformanceFrameSample[]) => {
-        const durations = samples.map((sample) => sample.durationMs);
-        return {
-          p95: percentile(durations, 0.95),
-          max: durations.length > 0 ? Math.max(...durations) : 0,
-          dropped: estimateMissedFramePercent(samples, STRICT_60_HZ_FRAME_BUDGET_MS),
-        };
-      };
+
       let result: ContentAwareRepairBenchmarkResult | undefined;
       const finishScenario = startPerformanceSpan('projection', 's9-real-projection-repair', {
         projectedLayerCount: projectedLayers.length,
@@ -2889,14 +2854,7 @@ function PerformanceTestHud() {
       throw new Error('已有性能压测正在运行。');
     }
     if (!activeViewportStressController) throw new Error('S7 暴力切换模拟器尚未就绪。');
-    const summarizeFrames = (samples: PerformanceFrameSample[]) => {
-      const durations = samples.map((sample) => sample.durationMs);
-      return {
-        p95: percentile(durations, 0.95),
-        max: durations.length > 0 ? Math.max(...durations) : 0,
-        dropped: estimateMissedFramePercent(samples, STRICT_60_HZ_FRAME_BUDGET_MS),
-      };
-    };
+
     setViewportLayerStressRunning(true);
     clearReport(true);
     try {
