@@ -5,7 +5,7 @@ import {encodeRgbaPngBlob} from '@/utils/encodeRgbaPng';
 import {clearPreparedMergePreview, prepareMergePreview} from './preparedMergePreview';
 import {yieldToBrowserTask} from '@/utils/browserScheduling';
 import {getLiveProjectedTextureSourceState,flushLiveUvCommits,isLiveProjectedCanvasUrl,getLiveProjectedTextureBlob} from '@/engine/projection/liveProjectedCanvasTextureRegistry';
-import {waitForViewportInteractionIdle} from '@/engine/viewport/viewportInteractionState';
+import {cloneProjectionBakeImageData} from './projectionBakeSignature';
 
 let ready:{key:string;blob:Blob}|undefined;
 let pending:{key:string;controller:AbortController;promise:Promise<void>}|undefined;
@@ -64,17 +64,7 @@ export async function prepareMergeFinal(signature:string,imageData:ImageData,lay
     guard();
     // Preserve the reusable atlas; copy in bounded slices instead of one
     // synchronous 64 MiB copy. Input/rendering gets priority between slices.
-    let rgba=new Uint8ClampedArray(imageData.data.length);
-    let sliceStarted=performance.now();
-    for(let offset=0;offset<rgba.length;offset+=1048576) {
-      guard();
-      rgba.set(imageData.data.subarray(offset,offset+1048576),offset);
-      if(performance.now()-sliceStarted>=4 && offset+1048576<rgba.length) {
-        await yieldToBrowserTask();
-        await waitForViewportInteractionIdle();
-        sliceStarted=performance.now();
-      }
-    }
+    let rgba=(await cloneProjectionBakeImageData(imageData,guard)).data;
     for(const layer of layers) {
       guard();
       let sourceUrl=layer.imageUrl;
