@@ -12,6 +12,7 @@ import {
   releaseTransientPreviewUploadSource,
 } from '@/engine/viewport/previewTextureCache';
 import { yieldToBrowserTask } from '@/utils/browserScheduling';
+import { isViewportInteractionBusy } from '@/engine/viewport/viewportInteractionState';
 import { markSparseAlphaBaseTexture } from './ProjectedLayerMaterial';
 import { ProjectedUvRasterCache } from '@/engine/bake/ProjectedUvRasterCache';
 import { markResidentUvPending, finishResidentUvPresentation, releaseResidentUvManagement } from './residentUvPresentation';
@@ -57,13 +58,14 @@ export function preloadProjectedUvBakeKernel() {
   return projectedUvBakeKernelPromise;
 }
 
-/** UV-DISPLAY-BUFFER/1.4.0. The display owns derived UV buffers, never layers/assets.
+/** UV-DISPLAY-BUFFER/1.4.1. The display owns derived UV buffers, never layers/assets.
  * Use the same resident Top-K and exact postprocess path as explicit UV merge.
  * Keep the front buffer until its replacement has uploaded and been bound.
  */
 export class ResidentProjectedUvDisplay {
   private requested?: Request;
   private active = false;
+  private interactiveOnly = false;
   private revision = 0;
   private disposed = false;
   private retries = 0;
@@ -78,6 +80,7 @@ export class ResidentProjectedUvDisplay {
     this.clearBuffers();
   };
   private front?: ProjectedPreviewComposite;
+  private persistAfterPresentation?: { texture: THREE.Texture; run: () => void };
   private rawComposite?: RawUvComposite;
   private previousPixels?: { image: ImageData; texture: THREE.Texture };
   private readonly cache = new Map<string, ProjectedPreviewComposite>();
@@ -98,12 +101,14 @@ export class ResidentProjectedUvDisplay {
     if (this.requested && this.requested.sourceModel.group !== request.sourceModel.group)
       releaseResidentUvManagement(this.requested.sourceModel.group);
     this.requested = request;
+    this.persistAfterPresentation = undefined;
     this.rawComposite = undefined;
     markResidentUvPending(request.sourceModel.group, request.sourceModel.objectId);
     this.retries = 0;
     this.retryAt = 0;
     this.revision++;
     const cached = this.cache.get(request.signature);
+    document.body.dataset.residentUvProjectionCacheHit = String(Boolean(cached));
     if (cached) {
       this.cache.delete(request.signature);
       this.cache.set(request.signature, cached);
@@ -113,6 +118,8 @@ export class ResidentProjectedUvDisplay {
   }
 
   step(interactiveOnly = false) {
+    // Remember the latest camera gate even while a superseded job drains.
+    this.interactiveOnly = interactiveOnly;
     const original = this.requested;
     if (
       this.active ||
@@ -167,8 +174,8 @@ export class ResidentProjectedUvDisplay {
     void (async () => {
       let persistentKey: string | undefined;
       let restored = interactive ? undefined : await this.compressed.restore(request.signature);
-      // Only the first presentation consults disk synchronously. Subsequent eye
-      // changes must not wait for source hashing before GPU recomposition.
+      // Preserve the original verification snapshot timing. Only the first
+      // presentation waits for disk; optional cache publication waits for binding.
       const keyPromise = !restored && request.projectId ? import('@/engine/bake/persistentMergePreparation')
         .then(({ persistentMergeKey }) => persistentMergeKey({
           projectId: request.projectId!, objectId: request.sourceModel.objectId,
@@ -369,12 +376,17 @@ export class ResidentProjectedUvDisplay {
       document.body.dataset.residentUvProjectionStages = JSON.stringify(
         { ...result.report.performanceBreakdown, ...stages },
       );
-      request.onReady(buffer);
       if (!interactive && !restored) {
-        void keyPromise.then(key => {
-          if (!cancelled()) this.compressed.offer(request.signature, result.imageData!, result.renderedColorMask, key);
-        });
+        this.persistAfterPresentation = { texture: colorTexture, run: () => {
+          void yieldToBrowserTask().then(() => {
+            if (cancelled()) return undefined;
+            return persistentKey ?? keyPromise;
+          }).then(key => {
+            if (!cancelled()) this.compressed.offer(request.signature, result.imageData!, result.renderedColorMask, key);
+          }).catch(() => undefined);
+        } };
       }
+      request.onReady(buffer);
     })()
       .catch((error) => {
         created.forEach((texture) => texture.dispose());
@@ -398,7 +410,9 @@ export class ResidentProjectedUvDisplay {
         }
         // Latest-wins queue: finish one immutable snapshot instead of repeatedly
         // cancelling it on mousemove. A newer gesture revision runs next.
-        if (interactive && !cancelled()) queueMicrotask(() => this.step(true));
+        if (revision !== this.revision || (interactive && !cancelled()))
+          queueMicrotask(() => this.step(this.interactiveOnly ||
+            (document.visibilityState === 'visible' && isViewportInteractionBusy())));
       });
   }
 
@@ -415,6 +429,11 @@ export class ResidentProjectedUvDisplay {
     const buffer = [...this.cache.values()].find((value) => value.colorTexture === texture);
     if (!buffer) return;
     this.front = buffer;
+    const persistence = this.persistAfterPresentation;
+    if (persistence?.texture === texture) {
+      this.persistAfterPresentation = undefined;
+      persistence.run();
+    }
     if (!buffer.interactive) this.compressed.activate(buffer.signature);
     if (!buffer.interactive && this.requested?.signature === buffer.signature)
       finishResidentUvPresentation(this.requested.sourceModel.group, buffer.maskBindings);
@@ -442,6 +461,7 @@ export class ResidentProjectedUvDisplay {
     }
   }
   cancelPending() {
+    this.persistAfterPresentation = undefined;
     this.rawComposite = undefined;
     this.previousPixels = undefined;
     if (this.requested) releaseResidentUvManagement(this.requested.sourceModel.group);
@@ -459,6 +479,7 @@ export class ResidentProjectedUvDisplay {
     this.clearBuffers();
   }
   private clearBuffers() {
+    this.persistAfterPresentation = undefined;
     this.rawComposite = undefined;
     this.previousPixels = undefined;
     for (const value of this.cache.values()) {

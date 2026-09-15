@@ -61,7 +61,16 @@ async function run(failure, flipY, fast = false, mask = false, allowWhileInterac
     getWorkerBitmapId: () => mask ? 17 : undefined, previewUploadGovernorEnabled: () => true,
     createTextureUploadBudget: () => ({ pixels: 4 }), updateTextureUploadBudget: budget => budget,
     startFrameIntervalMonitor: () => { monitors++; return { stop: () => monitors--, readAndReset: () => ({}) }; },
-    waitForViewportInteractionIdle: async () => { idleWaits++; if (failure === 'before-allocation') cancelled = true; },
+    waitForViewportInteractionIdle: async checkCancelled => {
+      idleWaits++;
+      assert.equal(typeof checkCancelled, 'function', 'idle waits must keep observing supersession');
+      if (failure === 'before-allocation') cancelled = true;
+      if (failure === 'cancel-during-idle') {
+        await new Promise(resolve => setImmediate(resolve));
+        cancelled = true;
+      }
+      checkCancelled();
+    },
     isViewportInteractionBusy: () => false,
     waitForBrowserPaint: async () => {
       waitCount++;
@@ -140,6 +149,7 @@ assert.equal(visibleBatch.taskYields, 0, 'healthy visible uploads batch sub-budg
 const detachedBatch = await run(undefined, false, true, false, false, false);
 assert.equal(detachedBatch.taskYields, 1, 'detached uploads yield once per bounded exact-stripe batch');
 await run('detached-yield', false, true, false, false, false);
+for (const mask of [false, true, 'rgba']) await run('cancel-during-idle', false, true, mask);
 const deferredVisibleBatch = await run(undefined, false, true, false, false, true, true);
 assert.equal(deferredVisibleBatch.waitCount, 0, 'private visible batches may defer their per-texture presentation barrier');
 console.log('Preview upload cleanup passed: RGBA bitmap/bytes and R8 mask success/cancel/failure cases; visible and detached bounded batching, deferred barrier, idle/cancel gating, late/rejected stripes, GL state, source ownership, orientation and zero live monitors/uploads.');

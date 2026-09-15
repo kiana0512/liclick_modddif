@@ -60,6 +60,7 @@ const gpuUvSeamPairCache = new WeakMap<THREE.Object3D, ReturnType<typeof collect
 type GpuLayerStackBakeInput = {
   region?: import('./incrementalUvComposite').UvBakeRegion;
   allowWhileInteracting?: boolean;
+  checkCancelled?: () => void;
   rasterCache?: import('./ProjectedUvRasterCache').ProjectedUvRasterCache;
   residentQuality?: { preserveAlpha: boolean; retainRasters: boolean };
   renderer: THREE.WebGLRenderer;
@@ -897,12 +898,14 @@ async function stageLayerTexturesForGpu(
   renderer: THREE.WebGLRenderer,
   textures: Iterable<THREE.Texture>,
   allowWhileInteracting = false,
+  checkCancelled?: () => void,
 ) {
   let maximumUploadMs = 0;
   let stagedTextureCount = 0;
   const usesVisibleRenderer = renderer.domElement.isConnected;
   let nextYieldAt = performance.now() + 4;
   for (const texture of new Set(textures)) {
+    checkCancelled?.();
     // Uploads already yield in stripes. Do not charge an extra frame for each
     // source (including the 1px neutral); retain a bounded submission budget.
     if (performance.now() >= nextYieldAt) {
@@ -914,6 +917,7 @@ async function stageLayerTexturesForGpu(
     const startedAt = performance.now();
     await uploadPreviewTextureInStripes(renderer, texture, {
       allowWhileInteracting,
+      checkCancelled,
       // These textures remain private to this bake until the entire set is
       // staged. Preserve the exact final barrier once for the batch instead
       // of paying two presentation frames for every individual source.
@@ -926,7 +930,7 @@ async function stageLayerTexturesForGpu(
     renderer.getContext().flush();
     for (let frame = 0; frame < 2; frame += 1) {
       await waitForBrowserPaint();
-      if (!allowWhileInteracting) await waitForSharedViewportInteractionIdle(240);
+      if (!allowWhileInteracting) await waitForSharedViewportInteractionIdle(240, checkCancelled);
     }
   }
   if (typeof document !== 'undefined') {
@@ -1786,6 +1790,7 @@ export async function bakeProjectedLayerRastersWithGpu(
   try {
     const bakeScene = createBakeScene(meshes);
     for (const [layerIndex, layer] of input.layers.entries()) {
+      input.checkCancelled?.();
       if (layerIndex < residentStartIndex) {
         processedTriangles += totalTrianglesPerLayer;
         reportProgress(layer, layerIndex, true);
@@ -1828,7 +1833,8 @@ export async function bakeProjectedLayerRastersWithGpu(
       activeTextures = textures.disposableTextures;
       sourceSizes.push(textures.sourceSizes);
       const uploadStartedAt=performance.now();
-      await stageLayerTexturesForGpu(renderer, textures.disposableTextures, input.allowWhileInteracting);
+      await stageLayerTexturesForGpu(renderer, textures.disposableTextures, input.allowWhileInteracting, input.checkCancelled);
+      input.checkCancelled?.();
       textureUploadMs+=performance.now()-uploadStartedAt;
 
       const useMrt = Boolean(
@@ -2062,7 +2068,8 @@ export async function bakeProjectedLayerStackWithGpu(
       const textures = await sources.take();
       activeTextures=textures.disposableTextures;
       sourceSizes.push(textures.sourceSizes);
-      await stageLayerTexturesForGpu(renderer, textures.disposableTextures, input.allowWhileInteracting);
+      await stageLayerTexturesForGpu(renderer, textures.disposableTextures, input.allowWhileInteracting, input.checkCancelled);
+      input.checkCancelled?.();
       const material = createLayerMaterial({
         group: input.group,
         layer,

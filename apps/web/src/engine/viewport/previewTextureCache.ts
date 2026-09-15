@@ -311,8 +311,8 @@ function markPreviewUploadStep(step: string) {
   }
 }
 
-function waitForViewportInteractionIdle() {
-  return waitForSharedViewportInteractionIdle(240);
+function waitForViewportInteractionIdle(checkCancelled?: () => void) {
+  return waitForSharedViewportInteractionIdle(240, checkCancelled);
 }
 
 function previewUploadGovernorEnabled() {
@@ -567,6 +567,7 @@ export function uploadPreviewTextureInStripes(
   options?: {
     allowWhileInteracting?: boolean;
     shouldCancel?: () => boolean;
+    checkCancelled?: () => void;
     deferVisiblePresentationBarrier?: boolean;
   },
 ) {
@@ -581,6 +582,7 @@ export function uploadPreviewTextureInStripes(
   markPreviewTextureUploadStarted(renderer);
   const upload = (async () => {
     const throwIfCancelled = () => {
+      options?.checkCancelled?.();
       if (options?.shouldCancel?.()) {
         throw new DOMException('Texture upload superseded.', 'AbortError');
       }
@@ -607,7 +609,7 @@ export function uploadPreviewTextureInStripes(
       readyRenderers.add(renderer);
     };
     if (!imageBitmap && workerBitmapId === undefined) {
-      if (pauseDuringInteraction) await waitForViewportInteractionIdle();
+      if (pauseDuringInteraction) await waitForViewportInteractionIdle(throwIfCancelled);
       throwIfCancelled();
       renderer.initTexture(texture);
       markReady();
@@ -640,7 +642,7 @@ export function uploadPreviewTextureInStripes(
     try {
       texture.source.dataReady = false;
       texture.needsUpdate = true;
-      if (pauseDuringInteraction) await waitForViewportInteractionIdle();
+      if (pauseDuringInteraction) await waitForViewportInteractionIdle(throwIfCancelled);
       throwIfCancelled();
       const allocationStartedAt = performance.now();
       renderer.initTexture(texture);
@@ -683,7 +685,7 @@ export function uploadPreviewTextureInStripes(
       void pendingStripe.catch(() => undefined);
       while (y < image.height) {
         throwIfCancelled();
-        if (pauseDuringInteraction) await waitForViewportInteractionIdle();
+        if (pauseDuringInteraction) await waitForViewportInteractionIdle(throwIfCancelled);
         throwIfCancelled();
         const prepared: PreparedPreviewStripe = await pendingStripe!;
         activeStripe = prepared.stripe;
@@ -724,7 +726,7 @@ export function uploadPreviewTextureInStripes(
         throwIfCancelled();
         // Input may arrive between the idle check and the next animation frame.
         // Recheck before issuing any GL work so interaction always wins.
-        if (pauseDuringInteraction) await waitForViewportInteractionIdle();
+        if (pauseDuringInteraction) await waitForViewportInteractionIdle(throwIfCancelled);
         throwIfCancelled();
         const { rowCount, stripe } = prepared;
         if (options?.shouldCancel?.()) {
@@ -833,7 +835,7 @@ export function uploadPreviewTextureInStripes(
           for (let frame = 0; frame < 2; frame += 1) {
             await waitForBrowserPaint();
             throwIfCancelled();
-            if (pauseDuringInteraction) await waitForViewportInteractionIdle();
+            if (pauseDuringInteraction) await waitForViewportInteractionIdle(throwIfCancelled);
             throwIfCancelled();
           }
         }
