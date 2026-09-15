@@ -739,6 +739,9 @@ type LayerToggleScenarioResult = ProjectedLayerRampResult & {
   scenario: 'projected' | 'content-aware' | 'uv-projected';
   operations: number;
   durationMs: number;
+  presentationSamples?: Array<{ layerId: string; visible: boolean; repeat: number; durationMs: number; cacheHit: boolean; stages: string | undefined }>;
+  presentationP95?: number;
+  presentationMax?: number;
 };
 
 type ViewportLayerStressResult = {
@@ -2334,6 +2337,33 @@ function PerformanceTestHud() {
         markPerformanceEvent('interaction', `real-4k-${scenario}-simulated-pointer-release`);
         await wait(2_000);
         const publishSummary = summarizeFrames(frameSamplesRef.current.slice(publishFrameStart));
+        const presentationSamples: NonNullable<LayerToggleScenarioResult['presentationSamples']> = [];
+        if (scenario === 'projected') {
+          const model = useSceneStore.getState().importedModels.find(model => model.objectId === selectedObjectId);
+          if (!model) throw new Error('图层显隐测试对象尚未加载。');
+          const { waitForProjectedUvLayers } = await import('@/engine/performance/residentUvVisibilityProbe');
+          const expectedIds = () => useLayerStore.getState().layers.filter(layer =>
+            layer.type === 'projected' && layer.visible && layer.opacity > 0 && layer.imageUrl && layer.camera &&
+            (!layer.objectId || layer.objectId === selectedObjectId)).map(layer => layer.id);
+          useLayerStore.getState().setLayerVisibility(targetLayers.map(layer => layer.id), true);
+          await waitForProjectedUvLayers(model.group, expectedIds());
+          // Top/middle removal exercises both prefix reuse and recomposition.
+          // Repeat the same authored states to distinguish cold from warm.
+          const ordered = [...targets].sort((a, b) => a.order - b.order);
+          for (const layer of [ordered[0], ordered[Math.floor(ordered.length / 2)]]) {
+            for (let repeat = 0; repeat < 2; repeat++) {
+              for (const visible of [false, true]) {
+                const clickAt = performance.now();
+                useLayerStore.getState().setLayerVisibility([layer.id], visible);
+                await waitForProjectedUvLayers(model.group, expectedIds());
+                const cacheHit = document.body.dataset.residentUvProjectionCacheHit === 'true';
+                presentationSamples.push({ layerId: layer.id, visible, repeat,
+                  durationMs: performance.now() - clickAt, cacheHit,
+                  stages: cacheHit ? undefined : document.body.dataset.residentUvProjectionStages });
+              }
+            }
+          }
+        }
         const result: LayerToggleScenarioResult = {
           scenario,
           operations,
@@ -2344,6 +2374,10 @@ function PerformanceTestHud() {
           publishFrameP95: publishSummary.p95,
           publishFrameMax: publishSummary.max,
           publishDroppedFrames: publishSummary.dropped,
+          ...(presentationSamples.length ? { presentationSamples,
+            presentationP95: percentile(presentationSamples.map(sample => sample.durationMs), 0.95),
+            presentationMax: Math.max(...presentationSamples.map(sample => sample.durationMs)),
+          } : {}),
         };
         document.body.dataset.perfLayerToggleResult = JSON.stringify(result);
         setLayerToggleScenarioResult(result);
@@ -3641,6 +3675,13 @@ function PerformanceTestHud() {
               : '等待压测'
           }
           tone={metricTone(layerToggleScenarioResult?.publishFrameMax ?? 0, 33, 80)}
+        />
+        <PerformanceMetric
+          label="S2 眼睛→实际 UV 绑定 P95 / 最大"
+          value={layerToggleScenarioResult?.presentationP95 !== undefined
+            ? `${layerToggleScenarioResult.presentationP95.toFixed(1)} / ${layerToggleScenarioResult.presentationMax!.toFixed(1)}ms`
+            : '等待实际显示验收'}
+          tone={metricTone(layerToggleScenarioResult?.presentationMax ?? 0, 100, 500)}
         />
         <PerformanceMetric
           label="S4 合成保护 P95 / 最大"
