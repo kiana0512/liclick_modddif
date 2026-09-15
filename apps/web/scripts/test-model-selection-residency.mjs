@@ -54,16 +54,19 @@ const wireObject = new THREE.Group();
 const wireGeometry = new THREE.BoxGeometry();
 wireObject.add(new THREE.Mesh(wireGeometry, new THREE.MeshBasicMaterial()));
 let memo, effectDeps, cleanupWire, wireFrame, wireCompiles = 0, wireDraws = 0;
+let wireCameraRef;
+const wireCompileResolvers = [];
 const wireGl = {
-  compileAsync: async () => { wireCompiles++; }, getRenderTarget: () => null,
+  compileAsync: () => { wireCompiles++; return new Promise(resolve => wireCompileResolvers.push(resolve)); }, getRenderTarget: () => null,
   setRenderTarget() {}, autoClear: false,
   render: (scene) => { wireDraws++; assert.equal(scene.children[0].children[0].geometry, wireGeometry); },
 };
-const wireCamera = new THREE.Camera();
+let wireCamera = new THREE.Camera();
 const renderWire = compile(`${wireSource}\nconst run = TopologyWireframeOverlay;`, {
   THREE, React: { createElement: (_type, props) => props.object },
   useThree: () => ({gl:wireGl, camera:wireCamera}),
   useMemo: (factory) => memo ??= factory(),
+  useRef: (initial) => wireCameraRef ??= { current: initial },
   useFrame: (callback) => { wireFrame = callback; },
   useEffect: (callback, deps) => {
     if (!effectDeps || deps.some((v,i) => v !== effectDeps[i])) { cleanupWire?.(); cleanupWire = callback(); effectDeps = deps; }
@@ -72,9 +75,16 @@ const renderWire = compile(`${wireSource}\nconst run = TopologyWireframeOverlay;
   isSharedViewportInteractionBusy: () => false,
 });
 const wireGroup = renderWire({object:wireObject, visible:true});
-await new Promise(setImmediate);
 let wireDisposals = 0;
 memo.material.addEventListener('dispose', () => wireDisposals++);
+for (let i = 0; i < 16; i++) {
+  wireCamera = i % 2 ? new THREE.PerspectiveCamera() : new THREE.OrthographicCamera();
+  assert.equal(renderWire({object:wireObject, visible:true}), wireGroup);
+}
+assert.equal(wireCompiles, 1, 'Camera replacement must not restart an outstanding wireframe compile');
+wireCompileResolvers.forEach(resolve => resolve());
+await new Promise(setImmediate);
+assert.deepEqual([wireDraws, wireDisposals], [1, 0], 'The completed poll must not dispose the active helper after a camera switch');
 for (let i = 0; i < 71; i++) {
   wireObject.position.x = i;
   assert.equal(renderWire({object:wireObject, visible:false}), wireGroup);

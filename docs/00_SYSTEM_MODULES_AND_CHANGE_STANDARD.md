@@ -37,7 +37,9 @@
 
 2026-09-15 M03：ALG-VIEW-INPUT-001/1.3.2 在鼠标接触前即让 R3F 悬停遵守 Alt 所有权；保留普通 hover 和已锁定拖动。旧实现拾取回归失败、新实现通过，用户实际首帧延迟需继续录制。无像素/持久化迁移，见 [Alt 悬停变更卡](changes/CHG-20260915-ALT-BRUSH-HOVER.md)。
 
-> 文档版本：`2.20.132`
+> 文档版本：`2.20.133`
+
+2026-09-15 UI-06 → M03：`ALG-VIEW-SELECT-001/1.0.5` 将常驻线框预热绑定到 renderer/模型生命周期，透视/正交相机替换不重新编译或释放同一辅助材质，避免旧编译完成后释放当前材质。16 次相机替换旧实现启动 17 次编译，新实现一次；71 次显隐及卸载清理保持。GPU 线框/CPU 几何/Worker/shader、捕获/UV/重绘/导出、分辨率和 QA、持久化/Schema 均不变，无迁移。其他工具切换仍有长帧，不宣称全操作无卡顿，验证和回滚见 [线框相机生命周期变更卡](changes/CHG-20260915-WIREFRAME-CAMERA-LIFETIME.md)。
 
 2026-09-15 M07（协作 M06/M09）：UV-UNDERLAY-FENCE/1.0.0 删除空闲计算及映射前冗余整队列等待，mapAsync 继续保证此前 buffer 写入完成；活动交互/8MiB 映射/yield/完整像素/QA/shader/持久化/导出保持。哈希隔离基线热总耗时 67–75→60–64ms，部分 GPU 等待转移到 readback，不能以 computeMs 作为净收益。无迁移，验证和回滚见 [UV 底图变更卡](changes/CHG-20260915-UV-GUTTER-SEED-SCAN.md)。
 

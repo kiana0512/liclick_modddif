@@ -1135,6 +1135,9 @@ function TopologyWireframeOverlay({
   visible: boolean;
 }) {
   const { gl, camera } = useThree();
+  // Camera replacement does not change the resident wireframe program.
+  const cameraRef = useRef(camera);
+  cameraRef.current = camera;
   const overlay = useMemo(() => {
     const group = new THREE.Group();
     group.name = 'Liclick Topology Wireframe Overlay';
@@ -1197,6 +1200,7 @@ function TopologyWireframeOverlay({
     document.body.dataset.topologyWireframeReady = '0';
     let cancelled = false;
     const compile = async () => {
+      const camera = cameraRef.current;
       const compileScene = new THREE.Scene();
       const compileGroup = overlay.group.clone(true);
       compileGroup.visible = true;
@@ -1261,7 +1265,7 @@ function TopologyWireframeOverlay({
         overlay.material.dispose();
       }
     };
-  }, [camera, gl, overlay]);
+  }, [gl, overlay]);
 
   return <primitive object={overlay.group} />;
 }
