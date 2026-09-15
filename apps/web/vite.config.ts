@@ -130,6 +130,7 @@ export default defineConfig({
     // names while removing more redundant expressions than the fast dev tool.
     minify: 'terser',
     terserOptions: {
+      ecma: 2022,
       compress: { passes: 4, drop_console: false, unsafe: false },
       mangle: { properties: false },
       // Licenses remain available in the shipped THIRD_PARTY_NOTICES.txt.
