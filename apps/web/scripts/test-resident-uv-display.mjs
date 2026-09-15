@@ -372,6 +372,8 @@ compactCache.dispose();
 {
   const {projectionAttributeRevision}=load('projectionBakeSignature',{
     './layerStackCache':{},'./uvBakeDebugControls':{},
+    '@/utils/browserScheduling':{yieldToBrowserTask:async()=>{throw Error('Attribute revision must not schedule pixel copies');}},
+    '@/engine/viewport/viewportInteractionState':{waitForViewportInteractionIdle:async()=>{throw Error('Attribute revision must not wait for interaction');}},
   });
   const uv=new THREE.Float32BufferAttribute([0,0,1,1],2);
   const first=projectionAttributeRevision(uv);
