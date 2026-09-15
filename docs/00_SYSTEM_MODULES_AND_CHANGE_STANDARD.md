@@ -4,9 +4,11 @@
 
 2026-09-14 UI-05 → M04（协作 M08）：`ALG-GEN-001/002` 提示词修订 v1.3.0。GPT 单视图、多视图贴图与 GPT 局部重绘共用用户确认的弱光影模板，仅待补全区域抑制强明暗、高光和反射，保留真实纹理及非常轻微的接触明暗，已贴纹理/几何/背景/透明区不变；补充要求仍追加。服务端识别新旧模板，不为新版附加整图光影约束。六视图参考生成/第二步去光、原 ModelView 重绘、模型参数、GPU/CPU/Worker/shader、UV/export 与持久化协议不变；只影响新构造请求，无 Schema 或数据迁移。回滚恢复模板与识别分支，保留历史。未运行付费生图，不承诺模型必然达到目标效果；详见 [弱光影提示词变更卡](changes/CHG-20260914-GPT-TEXTURE-WEAK-LIGHT-PROMPT.md)。
 
-> 文档版本：`2.20.98`
+2026-09-15 M07，协作 UI-06/M06/M08/M09/M11/M13：`UV-DISPLAY-BUFFER` v1.4.1 / `PERF-UV-SOURCE-PREPARE-001` v1.12.1。显隐旧请求取消后直接接续最新状态；源与最终纹理的相机静默等待也检查取消，保留交互保护。首次磁盘恢复仍校验实际字节，几何/来源验证时点保留；可选压缩缓存写入延后到实际 UV 绑定之后。S2 新增顶层/中层冷、热状态的绑定探针，不再把保护窗口 FPS 当作显隐延迟。完整分辨率、Top-K、QA、接缝/gutter、CPU/Worker/shader 像素、生成屏障、Command/CAS/ownership、资产/持久化/导出不变，无迁移，回滚不恢复投影视口材质。详见 [显隐响应变更卡](changes/CHG-20260915-UV-VISIBILITY-RESPONSE.md)。
+
+> 文档版本：`2.20.100`
 >
-> 生效日期：`2026-09-14`
+> 生效日期：`2026-09-15`
 >
 > 代码盘点基线：`6f26336 + 资产盘点与手动隔离清理 Phase 1（本地未部署）`
 >
@@ -1054,6 +1056,8 @@ v1.3.3 修复 QA IDaaS JWT 被错误提交到生产 Atlas Gateway 导致 `HTTP 4
 - 交互期间 Worker/GPU 重任务受 frame budget/heavy task scheduler 约束，但不得静默降低最终分辨率或关闭可见性检查。
 - 性能实验室入口契约 `PERF-LAB-ENTRY/2.0.0`：项目贴图路由追加 `?perfLab=1` 时，只为当前真实项目打开性能 HUD、人工录制、帧时间与算法基准按钮。入口不得创建合成 Project、不得调用 `replaceCurrentProject`、不得写 Scene/Layer Store、不得改变活动对象或活动图层、不得触发项目保存；`perfScenario` 不再是编辑器路由契约。合成压力数据只能进入独立测试 Harness，且不得挂载真实项目持久化服务。投影预览失败保留上一份有效材质并写入 console；渐进预览按 `ALG-PROJ-007` v2.1.0 对相同签名执行有界退避恢复，禁止弹出用户 Toast 或无限自动重算。
 - P0 数据安全门禁：任何调试、性能、演示或测试模块不得向真实 Project/Layer/Capture/Generation 持久化路径写入数据。回归测试必须静态断言编辑器不挂载场景替换加载器，并验证 `perfLab=1` 仅返回布尔诊断开关。若发生污染，先停自动保存、备份原文件，再依据 Generation.metadata.projectedLayerId、textureBatchId、Capture.camera 与本地资产重建，禁止直接删除整个项目。
+
+2026-09-15 M07：ALG-UV-005 v2.0.6 使用 <=1 MiB 的连续区间替代逐像素 gutter 边界登记，避免大片空白 atlas 撑爆索引后反复全扫描。原谓词、动态 coverage、row-major donor 顺序、像素/分辨率/QA、GPU/CPU/Worker/shader、持久化与导出不变，无迁移；碎片超预算保守回退。验证与回滚见 [区间缓存变更卡](changes/CHG-20260915-UV-GUTTER-SPANS.md)。
 
 ## 14. 变更分级与修改上限
 

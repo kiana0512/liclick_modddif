@@ -116,6 +116,39 @@ for (let trial = 0; trial < 600; trial++) {
   assert.deepEqual(nextMask, goldMask);
 }
 
+// Empty atlas regions used to exceed the 262144-index cap. Continuous spans
+// retain their exact row-major membership without omitting raster fringe texels.
+const indexedDilation = {};
+new Function('require', 'exports', ts.transpileModule(await readFile(
+  new URL('../src/engine/bake/dilation.ts', import.meta.url), 'utf8'), {
+  compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
+}).outputText + '\nexports.boundary = () => gutterBoundary;')(
+  name => { if (name === 'three') return THREE; throw Error(name); }, indexedDilation);
+for (const fragmented of [false, true]) {
+  const size = 1024, topology = new Uint8Array(size * size).fill(1);
+  for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) {
+    if (fragmented ? x % 4 === 1 && y % 4 === 1 : x < 128 || x > 800 || y < 100 || y > 900) {
+      topology[y * size + x] = 0;
+    }
+  }
+  for (const mode of [false, true, 'rgb-only']) for (let repeat = 0; repeat < 2; repeat++) {
+    const rgba = Uint8ClampedArray.from({ length: size * size * 4 }, () => random() * 256);
+    // Deliberately include dynamically covered pixels OUTSIDE topology.
+    const coverage = Uint8Array.from(topology, () => random() < 0.02 ? 1 : 0);
+    const gold = { width: size, height: size, data: rgba.slice() }, goldMask = coverage.slice();
+    const actual = { width: size, height: size, data: rgba }, actualMask = coverage.slice();
+    const count = reference(gold, goldMask, topology, 2, mode);
+    assert.equal(await indexedDilation.padUvIslandGuttersWithTopologyCooperatively(
+      actual, actualMask, topology, 2, mode, async () => {}, true), count);
+    assert.deepEqual(actual.data, gold.data);
+    assert.deepEqual(actualMask, goldMask);
+    const spans = indexedDilation.boundary().spans;
+    if (fragmented) assert.equal(spans, undefined, 'fragmented atlas retains bounded fallback');
+    else assert(spans && spans.length < 10000, 'large empty atlas fits the 1 MiB span budget');
+  }
+}
+console.log('Gutter spans: large empty atlas, outside-topology coverage, all alpha modes, cold/warm and fragmented fallback are byte-exact.');
+
 const width = 2048;
 const image = { width, height: width, data: new Uint8ClampedArray(width * width * 4) };
 const topology = new Uint8Array(width * width).fill(1);

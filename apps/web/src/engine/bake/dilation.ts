@@ -12,7 +12,7 @@ const MAX_TOPOLOGY_PINHOLE_RGB_DISTANCE_SQUARED = 64 * 64;
 // Only immutable, geometry-validated topology opts in. One atlas, <=1 MiB;
 // dense/fragmented atlases retain the original scan and donor ordering.
 let gutterBoundary: { mask: WeakRef<Uint8Array>; width: number; height: number;
-  seeds: ChunkedUint32Queue | undefined } | undefined;
+  spans: ChunkedUint32Queue | undefined } | undefined;
 
 function getRgbDistanceSquared(data: Uint8ClampedArray, first: number, second: number) {
   const firstOffset = first * 4;
@@ -251,13 +251,26 @@ function* padUvIslandGutterSteps(
   const cached = immutableTopology && gutterBoundary?.mask.deref() === topology &&
     gutterBoundary.width === width && gutterBoundary.height === height ? gutterBoundary : undefined;
   let prepared = immutableTopology && !cached ? new ChunkedUint32Queue() : undefined;
-  if (cached?.seeds) {
-    for (let i = 0; i < cached.seeds.length; i++) {
-      if (i % 8192 === 0) yield;
-      const index = cached.seeds.get(i);
-      if (coverage[index]) currentFrontier.push(index);
+  if (cached?.spans) {
+    let scanned = 0;
+    for (let i = 0; i < cached.spans.length; i += 2) {
+      const end = cached.spans.get(i + 1);
+      for (let index = cached.spans.get(i); index < end; index++) {
+        if (++scanned % 8192 === 0) yield;
+        if (coverage[index]) currentFrontier.push(index);
+      }
     }
   } else {
+  let spanStart = -1;
+  const finishSpan = (end: number) => {
+    if (spanStart < 0) return;
+    if (prepared) {
+      if (prepared.length <= 262142) {
+        prepared.push(spanStart); prepared.push(end);
+      } else prepared = undefined;
+    }
+    spanStart = -1;
+  };
   for (let y = 0; y < height; y += 1) {
     if (y > 0) yield;
     for (let x = 0; x < width; x += 1) {
@@ -274,16 +287,14 @@ function* padUvIslandGutterSteps(
           !topology[index + width] || (x + 1 < width && !topology[index + width + 1])));
       if (touchesAtlasGutter) {
         if (coverage[index]) currentFrontier.push(index);
-        if (prepared) {
-          if (prepared.length < 262144) prepared.push(index);
-          else prepared = undefined;
-        }
-      }
+        if (prepared && spanStart < 0) spanStart = index;
+      } else finishSpan(index);
     }
   }
+  finishSpan(width * height);
   }
   if (immutableTopology && !cached) gutterBoundary = {
-    mask: new WeakRef(topology), width, height, seeds: prepared,
+    mask: new WeakRef(topology), width, height, spans: prepared,
   };
   let paddedPixels = 0;
   let processedSeeds = 0;
