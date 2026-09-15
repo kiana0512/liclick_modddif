@@ -15,7 +15,7 @@ new Function(
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
   }).outputText,
 )(module, module.exports, () => contracts);
-const { findContentFraming, restoredFrameLayout } = module.exports;
+const { findContentFraming, restoredFrameLayout, validateFramedSilhouette } = module.exports;
 function coverage(width, height, rect, normal = false) {
   const data = new Uint8ClampedArray(width * height * 4);
   for (let y = rect.y; y < rect.y + rect.h; y++)
@@ -36,7 +36,11 @@ for (const rect of [
   );
   assert.ok(Math.max(frame.width / frame.height, frame.height / frame.width) <= 3);
   for (const scale of [1, 2, 3]) {
-    const layout = restoredFrameLayout(frame, frame.width * scale, frame.height * scale);
+    const layout = restoredFrameLayout(
+      { ...frame, version: 1 },
+      frame.width * scale,
+      frame.height * scale,
+    );
     for (const [x, y] of [
       [0, 0],
       [rect.x, rect.y],
@@ -71,6 +75,69 @@ const exact = {
   width: 1710,
   height: 1470,
 };
+assert.deepEqual(contracts.generationOutputSize(69, 100, '1K'), { width: 848, height: 1232 });
+assert.throws(() => contracts.generationOutputSize(0, 1, '2K'));
+for (const [w, h, ow, oh] of [
+  [1507, 597, 3248, 1296],
+  [1742, 593, 3504, 1200],
+  [1740, 593, 3504, 1200],
+  [1514, 617, 3216, 1312],
+  [1478, 859, 2688, 1568],
+  [1472, 958, 2544, 1648],
+]) {
+  assert.deepEqual(contracts.generationOutputSize(w, h, '2K'), { width: ow, height: oh });
+  assert.doesNotThrow(() => restoredFrameLayout({ ...exact, width: w, height: h }, ow, oh));
+}
+for (const imageSize of ['1K', '2K', '4K']) {
+  for (const rect of [
+    { x: 60, y: 30, w: 150, h: 60 },
+    { x: 80, y: 10, w: 70, h: 170 },
+    { x: 0, y: 0, w: 220, h: 220 },
+  ]) {
+    const f = findContentFraming(coverage(220, 220, rect), false, imageSize);
+    assert.equal(f.version, 2);
+    assert.ok(f.ratioWidth <= 100 && f.ratioHeight <= 100);
+    assert.equal(f.width * f.outputHeight, f.height * f.outputWidth);
+    assert.ok(f.cropBounds.left >= f.left && f.cropBounds.top >= f.top);
+    assert.ok(f.cropBounds.left + f.cropBounds.width <= f.left + f.width);
+    const l = restoredFrameLayout(f, f.outputWidth, f.outputHeight);
+    assert.equal(l.patchWidth, f.outputWidth);
+    assert.equal(l.patchHeight, f.outputHeight);
+    const s = f.outputWidth / f.width;
+    assert.ok(Math.abs(l.left - f.left * s) <= 0.5);
+    assert.ok(Math.abs(l.top - f.top * s) <= 0.5);
+    assert.throws(() => restoredFrameLayout(f, f.outputWidth + 16, f.outputHeight), /比例/);
+    const box = {
+      x: Math.round((rect.x - f.left) * s),
+      y: Math.round((rect.y - f.top) * s),
+      w: Math.round(rect.w * s),
+      h: Math.round(rect.h * s),
+    };
+    const pixels = coverage(f.outputWidth, f.outputHeight, box);
+    let checkpoints = 0;
+    await validateFramedSilhouette(f, pixels, async () => {
+      checkpoints++;
+    });
+    assert.ok(checkpoints > 0);
+    await assert.rejects(
+      () =>
+        validateFramedSilhouette(f, pixels, async () => {
+          throw new Error('cancel');
+        }),
+      /cancel/,
+    );
+    const changed = coverage(f.outputWidth, f.outputHeight, { ...box, w: Math.floor(box.w / 2) });
+    await assert.rejects(() => validateFramedSilhouette(f, changed), /轮廓/);
+    await assert.rejects(
+      () =>
+        validateFramedSilhouette(
+          f,
+          coverage(f.outputWidth, f.outputHeight, { x: 0, y: 0, w: 0, h: 0 }),
+        ),
+      /轮廓/,
+    );
+  }
+}
 assert.deepEqual(contracts.generationFramingRatio(exact), { width: 57, height: 49 });
 assert.throws(() => restoredFrameLayout(exact, 2048, 2048), /比例/);
 assert.doesNotThrow(() => restoredFrameLayout(exact, 1711, 1470));
@@ -224,4 +291,170 @@ try {
 }
 console.log(
   'Framing API: exact payload, immediate/polled results, lazy history recovery, no double restore and cancellation passed.',
+);
+
+// Run the production image adapter with deterministic RGBA canvas fixtures.
+const fixtures = new Map();
+const canvases = [];
+const originalImage = globalThis.Image,
+  originalDocument = globalThis.document;
+globalThis.Image = class {
+  set src(url) {
+    this.url = url;
+    if (!url) return;
+    const pixels = fixtures.get(url);
+    this.naturalWidth = pixels.width;
+    this.naturalHeight = pixels.height;
+    globalThis.queueMicrotask(() => this.onload?.());
+  }
+  get src() {
+    return this.url;
+  }
+};
+globalThis.document = {
+  createElement() {
+    let clip;
+    const canvas = {
+      width: 0,
+      height: 0,
+      pixels: undefined,
+      getContext() {
+        return {
+          beginPath() {},
+          rect(x, y, w, h) {
+            clip = [x, y, w, h];
+          },
+          clip() {},
+          drawImage(image, dx, dy, dw, dh) {
+            const source = fixtures.get(image.src);
+            if (dw !== undefined) {
+              assert.equal(dw, source.width);
+              assert.equal(dh, source.height);
+            }
+            assert.ok(Number.isInteger(dx) && Number.isInteger(dy));
+            const data = new Uint8ClampedArray(canvas.width * canvas.height * 4);
+            for (let y = 0; y < canvas.height; y++)
+              for (let x = 0; x < canvas.width; x++) {
+                if (
+                  clip &&
+                  (x < clip[0] || y < clip[1] || x >= clip[0] + clip[2] || y >= clip[1] + clip[3])
+                )
+                  continue;
+                const sx = x - dx,
+                  sy = y - dy;
+                if (sx >= 0 && sy >= 0 && sx < source.width && sy < source.height)
+                  data.set(
+                    source.data.subarray(
+                      (sy * source.width + sx) * 4,
+                      (sy * source.width + sx) * 4 + 4,
+                    ),
+                    (y * canvas.width + x) * 4,
+                  );
+              }
+            canvas.pixels = { width: canvas.width, height: canvas.height, data };
+          },
+        };
+      },
+      toBlob(callback) {
+        callback(canvas.pixels);
+      },
+    };
+    canvases.push(canvas);
+    return canvas;
+  },
+};
+let sequence = 0;
+const imageAdapter = evaluate(
+  readFileSync(
+    new URL('../src/engine/generation/contentFramingImages.ts', import.meta.url),
+    'utf8',
+  ),
+  {
+    '@/services/workspaceApiClient': { urlToDataUrl: async (url) => url },
+    '@/engine/localRepaint/imageUtils': {
+      urlToImageData: async (url) => fixtures.get(url),
+      blobToDataUrl: async (pixels) => {
+        const url = `encoded-${sequence++}`;
+        fixtures.set(url, pixels);
+        return url;
+      },
+    },
+    './contentFraming': module.exports,
+    '@/utils/browserScheduling': { yieldToBrowserTask: async () => {} },
+  },
+);
+try {
+  fixtures.set('normal', coverage(220, 220, { x: 30, y: 70, w: 150, h: 60 }, true));
+  const combined = coverage(220, 220, { x: 0, y: 0, w: 220, h: 220 });
+  // Nonconstant opaque background proves newly added padding is not copied from the source.
+  for (let i = 0; i < combined.data.length; i += 4) combined.data[i] = (i / 4) % 251;
+  fixtures.set('combined', combined);
+  const capture = { width: 220, height: 220, normalUrl: 'normal', maskUrl: 'author-mask' };
+  const references = [
+    { id: 'combined', url: 'combined' },
+    { id: 'normal', url: 'normal' },
+    { id: 'material', url: 'untouched' },
+  ];
+  const preparedInput = await imageAdapter.prepareContentFraming({
+    workflow: 'local-repaint',
+    imageSize: '1K',
+    capture,
+    referenceImages: references,
+  });
+  assert.deepEqual(preparedInput.exactIds, ['combined', 'normal']);
+  assert.equal(preparedInput.references[2], references[2]);
+  assert.equal(capture.maskUrl, 'author-mask');
+  const f = preparedInput.framing,
+    c = f.cropBounds;
+  for (let index = 0; index < 2; index++) {
+    const actual = fixtures.get(preparedInput.references[index].url),
+      sourcePixels = fixtures.get(references[index].url);
+    for (let y = 0; y < f.height; y++)
+      for (let x = 0; x < f.width; x++) {
+        const sx = x + f.left,
+          sy = y + f.top;
+        const inside =
+          sx >= c.left &&
+          sy >= c.top &&
+          sx < c.left + c.width &&
+          sy < c.top + c.height &&
+          sx >= 0 &&
+          sy >= 0 &&
+          sx < 220 &&
+          sy < 220;
+        for (let channel = 0; channel < 4; channel++)
+          assert.equal(
+            actual.data[(y * f.width + x) * 4 + channel],
+            inside ? sourcePixels.data[(sy * 220 + sx) * 4 + channel] : 0,
+          );
+      }
+  }
+  const scale = f.outputWidth / f.width,
+    s = f.subject;
+  fixtures.set(
+    'remote-output',
+    coverage(f.outputWidth, f.outputHeight, {
+      x: Math.round((s.left - f.left) * scale),
+      y: Math.round((s.top - f.top) * scale),
+      w: Math.round(s.width * scale),
+      h: Math.round(s.height * scale),
+    }),
+  );
+  const restoredUrl = await imageAdapter.restoreContentFraming('remote-output', f);
+  assert.equal(
+    fixtures.get(restoredUrl).width,
+    restoredFrameLayout(f, f.outputWidth, f.outputHeight).width,
+  );
+  assert.ok(canvases.every((c) => c.width === 0 && c.height === 0));
+  const before = canvases.length;
+  const abort = new globalThis.AbortController();
+  abort.abort();
+  await assert.rejects(() => imageAdapter.restoreContentFraming('remote-output', f, abort.signal));
+  assert.equal(canvases.length, before);
+} finally {
+  globalThis.Image = originalImage;
+  globalThis.document = originalDocument;
+}
+console.log(
+  'Framing image adapter: byte-exact paired crop, transparent padding, unchanged references/mask, native return and cancellation passed.',
 );
