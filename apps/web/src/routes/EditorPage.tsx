@@ -5396,9 +5396,11 @@ export function EditorPage({
           )
           .slice(0, 1)
           .map((layer) => layer.id);
-        if (projectedIds.length < 14) {
-          throw new Error(`当前对象只有 ${projectedIds.length} 个可用投影图层，需要 14 个。`);
+        if (projectedIds.length === 0) {
+          throw new Error('当前对象没有可用投影图层。');
         }
+        // S4-SAMPLE/1.0.1: measure the actual 1–14 layer sample and report its
+        // size; ten-view generation projects are valid merge inputs too.
         // A repair underlay is optional in the real merge command. Requiring
         // one only in S4 made a perfectly valid 14-projection project unable to
         // quantify its 4K merge (and looked like a frozen benchmark button).
