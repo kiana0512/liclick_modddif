@@ -41,6 +41,16 @@ const {
   fillSmallMaskHoles,
   getMaskBounds,
 } = module.exports;
+const errorMessageSource = fs.readFileSync(path.resolve(scriptDirectory, '../src/services/generationErrorMessage.ts'), 'utf8');
+const errorModule = {exports: {}};
+new Function('exports', ts.transpileModule(errorMessageSource, {
+  compilerOptions: {module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022},
+}).outputText)(errorModule.exports);
+assert.throws(() => buildCompositeCoreMask(new Uint8Array(16), 4, 4), error => {
+  assert.equal(errorModule.exports.getUserFacingGenerationError(error, '局部重绘生成失败，请稍后重试。'), '蒙版为空，请先涂抹重绘区域。');
+  assert.equal(errorModule.exports.isRetryableGenerationPollError(error), false);
+  return true;
+});
 const pngCoreCompiled = ts.transpileModule(pngCoreSource, {
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
   fileName: pngCorePath,

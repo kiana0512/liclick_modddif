@@ -343,7 +343,7 @@ function buildCompositeCoreMask(
     }
   }
   if (candidateBounds.maxX < candidateBounds.minX || candidateBounds.maxY < candidateBounds.minY) {
-    throw new Error('The authored local repaint mask is empty.');
+    throw new Error('蒙版为空，请先涂抹重绘区域。');
   }
   const candidateWidth = candidateBounds.maxX - candidateBounds.minX + 1;
   const candidateHeight = candidateBounds.maxY - candidateBounds.minY + 1;
