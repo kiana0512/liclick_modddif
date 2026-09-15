@@ -103,7 +103,7 @@ const panel = read('components/panels/GeneratePanel.tsx');
 assert.match(panel, /!previewProcessingVisible \|\| !sourceUrl \|\| !previewProcessingMode/);
 assert.match(panel, /generatePanelExpanded && displayedTexturePreviewMode !== 'multi'/);
 assert.match(panel, /cancelled = true;\s*controller.abort\(\);/);
-assert.match(read('engine/localRepaint/resultPreviewUtils.ts'), /\['display', sourceUrl, depthUrl, request.revision\]/);
+assert.match(read('engine/localRepaint/resultPreviewUtils.ts'), /\['display', sourceUrl, depthUrl, request.revision, preserveAlpha\]/);
 console.log('Display preview scheduling, cancellation, LRU/byte budget and panel ownership passed.');
 
 // Run the real panel hook: thumbnail and zoom consumers stay separate, and

@@ -238,6 +238,36 @@ for (const projected of [false,true]) for (const abortAfterRead of [false,true])
   assert.equal(events.includes('exact-preview'),projected,'Only projected thumbnails consume the original exact mask/crop pipeline');
 }
 const bounds = bind(previewFunction('getExactAlphaContentBounds'), 'getExactAlphaContentBounds');
+const transparentBounds = bind(previewFunction('transparentPreviewBounds').replace('export ', ''), 'transparentPreviewBounds', { getExactAlphaContentBounds: bounds });
+const transparent = new Pixels(100, 100);
+for (let y=20; y<60; y++) for(let x=10; x<90; x++) transparent.data[(y*100+x)*4+3]=255;
+transparent.data[3]=1; // Remote transparent background can contain faint speckles.
+assert.deepEqual(transparentBounds(transparent), [2,12,96,56]);
+assert.equal(transparentBounds(new Pixels(100,100)), undefined);
+const edge = new Pixels(10,10); edge.data.fill(255);
+assert.deepEqual(transparentBounds(edge), [-8,-8,26,26], 'Keep 8px padding even at the source edge');
+const faint = new Pixels(10,10); faint.data[3]=1;
+assert.deepEqual(transparentBounds(faint), [-8,-8,17,17], 'Do not discard entirely translucent content');
+for (const cancelAt of [0,1,2,3]) {
+  const controller=new AbortController(), events=[];
+  let frames=0;
+  const snapshot=transparent.data.slice();
+  const run=bind(previewFunction('createGeneratedDisplayPreviewUncached'),'createGeneratedDisplayPreviewUncached',{
+    urlToImageData: async (_url,w,h,options)=>{ assert.equal(w,undefined); assert.equal(h,undefined); assert.equal(options.cooperative,true); return transparent; },
+    waitForBrowserPaint: async()=>{ if(++frames===cancelAt)controller.abort(); }, waitForViewportInteractionIdle:async()=>{},
+    transparentPreviewBounds:transparentBounds,
+    cropDisplayImage:(source,...rect)=>{ assert.equal(source,transparent); assert.deepEqual(rect,[2,12,96,56]); events.push('crop'); return source; },
+    encodeDisplayImage:async()=>{ events.push('encode'); if(cancelAt===3)controller.abort(); return 'preview-only'; },
+    resizeImageData:()=>assert.fail('Must not downsample transparent zoom preview'),
+    applyPackedDepthDisplayMask:()=>assert.fail('Must not remask transparent source'),
+    removeStrictOuterDarkDisplayBackground:()=>assert.fail('Must not remove black material'),
+  });
+  const result=run('original','unused-depth',controller.signal,true);
+  if(cancelAt)await assert.rejects(result,{name:'AbortError'});
+  else assert.deepEqual(await result,{alignedUrl:'original',fittedUrl:'preview-only'});
+  if(cancelAt===1||cancelAt===2)assert.deepEqual(events,[]);
+  assert.deepEqual(transparent.data,snapshot,'Preview leaves persisted/projection RGBA unchanged');
+}
 const referenceBounds = (image) => {
   let left = image.width, top = image.height, right = -1, bottom = -1;
   for (let y = 0; y < image.height; y++) for (let x = 0; x < image.width; x++) {

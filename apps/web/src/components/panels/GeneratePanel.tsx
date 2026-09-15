@@ -1143,14 +1143,16 @@ export function GeneratePanel({
       isTextureMapGeneration(displayedPreviewGeneration))
       ? previewCapture?.maskUrl
       : undefined;
-  const previewProcessingMode = displayedPreviewGeneration && !preservesGeneratedSourceAlpha(displayedPreviewGeneration)
-    ? isLocalRepaintGeneration(displayedPreviewGeneration)
-      ? 'generated-display'
-      : isTextureMapGeneration(displayedPreviewGeneration)
-        ? capturePreviewMaskUrl
-          ? 'capture-mask'
+  const previewProcessingMode = displayedPreviewGeneration
+    ? preservesGeneratedSourceAlpha(displayedPreviewGeneration)
+      ? 'source-alpha'
+      : isLocalRepaintGeneration(displayedPreviewGeneration)
+        ? 'generated-display'
+        : isTextureMapGeneration(displayedPreviewGeneration)
+          ? capturePreviewMaskUrl
+            ? 'capture-mask'
+            : undefined
           : undefined
-        : undefined
     : undefined;
   // A local-repaint result is a normal generated image, not the editor's
   // selection mask.  Keeping that mask in the preview cache key made an old
@@ -1184,7 +1186,7 @@ export function GeneratePanel({
     const previewPromise =
       previewProcessingMode === 'capture-mask'
         ? createCaptureMaskedPreview(sourceUrl, capturePreviewMaskUrl!, previewRequest)
-        : createGeneratedDisplayPreview(sourceUrl, previewProcessingDepthUrl, previewRequest).then(
+        : createGeneratedDisplayPreview(sourceUrl, previewProcessingDepthUrl, previewRequest, previewProcessingMode === 'source-alpha').then(
             (preview) => preview.fittedUrl,
           );
     void previewPromise
@@ -5341,7 +5343,9 @@ export function GeneratePanel({
       ? 'texture_map'
       : 'liclick_generation';
     const downloaded = await downloadImageAsset(
-      previewResultUrl ?? displayedPreviewGeneration.resultUrl,
+      previewProcessingMode === 'source-alpha'
+        ? displayedPreviewGeneration.resultUrl
+        : previewResultUrl ?? displayedPreviewGeneration.resultUrl,
       `liclick_${kind}_${displayedPreviewGeneration.id}`,
     );
     if (!downloaded) return;

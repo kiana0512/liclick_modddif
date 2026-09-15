@@ -35,6 +35,11 @@ for (const rect of [
     frame.left + frame.width > rect.x + rect.w && frame.top + frame.height > rect.y + rect.h,
   );
   assert.ok(Math.max(frame.width / frame.height, frame.height / frame.width) <= 3);
+  assert.equal(frame.width, frame.height);
+  assert.deepEqual(contracts.generationFramingRatio(frame), { width: 1, height: 1 });
+  const border = Math.max(2, Math.ceil(Math.max(rect.w, rect.h) * 0.01));
+  assert.equal(frame.width, Math.max(rect.w, rect.h) + 2 * border);
+  assert.equal(frame.outputWidth, frame.outputHeight);
   for (const scale of [1, 2, 3]) {
     const layout = restoredFrameLayout(
       { ...frame, version: 1 },

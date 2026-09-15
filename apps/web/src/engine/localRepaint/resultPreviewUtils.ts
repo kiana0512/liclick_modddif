@@ -323,7 +323,7 @@ function getAlphaContentBounds(imageData: ImageData) {
   };
 }
 
-function getExactAlphaContentBounds(imageData: ImageData) {
+function getExactAlphaContentBounds(imageData: ImageData, minimumAlpha = 1) {
   const { width, height, data } = imageData;
   let left = width;
   let top = height;
@@ -332,10 +332,10 @@ function getExactAlphaContentBounds(imageData: ImageData) {
   for (let y = 0; y < height; y += 1) {
     const rowOffset = y * width * 4 + 3;
     let first = 0;
-    while (first < width && data[rowOffset + first * 4] === 0) first += 1;
+    while (first < width && data[rowOffset + first * 4] < minimumAlpha) first += 1;
     if (first === width) continue;
     let last = width - 1;
-    while (last > first && data[rowOffset + last * 4] === 0) last -= 1;
+    while (last > first && data[rowOffset + last * 4] < minimumAlpha) last -= 1;
     // Only the first/last nonzero alpha in a row can extend its exact bounds.
     // Interior gaps and faint nonzero alpha retain the original semantics.
     left = Math.min(left, first);
@@ -354,6 +354,12 @@ function paddedDisplayBounds(source: ImageData, bounds: { x: number; y: number; 
     Math.max(1, Math.min(source.width, bounds.x + bounds.width + padding) - x),
     Math.max(1, Math.min(source.height, bounds.y + bounds.height + padding) - y),
   ] as const;
+}
+
+/** Display only: ignore faint background speckles, preserve every RGBA pixel inside the crop. */
+export function transparentPreviewBounds(source: ImageData) {
+  const bounds = getExactAlphaContentBounds(source, 16) ?? getExactAlphaContentBounds(source);
+  return bounds ? [bounds.x - 8, bounds.y - 8, bounds.width + 16, bounds.height + 16] as const : undefined;
 }
 
 // Both display paths use the same unscaled canvas crop. Keep their distinct
@@ -386,6 +392,7 @@ async function createGeneratedDisplayPreviewUncached(
   sourceUrl: string,
   depthUrl?: string,
   signal?: AbortSignal,
+  preserveAlpha = false,
 ): Promise<GeneratedDisplayPreview> {
   const checkpoint = async () => {
     signal?.throwIfAborted();
@@ -398,6 +405,14 @@ async function createGeneratedDisplayPreviewUncached(
   const readOptions = { cooperative: true, signal };
   const decoded = await urlToImageData(sourceUrl, undefined, undefined, readOptions);
   await checkpoint();
+  if (preserveAlpha) {
+    const bounds = transparentPreviewBounds(decoded);
+    await checkpoint();
+    const fitted = bounds && cropDisplayImage(decoded, ...bounds);
+    const fittedUrl = fitted ? await encodeDisplayImage(fitted) : sourceUrl;
+    signal?.throwIfAborted();
+    return { alignedUrl: sourceUrl, fittedUrl };
+  }
   const scale = Math.min(
     1,
     GENERATED_DISPLAY_MAX_DIMENSION / Math.max(decoded.width, decoded.height, 1),
@@ -451,10 +466,11 @@ async function createGeneratedDisplayPreviewUncached(
 
 export function createGeneratedDisplayPreview(
   sourceUrl: string, depthUrl?: string, request: DisplayPreviewRequest = {},
+  preserveAlpha = false,
 ) {
   return requestDisplayPreview(
-    JSON.stringify(['display', sourceUrl, depthUrl, request.revision]),
-    (signal) => createGeneratedDisplayPreviewUncached(sourceUrl, depthUrl, signal),
+    JSON.stringify(['display', sourceUrl, depthUrl, request.revision, preserveAlpha]),
+    (signal) => createGeneratedDisplayPreviewUncached(sourceUrl, depthUrl, signal, preserveAlpha),
     request.signal,
   );
 }
