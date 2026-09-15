@@ -30,6 +30,26 @@ for (const visible of [true, false]) {
 await assert.rejects(read({ domElement: { isConnected: false }, async readRenderTargetPixelsAsync() {
   throw new Error('GPU readback failed');
 } }, {}, 4), /GPU readback failed/);
+// The browser yield can be arbitrarily delayed by user input. Private transfers
+// must already occupy the freed slot; visible transfers must await the paint.
+for (const visible of [false, true]) {
+  let calls = 0, first = true, release;
+  const gate = new Promise(resolve => { release = resolve; });
+  const pause = async () => {
+    if (!first) return;
+    first = false;
+    assert.equal(calls, visible ? 1 : 5);
+    await gate;
+  };
+  const gatedRead = new Function('waitForBrowserPaint', 'yieldToBrowserTask', `${compiled}; return readRenderTargetPixelsInStripes;`)(pause, pause);
+  const job = gatedRead({domElement: {isConnected: visible}, async readRenderTargetPixelsAsync() {calls++;}}, {}, 2048);
+  // Let the first completion and scheduling boundary settle without a timer.
+  for (let i = 0; i < 8; i++) await Promise.resolve();
+  assert.equal(first, false);
+  assert.equal(calls, visible ? 1 : 5, 'no unbounded submission while browser input owns the task');
+  release();
+  await job;
+}
 for (const [width, height] of [[2048, 1537], [1537, 2048], [4096, 512]]) {
   let rows = 0;
   const bytes = await read({ domElement: { isConnected: false },

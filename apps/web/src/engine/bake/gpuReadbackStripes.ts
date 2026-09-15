@@ -1,7 +1,7 @@
 import type * as THREE from 'three';
 import { waitForBrowserPaint, yieldToBrowserTask } from '@/utils/browserScheduling';
 
-// UV-READBACK-SCHEDULING/1.2.0: private contexts pipeline four 2 MiB stripes;
+// UV-READBACK-SCHEDULING/1.2.1: private contexts pipeline four 2 MiB stripes;
 // visible contexts retain one 1 MiB stripe. At most 8 MiB of private PBOs.
 const GPU_READBACK_STRIPE_BYTES = 1024 * 1024;
 
@@ -49,12 +49,15 @@ export async function readRenderTargetPixelsInStripes(
       const completed = await pending.shift()!;
       if ('error' in completed) throw completed.error;
       if (nextY >= height && !pending.length) break;
+      // Refill the freed private slot before yielding, so its GPU transfer can
+      // overlap browser input. Never submit visible work before its paint gate.
+      if (!usesVisibleRenderer && nextY < height) submit();
       if (usesVisibleRenderer) {
         await waitForBrowserPaint();
       } else {
         await yieldToBrowserTask();
       }
-      if (nextY < height) submit();
+      if (usesVisibleRenderer && nextY < height) submit();
     }
   } finally {
     await Promise.all(pending);
