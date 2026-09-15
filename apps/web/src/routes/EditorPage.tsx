@@ -5975,7 +5975,6 @@ export function EditorPage({
       }
       setLocalRepaintInteractiveState(detail);
       if (detail.status === 'ready' || detail.status === 'failed') {
-        setLocalRepaintActivationQueued(false);
         localRepaintGpuPrepareRequestedKeyRef.current = undefined;
         if (pendingLocalRepaintBackgroundGenerationIdRef.current === detail.generationId) {
           pendingLocalRepaintBackgroundGenerationIdRef.current = undefined;
@@ -5983,6 +5982,7 @@ export function EditorPage({
       }
       if (detail.status !== 'failed') return;
       pendingLocalRepaintActivationRequestRef.current = undefined;
+      setLocalRepaintActivationQueued(false);
       pushToast({
         tone: 'error',
         title: '局部重绘 GPU 准备失败',
@@ -6443,7 +6443,6 @@ export function EditorPage({
       });
     };
     const clearPrewarmProgress = () => {
-      setLocalRepaintActivationQueued(false);
       delete document.body.dataset.localRepaintPrewarmProgressRequested;
       window.clearTimeout(manualBakeProgressTimerRef.current);
       setManualBakeProgress(undefined);
@@ -6600,7 +6599,6 @@ export function EditorPage({
       // disabled while its lightweight source and renderer material are being
       // prepared, so an early gesture cannot be silently queued behind setup.
       setPaintTool('none');
-      setLocalRepaintActivationQueued(true);
       showPrewarmProgress('读取高清生成结果', 0.06);
       let projectionImage: {
         imageUrl: string;
@@ -6628,11 +6626,11 @@ export function EditorPage({
         });
         return;
       }
-      if (localRepaintToolRequestRevisionRef.current !== requestRevision) return;
-      if (useSceneStore.getState().paintTool !== 'none') {
-        clearPrewarmProgress();
+      if (
+        localRepaintToolRequestRevisionRef.current !== requestRevision ||
+        useSceneStore.getState().paintTool !== 'none'
+      )
         return;
-      }
       let currentTargetLayer = useLayerStore
         .getState()
         .layers.find((layer) => layer.id === targetLayer.id);

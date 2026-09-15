@@ -4340,11 +4340,48 @@ function computeScreenBrushTransform(
   worldRadius: number,
   fallbackRadius: number,
 ) {
-  const { tangentX, tangentY, delta } = surfaceBrushScratch;
+  const { tangentX, tangentY } = surfaceBrushScratch;
   // The cursor and screen-space stamps share camera-facing axes. Surface
   // normals must not flatten or rotate the footprint at hard edges.
   tangentX.setFromMatrixColumn(camera.matrixWorld, 0).normalize();
   tangentY.setFromMatrixColumn(camera.matrixWorld, 1).normalize();
+  return projectScreenBrush(hitPoint, camera, worldRadius, fallbackRadius);
+}
+
+function computeLocalRepaintScreenBrushTransform(
+  mesh: THREE.Mesh,
+  face: THREE.Face,
+  hitPoint: THREE.Vector3,
+  camera: THREE.Camera,
+  worldRadius: number,
+  fallbackRadius: number,
+) {
+  const position = mesh.geometry.getAttribute('position');
+  if (!(position instanceof THREE.BufferAttribute)) {
+    return createCircularBrushTransform(fallbackRadius);
+  }
+
+  const { p0, p1, p2, edge1, edge2, tangentX, tangentY, normal } = surfaceBrushScratch;
+  p0.fromBufferAttribute(position, face.a).applyMatrix4(mesh.matrixWorld);
+  p1.fromBufferAttribute(position, face.b).applyMatrix4(mesh.matrixWorld);
+  p2.fromBufferAttribute(position, face.c).applyMatrix4(mesh.matrixWorld);
+  edge1.copy(p1).sub(p0);
+  edge2.copy(p2).sub(p0);
+  if (edge1.lengthSq() < 1e-16 || edge2.lengthSq() < 1e-16) {
+    return createCircularBrushTransform(fallbackRadius);
+  }
+  tangentX.copy(edge1).normalize();
+  normal.crossVectors(edge1, edge2).normalize();
+  if (normal.lengthSq() < 0.5) return createCircularBrushTransform(fallbackRadius);
+  tangentY.crossVectors(normal, tangentX).normalize();
+
+  return projectScreenBrush(hitPoint, camera, worldRadius, fallbackRadius);
+}
+
+function projectScreenBrush(
+  hitPoint: THREE.Vector3, camera: THREE.Camera, worldRadius: number, fallbackRadius: number,
+) {
+  const { tangentX, tangentY, delta } = surfaceBrushScratch;
   const projectToScreen = (point: THREE.Vector3) => {
     const projected = surfaceBrushScratch.projected.copy(point).project(camera);
     return new THREE.Vector2((projected.x + 1) * 0.5, (1 - projected.y) * 0.5);
@@ -6411,7 +6448,6 @@ function computeLocalRepaintBrushTransform(
   mesh: THREE.Mesh,
   face: THREE.Face,
   hitPoint: THREE.Vector3,
-  camera: THREE.Camera,
   worldToSourceClip: THREE.Matrix4,
   worldRadius: number,
   fallbackRadius: number,
@@ -6427,9 +6463,10 @@ function computeLocalRepaintBrushTransform(
   edge2.copy(p2).sub(p0);
   if (edge1.lengthSq() < 1e-16 || edge2.lengthSq() < 1e-16)
     return createCircularBrushTransform(fallbackRadius);
+  tangentX.copy(edge1).normalize();
   normal.crossVectors(edge1, edge2).normalize();
-  if (!computeViewAlignedSurfaceTangents(normal, hitPoint, camera, tangentX, tangentY))
-    return createCircularBrushTransform(fallbackRadius);
+  if (normal.lengthSq() < 0.5) return createCircularBrushTransform(fallbackRadius);
+  tangentY.crossVectors(normal, tangentX).normalize();
 
   const center = projectWorldPointToLocalRepaintUv(
     hitPoint,
@@ -10353,7 +10390,9 @@ function SurfacePaintOverlay() {
               worldRadius,
               fallbackTextureRadius,
             ),
-        screenBrush: computeScreenBrushTransform(
+        screenBrush: isSurfaceMaskBrush ? computeLocalRepaintScreenBrushTransform(
+          hit.object, hit.face, hit.point, camera, worldRadius, fallbackTextureRadius,
+        ) : computeScreenBrushTransform(
           hit.point,
           camera,
           worldRadius,
@@ -11951,7 +11990,6 @@ function SurfacePaintOverlay() {
                 result.hit.object,
                 result.hit.face,
                 result.hit.point,
-                camera,
                 composite.worldToSourceClip,
                 result.worldRadius,
                 result.textureRadius,
@@ -15176,20 +15214,20 @@ function SurfacePaintOverlay() {
             overlay.material.userData.liclickDisposedMaterial !== true,
         );
         const repaintSession = getLocalRepaintSessionSnapshot();
-        const native = composite?.nativeUv;
-        const presentationOwnerReady = native
-          ? nativeUvOwnersRef.current.get(native.assetUrl) === native.engine &&
-            getLiveProjectedTexture(native.assetUrl) === native.engine.texture
-          : isEditingPersistedLocalRepaint
-            ? residentMaskBound || (exactOverlayReady &&
-              useSceneStore.getState().localRepaintPreviewLayer?.id === composite?.layerId)
-            : exactOverlayReady;
+        const repaintPreviewLayer = useSceneStore.getState().localRepaintPreviewLayer;
+        const exactOverlayOwnsPersistedEraser = Boolean(
+          exactOverlayReady && repaintPreviewLayer?.id === composite?.layerId,
+        );
+        const presentationOwnerReady = isEditingPersistedLocalRepaint
+          ? residentMaskBound || exactOverlayOwnsPersistedEraser
+          : exactOverlayReady;
         const localRepaintPresentationReady = Boolean(
           presentationOwnerReady &&
             repaintSession?.status === 'ready' &&
             repaintSession.generationId === (source.generationId ?? '') &&
             repaintSession.targetLayerId === source.targetLayerId,
         );
+        const shouldRetryGpuPreparation = Boolean(isEditingPersistedLocalRepaint);
         if (
           !composite ||
           (composite.restoredMaskUrl && !composite.restoredMaskReady) ||
@@ -15197,7 +15235,7 @@ function SurfacePaintOverlay() {
         ) {
           // A persisted eraser may outlive a material rebuild. Ask the session
           // owner to rebuild it, but keep all GPU work outside pointer-down.
-          if (isEditingPersistedLocalRepaint) {
+          if (shouldRetryGpuPreparation) {
             useSceneStore.getState().requestLocalRepaintGpuPrepare();
             markPerformanceEvent('local-repaint', 'local-repaint-eraser-prepare', {
               layerId: activePaintLayerId,

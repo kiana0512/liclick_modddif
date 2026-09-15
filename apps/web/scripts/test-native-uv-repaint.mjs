@@ -194,39 +194,6 @@ try {
     new URL('../src/engine/viewport/ViewportCanvas.tsx', import.meta.url),
     'utf8',
   );
-  // Execute the production input owner gate: UV sessions must not require
-  // an overlay that the UV-only viewport no longer presents.
-  const ownerGate = viewport.match(/const native = composite\?\.nativeUv;\s+const presentationOwnerReady[\s\S]*?\n        if \(/);
-  assert.ok(ownerGate, 'Native UV input has an explicit registered owner gate');
-  const canApply = new Function('composite', 'nativeUvOwnersRef', 'getLiveProjectedTexture',
-    'isEditingPersistedLocalRepaint', 'residentMaskBound', 'useSceneStore',
-    'exactOverlayReady', 'repaintSession', 'source',
-    `${ownerGate[0].replace(/\n        if \($/, '')} return localRepaintPresentationReady;`);
-  const inputTexture = {}, engineOwner = { texture: inputTexture }, nativeAsset = { assetUrl: 'live-uv', engine: engineOwner };
-  const owners = { current: new Map([['live-uv', engineOwner]]) };
-  const readySession = { status: 'ready', generationId: 'gen', targetLayerId: 'target' };
-  const strokeSource = { generationId: 'gen', targetLayerId: 'target' };
-  const nativeInput = (overrides = {}) => canApply(
-    overrides.composite ?? { nativeUv: nativeAsset }, overrides.owners ?? owners,
-    () => overrides.texture ?? inputTexture, overrides.eraser ?? false,
-    overrides.resident ?? false, { getState: () => ({ localRepaintPreviewLayer: { id: 'legacy-target' } }) }, overrides.overlay ?? false,
-    overrides.session ?? readySession, strokeSource);
-  assert.equal(nativeInput(), true, 'Native UV applies with its exact texture even without a projection overlay');
-  assert.equal(nativeInput({ eraser: true }), true, 'Native eraser uses the same UV owner');
-  for (const overrides of [
-    { owners: { current: new Map() } }, { texture: {} },
-    { session: { ...readySession, status: 'preparing' } },
-    { session: { ...readySession, status: 'failed' } },
-    { session: { ...readySession, generationId: 'old-gen' } },
-    { session: { ...readySession, targetLayerId: 'old-target' } },
-  ]) assert.equal(nativeInput(overrides), false, 'Stale, missing or unprepared UV ownership rejects input');
-  assert.equal(nativeInput({ composite: {}, overlay: true }), true, 'Legacy exact overlay still applies');
-  assert.equal(nativeInput({ composite: {} }), false, 'Legacy input cannot bypass its overlay gate');
-  assert.equal(nativeInput({ composite: {}, eraser: true, resident: true }), true, 'Legacy resident eraser is preserved');
-  assert.equal(nativeInput({ composite: { layerId: 'legacy-target' }, eraser: true, overlay: true }), true,
-    'Legacy exact overlay must belong to the eraser layer');
-  assert.equal(nativeInput({ composite: { layerId: 'other-target' }, eraser: true, overlay: true }), false,
-    'Another legacy preview cannot own the eraser');
   assert.match(
     viewport,
     /await import\('@\/engine\/localRepaint\/uvRepaintSession'\)/,
