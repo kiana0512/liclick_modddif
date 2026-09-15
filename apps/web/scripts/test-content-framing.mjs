@@ -305,7 +305,7 @@ globalThis.Image = class {
     const pixels = fixtures.get(url);
     this.naturalWidth = pixels.width;
     this.naturalHeight = pixels.height;
-    queueMicrotask(() => this.onload?.());
+    globalThis.queueMicrotask(() => this.onload?.());
   }
   get src() {
     return this.url;
@@ -447,7 +447,7 @@ try {
   );
   assert.ok(canvases.every((c) => c.width === 0 && c.height === 0));
   const before = canvases.length;
-  const abort = new AbortController();
+  const abort = new globalThis.AbortController();
   abort.abort();
   await assert.rejects(() => imageAdapter.restoreContentFraming('remote-output', f, abort.signal));
   assert.equal(canvases.length, before);
