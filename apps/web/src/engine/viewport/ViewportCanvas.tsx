@@ -15176,20 +15176,20 @@ function SurfacePaintOverlay() {
             overlay.material.userData.liclickDisposedMaterial !== true,
         );
         const repaintSession = getLocalRepaintSessionSnapshot();
-        const repaintPreviewLayer = useSceneStore.getState().localRepaintPreviewLayer;
-        const exactOverlayOwnsPersistedEraser = Boolean(
-          exactOverlayReady && repaintPreviewLayer?.id === composite?.layerId,
-        );
-        const presentationOwnerReady = isEditingPersistedLocalRepaint
-          ? residentMaskBound || exactOverlayOwnsPersistedEraser
-          : exactOverlayReady;
+        const native = composite?.nativeUv;
+        const presentationOwnerReady = native
+          ? nativeUvOwnersRef.current.get(native.assetUrl) === native.engine &&
+            getLiveProjectedTexture(native.assetUrl) === native.engine.texture
+          : isEditingPersistedLocalRepaint
+            ? residentMaskBound || (exactOverlayReady &&
+              useSceneStore.getState().localRepaintPreviewLayer?.id === composite?.layerId)
+            : exactOverlayReady;
         const localRepaintPresentationReady = Boolean(
           presentationOwnerReady &&
             repaintSession?.status === 'ready' &&
             repaintSession.generationId === (source.generationId ?? '') &&
             repaintSession.targetLayerId === source.targetLayerId,
         );
-        const shouldRetryGpuPreparation = Boolean(isEditingPersistedLocalRepaint);
         if (
           !composite ||
           (composite.restoredMaskUrl && !composite.restoredMaskReady) ||
@@ -15197,7 +15197,7 @@ function SurfacePaintOverlay() {
         ) {
           // A persisted eraser may outlive a material rebuild. Ask the session
           // owner to rebuild it, but keep all GPU work outside pointer-down.
-          if (shouldRetryGpuPreparation) {
+          if (isEditingPersistedLocalRepaint) {
             useSceneStore.getState().requestLocalRepaintGpuPrepare();
             markPerformanceEvent('local-repaint', 'local-repaint-eraser-prepare', {
               layerId: activePaintLayerId,

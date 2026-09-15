@@ -1145,7 +1145,7 @@ export function GeneratePanel({
       : undefined;
   const previewProcessingMode = displayedPreviewGeneration
     ? preservesGeneratedSourceAlpha(displayedPreviewGeneration)
-      ? 'source-alpha'
+      ? isLocalRepaintGeneration(displayedPreviewGeneration) ? undefined : 'source-alpha'
       : isLocalRepaintGeneration(displayedPreviewGeneration)
         ? 'generated-display'
         : isTextureMapGeneration(displayedPreviewGeneration)

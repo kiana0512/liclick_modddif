@@ -211,6 +211,32 @@ assert.match(dock, /localRepaintActivationQueued && \(/);
 assert.match(dock, /role="progressbar"/);
 assert.match(globals, /@keyframes local-repaint-activation-progress/);
 
+// Run the shipped preview decision rather than duplicating its nested policy.
+const previewDecision = panel.match(/const previewProcessingMode = ([\s\S]*?);\s*\/\//)?.[1];
+assert.ok(previewDecision);
+const choosePreview = new Function('displayedPreviewGeneration', 'preservesGeneratedSourceAlpha',
+  'isLocalRepaintGeneration', 'isTextureMapGeneration', 'capturePreviewMaskUrl', `return ${previewDecision};`);
+assert.equal(choosePreview({}, () => true, () => true, () => false, 'mask'), undefined,
+  'c6215698 local repaint alpha preview uses the original result without a new crop');
+assert.equal(choosePreview({}, () => false, () => true, () => false, 'mask'), 'generated-display');
+assert.equal(choosePreview({}, () => true, () => false, () => true, 'mask'), 'source-alpha',
+  'Keep the later texture preview optimization');
+const coldPending = editor.match(/setPaintTool\('none'\);\s*setLocalRepaintActivationQueued\(true\);\s*showPrewarmProgress\('读取高清生成结果', 0\.06\);/)?.[0];
+assert.ok(coldPending, 'Cold decode must advertise pending before its first await');
+let pending = false, selectedTool = 'inpaint-apply', stage;
+new Function('setPaintTool', 'setLocalRepaintActivationQueued', 'showPrewarmProgress', coldPending)(
+  value => { selectedTool = value; }, value => { pending = value; }, value => { stage = value; });
+assert.deepEqual([pending, selectedTool, stage], [true, 'none', '读取高清生成结果']);
+const terminalReady = editor.match(/if \(detail.status === 'ready' \|\| detail.status === 'failed'\) \{([\s\S]*?)\n      \}/)?.[1];
+assert.ok(terminalReady);
+for (const status of ['ready', 'failed']) {
+  pending = true;
+  new Function('detail', 'setLocalRepaintActivationQueued', 'localRepaintGpuPrepareRequestedKeyRef',
+    'pendingLocalRepaintBackgroundGenerationIdRef', terminalReady)(
+    { status, generationId: 'gen' }, value => { pending = value; }, { current: 'gen' }, { current: 'gen' });
+  assert.equal(pending, false, `${status} ends the current button wait`);
+}
+
 const compiledBackgroundPrewarmPolicy = ts.transpileModule(backgroundPrewarmPolicy, {
   compilerOptions: {
     module: ts.ModuleKind.ES2022,

@@ -1,5 +1,7 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
+2026-09-15 UI-10/UI-06 → M08（协作 M03/M07/M12）：`ALG-LR-008/2.4.6` 对照用户指定 `c6215698d299b0c6469ee20fd7de607b665ac208` 保留局部重绘的三按钮、画笔 30、冻结来源/作者蒙版、原生 UV 和历史路径；透明局部结果预览恢复该版本直接显示原图的行为，其他贴图裁切预览、云端上传/恢复、UV 与导航优化保留。原生 UV 落笔核验当前 engine owner 和注册输出纹理，继续校验确切 Session/generation/target，不再要求旧投影覆盖层；旧投影橡皮门禁保持。冷准备明确显示等待，精确终态及当前取消结束等待。GPU/CPU/Worker/shader 像素、完整分辨率、QA、UV_REPAINT_VERSION=4、Schema、Command/CAS/ownership 与 verified assets 不改，无迁移；范围、验收边界和回滚见 [按钮3兼容修复](changes/CHG-20260915-REPAINT-BUTTON3-BASELINE.md)。
+
 2026-09-15 UI-06 → M03（协作 M08）：`ALG-VIEW-INPUT-001` v1.3.0 将视角导航改为 Alt＋左键旋转、Alt＋中键平移、Alt＋右键拖动缩放，保留滚轮缩放。导航在按下时锁定归属，松开 Alt 不切换成绘制；释放/取消/失去捕获后正常结束。Alt 按下时在表面绘制拾取前退出，R3F 跳过导航拾取及点击尾事件，变换工具原生输入同步避让；抬键后悬停与下一次选择恢复。普通绘制/擦除、完整分辨率及 GPU/CPU/Worker/shader/UV/export 像素、持久化协议保持，无 Schema 或数据迁移。类型、lint、真实 R3F/相机事件与 Edge DPR2 绘制回归通过；尚未推送或部署。回滚与验证详见 [Alt 视角导航变更卡](changes/CHG-20260915-ALT-VIEWPORT-NAVIGATION.md)。
 
 2026-09-15 UI-10 → M08：`LOCAL-REPAINT-BRUSH-DEFAULT` v1.0.1 将局部重绘视口和独立画布画笔默认大小从 15 改为 30；新初始化生效，用户手动调节与羽化保持原逻辑。GPU/CPU/Worker/Shader、半径换算、历史、导出与持久化不变，无 Schema 或数据迁移，回滚两处默认常量为 15。详见 [默认画笔大小变更卡](changes/CHG-20260912-LOCAL-REPAINT-BRUSH-DEFAULT.md)。
@@ -37,7 +39,7 @@
 
 2026-09-15 M03：ALG-VIEW-INPUT-001/1.3.2 在鼠标接触前即让 R3F 悬停遵守 Alt 所有权；保留普通 hover 和已锁定拖动。旧实现拾取回归失败、新实现通过，用户实际首帧延迟需继续录制。无像素/持久化迁移，见 [Alt 悬停变更卡](changes/CHG-20260915-ALT-BRUSH-HOVER.md)。
 
-> 文档版本：`2.20.133`
+> 文档版本：`2.20.134`
 
 2026-09-15 UI-06 → M03：`ALG-VIEW-SELECT-001/1.0.5` 将常驻线框预热绑定到 renderer/模型生命周期，透视/正交相机替换不重新编译或释放同一辅助材质，避免旧编译完成后释放当前材质。16 次相机替换旧实现启动 17 次编译，新实现一次；71 次显隐及卸载清理保持。GPU 线框/CPU 几何/Worker/shader、捕获/UV/重绘/导出、分辨率和 QA、持久化/Schema 均不变，无迁移。其他工具切换仍有长帧，不宣称全操作无卡顿，验证和回滚见 [线框相机生命周期变更卡](changes/CHG-20260915-WIREFRAME-CAMERA-LIFETIME.md)。
 
