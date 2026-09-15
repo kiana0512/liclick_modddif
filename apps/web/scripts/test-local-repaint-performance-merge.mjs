@@ -45,7 +45,7 @@ assert.match(panel, /createModelviewApiClient\(\)\.generateInpaint\(/);
 assert.match(panel, /image: \{ path: 'current-effect\.png'/);
 assert.match(
   panel,
-  /materialImage: \{[\s\S]*path: `\$\{generationId\}-\$\{materialReference\.id\}-material-reference\.png`/,
+  /materialImage: \{[\s\S]*path: `\$\{generationId\}-\$\{materialReference!\.id\}-material-reference\.png`/,
 );
 assert.match(panel, /mask: \{ path: `\$\{generationId\}-mask\.png`, dataUrl: maskDataUrl \}/);
 assert.match(panel, /const \[currentEffectDataUrl, materialReferenceDataUrl, maskDataUrl\]/);
