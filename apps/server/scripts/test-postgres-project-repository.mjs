@@ -16,10 +16,14 @@ const migration = await fs.readFile(
 await engine.exec(migration);
 
 let listedRows;
+let lastQuery;
+let lastRows;
 function connection(client) {
   return {
     async query(text, params = []) {
       const result = await client.query(text, params);
+      lastQuery = text;
+      lastRows = result.rows;
       if (/ORDER BY updated_at DESC/.test(text)) listedRows = result.rows;
       return {
         rows: result.rows,
@@ -157,6 +161,7 @@ assert.equal((await repositoryB.list(userA)).length, 2);
 assert.equal((await repositoryB.list(userB)).length, 0);
 
 const deleted = await repositoryB.delete(userA, duplicated.project.id);
+assert.equal(await repositoryA.findSlug(userA, duplicated.project.id), undefined);
 assert.equal(deleted.deleted, true);
 assert.equal((await repositoryA.list(userA)).length, 1);
 assert.equal(await repositoryA.load(userA, duplicated.project.id), undefined);
@@ -206,6 +211,13 @@ assert(
   listedRows.every((row) => !('captures' in row.document_json) && !('layers' in row.document_json)),
 );
 const reopened = await repositoryA.load(userA, large.project.id);
+assert.equal(await repositoryB.findSlug(userA, large.project.id), large.slug);
+assert.match(lastQuery, /^SELECT slug FROM project_documents/);
+assert.doesNotMatch(lastQuery, /document_json|SELECT\s+\*/i);
+assert.deepEqual(lastRows, [{ slug: large.slug }]);
+assert.ok(Buffer.byteLength(JSON.stringify(lastRows)) < 200);
+assert.equal(await repositoryA.findSlug(userB, large.project.id), undefined);
+assert.equal(await repositoryA.findSlug(userA, 'missing-project'), undefined);
 assert.equal(
   reopened.project.captures[0].metadata.length,
   2 * 1024 * 1024,

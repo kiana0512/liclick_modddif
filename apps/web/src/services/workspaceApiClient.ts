@@ -17,6 +17,7 @@ import { isCloudBuild } from '@/platform/runtimeCapabilities';
 import { createId } from '@/utils/id';
 import { getWorkspaceApiBase } from './workspaceApiBase';
 import { persistRuntimeLayerAssets } from './runtimeLayerAssetPersistence';
+import { withWorkspaceAssetUpload } from './workspaceAssetUploadQueue';
 
 const workspaceApiBase = getProjectApiBase();
 const generationWorkspaceApiBase = getWorkspaceApiBase(import.meta.env.VITE_LICLICK_WORKSPACE_API);
@@ -130,6 +131,11 @@ export type AssetCategory =
   | 'layers'
   | 'baked';
 
+function workspaceResponseMessage(payload: unknown, status: number) {
+  const error = (payload as { error?: unknown } | null)?.error;
+  return typeof error === 'string' ? error : `Workspace request failed: ${status}`;
+}
+
 async function requestJson<T>(
   path: string,
   init?: RequestInit & { timeoutMs?: number },
@@ -159,13 +165,7 @@ async function requestJson<T>(
   }
   if (!response.ok) {
     const payload = await response.json().catch(() => undefined);
-    const message =
-      payload &&
-      typeof payload === 'object' &&
-      'error' in payload &&
-      typeof payload.error === 'string'
-        ? payload.error
-        : `Workspace request failed: ${response.status}`;
+    const message = workspaceResponseMessage(payload, response.status);
     const code =
       payload &&
       typeof payload === 'object' &&
@@ -552,14 +552,18 @@ export async function saveDataUrlAsset(input: {
     const blob = await fetch(input.dataUrl).then((response) => response.blob());
     return saveBlobAsset({ ...input, blob });
   }
-  return requestJson<{ asset: { category: AssetCategory; relativePath: string; url: string } }>(
+  return saveJsonAsset(input, 60_000);
+}
+
+function saveJsonAsset(input: { projectId: string }, timeoutMs: number) {
+  return withWorkspaceAssetUpload(() => requestJson<SavedAssetResponse>(
     `/api/projects/${input.projectId}/assets`,
     {
       method: 'POST',
       body: JSON.stringify(input),
-      timeoutMs: 60_000,
+      timeoutMs,
     },
-  );
+  ));
 }
 
 export type BlobAssetUploadProgress = {
@@ -703,13 +707,7 @@ function saveBlobAssetWithProgress(input: SaveBlobAssetInput) {
         payload = undefined;
       }
       if (request.status < 200 || request.status >= 300) {
-        const message =
-          payload &&
-          typeof payload === 'object' &&
-          'error' in payload &&
-          typeof payload.error === 'string'
-            ? payload.error
-            : `Workspace request failed: ${request.status}`;
+        const message = workspaceResponseMessage(payload, request.status);
         reject(new WorkspaceApiError(request.status, message));
         return;
       }
@@ -733,7 +731,11 @@ function saveBlobAssetWithProgress(input: SaveBlobAssetInput) {
   });
 }
 
-export async function saveBlobAsset(input: SaveBlobAssetInput) {
+export function saveBlobAsset(input: SaveBlobAssetInput) {
+  return withWorkspaceAssetUpload(() => uploadBlobAsset(input));
+}
+
+async function uploadBlobAsset(input: SaveBlobAssetInput) {
   // The integrated 4517 workspace deliberately has no object-storage service.
   // Going through the cloud upload-intent endpoint first produces a guaranteed
   // 503 for every image plane. Multi-view projection amplifies that into
@@ -789,32 +791,19 @@ export async function saveBlobAsset(input: SaveBlobAssetInput) {
   }
   if (!response.ok) {
     const payload = await response.json().catch(() => undefined);
-    const message =
-      payload &&
-      typeof payload === 'object' &&
-      'error' in payload &&
-      typeof payload.error === 'string'
-        ? payload.error
-        : `Workspace request failed: ${response.status}`;
+    const message = workspaceResponseMessage(payload, response.status);
     throw new WorkspaceApiError(response.status, message);
   }
   return response.json() as Promise<SavedAssetResponse>;
 }
 
-export async function saveRemoteUrlAsset(input: {
+export function saveRemoteUrlAsset(input: {
   projectId: string;
   category: AssetCategory;
   url: string;
   filename: string;
 }) {
-  return requestJson<{ asset: { category: AssetCategory; relativePath: string; url: string } }>(
-    `/api/projects/${input.projectId}/assets`,
-    {
-      method: 'POST',
-      body: JSON.stringify(input),
-      timeoutMs: 45_000,
-    },
-  );
+  return saveJsonAsset(input, 45_000);
 }
 
 export async function exportProjectPackage(projectId: string) {
