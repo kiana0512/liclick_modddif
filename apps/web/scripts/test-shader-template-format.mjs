@@ -137,15 +137,16 @@ assert.ok(additionalSaved >= 1500, `Expected bundle headroom savings, got ${addi
 const repaintSource = fs.readFileSync(new URL('../src/engine/localRepaint/uvRepaint.ts', import.meta.url), 'utf8');
 function assembledRepaintVertex(code) {
   const ast = ts.createSourceFile('uvRepaint.ts', code, ts.ScriptTarget.Latest, true);
-  let vertex, assembly;
+  let vertex, assembly, entry;
   const visit = node => {
     if (ts.isVariableDeclaration(node) && node.name.getText(ast) === 'vertex' && node.initializer && ts.isNoSubstitutionTemplateLiteral(node.initializer)) vertex = node.initializer.getText(ast);
+    if (ts.isVariableDeclaration(node) && node.name.getText(ast) === 'shaderMain') entry = node.initializer.getText(ast);
     if (ts.isBinaryExpression(node) && node.left.getText(ast) === 'this.brush.vertexShader' && node.right.getText(ast).includes('paintSourceVertex')) assembly = node.right.getText(ast);
     ts.forEachChild(node, visit);
   };
   visit(ast);
-  assert.ok(vertex && assembly, 'Exercise the production repaint shader assembly');
-  return new Function('material', `const vertex = ${vertex}; return (${assembly});`)({vertexShader: 'void main(){gl_Position=vec4(position,1.0);}'});
+  assert.ok(vertex && assembly && entry, 'Exercise the production repaint shader assembly');
+  return new Function('material', `const shaderMain = ${entry}; const vertex = ${vertex}; return (${assembly});`)({vertexShader: 'void main(){gl_Position=vec4(position,1.0);}'});
 }
 for (const code of [repaintSource, compact(repaintSource)]) {
   const shader = assembledRepaintVertex(code);
