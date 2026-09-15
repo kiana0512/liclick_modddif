@@ -20,6 +20,7 @@ export type CapturePassOutput = {
 };
 
 export type CaptureCurrentViewRequest = {
+  signal?: AbortSignal;
   objectId: string;
   resolution: CaptureResolution;
   aspect?: number;

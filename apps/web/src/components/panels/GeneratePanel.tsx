@@ -1,3 +1,4 @@
+import { sameGenerationRecovery } from '@/services/generationRecoveryComparison';
 import { buildMultiviewPrompt } from '../../services/multiviewReferencePrompt';
 import { usesCaptureMaskTextureProjection, preservesGeneratedSourceAlpha, textureProjectionIgnoresSourceAlpha } from '@/engine/generation/textureProjectionPolicy';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
@@ -531,32 +532,6 @@ function throwIfTexturePipelineCancelled(signal?: AbortSignal) {
   if (signal?.aborted) {
     throw new DOMException('用户已终止多视图快照。', 'AbortError');
   }
-}
-
-function generationRecoverySignature(generation: Generation | undefined) {
-  if (!generation) return undefined;
-  const metadata = generation.metadata;
-  return JSON.stringify({
-    id: generation.id,
-    prompt: generation.prompt,
-    referenceIds: generation.referenceIds,
-    captureId: generation.captureId,
-    resultUrl: generation.resultUrl,
-    status: generation.status,
-    metadata: {
-      clientGenerationId: metadata.clientGenerationId,
-      serverJobId: metadata.serverJobId,
-      projectId: metadata.projectId,
-      workflow: metadata.workflow,
-      taskId: metadata.taskId,
-      model: metadata.model,
-      resultUrls: metadata.resultUrls,
-      startedAt: metadata.startedAt,
-      completedAt: metadata.completedAt,
-      error: metadata.error,
-      serverSubmitted: metadata.serverSubmitted,
-    },
-  });
 }
 
 function isGenerationSubmittedToServer(generation: Generation) {
@@ -1418,12 +1393,11 @@ export function GeneratePanel({
       generation = await prepareCloudRepaintCompletion(generation, liveProject?.captures ?? []);
       if (cancelled || generationIdentityIds(generation).some((id) => cancelledGenerationIdsRef.current.has(id)))
         return { changed: false, needsPersist: false };
-      const nextSignature = generationRecoverySignature(generation);
       const needsPersist =
         Boolean(generation.resultUrl) && !isWorkspaceAssetUrl(generation.resultUrl);
       if (
-        generationRecoverySignature(projectGeneration) === nextSignature &&
-        generationRecoverySignature(storeGeneration) === nextSignature
+        sameGenerationRecovery(projectGeneration, generation) &&
+        sameGenerationRecovery(storeGeneration, generation)
       )
         return { changed: false, needsPersist };
       syncGeneration(generation);
@@ -1610,18 +1584,24 @@ export function GeneratePanel({
     if (missingViews.length === 0) return undefined;
 
     let cancelled = false;
+    const previewAbort = new AbortController();
     capturingCameraViewsRef.current = new Set([
       ...capturingCameraViewsRef.current,
       ...missingViews.map((view) => view.id),
     ]);
-    setCapturingCameraViews(
-      (current) => new Set([...current, ...missingViews.map((view) => view.id)]),
-    );
+    const publishPending = () => setCapturingCameraViews(new Set(capturingCameraViewsRef.current));
+    const clearPending = () => {
+      missingViews.forEach((view) => capturingCameraViewsRef.current.delete(view.id));
+      publishPending();
+    };
+    publishPending();
 
     async function captureMissingViews() {
       try {
         for (const view of missingViews) {
+          if (cancelled) return;
           const preview = await captureCurrentNormalPreview({
+            signal: previewAbort.signal,
             objectId: currentCaptureObjectId,
             resolution: 512,
             framing: 'fit-object',
@@ -1634,52 +1614,36 @@ export function GeneratePanel({
             ...cameraViewPreviewsRef.current,
             [view.id]: preview,
           };
-          setCameraViewPreviews((current) => ({ ...current, [view.id]: preview }));
+          setCameraViewPreviews(cameraViewPreviewsRef.current);
           capturingCameraViewsRef.current.delete(view.id);
-          setCapturingCameraViews((current) => {
-            const next = new Set(current);
-            next.delete(view.id);
-            return next;
-          });
+          publishPending();
         }
       } catch (error) {
         if (!cancelled) {
-          console.warn(
-            '[Liclick 3D Texture] Could not capture multiview normal thumbnails:',
-            error,
-          );
+          console.warn('[Capture] Normal preview failed:', error);
+          const message = error instanceof Error ? error.message : '无法生成多视图法线预览。';
           setGenerateNotice({
             tone: 'warning',
-            message: error instanceof Error ? error.message : '无法生成多视图法线预览。',
+            message,
           });
           pushToast({
             tone: 'warning',
             title: '多视图预览生成失败',
-            description: error instanceof Error ? error.message : '无法生成多视图法线预览。',
+            description: message,
             dedupeKey: 'multiview-preview-failed',
           });
         }
       } finally {
-        if (!cancelled) {
-          missingViews.forEach((view) => capturingCameraViewsRef.current.delete(view.id));
-          setCapturingCameraViews((current) => {
-            const next = new Set(current);
-            missingViews.forEach((view) => next.delete(view.id));
-            return next;
-          });
-        }
+        if (!cancelled) clearPending();
       }
     }
 
-    void captureMissingViews();
+    const previewTimer = setTimeout(() => void captureMissingViews(), 180);
     return () => {
       cancelled = true;
-      missingViews.forEach((view) => capturingCameraViewsRef.current.delete(view.id));
-      setCapturingCameraViews((current) => {
-        const next = new Set(current);
-        missingViews.forEach((view) => next.delete(view.id));
-        return next;
-      });
+      clearTimeout(previewTimer);
+      previewAbort.abort();
+      clearPending();
     };
   }, [cameraViews, captureObjectId, isTextureMapTab, pushToast, setGenerateNotice, viewport]);
 
@@ -2064,6 +2028,7 @@ export function GeneratePanel({
   }
 
   function handleCameraViewPresetSelect(selection: CameraViewPresetSelection) {
+    if (selection === selectedCameraViewPreset) return;
     if (workflowConfigurationLocked) {
       notifyWorkflowOperationLocked();
       return;
@@ -2072,10 +2037,6 @@ export function GeneratePanel({
       selection === 'custom'
         ? createCameraViewsFromValues(customCameraViewPreset.views, t)
         : createCameraViewsForPreset(selection, t);
-    cameraViewPreviewsRef.current = {};
-    capturingCameraViewsRef.current = new Set();
-    setCameraViewPreviews({});
-    setCapturingCameraViews(new Set());
     setSelectedCameraViewPreset(selection);
     setCameraViews(nextViews);
     setActiveCameraViewId(nextViews[0]?.id ?? '');
@@ -3506,7 +3467,7 @@ export function GeneratePanel({
       if (textureBatchWasCancelled() || isCancelledGeneration(pending.pendingGeneration)) return;
       const failureMessage =
         result.reason instanceof Error ? result.reason.message : `${pending.label} 视角提交失败。`;
-      failureMessages.push(getUserFacingGenerationError(failureMessage));
+      failureMessages.push(`${pending.label}视角提交失败：${getUserFacingGenerationError(failureMessage)}`);
       syncGeneration(
         createFailedGeneration(pending.pendingGeneration, failureMessage, {
           cameraView: pending.cameraView,
@@ -3615,7 +3576,7 @@ export function GeneratePanel({
               : isMultiviewRequest
                 ? '多视角纹理贴图任务失败。'
                 : '当前单视图纹理贴图任务失败。';
-          failureMessages.push(getUserFacingGenerationError(failureMessage));
+          failureMessages.push(`${String(submitted.metadata.cameraViewLabel ?? '当前')}视角生成失败：${getUserFacingGenerationError(failureMessage)}`);
           syncGeneration(createFailedGeneration(submitted, failureMessage));
         }
       });

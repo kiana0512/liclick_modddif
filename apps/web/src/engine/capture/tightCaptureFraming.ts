@@ -8,7 +8,7 @@ import { waitForBrowserPaint } from '@/utils/browserScheduling';
 
 type Fitted = { camera: THREE.PerspectiveCamera | THREE.OrthographicCamera; target: THREE.Vector3 };
 
-/** ALG-CAP-007/1.1.0: every submitted vertex constrains the camera, not empty AABB corners. */
+/** ALG-CAP-007/1.1.2: exact submitted vertices, repeated indices evaluated once. */
 export async function fitGeometryCapture(
   scene: THREE.Scene, objectId: string, fallback: Fitted, aspect: number,
   signal?: AbortSignal,
@@ -40,12 +40,22 @@ export async function fitGeometryCapture(
     const positions = geometry.getAttribute('position');
     if (!positions) return fallback;
     const index = geometry.index;
+    const visited = index && positions.count <= 2_000_000 ? new Uint8Array(positions.count) : undefined;
     const start = geometry.drawRange.start;
     const end = Math.min(index?.count ?? positions.count, start + geometry.drawRange.count);
     const matrix = mesh.matrixWorld.clone();
     for (let i = start; i < end; i++) {
       if (++count > 2_000_000) return fallback;
-      mesh.getVertexPosition(index ? index.getX(i) : i, point);
+      if (count % 4096 === 0 && performance.now() - sliceStart > 4) {
+        await waitForBrowserPaint();
+        signal?.throwIfAborted();
+        sliceStart = performance.now();
+        if (!matrix.equals(mesh.matrixWorld)) return fallback;
+      }
+      const vertex = index ? index.getX(i) : i;
+      if (visited?.[vertex]) continue;
+      if (visited) visited[vertex] = 1;
+      mesh.getVertexPosition(vertex, point);
       point.applyMatrix4(matrix);
       origin ??= point.clone();
       point.sub(origin);
@@ -55,12 +65,6 @@ export async function fitGeometryCapture(
       hiX = Math.max(hiX, x + z * tx); loX = Math.min(loX, x - z * tx);
       hiY = Math.max(hiY, y + z * ty); loY = Math.min(loY, y - z * ty);
       loZ = Math.min(loZ, z); hiZ = Math.max(hiZ, z);
-      if (count % 4096 === 0 && performance.now() - sliceStart > 4) {
-        await waitForBrowserPaint();
-        signal?.throwIfAborted();
-        sliceStart = performance.now();
-        if (!matrix.equals(mesh.matrixWorld)) return fallback;
-      }
     }
   }
   signal?.throwIfAborted();

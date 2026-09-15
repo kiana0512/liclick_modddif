@@ -121,6 +121,12 @@ irregular.geometry.setIndex([0,1,2, 1,2,3]);
 irregular.userData.liclickObjectId = 'irregular'; irregular.visible = false;
 irregular.position.set(-3, 2, 4); irregular.rotation.set(0.2, 0.7, -0.1); scene.add(irregular);
 scene.updateMatrixWorld(true);
+const vertexReader = irregular.getVertexPosition;
+let vertexReads = 0;
+irregular.getVertexPosition = function (...args) { vertexReads++; return vertexReader.apply(this, args); };
+await tight.fitGeometryCapture(scene, 'irregular', fallback, 1);
+assert.equal(vertexReads, 4, 'Six indices with shared vertices evaluate four exact positions, excluding unused vertices');
+irregular.getVertexPosition = vertexReader;
 for (const ortho of [false, true]) for (const direction of [[0,0,1],[1,0,0],[0,1,0],[0,-1,0],[-1,0,0],[0,0,-1]]) {
   viewport.camera = ortho ? new THREE.OrthographicCamera(-5,5,5,-5,0.01,10000) : new THREE.PerspectiveCamera(40,1,0.01,10000);
   viewport.camera.position.set(1,2,10); viewport.camera.lookAt(0,0,0); viewport.camera.updateMatrixWorld(true);

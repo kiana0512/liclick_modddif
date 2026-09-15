@@ -28,9 +28,16 @@
 
 2026-09-15 M04/UI-05，协作 M03/M07：`GEN-CANCEL-CLASSIFICATION/1` 不再把所有 AbortError 或包含“已取消”的内部错误当成用户意图；多视图入口检查自己的取消 signal，意外中断保留错误提示和 toast，错误/警告不受精简进度文案过滤。`ALG-CAP-007/1.1.1` 固定方向且不驱动视口动画的批次相机已独立冻结，因此不再因屏幕相机微小变化停止下一组；交互取景/无固定方向仍检查相机变更，主动取消仍有效。分组 2+4+4 / 2+4+4+4、前组 UV 呈现屏障、原分辨率和 GPU/CPU/Worker/shader 像素算法、持久化与导出不变；不重新投影、不自动重提付费请求，不修改历史成功图片。无需数据迁移，回滚恢复取消分类和实时相机比较分支即可。单元覆盖首组成功后中断、前六张成功后第三组中断、固定相机移动和显式取消；实际付费全流程与用户本次根因仍待控制台证据核实。
 
-> 文档版本：`2.20.115`
-
 2026-09-15 M07（协作 M03/M15）：`UV-ARCHIVE-HTTP-ID/1.0.1` 修复内网 HTTP 下 UV 会话缓存构造时直接调用不可用的 crypto.randomUUID 导致编辑器崩溃；改用已有 createId 兼容入口。实际构造函数回归覆盖无 crypto、缺少 randomUUID 和原生 UUID 三种环境，保留会话隔离。GPU/CPU/Worker/shader、完整像素与分辨率、QA、生成、持久化/CAS 和导出均不变，无 Schema 或历史资产迁移；详见 [HTTP 缓存初始化修复](changes/CHG-20260915-UV-ARCHIVE-HTTP-ID.md)。
+2026-09-15 M03（协作 M04/M06/M08）：CAPTURE-NORMAL-ISOLATION/1.1.0 在真实模型挂载后复制离屏场景，取消过时预览，复用同模型已完成视角；180ms 合并快速预设切换。原尺寸、拟合 QA 和持久化/导出不变；无数据迁移，回滚及验证见 [离屏采集变更卡](changes/CHG-20260915-CAPTURE-OFFSCREEN.md)。
+
+> 文档版本：`2.20.120`
+
+2026-09-15 M03/M08：`ALG-VIEW-INPUT-001/1.3.1` 让原生画笔悬停复用 Alt 导航所有权，取消导航中的逐帧模型拾取；三类拖动 600 个事件均零多余拾取，松手恢复，绘制及相机轨迹保持。详见 [Alt 悬停变更卡](changes/CHG-20260915-ALT-BRUSH-HOVER.md)。
+
+2026-09-15 M03，协作 M06/M08：`UV-READBACK-SCHEDULING/1.1.1` 将矩形采集接入完整像素 1 MiB 回读；`CAPTURE-NORMAL-ISOLATION/1.0.0` 用独立场景/骨骼/渲染器采集法线预览和引导，拟合与轮廓检查也离屏，空闲释放额外 GPU 上下文。场景所有权、矩形完整像素、失败清理测试通过；分辨率、QA、GPU/CPU/Worker/shader、投影/UV、持久化与导出语义保持，无迁移。资源开销、验证范围和回滚见 [离屏采集变更卡](changes/CHG-20260915-CAPTURE-OFFSCREEN.md)。
+
+2026-09-15 M12/M04：`GENERATION-RECOVERY-COMPARE/1.0.0` 对相同历史恢复字段直接比较，消除反复序列化内联大图；8 MiB 纯函数 20 次约 546ms→0.21ms，不代表整体 FPS。`GEN-FAILURE-CONTEXT/1.0.0` 保留失败视角和提交/生成阶段；用户新批次左后连接失败、9/10 与上一批全部成功分别记录，不自动重提收费任务。协议/像素保持，无数据迁移，见 [历史比对](changes/CHG-20260915-GENERATION-RECOVERY-COMPARE.md) 与 [失败上下文](changes/CHG-20260915-GENERATION-FRAMING-RECOVERY.md)。
 
 2026-09-15 M04，协作 M03/M08/M12：`GPT-CONTENT-FRAMING/1.0.1` / `GEN-POLL-CLASSIFICATION/1.0.0` / `SINGLE-VIEW-AUTO-PROJECTION/1.2.0` 修复原生输出网格取整被误判为断网的问题；保留全部原生像素、整数平移补透明，不重提付费任务。显式预期回贴的成功多视图通过既有事务恢复；用户本批十视图全部 succeeded 且各自提交图层存在，Saved。GPU/CPU/Worker/shader、QA、投影/UV、Command/CAS/ownership 和导出保持，无 Schema 迁移；详见 [十视图恢复变更卡](changes/CHG-20260915-GENERATION-FRAMING-RECOVERY.md)。
 

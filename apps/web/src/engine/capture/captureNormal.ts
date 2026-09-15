@@ -9,21 +9,18 @@ function createEncodedNormalMaterial(space: NormalCaptureSpace) {
 
   return new THREE.ShaderMaterial({
     vertexShader: `
-      varying vec3 vNormalObject;
-      varying vec3 vNormalWorld;
+      varying vec3 vCaptureNormal;
 
       void main() {
-        vNormalObject = normalize(normal);
-        vNormalWorld = normalize(mat3(modelMatrix) * normal);
+        vCaptureNormal = normalize(${space === 'world' ? 'mat3(modelMatrix) * normal' : 'normal'});
         gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
       }
     `,
     fragmentShader: `
-      varying vec3 vNormalObject;
-      varying vec3 vNormalWorld;
+      varying vec3 vCaptureNormal;
 
       void main() {
-        vec3 n = normalize(${space === 'world' ? 'vNormalWorld' : 'vNormalObject'});
+        vec3 n = normalize(vCaptureNormal);
         gl_FragColor = vec4(n * 0.5 + 0.5, 1.0);
       }
     `,
@@ -35,15 +32,11 @@ export async function captureNormal(
   request: CapturePassRequest,
   options: { space?: NormalCaptureSpace; geometryGuide?: boolean } = {},
 ): Promise<CapturePassOutput> {
-  const materials: THREE.Material[] = [];
+  const material = createEncodedNormalMaterial(options.space ?? 'view');
   const restore = applyTargetOnlyMaterial(
     request.scene,
     request.objectId,
-    () => {
-      const material = createEncodedNormalMaterial(options.space ?? 'view');
-      materials.push(material);
-      return material;
-    },
+    () => material,
   );
 
   try {
@@ -56,6 +49,6 @@ export async function captureNormal(
     };
   } finally {
     restore();
-    materials.forEach((material) => material.dispose());
+    material.dispose();
   }
 }

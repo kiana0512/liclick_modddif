@@ -3,6 +3,12 @@ import { events } from '@react-three/fiber';
 const paintPointers = new WeakMap<EventTarget, number | undefined>();
 const navigationPointers = new WeakMap<EventTarget, number | undefined>();
 
+/** ALG-VIEW-INPUT-001/1.3.1: native brush hover shares navigation ownership. */
+export function isViewportNavigationPointer(target: EventTarget, event: Pick<PointerEvent, 'altKey' | 'pointerId' | 'buttons'>) {
+  const pointerId = navigationPointers.get(target);
+  return event.altKey || (pointerId !== undefined && pointerId === event.pointerId && event.buttons !== 0);
+}
+
 // Native brush ownership survives pointer capture release and tool changes
 // until the next non-paint contact. No scene/store subscription is needed.
 export function setViewportPaintPointer(target: EventTarget, pointerId?: number) {

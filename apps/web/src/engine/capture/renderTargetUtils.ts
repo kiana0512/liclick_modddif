@@ -4,6 +4,7 @@ import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import type { CapturePassRequest, SceneMaterialSnapshot } from './captureTypes';
 import { createRegisteredObjectUrl } from '@/utils/blobUrlRegistry';
 import { encodeFlippedGpuReadbackPngInWorker } from './gpuReadbackPngWorker';
+import { readRenderTargetPixelsInStripes } from '@/engine/bake/gpuReadbackStripes';
 
 type RenderSceneToPngOptions = {
   applyDisplayTransform?: boolean;
@@ -157,7 +158,7 @@ export async function renderSceneToPngUrl(
   const readTarget = outputTarget ?? sceneTarget;
   const previousRendererState = captureSharedRendererState(request.gl);
   const previousBackground = request.scene.background;
-  const pixels = new Uint8Array(request.width * request.height * 4);
+  let pixels: Uint8Array<ArrayBuffer>;
   const bindCaptureTarget = () => {
     request.gl.setRenderTarget(sceneTarget);
     request.gl.setClearColor(request.clearColor ?? '#000000', request.clearAlpha ?? 1);
@@ -244,13 +245,11 @@ export async function renderSceneToPngUrl(
     }
 
     markCapturePerformancePhase(options.performancePhasePrefix, 'readback-submit');
-    const readbackPromise = request.gl.readRenderTargetPixelsAsync(
+    const readbackPromise = readRenderTargetPixelsInStripes(
+      request.gl,
       readTarget,
-      0,
-      0,
       request.width,
       request.height,
-      pixels,
     );
     // The async PBO read owns the submitted frame. Restore the shared renderer
     // before waiting so React Three Fiber can keep drawing the viewport.
@@ -258,7 +257,7 @@ export async function renderSceneToPngUrl(
     restoreSharedRendererState(request.gl, previousRendererState);
     options.onRenderSubmitted?.();
     markCapturePerformancePhase(options.performancePhasePrefix, 'readback-wait');
-    await readbackPromise;
+    pixels = await readbackPromise;
   } finally {
     request.scene.background = previousBackground;
     restoreSharedRendererState(request.gl, previousRendererState);
@@ -313,7 +312,7 @@ export async function renderScenePassesToPngUrl(
   });
   const previousRendererState = captureSharedRendererState(request.gl);
   const previousBackground = request.scene.background;
-  const pixels = new Uint8Array(request.width * request.height * 4);
+  let pixels: Uint8Array<ArrayBuffer>;
   try {
     if (options.ignoreSceneBackground) request.scene.background = null;
     request.gl.autoClear = false;
@@ -359,18 +358,16 @@ export async function renderScenePassesToPngUrl(
     request.gl.setRenderTarget(target);
     request.gl.setScissorTest(false);
     request.gl.autoClear = false;
-    const readbackPromise = request.gl.readRenderTargetPixelsAsync(
+    const readbackPromise = readRenderTargetPixelsInStripes(
+      request.gl,
       target,
-      0,
-      0,
       request.width,
       request.height,
-      pixels,
     );
     request.scene.background = previousBackground;
     restoreSharedRendererState(request.gl, previousRendererState);
     options.onRenderSubmitted?.();
-    await readbackPromise;
+    pixels = await readbackPromise;
   } finally {
     request.scene.background = previousBackground;
     restoreSharedRendererState(request.gl, previousRendererState);
