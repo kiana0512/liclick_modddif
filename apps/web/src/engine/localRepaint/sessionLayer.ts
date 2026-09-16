@@ -1,12 +1,20 @@
 import { useLayerStore } from '@/stores/layerStore';
 import type { Layer } from '@/types/layer';
 
-/** Manual destination policy v1. Sources never create, convert or select rows. */
+export function isContentAwareRepairLayer(layer: Layer) {
+  return layer.role === 'content-aware-underlay' ||
+    layer.generationId === 'texture-map-content-aware-repair' ||
+    layer.id.startsWith('content-aware-projected-repair') ||
+    layer.id.startsWith('content-aware-uv-repair');
+}
+
+/** Manual destination policy v1.1. Sources never create, convert or select rows. */
 export function isLocalRepaintDestinationLayer(
   layer: Layer | undefined,
   objectId: string,
 ): layer is Layer & { type: 'uv' } {
-  return Boolean(layer && layer.type === 'uv' && layer.objectId === objectId && layer.visible);
+  return Boolean(layer && layer.type === 'uv' && layer.objectId === objectId && layer.visible &&
+    !isContentAwareRepairLayer(layer));
 }
 
 export function getSelectedLocalRepaintLayer(objectId: string) {

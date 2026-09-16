@@ -18,12 +18,25 @@ try {
   const projected = { ...row, id: 'projected', type: 'projected' };
   const hidden = { ...row, id: 'hidden', visible: false };
   const foreign = { ...row, id: 'foreign', objectId: 'other-model' };
-  const rows = [b, a, projected, hidden, foreign];
-  for (const id of [a.id, b.id, projected.id, hidden.id, foreign.id, undefined]) {
+  const repairRows = [
+    { ...row, id: 'repair-role', role: 'content-aware-underlay' },
+    { ...row, id: 'repair-generation', generationId: 'texture-map-content-aware-repair' },
+    { ...row, id: 'content-aware-uv-repair-legacy' },
+    { ...row, id: 'content-aware-projected-repair-legacy' },
+  ];
+  const rows = [b, a, projected, hidden, foreign, ...repairRows];
+  for (const id of [...rows.map(layer => layer.id), undefined]) {
     useLayerStore.setState({ layers: rows, activeProjectedLayerId: id });
     const before = useLayerStore.getState();
     assert.equal(getSelectedLocalRepaintLayer('model')?.id, [a.id, b.id].includes(id) ? id : undefined);
     assert.equal(useLayerStore.getState(), before, 'lookup must be read-only');
+  }
+  for (const layer of repairRows) {
+    const before = useLayerStore.getState();
+    assert.equal(publishUvRepaintLayer({ id: layer.id, objectId: 'model',
+      source: { destinationMode: 'selected-uv', targetLayerId: layer.id },
+      assetUrl: 'must-not-overwrite', initialize: true }), false);
+    assert.equal(useLayerStore.getState(), before, 'repair layer must not be overwritten');
   }
   useLayerStore.setState({ layers: rows, activeProjectedLayerId: a.id });
   const source = { imageUrl: 'new-source', destinationMode: 'selected-uv', targetLayerId: a.id };
@@ -51,7 +64,7 @@ try {
   assert.doesNotMatch(panel, /ensureLocalRepaintSessionLayer|addEmptyLayer/);
   const editor = await readFile(root + '/src/routes/EditorPage.tsx', 'utf8');
   assert.doesNotMatch(editor, /ensureLocalRepaintSessionLayer|collapseLocalRepaintProjectionLayers/);
-  assert.match(editor, /<RepaintLayerDialog/);
+  assert.match(editor, /<RepaintLayerNotice/);
   assert.match(editor, /captureHistory\('新建局部重绘图层'\)/);
   console.log('Manual repaint: read-only selected target, hidden/foreign/projected rejection, explicit creation gate, reused row/metadata, generation independence and no resurrection passed.');
 } finally { await server.close(); }

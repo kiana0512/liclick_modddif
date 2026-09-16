@@ -164,8 +164,8 @@ import {
   type LocalRepaintSeamMode,
 } from '@/engine/localRepaint/seamHarmonizationMode';
 import { harmonizeLocalRepaintInWorker } from '@/engine/localRepaint/seamHarmonizationWorker';
-import { getSelectedLocalRepaintLayer, isLocalRepaintDestinationLayer } from '@/engine/localRepaint/sessionLayer';
-import { RepaintLayerDialog } from '@/components/localRepaint/RepaintLayerDialog';
+import { getSelectedLocalRepaintLayer, isContentAwareRepairLayer, isLocalRepaintDestinationLayer } from '@/engine/localRepaint/sessionLayer';
+import { RepaintLayerNotice } from '@/components/localRepaint/RepaintLayerNotice';
 import { paintHistoryBoundary } from '@/engine/paint/paintHistoryBoundary';
 import { resolveLocalRepaintBackgroundPrewarmDisposition } from '@/engine/localRepaint/backgroundPrewarmPolicy';
 import {
@@ -596,15 +596,6 @@ function isLocalRepaintLayer(layer: Layer) {
     layer.role === 'local-repaint-overlay' ||
     layer.role === 'local-repaint-draft' ||
     (layer.imageUrl ?? '').includes('surface-edit:local-repaint')
-  );
-}
-
-function isContentAwareRepairLayer(layer: Layer) {
-  return (
-    layer.role === 'content-aware-underlay' ||
-    layer.generationId === 'texture-map-content-aware-repair' ||
-    layer.id.startsWith('content-aware-projected-repair') ||
-    layer.id.startsWith('content-aware-uv-repair')
   );
 }
 
@@ -8057,7 +8048,7 @@ export function EditorPage({
         />
       )}
       {repaintLayerPrompt && (
-        <RepaintLayerDialog
+        <RepaintLayerNotice
           onCancel={() => setRepaintLayerPrompt(undefined)}
           onCreate={() => {
             const prompt = repaintLayerPrompt;

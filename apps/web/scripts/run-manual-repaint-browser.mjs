@@ -22,19 +22,21 @@ try {
   for (const path of ['**/api/local-settings', '**/api/identity/status', '**/__li3d_eraser_perf'])
     await page.route(path, route => route.fulfill({ json: {} }));
   await page.goto(server.resolvedUrls.local[0] + '__fixture');
-  // Test the production modal's explicit create / cancel / Escape interactions.
+  // Test the production warning notice without a blocking dialog/backdrop.
   const showDialog = () => page.evaluate(async () =>
     (await import('/scripts/uv-repaint-viewport-fixture.mjs')).showLayerDialog());
   await page.evaluate(async () => (await import('/scripts/uv-repaint-viewport-fixture.mjs')).setup({ manual: true }));
   await showDialog();
-  await page.getByRole('button', { name: '取消', exact: true }).click();
+  await page.getByRole('status').waitFor();
+  assert.equal(await page.getByRole('dialog').count(), 0);
+  assert.match(await page.getByRole('status').getAttribute('class'), /border-amber/);
+  await page.getByRole('button', { name: 'Dismiss', exact: true }).click();
   assert.equal(await page.evaluate(() => window.dialogResult), 'cancel');
   await showDialog();
-  await page.getByRole('dialog').waitFor();
+  await page.getByRole('status').waitFor();
   await page.keyboard.press('Escape');
-  assert.equal(await page.evaluate(() => window.dialogResult), 'cancel');
-  await showDialog();
-  await page.getByRole('button', { name: '新建图层并开始绘制' }).click();
+  assert.equal(await page.evaluate(() => window.dialogResult), undefined);
+  await page.getByRole('button', { name: '新建图层', exact: true }).click();
   assert.equal(await page.evaluate(() => window.dialogResult), 'create');
   const box = await page.locator('canvas').first().boundingBox();
   const click = async offset => {
@@ -95,7 +97,7 @@ try {
   await click(0);
   assert.deepEqual(await state(), beforeHide, 'hidden target must not receive new pixels');
   assert.deepEqual(errors, []);
-  console.log(JSON.stringify({ passed: true, checks: ['dialog cancel/create/Escape', 'same-layer multi-generation', 'exact pixel retention', 'visible GPU colors', 'PNG roundtrip', 'undo/redo', 'selected A/B', 'midstroke handoff', 'deleted/hidden target'], first, second, visible }));
+  console.log(JSON.stringify({ passed: true, checks: ['nonblocking warning dismiss/reopen/create', 'same-layer multi-generation', 'exact pixel retention', 'visible GPU colors', 'PNG roundtrip', 'undo/redo', 'selected A/B', 'midstroke handoff', 'deleted/hidden target'], first, second, visible }));
 } finally {
   await browser.close();
   await server.close();

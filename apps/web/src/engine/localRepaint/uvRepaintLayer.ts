@@ -2,7 +2,7 @@ import type { Layer } from '@/types/layer';
 import type { LocalRepaintProjectionSource } from '@/stores/sceneStore';
 import { useLayerStore } from '@/stores/layerStore';
 import { useProjectStore } from '@/stores/projectStore';
-import { restoreLocalRepaintLayerSelection } from './sessionLayer';
+import { isContentAwareRepairLayer, restoreLocalRepaintLayerSelection } from './sessionLayer';
 import { getVisibleUvLayerStack } from '@/engine/layers/uvLayerComposition';
 
 /** Layer publication only. Pixel math and rendering live in uvRepaint.ts. */
@@ -18,7 +18,7 @@ export function publishUvRepaintLayer(input: {
   if (input.source.destinationMode === 'selected-uv') {
     // A source is only paint, not a new layer descriptor. Preserve every user
     // property and never resurrect a deleted row, including during preparation.
-    if (!existing || existing.type !== 'uv' ||
+    if (!existing || existing.type !== 'uv' || isContentAwareRepairLayer(existing) ||
       existing.objectId !== input.objectId || input.source.targetLayerId !== existing.id) return false;
     if (existing.imageUrl !== input.assetUrl || input.initialize ||
       getVisibleUvLayerStack(state.layers, input.objectId, 'top-to-bottom')[0]?.id !== existing.id) {

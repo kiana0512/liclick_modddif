@@ -16,7 +16,7 @@ import {
 } from '../src/engine/projection/liveProjectedCanvasTextureRegistry.ts';
 import { paintHistoryBoundary } from '../src/engine/paint/paintHistoryBoundary.ts';
 import { prepareFbxModelExport } from '../src/engine/export/texturedExportUtils.ts';
-import { RepaintLayerDialog } from '../src/components/localRepaint/RepaintLayerDialog.tsx';
+import { RepaintLayerNotice } from '../src/components/localRepaint/RepaintLayerNotice.tsx';
 
 export function showLayerDialog() {
   const host = document.createElement('div');
@@ -24,7 +24,7 @@ export function showLayerDialog() {
   const root = createRoot(host);
   window.dialogResult = undefined;
   const finish = result => { window.dialogResult = result; root.unmount(); host.remove(); };
-  root.render(React.createElement(RepaintLayerDialog, {
+  root.render(React.createElement(RepaintLayerNotice, {
     onCreate: () => finish('create'), onCancel: () => finish('cancel'),
   }));
 }
