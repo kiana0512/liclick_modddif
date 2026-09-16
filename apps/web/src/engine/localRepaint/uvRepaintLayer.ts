@@ -2,7 +2,7 @@ import type { Layer } from '@/types/layer';
 import type { LocalRepaintProjectionSource } from '@/stores/sceneStore';
 import { useLayerStore } from '@/stores/layerStore';
 import { useProjectStore } from '@/stores/projectStore';
-import { restoreLocalRepaintLayerSelection } from './sessionLayer';
+import { isContentAwareRepairLayer, restoreLocalRepaintLayerSelection } from './sessionLayer';
 import { getVisibleUvLayerStack } from '@/engine/layers/uvLayerComposition';
 
 /** Layer publication only. Pixel math and rendering live in uvRepaint.ts. */
@@ -15,6 +15,21 @@ export function publishUvRepaintLayer(input: {
 }) {
   const state = useLayerStore.getState();
   const existing = state.layers.find((layer) => layer.id === input.id);
+  if (input.source.destinationMode === 'selected-uv') {
+    // A source is only paint, not a new layer descriptor. Preserve every user
+    // property and never resurrect a deleted row, including during preparation.
+    if (!existing || existing.type !== 'uv' || isContentAwareRepairLayer(existing) ||
+      existing.objectId !== input.objectId || input.source.targetLayerId !== existing.id) return false;
+    if (existing.imageUrl !== input.assetUrl || input.initialize ||
+      getVisibleUvLayerStack(state.layers, input.objectId, 'top-to-bottom')[0]?.id !== existing.id) {
+      state.updateLayer(existing.id, {
+        imageUrl: input.assetUrl,
+        contentRevision: (existing.contentRevision ?? 0) + 1,
+      });
+    }
+    useProjectStore.getState().setProjectLayers(useLayerStore.getState().layers);
+    return true;
+  }
   // A late GPU readback must never resurrect a row deleted by the user.
   if (!existing && !input.initialize) return false;
   const source = input.source;

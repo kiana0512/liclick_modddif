@@ -75,7 +75,7 @@ import {
   applySelectionPixelPatches,
   selectionPixelsHaveContent,
 } from '@/engine/localRepaint/consumeSelectionMask';
-import { restoreLocalRepaintLayerSelection } from '@/engine/localRepaint/sessionLayer';
+import { getSelectedLocalRepaintLayer, restoreLocalRepaintLayerSelection } from '@/engine/localRepaint/sessionLayer';
 import { SceneRoot } from './SceneRoot';
 import { getPreviewLighting } from './previewLighting';
 import { CameraController } from './CameraController';
@@ -6183,6 +6183,7 @@ function createLocalRepaintSourceKey(source: LocalRepaintProjectionSource, objec
     source.objectId ?? objectId,
     source.targetLayerId ?? '',
     source.projectionLayerId ?? '',
+    source.destinationMode ?? '',
   ].join('|');
 }
 
@@ -6274,6 +6275,10 @@ function isMatchingLocalRepaintProjectionLayer(
   source: LocalRepaintProjectionSource,
   objectId: string,
 ) {
+  if (source.destinationMode === 'selected-uv') {
+    return layer.type === 'uv' && layer.id === source.targetLayerId &&
+      layer.objectId === (source.objectId ?? objectId);
+  }
   if (!isLocalRepaintProjectionLayer(layer) && !isNativeUvRepaintLayer(layer)) return false;
   if (isNativeUvRepaintLayer(layer) && !source.projectionLayerId && source.generationId) {
     // The session target may become the UV result itself when reopening it.
@@ -7169,7 +7174,7 @@ function SurfacePaintOverlay() {
   const isEditingPersistedLocalRepaint =
     paintTool === 'eraser' && isEditableLocalRepaintProjectionLayer(activePaintLayer);
   const isEditingNativeRepaint = paintTool === 'eraser' && Boolean(
-    activePaintLayer && isNativeUvRepaintLayer(activePaintLayer) &&
+    activePaintLayer && (isNativeUvRepaintLayer(activePaintLayer) || localRepaintProjectionSource?.destinationMode === 'selected-uv') &&
     localRepaintCompositeRef.current?.nativeUv && localRepaintCompositeRef.current.layerId === activePaintLayer.id,
   );
   const isLocalRepaintApplyMode = paintTool === 'inpaint-apply' || isEditingPersistedLocalRepaint || isEditingNativeRepaint;
@@ -9842,7 +9847,7 @@ function SurfacePaintOverlay() {
               : undefined);
           return (
             !layer ||
-            isNativeUvRepaintLayer(layer) ||
+            layer.type === 'uv' ||
             !layer.visible ||
             previousRoot?.visible === false ||
             !isLocalRepaintHandoffForObject(previousObjectId, nextObjectId) ||
@@ -10678,7 +10683,10 @@ function SurfacePaintOverlay() {
       const existingLayer = currentLayers.find((item) =>
         isMatchingLocalRepaintProjectionLayer(item, localRepaintSource, model.objectId),
       );
-      const useNativeUv = !existingLayer || isNativeUvRepaintLayer(existingLayer);
+      const manualDestination = localRepaintSource.destinationMode === 'selected-uv';
+      if (manualDestination && (!existingLayer ||
+        getSelectedLocalRepaintLayer(model.objectId)?.id !== existingLayer.id)) return undefined;
+      const useNativeUv = manualDestination || !existingLayer || isNativeUvRepaintLayer(existingLayer);
       // A persisted eraser session is bound to one exact projected row. If that
       // row disappeared or selection advanced, do not silently create or reuse
       // another repaint layer with similar generation/target metadata.
@@ -11542,13 +11550,25 @@ function SurfacePaintOverlay() {
             preparedAssets.allowedMaskImage, image.naturalWidth || image.width, image.naturalHeight || image.height,
           );
           if (cancelled) return;
+          // Complete old dirty-tile readbacks before copying the same UV layer
+          // into a new source owner. This includes a pointer gesture still ending.
+          await new Promise<void>((resolve) => paintHistoryBoundary.run(resolve));
+          if (cancelled) return;
           const saved = useLayerStore.getState().layers.find((layer) => layer.id === composite.layerId);
           const initial = saved?.imageUrl ? (getLiveProjectedCanvasState(saved.imageUrl)?.canvas ?? await loadImageElement(saved.imageUrl)) : undefined;
+          if (source.destinationMode === 'selected-uv' && initial && initial.width !== initial.height) {
+            throw new Error('当前 UV 图层不是方形纹理，请新建空白 UV 图层后绘制；未缩放或覆盖原图。');
+          }
+          const nativeResolution = source.destinationMode === 'selected-uv' && initial
+            ? initial.width : UV_TEXTURE_RESOLUTION[useSettingsStore.getState().resolution];
           const native = await createNativeUvRepaintSession({
             renderer: gl, meshes: getPaintableSurfaceCache(model.group).positionedMeshes, camera,
-            resolution: UV_TEXTURE_RESOLUTION[useSettingsStore.getState().resolution], sourceMaterial: readyOverlay.material,
+            resolution: nativeResolution, sourceMaterial: readyOverlay.material,
             image, falloff, initial, source, objectId: model.objectId, layerId: composite.layerId,
-            cancelled: () => cancelled || localRepaintCompositeRef.current !== composite || Boolean(saved && !useLayerStore.getState().layers.some((layer) => layer.id === saved.id)),
+            cancelled: () => cancelled || localRepaintCompositeRef.current !== composite ||
+              Boolean(saved && !useLayerStore.getState().layers.some((layer) => layer.id === saved.id)) ||
+              (source.destinationMode === 'selected-uv' &&
+                getSelectedLocalRepaintLayer(model.objectId)?.id !== composite.layerId),
           });
           if (!native) return;
           const previousOwner = nativeUvOwnersRef.current.get(native.assetUrl);
@@ -15249,6 +15269,8 @@ function SurfacePaintOverlay() {
       updateCursorFromHit(result);
       if (isLocalRepaintApplyMode) {
         const source = resolveLocalRepaintStrokeSource();
+        if (source?.destinationMode === 'selected-uv' &&
+          getSelectedLocalRepaintLayer(result.model.objectId)?.id !== source.targetLayerId) return;
         const preparedAssets = localRepaintSourceImageRef.current;
         if (
           !source ||
@@ -15431,7 +15453,35 @@ function SurfacePaintOverlay() {
     window.addEventListener('pointercancel', handlePointerCancel, true);
     canvas.addEventListener('lostpointercapture', handleLostPointerCapture);
     canvas.addEventListener('pointerleave', handlePointerLeave);
+    const unsubscribeDestination = useLayerStore.subscribe((state) => {
+      const scene = useSceneStore.getState();
+      const source = scene.localRepaintProjectionSource;
+      if (source?.destinationMode !== 'selected-uv' || !source.objectId) return;
+      if (getSelectedLocalRepaintLayer(source.objectId)?.id === source.targetLayerId) return;
+      const activate = scene.paintTool === 'inpaint-apply' ||
+        (source.autoActivate !== false && getLocalRepaintSessionSnapshot()?.status === 'preparing');
+      // Finish against the draft's frozen owner before replacing source/target.
+      finishPaintStroke(undefined, 'pointercancel');
+      if (scene.paintTool === 'inpaint-apply') scene.setPaintTool('none');
+      if (!state.layers.some((layer) => layer.id === source.targetLayerId)) {
+        scene.setLocalRepaintProjectionSource(undefined);
+        return;
+      }
+      paintHistoryBoundary.run(() => {
+        if (useSceneStore.getState().localRepaintProjectionSource !== source) return;
+        const target = getSelectedLocalRepaintLayer(source.objectId!);
+        if (!target) {
+          scene.setLocalRepaintProjectionSource(undefined);
+          if (activate) pushToast({ tone: 'warning', title: '请选择可见的 UV 图层后再绘制' });
+          return;
+        }
+        scene.setLocalRepaintProjectionSource({
+          ...source, targetLayerId: target.id, targetLayerName: target.name, autoActivate: activate,
+        });
+      });
+    });
     return () => {
+      unsubscribeDestination();
       canvas.removeEventListener('pointermove', handlePointerMove, true);
       canvas.removeEventListener('pointerdown', handlePointerDown, true);
       canvas.removeEventListener('contextmenu', handleContextMenu);

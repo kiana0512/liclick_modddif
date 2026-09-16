@@ -40,5 +40,16 @@ assert.doesNotMatch(
   /window\.history|window\.location/,
   'Authentication must preserve the original deep link rather than redirecting the main tab.',
 );
+assert.doesNotMatch(
+  app,
+  /setInterval\(refresh,\s*3_000\)/,
+  'Local settings must not create an unconditional three-second request loop.',
+);
+assert.match(app, /let inFlight = false/, 'Local settings refresh must remain single-flight.');
+assert.match(
+  app,
+  /retryBaseMs = 30_000[\s\S]*retryMaximumMs = 300_000/,
+  'Local settings refresh must use bounded failure backoff.',
+);
 
 process.stdout.write('Global Li3D authentication gate regression test passed.\n');

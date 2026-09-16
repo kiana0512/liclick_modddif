@@ -334,12 +334,164 @@ try {
     '../dist/repositories/postgresAssetStorageRepository.js'
   );
   const repository = createPostgresAssetStorageRepository(sql);
+  const timeoutCalls = [];
+  const timeoutConnection = {
+    async query() {
+      return { rows: [], affectedRows: 0 };
+    },
+  };
+  const timeoutRepository = createPostgresAssetStorageRepository({
+    ...timeoutConnection,
+    async transaction(operation) {
+      return operation(timeoutConnection);
+    },
+    async withStatementTimeout(timeoutMs, operation) {
+      timeoutCalls.push(timeoutMs);
+      return operation(timeoutConnection);
+    },
+  });
+  await timeoutRepository.listLegacyAssetPage('bounded-user', 'scan-bounded', undefined, 128);
+  await timeoutRepository.listStorageDocumentPage('bounded-user', 'current', undefined, 4);
+  assert.deepEqual(timeoutCalls, [45_000, 45_000]);
   const now = new Date().toISOString();
   await sql.query(
     `INSERT INTO cloud_users (
        user_id, display_name, role, status, auth_source, created_at, updated_at
      ) VALUES ($1,$2,'user','active','feishu-oauth',$3::timestamptz,$3::timestamptz)`,
     ['storage-cloud-user', 'Storage Cloud User', now],
+  );
+  await sql.query(
+    `INSERT INTO project_documents (
+       user_id, project_id, slug, name, document_json, revision_id,
+       revision_number, created_at, updated_at, deleted_at
+     ) VALUES
+       ($1,'project-active','project-active','Active',$2::jsonb,'revision-current',2,$4,$4,NULL),
+       ($1,'project-trash','project-trash','Trash',$3::jsonb,'revision-trash-current',2,$4,$4,$4)`,
+    [
+      'storage-cloud-user',
+      { imageUrl: '/api/projects/project-active/assets/asset-current-12345678/content' },
+      { imageUrl: '/api/projects/project-trash/assets/asset-trash-12345678/content' },
+      now,
+    ],
+  );
+  await sql.query(
+    `INSERT INTO project_document_revisions (
+       user_id, project_id, revision_id, revision_number, document_json, created_at
+     ) VALUES
+       ($1,'project-active','revision-history',1,$2::jsonb,$4),
+       ($1,'project-trash','revision-trash',1,$3::jsonb,$4)`,
+    [
+      'storage-cloud-user',
+      {
+        imageUrl: 'objects/asset-history-12345678',
+        retainedCurrentImageUrl: 'objects/asset-current-12345678',
+      },
+      { imageUrl: 'objects/asset-trash-12345678' },
+      now,
+    ],
+  );
+  for (const [index, assetId] of [
+    'asset-current-12345678',
+    'asset-history-12345678',
+    'asset-trash-12345678',
+    'asset-unused-12345678',
+  ].entries()) {
+    await sql.query(
+      `INSERT INTO asset_transfers (
+         user_id, intent_id, asset_id, project_id, status, record_json, created_at, updated_at
+       ) VALUES ($1,$2,$3,'project-active','verified',$4::jsonb,$5,$5)`,
+      [
+        'storage-cloud-user',
+        `intent-${index}`,
+        assetId,
+        {
+          assetId,
+          projectId: 'project-active',
+          category: 'layers',
+          filename: `${assetId}.png`,
+          mimeType: 'image/png',
+          sizeBytes: 100 + index,
+          sha256: String(index + 1).repeat(64),
+          objectKey: `objects/${assetId}`,
+          createdAt: now,
+        },
+        now,
+      ],
+    );
+  }
+  const pagingScanId = 'scan-paging-12345678';
+  await repository.beginInventoryScan('storage-cloud-user', pagingScanId);
+  const referencePages = await Promise.all([
+    repository.listStorageDocumentPage('storage-cloud-user', 'current', undefined, 1),
+    repository.listStorageDocumentPage('storage-cloud-user', 'history', undefined, 1),
+    repository.listStorageDocumentPage('storage-cloud-user', 'trash', undefined, 1),
+  ]);
+  assert.equal(referencePages[0]?.documents[0]?.assetIds.includes('asset-current-12345678'), true);
+  assert.equal(referencePages[1]?.documents[0]?.assetIds.includes('asset-history-12345678'), true);
+  assert.equal(referencePages[1]?.documents[0]?.assetIds.includes('asset-current-12345678'), true);
+  assert.equal(referencePages[2]?.documents[0]?.assetIds.includes('asset-trash-12345678'), true);
+  await repository.appendInventoryReferences({
+    userId: 'storage-cloud-user',
+    scanId: pagingScanId,
+    references: referencePages.flatMap((page) =>
+      page.documents.flatMap((document) =>
+        document.assetIds.map((assetId) => ({
+          assetId,
+          bucketId:
+            document.kind === 'current' ? 'project-resources' : document.kind,
+        })),
+      ),
+    ),
+  });
+  const assetBuckets = new Map();
+  let assetCursor;
+  do {
+    const page = await repository.listLegacyAssetPage(
+      'storage-cloud-user',
+      pagingScanId,
+      assetCursor,
+      2,
+    );
+    for (const asset of page.assets) assetBuckets.set(asset.assetId, asset.referenceBucket);
+    assetCursor = page.nextCursor;
+  } while (assetCursor);
+  assert.deepEqual(Object.fromEntries(assetBuckets), {
+    'asset-current-12345678': 'project-resources',
+    'asset-history-12345678': 'history',
+    'asset-trash-12345678': 'trash',
+    'asset-unused-12345678': undefined,
+  });
+  await repository.discardInventoryScan('storage-cloud-user', pagingScanId);
+  await sql.query(
+    `INSERT INTO cloud_users (
+       user_id, display_name, role, status, auth_source, created_at, updated_at
+     ) VALUES ($1,$2,'user','active','feishu-oauth',$3::timestamptz,$3::timestamptz)`,
+    ['storage-large-document-user', 'Storage Large Document User', now],
+  );
+  await sql.query(
+    `INSERT INTO project_documents (
+       user_id, project_id, slug, name, document_json, revision_id,
+       revision_number, created_at, updated_at
+     ) VALUES ($1,'project-large','project-large','Large',$2::jsonb,'revision-large',1,$3,$3)`,
+    [
+      'storage-large-document-user',
+      {
+        imageUrl: 'objects/asset-large-12345678',
+        padding: 'x'.repeat(5_600_000),
+      },
+      now,
+    ],
+  );
+  const largeDocumentPage = await repository.listStorageDocumentPage(
+    'storage-large-document-user',
+    'current',
+    undefined,
+    8,
+  );
+  assert.deepEqual(largeDocumentPage.documents[0]?.assetIds, ['asset-large-12345678']);
+  assert.ok(
+    JSON.stringify(largeDocumentPage).length < 1_024,
+    'Cloud inventory must project asset IDs in PostgreSQL instead of returning full project JSON.',
   );
   const cloudOverview = {
     schemaVersion: 1,

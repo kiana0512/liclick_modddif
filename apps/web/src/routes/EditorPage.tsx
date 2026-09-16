@@ -164,7 +164,10 @@ import {
   type LocalRepaintSeamMode,
 } from '@/engine/localRepaint/seamHarmonizationMode';
 import { harmonizeLocalRepaintInWorker } from '@/engine/localRepaint/seamHarmonizationWorker';
-import { ensureLocalRepaintSessionLayer, restoreLocalRepaintLayerSelection } from '@/engine/localRepaint/sessionLayer';
+import { getSelectedLocalRepaintLayer, isContentAwareRepairLayer, isLocalRepaintDestinationLayer } from '@/engine/localRepaint/sessionLayer';
+import { createLocalRepaintDrawingLayer } from '@/engine/localRepaint/createDrawingLayer';
+import { RepaintLayerNotice } from '@/components/localRepaint/RepaintLayerNotice';
+import { paintHistoryBoundary } from '@/engine/paint/paintHistoryBoundary';
 import { resolveLocalRepaintBackgroundPrewarmDisposition } from '@/engine/localRepaint/backgroundPrewarmPolicy';
 import {
   createLocalRepaintActivationRequest,
@@ -597,62 +600,6 @@ function isLocalRepaintLayer(layer: Layer) {
   );
 }
 
-function isContentAwareRepairLayer(layer: Layer) {
-  return (
-    layer.role === 'content-aware-underlay' ||
-    layer.generationId === 'texture-map-content-aware-repair' ||
-    layer.id.startsWith('content-aware-projected-repair') ||
-    layer.id.startsWith('content-aware-uv-repair')
-  );
-}
-
-function isMatchingLocalRepaintProjectionLayer(
-  layer: Layer,
-  generationId: string | undefined,
-  captureId: string | undefined,
-  objectId: string,
-  targetLayerId: string | undefined,
-) {
-  if (!isLocalRepaintProjectionLayer(layer)) return false;
-  if (targetLayerId) return layer.replacementTargetLayerId === targetLayerId;
-  if (generationId) return layer.generationId === generationId;
-  if (captureId) return layer.captureId === captureId;
-  return layer.objectId === objectId;
-}
-
-function collapseLocalRepaintProjectionLayers(
-  layers: Layer[],
-  generationId: string | undefined,
-  captureId: string | undefined,
-  objectId: string,
-  targetLayerId: string | undefined,
-) {
-  let keptLocalRepaintLayer = false;
-  return layers.filter((layer) => {
-    if (
-      !isMatchingLocalRepaintProjectionLayer(
-        layer,
-        generationId,
-        captureId,
-        objectId,
-        targetLayerId,
-      )
-    )
-      return true;
-    if (keptLocalRepaintLayer) return false;
-    keptLocalRepaintLayer = true;
-    return true;
-  });
-}
-
-function isLocalRepaintDestinationLayer(
-  layer: Layer | undefined,
-  objectId: string,
-): layer is Layer & { type: 'uv' } {
-  if (!layer || layer.type !== 'uv' || layer.objectId !== objectId) return false;
-  if (!layer.imageUrl) return true;
-  return layer.role === 'local-repaint-overlay';
-}
 
 function findNormalMapTexture(model?: ModelLoadResult) {
   let normalMap: THREE.Texture | undefined;
@@ -1102,6 +1049,7 @@ export function EditorPage({
     setLocalRepaintGenerationSettledAwaitingUnlock,
   ] = useState(false);
   const [localRepaintActivationQueued, setLocalRepaintActivationQueued] = useState(false);
+  const [repaintLayerPrompt, setRepaintLayerPrompt] = useState<{ projectId: string; objectId: string }>();
   const [localRepaintInteractiveState, setLocalRepaintInteractiveState] =
     useState<LocalRepaintInteractiveStateDetail>();
   const [localImageGenerationSuccessKey, setLocalImageGenerationSuccessKey] = useState(0);
@@ -6107,11 +6055,8 @@ export function EditorPage({
     document.body.dataset.localRepaintBackgroundCameraBackend = archivedCamera
       ? 'archived-capture'
       : 'legacy-current-view';
-    let targetLayer = currentLayers.find(
-      (layer) =>
-        layer.id === generationResultLayer?.replacementTargetLayerId &&
-        isLocalRepaintDestinationLayer(layer, objectId),
-    );
+    const targetLayer = getSelectedLocalRepaintLayer(objectId);
+    if (!targetLayer) return undefined;
     const generationMaskUrl = getLocalRepaintAuthoringMaskUrl(
       latestLocalRepaintGeneration,
       paintMaskDataUrl,
@@ -6164,25 +6109,6 @@ export function EditorPage({
       document.body.dataset.localRepaintBackgroundStage = 'running';
       document.body.dataset.localRepaintBackgroundGeneration = latestLocalRepaintGeneration.id;
       try {
-        if (!isLocalRepaintDestinationLayer(targetLayer, objectId)) {
-          // Create/bind the destination while the browser is idle, not in the
-          // button-3 click handler. Preserve the user's active layer because
-          // this is preparation rather than an explicit layer selection.
-          const activeLayerId = useLayerStore.getState().activeProjectedLayerId;
-          targetLayer = ensureLocalRepaintSessionLayer({
-            objectId,
-            generationId: latestLocalRepaintGeneration.id,
-            preserveActiveProjection: true,
-            preserveActiveLayer: true,
-          }).layer;
-          if (
-            activeLayerId &&
-            useLayerStore.getState().layers.some((layer) => layer.id === activeLayerId)
-          ) {
-            useLayerStore.getState().setActiveLayer(activeLayerId);
-          }
-          await waitForBrowserPaint();
-        }
         if (!isLocalRepaintDestinationLayer(targetLayer, objectId)) return;
         const targetLayerId = targetLayer.id;
         const projectionImage = await getLocalRepaintProjectionImage(
@@ -6193,7 +6119,8 @@ export function EditorPage({
         const currentTarget = useLayerStore
           .getState()
           .layers.find((layer) => layer.id === targetLayerId);
-        if (!isLocalRepaintDestinationLayer(currentTarget, objectId)) return;
+        if (!isLocalRepaintDestinationLayer(currentTarget, objectId) ||
+          getSelectedLocalRepaintLayer(objectId)?.id !== targetLayerId) return;
         const latestSceneState = useSceneStore.getState();
         const visibleProjectionSource = latestSceneState.localRepaintProjectionSource;
         const visiblePreviewLayer = latestSceneState.localRepaintPreviewLayer;
@@ -6264,6 +6191,7 @@ export function EditorPage({
           targetLayerId: currentTarget.id,
           targetLayerType: currentTarget.type,
           targetLayerName: currentTarget.name,
+          destinationMode: 'selected-uv',
         });
         if (
           pendingLocalRepaintBackgroundGenerationIdRef.current === latestLocalRepaintGeneration.id
@@ -6514,6 +6442,13 @@ export function EditorPage({
         return;
       }
 
+      const targetLayer = getSelectedLocalRepaintLayer(objectId);
+      if (!targetLayer) {
+        setPaintTool('none');
+        clearPrewarmProgress();
+        setRepaintLayerPrompt({ projectId: project.id, objectId });
+        return;
+      }
       // Hot path first: the result, mask and destination are staged while the
       // remote generation is finishing. Do not normalize every layer, trigger
       // an immediate project save and rebuild React subscribers before checking
@@ -6533,6 +6468,8 @@ export function EditorPage({
         preparedSource?.generationId === latestLocalRepaintGeneration.id &&
         preparedSource.objectId === objectId &&
         preparedTargetId &&
+        preparedSource.destinationMode === 'selected-uv' &&
+        preparedTargetId === targetLayer.id &&
         isLocalRepaintDestinationLayer(preparedTargetLayer, objectId) &&
         !preparedSourceHasGpuError
       ) {
@@ -6577,10 +6514,6 @@ export function EditorPage({
         return;
       }
 
-      const { layer: targetLayer } = ensureLocalRepaintSessionLayer({
-        objectId,
-        generationId: latestLocalRepaintGeneration.id,
-      });
       document.body.dataset.localRepaintButton3ActivationPath = 'cold-prepare';
       if (!isLocalRepaintDestinationLayer(targetLayer, objectId)) {
         setLocalRepaintProjectionSource(undefined);
@@ -6635,38 +6568,15 @@ export function EditorPage({
         useSceneStore.getState().paintTool !== 'none'
       )
         return;
-      let currentTargetLayer = useLayerStore
+      const currentTargetLayer = useLayerStore
         .getState()
         .layers.find((layer) => layer.id === targetLayer.id);
-      if (!isLocalRepaintDestinationLayer(currentTargetLayer, objectId)) {
-        const recoveredTarget = ensureLocalRepaintSessionLayer({
-          objectId,
-          generationId: latestLocalRepaintGeneration.id,
-        }).layer;
-        if (!isLocalRepaintDestinationLayer(recoveredTarget, objectId)) {
-          clearPrewarmProgress();
-          setLocalRepaintProjectionSource(undefined);
-          setPaintTool('none');
-          console.warn('[Liclick 3D Texture] Could not recover the internal local repaint layer.');
-          return;
-        }
-        currentTargetLayer = recoveredTarget;
+      if (!isLocalRepaintDestinationLayer(currentTargetLayer, objectId) ||
+        getSelectedLocalRepaintLayer(objectId)?.id !== targetLayer.id) {
+        clearPrewarmProgress();
+        return;
       }
       const nameSource = latestLocalRepaintGeneration.prompt.trim();
-      const currentLayers = useLayerStore.getState().layers;
-      const collapsedLayers = collapseLocalRepaintProjectionLayers(
-        currentLayers,
-        latestLocalRepaintGeneration.id,
-        captureId,
-        objectId,
-        currentTargetLayer.id,
-      );
-      if (collapsedLayers.length !== currentLayers.length) {
-        const selectedLayerId = useLayerStore.getState().activeProjectedLayerId;
-        setLayers(collapsedLayers);
-        restoreLocalRepaintLayerSelection(selectedLayerId);
-        setProjectLayers(useLayerStore.getState().layers);
-      }
       setLocalRepaintProjectionSource({
         imageUrl: projectionImage.imageUrl,
         persistentImageUrl: projectionImage.persistentImageUrl,
@@ -6689,6 +6599,7 @@ export function EditorPage({
         targetLayerId: currentTargetLayer.id,
         targetLayerType: 'uv',
         targetLayerName: currentTargetLayer.name,
+        destinationMode: 'selected-uv',
       });
     })();
   }, [
@@ -6706,9 +6617,7 @@ export function EditorPage({
     pushToast,
     selectedObjectId,
     setLocalRepaintProjectionSource,
-    setLayers,
     setPaintTool,
-    setProjectLayers,
     t,
   ]);
 
@@ -8137,6 +8046,23 @@ export function EditorPage({
           projectId={project.id}
           projectCreatedAt={project.createdAt}
           forceStart={showOnboarding}
+        />
+      )}
+      {repaintLayerPrompt && (
+        <RepaintLayerNotice
+          onCancel={() => setRepaintLayerPrompt(undefined)}
+          onCreate={() => {
+            const prompt = repaintLayerPrompt;
+            setRepaintLayerPrompt(undefined);
+            paintHistoryBoundary.run(() => {
+              if (useProjectStore.getState().currentProjectId !== prompt.projectId ||
+                (useSceneStore.getState().selectedObjectId ?? importedModel?.objectId) !== prompt.objectId) return;
+              captureHistory('新建局部重绘图层');
+              createLocalRepaintDrawingLayer(prompt.objectId);
+              setProjectLayers(useLayerStore.getState().layers);
+              handleLocalRepaintFromToolbar();
+            });
+          }}
         />
       )}
       {pendingReferenceImport ? (

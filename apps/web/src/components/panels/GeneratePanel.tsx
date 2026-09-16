@@ -34,7 +34,6 @@ import {
   createCaptureMaskedPreview,
   createGeneratedDisplayPreview,
 } from '@/engine/localRepaint/resultPreviewUtils';
-import { ensureLocalRepaintSessionLayer as ensurePersistentLocalRepaintSessionLayer } from '@/engine/localRepaint/sessionLayer';
 import { generationBelongsToObject } from '@/engine/localRepaint/objectBinding';
 import { SINGLE_VIEW_MINIMUM_PROJECTION_FACING } from '@/engine/projection/projectionTypes';
 import {
@@ -858,31 +857,6 @@ export function GeneratePanel({
         : latestGeneration;
     }, undefined);
   }, [captureObjectId, currentProject?.captures, currentProjectId, generations]);
-  const latestLocalRepaintGenerationId = latestLocalRepaintGeneration?.id;
-  const ensureLocalRepaintSessionLayer = useCallback(
-    (
-      generationId = latestLocalRepaintGenerationId,
-      options?: {
-        preserveActiveProjection?: boolean;
-        preserveActiveLayer?: boolean;
-      },
-    ) => {
-      if (!currentProjectId || !captureObjectId) return undefined;
-      return ensurePersistentLocalRepaintSessionLayer({
-        objectId: captureObjectId,
-        generationId,
-        ...options,
-      }).layer;
-    },
-    [captureObjectId, currentProjectId, latestLocalRepaintGenerationId],
-  );
-  useEffect(() => {
-    if (!isLocalRepaintTab) return;
-    ensureLocalRepaintSessionLayer(undefined, {
-      preserveActiveProjection: true,
-      preserveActiveLayer: true,
-    });
-  }, [ensureLocalRepaintSessionLayer, isLocalRepaintTab]);
   const viewport = useSceneStore((state) => state.viewport);
   const activeReferences = references;
   const activeReferenceIds = useMemo(
@@ -4280,12 +4254,6 @@ export function GeneratePanel({
       // metadata.maskUrl owns the exact snapshot used by this task. Keep the
       // single live mask intact until the user edits or explicitly clears it.
       lastCompletedLocalRepaintGenerationIdRef.current = completedGeneration.id;
-      if (completedGeneration.resultUrl) {
-        ensureLocalRepaintSessionLayer(completedGeneration.id, {
-          preserveActiveProjection: true,
-          preserveActiveLayer: true,
-        });
-      }
       setGenerateNotice(undefined);
       setTexturePreviewMode('repaint');
       setTab('repaint');

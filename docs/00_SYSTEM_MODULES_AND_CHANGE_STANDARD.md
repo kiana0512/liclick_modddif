@@ -2,7 +2,15 @@
 
 2026-09-16 master/release 集成（M15，`CLOUD-DEPLOYMENT` v1.0.0）：将 `master` 提交 `0bb0e6ec` 合入 `release`，保留 release 现有 K8s、Nginx、数据库、对象存储、Ceph 完整性、IDaaS 与资源配置。业务源码采用 master 的视口输入、投影选区显示、局部重绘、生成稳定性和 UV 性能修复；完整分辨率、QA、Project Command、Revision CAS、ownership、verified assets、持久化与导出约束不放宽，无 Schema 或资产迁移。最终 release 合并提交以 `[deploy]` 触发 server/web 同一不可变 SHA 镜像与串行部署；失败时 server/web/db-push 一同回滚到 `35db5bc4` 对应镜像，保留数据库、工程、对象资产和 PVC。线上结果以 release 流水线及 `/api/release`、health、ready 核验为准。
 
+2026-09-16 UI-10/UI-11 → M08（协作 M03）：`ALG-LR-MANUAL-TARGET` v1.1.1 修复黄色“新建图层”按钮将用户层误标为内部 draft、导致图层列表隐藏的问题。显式创建普通 UV 层，与面板新建使用同一 store 动作；旧版无生成/捕获/相机/投影配对的独立 draft 只读显示，不改 ID、像素、顺序或数据库。真正生成绑定/配对的内部 draft 继续隐藏。GPU/CPU/Worker/shader、绘制核、保存/export 协议不变。生产创建回调与真实图层面板点击/重载验证通过；详见 [手动局部重绘目标层变更卡](changes/CHG-20260916-MANUAL-REPAINT-LAYER.md)。
+
+2026-09-16 UI-06/UI-10 → M08：`ALG-LR-MANUAL-TARGET` v1.1.0 将新建绘制层模态框改为现有顶部黄色 warning 提示，显式“新建图层”按钮沿用历史边界、创建/选中/开始绘制流程。关闭不创建，不遮挡编辑器；内容识别填补层（含旧 ID/generation 标记）禁止作为手动绘制目标，并在写回时保护。GPU/CPU 像素核、Worker/shader、分辨率、保存/导出协议不变，无迁移。回滚提示组件及目标保护即可恢复上版交互；详见 [手动局部重绘目标层变更卡](changes/CHG-20260916-MANUAL-REPAINT-LAYER.md)。本轮尚未推送或部署。
+
+2026-09-16 UI-05/UI-06/UI-10 → M08（协作 M03/M12）：`ALG-LR-MANUAL-TARGET` v1.0.0 将视口局部重绘改为显式选择 UV 目标层。打开面板、生成完成和后台准备不再创建/合并重绘层；应用画笔没有可见同对象 UV 目标时，提示用户新建或选择。新生成仅更换来源，GPU 从目标现有 RGBA 初始化并继续写回原 ID；切层先结束旧笔画，等读回完成再绑定新目标，迟到初始化/提交不得复活删除层。保留名称/角色/顺序/透明度/混合设置及旧项目图层。GPU 像素核、CPU tile/history、Worker、shader、蒙版/法线、投影显示与导出协议不变；新增仅运行时 destinationMode，无 Schema 或数据迁移。详见 [手动局部重绘目标层变更卡](changes/CHG-20260916-MANUAL-REPAINT-LAYER.md)。
+
 2026-09-16 UI-06 → M03（协作 M08）：`ALG-VIEW-INPUT-001` v1.4.0 将平移改为直接中键拖动，兼容原 Alt＋中键；Alt＋左键旋转、Alt＋右键拖动缩放、滚轮及普通绘制/擦除不变。相机、R3F 拾取、画笔悬停/按下、变换工具同时避让中键，保持指针归属和结束清理。透视/正交平移、原导航与拾取回归、类型检查通过。只改输入路由，GPU/CPU/Worker/shader、蒙版/UV/export、保存和 Schema 不变，无数据迁移；回滚四处输入判断及对应测试即可恢复 Alt 必需。此次本地修改，尚未推送或部署。
+
+2026-09-16 M07（协作 M06/M08/M09）：`UV-GUTTER-TOPOLOGY/3` / UV composition 11 修正抗锯齿面积阈值与 GPU UV 像素中心不一致造成的切层白点。CPU/Worker 校准共用像素中心光栅，仅补岛外留边，保持未涂抹内部、原生 RGBA、相机、完整分辨率与 QA；派生缓存键升级，无工程/资产迁移，Command/CAS/ownership/verified assets 不变。真实车辆 A/B、WebGL 三角形与合成回归通过。详见 [白点与留边拓扑](changes/CHG-20260916-UV-GUTTER-PIXEL-CENTER.md)。
 
 2026-09-16 UI-06/M08（协作 M03）：`PROJECTED-SELECTION-DISPLAY/1.0.0` 接入正式 ViewportCanvas，冻结屏幕投影显示不读取模型 UV，保留作者蒙版与原空闲归档时机。数组纹理有界缓存、同视角合批、会话撤销/重做与清空/反选接入；旧 UV-only 状态、消耗选区或超预算时回退原 UV 显示。真实约 200 万三角形车辆涂画/旋转约 60FPS，UV 置零显示字节一致、作者蒙版撤销摘要一致。GPU/CPU 显示历史变更、Worker/远端/持久化/export 不变，无 Schema 迁移；预算、兼容限制与回滚见 [正式投影显示](changes/CHG-20260916-PROJECTED-SELECTION-DISPLAY.md)。下方四槽原型记录仅作历史参考。
 
@@ -24,6 +32,8 @@
 2026-09-16 UI-05/M04：`GEN-PREVIEW-STATUS/1.0.0` 统一预览文字优先级为生成中、准备中、取消/失败、空闲，防止局部重绘空提示与取消/错误文案重叠；重试准备期间隐藏旧终态提示。只改渲染条件，已保存结果、任务取消/提交、GPU/CPU/Worker/shader、投影/UV/export、保存和分辨率不变，无 Schema 或数据迁移。真实 JSX 状态组合与回滚见 [预览文案互斥](changes/CHG-20260916-PREVIEW-STATUS.md)。
 
 2026-09-16 M03（协作 M04/M08/M06/M07）：`GPT-CONTENT-BOUNDS/1.0.0` 以逐行两侧精确边界减少取景/返图扫描，合作入口按 4ms 让出并保留空行取消；加载等待异步 decode，拒绝提示保留可绘制兼容。4K 扫描约 71–80→5–8ms，配对裁切和 native 还原字节一致；不放宽远端比例/透明轮廓错误，不改 framing v1/v2、相机、法线/mask/depth、UV 权重或完整分辨率。GPU/CPU/Worker/shader、QA、持久化/导出及 Command/CAS/ownership/资产保持，无迁移；详见 [返图扫描延迟变更卡](changes/CHG-20260916-FRAMING-BOUNDS-LATENCY.md)。
+
+2026-09-16 M06（协作 M08/M07/M09）：`ALG-PROJ-007` v2.1.14 修复原生局部重绘从 GPU owner 切到 Canvas/PNG/多层合成后的透明边缘黑缝。UV 颜色统一在线性预乘 alpha 空间插值，普通 UV 下层 source-over 只计算一次 alpha；保留作者 RGBA、绘制/擦除/历史、投影权重、完整分辨率、QA、持久化和导出协议。真实 WebGL 硬边/羽化转换及六种材质数值回归通过，无资产迁移；原工程新构建验收待完成。详见 [重绘黑缝变更卡](changes/CHG-20260916-UV-REPAINT-ALPHA-EDGE.md)。
 
 2026-09-16 M07（协作 M06/M03/M08/M09）：`UV-RASTER-LAYER-KEY/1.0.0` 以 owner 私有完整字符串身份减少 Base64 URL 重复序列化；64MiB/2048 条上限，溢出不淘汰而回退原字符串，dispose 释放。全部像素输入、逐层 UV/权重、GPU/CPU/Worker/shader、取消/几何/来源验证、QA、完整分辨率及持久化/导出保持。2K 七层旧/新核 20 次显隐最终字节和覆盖计数一致，无迁移；仍有 GPU 合成/回读耗时，不宣称全流程实时。详见 [返图 UV 缓存键优化](changes/CHG-20260916-UV-RASTER-LAYER-KEY.md)。
 
@@ -101,7 +111,9 @@
 
 2026-09-15 M03：ALG-VIEW-INPUT-001/1.3.2 在鼠标接触前即让 R3F 悬停遵守 Alt 所有权；保留普通 hover 和已锁定拖动。旧实现拾取回归失败、新实现通过，用户实际首帧延迟需继续录制。无像素/持久化迁移，见 [Alt 悬停变更卡](changes/CHG-20260915-ALT-BRUSH-HOVER.md)。
 
-> 文档版本：`2.20.154`
+> 文档版本：`2.20.155`
+
+2026-09-16 UI-16 → M14（协作 M01/M12/M13/M15）：`ASSET-LIFECYCLE-GC` v0.3.4 将 Cloud 存储盘点从全量加载全部 Asset Transfer 与 Project/Revision JSON 改为 PostgreSQL 原生引用提取、键集分页和扫描专属暂存表。工程页默认 8 条、资产页默认 256 条；Node 只接收 assetId 投影和单页资产，候选按页批量落库，完成后原子切换快照，失败清理暂存且保留上一份可用快照。查询使用 45 秒 statement timeout，失败状态不会被自动扫描立即覆盖。`LOCAL-SETTINGS-REFRESH` v1.1.0 删除 3 秒固定请求风暴，改为单飞、前台可见刷新和 30 秒至 5 分钟指数退避。新增 `asset_storage_inventory_scan_references` 暂存表，无 Project/Revision/Asset Transfer Schema 语义变化；`STORAGE-INVENTORY-001/3` 分类规则、Command 幂等、Revision CAS、ownership、verified assets、隔离/删除规则、GPU/CPU/Worker/shader、投影/UV/重绘/export 与分辨率不变。5.6 MB 工程文档回归中 Node 响应小于 1 KiB；详细迁移、内存边界与回滚见 [Cloud 存储盘点有界化变更卡](changes/CHG-20260916-CLOUD-STORAGE-INVENTORY-BOUNDED.md)。
 
 2026-09-15 UI-06 → M03：`ALG-VIEW-SELECT-001/1.0.5` 将常驻线框预热绑定到 renderer/模型生命周期，透视/正交相机替换不重新编译或释放同一辅助材质，避免旧编译完成后释放当前材质。16 次相机替换旧实现启动 17 次编译，新实现一次；71 次显隐及卸载清理保持。GPU 线框/CPU 几何/Worker/shader、捕获/UV/重绘/导出、分辨率和 QA、持久化/Schema 均不变，无迁移。其他工具切换仍有长帧，不宣称全操作无卡顿，验证和回滚见 [线框相机生命周期变更卡](changes/CHG-20260915-WIREFRAME-CAMERA-LIFETIME.md)。
 

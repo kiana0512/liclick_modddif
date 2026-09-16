@@ -56,38 +56,17 @@ assert.match(
   'newest-generation background prewarm must not steal an active eraser session',
 );
 
-assert.match(sessionLayer, /preserveActiveProjection\?: boolean/);
-assert.match(
-  sessionLayer,
-  /if \(!input\.preserveActiveProjection && !sourceOwnsTarget\)/,
-  'passive layer creation must not tear down the visible repaint projection',
-);
-assert.match(sessionLayer, /preserveActiveLayer\?: boolean/);
-assert.match(
-  generatePanel,
-  /ensureLocalRepaintSessionLayer\(undefined,\s*\{[\s\S]*?preserveActiveProjection: true,[\s\S]*?preserveActiveLayer: true/,
-  'starting a generation must retain the visible repaint layer',
-);
-assert.match(
-  generatePanel,
-  /ensureLocalRepaintSessionLayer\(completedGeneration\.id,\s*\{[\s\S]*?preserveActiveProjection: true,[\s\S]*?preserveActiveLayer: true/,
-  'generation writeback must retain the previous repaint layer',
-);
-assert.match(
-  editorPage,
-  /generationId: latestLocalRepaintGeneration\.id,\s*preserveActiveProjection: true,\s*preserveActiveLayer: true/,
-  'idle preparation must not steal renderer ownership',
-);
+assert.doesNotMatch(sessionLayer, /addEmptyLayer|setLayers|updateLayer/,
+  'resolving a destination must not mutate or create layers');
+assert.doesNotMatch(generatePanel, /ensureLocalRepaintSessionLayer/,
+  'opening the panel and generation completion must not create layers');
+assert.match(editorPage, /getSelectedLocalRepaintLayer\(objectId\)/,
+  'explicit activation and idle preparation must use the selected UV row');
 assert.match(editorPage, /resolveLocalRepaintBackgroundPrewarmDisposition\(\{/);
 assert.match(
   backgroundPrewarmPolicy,
   /pendingGenerationId === nextSource\.generationId[\s\S]*?'stage-latest-generation'[\s\S]*?'preserve-current-source'/,
   'only a newly completed result may take renderer ownership from the visible repaint source',
-);
-assert.match(
-  sessionLayer,
-  /!item\.generationId && !item\.imageUrl && !claimedTargetIds\.has\(item\.id\)/,
-  'an empty target already owned by an in-flight generation must not be rebound',
 );
 assert.match(
   viewportCanvas,
@@ -181,7 +160,7 @@ const server = await createServer({
   server: { middlewareMode: true, watch: { ignored: () => true } },
 });
 try {
-  const { ensureLocalRepaintSessionLayer, restoreLocalRepaintLayerSelection } = await server.ssrLoadModule(
+  const { getSelectedLocalRepaintLayer, restoreLocalRepaintLayerSelection } = await server.ssrLoadModule(
     '/src/engine/localRepaint/sessionLayer.ts',
   );
   const { useLayerStore } = await server.ssrLoadModule('/src/stores/layerStore.ts');
@@ -203,15 +182,12 @@ try {
   const projectionRow = { ...uvRow, id: 'hidden-projection', type: 'projected', visible: false };
   for (const selectedId of [uvRow.id, projectionRow.id, undefined]) {
     useLayerStore.setState({ layers: [uvRow, projectionRow], activeProjectedLayerId: selectedId });
-    const first = ensureLocalRepaintSessionLayer({ objectId: 'selection-model', generationId: 'selection-generation' });
-    assert.equal(useLayerStore.getState().activeProjectedLayerId, selectedId,
-      'creating an internal repaint target must preserve UV, hidden projection, and empty selection');
-    assert.notEqual(first.layer.id, uvRow.id);
-    assert.notEqual(first.layer.id, projectionRow.id);
-    const reused = ensureLocalRepaintSessionLayer({ objectId: 'selection-model', generationId: 'selection-generation' });
-    assert.equal(reused.layer.id, first.layer.id);
-    assert.equal(useLayerStore.getState().activeProjectedLayerId, selectedId,
-      'reusing the same generation must not select its hidden target');
+    const before = useLayerStore.getState().layers;
+    const first = getSelectedLocalRepaintLayer('selection-model');
+    assert.equal(first?.id, selectedId === uvRow.id ? uvRow.id : undefined);
+    assert.equal(getSelectedLocalRepaintLayer('selection-model'), first);
+    assert.equal(useLayerStore.getState().layers, before, 'lookup must not allocate a hidden target');
+    assert.equal(useLayerStore.getState().activeProjectedLayerId, selectedId);
     useLayerStore.getState().setLayers(useLayerStore.getState().layers);
     restoreLocalRepaintLayerSelection(selectedId);
     assert.equal(useLayerStore.getState().activeProjectedLayerId, selectedId,

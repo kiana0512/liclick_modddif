@@ -127,6 +127,27 @@ const ORDERED_OVERLAY_ALPHA_GLSL = `
     return clamp(coverage * mix(0.75, 1.0, qualityFade), 0.0, 1.0);
   }
 `;
+// ALG-PROJ-007 v2.1.14: interpolate sparse UV color in premultiplied space.
+// Explicit texel reads also keep live render targets and uploaded PNGs identical,
+// regardless of the sampler state retained when the render target was allocated.
+const UV_OVERLAY_SAMPLE_GLSL = `
+  vec4 sampleUvOverlay(sampler2D map, vec2 uv) {
+    ivec2 size = textureSize(map, 0);
+    vec2 pixel = uv * vec2(size) - 0.5;
+    ivec2 origin = ivec2(floor(pixel));
+    vec2 weight = fract(pixel);
+    ivec2 last = size - 1;
+    vec4 a = texelFetch(map, clamp(origin, ivec2(0), last), 0);
+    vec4 b = texelFetch(map, clamp(origin + ivec2(1, 0), ivec2(0), last), 0);
+    vec4 c = texelFetch(map, clamp(origin + ivec2(0, 1), ivec2(0), last), 0);
+    vec4 d = texelFetch(map, clamp(origin + ivec2(1, 1), ivec2(0), last), 0);
+    vec4 result = mix(
+      mix(vec4(a.rgb * a.a, a.a), vec4(b.rgb * b.a, b.a), weight.x),
+      mix(vec4(c.rgb * c.a, c.a), vec4(d.rgb * d.a, d.a), weight.x), weight.y);
+    if (result.a > 0.0) result.rgb /= result.a;
+    return result;
+  }
+`;
 // Large turns should still receive projection when the capture depth/normal
 // neighbourhood proves that the surface was visible. At grazing angles we
 // require much broader support instead of accepting isolated scan-line samples.
@@ -619,6 +640,8 @@ const fragmentShader = `
 
   ${ORDERED_OVERLAY_ALPHA_GLSL}
 
+  ${UV_OVERLAY_SAMPLE_GLSL}
+
   ${BASE_COLOR_PREVIEW_LIGHT_GLSL}
 
   float computeWhiteMembraneLight(vec3 normal) {
@@ -912,7 +935,7 @@ const fragmentShader = `
     );
     vec4 baseTexel = texture2D(baseMap, vUv);
     float baseRenderedColor = texture2D(baseRenderedColorMaskMap, vUv).r * useBaseRenderedColorMaskMap;
-    vec4 uvOverlayTexel = texture2D(uvOverlayMap, vUv);
+    vec4 uvOverlayTexel = sampleUvOverlay(uvOverlayMap, vUv);
     float uvOverlayRenderedColorWeight = max(
       uvOverlayRenderedColor,
       texture2D(uvOverlayRenderedColorMaskMap, vUv).r * useUvOverlayRenderedColorMaskMap
@@ -983,7 +1006,7 @@ const fragmentShader = `
       uvOverlayDisplayColor,
       uvOverlayAlpha * (1.0 - uvOverlayBelowProjected)
     );
-    vec4 topUvOverlayTexel = texture2D(topUvOverlayMap, vUv);
+    vec4 topUvOverlayTexel = sampleUvOverlay(topUvOverlayMap, vUv);
     topUvOverlayTexel.rgb = applyHsvAdjustments(
       topUvOverlayTexel.rgb,
       topUvOverlayHueShift,
@@ -2100,6 +2123,8 @@ function buildStackFragmentShader(
 
   ${ORDERED_OVERLAY_ALPHA_GLSL}
 
+  ${UV_OVERLAY_SAMPLE_GLSL}
+
   ${BASE_COLOR_PREVIEW_LIGHT_GLSL}
 
   float computeWhiteMembraneLight(vec3 normal) {
@@ -2268,7 +2293,7 @@ function buildStackFragmentShader(
     ${
       features.useUvOverlayMap
         ? `
-    vec4 uvOverlayTexel = texture2D(uvOverlayMap, vUv);
+    vec4 uvOverlayTexel = sampleUvOverlay(uvOverlayMap, vUv);
     uvOverlayTexel.rgb = applyHsvAdjustments(
       uvOverlayTexel.rgb,
       uvOverlayHueShift,
@@ -2280,7 +2305,7 @@ function buildStackFragmentShader(
     ${
       features.useTopUvOverlayMap
         ? `
-    vec4 topUvOverlayTexel = texture2D(topUvOverlayMap, vUv);
+    vec4 topUvOverlayTexel = sampleUvOverlay(topUvOverlayMap, vUv);
     topUvOverlayTexel.rgb = applyHsvAdjustments(
       topUvOverlayTexel.rgb,
       topUvOverlayHueShift,
@@ -5272,6 +5297,7 @@ const uvOverlayFragmentShader = `
   uniform float uvOverlayBelowBase;
   uniform float normalPreviewEnabled;
   uniform float wirePreviewEnabled;
+  ${UV_OVERLAY_SAMPLE_GLSL}
   vec3 computeUvEmptyPreviewColor() {
     float stripe = step(0.5, fract((gl_FragCoord.x - gl_FragCoord.y) * 0.095));
     vec3 hatchColor = mix(vec3(0.012), vec3(0.09), stripe * 0.62);
@@ -5303,12 +5329,12 @@ const uvOverlayFragmentShader = `
     float lambert = mix(computeWhiteMembraneLight(normal), computePreviewLight(normal), hasAnyColor);
     vec4 baseTexel = texture2D(baseMap, vUv);
     float baseRenderedColor = texture2D(baseRenderedColorMaskMap, vUv).r * useBaseRenderedColorMaskMap;
-    vec4 overlayTexel = texture2D(uvOverlayMap, vUv);
+    vec4 overlayTexel = sampleUvOverlay(uvOverlayMap, vUv);
     float overlayRenderedColor = max(
       uvOverlayRenderedColor,
       texture2D(uvOverlayRenderedColorMaskMap, vUv).r * useUvOverlayRenderedColorMaskMap
     );
-    vec4 liveOverlayTexel = texture2D(liveUvOverlayMap, vUv);
+    vec4 liveOverlayTexel = sampleUvOverlay(liveUvOverlayMap, vUv);
     overlayTexel.rgb = applyHsvAdjustments(
       overlayTexel.rgb,
       uvOverlayHueShift,
@@ -5368,14 +5394,14 @@ const uvOverlayFragmentShader = `
       renderedColorExposureCompensation / max(lighting, 0.0001),
       overlayRenderedColor
     );
-    surfaceColor = mix(surfaceColor, overlayPrelightColor, overlayAlpha);
     vec3 litBaseSurface = mix(
       baseColor * lighting,
       baseTexel.rgb * mix(lighting, renderedColorExposureCompensation, baseRenderedColor),
       baseTextureAlpha
     );
     litBaseSurface = mix(baseColor * lighting, litBaseSurface, surfaceMask);
-    surfaceColor = mix(litBaseSurface, surfaceColor * lighting, max(overlayAlpha, showEmptyUvChecker * hasUvOverlay));
+    surfaceColor = mix(litBaseSurface, surfaceColor * lighting, showEmptyUvChecker * hasUvOverlay);
+    surfaceColor = mix(surfaceColor, overlayPrelightColor * lighting, overlayAlpha);
     vec3 displayColor = mix(surfaceColor, liveOverlayDisplayColor, liveOverlayAlpha);
     gl_FragDepthEXT = gl_FragCoord.z;
     float capturedCoverage = 1.0 - (1.0 - baseTextureAlpha * surfaceMask) *

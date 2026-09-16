@@ -26,6 +26,10 @@ export type ProjectSqlConnection = {
 
 export type ProjectSqlDatabase = ProjectSqlConnection & {
   transaction<T>(operation: (connection: ProjectSqlConnection) => Promise<T>): Promise<T>;
+  withStatementTimeout?<T>(
+    timeoutMs: number,
+    operation: (connection: ProjectSqlConnection) => Promise<T>,
+  ): Promise<T>;
   close?(): Promise<void>;
 };
 
@@ -65,6 +69,16 @@ export function createPgProjectSqlDatabase(connectionString: string): ProjectSql
       } finally {
         client.release();
       }
+    },
+    async withStatementTimeout<T>(
+      timeoutMs: number,
+      operation: (connection: ProjectSqlConnection) => Promise<T>,
+    ) {
+      return this.transaction(async (connection) => {
+        const boundedTimeoutMs = Math.max(1, Math.trunc(timeoutMs));
+        await connection.query(`SET LOCAL statement_timeout = '${boundedTimeoutMs}ms'`);
+        return operation(connection);
+      });
     },
     async close() {
       await pool.end();

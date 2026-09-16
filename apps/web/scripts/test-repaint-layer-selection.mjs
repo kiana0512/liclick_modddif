@@ -37,7 +37,9 @@ sceneState.setLocalRepaintProjectionSource = (source) => {
 };
 let encode = async () => 'encoded-mask';
 let liveMask;
-const runRestore = compile(`return (paintTool, activePaintLayer) => { ${editingFlags}\nreturn (${restoreEffect})(); };`, {
+const runRestore = compile(`return (paintTool, activePaintLayer) => {
+  const localRepaintProjectionSource = useSceneStore.getState().localRepaintProjectionSource;
+  ${editingFlags}\nreturn (${restoreEffect})(); };`, {
   useLayerStore: layerStore, useSceneStore: { getState: () => sceneState }, selectedObjectId: 'object',
   isEditableLocalRepaintProjectionLayer: (layer) => Boolean(layer?.camera && layer?.maskUrl),
   isNativeUvRepaintLayer: (layer) => layer.type === 'uv' && layer.id.startsWith('local-repaint-uv-native-v1'),

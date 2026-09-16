@@ -197,15 +197,39 @@ export function StorageManagementDialog({
 
   useEffect(() => {
     if (overview?.status !== 'scanning' || scanning) return;
-    const timer = window.setTimeout(() => {
+    let cancelled = false;
+    let consecutiveFailures = 0;
+    let timer: number | undefined;
+    const poll = () => {
       void getStorageOverview()
-        .then(({ overview: next }) => updateOverview(next))
-        .catch(() => undefined);
-    }, 2_000);
-    return () => window.clearTimeout(timer);
+        .then(({ overview: next }) => {
+          if (cancelled) return;
+          consecutiveFailures = 0;
+          setError('');
+          updateOverview(next);
+          if (next.status === 'scanning') timer = window.setTimeout(poll, 2_000);
+        })
+        .catch((reason) => {
+          if (cancelled) return;
+          consecutiveFailures += 1;
+          setError(
+            reason instanceof Error
+              ? `扫描服务暂时不可用，正在自动重连：${reason.message}`
+              : '扫描服务暂时不可用，正在自动重连。',
+          );
+          timer = window.setTimeout(
+            poll,
+            Math.min(10_000, 2_000 * 2 ** (consecutiveFailures - 1)),
+          );
+        });
+    };
+    timer = window.setTimeout(poll, 2_000);
+    return () => {
+      cancelled = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
   }, [
-    overview?.scanPhase,
-    overview?.scannedItemCount,
+    overview?.scanId,
     overview?.status,
     scanning,
     updateOverview,

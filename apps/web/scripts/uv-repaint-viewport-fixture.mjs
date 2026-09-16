@@ -16,6 +16,55 @@ import {
 } from '../src/engine/projection/liveProjectedCanvasTextureRegistry.ts';
 import { paintHistoryBoundary } from '../src/engine/paint/paintHistoryBoundary.ts';
 import { prepareFbxModelExport } from '../src/engine/export/texturedExportUtils.ts';
+import { RepaintLayerNotice } from '../src/components/localRepaint/RepaintLayerNotice.tsx';
+import { LayersPanel } from '../src/components/panels/LayersPanel.tsx';
+import { createLocalRepaintDrawingLayer } from '../src/engine/localRepaint/createDrawingLayer.ts';
+
+export function setupLayerCreationCheck() {
+  useSceneStore.setState({ paintTool: 'none', localRepaintProjectionSource: undefined });
+  const objectId = useSceneStore.getState().selectedObjectId;
+  const base = useLayerStore.getState().layers[0];
+  useLayerStore.getState().setLayers([
+    { ...base, id: 'legacy-manual', name: '此前手动创建', role: 'local-repaint-draft', imageUrl: '', visible: true },
+    { ...base, id: 'legacy-internal', name: '内部草稿', role: 'local-repaint-draft', generationId: 'old-gen', imageUrl: '' },
+  ]);
+  const host = document.createElement('div');
+  host.id = 'layer-creation-check';
+  host.style.cssText = 'position:fixed;right:0;top:180px;width:300px;z-index:100;background:#181824';
+  document.body.append(host);
+  createRoot(host).render(React.createElement(LayersPanel));
+  const noticeHost = document.createElement('div');
+  document.body.append(noticeHost);
+  const noticeRoot = createRoot(noticeHost);
+  const finish = () => { noticeRoot.unmount(); noticeHost.remove(); };
+  noticeRoot.render(React.createElement(RepaintLayerNotice, {
+    onCreate: () => {
+      paintHistoryBoundary.run(() => {
+        useEditorHistoryStore.getState().capture('新建局部重绘图层');
+        const layer = createLocalRepaintDrawingLayer(objectId);
+        useProjectStore.getState().setProjectLayers(useLayerStore.getState().layers);
+        window.createdLayerId = layer.id;
+      });
+      finish();
+    },
+    onCancel: finish,
+  }));
+  window.reloadCreatedLayers = () => {
+    const saved = useProjectStore.getState().getCurrentProject().layers;
+    useLayerStore.getState().setLayers(JSON.parse(JSON.stringify(saved)));
+  };
+}
+
+export function showLayerDialog() {
+  const host = document.createElement('div');
+  document.body.append(host);
+  const root = createRoot(host);
+  window.dialogResult = undefined;
+  const finish = result => { window.dialogResult = result; root.unmount(); host.remove(); };
+  root.render(React.createElement(RepaintLayerNotice, {
+    onCreate: () => finish('create'), onCancel: () => finish('cancel'),
+  }));
+}
 
 const tick = () => new Promise((resolve) => window.requestAnimationFrame(resolve));
 async function until(test, label) {
@@ -26,7 +75,7 @@ async function until(test, label) {
     await tick();
   }
 }
-export async function setup() {
+export async function setup({ manual = false } = {}) {
   const group = new THREE.Group();
   group.add(
     new THREE.Mesh(
@@ -107,7 +156,9 @@ export async function setup() {
   mask.width = mask.height = 128;
   mask.getContext('2d').fillStyle = '#fff';
   mask.getContext('2d').fillRect(0, 0, 128, 128);
+  const manualLayer = manual ? useLayerStore.getState().addEmptyLayer({ objectId: object.id, name: '手动 A' }) : undefined;
   useSceneStore.getState().setLocalRepaintProjectionSource({
+    ...(manualLayer ? { destinationMode: 'selected-uv', targetLayerId: manualLayer.id, targetLayerType: 'uv', targetLayerName: manualLayer.name } : {}),
     generationId: 'fixture-gen',
     captureId: 'fixture-capture',
     objectId: object.id,
@@ -129,6 +180,51 @@ export async function setup() {
   await tick();
   await tick();
   window.uvFixture = {
+    addManualLayer() {
+      return useLayerStore.getState().addEmptyLayer({ objectId: object.id, name: '手动 B' }).id;
+    },
+    selectManual(id) { useLayerStore.getState().setActiveLayer(id); },
+    removeManual(id) { useLayerStore.getState().deleteLayer(id); },
+    async roundTripManual() {
+      await flushLiveUvCommits();
+      const frozen = useSceneStore.getState().localRepaintProjectionSource;
+      const selected = useLayerStore.getState().activeProjectedLayerId;
+      const rows = await Promise.all(useLayerStore.getState().layers.map(async layer => {
+        if (!layer.imageUrl) return layer;
+        const blob = await getLiveProjectedTextureBlob(layer.imageUrl);
+        const imageUrl = await new Promise((resolve, reject) => {
+          const reader = new window.FileReader();
+          reader.onload = () => resolve(reader.result);
+          reader.onerror = reject;
+          reader.readAsDataURL(blob);
+        });
+        return { ...layer, imageUrl };
+      }));
+      useSceneStore.getState().setPaintTool('none');
+      useSceneStore.getState().setLocalRepaintProjectionSource(undefined);
+      for (let i = 0; i < 12; i++) await tick();
+      useLayerStore.getState().setLayers(JSON.parse(JSON.stringify(rows)));
+      useLayerStore.getState().setActiveLayer(selected);
+      useSceneStore.getState().setLocalRepaintProjectionSource({ ...frozen, autoActivate: true });
+      await until(() => document.body.dataset.localRepaintGpuReadyTarget === selected, 'saved PNG reopen');
+      for (let i = 0; i < 4; i++) await tick();
+    },
+    async manualState() {
+      await flushLiveUvCommits();
+      return useLayerStore.getState().layers.map((layer) => {
+        const canvas = getLiveProjectedCanvasState(layer.imageUrl)?.canvas;
+        const bytes = canvas?.getContext('2d').getImageData(0, 0, canvas.width, canvas.height).data;
+        let hash = 2166136261, red = 0, green = 0, blue = 0;
+        if (bytes) for (let i = 0; i < bytes.length; i += 4) {
+          for (let j = 0; j < 4; j++) hash = Math.imul(hash ^ bytes[i+j], 16777619) >>> 0;
+          if (!bytes[i+3]) continue;
+          if (bytes[i] > 150 && bytes[i+1] < 120) red++;
+          if (bytes[i+1] > 150 && bytes[i] < 120) green++;
+          if (bytes[i+2] > 150 && bytes[i] < 120) blue++;
+        }
+        return { id: layer.id, name: layer.name, type: layer.type, hash, red, green, blue };
+      });
+    },
     navigationState() {
       return { position: runtime.camera.position.toArray(), target: runtime.controls.target.toArray() };
     },

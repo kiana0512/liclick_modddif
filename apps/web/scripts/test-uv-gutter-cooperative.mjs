@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { setInterval, clearInterval, setImmediate } from 'node:timers';
 import * as THREE from 'three';
+import * as pixelRaster from '../src/engine/bake/uvPixelCenterRaster.ts';
 import * as oldDilation from './fixtures/uv-gutter-b3431cb.ts';
 import * as nextDilation from '../src/engine/bake/dilation.ts';
 import * as oldSeams from './fixtures/uv-seam-b3431cb.ts';
@@ -135,7 +136,11 @@ new Function('require', 'exports', ts.transpileModule(await readFile(
   new URL('../src/engine/bake/dilation.ts', import.meta.url), 'utf8'), {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
 }).outputText + '\nexports.boundary = () => gutterBoundary;')(
-  name => { if (name === 'three') return THREE; throw Error(name); }, indexedDilation);
+  name => {
+    if (name === 'three') return THREE;
+    if (name === './uvPixelCenterRaster.ts') return pixelRaster;
+    throw Error(name);
+  }, indexedDilation);
 for (const fragmented of [false, true]) {
   const size = 1024, topology = new Uint8Array(size * size).fill(1);
   for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) {

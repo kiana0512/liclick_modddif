@@ -50,6 +50,8 @@ export type LocalRepaintProjectionSource = {
   targetLayerId?: string;
   targetLayerType?: 'projected' | 'uv';
   targetLayerName?: string;
+  /** Apply to the explicitly selected UV row, never allocate a result row. */
+  destinationMode?: 'selected-uv';
 };
 
 export type PaintMaskSettings = {
