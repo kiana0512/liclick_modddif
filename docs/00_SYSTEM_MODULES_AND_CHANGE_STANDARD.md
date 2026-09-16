@@ -1,5 +1,7 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
+2026-09-16 UI-10/UI-11 → M08（协作 M03）：`ALG-LR-MANUAL-TARGET` v1.1.1 修复黄色“新建图层”按钮将用户层误标为内部 draft、导致图层列表隐藏的问题。显式创建普通 UV 层，与面板新建使用同一 store 动作；旧版无生成/捕获/相机/投影配对的独立 draft 只读显示，不改 ID、像素、顺序或数据库。真正生成绑定/配对的内部 draft 继续隐藏。GPU/CPU/Worker/shader、绘制核、保存/export 协议不变。生产创建回调与真实图层面板点击/重载验证通过；详见 [手动局部重绘目标层变更卡](changes/CHG-20260916-MANUAL-REPAINT-LAYER.md)。
+
 2026-09-16 UI-06/UI-10 → M08：`ALG-LR-MANUAL-TARGET` v1.1.0 将新建绘制层模态框改为现有顶部黄色 warning 提示，显式“新建图层”按钮沿用历史边界、创建/选中/开始绘制流程。关闭不创建，不遮挡编辑器；内容识别填补层（含旧 ID/generation 标记）禁止作为手动绘制目标，并在写回时保护。GPU/CPU 像素核、Worker/shader、分辨率、保存/导出协议不变，无迁移。回滚提示组件及目标保护即可恢复上版交互；详见 [手动局部重绘目标层变更卡](changes/CHG-20260916-MANUAL-REPAINT-LAYER.md)。本轮尚未推送或部署。
 
 2026-09-16 UI-05/UI-06/UI-10 → M08（协作 M03/M12）：`ALG-LR-MANUAL-TARGET` v1.0.0 将视口局部重绘改为显式选择 UV 目标层。打开面板、生成完成和后台准备不再创建/合并重绘层；应用画笔没有可见同对象 UV 目标时，提示用户新建或选择。新生成仅更换来源，GPU 从目标现有 RGBA 初始化并继续写回原 ID；切层先结束旧笔画，等读回完成再绑定新目标，迟到初始化/提交不得复活删除层。保留名称/角色/顺序/透明度/混合设置及旧项目图层。GPU 像素核、CPU tile/history、Worker、shader、蒙版/法线、投影显示与导出协议不变；新增仅运行时 destinationMode，无 Schema 或数据迁移。详见 [手动局部重绘目标层变更卡](changes/CHG-20260916-MANUAL-REPAINT-LAYER.md)。

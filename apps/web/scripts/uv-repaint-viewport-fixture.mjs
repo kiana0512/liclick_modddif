@@ -17,6 +17,43 @@ import {
 import { paintHistoryBoundary } from '../src/engine/paint/paintHistoryBoundary.ts';
 import { prepareFbxModelExport } from '../src/engine/export/texturedExportUtils.ts';
 import { RepaintLayerNotice } from '../src/components/localRepaint/RepaintLayerNotice.tsx';
+import { LayersPanel } from '../src/components/panels/LayersPanel.tsx';
+import { createLocalRepaintDrawingLayer } from '../src/engine/localRepaint/createDrawingLayer.ts';
+
+export function setupLayerCreationCheck() {
+  useSceneStore.setState({ paintTool: 'none', localRepaintProjectionSource: undefined });
+  const objectId = useSceneStore.getState().selectedObjectId;
+  const base = useLayerStore.getState().layers[0];
+  useLayerStore.getState().setLayers([
+    { ...base, id: 'legacy-manual', name: '此前手动创建', role: 'local-repaint-draft', imageUrl: '', visible: true },
+    { ...base, id: 'legacy-internal', name: '内部草稿', role: 'local-repaint-draft', generationId: 'old-gen', imageUrl: '' },
+  ]);
+  const host = document.createElement('div');
+  host.id = 'layer-creation-check';
+  host.style.cssText = 'position:fixed;right:0;top:180px;width:300px;z-index:100;background:#181824';
+  document.body.append(host);
+  createRoot(host).render(React.createElement(LayersPanel));
+  const noticeHost = document.createElement('div');
+  document.body.append(noticeHost);
+  const noticeRoot = createRoot(noticeHost);
+  const finish = () => { noticeRoot.unmount(); noticeHost.remove(); };
+  noticeRoot.render(React.createElement(RepaintLayerNotice, {
+    onCreate: () => {
+      paintHistoryBoundary.run(() => {
+        useEditorHistoryStore.getState().capture('新建局部重绘图层');
+        const layer = createLocalRepaintDrawingLayer(objectId);
+        useProjectStore.getState().setProjectLayers(useLayerStore.getState().layers);
+        window.createdLayerId = layer.id;
+      });
+      finish();
+    },
+    onCancel: finish,
+  }));
+  window.reloadCreatedLayers = () => {
+    const saved = useProjectStore.getState().getCurrentProject().layers;
+    useLayerStore.getState().setLayers(JSON.parse(JSON.stringify(saved)));
+  };
+}
 
 export function showLayerDialog() {
   const host = document.createElement('div');

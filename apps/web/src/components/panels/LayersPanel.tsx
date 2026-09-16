@@ -39,6 +39,7 @@ import {
 import { isFlattenableUvMergeSource } from '@/engine/layers/mergeUvComposition';
 import {
   expandAuthoredLayerVisibilityIds,
+  getUserVisibleLayers,
   isLocalRepaintVisibilityLayer,
 } from '@/engine/layers/layerVisibility';
 import {
@@ -533,15 +534,7 @@ export function LayersPanel({
     y: number;
   }>();
   const visibleLayers = useMemo(
-    () =>
-      layers.filter(
-        (layer) =>
-          (!layer.objectId || layer.objectId === selectedObjectId) &&
-          // This UV row is an implementation target for the renderer. The
-          // actual local repaint result is the visible projected row above it;
-          // exposing both made one user operation look like multiple layers.
-          layer.role !== 'local-repaint-draft',
-      ),
+    () => getUserVisibleLayers(layers, selectedObjectId),
     [layers, selectedObjectId],
   );
   const layerIds = useMemo(() => visibleLayers.map((layer) => layer.id), [visibleLayers]);
