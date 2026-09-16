@@ -1,136 +1,43 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { X } from 'lucide-react';
 import { useWorkspaceLayoutStore } from '@/components/workspace/workspaceLayoutStore';
+import {
+  loadTour,
+  nextTour,
+  placeTourCard,
+  saveTour,
+  tutorials,
+  type TourProgress,
+  type TourRect,
+  type Tutorial,
+} from '@/engine/onboarding/textureOnboarding';
 
 type TextureOnboardingTourProps = {
   projectId: string;
   projectCreatedAt: string;
   forceStart?: boolean;
+  suspended?: boolean;
 };
-
-type TourTarget =
-  | 'import-model'
-  | 'reference-images'
-  | 'generate-texture'
-  | 'multiview-retry'
-  | 'edit-tools'
-  | 'single-view';
-
-type TourStep = {
-  target: TourTarget;
-  eyebrow: string;
-  title: string;
-  body: string;
-  placement: 'right' | 'above';
-  manualAdvance?: boolean;
+const labels: Record<Tutorial, string> = {
+  basic: '基础入门',
+  single: '单视图调整',
+  repaint: '局部重绘',
 };
-
-type TargetRect = {
-  left: number;
-  top: number;
-  right: number;
-  bottom: number;
-  width: number;
-  height: number;
-};
-
-const TOUR_VERSION = 2;
-const LEGACY_TOUR_VERSION = 1;
-const NEW_PROJECT_WINDOW_MS = 30 * 60 * 1000;
-const TARGET_PADDING = 8;
-const CARD_WIDTH = 304;
-const CARD_HEIGHT_ESTIMATE = 174;
-const STEP_COMPLETION_DELAY_MS = 280;
-
-const tourSteps: TourStep[] = [
-  {
-    target: 'import-model',
-    eyebrow: '第一步',
-    title: '导入模型',
-    body: '点击对象栏“+”，或把模型直接拖进视口。',
-    placement: 'right',
-  },
-  {
-    target: 'reference-images',
-    eyebrow: '第二步',
-    title: '添加参考图',
-    body: '单图、多视图任选；只有单图时会自动补全多视图。',
-    placement: 'right',
-  },
-  {
-    target: 'generate-texture',
-    eyebrow: '第三步',
-    title: '生成纹理',
-    body: '点击底部按钮，即可生成纹理贴图。',
-    placement: 'right',
-  },
-  {
-    target: 'multiview-retry',
-    eyebrow: '第四步',
-    title: '添加更多预设视角',
-    body: '纹理效果不满意时，先清空当前图层，再选择其他预设视角重新生成。',
-    placement: 'right',
-    manualAdvance: true,
-  },
-  {
-    target: 'single-view',
-    eyebrow: '第五步',
-    title: '修改单视图',
-    body: '切换到单视图，修改想要调整视角的纹理。',
-    placement: 'right',
-  },
-  {
-    target: 'edit-tools',
-    eyebrow: '第六步',
-    title: '局部重绘',
-    body: '局部修改按蒙版 → 局部生图 → 重绘使用。',
-    placement: 'above',
-  },
-];
-
-function getStorageKey(projectId: string) {
-  return `li3d:texture-onboarding:v${TOUR_VERSION}:${projectId}`;
-}
-
-function getLegacyStorageKey(projectId: string) {
-  return `li3d:texture-onboarding:v${LEGACY_TOUR_VERSION}:${projectId}`;
-}
-
-function readSavedStep(storageKey: string) {
+const buttonClass =
+  'rounded-md border border-white/20 px-3 py-1.5 text-xs hover:bg-white/10 disabled:opacity-40';
+const fallbackStorage = { getItem: () => null, setItem: () => undefined };
+function storage() {
   try {
-    const value = window.localStorage.getItem(storageKey);
-    if (value === 'done') return { done: true, step: 0, exists: true };
-    const parsed = Number(value);
-    return {
-      done: false,
-      step: Number.isInteger(parsed) && parsed >= 0 && parsed < tourSteps.length ? parsed : 0,
-      exists: value !== null,
-    };
+    return window.localStorage;
   } catch {
-    return { done: false, step: 0, exists: false };
+    return fallbackStorage;
   }
 }
-
-function writeSavedStep(storageKey: string, value: number | 'done') {
-  try {
-    window.localStorage.setItem(storageKey, String(value));
-  } catch {
-    // The tour still works for this session when storage is unavailable.
-  }
-}
-
-function clamp(value: number, min: number, max: number) {
-  return Math.min(Math.max(value, min), Math.max(min, max));
-}
-
-function sameRect(left: TargetRect | undefined, right: TargetRect) {
-  if (!left) return false;
-  return (
-    Math.abs(left.left - right.left) < 0.5 &&
-    Math.abs(left.top - right.top) < 0.5 &&
-    Math.abs(left.width - right.width) < 0.5 &&
-    Math.abs(left.height - right.height) < 0.5
+function findTarget(target: string) {
+  return [...document.querySelectorAll<HTMLElement>(`[data-texture-onboarding="${target}"]`)].find(
+    (element) =>
+      element.getClientRects().length > 0 && getComputedStyle(element).visibility !== 'hidden',
   );
 }
 
@@ -138,236 +45,346 @@ export function TextureOnboardingTour({
   projectId,
   projectCreatedAt,
   forceStart = false,
+  suspended = false,
 }: TextureOnboardingTourProps) {
-  const storageKey = useMemo(() => getStorageKey(projectId), [projectId]);
-  const [active, setActive] = useState(false);
-  const [stepIndex, setStepIndex] = useState(0);
-  const [targetRect, setTargetRect] = useState<TargetRect>();
-  const setMode = useWorkspaceLayoutStore((state) => state.setMode);
-  const showPanel = useWorkspaceLayoutStore((state) => state.showPanel);
-  const setPanelCollapsed = useWorkspaceLayoutStore((state) => state.setPanelCollapsed);
-  const step = tourSteps[stepIndex];
-
-  useEffect(() => {
-    let saved = readSavedStep(storageKey);
-    if (!saved.exists) {
-      const legacySaved = readSavedStep(getLegacyStorageKey(projectId));
-      if (legacySaved.exists) {
-        saved = legacySaved.done
-          ? legacySaved
-          : {
-              ...legacySaved,
-              step: legacySaved.step >= 3 ? legacySaved.step + 1 : legacySaved.step,
-            };
-        writeSavedStep(storageKey, saved.done ? 'done' : saved.step);
-      }
-    }
+  const [progress, setProgress] = useState<TourProgress>(() => {
     const forcePreview =
       forceStart || new URLSearchParams(window.location.search).get('textureTour') === '1';
-    const createdAt = Date.parse(projectCreatedAt);
-    const isNewProject =
-      Number.isFinite(createdAt) &&
-      Date.now() - createdAt >= 0 &&
-      Date.now() - createdAt <= NEW_PROJECT_WINDOW_MS;
-    setStepIndex(forcePreview ? 0 : saved.step);
-    setActive(forcePreview || (!saved.done && (isNewProject || saved.exists)));
-  }, [forceStart, projectCreatedAt, projectId, storageKey]);
+    const age = Date.now() - Date.parse(projectCreatedAt);
+    return loadTour(storage(), projectId, forcePreview || (age >= 0 && age <= 30 * 60 * 1000));
+  });
+  const [menu, setMenu] = useState(false);
+  const [collapsed, setCollapsed] = useState(false);
+  const [targetRect, setTargetRect] = useState<TourRect>();
+  const [complete, setComplete] = useState(false);
+  const [cardHeight, setCardHeight] = useState(230);
+  const [, setViewportRevision] = useState(0);
+  const cardRef = useRef<HTMLElement>(null);
+  const launcherRef = useRef<HTMLButtonElement>(null);
+  const [menuPosition, setMenuPosition] = useState({ left: 16, top: 64 });
+  useLayoutEffect(() => {
+    if (!menu) return;
+    const positionMenu = () => {
+      const rect = launcherRef.current?.getBoundingClientRect();
+      if (rect)
+        setMenuPosition({
+          left: Math.max(16, Math.min(rect.left, innerWidth - 296)),
+          top: rect.bottom + 8,
+        });
+    };
+    positionMenu();
+    window.addEventListener('resize', positionMenu);
+    return () => window.removeEventListener('resize', positionMenu);
+  }, [menu]);
+  const mode = useWorkspaceLayoutStore((state) => state.mode);
+  const initialLaunch = useRef(progress.status === 'active');
+  useEffect(() => {
+    if (!initialLaunch.current) return;
+    initialLaunch.current = false;
+    useWorkspaceLayoutStore.getState().setMode('texture');
+  }, []);
+  const step = tutorials[progress.track][progress.step];
+  const active = progress.status === 'active' && !suspended && mode === 'texture';
+  const confirm = 'confirm' in step && step.confirm;
+  const update = useCallback(
+    (value: TourProgress) => {
+      saveTour(storage(), projectId, value);
+      setComplete(false);
+      setTargetRect(undefined);
+      setProgress(value);
+    },
+    [projectId],
+  );
+  useEffect(() => {
+    saveTour(storage(), projectId, progress);
+  }, [projectId, progress]);
+  const pause = useCallback(() => update({ ...progress, status: 'paused' }), [progress, update]);
+  const advance = useCallback(() => update(nextTour(progress)), [progress, update]);
+
+  const reveal = useCallback(() => {
+    const layout = useWorkspaceLayoutStore.getState();
+    layout.setMode('texture');
+    const panel = step.target === 'import-model' ? 'objects' : 'generate';
+    layout.showPanel(panel);
+    layout.setPanelCollapsed(panel, false);
+    // Wait for the expanded panel to mount before locating its operation.
+    let frame = requestAnimationFrame(() => {
+      frame = requestAnimationFrame(() =>
+        findTarget(step.target)?.scrollIntoView({ block: 'nearest', inline: 'nearest' }),
+      );
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [step.target]);
+
+  useEffect(() => {
+    if (active && !collapsed && !menu) return reveal();
+  }, [active, collapsed, menu, reveal]);
 
   useEffect(() => {
     if (!active) return;
-    setMode('texture');
-    showPanel('objects');
-    showPanel('generate');
-    setPanelCollapsed('objects', false);
-    setPanelCollapsed('generate', false);
-  }, [active, setMode, setPanelCollapsed, showPanel]);
-
-  const finish = useCallback(() => {
-    writeSavedStep(storageKey, 'done');
-    setActive(false);
-    setTargetRect(undefined);
-  }, [storageKey]);
-
-  const advance = useCallback(() => {
-    if (stepIndex >= tourSteps.length - 1) {
-      finish();
-      return;
-    }
-    const nextStep = stepIndex + 1;
-    writeSavedStep(storageKey, nextStep);
-    setStepIndex(nextStep);
-  }, [finish, stepIndex, storageKey]);
-
-  useEffect(() => {
-    if (!active || !step) return undefined;
-    let frame = 0;
-    let target: HTMLElement | null = null;
-    let observer: ResizeObserver | undefined;
-    let completionTimer: number | undefined;
-    let completionScheduled = false;
-
-    const scheduleAdvanceWhenCompleted = (element: HTMLElement | null) => {
-      if (
-        step.manualAdvance ||
-        completionScheduled ||
-        element?.dataset.onboardingComplete !== 'true'
-      )
-        return;
-      completionScheduled = true;
-      completionTimer = window.setTimeout(advance, STEP_COMPLETION_DELAY_MS);
-    };
-
-    const updateTarget = () => {
-      target = document.querySelector<HTMLElement>(`[data-texture-onboarding="${step.target}"]`);
-      if (!target) {
-        setTargetRect(undefined);
-        return;
+    let completedAt = 0;
+    const inspect = () => {
+      const target = findTarget(step.target);
+      const rect = target?.getBoundingClientRect();
+      const visible =
+        rect &&
+        rect.width > 0 &&
+        rect.height > 0 &&
+        rect.bottom > 0 &&
+        rect.top < innerHeight &&
+        rect.right > 0 &&
+        rect.left < innerWidth;
+      const next = visible
+        ? {
+            left: Math.max(8, rect.left - 6),
+            top: Math.max(8, rect.top - 6),
+            right: Math.min(innerWidth - 8, rect.right + 6),
+            bottom: Math.min(innerHeight - 8, rect.bottom + 6),
+            width: 0,
+            height: 0,
+          }
+        : undefined;
+      if (next) {
+        next.width = next.right - next.left;
+        next.height = next.bottom - next.top;
       }
-      scheduleAdvanceWhenCompleted(target);
-      const rect = target.getBoundingClientRect();
-      const nextRect: TargetRect = {
-        left: clamp(rect.left - TARGET_PADDING, 8, window.innerWidth - 8),
-        top: clamp(rect.top - TARGET_PADDING, 8, window.innerHeight - 8),
-        right: clamp(rect.right + TARGET_PADDING, 8, window.innerWidth - 8),
-        bottom: clamp(rect.bottom + TARGET_PADDING, 8, window.innerHeight - 8),
-        width: Math.min(rect.width + TARGET_PADDING * 2, window.innerWidth - 16),
-        height: Math.min(rect.height + TARGET_PADDING * 2, window.innerHeight - 16),
-      };
-      nextRect.width = Math.max(1, nextRect.right - nextRect.left);
-      nextRect.height = Math.max(1, nextRect.bottom - nextRect.top);
-      setTargetRect((current) => (sameRect(current, nextRect) ? current : nextRect));
-    };
-
-    const revealTarget = () => {
-      const element = document.querySelector<HTMLElement>(
-        `[data-texture-onboarding="${step.target}"]`,
+      setTargetRect((current) =>
+        JSON.stringify(current) === JSON.stringify(next) ? current : next,
       );
-      element?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
-      updateTarget();
-      if (element && typeof ResizeObserver !== 'undefined') {
-        observer = new ResizeObserver(updateTarget);
-        observer.observe(element);
+      const freshResult =
+        (progress.track === 'single' && progress.step === 1) ||
+        (progress.track === 'repaint' && progress.step === 1);
+      if (freshResult && target && progress.generationBefore === undefined) {
+        update({ ...progress, generationBefore: target.dataset.onboardingGeneration ?? '' });
+        return;
       }
+      const ready = Boolean(
+        visible &&
+        target?.dataset.onboardingComplete === 'true' &&
+        (!freshResult ||
+          (target.dataset.onboardingGeneration &&
+            target.dataset.onboardingGeneration !== progress.generationBefore)) &&
+        (progress.track !== 'single' ||
+          progress.step !== 1 ||
+          target.dataset.onboardingView === 'single'),
+      );
+      setComplete(ready);
+      if (ready && !progress.review && !confirm && !menu && !collapsed) {
+        if (!completedAt) completedAt = Date.now();
+        if (Date.now() - completedAt >= 500) advance();
+      } else completedAt = 0;
     };
-
-    frame = window.requestAnimationFrame(revealTarget);
-    const retryTimer = window.setInterval(updateTarget, 350);
-    window.addEventListener('resize', updateTarget);
-    window.addEventListener('scroll', updateTarget, true);
+    inspect();
+    const timer = window.setInterval(inspect, 350);
+    const resize = () => {
+      setViewportRevision((value) => value + 1);
+      inspect();
+    };
+    window.addEventListener('resize', resize);
+    window.addEventListener('scroll', inspect, true);
     return () => {
-      window.cancelAnimationFrame(frame);
-      window.clearInterval(retryTimer);
-      window.removeEventListener('resize', updateTarget);
-      window.removeEventListener('scroll', updateTarget, true);
-      if (completionTimer !== undefined) window.clearTimeout(completionTimer);
-      observer?.disconnect();
+      clearInterval(timer);
+      window.removeEventListener('resize', resize);
+      window.removeEventListener('scroll', inspect, true);
     };
-  }, [active, advance, step]);
+  }, [active, advance, collapsed, confirm, menu, progress, step.target, update]);
 
   useEffect(() => {
-    if (!active) return undefined;
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') finish();
+    if (!active && !menu) return;
+    const handleKey = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      if (menu) setMenu(false);
+      else pause();
     };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [active, finish]);
+    window.addEventListener('keydown', handleKey);
+    return () => window.removeEventListener('keydown', handleKey);
+  }, [active, menu, pause]);
+  useEffect(() => {
+    const card = cardRef.current;
+    if (!card) return;
+    const observer = new ResizeObserver(() => setCardHeight(card.getBoundingClientRect().height));
+    observer.observe(card);
+    return () => observer.disconnect();
+  }, [active, collapsed, menu]);
 
-  if (!active || !step || typeof document === 'undefined') return null;
-
-  const viewportWidth = window.innerWidth;
-  const viewportHeight = window.innerHeight;
-  const cardWidth = Math.min(CARD_WIDTH, viewportWidth - 32);
-  const cardHeightEstimate = step.manualAdvance
-    ? CARD_HEIGHT_ESTIMATE + 42
-    : CARD_HEIGHT_ESTIMATE;
-  const preferredRight = targetRect && targetRect.right + 18 + cardWidth <= viewportWidth - 16;
-  const preferredAbove = targetRect && targetRect.top >= cardHeightEstimate + 24;
-  const placement =
-    step.placement === 'right' && preferredRight
-      ? 'right'
-      : preferredAbove
-        ? 'above'
-        : targetRect && targetRect.bottom + cardHeightEstimate + 18 <= viewportHeight
-          ? 'below'
-          : 'center';
-  const cardLeft = !targetRect
-    ? (viewportWidth - cardWidth) / 2
-    : placement === 'right'
-      ? targetRect.right + 18
-      : clamp(
-          targetRect.left + targetRect.width / 2 - cardWidth / 2,
-          16,
-          viewportWidth - cardWidth - 16,
-        );
-  const cardTop = !targetRect
-    ? (viewportHeight - cardHeightEstimate) / 2
-    : placement === 'right'
-      ? clamp(
-          targetRect.top + targetRect.height / 2 - cardHeightEstimate / 2,
-          16,
-          viewportHeight - cardHeightEstimate - 16,
-        )
-      : placement === 'above'
-        ? targetRect.top - cardHeightEstimate - 18
-        : placement === 'below'
-          ? targetRect.bottom + 18
-          : (viewportHeight - cardHeightEstimate) / 2;
-  return createPortal(
-    <div className="pointer-events-none fixed inset-0 z-[180] text-white" aria-live="polite">
-      {targetRect ? (
-        <div
-          className="pointer-events-none fixed rounded-xl border-2 border-liclick-pink shadow-[0_0_0_4px_rgba(236,72,189,0.16),0_0_34px_rgba(236,72,189,0.42)]"
-          style={{
-            left: targetRect.left,
-            top: targetRect.top,
-            width: targetRect.width,
-            height: targetRect.height,
-          }}
-        />
-      ) : null}
-
-      <section
-        role="dialog"
-        aria-modal="false"
-        aria-label={`${step.eyebrow}：${step.title}`}
-        tabIndex={0}
-        className="pointer-events-auto fixed z-[182] overflow-hidden rounded-xl border border-white/16 bg-[#17131f]/98 p-4 shadow-[0_24px_80px_rgba(0,0,0,0.66)] backdrop-blur-xl outline-none"
-        style={{ left: cardLeft, top: cardTop, width: cardWidth }}
-      >
-        <div className="absolute inset-x-0 top-0 h-1 bg-gradient-to-r from-liclick-pink to-liclick-purple" />
-        <div className="flex items-start justify-between gap-3">
-          <div>
-            <div className="text-[11px] font-semibold tracking-[0.14em] text-liclick-pink">
-              {step.eyebrow}
-            </div>
-            <h2 className="mt-1 text-lg font-bold text-white">{step.title}</h2>
-          </div>
-          <button
-            type="button"
-            className="grid h-7 w-7 shrink-0 place-items-center rounded-md text-white/48 transition hover:bg-white/10 hover:text-white"
-            aria-label="跳过引导"
-            title="跳过引导"
-            onClick={(event) => {
-              event.stopPropagation();
-              finish();
-            }}
+  const start = (track: Tutorial) => {
+    const generationTarget = document.querySelector<HTMLElement>(
+      `[data-texture-onboarding="${track === 'repaint' ? 'repaint-generate' : 'generate-texture'}"]`,
+    );
+    update({
+      track,
+      step: 0,
+      status: 'active',
+      review: track === 'basic',
+      generationBefore: generationTarget
+        ? (generationTarget.dataset.onboardingGeneration ?? '')
+        : undefined,
+    });
+    setMenu(false);
+    setCollapsed(false);
+    useWorkspaceLayoutStore.getState().setMode('texture');
+  };
+  if (suspended) return null;
+  const width = Math.min(304, innerWidth - 32);
+  const position = placeTourCard(targetRect, width, cardHeight, innerWidth, innerHeight);
+  const compact = collapsed || position.compact;
+  return (
+    <>
+      <div className="pointer-events-auto relative h-16 max-w-[calc(100vw-32px)] text-white">
+        <button
+          ref={launcherRef}
+          className="h-full whitespace-nowrap rounded-lg border border-white/20 bg-black px-4 text-sm font-semibold text-white shadow-xl transition-colors hover:bg-[#161616] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/60"
+          onClick={() => setMenu(!menu)}
+          aria-expanded={menu}
+        >
+          {active
+            ? `新手引导 · ${progress.step + 1}/${tutorials[progress.track].length}`
+            : progress.status === 'done'
+              ? '引导已完成 · 进阶教程'
+              : '新手引导'}
+        </button>
+        {menu && (
+          <section
+            aria-label="新手引导菜单"
+            className="fixed grid w-[280px] max-w-[calc(100vw-32px)] gap-2 overflow-y-auto rounded-xl border border-white/20 bg-[#17131f] p-4 shadow-xl"
+            style={{ ...menuPosition, maxHeight: `calc(100vh - ${menuPosition.top + 16}px)` }}
           >
-            <X className="h-4 w-4" />
-          </button>
-        </div>
-        <p className="mt-2 whitespace-pre-line text-sm leading-6 text-white/72">{step.body}</p>
-        {step.manualAdvance ? (
-          <button
-            type="button"
-            className="mt-3 h-8 w-full rounded-md bg-gradient-to-r from-liclick-pink to-liclick-purple text-sm font-semibold text-white transition hover:brightness-110"
-            onClick={advance}
-          >
-            下一步
-          </button>
-        ) : null}
-      </section>
-    </div>,
-    document.body,
+            {active && (
+              <>
+                <p className="text-sm font-semibold">{step.title}</p>
+                <p className="text-sm text-white/75">{step.body}</p>
+                {(progress.review || confirm) && (
+                  <button
+                    className={buttonClass}
+                    disabled={!complete}
+                    onClick={() => {
+                      advance();
+                      setMenu(false);
+                    }}
+                  >
+                    {confirm ? '已涂抹并确认效果' : '下一步'}
+                  </button>
+                )}
+              </>
+            )}
+            <p className="mb-1 text-sm text-white/70">基础三步：导入模型 → 添加参考图 → 生成纹理</p>
+            {progress.status !== 'done' && (
+              <button
+                className={buttonClass}
+                onClick={() => {
+                  update({ ...progress, status: 'active' });
+                  setMenu(false);
+                  setCollapsed(false);
+                  useWorkspaceLayoutStore.getState().setMode('texture');
+                }}
+              >
+                继续{labels[progress.track]} · 第 {progress.step + 1} 步
+              </button>
+            )}
+            <button className={buttonClass} onClick={() => start('basic')}>
+              重新学习基础入门
+            </button>
+            <button className={buttonClass} onClick={() => start('single')}>
+              选学：单视图调整
+            </button>
+            <button className={buttonClass} onClick={() => start('repaint')}>
+              选学：局部重绘
+            </button>
+            {active && (
+              <button
+                className={buttonClass}
+                onClick={() => {
+                  pause();
+                  setMenu(false);
+                }}
+              >
+                暂停引导
+              </button>
+            )}
+            <button className={buttonClass} onClick={() => setMenu(false)}>
+              收起菜单
+            </button>
+          </section>
+        )}
+      </div>
+      {createPortal(
+        <div className="pointer-events-none fixed inset-0 z-[180] text-white" aria-live="polite">
+          {active && targetRect && !menu && !compact && (
+            <div
+              className="pointer-events-none fixed rounded-xl border-2 border-liclick-pink"
+              style={{
+                left: targetRect.left,
+                top: targetRect.top,
+                width: targetRect.width,
+                height: targetRect.height,
+              }}
+            />
+          )}
+          {active && !compact && !menu && (
+            <section
+              ref={cardRef}
+              role="dialog"
+              aria-modal="false"
+              aria-label={`${labels[progress.track]}：${step.title}`}
+              className="pointer-events-auto fixed rounded-xl border border-white/20 bg-[#17131f] p-4 shadow-xl"
+              style={{
+                left: position.left,
+                top: position.top,
+                width,
+                maxHeight: 'calc(100vh - 96px)',
+                overflowY: 'auto',
+              }}
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <div className="text-xs text-liclick-pink">
+                    {labels[progress.track]} · {progress.step + 1}/
+                    {tutorials[progress.track].length}
+                  </div>
+                  <h2 className="mt-1 text-lg font-bold">{step.title}</h2>
+                </div>
+                <button
+                  className="rounded p-1 hover:bg-white/10"
+                  aria-label="暂停引导"
+                  title="暂停，下次可继续"
+                  onClick={pause}
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+              <p className="mt-2 text-sm leading-6 text-white/75">{step.body}</p>
+              {!targetRect && (
+                <p className="mt-2 text-xs text-white/60">
+                  请展开左侧对应面板；如仍未显示，请先导入并选中模型。
+                </p>
+              )}
+              <div className="mt-3 flex flex-wrap gap-2">
+                {progress.step > 0 && (
+                  <button
+                    className={buttonClass}
+                    onClick={() => update({ ...progress, step: progress.step - 1, review: true })}
+                  >
+                    上一步
+                  </button>
+                )}
+                <button className={buttonClass} onClick={() => setCollapsed(true)}>
+                  收起
+                </button>
+                {(progress.review || confirm) && (
+                  <button className={buttonClass} disabled={!complete} onClick={advance}>
+                    {confirm
+                      ? '已涂抹并确认效果'
+                      : progress.step === tutorials[progress.track].length - 1
+                        ? '完成引导'
+                        : '下一步'}
+                  </button>
+                )}
+              </div>
+            </section>
+          )}
+        </div>,
+        document.body,
+      )}
+    </>
   );
 }

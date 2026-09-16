@@ -159,7 +159,7 @@ async function requestJson<T>(
     if (error instanceof DOMException && error.name === 'AbortError') {
       throw new WorkspaceApiError(408, '本地工作区响应超时，请稍后重试。');
     }
-    throw new WorkspaceApiError(0, '无法连接本地工作区服务，请确认应用服务已启动。');
+    throw new WorkspaceApiError(0, '暂时无法连接云端工作区服务，请稍后重试；这不代表项目已被删除。');
   } finally {
     window.clearTimeout(timeout);
   }
@@ -719,7 +719,7 @@ function saveBlobAssetWithProgress(input: SaveBlobAssetInput) {
           0,
           isCloudBuild
             ? '无法连接云端项目服务，项目资源尚未上传。'
-            : '无法连接本地工作区服务，项目资源尚未上传。',
+            : '暂时无法连接云端工作区服务，项目资源尚未上传，请稍后重试。',
         ),
       );
     };

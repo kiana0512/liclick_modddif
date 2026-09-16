@@ -193,7 +193,8 @@ export class BlenderOrbitControls {
 
     if (this.pointerAction === 'orbit') this.orbit(deltaX, deltaY);
     else if (this.pointerAction === 'pan') this.pan(deltaX, deltaY);
-    else this.zoomByFactor(Math.exp(THREE.MathUtils.clamp((deltaX + deltaY) * 0.005, -4, 4)));
+    // ALG-VIEW-INPUT-001 v1.4.1: right/down zoom in; left/up zoom out.
+    else this.zoomByFactor(Math.exp(THREE.MathUtils.clamp(-(deltaX + deltaY) * 0.005, -4, 4)));
     event.preventDefault();
   };
 

@@ -24,7 +24,11 @@ function connection(client) {
       const result = await client.query(text, params);
       lastQuery = text;
       lastRows = result.rows;
-      if (/ORDER BY updated_at DESC/.test(text)) listedRows = result.rows;
+      if (/ORDER BY projects.updated_at DESC/.test(text)) {
+        listedRows = result.rows;
+        assert.equal((text.match(/jsonb_to_record/g) ?? []).length, 1);
+        assert.doesNotMatch(text, /document_json\s*->/);
+      }
       return {
         rows: result.rows,
         affectedRows: result.affectedRows ?? 0,

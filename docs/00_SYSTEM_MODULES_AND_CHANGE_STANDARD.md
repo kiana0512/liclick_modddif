@@ -2,6 +2,16 @@
 
 2026-09-16 master/release 集成（M15，`CLOUD-DEPLOYMENT` v1.0.0）：将 `master` 提交 `0bb0e6ec` 合入 `release`，保留 release 现有 K8s、Nginx、数据库、对象存储、Ceph 完整性、IDaaS 与资源配置。业务源码采用 master 的视口输入、投影选区显示、局部重绘、生成稳定性和 UV 性能修复；完整分辨率、QA、Project Command、Revision CAS、ownership、verified assets、持久化与导出约束不放宽，无 Schema 或资产迁移。最终 release 合并提交以 `[deploy]` 触发 server/web 同一不可变 SHA 镜像与串行部署；失败时 server/web/db-push 一同回滚到 `35db5bc4` 对应镜像，保留数据库、工程、对象资产和 PVC。线上结果以 release 流水线及 `/api/release`、health、ready 核验为准。
 
+2026-09-16 UI-01：`EDITOR-HEADER-STYLE` v1.0.0 统一贴图工作台项目头、贴图/UV/烘焙切换栏、视角/分辨率工具组和新手引导外框为 64px 高度，内容垂直居中；新手引导改为不透明黑底白字，使用与工作流按钮一致的 text-sm / font-semibold。仅当前编辑器样式调整，不改变其他工作流页、教程进度、导航/绘制/生成、CPU/GPU/Worker/shader、Schema 或保存/导出。无迁移；回滚两个生产组件的样式即可。详见 [新手引导变更卡](changes/CHG-20260916-TEXTURE-ONBOARDING.md)。本轮未推送或部署。
+
+2026-09-16 UI-06 → M03：`ALG-VIEW-INPUT-001` v1.4.1 将 Alt＋右键拖动改为左/上缩小、右/下放大；仅反转拖动缩放输入符号，保持 0.005 灵敏度、滚轮、旋转、中键平移、相机界限与指针归属。透视/正交四方向和双向界限执行真实控制器回归。GPU/CPU/Worker/shader 绘制、捕获、UV/export、保存及 Schema 不变，无迁移；回滚仅恢复拖动符号和对应测试。详见 [Alt 视角导航变更卡](changes/CHG-20260915-ALT-VIEWPORT-NAVIGATION.md)。本轮未推送或部署。
+
+2026-09-16 UI-01：`TEXTURE-ONBOARDING` v3.0.1 将新手引导入口移至顶部工具栏分辨率右侧，活动教程也保留入口；移除“定位操作区”按钮，进入步骤自动展开对应面板并滚动到操作区，保留高亮与暂停/继续。窄屏工具栏可换行。仅 UI 展示调整，v3 本地进度、Project Schema、生成/绘制/CPU/GPU/Worker/shader/持久化和导出不变，无数据迁移；回滚恢复原入口位置与按钮。验证见 [新手引导简化](changes/CHG-20260916-TEXTURE-ONBOARDING.md)。本轮未推送或部署。
+
+2026-09-16 UI-01 → M12/M14：恢复已在 A100 验证但未进入 master 的 `DB-CONNECTION-RECOVERY/1.0.0` 与项目列表单次 JSON 展开修复。515da7f9 发布覆盖了线上独有修复，导致数据库断连再次触发 API 进程未处理 error 退出；本次通过正式 cherry-pick 61338e99 保留新手引导与最新存储更新。空闲/借出连接异常、ROLLBACK 失败保持原错误且丢弃坏连接，禁止重放不确定写入；列表只一次解压 JSON，前端保留缓存并提供重试与正确云端提示。无像素/Project Schema/数据迁移。发布前必须比较实际线上 SHA 与候选提交差异，线上 SHA 非候选祖先时逐项核对独有修复，不能仅以候选 master 健康检查替代。详见 [断连修复与覆盖事故](changes/CHG-20260916-DATABASE-DISCONNECT-RECOVERY.md)。
+
+2026-09-16 UI-01（协作 UI-05/UI-10）：`TEXTURE-ONBOARDING` v3.0.0 将新手主线缩为导入模型、添加参考图、生成纹理三步；单视图调整与局部重绘改为主动选学。关闭/Escape 只暂停，生成期间保留组件与项目进度；返回上一步进入手动复习，旧教程不重复弹出。生成完成需成功结果、回贴提交与可见图层；局部蒙版需真实内容，最后涂抹由用户明确确认。提示卡避让实际操作区，空间不足收起。只读消费现有业务状态，无 GPU/CPU/Worker/shader、生成请求、持久化/导出及 Project Schema 改动。浏览器本地进度使用 v3，保留 v1/v2 以便回滚。验证和范围见 [新手引导简化](changes/CHG-20260916-TEXTURE-ONBOARDING.md)。本轮未推送或部署。
+
 2026-09-16 账号菜单 → M13（纯 UI）：`USER-MENU-PRODUCT-LABEL` v1 在“退出登录”下方以分隔线和次要文字显示固定“版本 0.1”。这是上线前产品展示文案，不读取或覆盖前后端 release manifest、Git SHA、构建时间、package 版本及部署配置；正式上线时再调整文案。无算法、Schema、数据迁移或网络请求增加，移除此静态行即可回滚。尚未推送或部署。
 
 2026-09-16 UI-10 → M08：`PAINT-MASK-BRUSH-DEFAULT` v1.0.1 将视口蒙版加选/减选画笔初始大小从 45 调整为 35；应用重绘画笔仍为 30，普通绘制/橡皮、羽化和用户手动调节不变。只修改初始设置，GPU/CPU/Worker/shader 像素核、分辨率、保存及导出协议不变，无 Schema/数据迁移；回滚默认常量到 45 即可。详见 [画笔默认值记录](changes/CHG-20260912-LOCAL-REPAINT-BRUSH-DEFAULT.md)。本轮尚未推送或部署。
@@ -115,7 +125,7 @@
 
 2026-09-15 M03：ALG-VIEW-INPUT-001/1.3.2 在鼠标接触前即让 R3F 悬停遵守 Alt 所有权；保留普通 hover 和已锁定拖动。旧实现拾取回归失败、新实现通过，用户实际首帧延迟需继续录制。无像素/持久化迁移，见 [Alt 悬停变更卡](changes/CHG-20260915-ALT-BRUSH-HOVER.md)。
 
-> 文档版本：`2.20.157`
+> 文档版本：`2.20.162`
 
 2026-09-16 UI-16 → M14（协作 M01/M12/M13/M15）：`ASSET-LIFECYCLE-GC` v0.4.0 / `STORAGE-INVENTORY-001/4` 将 Cloud 工程/Revision 引用页默认 8→32，并由单条 PostgreSQL CTE 完成分页、assetId 提取与引用 upsert，Node 不再回传引用数组后二次写库；每 256 条文档约 64→8 次数据库往返，保持 45 秒单查询上限与有界 Node 内存。当前 ready scan 引用索引保留到下一快照原子切换，旧 /3 快照自动重扫。Cloud 隔离区改按真实 quarantine 且排除重新可达对象统计；新增用户级幂等持久 purge job/item，以最多 4 并发签名 DeleteObject 后逐项事务删除 transfer、写 deleted_at，404/Pod 重启可安全重放。新增 `asset_storage_purge_jobs/items`，无 Project/Revision/Asset 内容迁移；Command/CAS/ownership/verified 及 GPU/CPU/Worker/shader、投影/UV/重绘/export、分辨率与 QA 不变。回滚前停 purge 并保留任务表，详见 [Cloud 存储盘点与物理清理变更卡](changes/CHG-20260916-CLOUD-STORAGE-INVENTORY-BOUNDED.md)。
 

@@ -148,18 +148,30 @@ try {
     const target=controls.target.clone(), rotation=camera.quaternion.clone();
     input.emit('pointerdown',{button:2,altKey:true,clientX:0,clientY:0});
     input.emit('pointermove',{clientX:50,clientY:0,altKey:false});
-    assert(orthographic ? camera.zoom<1 : camera.position.distanceTo(target)>5, 'Alt+RMB must dolly even after Alt is released');
+    assert(orthographic ? camera.zoom>1 : camera.position.distanceTo(target)<5, 'Alt+RMB rightward drag must zoom in even after Alt is released');
     assert(camera.quaternion.angleTo(rotation)<1e-7); assert(controls.target.equals(target));
     input.emit('pointercancel');
     const position=camera.position.clone(), zoom=camera.zoom;
     input.emit('pointermove',{clientX:80,clientY:50});
     assert(camera.position.equals(position)); assert.equal(camera.zoom,zoom);
+    for (const [dx,dy,zoomIn] of [[-50,0,false],[50,0,true],[0,-50,false],[0,50,true]]) {
+      const beforeSize = orthographic ? camera.zoom : 1/camera.position.distanceTo(target);
+      input.emit('pointerdown',{button:2,altKey:true,clientX:0,clientY:0});
+      input.emit('pointermove',{clientX:dx,clientY:dy});
+      input.emit('pointerup',{button:2});
+      const afterSize = orthographic ? camera.zoom : 1/camera.position.distanceTo(target);
+      assert(zoomIn ? afterSize>beforeSize : afterSize<beforeSize, `Alt+RMB direction (${dx},${dy})`);
+      assert(controls.target.equals(target));
+      assert(camera.quaternion.angleTo(rotation)<1e-7);
+    }
+    for (const direction of [-1,1]) {
+      input.emit('pointerdown',{button:2,altKey:true,clientX:0,clientY:0});
+      for (let i=1;i<=5;i++) input.emit('pointermove',{clientX:direction*i*100000,clientY:direction*i*100000});
+      if(orthographic) assert.equal(camera.zoom,direction>0 ? 10000 : .01);
+      else assert(Math.abs(camera.position.distanceTo(target)-(direction>0 ? controls.minDistance : controls.maxDistance))<1e-8);
+      input.emit('pointerup',{button:2});
+    }
     input.emit('pointerdown',{button:2,altKey:true});
-    input.emit('pointermove',{clientX:-100000,clientY:-100000});
-    input.emit('pointermove',{clientX:-200000,clientY:-200000});
-    input.emit('pointermove',{clientX:-300000,clientY:-300000});
-    if(orthographic) assert(camera.zoom<=10000 && camera.zoom>=.01);
-    else assert(camera.position.distanceTo(target)>=controls.minDistance-1e-8);
     input.emit('lostpointercapture');
     input.emit('pointerdown',{button:0,altKey:true});
     assert(input.hasPointerCapture(1));
