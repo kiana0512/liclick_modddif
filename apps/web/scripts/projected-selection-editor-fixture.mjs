@@ -94,3 +94,4 @@ export async function setup(car = false) {
   await settle();
   return {triangles:group.children.reduce((n,c)=>{c.traverse(m=>{if(m.isMesh&&!m.userData.liclickPaintOverlay)n+=(m.geometry.index?.count??m.geometry.attributes.position.count)/3;});return n;},0),renderer:window.selectionFixture.renderer};
 }
+/* global requestAnimationFrame, fetch, PerformanceObserver, createImageBitmap, structuredClone */
