@@ -4,6 +4,7 @@
   "version": "0.1.3",
   "type": "module",
   "scripts": {
+    "test:manual-repaint-layer": "node scripts/test-manual-repaint-layer.mjs",
     "test:projected-selection-display": "node scripts/test-projected-selection-display.mjs",
     "test:projected-selection-preview": "node scripts/test-projected-selection-preview.mjs",
     "test:inpaint-selection-display": "node scripts/test-inpaint-selection-display.mjs",
