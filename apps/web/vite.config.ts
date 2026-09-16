@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { defineConfig, type Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
 import { shaderTemplateFormatPlugin } from './scripts/shader-template-format.mjs';
+import { shaderChunkPackPlugin } from './scripts/shader-chunk-pack.mjs';
 
 const rootDir = fileURLToPath(new URL('.', import.meta.url));
 
@@ -118,7 +119,7 @@ function eraserPerformanceDiagnosticsPlugin(base: string): Plugin {
 
 const publicBase = normalizeBase(process.env.VITE_PUBLIC_PATH ?? process.env.VITE_BASE_PATH);
 export default defineConfig({
-  plugins: [shaderTemplateFormatPlugin(), cloudPublicAssetsPlugin(), eraserPerformanceDiagnosticsPlugin(publicBase), react()],
+  plugins: [shaderTemplateFormatPlugin(), shaderChunkPackPlugin(), cloudPublicAssetsPlugin(), eraserPerformanceDiagnosticsPlugin(publicBase), react()],
   publicDir: false,
   base: publicBase,
   // THIRD_PARTY_NOTICES.txt is shipped with every cloud artifact. Avoid
@@ -130,6 +131,7 @@ export default defineConfig({
     // names while removing more redundant expressions than the fast dev tool.
     minify: 'terser',
     terserOptions: {
+      ecma: 2020,
       compress: { passes: 4, drop_console: false, unsafe: false },
       mangle: { properties: false },
       // Licenses remain available in the shipped THIRD_PARTY_NOTICES.txt.
@@ -141,10 +143,14 @@ export default defineConfig({
     target: 'es2022',
     rollupOptions: {
       output: {
+        // Keep the presentation-only selection kernel independently cacheable;
+        // do not pull its shared Three dependency out of the shared 3D chunk.
+        onlyExplicitManualChunks: true,
         // Zod is stable vendor code shared by editor and bake routes. Keep it
         // cacheable outside the large viewport snapshot instead of reparsing it
         // as part of that feature chunk on every release.
         manualChunks(id) {
+          if (id.endsWith('/engine/localRepaint/projectedSelectionDisplay.ts')) return 'projected-selection-display';
           // Shared image I/O must not make the lazy silhouette clip import the editor route.
           if (id.endsWith('/engine/localRepaint/imageUtils.ts')) return 'local-repaint-image-utils';
           if (id.includes('/node_modules/.pnpm/zod@')) return 'vendor-zod';

@@ -26,6 +26,14 @@ const scope={exports:{},AbortController:globalThis.AbortController,DOMException,
   },
   encodeRgbaPngBlob:async(width,height,rgba)=>{encodeCalls++;return new Blob([rgba]);},
 };
+const copySource=fs.readFileSync(new URL('../src/engine/bake/projectionBakeSignature.ts',import.meta.url),'utf8');
+const copyCode=ts.transpileModule(copySource.replace(/^import[^\n]+\n/gm,''),{
+  compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS},
+}).outputText;
+const copyScope={exports:{},yieldToBrowserTask:scope.yieldToBrowserTask,
+  waitForViewportInteractionIdle:scope.waitForViewportInteractionIdle,performance:scope.performance,
+  ImageData:class{constructor(data,width,height){Object.assign(this,{data,width,height});}}};
+scope.cloneProjectionBakeImageData=new Function(...Object.keys(copyScope),copyCode+';return exports.cloneProjectionBakeImageData;')(...Object.values(copyScope));
 const api=new Function(...Object.keys(scope),code+';return exports;')(...Object.values(scope));
 const image={width:1,height:1,data:new Uint8ClampedArray([3,0,0,255])};
 const layers=[{imageUrl:'2',opacity:1},{imageUrl:'5',opacity:1}];

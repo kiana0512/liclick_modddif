@@ -311,8 +311,8 @@ function markPreviewUploadStep(step: string) {
   }
 }
 
-function waitForViewportInteractionIdle() {
-  return waitForSharedViewportInteractionIdle(240);
+function waitForViewportInteractionIdle(checkCancelled?: () => void) {
+  return waitForSharedViewportInteractionIdle(240, checkCancelled);
 }
 
 function previewUploadGovernorEnabled() {
@@ -561,13 +561,24 @@ export function releasePreviewTexture(imageUrl: string) {
     .catch(() => undefined);
 }
 
+export type PreviewTextureUploadTimings = {
+  allocationMs: number;
+  stripeWaitMs: number;
+  submitMs: number;
+  interactionWaitMs: number;
+  yieldMs: number;
+  presentationWaitMs: number;
+};
+
 export function uploadPreviewTextureInStripes(
   renderer: THREE.WebGLRenderer,
   texture: THREE.Texture,
   options?: {
     allowWhileInteracting?: boolean;
     shouldCancel?: () => boolean;
+    checkCancelled?: () => void;
     deferVisiblePresentationBarrier?: boolean;
+    timings?: Partial<PreviewTextureUploadTimings>;
   },
 ) {
   if (previewTextureReadyRenderers.get(texture)?.has(renderer)) return Promise.resolve();
@@ -580,7 +591,15 @@ export function uploadPreviewTextureInStripes(
   if (pending) return pending;
   markPreviewTextureUploadStarted(renderer);
   const upload = (async () => {
+    const timings = options?.timings;
+    const timedWait = async <T>(field: keyof PreviewTextureUploadTimings, work: () => Promise<T>) => {
+      if (!timings) return work();
+      const started = performance.now();
+      try { return await work(); }
+      finally { timings[field] = (timings[field] ?? 0) + performance.now() - started; }
+    };
     const throwIfCancelled = () => {
+      options?.checkCancelled?.();
       if (options?.shouldCancel?.()) {
         throw new DOMException('Texture upload superseded.', 'AbortError');
       }
@@ -607,9 +626,11 @@ export function uploadPreviewTextureInStripes(
       readyRenderers.add(renderer);
     };
     if (!imageBitmap && workerBitmapId === undefined) {
-      if (pauseDuringInteraction) await waitForViewportInteractionIdle();
+      if (pauseDuringInteraction) await timedWait('interactionWaitMs', () => waitForViewportInteractionIdle(throwIfCancelled));
       throwIfCancelled();
+      const allocationStartedAt = performance.now();
       renderer.initTexture(texture);
+      if (timings) timings.allocationMs = (timings.allocationMs ?? 0) + performance.now() - allocationStartedAt;
       markReady();
       return;
     }
@@ -640,10 +661,11 @@ export function uploadPreviewTextureInStripes(
     try {
       texture.source.dataReady = false;
       texture.needsUpdate = true;
-      if (pauseDuringInteraction) await waitForViewportInteractionIdle();
+      if (pauseDuringInteraction) await timedWait('interactionWaitMs', () => waitForViewportInteractionIdle(throwIfCancelled));
       throwIfCancelled();
       const allocationStartedAt = performance.now();
       renderer.initTexture(texture);
+      if (timings) timings.allocationMs = (timings.allocationMs ?? 0) + performance.now() - allocationStartedAt;
       document.body.dataset.previewTextureAllocationMs = (
         performance.now() - allocationStartedAt
       ).toFixed(1);
@@ -683,9 +705,9 @@ export function uploadPreviewTextureInStripes(
       void pendingStripe.catch(() => undefined);
       while (y < image.height) {
         throwIfCancelled();
-        if (pauseDuringInteraction) await waitForViewportInteractionIdle();
+        if (pauseDuringInteraction) await timedWait('interactionWaitMs', () => waitForViewportInteractionIdle(throwIfCancelled));
         throwIfCancelled();
-        const prepared: PreparedPreviewStripe = await pendingStripe!;
+        const prepared: PreparedPreviewStripe = await timedWait('stripeWaitMs', () => pendingStripe!);
         activeStripe = prepared.stripe;
         const nextY: number = y + prepared.rowCount;
         // Keep one worker crop in flight while the browser presents. Budget
@@ -705,7 +727,7 @@ export function uploadPreviewTextureInStripes(
         if (usesVisibleRenderer && (!batchVisibleStripes || batchSynchronousMs >= 4 || presentationRequired)) {
           // The visible context must yield through presentation because R3F
           // owns the same GL state and command stream.
-          await waitForBrowserPaint();
+          await timedWait('yieldMs', waitForBrowserPaint);
           batchSynchronousMs = 0;
           presentationRequired = false;
         } else if (
@@ -717,14 +739,14 @@ export function uploadPreviewTextureInStripes(
           // bounded batch, not before every sub-millisecond stripe. This keeps
           // pointer/rAF work responsive without adding hundreds of avoidable
           // macrotask round trips to a 14-view 4K UV generation.
-          await yieldToBrowserTask();
+          await timedWait('yieldMs', yieldToBrowserTask);
           detachedSubmittedSinceYield = 0;
           batchSynchronousMs = 0;
         }
         throwIfCancelled();
         // Input may arrive between the idle check and the next animation frame.
         // Recheck before issuing any GL work so interaction always wins.
-        if (pauseDuringInteraction) await waitForViewportInteractionIdle();
+        if (pauseDuringInteraction) await timedWait('interactionWaitMs', () => waitForViewportInteractionIdle(throwIfCancelled));
         throwIfCancelled();
         const { rowCount, stripe } = prepared;
         if (options?.shouldCancel?.()) {
@@ -781,6 +803,7 @@ export function uploadPreviewTextureInStripes(
             );
           }
           stripeSubmitMs = performance.now() - stripeStartedAt;
+          if (timings) timings.submitMs = (timings.submitMs ?? 0) + stripeSubmitMs;
           batchSynchronousMs += stripeSubmitMs;
           maximumStripeMs = Math.max(maximumStripeMs, stripeSubmitMs);
           stripeCount += 1;
@@ -831,9 +854,9 @@ export function uploadPreviewTextureInStripes(
         context.flush();
         if (options?.deferVisiblePresentationBarrier !== true) {
           for (let frame = 0; frame < 2; frame += 1) {
-            await waitForBrowserPaint();
+            await timedWait('presentationWaitMs', waitForBrowserPaint);
             throwIfCancelled();
-            if (pauseDuringInteraction) await waitForViewportInteractionIdle();
+            if (pauseDuringInteraction) await timedWait('interactionWaitMs', () => waitForViewportInteractionIdle(throwIfCancelled));
             throwIfCancelled();
           }
         }

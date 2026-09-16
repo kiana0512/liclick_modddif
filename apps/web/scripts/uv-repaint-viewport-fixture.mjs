@@ -129,6 +129,19 @@ export async function setup() {
   await tick();
   await tick();
   window.uvFixture = {
+    navigationState() {
+      return { position: runtime.camera.position.toArray(), target: runtime.controls.target.toArray() };
+    },
+    resetNavigation() {
+      runtime.camera.position.set(0, 0, 5);
+      runtime.camera.up.set(0, 1, 0);
+      runtime.controls.target.set(0, 0, 0);
+      runtime.controls.update();
+    },
+    setSurfaceTilt(angle) {
+      group.children.find(child => child.isMesh).rotation.y = angle;
+      group.updateMatrixWorld(true);
+    },
     async nextLayer(generationId = 'fixture-gen-second', color = '#22bb44') {
       const frozen = useSceneStore.getState().localRepaintProjectionSource;
       useSceneStore.getState().setPaintTool('none');

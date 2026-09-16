@@ -55,7 +55,99 @@ fixture += String.raw`
     }throw Error('Not settled '+count+' '+JSON.stringify(state()));
   };
   await settled(5);
-  window.toggleFixture={state,pixels,set,settled,close:()=>root.unmount(), async mergedBoundary() {
+  window.toggleFixture={state,pixels,set,settled,close:()=>root.unmount(), async stackedNativeUvRepaintsAboveMergedUv() {
+    const image=(color,side)=>{
+      const canvas=document.createElement('canvas');canvas.width=canvas.height=128;
+      const context=canvas.getContext('2d');context.clearRect(0,0,128,128);
+      context.fillStyle=color;
+      if(side==='left')context.fillRect(0,0,64,128);
+      else if(side==='right')context.fillRect(64,0,64,128);
+      else context.fillRect(0,0,128,128);
+      return canvas.toDataURL();
+    };
+    const merged={id:'fixture-native-merged-underlay',objectId:object.id,name:'Merged UV',type:'uv',role:'merged-uv',
+      imageUrl:image('#21366f'),order:2,visible:true,opacity:1,blendMode:'normal'};
+    const old={id:'local-repaint-uv-native-v1-fixture-old',objectId:object.id,name:'Old native repaint',type:'uv',
+      role:'local-repaint-overlay',imageUrl:image('#e33b35','left'),order:1,visible:true,opacity:1,blendMode:'normal'};
+    const latest={...old,id:'local-repaint-uv-native-v1-fixture-latest',name:'Latest native repaint',
+      imageUrl:image('#2cce62','right'),order:0};
+    useLayerStore.setState({layers:[merged]});
+    await until(()=>mesh.material.name==='LiclickUvOverlayPreview' &&
+      mesh.material.uniforms?.uvOverlayOpacity?.value>0,'merged UV base');
+    useLayerStore.setState({layers:[old,merged]});
+    for(let i=0;i<60;i++)await tick();
+    useLayerStore.setState({layers:[latest,old,merged]});
+    await until(()=>document.body.dataset.uvCompositeStatus!=='composing' &&
+      document.body.dataset.textureRestoreUvReady==='1','two native repaint rows');
+    for(let i=0;i<60;i++)await tick();
+    const output=pixels();
+    const average=(input,start,end,channel)=>{
+      let total=0,count=0;
+      for(let y=8;y<56;y++)for(let x=start;x<end;x++){
+        total+=input[(y*64+x)*4+channel];count++;
+      }
+      return total/count;
+    };
+    const report={leftRed:average(output,8,30,0),leftGreen:average(output,8,30,1),
+      rightRed:average(output,34,56,0),rightGreen:average(output,34,56,1),
+      compositeStatus:document.body.dataset.uvCompositeStatus};
+    if(!(report.leftRed>report.leftGreen*1.35))throw Error('Older native UV repaint disappeared above merged UV: '+JSON.stringify(report));
+    if(!(report.rightGreen>report.rightRed*1.35))throw Error('Latest native UV repaint disappeared above merged UV: '+JSON.stringify(report));
+    useLayerStore.setState({layers:[latest,{...old,visible:false},merged]});
+    await until(()=>pixels().some((value,index)=>value!==output[index]),'hide older native repaint');
+    const oldHidden=pixels();
+    if(!(average(oldHidden,8,30,0)<report.leftRed-40))throw Error('Older native UV repaint eye did not hide its pixels');
+    useLayerStore.setState({layers:[latest,old,merged]});
+    for(let i=0;i<120;i++)await tick();
+    const restored=pixels();
+    const restoredReport={leftRed:average(restored,8,30,0),leftGreen:average(restored,8,30,1),
+      rightRed:average(restored,34,56,0),rightGreen:average(restored,34,56,1)};
+    if(!(restoredReport.leftRed>restoredReport.leftGreen*1.35 && restoredReport.rightGreen>restoredReport.rightRed*1.35))
+      throw Error('Native UV repaint eye round trip did not restore both rows: '+JSON.stringify(restoredReport));
+    useLayerStore.setState({layers:original});await settled(5);
+    return report;
+  }, async stackedRepaintsAboveMergedUv() {
+    const image=(color,side)=>{
+      const canvas=document.createElement('canvas');canvas.width=canvas.height=128;
+      const context=canvas.getContext('2d');
+      if(side){
+        context.fillStyle='#000';context.fillRect(0,0,128,128);
+        context.fillStyle='#fff';context.fillRect(side==='left'?0:64,0,64,128);
+      }else{
+        context.fillStyle=color;context.fillRect(0,0,128,128);
+      }
+      return canvas.toDataURL();
+    };
+    const snapshot=serializeCamera(runtime.camera,1,new THREE.Vector3());
+    const merged={id:'fixture-merged-underlay',objectId:object.id,name:'Merged UV',type:'uv',role:'merged-uv',
+      imageUrl:image('#21366f'),order:2,visible:true,opacity:1,blendMode:'normal'};
+    const old={id:'local-repaint-fixture-old',objectId:object.id,name:'Old repaint',type:'projected',
+      imageUrl:image('#e33b35'),maskUrl:image('', 'left'),camera:snapshot,order:1,visible:true,opacity:1,
+      strength:1,blendMode:'normal',ignoreSourceAlpha:true,projectionVisibilityPolicy:'surface-locked-v1'};
+    const latest={...old,id:'local-repaint-fixture-latest',name:'Latest repaint',
+      imageUrl:image('#2cce62'),maskUrl:image('', 'right'),order:0};
+    const revision=document.body.dataset.residentUvProjectionRevision;
+    useLayerStore.setState({layers:[latest,old,merged]});
+    await until(()=>document.body.dataset.residentUvProjectionRevision!==revision &&
+      mesh.material.name==='LiclickUvOverlayPreview' &&
+      state().bindings?.length===2 && state().bindings.includes(old.id) && state().bindings.includes(latest.id),
+      'two local repaints above merged UV');
+    await tick();await tick();
+    const output=pixels();
+    const average=(start,end,channel)=>{
+      let total=0,count=0;
+      for(let y=8;y<56;y++)for(let x=start;x<end;x++){
+        total+=output[(y*64+x)*4+channel];count++;
+      }
+      return total/count;
+    };
+    const report={leftRed:average(8,30,0),leftGreen:average(8,30,1),
+      rightRed:average(34,56,0),rightGreen:average(34,56,1),bindings:state().bindings};
+    if(!(report.leftRed>report.leftGreen*1.35))throw Error('Older local repaint disappeared above merged UV: '+JSON.stringify(report));
+    if(!(report.rightGreen>report.rightRed*1.35))throw Error('Latest local repaint disappeared above merged UV: '+JSON.stringify(report));
+    useLayerStore.setState({layers:original});await settled(5);
+    return report;
+  }, async mergedBoundary() {
     const before=pixels();
     const canvas=document.createElement('canvas');canvas.width=canvas.height=16;
     const context=canvas.getContext('2d');context.fillStyle='#00ffdd';context.fillRect(0,0,16,16);
@@ -246,6 +338,8 @@ try {
   );
   const label = process.argv[2] ?? 'resident-uv';
   await page.screenshot({ path: tmpdir() + '/li3d-toggle-' + label + '.png' });
+  const stackedNativeUvRepaints = await page.evaluate(() => window.toggleFixture.stackedNativeUvRepaintsAboveMergedUv());
+  const stackedRepaints = await page.evaluate(() => window.toggleFixture.stackedRepaintsAboveMergedUv());
   await page.evaluate(() => window.toggleFixture.mergedBoundary());
   await page.evaluate(() => window.toggleFixture.geometryModes());
   const compressed = testResolution === '4K' ? await page.evaluate(() => window.toggleFixture.compressedRoundTrip()) : undefined;
@@ -257,6 +351,8 @@ try {
     resolution: testResolution,
     errors,
     rows,
+    stackedNativeUvRepaints,
+    stackedRepaints,
     interaction,
     compressed,
     islandEdge,

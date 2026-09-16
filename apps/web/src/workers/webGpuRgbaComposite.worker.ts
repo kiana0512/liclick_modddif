@@ -64,6 +64,7 @@ type CompositeResources = {
   underlay: GpuBuffer;
   params: GpuBuffer;
   readback: GpuBuffer;
+  underlaySource?: WeakRef<ArrayBuffer>;
 };
 
 type CompositeRequest = {
@@ -72,6 +73,7 @@ type CompositeRequest = {
   front: ArrayBuffer;
   underlay?: ArrayBuffer;
   underlayUrl?: string;
+  underlayCacheKey?: string;
   width?: number;
   height?: number;
   opacity: number;
@@ -145,6 +147,12 @@ let devicePromise: Promise<GpuDevice | undefined> | undefined;
 let resources: CompositeResources | undefined;
 let workQueue: Promise<void> = Promise.resolve();
 const cancelledRequestIds = new Set<number>();
+const fetchControllers = new Map<number, AbortController>();
+// UV-UNDERLAY-DECODE/1.0.1: byte-verified readonly 4K RGBA; obsolete fetches abort.
+// Re-fetch before comparing, so mutable URLs and ownership failures cannot reuse
+// stale bytes. Source-over consumes its front buffer and therefore receives a copy.
+let underlayCache: { key: string; pixels: ArrayBuffer } | undefined;
+let underlayCacheGeneration = 0;
 
 const shaderSource = `
   struct Params {
@@ -333,7 +341,7 @@ async function computeInBudgetedChunks(
     if (interactive) await device.queue.onSubmittedWorkDone();
     if (firstPixel < totalPixels) await yieldGpuBudget();
   }
-  await device.queue.onSubmittedWorkDone();
+  if (interactive) await device.queue.onSubmittedWorkDone();
 }
 
 async function copyToReadbackInBudgetedChunks(
@@ -353,7 +361,8 @@ async function copyToReadbackInBudgetedChunks(
     const encoder = device.createCommandEncoder();
     encoder.copyBufferToBuffer(target.front, offset, target.readback, offset, size);
     device.queue.submit([encoder.finish()]);
-    await device.queue.onSubmittedWorkDone();
+    // mapAsync waits for prior uses of this buffer on the queue. A separate
+    // queue-wide completion roundtrip before every mapping is redundant.
     await target.readback.mapAsync(GPU_MAP_MODE_READ, offset, size);
     outputBytes.set(new Uint8Array(target.readback.getMappedRange(offset, size)), offset);
     target.readback.unmap();
@@ -363,10 +372,11 @@ async function copyToReadbackInBudgetedChunks(
   return output;
 }
 
-function compositeOnCpu(frontBuffer: ArrayBuffer, underlayBuffer: ArrayBuffer, opacity: number, frontOpacity = 1) {
+function compositeOnCpu(frontBuffer: ArrayBuffer, underlayBuffer: ArrayBuffer, opacity: number, frontOpacity = 1,
+  firstOffset = 0, endOffset = frontBuffer.byteLength) {
   const front = new Uint8ClampedArray(frontBuffer);
   const underlay = new Uint8ClampedArray(underlayBuffer);
-  for (let offset = 0; offset < front.length; offset += 4) {
+  for (let offset = firstOffset; offset < endOffset; offset += 4) {
     const frontAlpha = (front[offset + 3] / 255) * frontOpacity;
     const underlayAlpha = (underlay[offset + 3] / 255) * opacity;
     const visibleUnderlayAlpha = underlayAlpha * (1 - frontAlpha);
@@ -399,54 +409,37 @@ async function compositeOnCpuBudgeted(
   opacity: number,
   request: NormalizedCompositeRequest,
 ) {
-  const front = new Uint8ClampedArray(frontBuffer);
-  const underlay = new Uint8ClampedArray(underlayBuffer);
   // A quarter mebibyte of RGBA per slice keeps this worker from monopolising a
   // CPU core while the viewport is being orbited. The arithmetic is deliberately
   // byte-for-byte identical to the canonical CPU composite above.
   const sliceBytes = 256 * 1024;
-  for (let firstOffset = 0; firstOffset < front.length; firstOffset += sliceBytes) {
+  for (let firstOffset = 0; firstOffset < frontBuffer.byteLength; firstOffset += sliceBytes) {
     throwIfCancelled(request);
-    const endOffset = Math.min(front.length, firstOffset + sliceBytes);
-    for (let offset = firstOffset; offset < endOffset; offset += 4) {
-      const frontAlpha = (front[offset + 3] / 255) * (request.frontOpacity ?? 1);
-      const underlayAlpha = (underlay[offset + 3] / 255) * opacity;
-      const visibleUnderlayAlpha = underlayAlpha * (1 - frontAlpha);
-      const outputAlpha = frontAlpha + visibleUnderlayAlpha;
-      if (outputAlpha <= 0) {
-        if (front[offset] === 0 && front[offset + 1] === 0 && front[offset + 2] === 0) {
-          front[offset] = underlay[offset];
-          front[offset + 1] = underlay[offset + 1];
-          front[offset + 2] = underlay[offset + 2];
-        }
-        continue;
-      }
-      front[offset] = Math.round(
-        (front[offset] * frontAlpha + underlay[offset] * visibleUnderlayAlpha) / outputAlpha,
-      );
-      front[offset + 1] = Math.round(
-        (front[offset + 1] * frontAlpha + underlay[offset + 1] * visibleUnderlayAlpha) /
-          outputAlpha,
-      );
-      front[offset + 2] = Math.round(
-        (front[offset + 2] * frontAlpha + underlay[offset + 2] * visibleUnderlayAlpha) /
-          outputAlpha,
-      );
-      front[offset + 3] = Math.round(outputAlpha * 255);
-    }
-    if (endOffset < front.length) await yieldGpuBudget();
+    const endOffset = Math.min(frontBuffer.byteLength, firstOffset + sliceBytes);
+    compositeOnCpu(frontBuffer,underlayBuffer,opacity,request.frontOpacity,firstOffset,endOffset);
+    if (endOffset < frontBuffer.byteLength) await yieldGpuBudget();
   }
   return frontBuffer;
 }
 
-async function loadUnderlayInWorker(request: CompositeRequest) {
+async function loadUnderlayInWorker(request: CompositeRequest, generation = underlayCacheGeneration) {
   if (request.underlay) return request.underlay;
   if (!request.underlayUrl || !request.width || !request.height) {
     throw new Error('Composite underlay source is missing.');
   }
-  const response = await fetch(request.underlayUrl);
+  const response = await fetch(request.underlayUrl, { signal: fetchControllers.get(request.id)?.signal });
   if (!response.ok) throw new Error(`Could not load UV underlay (${response.status}).`);
-  const bitmap = await createImageBitmap(await response.blob());
+  throwIfCancelled(request);
+  const blob=await response.blob();
+  let key: string | undefined;
+  if(request.underlayUrl.length<=4096 && request.width*request.height*4<=64*1024*1024 &&
+    blob.size<=64*1024*1024 && typeof crypto!=='undefined' && crypto.subtle) {
+    const digest=new Uint8Array(await crypto.subtle.digest('SHA-256',await blob.arrayBuffer()));
+    key=JSON.stringify([request.underlayCacheKey,request.underlayUrl,request.width,request.height,blob.type,Array.from(digest)]);
+    throwIfCancelled(request);
+    if(underlayCache?.key===key) return request.sourceOver ? underlayCache.pixels.slice(0) : underlayCache.pixels;
+  }
+  const bitmap = await createImageBitmap(blob);
   try {
     const rowsPerSlice = Math.min(request.height, Math.max(1, Math.floor((1 * 1024 * 1024) / (request.width * 4))));
     const canvas = new OffscreenCanvas(request.width, rowsPerSlice);
@@ -454,6 +447,7 @@ async function loadUnderlayInWorker(request: CompositeRequest) {
     if (!context) throw new Error('Could not create UV underlay worker canvas.');
     const output = new Uint8ClampedArray(request.width * request.height * 4);
     for (let y = 0; y < request.height; y += rowsPerSlice) {
+      throwIfCancelled(request);
       const rowCount = Math.min(rowsPerSlice, request.height - y);
       context.clearRect(0, 0, request.width, rowsPerSlice);
       // Rasterize only the rows consumed this turn. A single full 4K drawImage
@@ -476,6 +470,11 @@ async function loadUnderlayInWorker(request: CompositeRequest) {
       if (y + rowCount < request.height) {
         await wait(request.interactive ? INTERACTIVE_GPU_PAUSE_MS : 0);
       }
+    }
+    throwIfCancelled(request);
+    if(key && generation===underlayCacheGeneration) {
+      underlayCache={key,pixels:output.buffer};
+      return request.sourceOver ? output.buffer.slice(0) : output.buffer;
     }
     return output.buffer;
   } finally {
@@ -536,7 +535,12 @@ async function runComposite(rawRequest: CompositeRequest) {
     const target = getResources(device, request.front.byteLength);
     const uploadStartedAt = performance.now();
     await uploadInBudgetedChunks(device, target.front, request.front, request);
-    await uploadInBudgetedChunks(device, target.underlay, request.underlay, request);
+    const reusedUnderlay = target.underlaySource?.deref() === request.underlay;
+    if (!reusedUnderlay) {
+      target.underlaySource = undefined;
+      await uploadInBudgetedChunks(device, target.underlay, request.underlay, request);
+      if (underlayCache?.pixels === request.underlay) target.underlaySource = new WeakRef(request.underlay);
+    }
     const uploadMs = performance.now() - uploadStartedAt;
     const computeStartedAt = performance.now();
     await computeInBudgetedChunks(device, target, request.opacity, request);
@@ -551,7 +555,7 @@ async function runComposite(rawRequest: CompositeRequest) {
         computeMs,
         readbackMs,
         totalMs: performance.now() - startedAt,
-        bytesTransferred: request.front.byteLength * 3,
+        bytesTransferred: request.front.byteLength * (reusedUnderlay ? 2 : 3),
         chunkBytes: activeChunkBytes(request),
         backend: 'webgpu-worker' as const,
       },
@@ -624,18 +628,22 @@ scope.onmessage = (event) => {
   }
   if (request.type === 'cancel') {
     cancelledRequestIds.add(request.id);
+    fetchControllers.get(request.id)?.abort();
     return;
   }
   if (request.type === 'release') {
+    underlayCache=undefined;underlayCacheGeneration++;
     destroyResources();
     return;
   }
+  const generation = underlayCacheGeneration;
   workQueue = workQueue.then(async () => {
     try {
       throwIfCancelled(request);
+      fetchControllers.set(request.id, new AbortController());
       const normalizedRequest: NormalizedCompositeRequest = {
         ...request,
-        underlay: await loadUnderlayInWorker(request),
+        underlay: await loadUnderlayInWorker(request, generation),
       };
       if (request.sourceOver) {
         [normalizedRequest.front, normalizedRequest.underlay] = [normalizedRequest.underlay, normalizedRequest.front];
@@ -698,6 +706,7 @@ scope.onmessage = (event) => {
       };
       scope.postMessage(response);
     } finally {
+      fetchControllers.delete(request.id);
       cancelledRequestIds.delete(request.id);
     }
   });

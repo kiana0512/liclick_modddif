@@ -22,7 +22,7 @@ assert.ok(dispatch);
 const dispatchJs = ts.transpileModule(`const result = ${dispatch};`, {
   compilerOptions: { target: ts.ScriptTarget.ES2022 },
 }).outputText;
-for (const mode of ['capture-mask', 'generated-display']) {
+for (const mode of ['capture-mask', 'generated-display', 'source-alpha']) {
   const calls = [];
   const run = new Function('previewProcessingMode', 'sourceUrl', 'capturePreviewMaskUrl',
     'previewProcessingDepthUrl', 'previewRequest', 'createCaptureMaskedPreview', 'createGeneratedDisplayPreview',
@@ -32,7 +32,7 @@ for (const mode of ['capture-mask', 'generated-display']) {
     async (...args) => { calls.push(['mask', ...args]); return 'masked'; },
     async (...args) => { calls.push(['depth', ...args]); return { fittedUrl: 'fitted' }; });
   assert.equal(result, mode === 'capture-mask' ? 'masked' : 'fitted');
-  assert.deepEqual(calls, [mode === 'capture-mask' ? ['mask', 'source', 'mask', previewRequest] : ['depth', 'source', 'depth', previewRequest]]);
+  assert.deepEqual(calls, [mode === 'capture-mask' ? ['mask', 'source', 'mask', previewRequest] : ['depth', 'source', 'depth', previewRequest, mode === 'source-alpha']]);
 }
 
 class TestImageData {

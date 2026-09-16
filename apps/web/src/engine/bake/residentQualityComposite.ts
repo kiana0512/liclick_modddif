@@ -4,6 +4,7 @@ import type { QualityBlendWorkerResult } from './qualityBlendWorker';
 import { readRenderTargetPixelsInStripes } from './gpuReadbackStripes';
 import { yieldToBrowserTask } from '@/utils/browserScheduling';
 import { isLegacyUvBakeDiagnosticEnabled } from './uvBakeDebugControls';
+import { withUvRenderTarget, type UvContributionTiles } from './uvContributionTiles';
 
 const approvals=new WeakMap<THREE.WebGLRenderer,Map<boolean,boolean>>();
 export function residentQualityPolicy(renderer:THREE.WebGLRenderer,preserveAlpha:boolean) {
@@ -19,17 +20,21 @@ export function residentQualityPolicy(renderer:THREE.WebGLRenderer,preserveAlpha
   return {preserveAlpha,retainRasters:modes.get(preserveAlpha)!==true || params.get('perfQualityGpuAb')==='1'};
 }
 
-export function verifyResidentQuality(renderer:THREE.WebGLRenderer,preserveAlpha:boolean,
+export async function verifyResidentQuality(renderer:THREE.WebGLRenderer,preserveAlpha:boolean,
   candidate:QualityBlendWorkerResult,reference:QualityBlendWorkerResult) {
   const a=candidate.imageData.data,b=reference.imageData.data;
+  const modes=approvals.get(renderer);
   let byteMismatches=0,alphaByteMismatches=0,maximumByteDelta=0;
+  let started=performance.now();
   for(let i=0;i<a.length;i++) {
     const delta=Math.abs(a[i]-b[i]);
     if(delta) {byteMismatches++;maximumByteDelta=Math.max(maximumByteDelta,delta);if(i%4===3)alphaByteMismatches++;}
+    if(i%262144===0 && performance.now()-started>=4) {await yieldToBrowserTask();started=performance.now();}
   }
   const mismatchRatio=byteMismatches/a.length;
   const accepted=a.length===b.length && alphaByteMismatches===0 && maximumByteDelta<=1 && mismatchRatio<=0.00001;
-  approvals.get(renderer)?.set(preserveAlpha,accepted);
+  if(approvals.get(renderer)!==modes) throw new DOMException('UV validation context changed.', 'AbortError');
+  modes?.set(preserveAlpha,accepted);
   if(!accepted && !isLegacyUvBakeDiagnosticEnabled()) {
     throw new Error(`GPU UV quality validation failed (${byteMismatches} differing bytes). Legacy bake is disabled.`);
   }
@@ -64,12 +69,21 @@ const accumulateShader = `${common}
 uniform sampler2D layerColor;
 uniform sampler2D layerQuality;
 uniform bool qualityIsRed;
+uniform usampler2D contributionIndex;
+uniform bool tiledContribution;
+uniform int contributionColumns;
 uniform sampler2D unpremultiplyTable;
 layout(location=0) out uvec4 result;
 void main() {
   ivec2 p = ivec2(gl_FragCoord.xy);
   result = texelFetch(previousCandidates, p, 0);
   uvec4 selected = result;
+  if(tiledContribution) {
+    uint address=texelFetch(contributionIndex,p/64,0).r;
+    if(address==0u)return;
+    int n=int(address)-1;
+    p=ivec2(n%contributionColumns,n/contributionColumns)*64+p%64;
+  }
   uvec4 color = uvec4(floor(texelFetch(layerColor, p, 0) * 255.0 + 0.5));
   if (color.a>0u) { result.w+=0x01000000u; selected.w=result.w; }
   if (color.a <= 5u) return;
@@ -191,7 +205,7 @@ void main() {
  * Ranks preserve that asymmetric comparison, including coverage-floor ties.
  * Comparing two rounded shader scores would silently reorder some candidates.
  */
-export function createResidentQualityScoreTable() {
+function* residentQualityScoreSteps() {
   const raw = new Float64Array(65536);
   const values = new Set<number>([0]);
   for (let alpha = 0; alpha < 256; alpha += 1) {
@@ -200,6 +214,7 @@ export function createResidentQualityScoreTable() {
       raw[alpha * 256 + quality] = value;
       values.add(value); values.add(Math.fround(value));
     }
+    yield;
   }
   const ranks = new Map([...values].sort((a,b) => a-b).map((value,index) => [value,index]));
   const table = new Float32Array(65536 * 4);
@@ -208,8 +223,28 @@ export function createResidentQualityScoreTable() {
     table[index * 4 + 1] = ranks.get(Math.fround(raw[index]))!;
     table[index * 4 + 2] = Math.fround(raw[index]);
     table[index * 4 + 3] = Math.fround(Math.floor(index / 256) / 255);
+    if(index%4096===0) yield;
   }
   return table;
+}
+
+let preparedScores: Float32Array<ArrayBuffer> | undefined;
+let scorePreparation: Promise<void> | undefined;
+/** Pure, immutable lookup preparation never blocks an entire input frame. */
+export function prepareResidentQualityScores() {
+  return scorePreparation ??= (async () => {
+    const steps=residentQualityScoreSteps();let started=performance.now();
+    for(let result=steps.next();;result=steps.next()) {
+      if(result.done) {preparedScores=result.value;return;}
+      if(performance.now()-started>=4) {await yieldToBrowserTask();started=performance.now();}
+    }
+  })();
+}
+/** Synchronous gold/test callers retain the exact independent lookup. */
+export function createResidentQualityScoreTable() {
+  const steps=residentQualityScoreSteps();let result=steps.next();
+  while(!result.done) result=steps.next();
+  return result.value;
 }
 
 function tableTexture(data: Float32Array<ArrayBuffer>, width: number, height: number) {
@@ -234,6 +269,10 @@ export class ResidentQualityComposite {
   private readonly mesh: THREE.Mesh;
   private current = 0;
   private initialized = false;
+  // Exact integer tuples only; direct-mapped collisions are verified, never
+  // approximated. One lazy 5 MiB table avoids repeating double-precision repair
+  // for unchanged pixels across different visibility combinations.
+  private correctedTuples?: Uint32Array;
 
   constructor(private readonly renderer: THREE.WebGLRenderer, readonly resolution: number) {
     this.output = new THREE.WebGLRenderTarget(resolution, resolution, { depthBuffer: false });
@@ -243,7 +282,7 @@ export class ResidentQualityComposite {
         minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter, depthBuffer: false,
       }));
     }
-    this.scoreTexture = tableTexture(createResidentQualityScoreTable(),256,256);
+    this.scoreTexture = tableTexture(preparedScores ?? createResidentQualityScoreTable(),256,256);
     const linear = new Float32Array(256 * 4);
     for (let i=0; i<256; i+=1) {
       const c=i/255;
@@ -262,6 +301,7 @@ export class ResidentQualityComposite {
       uniforms: {
         previousCandidates:{value:null}, scoreTable:{value:this.scoreTexture},
         layerColor:{value:null}, layerQuality:{value:null}, qualityIsRed:{value:false},
+        contributionIndex:{value:null},tiledContribution:{value:false},contributionColumns:{value:1},
         linearTable:{value:this.linearTexture}, preserveAlpha:{value:false},
         markUncertain:{value:false}, coordinates:{value:null}, resolution:{value:resolution},
         counts:{value:null},firstCount:{value:true},
@@ -279,29 +319,10 @@ export class ResidentQualityComposite {
   }
 
   private withTarget(target: THREE.WebGLRenderTarget, draw: () => void) {
-    const renderer=this.renderer;
-    const previous=renderer.getRenderTarget();
-    const face=renderer.getActiveCubeFace(), mip=renderer.getActiveMipmapLevel();
-    const viewport=renderer.getViewport(new THREE.Vector4());
-    const scissor=renderer.getScissor(new THREE.Vector4());
-    const scissorTest=renderer.getScissorTest(), autoClear=renderer.autoClear;
-    const xr=renderer.xr.enabled;
-    try {
-      renderer.xr.enabled=false; renderer.autoClear=false;
-      renderer.setRenderTarget(target); renderer.setViewport(0,0,target.width,target.height);
-      renderer.setScissorTest(false);
-      if (renderer.getContext().checkFramebufferStatus(renderer.getContext().FRAMEBUFFER) !== renderer.getContext().FRAMEBUFFER_COMPLETE) {
-        throw new Error('Resident quality framebuffer is incomplete.');
-      }
-      draw();
-    } finally {
-      renderer.setRenderTarget(previous,face,mip); renderer.setViewport(viewport);
-      renderer.setScissor(scissor); renderer.setScissorTest(scissorTest);
-      renderer.autoClear=autoClear; renderer.xr.enabled=xr;
-    }
+    return withUvRenderTarget(this.renderer,target,draw);
   }
 
-  push(color: THREE.Texture, quality: THREE.Texture) {
+  push(color: THREE.Texture, quality: THREE.Texture, tiles?: UvContributionTiles) {
     if (!this.initialized) {
       this.withTarget(this.targets[this.current],() => {
         const gl=this.renderer.getContext() as WebGL2RenderingContext;
@@ -314,6 +335,9 @@ export class ResidentQualityComposite {
     this.accumulateMaterial.uniforms.layerColor.value=color;
     this.accumulateMaterial.uniforms.layerQuality.value=quality;
     this.accumulateMaterial.uniforms.qualityIsRed.value=quality.format===THREE.RedFormat;
+    this.accumulateMaterial.uniforms.contributionIndex.value=tiles?.index ?? this.targets[this.current].texture;
+    this.accumulateMaterial.uniforms.tiledContribution.value=Boolean(tiles);
+    this.accumulateMaterial.uniforms.contributionColumns.value=tiles?.columns ?? 1;
     this.mesh.material=this.accumulateMaterial;
     this.withTarget(this.targets[next],() => this.renderer.render(this.scene,this.camera));
     this.current=next;
@@ -341,13 +365,17 @@ export class ResidentQualityComposite {
   async readCorrected(preserveAlpha: boolean) {
     const bytes=await readRenderTargetPixelsInStripes(this.renderer,this.resolve(preserveAlpha,true),this.resolution);
     const output=new Uint8ClampedArray(bytes.buffer);
+    const outputWords = new Uint32Array(output.buffer);
     const indices:number[]=[];
+    let scanStarted=performance.now();
     for(let first=0;first<output.length;first+=1048576) {
       const end=Math.min(output.length,first+1048576);
       for(let i=first;i<end;i+=4) {
-        if(output[i+3]===0 && output[i]===255 && output[i+2]===255) indices.push(i/4);
+        if((outputWords[i/4]&0xffff00ff)===0x00ff00ff) indices.push(i/4);
       }
-      if(end<output.length) await yieldToBrowserTask();
+      if(end<output.length && performance.now()-scanStarted>=4) {
+        await yieldToBrowserTask();scanStarted=performance.now();
+      }
     }
     if(!indices.length) return {output,correctedPixels:0};
     const width=Math.min(indices.length,Math.floor(this.renderer.capabilities.maxTextureSize/4)), height=Math.ceil(indices.length/width);
@@ -372,15 +400,24 @@ export class ResidentQualityComposite {
         coverage:new Uint8Array([1]),writtenTexels:1};
       const pixel=new Uint8ClampedArray(4);
       const pixelWord = new Uint32Array(pixel.buffer);
-      const outputWords = new Uint32Array(output.buffer, output.byteOffset, output.length / 4);
       const repeatedMarker = new Uint32Array(new Uint8Array([254, 0, 255, 0]).buffer)[0];
       const previous = new Uint32Array(4);
+      const memo = this.correctedTuples ??= new Uint32Array(262144 * 5);
+      let memoHits = 0;
       let lastYield = performance.now();
       let correctedPixels = 0;
       for(let i=0;i<indices.length;i+=1) {
         const offset = i * 4;
         if (i === 0 || selected[offset] !== previous[0] || selected[offset + 1] !== previous[1] ||
             selected[offset + 2] !== previous[2] || selected[offset + 3] !== previous[3]) {
+          const a=selected[offset],b=selected[offset+1],c=selected[offset+2];
+          // The high byte is only a coverage counter, not a resolver input.
+          const q=(selected[offset+3]&0xffffff)|(preserveAlpha ? 0x1000000 : 0x2000000);
+          const hash=Math.imul(a^Math.imul(b,1597334677)^Math.imul(c,3812015801)^q,2654435761);
+          const entry=((hash^(hash>>>16))&262143)*5;
+          if(memo[entry]===a && memo[entry+1]===b && memo[entry+2]===c && memo[entry+3]===q) {
+            pixelWord[0]=memo[entry+4];memoHits++;
+          } else {
           for(let slot=0;slot<3;slot+=1) {
             const color=selected[offset+slot], coverage=(color>>>24)/255;
             const quality=(selected[offset+3]>>>(slot*8))&255;
@@ -389,6 +426,8 @@ export class ResidentQualityComposite {
             top.qualities[slot][0]=Math.max(Math.fround(quality/255),coverage*0.08);
           }
           resolvePixelCpu(top,0,preserveAlpha,pixel);
+          memo[entry]=a;memo[entry+1]=b;memo[entry+2]=c;memo[entry+3]=q;memo[entry+4]=pixelWord[0];
+          }
           previous.set(selected.subarray(offset, offset + 4));
         }
         // 254 marks an adjacent texel with the identical integer candidate tuple.
@@ -407,6 +446,7 @@ export class ResidentQualityComposite {
           }
         } while(more);
       }
+      if(typeof document!=='undefined') document.body.dataset.residentUvCorrectionMemoHits=String(memoHits);
       return {output,correctedPixels};
     } finally {texture.dispose();target.dispose();}
   }
@@ -435,6 +475,7 @@ export class ResidentQualityComposite {
   }
 
   dispose() {
+    this.correctedTuples=undefined;
     this.targets.forEach(target => target.dispose()); this.output.dispose();
     this.scoreTexture.dispose(); this.linearTexture.dispose();
     this.unpremultiplyTexture.dispose();

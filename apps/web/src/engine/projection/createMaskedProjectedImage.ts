@@ -596,6 +596,27 @@ export function removeSolidBackground(image: ImageData, options: CutoutOptions =
 }
 
 async function imageDataToPngUrl(imageData: ImageData) {
+  // This entry receives task-owned pixels returned by the mask worker. Send
+  // them back without copying; cached sampler inputs were never transferred.
+  if (typeof OffscreenCanvas !== 'undefined' && typeof OffscreenCanvas.prototype.convertToBlob === 'function') {
+    const worker = getMaskedProjectedWorker();
+    if (worker) {
+      const id = ++maskedProjectedRequestId;
+      const buffer = imageData.data.buffer as ArrayBuffer;
+      const png = await new Promise<Blob>((resolve, reject) => {
+        maskedProjectedRequests.set(id, { png: true, resolve, reject });
+        try {
+          worker.postMessage({ id, pngOnly: true, source: {
+            width: imageData.width, height: imageData.height, data: buffer,
+          } }, [buffer]);
+        } catch (error) {
+          maskedProjectedRequests.delete(id);
+          reject(error);
+        }
+      });
+      return createRegisteredObjectUrl(png);
+    }
+  }
   const canvas = document.createElement('canvas');
   canvas.width = imageData.width;
   canvas.height = imageData.height;
@@ -694,6 +715,7 @@ type MaskedProjectedWorkerResponse = {
   width?: number;
   height?: number;
   data?: ArrayBuffer;
+  png?: ArrayBuffer;
   error?: string;
 };
 
@@ -701,7 +723,8 @@ let maskedProjectedWorker: Worker | undefined;
 let maskedProjectedRequestId = 0;
 const maskedProjectedRequests = new Map<
   number,
-  { resolve: (image: ImageData) => void; reject: (error: Error) => void }
+  { png?: false; resolve: (image: ImageData) => void; reject: (error: Error) => void } |
+  { png: true; resolve: (image: Blob) => void; reject: (error: Error) => void }
 >();
 
 function getMaskedProjectedWorker() {
@@ -714,6 +737,11 @@ function getMaskedProjectedWorker() {
     const pending = maskedProjectedRequests.get(event.data.id);
     if (!pending) return;
     maskedProjectedRequests.delete(event.data.id);
+    if (pending.png) {
+      if (event.data.error || !event.data.png?.byteLength) pending.reject(new Error(event.data.error || 'Projected image worker returned no PNG.'));
+      else pending.resolve(new Blob([event.data.png], { type: 'image/png' }));
+      return;
+    }
     if (event.data.error || !event.data.data || !event.data.width || !event.data.height) {
       pending.reject(new Error(event.data.error || 'Projected image worker returned no pixels.'));
       return;

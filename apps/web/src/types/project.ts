@@ -5,7 +5,7 @@ import type { Layer } from './layer';
 import type { DisplayMode, ProjectionMode, SceneObject } from './model';
 import type { BakedTexture } from '@/engine/bake/uvBakeTypes';
 
-export type WorkspaceMode = 'none' | 'file-system-access' | 'download-fallback' | 'local-server';
+export type WorkspaceMode = 'none' | 'file-system-access' | 'download-fallback' | 'local-server' | 'cloud-server';
 
 export type AssetManifest = {
   models: string[];
@@ -47,6 +47,8 @@ export type ProjectSettings = {
     /** Legacy setting retained for old projects; new GPT batches always use accelerated groups. */
     textureMultiviewMode?: 'stable' | 'fast';
     localRepaintProvider?: 'modelview' | 'gpt';
+    /** Missing/false uses only the composite and geometry normal in GPT repaint. */
+    gptRepaintUseMaterialReference?: boolean;
     model: string;
     aspectRatio: string;
     imageSize: string;

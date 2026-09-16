@@ -171,6 +171,7 @@ async function compressReference(
 async function prepareReferenceUncached(
   reference: ReferenceImage,
   safeDataUrlLength = ATLAS_REFERENCE_SAFE_DATA_URL_LENGTH,
+  preservePixels = false,
 ): Promise<PreparedReference> {
   const sourceBlob = await referenceUrlToBlob(reference.url);
   const sourceDataUrl = reference.url.startsWith('data:')
@@ -183,6 +184,12 @@ async function prepareReferenceUncached(
       url: sourceDataUrl,
     };
   }
+  if (preservePixels) {
+    if (sourceBlob.size > 16 * 1024 * 1024) throw new Error('局部重绘结构引导图超过 16 MiB，未提交任务；不会自动压缩或缩小图片。');
+    // The control plane validates lossless PNG compression and, if needed,
+    // uploads a verified object URL. Atlas's JSON limit is not our HTTP limit.
+    return { id: reference.id, name: reference.name, url: sourceDataUrl };
+  }
   return compressReference(reference, sourceBlob, safeDataUrlLength);
 }
 
@@ -190,11 +197,12 @@ function prepareReferenceWithBudget(
   reference: ReferenceImage,
   cacheKey: string,
   safeDataUrlLength: number,
+  preservePixels = false,
 ) {
   const existing = preparationCache.get(cacheKey);
   if (existing?.sourceUrl === reference.url) return existing.promise;
 
-  const promise = prepareReferenceUncached(reference, safeDataUrlLength).catch((error) => {
+  const promise = prepareReferenceUncached(reference, safeDataUrlLength, preservePixels).catch((error) => {
     const cached = preparationCache.get(cacheKey);
     if (cached?.promise === promise) preparationCache.delete(cacheKey);
     throw error;
@@ -208,11 +216,12 @@ function prepareReferenceWithBudget(
   return promise;
 }
 
-export function prepareReferenceForAtlas(reference: ReferenceImage) {
+export function prepareReferenceForAtlas(reference: ReferenceImage, options: { preservePixels?: boolean } = {}) {
   return prepareReferenceWithBudget(
     reference,
-    `atlas-tool:${reference.id}`,
+    `atlas-tool:${options.preservePixels ? 'exact:' : ''}${reference.id}`,
     ATLAS_REFERENCE_SAFE_DATA_URL_LENGTH,
+    options.preservePixels,
   );
 }
 

@@ -22,9 +22,10 @@ assert.match(
 );
 assert.match(
   source,
-  /request\.open\([\s\S]*'POST',[\s\S]*\/api\/projects\/\$\{input\.projectId\}\/assets\?/u,
+  /request\.open\('POST', blobUploadUrl\(input\)\)/u,
   'The fallback must stream into the project assets route on the same workspace backend.',
 );
+assert.match(source, /function blobUploadUrl\([\s\S]*return `\$\{workspaceApiBase\}\/api\/projects\/\$\{input\.projectId\}\/assets\?\$\{params\.toString\(\)\}`/u);
 assert.match(
   source,
   /if \(isCloudBuild && globalThis\.crypto\?\.subtle\)[\s\S]*return await saveDirectBlobAsset\(input\);/u,

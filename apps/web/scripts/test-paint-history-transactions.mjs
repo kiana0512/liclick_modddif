@@ -240,7 +240,7 @@ try {
   assert.match(
     commitSource,
     /scheduleIdleInpaintArchive\(draft\.layer, draft\.inpaintHistoryModel\)/,
-    'Mask history keeps the live projector authoritative and archives after pointer-up',
+    'Mask history retains the live projector and archives after pointer-up',
   );
   assert.doesNotMatch(
     commitSource,

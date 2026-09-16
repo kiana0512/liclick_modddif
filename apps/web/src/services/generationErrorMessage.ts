@@ -2,14 +2,34 @@ function getRawMessage(error: unknown) {
   if (error instanceof Error) return error.message;
   return typeof error === 'string' ? error : '';
 }
+/** GEN-CANCEL-CLASSIFICATION/1: renderer/Worker AbortError is not user intent. */
+export function isGenerationCancellation(error: unknown, signal?: AbortSignal) {
+  if (signal?.aborted) return true;
+  return /用户已终止|用户已取消|任务已终止/.test(getRawMessage(error));
+}
+
+/** GEN-POLL-CLASSIFICATION/1.0.0: retry transport failures, not result validation. */
+export function isRetryableGenerationPollError(error: unknown) {
+  if (isGenerationCancellation(error)) return false;
+  if (error && typeof error === 'object' && 'status' in error && typeof error.status === 'number') {
+    return [0, 408, 429].includes(error.status) || (error.status >= 500 && error.status <= 599);
+  }
+  return /响应超时|无法连接云端莉刻生图服务|暂时无法连接生成服务|failed to fetch|fetch failed|networkerror|econn/i.test(getRawMessage(error));
+}
+
 export function getUserFacingGenerationError(
   error: unknown,
   fallback = '生成服务暂时无法完成请求，请稍后重试。',
-) {
+): string {
   const message = getRawMessage(error).replace(/\s+/g, ' ').trim();
+  const viewFailure = /^([^：]{1,32}视角(?:提交|生成|回贴)失败)：(.+)$/.exec(message);
+  if (viewFailure) return `${viewFailure[1]}：${getUserFacingGenerationError(viewFailure[2], fallback)}`;
   const normalized = message.toLowerCase();
 
-  if (/用户已终止|cancelled|canceled|aborted/.test(normalized)) return '生成任务已终止。';
+  if (isGenerationCancellation(error)) return '生成任务已终止。';
+  if ((error instanceof Error && error.name === 'AbortError') || /\baborted\b|superseded/.test(normalized)) {
+    return '生成准备或回贴渲染意外中断，后续视角未继续。已完成的图片会保留，请勿重复生成已完成视角。';
+  }
   if (
     /\b402\b|payment required|billing[_\s-]*(hard[_\s-]*)?limit|insufficient.*(?:credit|balance|quota)|(?:credit|balance|quota).*(?:insufficient|exhausted|exceeded|empty)|quota[_\s-]*(?:exceeded|exhausted)|计费.*(?:上限|权限)|账单.*限额|(?:额度|余额|积分|资源点).*(?:不足|用完|耗尽|超限)/.test(
       normalized,

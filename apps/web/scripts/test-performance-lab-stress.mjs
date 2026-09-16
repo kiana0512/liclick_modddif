@@ -35,6 +35,17 @@ const referenceQuantile = (values, ratio) => [...values].sort((a, b) => a - b)[M
 try {
   const { PerformanceLabCollector } = await vite.ssrLoadModule('/src/features/performanceLab/performanceLabCollector.ts');
   const metrics = await vite.ssrLoadModule('/src/engine/performance/performanceLabMetrics.ts');
+  for (const values of [[], [16.8], [16.7, 33.4, 50.1, 200], [-1, 0, 1], [NaN, 5, Infinity],
+    ...Array.from({length:100},(_,seed)=>Array.from({length:seed},(_,i)=>(i*17+seed)%240))]) {
+    const samples=values.map(durationMs=>({durationMs}));
+    const sorted=[...values].sort((a,b)=>a-b);
+    assert.deepEqual(metrics.summarizeScenarioFrames(samples),{
+      p95:sorted[Math.max(0,Math.ceil(sorted.length*0.95)-1)]??0,
+      max:values.length?Math.max(...values):0,
+      dropped:metrics.estimateMissedFramePercent(samples,1000/60),
+    },'Shared scenario summary preserves all samples and legacy metrics');
+    assert.deepEqual(samples.map(sample=>sample.durationMs),values,'Summary never mutates frame history');
+  }
   const { performanceScenarioOccludingUvIds, performanceScenarioVisibleBindings } = await vite.ssrLoadModule('/src/engine/performance/performanceScenarioLayers.ts');
   const opacityBindings = [0, 1, 2, 3, 4].map(arrayIndex => ({ layerId: `${arrayIndex}`, opacityUniform: `opacity${arrayIndex}`, arrayIndex }));
   for (const values of [[1, 0, 0.5, 0.0001, 0.00011], [0, 0, 0, 0, 0], [1, 1, 1, 1, 1]]) {

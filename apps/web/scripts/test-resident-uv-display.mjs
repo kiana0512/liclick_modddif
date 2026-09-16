@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import ts from 'typescript';
 import * as THREE from 'three';
+import './test-resident-uv-visibility-scheduling.mjs';
+import * as fflate from 'fflate';
 
 const load = (file, dependencies) => {
   const source = fs.readFileSync(new URL(`../src/engine/bake/${file}.ts`, import.meta.url), 'utf8');
@@ -19,11 +21,32 @@ const load = (file, dependencies) => {
   return exports;
 };
 const { resolvePixelCpu } = load('qualityBlendCpuPixel', {});
+{
+  const {uploadUvRgba}=load('uvContributionTiles',{three:THREE,
+    '@/utils/browserScheduling':{yieldToBrowserTask:async()=>{}}});
+  for(const [width,height] of [[1,1],[65,67],[300,301],[1024,1025]])for(const flipRows of [false,true]) {
+    const source=Uint8Array.from({length:width*height*4},(_,i)=>(i*37)&255),before=source.slice();
+    const output=new Uint8Array(source.length);let maximum=0;
+    const renderer={initTexture(texture){assert.equal(texture.source.dataReady,false);},copyTextureToTexture(stripe,_target,_region,position){
+      maximum=Math.max(maximum,stripe.image.data.byteLength);output.set(stripe.image.data,position.y*width*4);
+    }};
+    const texture=await uploadUvRgba(renderer,source,width,height,{flipRows});
+    for(let y=0;y<height;y++)assert.deepEqual(output.subarray(y*width*4,(y+1)*width*4),
+      source.subarray((flipRows?height-1-y:y)*width*4,(flipRows?height-y:y+1)*width*4));
+    assert.deepEqual(source,before);assert(maximum<=1048576);texture.dispose();
+  }
+  let released=0,checks=0;
+  await assert.rejects(uploadUvRgba({initTexture(t){t.addEventListener('dispose',()=>released++);},copyTextureToTexture(){}},
+    new Uint8Array(300*301*4),300,301,{check(){if(++checks===3)throw Error('cancelled');}}),/cancelled/);
+  assert.equal(released,1,'Cancelled direct upload releases its unpublished destination');
+}
 let sentinels,
   packed,
   calls = 0;
 const { ResidentQualityComposite } = load('residentQualityComposite', {
   three: THREE,
+  './uvContributionTiles': load('uvContributionTiles', {three:THREE,
+    '@/utils/browserScheduling':{yieldToBrowserTask:async()=>{}}}),
   './qualityBlendCpuPixel': {
     resolvePixelCpu(...args) {
       calls++;
@@ -34,6 +57,16 @@ const { ResidentQualityComposite } = load('residentQualityComposite', {
   '@/utils/browserScheduling': { yieldToBrowserTask: async () => {} },
   './uvBakeDebugControls': { isLegacyUvBakeDiagnosticEnabled: () => false },
 });
+{
+  // Similar colors/alpha must not be mistaken for the internal correction marker.
+  sentinels = new Uint8Array(4 * 4 * 4);
+  sentinels.set([255, 0, 254, 0, 255, 0, 255, 1, 254, 0, 255, 0, 255, 255, 255, 255]);
+  const probe = Object.create(ResidentQualityComposite.prototype);
+  Object.assign(probe, { resolution: 4, resolve: () => ({}) });
+  const result = await probe.readCorrected(true);
+  assert.deepEqual(result.output, new Uint8ClampedArray(sentinels));
+  assert.equal(result.correctedPixels, 0);
+}
 for (const preserveAlpha of [false, true])
   for (const runMarkers of [false, true]) {
     const resolution = 64,
@@ -105,10 +138,27 @@ for (const preserveAlpha of [false, true])
     assert.deepEqual(result.output, reference, 'Sparse correction must remain byte-exact');
     assert.equal(calls, 2049, 'Identical candidate tuples reuse the exact CPU result');
     assert.equal(result.correctedPixels, count);
+    for(let i=3;i<packed.length;i+=4) packed[i]^=0x7f000000;
+    calls=0;
+    assert.deepEqual((await instance.readCorrected(preserveAlpha)).output,reference,
+      'Coverage-count changes reuse exact color tuples across visibility combinations');
+    assert(calls<100,'Warm integer tuples avoid redundant canonical pixel work');
+    // Force a hash collision with the same first color but a different second.
+    const a=packed[0],b=packed[1],c=packed[2];
+    const q=(packed[3]&0xffffff)|(preserveAlpha?0x1000000:0x2000000);
+    const hash=Math.imul(a^Math.imul(b,1597334677)^Math.imul(c,3812015801)^q,2654435761);
+    const entry=((hash^(hash>>>16))&262143)*5;
+    instance.correctedTuples.set([a,b^1,c,q,0],entry);
+    assert.deepEqual((await instance.readCorrected(preserveAlpha)).output,reference,'Hash collisions must verify all four keys');
+    const alternate=await instance.readCorrected(!preserveAlpha);
+    assert.notDeepEqual(alternate.output,reference,'Preserve-alpha modes must never share an incorrect memo output');
+    assert.deepEqual((await instance.readCorrected(preserveAlpha)).output,reference);
   }
 
 const { ProjectedUvRasterCache } = load('ProjectedUvRasterCache', {
   three: THREE,
+  './uvContributionTiles': {},
+  './UvContributionArchive': {UvContributionArchive: class {dispose() {}}},
   './residentQualityComposite': { ResidentQualityComposite },
   '@/utils/browserScheduling': { yieldToBrowserTask: async () => {} },
 });
@@ -150,43 +200,76 @@ cache.prepare(renderer, 'mesh-2/1K', ['a']);
 assert.equal(cache.get('a'), undefined, 'Geometry changes invalidate derived rasters');
 assert.equal(disposed, 6);
 cache.dispose();
+
+// Force a two-raster budget: third layer must spill, not disappear/re-project.
+{
+  class Archive {
+    entries=new Map();
+    has(key){return this.entries.has(key);}
+    async store(key,value,_renderer,check){check?.();this.entries.set(key,value);}
+    async restore(key,_renderer,check){check?.();return this.entries.get(key);}
+    dispose(){this.entries.clear();}
+  }
+  const {ProjectedUvRasterCache: Contributions}=load('ProjectedUvRasterCache',{
+    three:THREE,'./residentQualityComposite':{ResidentQualityComposite},
+    '@/utils/browserScheduling':{yieldToBrowserTask:async()=>{}},
+    './uvContributionTiles':{compactUvContribution:async()=>undefined},
+    './UvContributionArchive':{UvContributionArchive:Archive},
+  });
+  globalThis.document ??= {body:{dataset:{}}};
+  const owner=new Contributions(16,true);
+  owner.prepare(renderer,'scope',['a','b','c']);
+  const inputs=[entry(),entry(),entry()];
+  assert(await owner.retainContribution('a',inputs[0],1));
+  assert(await owner.retainContribution('b',inputs[1],1));
+  assert.equal(await owner.retainContribution('c',inputs[2],1),false);
+  assert(owner.hasArchivedContribution('c'));
+  assert.equal(await owner.restoreContribution('c'),inputs[2]);
+  owner.prepare(renderer,'scope',['b','d']);
+  assert(await owner.retainContribution('d',entry(),1));
+  assert(owner.hasArchivedContribution('a'),'Eviction first saves the UV input');
+  assert.equal(await owner.restoreContribution('a'),inputs[0]);
+  owner.prepare(renderer,'new geometry',['a']);
+  assert.equal(owner.hasArchivedContribution('a'),false,'Geometry changes invalidate contributions');
+  owner.dispose();
+  for(const operation of ['store','restore']) for(const invalidate of ['scope','context','dispose']) {
+    let resume,entered;
+    const began=new Promise(resolve=>{entered=resolve;});
+    class DelayedArchive extends Archive {
+      async store(...args) {
+        if(operation==='store') {entered();await new Promise(resolve=>{resume=resolve;});}
+        return super.store(...args);
+      }
+      async restore(...args) {
+        entered();await new Promise(resolve=>{resume=resolve;});return super.restore(...args);
+      }
+    }
+    const {ProjectedUvRasterCache: Delayed}=load('ProjectedUvRasterCache',{
+      three:THREE,'./residentQualityComposite':{ResidentQualityComposite},
+      './uvContributionTiles':{compactUvContribution:async()=>undefined},
+      './UvContributionArchive':{UvContributionArchive:DelayedArchive},
+    });
+    let contextLost;
+    const target={domElement:{addEventListener(_event,handler){contextLost=handler;},removeEventListener(){}}};
+    const pendingOwner=new Delayed(0,true);pendingOwner.prepare(target,'old',['x']);
+    if(operation==='restore') await pendingOwner.retainContribution('x',entry(),1);
+    const pending=operation==='store' ? pendingOwner.retainContribution('x',entry(),1) : pendingOwner.restoreContribution('x');
+    const rejected=assert.rejects(pending,{name:'AbortError'});
+    await began;
+    if(invalidate==='scope') pendingOwner.prepare(target,'new',['x']);
+    else if(invalidate==='context') contextLost(); else pendingOwner.dispose();
+    resume();await rejected;
+    assert.equal(pendingOwner.get('x'),undefined);
+    assert.equal(pendingOwner.hasArchivedContribution('x'),false,'Late archive work cannot republish invalid UVs');
+    if(invalidate!=='dispose') pendingOwner.dispose();
+  }
+}
 globalThis.ImageData ??= class {
   constructor(data, width, height) {
     Object.assign(this, { data, width, height });
   }
 };
-const aggregateCache = new ProjectedUvRasterCache(16);
-aggregateCache.prepare(renderer, 'scope', ['a', 'b']);
-aggregateCache.take('a', entry());
-aggregateCache.take('b', entry());
-const resolved = {
-  rasters: [],
-  warnings: [],
-  residentQuality: {
-    imageData: new ImageData(new Uint8ClampedArray([91, 72, 33, 255]), 1, 1),
-    coverage: new Uint8Array([1]),
-    renderedColorMask: new Uint8Array([0]),
-    writtenTexels: 1,
-    backend: 'webgl-resident',
-    accumulateMs: 12,
-    resolveMs: 13,
-    totalMs: 25,
-  },
-};
-await aggregateCache.retainResolved('normal-stack', resolved);
-assert.equal(aggregateCache.get('a'), undefined, 'Aggregate storage shares the raster byte budget');
-resolved.residentQuality.imageData.data.fill(0);
-const firstBase = await aggregateCache.getResolved('normal-stack');
-assert.deepEqual([...firstBase.residentQuality.imageData.data], [91, 72, 33, 255]);
-firstBase.residentQuality.imageData.data.fill(3);
-assert.equal(
-  (await aggregateCache.getResolved('normal-stack')).residentQuality.imageData.data[0],
-  91,
-  'Overlay mutation/transfer cannot corrupt the cached normal UV',
-);
-aggregateCache.prepare(renderer, 'changed-geometry', []);
-assert.equal(await aggregateCache.getResolved('normal-stack'), undefined);
-aggregateCache.dispose();
+assert.equal(cache.retainResolved, undefined, 'UV input storage cannot be displaced by duplicate raw aggregate snapshots');
 // A completed all-normal aggregate can continue with newly appended top
 // layers. Any non-prefix stack must reset, and taking a lease invalidates the
 // old prefix until the new calculation commits successfully.
@@ -271,9 +354,7 @@ assert(compactCache.take('a', compactEntry()));
 assert(compactCache.take('b', compactEntry()));
 assert(compactCache.take('c', compactEntry()), 'R8 quality is charged one byte per full-resolution texel');
 assert.equal(compactCache.take('d', compactEntry()), false);
-await compactCache.retainResolved('base', resolved);
-assert.equal(compactCache.get('a'), undefined);
-assert(compactCache.get('b'));assert(compactCache.get('c'), 'two 5-byte rasters share the 16-byte budget with a 6-byte base');
+assert(compactCache.get('a'));assert(compactCache.get('b'));assert(compactCache.get('c'), 'all three 5-byte contributions remain resident');
 compactCache.dispose();
 // MRT color/quality attachments share one render-target owner. Eviction must
 // dispose that owner exactly once while still charging the R8 byte footprint.
@@ -289,50 +370,11 @@ compactCache.dispose();
   assert.equal(mrtDisposals, 1, 'shared MRT attachment owner is released once');
   mrtCache.dispose();
 }
-// Eye-state A/B results share the existing hard budget and use exact LRU
-// ownership. A third result evicts the least recently read state.
-{
-  const lru = new ProjectedUvRasterCache(13);
-  lru.prepare(renderer, 'eye-state-scope', []);
-  const state = (red) => ({
-    ...resolved,
-    residentQuality: {
-      ...resolved.residentQuality,
-      imageData: new ImageData(new Uint8ClampedArray([red, 2, 3, 255]), 1, 1),
-      coverage: new Uint8Array([1]),
-      renderedColorMask: new Uint8Array([red]),
-    },
-  });
-  await lru.retainResolved('eyes-a', state(11));
-  await lru.retainResolved('eyes-b', state(22));
-  assert.equal((await lru.getResolved('eyes-a')).residentQuality.imageData.data[0], 11);
-  await lru.retainResolved('eyes-c', state(33));
-  assert.equal(await lru.getResolved('eyes-b'), undefined, 'Third eye state evicts the LRU result');
-  assert.equal((await lru.getResolved('eyes-a')).residentQuality.renderedColorMask[0], 11);
-  assert.equal((await lru.getResolved('eyes-c')).residentQuality.imageData.data[0], 33);
-  lru.prepare(renderer, 'changed-eye-scope', []);
-  assert.equal(await lru.getResolved('eyes-a'), undefined, 'Geometry/scope changes invalidate every state');
-  lru.dispose();
-}
-// A context may disappear while the bounded copy yields; the same scope string
-// after restoration is not proof that a result still belongs to this lifetime.
-{
-  let lose;
-  const owner={domElement:{addEventListener(_name,listener){lose=listener;},removeEventListener(){}}};
-  const guarded=new ProjectedUvRasterCache(64);guarded.prepare(owner,'same-scope',[]);
-  await guarded.retainResolved('a',resolved);
-  const copy=guarded.copyResolved.bind(guarded);
-  let resume;
-  guarded.copyResolved=async result=>{await new Promise(resolve=>{resume=resolve;});return copy(result);};
-  const reading=guarded.getResolved('a');lose();resume();
-  assert.equal(await reading,undefined,'context loss invalidates an in-flight cache copy');
-  const storing=guarded.retainResolved('a',resolved);lose();resume();await storing;
-  assert.equal(await guarded.getResolved('a'),undefined,'late store cannot resurrect a lost-context result');
-  guarded.dispose();
-}
 {
   const {projectionAttributeRevision}=load('projectionBakeSignature',{
     './layerStackCache':{},'./uvBakeDebugControls':{},
+    '@/utils/browserScheduling':{yieldToBrowserTask:async()=>{throw Error('Attribute revision must not schedule pixel copies');}},
+    '@/engine/viewport/viewportInteractionState':{waitForViewportInteractionIdle:async()=>{throw Error('Attribute revision must not wait for interaction');}},
   });
   const uv=new THREE.Float32BufferAttribute([0,0,1,1],2);
   const first=projectionAttributeRevision(uv);
@@ -470,6 +512,7 @@ globalThis.window = { caches: {} };
 globalThis.fetch = async () => new Response(new Uint8Array([sourceByte]));
 try {
   const { persistentMergeKey } = load('persistentMergePreparation', {
+    '@/utils/browserScheduling': { yieldToBrowserTask: async () => {} },
     '@/stores/authStore': { useAuthStore: { getState: () => ({ user: userId ? { id: userId } : undefined }) } },
     './uvBakeDebugControls': { getDebugUvBakeStatus: () => ({}) },
     '@/engine/layers/mergeUvComposition': { getMergeUvPostprocessOptions: () => ({}) },
@@ -537,7 +580,7 @@ await presentation.waitForResidentUvPresentation(scene, 'other-object');
   }
   const exports = {};
   new Function('require','exports','Worker','window',js)(
-    name => name === './uvSeamGeometrySnapshot' ? load('uvSeamGeometrySnapshot',{})
+    name => name === './uvSeamGeometrySnapshot' ? load('uvSeamGeometrySnapshot',{fflate})
       : ({recordWebGpuProductionDispatch(){}}), exports, RasterWorker,
     {setTimeout,location:{search:''}},
   );

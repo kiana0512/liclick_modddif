@@ -1,5 +1,6 @@
 import type * as THREE from 'three';
 import { copyRawUvComposite, patchRawUvComposite } from './incrementalUvComposite';
+import { padResidentUvGutterInWorker } from './gpuReadbackConversionWorker';
 import { flushLiveUvCommits } from '@/engine/projection/liveProjectedCanvasTextureRegistry';
 import { createBakeReport } from './bakeReport';
 import {
@@ -312,10 +313,20 @@ async function fillTransparentTexelsForViewport(imageData: ImageData) {
   }
 }
 
-async function clearWeakTransparentTexels(imageData: ImageData, coverage?: Uint8Array) {
+async function clearWeakTransparentTexels(imageData: ImageData, coverage?: Uint8Array, residentTexels?: Uint32Array) {
   let sliceStartedAt = performance.now();
+  let hasFilterOnlyTexels = false;
   const data = imageData.data;
   const words = data.byteOffset % 4 === 0 ? new Uint32Array(data.buffer, data.byteOffset, data.length / 4) : undefined;
+  if (residentTexels) {
+    // Worker already examined every texel of this untouched resident result.
+    // Resident coverage is only 0/1, so there are no filter-only exceptions.
+    for (const index of residentTexels) {
+      if(words) words[index]=0; else data.fill(0,index*4,index*4+4);
+      if(coverage) coverage[index]=0;
+    }
+    return true;
+  }
   for (let first = 0; first < data.length; first += BAKE_PIXELS_PER_YIELD * 4) {
     if (performance.now() - sliceStartedAt >= 4) {
       await (isViewportInteractionBusy() ? waitForBrowserPaint() : yieldToBrowserTask());
@@ -323,11 +334,12 @@ async function clearWeakTransparentTexels(imageData: ImageData, coverage?: Uint8
     }
     const end = Math.min(first + BAKE_PIXELS_PER_YIELD * 4, data.length);
     for (let offset = first; offset < end; offset += 4) {
-    if (imageData.data[offset + 3] > MIN_TRANSPARENT_OUTPUT_ALPHA) continue;
+    const alpha = data[offset + 3];
+    if (alpha > MIN_TRANSPARENT_OUTPUT_ALPHA) continue;
     const pixelIndex = offset / 4;
     // `padUvIslandGutters(..., 'rgb-only')` marks filter-only gutter texels
     // with coverage value 2. Keep their hidden RGB while alpha remains zero.
-    if (imageData.data[offset + 3] === 0 && coverage?.[pixelIndex] === 2) continue;
+    if (alpha === 0 && coverage?.[pixelIndex] === 2) { hasFilterOnlyTexels = true; continue; }
     if (words) words[pixelIndex] = 0;
     else data.fill(0, offset, offset + 4);
     // Keep the logical coverage mask in lockstep with the exported alpha.
@@ -337,6 +349,7 @@ async function clearWeakTransparentTexels(imageData: ImageData, coverage?: Uint8
     if (coverage) coverage[pixelIndex] = 0;
     }
   }
+  return !hasFilterOnlyTexels;
 }
 
 function clampByte(value: number) {
@@ -1248,6 +1261,7 @@ async function bakeVisibleProjectedLayersToTextureUnlocked(
           group: importedModel.group,
           rasterCache: input.rasterCache,
           allowWhileInteracting: input.allowWhileInteracting,
+          checkCancelled: input.checkCancelled,
           layers: bakeLayers,
           resolution: input.resolution,
           region: incremental?.region,
@@ -1411,7 +1425,7 @@ async function bakeVisibleProjectedLayersToTextureUnlocked(
           const referenceStartedAt=performance.now();
           const reference=await blendProjectedRastersInWorker(normalRasters,compositeResolution,
             input.preserveCoverageConfidenceAlpha ?? false,[],true);
-          residentBase=verifyResidentQuality(renderer,input.preserveCoverageConfidenceAlpha ?? false,residentBase,reference);
+          residentBase=await verifyResidentQuality(renderer,input.preserveCoverageConfidenceAlpha ?? false,residentBase,reference);
           performanceBreakdown.qualityFullReferenceMs=performance.now()-referenceStartedAt;
         }
         const blendOverlays = [
@@ -1439,8 +1453,8 @@ async function bakeVisibleProjectedLayersToTextureUnlocked(
           ...patchRawUvComposite(incremental.base, qualityBlend, incremental.region) };
         const rawComposite = input.retainRawComposite ? copyRawUvComposite(qualityBlend) : undefined;
         performanceBreakdown.interactiveRasterTexels = compositeResolution * compositeResolution;
-        const composite = qualityBlend.imageData;
-        const qualityCoverage = qualityBlend.coverage;
+        let composite = qualityBlend.imageData;
+        let qualityCoverage = qualityBlend.coverage;
         writtenTexels = qualityBlend.writtenTexels;
         performanceBreakdown.qualityAccumulateMs = qualityBlend.accumulateMs;
         performanceBreakdown.qualityResolveMs = qualityBlend.resolveMs;
@@ -1471,8 +1485,10 @@ async function bakeVisibleProjectedLayersToTextureUnlocked(
         const qualityResolveStartedAt = performance.now();
         input.checkCancelled?.();
         markUvBakePerformancePhase('quality-resolve');
+        let copyOnlyAlphaInvariant = false;
         if (input.outputAlpha === 'transparent') {
-          await clearWeakTransparentTexels(composite, qualityCoverage);
+          copyOnlyAlphaInvariant = await clearWeakTransparentTexels(composite, qualityCoverage,
+            qualityBlend === residentBase && !incremental ? qualityBlend.transparentCleanupTexels : undefined);
         }
         if (input.outputAlpha !== 'transparent') {
           await sharpenCoveredTexels(composite, qualityCoverage);
@@ -1528,11 +1544,21 @@ async function bakeVisibleProjectedLayersToTextureUnlocked(
           dilateImageData(composite, qualityCoverage, dilationPixels);
         }
         const gutterStartedAt = performance.now();
+        const gutterTimings = { gutterBoundaryScanMs: 0, gutterExpansionMs: 0, gutterYieldMs: 0, gutterTopologyRasterMs: 0 };
+        let gutterTopologyWaitMs = 0;
         markUvBakePerformancePhase('gutter');
         if ((input.uvIslandGutterPixels ?? 0) > 0) {
+          const topologyWaitStartedAt = performance.now();
           const topology = await getUvGutterTopology();
+          gutterTopologyWaitMs = performance.now() - topologyWaitStartedAt;
           input.checkCancelled?.();
-          const paddedPixels = topology
+          const workerGutter = topology && topology.mask.byteLength <= 64 * 1024 * 1024
+            ? await padResidentUvGutterInWorker(composite,qualityCoverage,topology.mask,
+                input.uvIslandGutterPixels ?? 0,input.outputAlpha === 'transparent',input.checkCancelled)
+            : undefined;
+          if(workerGutter) {composite=workerGutter.imageData;qualityCoverage=workerGutter.coverage;Object.assign(gutterTimings,workerGutter.timings);}
+          performanceBreakdown.gutterWorkerUsed=Number(!!workerGutter);
+          const paddedPixels = workerGutter ? workerGutter.paddedPixels : topology
             ? await padUvIslandGuttersWithTopologyCooperatively(
                 composite,
                 qualityCoverage,
@@ -1541,6 +1567,7 @@ async function bakeVisibleProjectedLayersToTextureUnlocked(
                 input.outputAlpha === 'transparent',
                 yieldPostprocess,
                 true,
+                gutterTimings,
               )
             : await padUvIslandGuttersCooperatively(
                 composite,
@@ -1549,17 +1576,28 @@ async function bakeVisibleProjectedLayersToTextureUnlocked(
                 input.uvIslandGutterPixels ?? 0,
                 input.outputAlpha === 'transparent',
                 yieldPostprocess,
+                gutterTimings,
               );
           if (paddedPixels > 0) {
             warnings.push(`UV-island gutter padding added ${paddedPixels} filter-only texels.`);
           }
         }
         performanceBreakdown.gutterMs = performance.now() - gutterStartedAt;
+        Object.assign(performanceBreakdown, gutterTimings, { gutterTopologyWaitMs });
+        // Residual orchestration time makes the non-overlapping buckets sum to
+        // gutterMs; the concurrently started topology total is not added again.
+        performanceBreakdown.gutterOtherMs = Math.max(0, performanceBreakdown.gutterMs - gutterTopologyWaitMs -
+          gutterTimings.gutterTopologyRasterMs - gutterTimings.gutterBoundaryScanMs -
+          gutterTimings.gutterExpansionMs - gutterTimings.gutterYieldMs);
         input.checkCancelled?.();
         const finalizeStartedAt = performance.now();
         markUvBakePerformancePhase('finalize-cleanup');
         if (input.outputAlpha !== 'transparent') await fillTransparentTexelsForViewport(composite);
-        else {
+        else if (!copyOnlyAlphaInvariant || input.enableDilation ||
+          (input.uvCoverageGapPixels ?? 0) > 0 || (input.uvInteriorHolePixels ?? 0) > 0) {
+          // UV-ALPHA-CLOSURE/1: seam repair copies valid RGBA (averaging changes
+          // RGB only); transparent gutters copy the same alpha. Without initial
+          // filter-only texels or other repair kernels, no weak alpha can reappear.
           await clearWeakTransparentTexels(composite, qualityCoverage);
         }
         markUvBakePerformancePhase('finalize-canvas-upload');

@@ -285,8 +285,14 @@ export function createPostgresProjectRepository(database: ProjectSqlDatabase): P
   }
 
   async function findSlug(userId: string, projectId: string) {
-    const row = await selectProject(database, userId, projectId);
-    return row?.slug;
+    // PROJECT-ASSET-LOOKUP/1.0.0: uploads need ownership/path, not the
+    // potentially very large authoring document. Do not materialize its JSONB.
+    const result = await database.query<{ slug: string }>(
+      `SELECT slug FROM project_documents
+        WHERE user_id = $1 AND project_id = $2 AND deleted_at IS NULL`,
+      [userId, projectId],
+    );
+    return result.rows[0]?.slug;
   }
 
   async function save(

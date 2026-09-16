@@ -5,14 +5,21 @@ export function getUvDilationPixels(resolution: number, requestedPixels: number)
 }
 
 export type UvGutterAlphaMode = boolean | 'rgb-only';
+export type UvGutterTimings = {
+  gutterBoundaryScanMs: number;
+  gutterExpansionMs: number;
+  gutterYieldMs: number;
+  gutterTopologyRasterMs: number;
+};
 
 const COMPONENT_QUEUE_CHUNK_SIZE = 65_536;
 const MIN_UV_REPAIR_SOURCE_ALPHA = 8;
 const MAX_TOPOLOGY_PINHOLE_RGB_DISTANCE_SQUARED = 64 * 64;
+
 // Only immutable, geometry-validated topology opts in. One atlas, <=1 MiB;
 // dense/fragmented atlases retain the original scan and donor ordering.
 let gutterBoundary: { mask: WeakRef<Uint8Array>; width: number; height: number;
-  seeds: ChunkedUint32Queue | undefined } | undefined;
+  spans: ChunkedUint32Queue | undefined } | undefined;
 
 function getRgbDistanceSquared(data: Uint8ClampedArray, first: number, second: number) {
   const firstOffset = first * 4;
@@ -22,7 +29,6 @@ function getRgbDistanceSquared(data: Uint8ClampedArray, first: number, second: n
   const blue = data[firstOffset + 2] - data[secondOffset + 2];
   return red * red + green * green + blue * blue;
 }
-
 /**
  * A compact grow-only queue for high-resolution atlases. A normal number[] can
  * use several times more memory per texel, while allocating width * height up
@@ -74,6 +80,7 @@ class ChunkedUint32Queue {
     this.length = length;
   }
 }
+
 
 export function rasterizeUvTopologyMask(...args: Parameters<typeof rasterizeUvTopologyMaskSteps>) {
   const steps = rasterizeUvTopologyMaskSteps(...args);
@@ -178,13 +185,26 @@ export async function padUvIslandGuttersCooperatively(
   iterations: number,
   alphaMode: UvGutterAlphaMode,
   yieldToUi: () => Promise<void>,
+  timings?: UvGutterTimings,
 ) {
+  let rasterYieldMs = 0;
+  const rasterStartedAt = timings ? performance.now() : 0;
+  const yieldRaster = timings ? async () => {
+    const startedAt = performance.now();
+    try { await yieldToUi(); } finally { rasterYieldMs += performance.now() - startedAt; }
+  } : yieldToUi;
   const topology = await rasterizeUvTopologyMaskCooperatively(
-    yieldToUi, root, imageData.width, imageData.height,
+    yieldRaster, root, imageData.width, imageData.height,
   );
-  return padUvIslandGuttersWithTopologyCooperatively(
-    imageData, coverage, topology, iterations, alphaMode, yieldToUi,
+  const rasterMs = timings ? performance.now() - rasterStartedAt - rasterYieldMs : 0;
+  const result = await padUvIslandGuttersWithTopologyCooperatively(
+    imageData, coverage, topology, iterations, alphaMode, yieldToUi, false, timings,
   );
+  if (timings) {
+    timings.gutterTopologyRasterMs = Math.max(0, rasterMs);
+    timings.gutterYieldMs += rasterYieldMs;
+  }
+  return result;
 }
 
 /**
@@ -211,23 +231,31 @@ export async function padUvIslandGuttersWithTopologyCooperatively(
   alphaMode: UvGutterAlphaMode,
   yieldToUi: () => Promise<void>,
   immutableTopology = false,
+  timings?: UvGutterTimings,
 ) {
-  const steps = padUvIslandGutterSteps(imageData, coverage, topology, iterations, alphaMode, immutableTopology);
-  return runUvPostprocessSteps(steps, yieldToUi);
+  if (timings) Object.assign(timings, {
+    gutterBoundaryScanMs: 0, gutterExpansionMs: 0, gutterYieldMs: 0, gutterTopologyRasterMs: 0,
+  });
+  const steps = padUvIslandGutterSteps(imageData, coverage, topology, iterations, alphaMode, immutableTopology, timings);
+  return runUvPostprocessSteps(steps, yieldToUi, timings);
 }
 
-async function runUvPostprocessSteps<T>(steps: Generator<void, T>, yieldToUi: () => Promise<void>) {
+async function runUvPostprocessSteps<T>(steps: Generator<void, T>, yieldToUi: () => Promise<void>, timings?: UvGutterTimings) {
   let sliceStartedAt = performance.now();
   let step = steps.next();
   while (!step.done) {
     if (performance.now() - sliceStartedAt >= 8) {
-      await yieldToUi();
+      const yieldStartedAt = timings ? performance.now() : 0;
+      try { await yieldToUi(); } finally {
+        if (timings) timings.gutterYieldMs += performance.now() - yieldStartedAt;
+      }
       sliceStartedAt = performance.now();
     }
     step = steps.next();
   }
   return step.value;
 }
+
 
 function* padUvIslandGutterSteps(
   imageData: ImageData,
@@ -236,28 +264,54 @@ function* padUvIslandGutterSteps(
   iterations: number,
   alphaMode: UvGutterAlphaMode = false,
   immutableTopology = false,
+  timings?: UvGutterTimings,
 ) {
   const { width, height, data } = imageData;
   if (iterations <= 0) return 0;
   if (topology.length !== width * height || coverage.length !== width * height) {
     throw new Error('UV gutter masks must match the image dimensions.');
   }
-  const neighborOffsets = [
-    [-1, -1], [0, -1], [1, -1],
-    [-1, 0],            [1, 0],
-    [-1, 1],  [0, 1],  [1, 1],
-  ] as const;
-  let currentFrontier: number[] = [];
+  const boundaryStartedAt = timings ? performance.now() : 0;
+  // Same row-major donor order, with precomputed linear offsets. The column
+  // check prevents wrapping across rows; the linear bounds handle top/bottom.
+  const neighborSteps = [-width - 1, -width, -width + 1, -1, 1, width - 1, width, width + 1];
+  const neighborColumns = [-1, 0, 1, -1, 1, -1, 0, 1];
+  const words = data.byteOffset % 4 === 0
+    ? new Uint32Array(data.buffer, data.byteOffset, data.length / 4) : undefined;
+  let currentFrontier = new ChunkedUint32Queue();
+  let spareFrontier = new ChunkedUint32Queue();
   const cached = immutableTopology && gutterBoundary?.mask.deref() === topology &&
     gutterBoundary.width === width && gutterBoundary.height === height ? gutterBoundary : undefined;
   let prepared = immutableTopology && !cached ? new ChunkedUint32Queue() : undefined;
-  if (cached?.seeds) {
-    for (let i = 0; i < cached.seeds.length; i++) {
-      if (i % 8192 === 0) yield;
-      const index = cached.seeds.get(i);
-      if (coverage[index]) currentFrontier.push(index);
+  if (cached?.spans) {
+    let scanned = 0;
+    const coverageWords = coverage.byteOffset % 4 === 0
+      ? new Uint32Array(coverage.buffer, coverage.byteOffset, Math.floor(coverage.length / 4)) : undefined;
+    for (let i = 0; i < cached.spans.length; i += 2) {
+      const end = cached.spans.get(i + 1);
+      for (let index = cached.spans.get(i); index < end; index++) {
+        // Empty atlas spans contain no donor. Skip only proven zero coverage;
+        // retain the exact row-major order for every nonempty candidate.
+        if (coverageWords && index % 4 === 0 && index + 4 <= end && coverageWords[index / 4] === 0) {
+          index += 3;scanned += 4;
+        } else {
+          scanned++;
+          if (coverage[index]) currentFrontier.push(index);
+        }
+        if (scanned >= 8192) {scanned = 0;yield;}
+      }
     }
   } else {
+  let spanStart = -1;
+  const finishSpan = (end: number) => {
+    if (spanStart < 0) return;
+    if (prepared) {
+      if (prepared.length <= 262142) {
+        prepared.push(spanStart); prepared.push(end);
+      } else prepared = undefined;
+    }
+    spanStart = -1;
+  };
   for (let y = 0; y < height; y += 1) {
     if (y > 0) yield;
     for (let x = 0; x < width; x += 1) {
@@ -274,33 +328,32 @@ function* padUvIslandGutterSteps(
           !topology[index + width] || (x + 1 < width && !topology[index + width + 1])));
       if (touchesAtlasGutter) {
         if (coverage[index]) currentFrontier.push(index);
-        if (prepared) {
-          if (prepared.length < 262144) prepared.push(index);
-          else prepared = undefined;
-        }
-      }
+        if (prepared && spanStart < 0) spanStart = index;
+      } else finishSpan(index);
     }
   }
+  finishSpan(width * height);
   }
   if (immutableTopology && !cached) gutterBoundary = {
-    mask: new WeakRef(topology), width, height, seeds: prepared,
+    mask: new WeakRef(topology), width, height, spans: prepared,
   };
+  const expansionStartedAt = timings ? performance.now() : 0;
+  const boundaryYieldMs = timings?.gutterYieldMs ?? 0;
+  if (timings) timings.gutterBoundaryScanMs = Math.max(0, expansionStartedAt - boundaryStartedAt - boundaryYieldMs);
   let paddedPixels = 0;
   let processedSeeds = 0;
 
   for (let iteration = 0; iteration < iterations && currentFrontier.length > 0; iteration += 1) {
-    const nextFrontier: number[] = [];
-    for (const sourceIndex of currentFrontier) {
+    const nextFrontier = spareFrontier;
+    nextFrontier.clear();
+    for (let seed = 0; seed < currentFrontier.length; seed++) {
+      const sourceIndex = currentFrontier.get(seed);
       if (++processedSeeds % 1024 === 0) yield;
       const sourceX = sourceIndex % width;
-      const sourceY = Math.floor(sourceIndex / width);
-      for (let neighbor = 0; neighbor < neighborOffsets.length; neighbor += 1) {
-        const offsetX = neighborOffsets[neighbor][0];
-        const offsetY = neighborOffsets[neighbor][1];
-        const x = sourceX + offsetX;
-        const y = sourceY + offsetY;
-        if (x < 0 || x >= width || y < 0 || y >= height) continue;
-        const targetIndex = y * width + x;
+      for (let neighbor = 0; neighbor < 8; neighbor += 1) {
+        const x = sourceX + neighborColumns[neighbor];
+        const targetIndex = sourceIndex + neighborSteps[neighbor];
+        if (x < 0 || x >= width || targetIndex < 0 || targetIndex >= coverage.length) continue;
         if (
           coverage[targetIndex] ||
           topology[targetIndex]
@@ -312,22 +365,28 @@ function* padUvIslandGutterSteps(
         // order retains the original Map's first-donor and insertion ordering.
         const sourceOffset = sourceIndex * 4;
         const targetOffset = targetIndex * 4;
-        data[targetOffset] = data[sourceOffset];
-        data[targetOffset + 1] = data[sourceOffset + 1];
-        data[targetOffset + 2] = data[sourceOffset + 2];
-        // RGB-only padding must remain transparent and survive weak-alpha cleanup.
-        data[targetOffset + 3] = alphaMode === 'rgb-only' ? 0
-          : alphaMode ? data[sourceOffset + 3] : 255;
+        if (words) words[targetIndex] = words[sourceIndex];
+        else {
+          data[targetOffset] = data[sourceOffset];
+          data[targetOffset + 1] = data[sourceOffset + 1];
+          data[targetOffset + 2] = data[sourceOffset + 2];
+          data[targetOffset + 3] = data[sourceOffset + 3];
+        }
+        if (alphaMode !== true) data[targetOffset + 3] = alphaMode === 'rgb-only' ? 0 : 255;
         coverage[targetIndex] = alphaMode === 'rgb-only' ? 2 : 1;
         nextFrontier.push(targetIndex);
         paddedPixels += 1;
       }
     }
 
+    spareFrontier = currentFrontier;
     currentFrontier = nextFrontier;
   }
+  if (timings) timings.gutterExpansionMs = Math.max(0,
+    performance.now() - expansionStartedAt - (timings.gutterYieldMs - boundaryYieldMs));
   return paddedPixels;
 }
+
 
 export function dilateImageData(...args: Parameters<typeof dilateImageDataSteps>) {
   const steps = dilateImageDataSteps(...args);

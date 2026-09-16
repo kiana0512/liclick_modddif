@@ -51,5 +51,5 @@ for (const model of ['gpt-image-2', 'gpt-image-2.5-sunburst', 'gpt-image-2.5-fla
 const panel = read('../src/components/panels/GeneratePanel.tsx');
 assert.match(panel, /let texturePrompt =[\s\S]*?buildTextureMapPrompt\(prompt\)/);
 assert.match(panel, /completionViewIds.has\(viewId\)[\s\S]*?buildTextureMapCompletionPrompt\(prompt\)/);
-assert.match(panel, /isGptLocalRepaint\s*\? \{ prompt:[^\n]*buildTextureMapCompletionPrompt\(rawUserPrompt\)/);
+assert.match(panel, /isGptLocalRepaint\s*\? \{ prompt:[^\n]*buildGptRepaintPrompt\(rawUserPrompt, gptRepaintUseMaterialReference\)/);
 console.log('Scoped weak-light template, shared entries, suffix and provider passthrough passed (no paid generation).');

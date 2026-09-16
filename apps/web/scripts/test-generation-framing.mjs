@@ -42,8 +42,9 @@ const tight = {};
 let maskPixels = { width: 100, height: 100, data: new Uint8ClampedArray(40000) };
 maskPixels.data.set([255, 255, 255, 255], (50 * 100 + 50) * 4);
 let releases = 0;
+let onVerify;
 new Function('exports', 'THREE', 'performance', 'waitForBrowserPaint', 'captureMask', 'urlToImageData', 'revokeRegisteredObjectUrl', tightCode)(
-  tight, THREE, { now: () => clock }, async () => { clock += 16; }, async () => ({ url: 'test-mask' }),
+  tight, THREE, { now: () => clock }, async () => { clock += 16; }, async () => { onVerify?.(); return { url: 'test-mask' }; },
   async () => maskPixels, () => { releases++; });
 new Function('exports', 'THREE', 'useSceneStore', 'animateCaptureCamera', 'fitGeometryCapture', 'verifyTightCapture', code)(exports, THREE,
   { getState: () => ({ viewport }) }, animationExports.animateCaptureCamera, tight.fitGeometryCapture, tight.verifyTightCapture);
@@ -61,7 +62,7 @@ scene.updateMatrixWorld(true);
 const box = new THREE.Box3().setFromObject(model);
 const center = box.getCenter(new THREE.Vector3());
 let checks = 0;
-for (const orthographic of [false, true]) {
+for (const orthographic of [false, true]) for (const fill of [0.92, 0.98]) {
   for (const direction of [new THREE.Vector3(0, 0, 1), new THREE.Vector3(1, 2, 3).normalize(),
     new THREE.Vector3(0, 1, 0), new THREE.Vector3(0, -1, 0)]) {
     for (const aspect of [0.5, 1, 2]) {
@@ -79,7 +80,7 @@ for (const orthographic of [false, true]) {
         let notifications = 0;
         viewport = { camera, scene, controls: { target: center.clone(), update: () => { notifications++; } } };
         const originalQuaternion = camera.quaternion.clone();
-        const snapshot = await exports.frameGenerationCapture('model', aspect);
+        const snapshot = await exports.frameGenerationCapture('model', aspect, undefined, undefined, undefined, true, fill);
         assert.equal(notifications, 2);
         assert(camera.near <= 0.01, 'capture fit must not raise the interactive near plane');
         assert(camera.far >= 10000, 'capture fit must not shrink the interactive far plane');
@@ -88,11 +89,11 @@ for (const orthographic of [false, true]) {
         const points = [];
         for (let i = 0; i < model.geometry.attributes.position.count; i++) {
           const projected = model.getVertexPosition(i, new THREE.Vector3()).applyMatrix4(model.matrixWorld).project(snapshot.camera);
-          assert(Math.abs(projected.x) <= 0.920001 && Math.abs(projected.y) <= 0.920001);
+          assert(Math.abs(projected.x) <= fill + 0.000001 && Math.abs(projected.y) <= fill + 0.000001);
           assert(projected.z >= -1 && projected.z <= 1);
           points.push(projected.x, projected.y);
         }
-        assert(Math.max(...points.map(Math.abs)) >= 0.919999, 'limiting silhouette must reach 92%');
+        assert(Math.max(...points.map(Math.abs)) >= fill - 0.000001, 'limiting silhouette must reach the requested fill');
         if (previousProjection) points.forEach((value, index) => assert(Math.abs(value - previousProjection[index]) < 1e-7));
         previousProjection = points;
         const frozenPosition = snapshot.camera.position.clone();
@@ -106,7 +107,16 @@ for (const orthographic of [false, true]) {
 const fallback = { camera: viewport.camera.clone(), target: center.clone() };
 const candidate = { camera: viewport.camera.clone(), target: center.clone() };
 assert.equal(await tight.verifyTightCapture(viewport, 'model', candidate, fallback, 1), candidate);
+maskPixels.data.set([255,255,255,255], (50 * 100 + 1) * 4);
+assert.equal(await tight.verifyTightCapture(viewport, 'model', candidate, fallback, 1, undefined, 0.005), candidate,
+  '1% square border is valid, not a reason to return to loose framing');
+assert.equal(await tight.verifyTightCapture(viewport, 'model', candidate, fallback, 1), fallback,
+  'Original non-GPT verification margin remains unchanged');
+maskPixels.data.fill(0);
+maskPixels.data.set([255,255,255,255], (50 * 100 + 50) * 4);
 maskPixels.data.set([255, 255, 255, 255], 0);
+assert.equal(await tight.verifyTightCapture(viewport, 'model', candidate, fallback, 1, undefined, 0.005), fallback,
+  'Square mode still rejects genuinely clipped border pixels');
 assert.equal(await tight.verifyTightCapture(viewport, 'model', candidate, fallback, 1), fallback, 'border pixel falls back');
 maskPixels.data.fill(0);
 assert.equal(await tight.verifyTightCapture(viewport, 'model', candidate, fallback, 1), fallback, 'empty mask falls back');
@@ -120,6 +130,12 @@ irregular.geometry.setIndex([0,1,2, 1,2,3]);
 irregular.userData.liclickObjectId = 'irregular'; irregular.visible = false;
 irregular.position.set(-3, 2, 4); irregular.rotation.set(0.2, 0.7, -0.1); scene.add(irregular);
 scene.updateMatrixWorld(true);
+const vertexReader = irregular.getVertexPosition;
+let vertexReads = 0;
+irregular.getVertexPosition = function (...args) { vertexReads++; return vertexReader.apply(this, args); };
+await tight.fitGeometryCapture(scene, 'irregular', fallback, 1);
+assert.equal(vertexReads, 4, 'Six indices with shared vertices evaluate four exact positions, excluding unused vertices');
+irregular.getVertexPosition = vertexReader;
 for (const ortho of [false, true]) for (const direction of [[0,0,1],[1,0,0],[0,1,0],[0,-1,0],[-1,0,0],[0,0,-1]]) {
   viewport.camera = ortho ? new THREE.OrthographicCamera(-5,5,5,-5,0.01,10000) : new THREE.PerspectiveCamera(40,1,0.01,10000);
   viewport.camera.position.set(1,2,10); viewport.camera.lookAt(0,0,0); viewport.camera.updateMatrixWorld(true);
@@ -140,6 +156,29 @@ for (const ortho of [false, true]) for (const direction of [[0,0,1],[1,0,0],[0,1
   irregular.geometry.attributes.position.setXYZ(4,999,999,999); irregular.geometry.computeBoundingBox();
 }
 scene.remove(irregular); irregular.geometry.dispose(); irregular.material.dispose();
+// Fixed multi-view cameras remain exact while the visible camera keeps moving.
+for (const ortho of [false, true]) {
+  viewport.camera = ortho ? new THREE.OrthographicCamera(-5,5,5,-5,0.01,10000) : new THREE.PerspectiveCamera(40,1,0.01,10000);
+  viewport.camera.position.set(1,2,10); viewport.camera.lookAt(0,0,0); viewport.camera.updateMatrixWorld(true);
+  const pose = viewport.camera.clone();
+  const fixed = await exports.frameGenerationCapture('model', 1, [1,0,0], undefined, undefined, false);
+  onVerify = () => {
+    viewport.camera.position.addScalar(0.0001);
+    viewport.camera.rotateY(0.0001);
+    viewport.camera.zoom += 0.0001;
+    viewport.camera.updateMatrixWorld(true);
+  };
+  const moving = await exports.frameGenerationCapture('model', 1, [1,0,0], undefined, undefined, false);
+  assert.deepEqual(moving.camera.matrixWorld.elements, fixed.camera.matrixWorld.elements);
+  assert.deepEqual(moving.camera.projectionMatrix.elements, fixed.camera.projectionMatrix.elements);
+  assert.notDeepEqual(viewport.camera.position.toArray(), pose.position.toArray(), 'batch does not overwrite live navigation');
+  await assert.rejects(exports.frameGenerationCapture('model', 1, [1,0,0]), /相机已移动/);
+  await assert.rejects(exports.frameGenerationCapture('model', 1, undefined, undefined, undefined, false), /相机已移动/);
+  const cancelledBatch = new AbortController();
+  onVerify = () => cancelledBatch.abort();
+  await assert.rejects(exports.frameGenerationCapture('model', 1, [1,0,0], undefined, cancelledBatch.signal, false), { name: 'AbortError' });
+  onVerify = undefined;
+}
 const beforeMissing = viewport.camera.position.clone();
 await assert.rejects(exports.frameGenerationCapture('missing'));
 assert(viewport.camera.position.equals(beforeMissing));

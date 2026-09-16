@@ -4988,7 +4988,7 @@ export function EditorPage({
       const readbackStartedAt = performance.now();
       let mergedImageData = projectionBakeCacheHit
         ? (preparedFinalHit ? reusableProjectionBake.imageData
-          : cloneProjectionBakeImageData(reusableProjectionBake.imageData))
+          : await cloneProjectionBakeImageData(reusableProjectionBake.imageData))
         : bakeResult?.imageData;
       if (!mergedImageData) {
         const outputContext = outputCanvas.getContext('2d', { willReadFrequently: true });
@@ -5001,7 +5001,7 @@ export function EditorPage({
       if (!preparedFinalHit && layersToBake.length > 0 && !projectionBakeCacheHit && bakeResult) {
         reusableProjectionBakeCacheRef.current.set('merge-uv', {
           signature: projectionBakeSignature,
-          imageData: cloneProjectionBakeImageData(mergedImageData),
+          imageData: await cloneProjectionBakeImageData(mergedImageData),
           report: bakeResult.report,
         });
       }
@@ -5396,9 +5396,11 @@ export function EditorPage({
           )
           .slice(0, 1)
           .map((layer) => layer.id);
-        if (projectedIds.length < 14) {
-          throw new Error(`当前对象只有 ${projectedIds.length} 个可用投影图层，需要 14 个。`);
+        if (projectedIds.length === 0) {
+          throw new Error('当前对象没有可用投影图层。');
         }
+        // S4-SAMPLE/1.0.1: measure the actual 1–14 layer sample and report its
+        // size; ten-view generation projects are valid merge inputs too.
         // A repair underlay is optional in the real merge command. Requiring
         // one only in S4 made a perfectly valid 14-projection project unable to
         // quantify its 4K merge (and looked like a frozen benchmark button).
@@ -5979,8 +5981,12 @@ export function EditorPage({
         }
       }
       if (detail.status !== 'failed') return;
+      const activationRequested = detail.activationRequested === true || Boolean(pendingRequest);
       pendingLocalRepaintActivationRequestRef.current = undefined;
       setLocalRepaintActivationQueued(false);
+      // Background prewarming is opportunistic and will retry when the tool is
+      // opened. Keep red errors for an explicit button-3 request only.
+      if (!activationRequested) return;
       pushToast({
         tone: 'error',
         title: '局部重绘 GPU 准备失败',
@@ -6988,9 +6994,9 @@ export function EditorPage({
         });
         delete document.body.dataset.perfUvBakePhase;
         let workingImageData = memoryProjectionBakeHit
-          ? cloneProjectionBakeImageData(reusableProjectionBake.imageData)
+          ? await cloneProjectionBakeImageData(reusableProjectionBake.imageData)
           : persistentProjectionBake
-            ? cloneProjectionBakeImageData(persistentProjectionBake)
+            ? await cloneProjectionBakeImageData(persistentProjectionBake)
             : bakeResult?.imageData;
         if (!workingImageData) {
           const bakeContext = bakeResult?.canvas.getContext('2d', { willReadFrequently: true });
@@ -7000,7 +7006,7 @@ export function EditorPage({
         if (!projectionBakeCacheHit && bakeResult) {
           reusableProjectionBakeCacheRef.current.set('content-aware-repair', {
             signature: projectionBakeSignature,
-            imageData: cloneProjectionBakeImageData(workingImageData),
+            imageData: await cloneProjectionBakeImageData(workingImageData),
             report: bakeResult.report,
           });
           // Persistence runs after the full-quality result is available and is
@@ -7010,7 +7016,7 @@ export function EditorPage({
         } else if (persistentProjectionBake && !memoryProjectionBakeHit) {
           reusableProjectionBakeCacheRef.current.set('content-aware-repair', {
             signature: projectionBakeSignature,
-            imageData: cloneProjectionBakeImageData(persistentProjectionBake),
+            imageData: await cloneProjectionBakeImageData(persistentProjectionBake),
             report: {
               id: createId('persistent-projection-bake-report'),
               objectId,

@@ -1,11 +1,12 @@
 import * as THREE from 'three';
-import { ResidentQualityComposite, residentQualityPolicy, verifyResidentQuality } from './residentQualityComposite';
+import { ResidentQualityComposite, residentQualityPolicy, verifyResidentQuality, prepareResidentQualityScores } from './residentQualityComposite';
+import { yieldToBrowserTask } from '@/utils/browserScheduling';
 import { blendProjectedRastersInWorker } from './qualityBlendWorker';
 import { convertLayerGpuReadbackInWorker } from './gpuReadbackConversionWorker';
 
 const pending = new WeakMap<THREE.WebGLRenderer, Map<boolean, Promise<void>>>();
 
-/** UV-DEVICE-CALIBRATION/1.1.0. Validate both R8/RGBA on the actual renderer; never trust a
+/** UV-DEVICE-CALIBRATION/1.1.1. Validate both R8/RGBA on the actual renderer; never trust a
  * persisted adapter name. Full-project CPU/GPU comparisons remain release QA.
  */
 export async function calibrateResidentQuality(renderer: THREE.WebGLRenderer, preserveAlpha: boolean) {
@@ -20,10 +21,12 @@ export async function calibrateResidentQuality(renderer: THREE.WebGLRenderer, pr
   if (!job) {
     const owner = modes;
     job = (async () => {
+      await prepareResidentQualityScores();
       const started = performance.now(), resolution = 256, count = resolution ** 2;
       const composite = new ResidentQualityComposite(renderer, resolution);
       const textures: THREE.Texture[] = [];
       const layers = [];
+      let sliceStarted=performance.now();
       try {
         for (let layer = 0; layer < 6; layer++) {
           const red = layer % 2 === 0;
@@ -40,12 +43,16 @@ export async function calibrateResidentQuality(renderer: THREE.WebGLRenderer, pr
             }
             rgba[offset + 3] = color[target + 3] = alpha;
             scores[red ? i : offset + 3] = q; quality[target / 4] = q / 255;
+            if(i%8192===0 && performance.now()-sliceStarted>=4) {
+              await yieldToBrowserTask();sliceStarted=performance.now();
+            }
           }
           const image = new THREE.DataTexture(rgba, resolution, resolution);
           const score = new THREE.DataTexture(scores, resolution, resolution, red ? THREE.RedFormat : THREE.RGBAFormat);
           image.needsUpdate = score.needsUpdate = true;
           textures.push(image, score); composite.push(image, score);
           layers.push({ color, quality });
+          await yieldToBrowserTask();sliceStarted=performance.now();
         }
         const { output } = await composite.readCorrected(preserveAlpha);
         const candidate = await convertLayerGpuReadbackInWorker(new Uint8Array(output.buffer, output.byteOffset, output.byteLength), resolution, true);
@@ -53,7 +60,7 @@ export async function calibrateResidentQuality(renderer: THREE.WebGLRenderer, pr
         if (pending.get(renderer) !== owner || renderer.getContext().isContextLost()) {
           throw new DOMException('UV calibration context changed.', 'AbortError');
         }
-        verifyResidentQuality(renderer, preserveAlpha, { ...reference, imageData: candidate.imageData }, reference);
+        await verifyResidentQuality(renderer, preserveAlpha, { ...reference, imageData: candidate.imageData }, reference);
         document.body.dataset.residentUvDeviceCalibrationMs = (performance.now() - started).toFixed(1);
       } finally {
         composite.dispose(); textures.forEach(texture => texture.dispose());

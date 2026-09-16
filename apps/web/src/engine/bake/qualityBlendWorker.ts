@@ -33,6 +33,8 @@ export type QualityBlendVerification = {
 };
 
 export type QualityBlendWorkerResult = {
+  /** Exact resident-only weak texel index; invalid after overlays/region patches. */
+  transparentCleanupTexels?: Uint32Array;
   imageData: ImageData;
   coverage: Uint8Array<ArrayBuffer>;
   renderedColorMask: Uint8Array<ArrayBuffer>;

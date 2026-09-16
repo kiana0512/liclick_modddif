@@ -5,13 +5,14 @@ import {
   type UvRepaintPatch,
 } from './uvRepaintState';
 
-// ALG-LR-UV-PAINT v1.1.4. Shared UV pixels intentionally share color/alpha.
+// ALG-LR-UV-PAINT v1.1.5. Shared UV pixels intentionally share color/alpha.
 type Tile = { bounds: Rect; surfaces: Array<{ mesh: THREE.Mesh; box: THREE.Box3 }> };
 type Stroke = {
   before?: Map<number, Promise<Uint8Array<ArrayBuffer>>>;
   changed: Set<number>;
 };
 type ProjectedSurfaceBounds = [left: number, top: number, right: number, bottom: number] | true;
+const shaderMain = /void main\(\)\s*\{/;
 
 const vertex = `
 attribute float repaintFaceId;
@@ -121,8 +122,7 @@ function cloneUniformValues(uniforms: Record<string, THREE.IUniform>) {
  * The caller supplies the full-resolution frozen author/allowed mask, not the
  * mutable coverage mask nor the expanded mask sent to the generation service. */
 export function createUvRepaintSourceMaterial(source: THREE.ShaderMaterial) {
-  const main = /void main\(\)\s*\{/;
-  if (!source.uniforms.transparentProjectionOnly || !main.test(source.vertexShader))
+  if (!source.uniforms.transparentProjectionOnly || !shaderMain.test(source.vertexShader))
     throw new Error('UV repaint requires a literal capture material.');
   const uniforms = cloneUniformValues(source.uniforms);
   for (const name of ['previewLightingEnabled', 'hueShift', 'saturationShift', 'lightnessShift'])
@@ -138,7 +138,7 @@ export function createUvRepaintSourceMaterial(source: THREE.ShaderMaterial) {
     uniforms,
     defines: { ...source.defines },
     vertexShader:
-      source.vertexShader.replace(main, 'void capturedVertex() {') +
+      source.vertexShader.replace(shaderMain, 'void capturedVertex() {') +
       `
       void main() { capturedVertex(); gl_Position = vec4(uv * 2.0 - 1.0, 0.0, 1.0); }
     `,
@@ -445,10 +445,10 @@ export class UvRepaint {
       this.brush.uniforms = { ...captured, ...this.brush.uniforms };
       this.brush.defines = { ...material.defines };
       this.brush.vertexShader =
-        material.vertexShader.replace(/void main\(\)\s*\{/, 'void paintSourceVertex() {') +
-        vertex.replace('void main() {', 'void main() { paintSourceVertex();');
+        material.vertexShader.replace(shaderMain, 'void paintSourceVertex() {') +
+        vertex.replace(shaderMain, 'void main() { paintSourceVertex();');
       this.brush.fragmentShader =
-        material.fragmentShader.replace(/void main\(\)\s*\{/, 'void paintSourceFragment() {') +
+        material.fragmentShader.replace(shaderMain, 'void paintSourceFragment() {') +
         paintFragment +
         `
       void main() {

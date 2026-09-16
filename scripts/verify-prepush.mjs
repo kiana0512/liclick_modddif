@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import yaml from 'js-yaml';
 
-// RELEASE-PREPUSH/1.0.0: consume the actual CI build job, including metadata.
+// RELEASE-PREPUSH/1.1.0: actual CI commands plus explicit metadata headroom.
 // This command validates locally; it never pushes or deploys.
 const root = path.resolve(import.meta.dirname, '..');
 const git = (...args) => execFileSync('git', args, { cwd: root, encoding: 'utf8' }).trim();
@@ -20,7 +20,7 @@ const values = {
   CI_COMMIT_SHA: sha,
   CI_COMMIT_SHORT_SHA: sha.slice(0, 8),
   CI_COMMIT_REF_SLUG: branch.toLowerCase().replace(/[^a-z0-9]/g, '-').slice(0, 63).replace(/^-+|-+$/g, ''),
-  CI_JOB_STARTED_AT: new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'),
+  CI_JOB_STARTED_AT: new Date().toISOString().replace(/\.\d{3}Z$/, '+00:00'),
 };
 const ci = yaml.load(fs.readFileSync(path.join(root, '.gitlab-ci.yml'), 'utf8'));
 const environment = { ...process.env };
@@ -31,8 +31,9 @@ for (const [key, value] of Object.entries(ci.build.variables)) {
   });
 }
 console.log(`正式发布推送前检查：${branch} / ${sha}`);
-for (const command of [...ci.lint.script, ...ci.build.script]) {
-  if (!/^corepack pnpm [\w :./-]+$/.test(command)) {
+for (const command of [...ci.lint.script, ...ci.build.script,
+  'corepack pnpm run check:web-bundle-budget --reserve-bytes=256']) {
+  if (!/^corepack pnpm [\w :./=-]+$/.test(command)) {
     throw new Error(`CI 构建命令发生变化，请同步检查入口：${command}`);
   }
   console.log(`\n[prepush] ${command}`);

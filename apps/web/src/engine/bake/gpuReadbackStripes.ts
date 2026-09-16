@@ -1,33 +1,34 @@
 import type * as THREE from 'three';
 import { waitForBrowserPaint, yieldToBrowserTask } from '@/utils/browserScheduling';
 
-// Eight 8 MiB stripes for a 4K RGBA target keep each driver readback bounded.
-// The smaller transfer is intentionally retained: stress testing showed a
-// 100.1ms maximum frame versus 433.6ms at 32 MiB, with identical pixels.
-const GPU_READBACK_STRIPE_BYTES = 8 * 1024 * 1024;
+// UV-READBACK-SCHEDULING/1.2.1: private contexts pipeline four 2 MiB stripes;
+// visible contexts retain one 1 MiB stripe. At most 8 MiB of private PBOs.
+const GPU_READBACK_STRIPE_BYTES = 1024 * 1024;
 
 export async function readRenderTargetPixelsInStripes(
   renderer: THREE.WebGLRenderer,
   target: THREE.WebGLRenderTarget,
   resolution: number,
+  height = resolution,
 ) {
-  const pixels = new Uint8Array(resolution * resolution * 4);
+  const pixels = new Uint8Array(resolution * height * 4);
+  const usesVisibleRenderer = renderer.domElement.isConnected;
+  const stripeBytes = GPU_READBACK_STRIPE_BYTES * (usesVisibleRenderer ? 1 : 2);
   const rowsPerStripe = Math.max(
     1,
-    Math.min(resolution, Math.floor(GPU_READBACK_STRIPE_BYTES / (resolution * 4))),
+    Math.min(height, Math.floor(stripeBytes / (resolution * 4))),
   );
   let maximumStripeMs = 0;
   const startedAt = performance.now();
-  const usesVisibleRenderer = renderer.domElement.isConnected;
   // Pipeline only the isolated bake context. The onscreen renderer keeps its
-  // original one-stripe paint boundary; private work holds at most 16 MiB of PBOs.
-  const depth = usesVisibleRenderer ? 1 : 2;
+  // original one-stripe paint boundary; private work holds at most 8 MiB of PBOs.
+  const depth = usesVisibleRenderer ? 1 : 4;
   const pending: Array<Promise<{ error?: unknown }>> = [];
   let nextY = 0;
   const submit = () => {
     const y = nextY;
     nextY += rowsPerStripe;
-    const rowCount = Math.min(rowsPerStripe, resolution - y);
+    const rowCount = Math.min(rowsPerStripe, height - y);
     const offset = y * resolution * 4;
     const stripe = pixels.subarray(offset, offset + resolution * rowCount * 4);
     const stripeStartedAt = performance.now();
@@ -43,17 +44,20 @@ export async function readRenderTargetPixelsInStripes(
     pending.push(task);
   };
   try {
-    while (nextY < resolution && pending.length < depth) submit();
+    while (nextY < height && pending.length < depth) submit();
     while (pending.length) {
       const completed = await pending.shift()!;
       if ('error' in completed) throw completed.error;
-      if (nextY >= resolution && !pending.length) break;
+      if (nextY >= height && !pending.length) break;
+      // Refill the freed private slot before yielding, so its GPU transfer can
+      // overlap browser input. Never submit visible work before its paint gate.
+      if (!usesVisibleRenderer && nextY < height) submit();
       if (usesVisibleRenderer) {
         await waitForBrowserPaint();
       } else {
         await yieldToBrowserTask();
       }
-      if (nextY < resolution) submit();
+      if (usesVisibleRenderer && nextY < height) submit();
     }
   } finally {
     await Promise.all(pending);
@@ -61,7 +65,7 @@ export async function readRenderTargetPixelsInStripes(
   if (typeof document !== 'undefined') {
     document.body.dataset.uvBakeReadbackStripeRows = String(rowsPerStripe);
     document.body.dataset.uvBakeReadbackStripeCount = String(
-      Math.ceil(resolution / rowsPerStripe),
+      Math.ceil(height / rowsPerStripe),
     );
     document.body.dataset.uvBakeReadbackMaximumStripeMs = maximumStripeMs.toFixed(1);
     document.body.dataset.uvBakeReadbackTotalMs = (performance.now() - startedAt).toFixed(1);

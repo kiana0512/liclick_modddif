@@ -118,7 +118,7 @@ function useProjectedLayerDisplayPreview(layer: Layer, thumbnail = false) {
     const controller = new AbortController();
     void (thumbnail ? createLayerThumbnail : createGeneratedDisplayPreview)(sourceUrl, depthUrl, {
       signal: controller.signal, revision,
-    }, type === 'projected' && !preserveSource)
+    }, thumbnail && type === 'projected' && !preserveSource)
       .then((nextPreview) => {
         if (!cancelled) setPreview({ ...nextPreview, key });
       })

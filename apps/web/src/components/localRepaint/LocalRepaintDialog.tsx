@@ -59,7 +59,7 @@ type CanvasRect = {
   h: number;
 };
 
-const DEFAULT_LOCAL_REPAINT_BRUSH_SIZE = 15;
+const DEFAULT_LOCAL_REPAINT_BRUSH_SIZE = 30;
 const MAX_LOCAL_REPAINT_BRUSH_SIZE = 96;
 const STROKE_CLIP_PADDING = 2;
 

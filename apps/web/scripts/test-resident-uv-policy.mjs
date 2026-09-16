@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import ts from 'typescript';
+import * as THREE from 'three';
 const read=name=>fs.readFileSync(new URL('../src/engine/bake/'+name,import.meta.url),'utf8');
 const window={location:{search:''},localStorage:{getItem:()=> 'cpu',removeItem(){}}};
 const compile=(source,dependencies={})=>{
@@ -11,7 +12,22 @@ const compile=(source,dependencies={})=>{
 };
 const debug=compile(read('uvBakeDebugControls.ts'));
 const source=read('residentQualityComposite.ts');
-const api=compile(source.slice(0,source.indexOf('// ALG-UV-003')),{'./uvBakeDebugControls':debug});
+let verificationYields=0;
+let onYield;
+const dependencies={'./uvBakeDebugControls':debug,'@/utils/browserScheduling':{async yieldToBrowserTask(){verificationYields++;onYield?.();}}};
+const api=compile(source.slice(0,source.indexOf('// ALG-UV-003')),dependencies);
+{
+  const full=compile(source,{...dependencies,three:THREE});
+  const gold=full.createResidentQualityScoreTable();
+  const preparation=full.prepareResidentQualityScores();
+  assert.equal(full.prepareResidentQualityScores(),preparation,'parallel modes share one immutable preparation');
+  await preparation;
+  const first=new full.ResidentQualityComposite({},1),second=new full.ResidentQualityComposite({},1);
+  assert.deepEqual(new Uint8Array(first.scoreTexture.image.data.buffer),new Uint8Array(gold.buffer),
+    'cooperative preparation preserves every Float32 lookup bit');
+  assert.equal(first.scoreTexture.image.data,second.scoreTexture.image.data,'reuse CPU lookup without sharing GPU texture owners');
+  assert.notEqual(first.scoreTexture,second.scoreTexture);first.dispose();second.dispose();
+}
 const renderer=()=>{let lost;return {domElement:{addEventListener:(_,cb)=>lost=cb},lose:()=>lost()};};
 for(const search of ['', '?perfResidentQuality=0', '?perfQualityCpuGold=1']) {
   window.location.search=search;
@@ -20,12 +36,24 @@ for(const search of ['', '?perfResidentQuality=0', '?perfQualityCpuGold=1']) {
   assert.equal(api.residentQualityPolicy(r,false).retainRasters,true,'first result retains full QA');
   const result=()=>({imageData:{data:new Uint8ClampedArray([20,21,22,255])}});
   const gpu=result(),cpu=result();
-  assert.equal(api.verifyResidentQuality(r,false,gpu,cpu),gpu);
+  assert.equal(await api.verifyResidentQuality(r,false,gpu,cpu),gpu);
   assert.equal(api.residentQualityPolicy(r,false).retainRasters,false,'only verified mode omits readbacks');
   r.lose();assert.equal(api.residentQualityPolicy(r,false).retainRasters,true,'context loss requires QA again');
   cpu.imageData.data[3]=0;
-  assert.throws(()=>api.verifyResidentQuality(r,false,gpu,cpu),/validation failed/);
+  await assert.rejects(api.verifyResidentQuality(r,false,gpu,cpu),/validation failed/);
   assert.throws(()=>api.residentQualityPolicy(r,false),/validation failed/,'never silently fall back');
+}
+{
+  const r=renderer();api.residentQualityPolicy(r,false);
+  const result=()=>({imageData:{data:new Uint8ClampedArray(4096*4096*4).fill(255)}});
+  const gpu=result(),cpu=result();
+  assert.equal(await api.verifyResidentQuality(r,false,gpu,cpu),gpu);
+  assert(verificationYields>0,'full 4K QA must give input a task boundary');
+  cpu.imageData.data[cpu.imageData.data.length-4]=253;
+  await assert.rejects(api.verifyResidentQuality(r,false,gpu,cpu),/validation failed/,'the last pixel is still verified');
+  const next=renderer();api.residentQualityPolicy(next,false);onYield=()=>{onYield=undefined;next.lose();};
+  await assert.rejects(api.verifyResidentQuality(next,false,gpu,gpu),error=>error.name==='AbortError');
+  assert.equal(api.residentQualityPolicy(next,false).retainRasters,true,'old-context QA cannot approve the replacement');
 }
 window.location.search='?perfLab=1&perfQualityCpuGold=1';
 assert.equal(debug.getDebugUvBakeMethod(),'cpu');

@@ -1,0 +1,27 @@
+# 逐层 UV 合成的填边扫描与缓存写入
+
+主模块 M07，协作 M06/M09/M12/M13。UV-GUTTER-SEED-SCAN/1.0.0 与 UV-CACHE-WRITE/1.1.0。
+
+用户要求每张投影先形成 UV 颜色/权重，再合成 UV。实际 4517 的 007_roof_vent 顶层关闭：9 个逐层 UV 命中、0 miss、累计投影次数仍 11；更新 616.3ms，其中质量解析 280.3ms（回读 130.4ms）、填边 120.1ms、底图混合 128.6ms、显示上传 58.2ms。证明本轮瓶颈在 UV 后处理，不以保护窗口 FPS 代替实际显示延迟。
+
+填边缓存跨度扫描仅对四字节对齐且完全为零的 coverage 组跳过；非零来源仍按原行顺序进入 frontier。跨度首尾、未对齐视图和任意非零 coverage 保留逐字节检查，yield 仍按扫描工作量执行。无额外长期缓冲。CPU 与 Worker 共用核心；GPU 权重/Top-K、shader、完整分辨率、接缝、alpha 模式、导出和 QA 均不变。
+
+完整回归：600 组冻结填边 oracle、500 组修补与 40 组变换模型接缝、360 组 Worker 冷热拓扑和所有权测试通过。独立 4096² 稀疏图集旧版冷 82.2ms、热 60.9/56.8/42.3ms；新版冷 84.3ms、热 32.2/16.1/15.6ms，全部 RGBA/coverage/填补数相等。该样例不是实际工程整体收益，实际页面复测另记。
+
+可选合成缓存将完整 RGBA 私有快照分段复制，并用 1MiB ReadableStream 写 Response，避免其构造阶段再次复制全部 64MiB；SHA-256 内容、v1 文件格式、两项淘汰上限、写完才 ready 的顺序不变。实际内置浏览器完整 4K 对照：旧版写入 199.2/202.9ms、最大帧 66.8/66.7ms，新版 204.1/201.6ms、最大帧 50.0/50.1ms；逐字节零差异。总写入时间没有明显改善，WebCrypto 快照等剩余长帧尚未解决。
+
+保存 Project Command 幂等、Revision CAS、ownership 与 verified assets 不变。无算法像素/Schema/资产迁移，不重算旧资产。回滚分别恢复逐字节 seed 扫描、同步打包及字节 Response；保留全部完整字节和状态校验。
+
+## UV 底图 GPU 上传复用
+
+UV-UNDERLAY-UPLOAD/1.0.0：复用既有 GPU underlay buffer，不新增 GPU 缓冲。只有当前经过 fetch 权限检查、实际 SHA/尺寸/MIME 验证并缓存的只读 ArrayBuffer，才可记录为上传完成；用 WeakRef 避免 GPU 元数据保留过期的 CPU 大缓冲。变更底图、重新分配/device loss、release、任何覆盖上传及失败均不得误命中。普通传入数组与 source-over 的可写前景不进入该缓存。
+
+CPU 分时后备复用原逐像素内核的范围参数，原方向、舍入、RGBA/透明 RGB、opacity、分块调度和 QA 不变。测试覆盖身份/字节变化、资源更换、非缓存输入、失败后重传、传输统计，以及 36 组含尾段的分时/原内核完整对照；此前权限、取消、decode/release 竞态回归继续通过。
+
+内置浏览器真实 4096² WebGPU：旧版冷/热总计 209.2/86.4/81.4ms，复用版 204.8/71.9/65.2ms；热上传 9.7/10.3→4.7/6.0ms，传输量 192→128MiB；六次完整 GPU/CPU QA 零差异。该指标不包含输入 PNG 解码与 QA 比对，不代表整个图层点击延迟。保留质量解析/全幅回读瓶颈，未宣称首切达到 150ms。回滚删除 underlaySource 身份记录，恢复每次上传；无存储格式或资产迁移。
+
+## UV 底图同步等待裁剪
+
+UV-UNDERLAY-FENCE/1.0.0（M07，协作 M06/M09）：空闲计算不再先等待一次整条 GPU queue 完成，每个有界映射前也不再额外等待整队列；`mapAsync` 本身等待此前使用该 buffer 的命令完成。[W3C WebGPU 映射规范](https://www.w3.org/TR/webgpu/#buffer-mapping)与 [MDN 队列接口说明](https://developer.mozilla.org/en-US/docs/Web/API/GPUQueue/onSubmittedWorkDone)支持此依赖关系。活动交互的原 CPU 分时路线及 GPU 预算门禁保持；8MiB 映射、逐段 yield、完整读回、取消、shader 和 CPU/GPU QA 不变。解析计时现在包括 CPU 提交，不代表 GPU 执行已完成；计算的 GPU 等待计入后续 readback，不能把 computeMs 的下降作为净收益。
+
+修正独立基准的固定 baseline Worker 地址，文件名改为实际内容 SHA 前缀，防止前轮旧脚本缓存被计入本轮收益。首次错误基线表现为热传输 192MiB，与正常缓存命中不符，已排除。哈希隔离重测：旧冷/热总耗时 207.9/74.9/67.3ms，新 189.1/64.3/59.9ms；双方热传输均 128MiB、六次完整 GPU/CPU 零差异。新旧 readback 热样本分别 53.0/50.2ms 与 59.4/55.1ms，反映等待转移，并非回读本身大幅提速。无 Schema/资产迁移；回滚恢复两个队列等待点。确定性回归验证 mapAsync 完成后才访问字节、完整/末段 8MiB 范围与 unmap，原权限/缓存/资源/取消回归通过。

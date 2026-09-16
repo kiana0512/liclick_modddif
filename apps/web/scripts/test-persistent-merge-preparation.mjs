@@ -6,6 +6,7 @@ const code=ts.transpileModule(source.replace(/^import[^\n]+\n/gm,''),{
   compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS},
 }).outputText;
 const stored=new Map();
+let copiedSlices=0;
 const cache={match:async req=>stored.get(req.url)?.clone(),put:async(req,res)=>stored.set(req.url,res),
   keys:async()=>[...stored.keys()].map(url=>new Request(url)),delete:async req=>stored.delete(req.url)};
 class Pixels {constructor(data,width,height){this.data=data;this.width=width;this.height=height;}}
@@ -13,6 +14,7 @@ let user='user-a';
 let activeFetches=0,peakFetches=0;
 const fetched=[];
 const scope={exports:{},crypto:globalThis.crypto,window:{caches:{}},caches:{open:async()=>cache},
+  yieldToBrowserTask:async()=>{copiedSlices++;await new Promise(resolve=>setTimeout(resolve,0));},
   location:{origin:'https://test.invalid'},Request,Response,TextEncoder,TextDecoder:globalThis.TextDecoder,ImageData:Pixels,
   document:{createElement:()=>({})},useAuthStore:{getState:()=>({user:{id:user}})},
   getDebugUvBakeStatus:()=>({}),getMergeUvPostprocessOptions:()=>({gutter:8}),
@@ -54,4 +56,20 @@ assert.equal(await api.readPersistentMerge(key,1024),undefined,'resolution is ch
 const url=[...stored.keys()][0];const response=stored.get(url);const bytes=new Uint8Array(await response.arrayBuffer());
 bytes[bytes.length-1]^=1;stored.set(url,new Response(bytes,{headers:response.headers}));
 assert.equal(await api.readPersistentMerge(key,512),undefined,'corrupt bytes cannot bypass SHA-256 verification');
+// Exercise the real streamed body with full 4K bytes, including transparent RGB.
+const full=new Uint8ClampedArray(4096*4096*4);
+for(let i=0;i<full.length;i++) full[i]=(i*37+(i>>>16))&255;
+const fullResult={report:{width:4096,height:4096},bakedTexture:{id:'4k'},imageData:new Pixels(full,4096,4096)};
+const fullKey='full';
+await api.writePersistentMerge(fullKey,fullResult);
+const fullResponse=stored.get('https://test.invalid/__li3d_internal/merge-preparation/full');
+const reader=fullResponse.clone().body.getReader();let chunkCount=0,total=0;
+while(true){const {value,done}=await reader.read();if(done)break;assert(value.length<=1048576);chunkCount++;total+=value.length;}
+assert.equal(chunkCount,65,'full pixels plus metadata are streamed in bounded chunks');
+assert(total>full.length);
+const originalFirst=full[0];full[0]^=255;
+const fullRestored=await api.readPersistentMerge(fullKey,4096);
+assert.equal(fullRestored.imageData.data[0],originalFirst,'writer retains a private immutable snapshot');
+full[0]=originalFirst;assert.deepEqual(fullRestored.imageData.data,full);
+assert(copiedSlices>=64,'large copies cross scheduling boundaries');
 console.log('Persistent Merge cache: cross-reload geometry/source identity, user isolation, UV invalidation, exact RGBA restore, resolution and corruption checks passed.');

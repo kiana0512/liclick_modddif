@@ -66,13 +66,15 @@ export function isViewportInteractionBusy(quietWindowMs = 180) {
  * jobs call this at safe boundaries; they keep their exact state and resume
  * after the pointer/wheel quiet window instead of competing for a frame.
  */
-export async function waitForViewportInteractionIdle(quietWindowMs = 180) {
+export async function waitForViewportInteractionIdle(quietWindowMs = 180, checkCancelled?: () => void) {
+  checkCancelled?.();
   while (isViewportInteractionBusy(quietWindowMs)) {
     // A hidden tab has no viewport presentation to protect. More importantly,
     // rAF is suspended there, so a stale pointer state must not freeze a queued
     // texture task until the user returns to this page.
     if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
     await waitForBrowserPaint();
+    checkCancelled?.();
   }
 }
 

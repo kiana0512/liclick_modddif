@@ -78,6 +78,19 @@ const signatureCode=ts.transpileModule(signatureSource.replace(/^import[^\n]+\n/
   compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS},
 }).outputText;
 const signatureApi=new Function('exports','getProjectedLayerStackSignature','getDebugUvBakeStatus',signatureCode+';return exports;')({},()=>'',()=>({}));
+let copyClock=0,copyYields=0,cancelCopy=false;
+const copyScope={exports:{},ImageData:Pixels,performance:{now:()=>copyClock+=5},
+  yieldToBrowserTask:async()=>{copyYields++;},waitForViewportInteractionIdle:async(_quiet,guard)=>guard?.()};
+const copyApi=new Function(...Object.keys(copyScope),signatureCode+';return exports;')(...Object.values(copyScope));
+const large=new Pixels(new Uint8ClampedArray(4096*4096*4+4).subarray(4),4096,4096);
+for(let i=0;i<large.data.length;i++)large.data[i]=(i*31+17)&255;
+const cloned=await copyApi.cloneProjectionBakeImageData(large);
+assert.deepEqual(cloned.data,large.data,'complete 4K RGBA including hidden colors survives bounded copy');
+assert.equal(copyYields,63,'full 4K clone yields at 1 MiB boundaries under load');
+cloned.data[0]^=255;assert.notEqual(cloned.data[0],large.data[0],'caller owns independent output');
+await assert.rejects(copyApi.cloneProjectionBakeImageData(large,()=>{
+  if(cancelCopy)throw new DOMException('cancelled','AbortError');cancelCopy=true;
+}),{name:'AbortError'},'cancelled copies do not publish partial results');
 const attributes={position:{count:3,version:0},normal:{count:3,version:0},uv:{count:3,version:0}};
 const mesh={uuid:'mesh',visible:true,isMesh:true,matrixWorld:{elements:[1]},
   geometry:{uuid:'geometry',index:{version:0},drawRange:{start:0,count:3},getAttribute:name=>attributes[name]}};

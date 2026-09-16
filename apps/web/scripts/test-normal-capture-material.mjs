@@ -1,0 +1,95 @@
+import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
+import * as THREE from 'three';
+import ts from 'typescript';
+
+const source = await readFile(new URL('../src/engine/capture/captureNormal.ts', import.meta.url), 'utf8');
+const targetSource = await readFile(new URL('../src/engine/capture/renderTargetUtils.ts', import.meta.url), 'utf8');
+const ast = ts.createSourceFile('target.ts', targetSource, ts.ScriptTarget.Latest, true);
+const helpers = ['isCaptureTargetMesh', 'applyTargetOnlyMaterial'].map(name => {
+  const node = ast.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === name);
+  assert(node, name);
+  return node.getText(ast).replace(/^export /, '');
+}).join('\n');
+const code = ts.transpileModule(helpers + '\n' + source.replace(/^import[^;]+;\s*/gm, '').replace('export async', 'async'), {
+  compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
+}).outputText;
+const seen = [], pending = [];
+let fail = false, delayed = false;
+const captureNormal = new Function('THREE', 'renderSceneToPngUrl', code + '\nreturn captureNormal;')(THREE,
+  async (request, options) => {
+    const target = request.scene.children[0];
+    seen.push({ material: target.material, camera: request.camera, options });
+    assert.equal(request.scene.children[1].visible, false);
+    if (fail) throw new Error('render failure');
+    options.onRenderSubmitted();
+    if (delayed) await new Promise(resolve => pending.push(resolve));
+    return 'normal-png';
+  });
+
+const scene = new THREE.Scene(), original = new THREE.MeshBasicMaterial();
+const mesh = new THREE.Mesh(new THREE.BoxGeometry(), original);
+mesh.userData.liclickObjectId = 'normal-target';
+const other = new THREE.Mesh();
+scene.add(mesh, other);
+const gl = {}, request = { gl, scene, camera: new THREE.PerspectiveCamera(), objectId: 'normal-target', width: 4096, height: 4096 };
+for (const space of ['view', 'world', 'object']) {
+  const materials = new Set();
+  for (let angle = 0; angle < 10; angle++) {
+    request.camera = new THREE.PerspectiveCamera();
+    request.camera.position.set(angle, angle + 1, angle + 2);
+    const camera = request.camera;
+    assert.deepEqual(await captureNormal(request, { space, geometryGuide: true }), { url: 'normal-png', warnings: [] });
+    const entry = seen.at(-1);
+    assert.equal(entry.camera, camera);
+    assert.equal(entry.options.dataTexture, true);
+    assert.equal(entry.options.ignoreSceneBackground, true);
+    assert.equal(entry.options.samples, 0);
+    assert.equal(mesh.material, original);
+    assert.equal(other.visible, true);
+    materials.add(entry.material);
+  }
+  assert.equal(materials.size, 1, 'One immutable material per renderer and normal space');
+}
+const [view, world, object] = [seen[0].material, seen[10].material, seen[20].material];
+assert.equal(new Set([view, world, object]).size, 3);
+assert(view instanceof THREE.MeshNormalMaterial);
+assert(world instanceof THREE.ShaderMaterial);
+assert(world.vertexShader.includes('mat3(modelMatrix) * normal'));
+assert(object.vertexShader.includes('normalize(normal)'));
+for (const material of [world, object]) {
+  assert(material.fragmentShader.includes('n * 0.5 + 0.5'));
+  assert(material.vertexShader.includes('projectionMatrix * modelViewMatrix'));
+  assert.equal(material.toneMapped, false);
+}
+let disposed = 0;
+view.addEventListener('dispose', () => disposed++);
+fail = true;
+await assert.rejects(captureNormal(request), /render failure/);
+assert.equal(mesh.material, original);
+assert.equal(other.visible, true);
+fail = false;
+await captureNormal(request);
+assert.equal(seen.at(-1).material, view, 'A failed draw does not poison the next capture');
+assert.equal(seen.at(-1).options.dataTexture, undefined, 'Default capture options remain unchanged');
+await captureNormal({ ...request, gl: {} });
+assert.notEqual(seen.at(-1).material, view, 'A replacement renderer has an independent material owner');
+
+delayed = true;
+const first = captureNormal(request), second = captureNormal(request);
+assert.equal(mesh.material, original, 'Async PNG waits must not retain scene mutations');
+const newer = new THREE.MeshBasicMaterial();
+mesh.material = newer;
+pending.shift()();
+await first;
+assert.equal(mesh.material, newer, 'Late finally must not overwrite a newer material commit');
+pending.shift()();
+await second;
+assert.equal(mesh.material, newer);
+assert.equal(disposed, 0, 'Finishing an angle must not dispose the renderer-owned program');
+mesh.geometry.dispose();
+original.dispose();
+newer.dispose();
+other.geometry.dispose();
+other.material.dispose();
+console.log('Normal capture material regression passed: three spaces, ten angles, independent renderers, failure restoration and overlapping PNG waits.');

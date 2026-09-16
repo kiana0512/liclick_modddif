@@ -9,6 +9,14 @@ const DOMINANCE_MARGIN_END = 0.2;
 const COLOR_CONSISTENCY_SIGMA = 0.22;
 const COVERAGE_THRESHOLD = 0.02;
 
+// Synchronous, non-reentrant kernel: every slot is overwritten before reading.
+// Reuse only scratch, never output. Sparse GPU correction can call this hundreds
+// of thousands of times; per-pixel nested arrays cause avoidable GC stalls.
+const pixelCoverages = [0, 0, 0];
+const pixelQualities = [0, 0, 0];
+const pixelStrongWeights = [0, 0, 0];
+const pixelColors = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
+
 
 const SRGB_BYTE_TO_LINEAR = Array.from({ length: 256 }, (_, value) => {
   const color = value / 255;
@@ -46,19 +54,15 @@ export function resolvePixelCpu(topK: TopK, pixelIndex: number, preserveAlpha: b
   const offset = pixelIndex * 4;
   let candidateCount = 0;
   let remaining = 1;
-  const coverages = [0, 0, 0];
-  const qualities = [0, 0, 0];
-  const colors = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
+  const coverages = pixelCoverages;
+  const qualities = pixelQualities;
+  const colors = pixelColors;
   for (let slot = 0; slot < TOP_K; slot += 1) {
     const coverage = topK.coverages[slot][pixelIndex];
     coverages[slot] = coverage;
     qualities[slot] = topK.qualities[slot][pixelIndex];
     remaining *= 1 - Math.max(0, Math.min(1, coverage));
     if (coverage > COVERAGE_THRESHOLD) candidateCount += 1;
-    const packed = topK.colors[slot][pixelIndex];
-    colors[slot][0] = SRGB_BYTE_TO_LINEAR[packed & 255];
-    colors[slot][1] = SRGB_BYTE_TO_LINEAR[(packed >>> 8) & 255];
-    colors[slot][2] = SRGB_BYTE_TO_LINEAR[(packed >>> 16) & 255];
   }
   const alpha = preserveAlpha ? clampByte((1 - remaining) * 255) : 255;
   if (candidateCount === 1) {
@@ -74,6 +78,10 @@ export function resolvePixelCpu(topK: TopK, pixelIndex: number, preserveAlpha: b
   let baseGreen = 0;
   let baseBlue = 0;
   for (let slot = 0; slot < TOP_K; slot += 1) {
+    const packed = topK.colors[slot][pixelIndex];
+    colors[slot][0] = SRGB_BYTE_TO_LINEAR[packed & 255];
+    colors[slot][1] = SRGB_BYTE_TO_LINEAR[(packed >>> 8) & 255];
+    colors[slot][2] = SRGB_BYTE_TO_LINEAR[(packed >>> 16) & 255];
     const quality = qualities[slot];
     if (quality <= 0) continue;
     totalQuality += quality;
@@ -101,7 +109,9 @@ export function resolvePixelCpu(topK: TopK, pixelIndex: number, preserveAlpha: b
   let sumStrong = 0;
   let sumSoft = 0;
   for (let slot = 0; slot < TOP_K; slot += 1) {
-    sumStrong += Math.max(0, qualities[slot]) ** BLEND_POWER;
+    const strong = Math.max(0, qualities[slot]) ** BLEND_POWER;
+    pixelStrongWeights[slot] = strong;
+    sumStrong += strong;
     sumSoft += Math.max(0, coverages[slot]);
   }
   if (sumSoft <= 0.000001) return false;
@@ -109,10 +119,9 @@ export function resolvePixelCpu(topK: TopK, pixelIndex: number, preserveAlpha: b
   let finalGreen = 0;
   let finalBlue = 0;
   for (let slot = 0; slot < TOP_K; slot += 1) {
-    const quality = Math.max(0, qualities[slot]);
     const coverage = Math.max(0, coverages[slot]);
     if (coverage <= 0) continue;
-    const strongWeight = quality ** BLEND_POWER / Math.max(sumStrong, 0.000001);
+    const strongWeight = pixelStrongWeights[slot] / Math.max(sumStrong, 0.000001);
     const softWeight = coverage / sumSoft;
     const weight = strongWeight * (1 - RESIDUAL_MIX) + softWeight * RESIDUAL_MIX;
     finalRed += colors[slot][0] * weight;
@@ -128,4 +137,3 @@ export function resolvePixelCpu(topK: TopK, pixelIndex: number, preserveAlpha: b
   output[offset + 3] = alpha;
   return true;
 }
-

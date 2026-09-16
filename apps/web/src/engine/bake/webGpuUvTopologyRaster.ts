@@ -103,6 +103,57 @@ function yieldMainThread() {
   return new Promise<void>((resolve) => window.setTimeout(resolve, 0));
 }
 
+function collectUvTriangleGeometries(root: THREE.Object3D) {
+  const geometries: Array<{
+    uv: THREE.BufferAttribute | THREE.InterleavedBufferAttribute;
+    index?: THREE.BufferAttribute | null;
+    triangleCount: number;
+  }> = [];
+  root.traverse((object) => {
+    const mesh = object as THREE.Mesh;
+    if (!mesh.isMesh || !mesh.geometry) return;
+    if (object.userData.liclickPaintOverlay || object.userData.liclickWireframeOverlay || object.userData.liclickLocalRepaintGpuOverlay) return;
+    const uv = mesh.geometry.getAttribute('uv');
+    if (!uv) return;
+    const index = mesh.geometry.getIndex();
+    const triangleCount = Math.floor((index?.count ?? uv.count) / 3);
+    if (triangleCount > 0) geometries.push({ uv, index, triangleCount });
+  });
+  return geometries;
+}
+
+// The retained raster input is already an exact reference. For oversized source
+// arrays, compare referenced UVs directly instead of inflating another snapshot
+// or allocating another full triangle array. Unversioned edits still invalidate.
+async function matchesSerializedUvTriangles(root: THREE.Object3D, previous: Float32Array<ArrayBuffer>) {
+  const geometries = collectUvTriangleGeometries(root);
+  if (geometries.reduce((sum, geometry) => sum + geometry.triangleCount * 6, 0) !== previous.length) return false;
+  const expected = new Uint32Array(previous.buffer);
+  const converted = new Float32Array(2), convertedBits = new Uint32Array(converted.buffer);
+  let offset = 0, verticesSinceYield = 0, sliceStarted = performance.now();
+  for (const { uv, index, triangleCount } of geometries) {
+    const raw = !('data' in uv) && !uv.normalized && uv.array instanceof Float32Array
+      ? new Uint32Array(uv.array.buffer, uv.array.byteOffset, uv.array.length) : undefined;
+    for (let vertex = 0; vertex < triangleCount * 3; vertex++) {
+      const sourceIndex = index ? index.getX(vertex) : vertex;
+      const sourceOffset = sourceIndex * uv.itemSize;
+      if (!(raw && Number.isInteger(sourceOffset) && sourceOffset >= 0 && sourceOffset + 1 < raw.length &&
+        raw[sourceOffset] === expected[offset] && raw[sourceOffset + 1] === expected[offset + 1])) {
+        // Match the existing Float32 serialization for normalized, interleaved,
+        // half-float and other formats, including NaN conversion and signed zero.
+        converted[0] = uv.getX(sourceIndex); converted[1] = uv.getY(sourceIndex);
+        if (convertedBits[0] !== expected[offset] || convertedBits[1] !== expected[offset + 1]) return false;
+      }
+      offset += 2;
+      if (++verticesSinceYield >= 8_192) {
+        verticesSinceYield = 0;
+        if (performance.now() - sliceStarted >= 4) { await yieldMainThread(); sliceStarted = performance.now(); }
+      }
+    }
+  }
+  return true;
+}
+
 async function serializeUvTriangles(root: THREE.Object3D) {
   const previous = trianglesByRoot.get(root);
   const run = async <T>(steps: Generator<void, T>) => {
@@ -114,31 +165,20 @@ async function serializeUvTriangles(root: THREE.Object3D) {
     }
     return step.value;
   };
-  if (previous && sourceSnapshot?.root.deref() === root &&
-      await run(matchesUvSeamGeometry(root, sourceSnapshot.value, true))) return previous;
+  if (previous) {
+    const snapshot = sourceSnapshot?.root.deref() === root ? sourceSnapshot.value : undefined;
+    const matches = snapshot
+      ? await run(matchesUvSeamGeometry(root, snapshot, true))
+      : await matchesSerializedUvTriangles(root, previous);
+    if (matches) return previous;
+  }
   // A single bounded source snapshot, rather than re-expanding every triangle
   // on every layer toggle. Actual unversioned UV/index edits still invalidate.
   sourceSnapshot = undefined;
-  const snapshot = await run(snapshotUvSeamGeometry(root, true));
+  const snapshot = await run(snapshotUvSeamGeometry(root, true, undefined, false));
   const promise = (async () => {
-    const geometries: Array<{
-      uv: THREE.BufferAttribute | THREE.InterleavedBufferAttribute;
-      index?: THREE.BufferAttribute | null;
-      triangleCount: number;
-    }> = [];
-    let triangleCount = 0;
-    root.traverse((object) => {
-      const mesh = object as THREE.Mesh;
-      if (!mesh.isMesh || !mesh.geometry) return;
-      if (object.userData.liclickPaintOverlay || object.userData.liclickWireframeOverlay || object.userData.liclickLocalRepaintGpuOverlay) return;
-      const uv = mesh.geometry.getAttribute('uv');
-      if (!uv) return;
-      const index = mesh.geometry.getIndex();
-      const meshTriangleCount = Math.floor((index?.count ?? uv.count) / 3);
-      if (meshTriangleCount <= 0) return;
-      geometries.push({ uv, index, triangleCount: meshTriangleCount });
-      triangleCount += meshTriangleCount;
-    });
+    const geometries = collectUvTriangleGeometries(root);
+    const triangleCount = geometries.reduce((sum, geometry) => sum + geometry.triangleCount, 0);
     const triangles = new Float32Array(triangleCount * 3 * 2);
     let outputOffset = 0;
     let verticesSinceYield = 0;
@@ -170,6 +210,7 @@ async function serializeUvTriangles(root: THREE.Object3D) {
   const triangles = await promise;
   if (snapshot && await run(matchesUvSeamGeometry(root, snapshot, true))) sourceSnapshot = {root:new WeakRef(root), value:snapshot};
   else if (snapshot) throw new Error('UV geometry changed during topology preparation.');
+  else if (!await matchesSerializedUvTriangles(root, triangles)) throw new Error('UV geometry changed during topology preparation.');
   if (previous?.length === triangles.length) {
     const currentBits = new Uint32Array(triangles.buffer);
     const previousBits = new Uint32Array(previous.buffer);

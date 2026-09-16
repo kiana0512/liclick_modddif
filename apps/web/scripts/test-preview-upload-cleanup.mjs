@@ -15,6 +15,7 @@ async function run(failure, flipY, fast = false, mask = false, allowWhileInterac
   let invalidations = 0;
   const bitmaps = [];
   const submissions = [];
+  const timings = {};
   class Bitmap {
     constructor(width, height, row = -1) { this.width = width; this.height = height; this.row = row; this.closed = 0; }
     close() { assert.equal(this.closed++, 0, 'each owned bitmap closes exactly once'); }
@@ -61,7 +62,16 @@ async function run(failure, flipY, fast = false, mask = false, allowWhileInterac
     getWorkerBitmapId: () => mask ? 17 : undefined, previewUploadGovernorEnabled: () => true,
     createTextureUploadBudget: () => ({ pixels: 4 }), updateTextureUploadBudget: budget => budget,
     startFrameIntervalMonitor: () => { monitors++; return { stop: () => monitors--, readAndReset: () => ({}) }; },
-    waitForViewportInteractionIdle: async () => { idleWaits++; if (failure === 'before-allocation') cancelled = true; },
+    waitForViewportInteractionIdle: async checkCancelled => {
+      idleWaits++;
+      assert.equal(typeof checkCancelled, 'function', 'idle waits must keep observing supersession');
+      if (failure === 'before-allocation') cancelled = true;
+      if (failure === 'cancel-during-idle') {
+        await new Promise(resolve => setImmediate(resolve));
+        cancelled = true;
+      }
+      checkCancelled();
+    },
     isViewportInteractionBusy: () => false,
     waitForBrowserPaint: async () => {
       waitCount++;
@@ -93,6 +103,7 @@ async function run(failure, flipY, fast = false, mask = false, allowWhileInterac
       shouldCancel: () => cancelled,
       allowWhileInteracting,
       deferVisiblePresentationBarrier: deferBarrier,
+      timings,
     });
     if (failure) await assert.rejects(operation, undefined, `${mask ? 'R8' : 'RGBA'} ${failure}`); else await operation;
     await new Promise(resolve => setTimeout(resolve, 10));
@@ -109,6 +120,16 @@ async function run(failure, flipY, fast = false, mask = false, allowWhileInterac
       [0, 2, 4, 6].map(y => [flipY ? 6 - y : y, mask ? -1 : y, 2, mask === true ? 'red' : 'rgba']),
     );
     if (!failure) assert.equal(idleWaits === 0, allowWhileInteracting, 'Only interactive uploads bypass idle gating');
+    if (!failure) {
+      for (const field of ['allocationMs', 'stripeWaitMs', 'submitMs']) {
+        assert(Number.isFinite(timings[field]) && timings[field] >= 0, `measured ${field}`);
+      }
+      assert.equal(timings.interactionWaitMs === undefined, allowWhileInteracting);
+      assert.equal(timings.presentationWaitMs === undefined, !visible || deferBarrier);
+      assert.equal(timings.yieldMs === undefined, waitCount === (visible && !deferBarrier ? 2 : 0) && taskYields === 0);
+      assert(Object.values(timings).reduce((sum, value) => sum + value, 0) <=
+        Number(scope.document.body.dataset.previewTextureStripedUploadMs) + 0.2, 'exclusive elapsed phases');
+    }
     assert.equal(states.get('active'), 7);
     assert.equal(states.get('binding'), 'original');
     assert.equal(Boolean(states.get('flip')), true);
@@ -140,6 +161,7 @@ assert.equal(visibleBatch.taskYields, 0, 'healthy visible uploads batch sub-budg
 const detachedBatch = await run(undefined, false, true, false, false, false);
 assert.equal(detachedBatch.taskYields, 1, 'detached uploads yield once per bounded exact-stripe batch');
 await run('detached-yield', false, true, false, false, false);
+for (const mask of [false, true, 'rgba']) await run('cancel-during-idle', false, true, mask);
 const deferredVisibleBatch = await run(undefined, false, true, false, false, true, true);
 assert.equal(deferredVisibleBatch.waitCount, 0, 'private visible batches may defer their per-texture presentation barrier');
 console.log('Preview upload cleanup passed: RGBA bitmap/bytes and R8 mask success/cancel/failure cases; visible and detached bounded batching, deferred barrier, idle/cancel gating, late/rejected stripes, GL state, source ownership, orientation and zero live monitors/uploads.');

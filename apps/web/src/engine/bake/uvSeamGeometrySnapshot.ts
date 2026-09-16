@@ -1,12 +1,18 @@
 import type * as THREE from 'three';
+import { deflateSync, inflateSync } from 'fflate';
 
 // Exact bytes, rather than a short hash or BufferAttribute.version: callers
 // can edit CPU geometry without raising needsUpdate. Only one seam plan retains
-// these snapshots, with a 32 MiB limit, independently of projection image size.
+// these snapshots, with a default 32 MiB limit. Repair plans can supply their
+// shared snapshot/address budget, independently of projection image size.
+// Large sources use lossless blocks; every restored byte is still compared.
 const MAX_SNAPSHOT_BYTES = 32 * 1024 * 1024;
-export type UvSeamGeometrySnapshot = { description: string; buffers: Uint8Array[] };
+const SNAPSHOT_BLOCK_BYTES = 65536;
+type CompressedBuffer = { byteLength: number; chunks: Uint8Array[] };
+export type UvSeamGeometrySnapshot = { description: string; buffers: Uint8Array[];
+  compressed?: CompressedBuffer[] };
 
-function describe(root: THREE.Object3D, topologyOnly = false): UvSeamGeometrySnapshot {
+function describe(root: THREE.Object3D, topologyOnly = false) {
   root.updateMatrixWorld(true);
   const description: unknown[] = [];
   const buffers: Uint8Array[] = [];
@@ -37,12 +43,45 @@ function describe(root: THREE.Object3D, topologyOnly = false): UvSeamGeometrySna
   return { description: JSON.stringify(description), buffers };
 }
 
-export function* snapshotUvSeamGeometry(root: THREE.Object3D, topologyOnly = false) {
+export function uvSeamSnapshotByteLength(snapshot: UvSeamGeometrySnapshot) {
+  return snapshot.compressed
+    ? snapshot.compressed.reduce((sum, buffer) => sum + buffer.chunks.reduce((size, chunk) => size + chunk.byteLength, 0), 0)
+    : snapshot.buffers.reduce((sum, buffer) => sum + buffer.byteLength, 0);
+}
+
+export function* snapshotUvSeamGeometry(root: THREE.Object3D, topologyOnly = false,
+  maximumBytes = MAX_SNAPSHOT_BYTES, compressOversize = true): Generator<void, UvSeamGeometrySnapshot | undefined> {
   const state = describe(root, topologyOnly);
   const bytes = state.buffers.reduce((sum, buffer) => sum + buffer.byteLength, 0);
   if (typeof document !== 'undefined') document.body.dataset.residentUvSeamGeometryBytes = String(bytes);
-  if (bytes > MAX_SNAPSHOT_BYTES) {
-    return undefined;
+  const recordStorage = (storedBytes: number, encoding: string) => {
+    if (!topologyOnly && typeof document !== 'undefined') {
+      document.body.dataset.residentUvSeamSnapshotBytes = String(storedBytes);
+      document.body.dataset.residentUvSeamSnapshotEncoding = encoding;
+    }
+  };
+  if (bytes > Math.min(MAX_SNAPSHOT_BYTES, maximumBytes)) {
+    if (!compressOversize) return undefined;
+    const compressed: CompressedBuffer[] = [];
+    let storedBytes = 0;
+    for (let index = 0; index < state.buffers.length; index++) {
+      const source = state.buffers[index];
+      const chunks: Uint8Array[] = [];
+      for (let offset = 0; offset < source.length; offset += SNAPSHOT_BLOCK_BYTES) {
+        const block = source.subarray(offset, offset + SNAPSHOT_BLOCK_BYTES);
+        const chunk = deflateSync(block, { level: 1 });
+        storedBytes += chunk.byteLength;
+        if (storedBytes > maximumBytes) {
+          recordStorage(0, 'over-budget');
+          return undefined;
+        }
+        chunks.push(chunk);
+        yield;
+      }
+      compressed.push({ byteLength: source.byteLength, chunks });
+    }
+    recordStorage(storedBytes, 'lossless-blocks');
+    return { description: state.description, buffers: [], compressed };
   }
   const buffers: Uint8Array[] = [];
   for (const source of state.buffers) {
@@ -53,12 +92,30 @@ export function* snapshotUvSeamGeometry(root: THREE.Object3D, topologyOnly = fal
     }
     buffers.push(copy);
   }
+  recordStorage(bytes, 'raw');
   return { description: state.description, buffers };
 }
 
 export function* matchesUvSeamGeometry(root: THREE.Object3D, snapshot: UvSeamGeometrySnapshot, topologyOnly = false) {
   const state = describe(root, topologyOnly);
-  if (state.description !== snapshot.description || state.buffers.length !== snapshot.buffers.length) return false;
+  if (state.description !== snapshot.description ||
+    state.buffers.length !== (snapshot.compressed ?? snapshot.buffers).length) return false;
+  if (snapshot.compressed) {
+    for (let index = 0; index < state.buffers.length; index++) {
+      const current = state.buffers[index], saved = snapshot.compressed[index];
+      if (current.length !== saved.byteLength) return false;
+      let offset = 0;
+      for (const chunk of saved.chunks) {
+        const previous = inflateSync(chunk);
+        for (let byte = 0; byte < previous.length; byte++) {
+          if (current[offset + byte] !== previous[byte]) return false;
+        }
+        offset += previous.length;
+        yield;
+      }
+    }
+    return true;
+  }
   for (let index = 0; index < state.buffers.length; index++) {
     const current = state.buffers[index], previous = snapshot.buffers[index];
     if (current.length !== previous.length) return false;

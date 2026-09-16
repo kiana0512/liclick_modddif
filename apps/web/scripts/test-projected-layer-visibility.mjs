@@ -970,7 +970,7 @@ assert.match(
 );
 assert.match(
   generatePanelSource,
-  /isLocalRepaintGeneration\(displayedPreviewGeneration\)[\s\S]*?'generated-display'[\s\S]*?createGeneratedDisplayPreview\(sourceUrl, previewProcessingDepthUrl, previewRequest\)[\s\S]*?preview\.fittedUrl/,
+  /isLocalRepaintGeneration\(displayedPreviewGeneration\)[\s\S]*?'generated-display'[\s\S]*?createGeneratedDisplayPreview\(sourceUrl, previewProcessingDepthUrl, previewRequest, previewProcessingMode === 'source-alpha'\)[\s\S]*?preview\.fittedUrl/,
   'Local repaint cards must use one depth-authored transparent and fitted UI display copy.',
 );
 assert.match(

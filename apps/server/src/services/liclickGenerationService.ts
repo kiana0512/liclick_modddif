@@ -2,7 +2,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
+import { generationFramingRatio, generationOutputSize, type GenerationFraming } from '@liclick/contracts';
 import { callAtlasToolJson, parseJsonFromOutput } from '../auth/atlasAuthService.js';
+import { preparePixelExactUploadArguments } from './pixelExactReferenceUpload.js';
+import { prepareRepaintColorUploadArguments } from './repaintColorReferenceUpload.js';
 
 type ReferenceInput = {
   id?: string;
@@ -11,6 +14,7 @@ type ReferenceInput = {
 };
 
 export type GenerateImageInput = {
+  framing?: GenerationFraming;
   referencePipeline?: 'six-view-delight-v1';
   clientGenerationId?: string;
   projectId?: string;
@@ -39,6 +43,8 @@ export type EditImageInput = {
 
 export type LiclickAtlasContext = {
   atlasHomeDir?: string;
+  userId?: string;
+  projectId?: string;
 };
 
 type UploadedReference = {
@@ -522,6 +528,19 @@ export function buildExtraParams(input: GenerateImageInput, uploadedReferences: 
       extraParams.image_size = imageSize === 'auto' ? '1K' : imageSize;
     }
   }
+  if (input.framing) {
+    if (!(isGpt25 || model === 'gpt-image-2') || !['texture-map', 'local-repaint'].includes(input.workflow ?? '') || input.referencePipeline || imageSize === 'auto')
+      throw new Error('自适应裁切仅适用于明确分辨率的 GPT 贴图或局部重绘。');
+    const ratio = generationFramingRatio(input.framing);
+    if (input.framing.version === 2) {
+      const expected = generationOutputSize(ratio.width, ratio.height, imageSize);
+      if (expected.width !== input.framing.outputWidth || expected.height !== input.framing.outputHeight)
+        throw new Error('生成补边画布与分辨率不一致，未提交任务。');
+    }
+    delete extraParams.aspect_ratio;
+    extraParams.aspect_ratio_w = ratio.width;
+    extraParams.aspect_ratio_h = ratio.height;
+  }
   return { model, extraParams };
 }
 
@@ -714,6 +733,7 @@ async function uploadReference(
   reference: ReferenceInput,
   _tempDir: string,
   atlasContext: LiclickAtlasContext = {},
+  colorGuide = false,
 ): Promise<UploadedReference> {
   const personalAtlasHomeDir = atlasContext.atlasHomeDir?.trim();
   if (!personalAtlasHomeDir) {
@@ -724,8 +744,7 @@ async function uploadReference(
   if (reference.url.startsWith('data:')) {
     const { buffer } = dataUrlToBuffer(reference.url);
     const digest = createHash('sha256').update(buffer).digest('hex');
-    cacheKey = `${personalAtlasHomeDir}:image:${digest}`;
-    toolArguments.file_path = reference.url;
+    cacheKey = `${personalAtlasHomeDir}:image:${colorGuide ? 'gpt-color-v2:' : ''}${digest}`;
   } else {
     cacheKey = `${personalAtlasHomeDir}:image-url:${reference.url}`;
     toolArguments.url = reference.url;
@@ -734,6 +753,17 @@ async function uploadReference(
   let uploadPromise = uploadedImageAssetCache.get(cacheKey);
   if (!uploadPromise) {
     uploadPromise = (async () => {
+      if (reference.url.startsWith('data:')) {
+        Object.assign(toolArguments, colorGuide
+          ? await prepareRepaintColorUploadArguments(reference.url)
+          : await preparePixelExactUploadArguments(reference.url, atlasContext));
+      }
+      // Include JSON and Base64 overhead. Never submit an oversized envelope,
+      // including when a future adapter returns a long download URL.
+      const envelope = { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'upload_asset', arguments: toolArguments } };
+      if (Buffer.byteLength(JSON.stringify(envelope)) >= 4_000_000) {
+        throw new Error('参考图上传请求超过 4MB 限制，未提交生成任务。');
+      }
       const upload = await retryAtlasAssetUpload(
         () =>
           callAtlasToolJson(
@@ -796,6 +826,25 @@ export async function pollLiclickImageTask(
   return parseLiclickImageTaskOutput(poll.stdout);
 }
 
+/** Existing GPT request contract: combined guide first, geometry normal second. */
+export function isGptRepaintColorGuide(input: GenerateImageInput, index: number) {
+  return index === 0 && input.workflow === 'local-repaint' &&
+    ['gpt-image-2', 'gpt-image-2.5-sunburst', 'gpt-image-2.5-flare'].includes(input.model ?? '') &&
+    input.references?.[0]?.name === 'image-1-current-view-clay-selection.png' &&
+    input.references?.[1]?.name === 'image-2-geometry-view-normal.png';
+}
+
+/** GPT texture-map contract: aligned current colour view first, material second.
+ * GPT-COLOR-REFERENCE-UPLOAD/1.1.0: only this colour guide shares the existing
+ * original-size adaptive RGB policy. Normal/mask and material inputs stay exact.
+ */
+export function isGptTextureColorGuide(input: GenerateImageInput, index: number) {
+  return index === 0 && input.workflow === 'texture-map' && !input.referencePipeline &&
+    ['gpt-image-2', 'gpt-image-2.5-sunburst', 'gpt-image-2.5-flare'].includes(input.model ?? '') &&
+    Boolean(input.framing) && (input.references?.length ?? 0) >= 2 &&
+    /^Current model view - \S/.test(input.references?.[0]?.name ?? '');
+}
+
 export async function submitLiclickImageJob(
   input: GenerateImageInput,
   atlasContext: LiclickAtlasContext = {},
@@ -806,7 +855,8 @@ export async function submitLiclickImageJob(
   return withTempDir(async (tempDir) => {
     const references = (input.references ?? []).slice(0, 10);
     const uploadedReferences = await Promise.all(
-      references.map((reference) => uploadReference(reference, tempDir, atlasContext)),
+      references.map((reference, index) => uploadReference(reference, tempDir, atlasContext,
+        isGptRepaintColorGuide(input, index) || isGptTextureColorGuide(input, index))),
     );
     const { model, extraParams } = buildExtraParams(input, uploadedReferences);
     const prompt = buildSubmissionPrompt(input, model);

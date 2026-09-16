@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { stdout } from 'node:process';
 import ts from 'typescript';
-import { compactShaderTemplateIndentation as compact, shaderTemplateFormatPlugin } from './shader-template-format.mjs';
+import { compactShaderTemplateIndentation as compact, compactThreeShaderChunks, shaderTemplateFormatPlugin } from './shader-template-format.mjs';
 
 const fixture = [
   'const type = "float", name = "value";',
@@ -21,7 +21,9 @@ const fixture = [
 ].join('\n');
 const load = code => import('data:text/javascript;base64,' + Buffer.from(code).toString('base64'));
 const before = await load(fixture), after = await load(compact(fixture));
-assert.equal(after.shader, before.shader.replace(/(\r?\n)[\t ]+/g, '$1'));
+assert.deepEqual(glslTokens(after.shader), glslTokens(before.shader));
+assert.deepEqual(directiveLines(after.shader), directiveLines(before.shader));
+assert.equal(after.shader.split('\n').length, before.shader.split('\n').length);
 assert.ok(after.shader.includes('float value;'));
 assert.ok(after.shader.includes('// Preserve comment newline\nfloat'));
 assert.ok(compact(fixture).includes('const ordinary = "  UI text"'));
@@ -56,7 +58,8 @@ function tokens(code, scriptKind = ts.ScriptKind.TS) {
             !raw.includes('/*') && !raw.includes('\\')) {
           expected = expected.replace(/(\r?\n)\/\/[^\r\n]*/g, '$1');
         }
-        text = text.slice(0, text.length - raw.length) + expected;
+        const normalized = JSON.stringify({ tokens: glslTokens(expected), directives: directiveLines(expected), lines: expected.split('\n').length });
+        text = text.slice(0, text.length - raw.length) + normalized;
       }
       out.push([node.kind, text]);
     }
@@ -129,8 +132,76 @@ for (const relativeFile of additionalShaderFiles) {
   verifyTemplate(ast);
 }
 assert.ok(additionalSaved >= 1500, `Expected bundle headroom savings, got ${additionalSaved}`);
+// GLSL token equivalence alone does not verify JavaScript shader assembly.
+// Exercise the real repaint vertex splice before and after the build transform.
+const repaintSource = fs.readFileSync(new URL('../src/engine/localRepaint/uvRepaint.ts', import.meta.url), 'utf8');
+function assembledRepaintVertex(code) {
+  const ast = ts.createSourceFile('uvRepaint.ts', code, ts.ScriptTarget.Latest, true);
+  let vertex, assembly, entry;
+  const visit = node => {
+    if (ts.isVariableDeclaration(node) && node.name.getText(ast) === 'vertex' && node.initializer && ts.isNoSubstitutionTemplateLiteral(node.initializer)) vertex = node.initializer.getText(ast);
+    if (ts.isVariableDeclaration(node) && node.name.getText(ast) === 'shaderMain') entry = node.initializer.getText(ast);
+    if (ts.isBinaryExpression(node) && node.left.getText(ast) === 'this.brush.vertexShader' && node.right.getText(ast).includes('paintSourceVertex')) assembly = node.right.getText(ast);
+    ts.forEachChild(node, visit);
+  };
+  visit(ast);
+  assert.ok(vertex && assembly && entry, 'Exercise the production repaint shader assembly');
+  return new Function('material', `const shaderMain = ${entry}; const vertex = ${vertex}; return (${assembly});`)({vertexShader: 'void main(){gl_Position=vec4(position,1.0);}'});
+}
+for (const code of [repaintSource, compact(repaintSource)]) {
+  const shader = assembledRepaintVertex(code);
+  assert.match(shader, /void\s+main\s*\(\)\s*\{\s*paintSourceVertex\s*\(/, 'The UV paint entry must invoke the frozen source projection after production formatting');
+  assert.equal((shader.match(/void\s+main\s*\(/g) ?? []).length, 1);
+}
 assert.equal(
   plugin.transform(compositorSource, new URL('../src/engine/projection/ProjectedLayerPreviewCompositor.ts', import.meta.url).pathname),
   undefined,
 );
 stdout.write(`Shader formatting preserves actual module tokens and GLSL line boundaries; removes ${saved + additionalSaved} source bytes.\n`);
+
+// Independently tokenize GLSL, including compound operators and numeric
+// literals. Compare the actual pinned vendor module, not a replacement kernel.
+function glslTokens(text) { return text.match(/\/\*[\s\S]*?\*\/|\/\/[^\r\n]*|[A-Za-z_]\w*|0[xX][\dA-Fa-f]+[uU]?|(?:\d+\.\d*|\.\d+|\d+)(?:[eE][+-]?\d+)?[fFuU]?|<<=|>>=|\+\+|--|&&|\|\||\^\^|<<|>>|<=|>=|==|!=|\+=|-=|\*=|\/=|%=|&=|\|=|\^=|[^\s]/g) ?? []; }
+function directiveLines(text) { return text.split(/\r?\n/).filter(line => line.trimStart().startsWith('#')).map(line => line.trimStart()); }
+const threeFile = new URL('../node_modules/three/build/three.module.js', import.meta.url);
+const threeSource = fs.readFileSync(threeFile, 'utf8');
+const threeResult = compactThreeShaderChunks(threeSource);
+assert.equal(plugin.transform(threeSource, threeFile.pathname).code, threeResult);
+assert.equal(plugin.transform(threeSource, '/node_modules/another/build/three.module.js'), undefined);
+assert.equal(compactThreeShaderChunks(threeResult), threeResult);
+const vendorLeaves = code => {
+  const ast = ts.createSourceFile('three.js', code, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+  assert.equal(ast.parseDiagnostics.length, 0);
+  const out = [];
+  const visit = node => {
+    const children = node.getChildren(ast);
+    if (children.length) children.forEach(visit);
+    else out.push({ kind: node.kind, text: node.getFullText(ast), value: ts.isStringLiteral(node) ? node.text : undefined });
+  };
+  visit(ast);
+  return out;
+};
+const vendorBefore = vendorLeaves(threeSource), vendorAfter = vendorLeaves(threeResult);
+assert.equal(vendorAfter.length, vendorBefore.length);
+let changedShaders = 0;
+for (let index = 0; index < vendorBefore.length; index++) {
+  const before = vendorBefore[index], after = vendorAfter[index];
+  assert.equal(after.kind, before.kind);
+  if (before.text === after.text) continue;
+  assert.equal(before.kind, ts.SyntaxKind.StringLiteral);
+  assert.deepEqual(glslTokens(after.value), glslTokens(before.value));
+  assert.deepEqual(directiveLines(after.value), directiveLines(before.value));
+  assert.equal(after.value.split('\n').length, before.value.split('\n').length);
+  changedShaders++;
+}
+assert.ok(changedShaders > 80);
+assert.ok(Buffer.byteLength(threeSource) - Buffer.byteLength(threeResult) >= 16000);
+const vendorFixture = 'const shader = ' + JSON.stringify('precision highp float;\n\tfloat a = 1e-3;\n\ta + +a; a - -a;\n\t#define X(a) ( a + 1 )\n') + '; const ui = "  UI text"; const ShaderChunk = { shader: shader };';
+const formattedFixture = compactThreeShaderChunks(vendorFixture);
+assert.ok(formattedFixture.includes('const ui = "  UI text"'));
+assert.deepEqual(vendorLeaves(formattedFixture).filter(node => node.value !== undefined).map(node => glslTokens(node.value)), vendorLeaves(vendorFixture).filter(node => node.value !== undefined).map(node => glslTokens(node.value)));
+assert.throws(() => compactThreeShaderChunks('const ShaderChunk = { shader: 1 };'), /audit/);
+assert.throws(() => compactThreeShaderChunks('const shader = compute(); const ShaderChunk = { shader: shader };'), /audit/);
+const commentFixture = 'const shader = ' + JSON.stringify('// standalone\n#define P 1\n/* block\n// inside block\n*/\nfloat a = 1.;\n') + '; const ShaderChunk = { shader: shader };';
+assert.ok(compactThreeShaderChunks(commentFixture).includes('standalone'), 'Block-comment ambiguity must disable comment removal');
+stdout.write(`Three registered shaders retain all GLSL tokens, directives and line counts: ${changedShaders} strings; ${Buffer.byteLength(threeSource) - Buffer.byteLength(threeResult)} source bytes removed.\n`);
