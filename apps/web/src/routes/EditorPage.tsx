@@ -4,6 +4,8 @@ import {prepareMergeProjection,startMergeProjectionPreparation,mergePreparationS
 import {getPreparedMergePng,awaitPreparedMergePng,reuseUnchangedMergePng} from '@/engine/bake/mergeFinalPreparation';
 import {compareProjectedLayersForDeterministicBake,createReusableProjectionBakeSignature,cloneProjectionBakeImageData,type ReusableProjectionBakeEntry,type ReusableProjectionBakePurpose} from '@/engine/bake/projectionBakeSignature';
 import {
+  lazy,
+  Suspense,
   useCallback,
   useEffect,
   useMemo,
@@ -16,7 +18,6 @@ import { Download, LoaderCircle, Plus } from 'lucide-react';
 import * as THREE from 'three';
 import { BottomToolDock } from '@/components/editor/BottomToolDock';
 import { ExportMenu, type ExportActionId } from '@/components/editor/ExportMenu';
-import { TextureOnboardingTour } from '@/components/editor/TextureOnboardingTour';
 import { PhotoshopEditSessionPanel } from '@/features/photoshop/PhotoshopEditSessionPanel';
 import {
   frontProjectThumbnailCapture,
@@ -286,6 +287,9 @@ import { generationBelongsToProject } from '@/utils/generationIdentity';
 import { createId } from '@/utils/id';
 import { waitForBrowserIdle, waitForBrowserPaint } from '@/utils/browserScheduling';
 import { mapWithConcurrency } from '@/utils/mapWithConcurrency';
+
+const TextureOnboardingTour = lazy(() => import('@/components/editor/TextureOnboardingTour')
+  .then(module => ({ default: module.TextureOnboardingTour })));
 
 type EditorPageProps = {
   projectId: string;
@@ -8041,13 +8045,15 @@ export function EditorPage({
           panels={panelDefinitions}
         />
       </div>
-      <TextureOnboardingTour
-        key={project.id}
-        projectId={project.id}
-        projectCreatedAt={project.createdAt}
-        forceStart={showOnboarding}
-        suspended={editorTaskRunning}
-      />
+      <Suspense fallback={null}>
+        <TextureOnboardingTour
+          key={project.id}
+          projectId={project.id}
+          projectCreatedAt={project.createdAt}
+          forceStart={showOnboarding}
+          suspended={editorTaskRunning}
+        />
+      </Suspense>
       {repaintLayerPrompt && (
         <RepaintLayerNotice
           onCancel={() => setRepaintLayerPrompt(undefined)}
