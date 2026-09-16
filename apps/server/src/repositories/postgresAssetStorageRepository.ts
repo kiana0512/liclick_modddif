@@ -122,7 +122,7 @@ async function insertCandidates(
          size_bytes BIGINT,
          proof_json JSONB
        )`,
-    [userId, scanId, rows, createdAt],
+    [userId, scanId, JSON.stringify(rows), createdAt],
   );
 }
 
@@ -348,10 +348,12 @@ export function createPostgresAssetStorageRepository(database: ProjectSqlDatabas
           [
             input.userId,
             input.scanId,
-            Array.from(deduplicated, ([assetId, bucketId]) => ({
-              asset_id: assetId,
-              bucket_id: bucketId,
-            })),
+            JSON.stringify(
+              Array.from(deduplicated, ([assetId, bucketId]) => ({
+                asset_id: assetId,
+                bucket_id: bucketId,
+              })),
+            ),
           ],
         );
       });

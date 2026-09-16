@@ -10,7 +10,7 @@
 - 设计算法：
   - STORAGE-INVENTORY-001/3：已实现的双后端引用盘点、候选快照、近期资产保护与单飞调度协议
   - ASSET-CONTENT-DEDUP v0.2.0：用户隔离的内容寻址与双存储适配
-  - ASSET-LIFECYCLE-GC v0.3.4：已实现引用标记、扫描候选快照、单飞任务、Cloud PostgreSQL 有界分页、本地高密度目录快速隔离与显式二次确认的 Workspace 后台物理清空；恢复与 Cloud 物理回收仍待实施
+  - ASSET-LIFECYCLE-GC v0.3.5：已实现引用标记、扫描候选快照、单飞任务、Cloud PostgreSQL 有界分页与显式 JSONB 批次、本地高密度目录快速隔离与显式二次确认的 Workspace 后台物理清空；恢复与 Cloud 物理回收仍待实施
   - ASSET-QUOTA-RESERVATION v0.2.0：配额预留、提交和释放
   - ASSET-ROLE-COMPRESSION v0.2.0：按资产角色生成有版本、跨解码器验证的无损或展示派生物
 - 候选协议：Asset Transfer v2
@@ -184,7 +184,7 @@ mimeType 不作为内容唯一键，但完成时必须与允许的声明及对�
 - 所有失败/过期 intent 释放预留；reconciler 定期纠正进程崩溃造成的残留预留。
 - 系统低空间时优先暂停新写入和清理 staging，不得缩短 current/pinned/合法保留数据窗口。
 
-## 9. ASSET-LIFECYCLE-GC v0.3.4
+## 9. ASSET-LIFECYCLE-GC v0.3.5
 
 ### 9.1 权威根集合
 
