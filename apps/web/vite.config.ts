@@ -143,10 +143,14 @@ export default defineConfig({
     target: 'es2022',
     rollupOptions: {
       output: {
+        // Keep the presentation-only selection kernel independently cacheable;
+        // do not pull its shared Three dependency out of the shared 3D chunk.
+        onlyExplicitManualChunks: true,
         // Zod is stable vendor code shared by editor and bake routes. Keep it
         // cacheable outside the large viewport snapshot instead of reparsing it
         // as part of that feature chunk on every release.
         manualChunks(id) {
+          if (id.endsWith('/engine/localRepaint/projectedSelectionDisplay.ts')) return 'projected-selection-display';
           // Shared image I/O must not make the lazy silhouette clip import the editor route.
           if (id.endsWith('/engine/localRepaint/imageUtils.ts')) return 'local-repaint-image-utils';
           if (id.includes('/node_modules/.pnpm/zod@')) return 'vendor-zod';
