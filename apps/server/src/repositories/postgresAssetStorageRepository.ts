@@ -1,4 +1,10 @@
-import type { StorageBucketId, StorageCleanupJob, StorageOverview } from '@liclick/contracts';
+import {
+  STORAGE_INVENTORY_RULE_VERSION,
+  type StorageBucketId,
+  type StorageCleanupJob,
+  type StorageOverview,
+  type StoragePurgeJob,
+} from '@liclick/contracts';
 import {
   getSharedPgProjectSqlDatabase,
   type ProjectSqlConnection,
@@ -38,6 +44,11 @@ export type StorageDocumentPage = {
   nextCursor?: StorageDocumentCursor;
 };
 
+export type StorageDocumentReferencePage = {
+  scannedDocumentCount: number;
+  nextCursor?: StorageDocumentCursor;
+};
+
 export type LegacyStorageAssetPage = {
   assets: LegacyStorageAsset[];
   nextCursor?: string;
@@ -50,6 +61,12 @@ export type StorageInventoryCandidate = {
   category: string;
   sizeBytes: number;
   proof: Record<string, unknown>;
+};
+
+export type CloudStoragePurgeItem = {
+  assetId: string;
+  objectKey: string;
+  sizeBytes: number;
 };
 
 function validLegacyAsset(value: unknown): value is Omit<LegacyStorageAsset, 'quarantined'> {
@@ -289,6 +306,120 @@ export function createPostgresAssetStorageRepository(database: ProjectSqlDatabas
       });
     },
 
+    async appendStorageDocumentReferencePage(
+      userId: string,
+      scanId: string,
+      kind: StorageDocumentKind,
+      cursor: StorageDocumentCursor | undefined,
+      requestedLimit: number,
+    ): Promise<StorageDocumentReferencePage> {
+      const limit = boundedPageSize(requestedLimit, 32);
+      const bucketId = kind === 'current' ? 'project-resources' : kind;
+      return runInventoryQuery(database, async (connection) => {
+        const rows = kind === 'current'
+          ? await connection.query<{
+              project_id: string;
+              revision_number: number;
+            }>(
+              `WITH page AS MATERIALIZED (
+                 SELECT project_id, revision_number, document_json
+                   FROM project_documents
+                  WHERE user_id=$1 AND deleted_at IS NULL AND project_id>$2
+                  ORDER BY project_id
+                  LIMIT $3
+               ), matches AS MATERIALIZED (
+                 SELECT DISTINCT asset_match[1] AS asset_id
+                   FROM page
+                   CROSS JOIN LATERAL regexp_matches(
+                     page.document_json::text,
+                     '(?:/assets/|objects/)(asset-[a-zA-Z0-9_-]{8,128})(?:/content)?',
+                     'g'
+                   ) AS captures(asset_match)
+               ), inserted AS (
+                 INSERT INTO asset_storage_inventory_scan_references (
+                   user_id, scan_id, asset_id, bucket_id
+                 )
+                 SELECT $1, $4, asset_id, $5 FROM matches
+                 ON CONFLICT (user_id, scan_id, asset_id) DO UPDATE SET
+                   bucket_id = CASE
+                     WHEN EXCLUDED.bucket_id='project-resources' THEN EXCLUDED.bucket_id
+                     WHEN asset_storage_inventory_scan_references.bucket_id='project-resources'
+                       THEN asset_storage_inventory_scan_references.bucket_id
+                     WHEN EXCLUDED.bucket_id='history' THEN EXCLUDED.bucket_id
+                     ELSE asset_storage_inventory_scan_references.bucket_id
+                   END
+                 RETURNING asset_id
+               )
+               SELECT page.project_id, page.revision_number
+                 FROM page
+                ORDER BY page.project_id`,
+              [userId, cursor?.projectId ?? '', limit, scanId, bucketId],
+            )
+          : await connection.query<{
+              project_id: string;
+              revision_number: number;
+            }>(
+              `WITH page AS MATERIALIZED (
+                 SELECT r.project_id, r.revision_number, r.document_json
+                   FROM project_document_revisions r
+                   JOIN project_documents p
+                     ON p.user_id=r.user_id AND p.project_id=r.project_id
+                  WHERE r.user_id=$1
+                    AND p.deleted_at IS ${kind === 'history' ? '' : 'NOT '}NULL
+                    ${kind === 'history' ? 'AND r.revision_id<>p.revision_id' : ''}
+                    AND (r.project_id, r.revision_number)>($2,$3)
+                  ORDER BY r.project_id, r.revision_number
+                  LIMIT $4
+               ), matches AS MATERIALIZED (
+                 SELECT DISTINCT asset_match[1] AS asset_id
+                   FROM page
+                   CROSS JOIN LATERAL regexp_matches(
+                     page.document_json::text,
+                     '(?:/assets/|objects/)(asset-[a-zA-Z0-9_-]{8,128})(?:/content)?',
+                     'g'
+                   ) AS captures(asset_match)
+               ), inserted AS (
+                 INSERT INTO asset_storage_inventory_scan_references (
+                   user_id, scan_id, asset_id, bucket_id
+                 )
+                 SELECT $1, $5, asset_id, $6 FROM matches
+                 ON CONFLICT (user_id, scan_id, asset_id) DO UPDATE SET
+                   bucket_id = CASE
+                     WHEN EXCLUDED.bucket_id='project-resources' THEN EXCLUDED.bucket_id
+                     WHEN asset_storage_inventory_scan_references.bucket_id='project-resources'
+                       THEN asset_storage_inventory_scan_references.bucket_id
+                     WHEN EXCLUDED.bucket_id='history' THEN EXCLUDED.bucket_id
+                     ELSE asset_storage_inventory_scan_references.bucket_id
+                   END
+                 RETURNING asset_id
+               )
+               SELECT page.project_id, page.revision_number
+                 FROM page
+                ORDER BY page.project_id, page.revision_number`,
+              [
+                userId,
+                cursor?.projectId ?? '',
+                cursor?.revisionNumber ?? -1,
+                limit,
+                scanId,
+                bucketId,
+              ],
+            );
+        const lastRow = rows.rows.at(-1);
+        return {
+          scannedDocumentCount: rows.rows.length,
+          ...(rows.rows.length === limit && lastRow
+            ? {
+                nextCursor: {
+                  projectId: lastRow.project_id,
+                  revisionNumber: lastRow.revision_number,
+                },
+              }
+            : {}),
+        };
+      });
+    },
+
     async beginInventoryScan(userId: string, scanId: string) {
       await runInventoryQuery(database, async (connection) => {
         await connection.query(
@@ -303,8 +434,16 @@ export function createPostgresAssetStorageRepository(database: ProjectSqlDatabas
           [userId, scanId],
         );
         await connection.query(
-          `DELETE FROM asset_storage_inventory_scan_references WHERE user_id=$1`,
-          [userId],
+          `DELETE FROM asset_storage_inventory_scan_references reference
+            WHERE reference.user_id=$1
+              AND (
+                reference.scan_id=$2 OR NOT EXISTS (
+                  SELECT 1 FROM asset_storage_inventory_snapshots snapshot
+                   WHERE snapshot.user_id=reference.user_id
+                     AND snapshot.scan_id=reference.scan_id
+                )
+              )`,
+          [userId, scanId],
         );
       });
     },
@@ -414,8 +553,9 @@ export function createPostgresAssetStorageRepository(database: ProjectSqlDatabas
           [input.userId, input.overview.scanId],
         );
         await connection.query(
-          `DELETE FROM asset_storage_inventory_scan_references WHERE user_id=$1`,
-          [input.userId],
+          `DELETE FROM asset_storage_inventory_scan_references
+            WHERE user_id=$1 AND scan_id<>$2`,
+          [input.userId, input.overview.scanId],
         );
       });
     },
@@ -576,6 +716,259 @@ export function createPostgresAssetStorageRepository(database: ProjectSqlDatabas
         [userId, idempotencyKey],
       );
       return result.rows[0]?.job_json;
+    },
+
+    async getCloudQuarantineSummary(userId: string) {
+      const result = await database.query<{
+        item_count: number | string;
+        bytes: number | string;
+      }>(
+        `SELECT COUNT(*) AS item_count,
+                COALESCE(SUM((t.record_json->>'sizeBytes')::bigint),0) AS bytes
+           FROM asset_storage_quarantine q
+           JOIN asset_transfers t
+             ON t.user_id=q.user_id AND t.asset_id=q.asset_id AND t.status='verified'
+           LEFT JOIN asset_storage_inventory_snapshots snapshot
+             ON snapshot.user_id=q.user_id AND snapshot.status='ready'
+            AND snapshot.rule_version=$2
+           LEFT JOIN asset_storage_inventory_scan_references reference
+             ON reference.user_id=q.user_id
+            AND reference.scan_id=snapshot.scan_id
+            AND reference.asset_id=q.asset_id
+          WHERE q.user_id=$1 AND q.restored_at IS NULL AND q.deleted_at IS NULL
+            AND reference.asset_id IS NULL`,
+        [userId, STORAGE_INVENTORY_RULE_VERSION],
+      );
+      return {
+        itemCount: Number(result.rows[0]?.item_count ?? 0),
+        bytes: Number(result.rows[0]?.bytes ?? 0),
+      };
+    },
+
+    async getActivePurgeJob(userId: string) {
+      const result = await database.query<{ job_json: StoragePurgeJob }>(
+        `SELECT job_json FROM asset_storage_purge_jobs
+          WHERE user_id=$1 AND status IN ('queued','running')
+          ORDER BY created_at
+          LIMIT 1`,
+        [userId],
+      );
+      return result.rows[0]?.job_json;
+    },
+
+    async getPurgeJob(userId: string, jobId: string) {
+      const result = await database.query<{ job_json: StoragePurgeJob }>(
+        `SELECT job_json FROM asset_storage_purge_jobs WHERE user_id=$1 AND job_id=$2`,
+        [userId, jobId],
+      );
+      return result.rows[0]?.job_json;
+    },
+
+    async createPurgeJob(input: {
+      userId: string;
+      idempotencyKey: string;
+      jobId: string;
+      now: string;
+    }) {
+      return database.transaction(async (connection) => {
+        await connection.query(
+          `SELECT user_id FROM cloud_users WHERE user_id=$1 FOR UPDATE`,
+          [input.userId],
+        );
+        const existing = await connection.query<{ job_json: StoragePurgeJob }>(
+          `SELECT job_json FROM asset_storage_purge_jobs
+            WHERE user_id=$1 AND idempotency_key=$2`,
+          [input.userId, input.idempotencyKey],
+        );
+        if (existing.rows[0]) return existing.rows[0].job_json;
+        const active = await connection.query<{ job_json: StoragePurgeJob }>(
+          `SELECT job_json FROM asset_storage_purge_jobs
+            WHERE user_id=$1 AND status IN ('queued','running')
+            ORDER BY created_at
+            LIMIT 1`,
+          [input.userId],
+        );
+        if (active.rows[0]) return active.rows[0].job_json;
+        const snapshot = await connection.query<{ scan_id: string }>(
+          `SELECT scan_id FROM asset_storage_inventory_snapshots
+            WHERE user_id=$1 AND status='ready' AND rule_version=$2`,
+          [input.userId, STORAGE_INVENTORY_RULE_VERSION],
+        );
+        const scanId = snapshot.rows[0]?.scan_id;
+        if (!scanId) return undefined;
+        const totals = await connection.query<{
+          item_count: number | string;
+          bytes: number | string;
+          cleanup_job_ids: string[];
+        }>(
+          `SELECT COUNT(*) AS item_count,
+                  COALESCE(SUM((t.record_json->>'sizeBytes')::bigint),0) AS bytes,
+                  COALESCE(ARRAY_AGG(DISTINCT q.job_id), ARRAY[]::text[]) AS cleanup_job_ids
+             FROM asset_storage_quarantine q
+             JOIN asset_transfers t
+               ON t.user_id=q.user_id AND t.asset_id=q.asset_id AND t.status='verified'
+             LEFT JOIN asset_storage_inventory_scan_references reference
+               ON reference.user_id=q.user_id
+              AND reference.scan_id=$2
+              AND reference.asset_id=q.asset_id
+            WHERE q.user_id=$1
+              AND q.restored_at IS NULL AND q.deleted_at IS NULL
+              AND reference.asset_id IS NULL`,
+          [input.userId, scanId],
+        );
+        const targetCount = Number(totals.rows[0]?.item_count ?? 0);
+        const targetBytes = Number(totals.rows[0]?.bytes ?? 0);
+        if (targetCount === 0) return undefined;
+        const job: StoragePurgeJob = {
+          schemaVersion: 1,
+          jobId: input.jobId,
+          status: 'queued',
+          backend: 'cloud-object-storage',
+          cleanupJobIds: totals.rows[0]?.cleanup_job_ids ?? [],
+          targetBytes,
+          targetCount,
+          createdAt: input.now,
+          updatedAt: input.now,
+        };
+        await connection.query(
+          `INSERT INTO asset_storage_purge_jobs (
+             user_id, job_id, idempotency_key, status, job_json, created_at, updated_at
+           ) VALUES ($1,$2,$3,'queued',$4::jsonb,$5::timestamptz,$5::timestamptz)`,
+          [input.userId, input.jobId, input.idempotencyKey, job, input.now],
+        );
+        await connection.query(
+          `INSERT INTO asset_storage_purge_items (
+             user_id, job_id, asset_id, object_key, size_bytes, status, updated_at
+           )
+           SELECT q.user_id, $3, q.asset_id, t.record_json->>'objectKey',
+                  (t.record_json->>'sizeBytes')::bigint, 'pending', $4::timestamptz
+             FROM asset_storage_quarantine q
+             JOIN asset_transfers t
+               ON t.user_id=q.user_id AND t.asset_id=q.asset_id AND t.status='verified'
+             LEFT JOIN asset_storage_inventory_scan_references reference
+               ON reference.user_id=q.user_id
+              AND reference.scan_id=$2
+              AND reference.asset_id=q.asset_id
+            WHERE q.user_id=$1
+              AND q.restored_at IS NULL AND q.deleted_at IS NULL
+              AND reference.asset_id IS NULL`,
+          [input.userId, scanId, input.jobId, input.now],
+        );
+        return job;
+      });
+    },
+
+    async markPurgeJobRunning(userId: string, job: StoragePurgeJob) {
+      const updated: StoragePurgeJob = {
+        ...job,
+        status: 'running',
+        phase: 'deleting',
+        detachedAt: job.detachedAt ?? new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        error: undefined,
+      };
+      await database.query(
+        `UPDATE asset_storage_purge_jobs
+            SET status='running', job_json=$3::jsonb, updated_at=$4::timestamptz
+          WHERE user_id=$1 AND job_id=$2`,
+        [userId, job.jobId, updated, updated.updatedAt],
+      );
+      return updated;
+    },
+
+    async listPurgeItemPage(
+      userId: string,
+      jobId: string,
+      cursor: string | undefined,
+      requestedLimit: number,
+    ) {
+      const limit = boundedPageSize(requestedLimit, 128);
+      const result = await database.query<{
+        asset_id: string;
+        object_key: string;
+        size_bytes: number | string;
+      }>(
+        `SELECT asset_id, object_key, size_bytes
+           FROM asset_storage_purge_items
+          WHERE user_id=$1 AND job_id=$2 AND status='pending' AND asset_id>$3
+          ORDER BY asset_id
+          LIMIT $4`,
+        [userId, jobId, cursor ?? '', limit],
+      );
+      const items: CloudStoragePurgeItem[] = result.rows.map((row) => ({
+        assetId: row.asset_id,
+        objectKey: row.object_key,
+        sizeBytes: Number(row.size_bytes),
+      }));
+      return {
+        items,
+        ...(items.length === limit ? { nextCursor: items.at(-1)?.assetId } : {}),
+      };
+    },
+
+    async markPurgeItemDeleted(input: {
+      userId: string;
+      jobId: string;
+      assetId: string;
+      now: string;
+    }) {
+      await database.transaction(async (connection) => {
+        await connection.query(
+          `DELETE FROM asset_transfers WHERE user_id=$1 AND asset_id=$2`,
+          [input.userId, input.assetId],
+        );
+        await connection.query(
+          `UPDATE asset_storage_quarantine
+              SET deleted_at=$3::timestamptz
+            WHERE user_id=$1 AND asset_id=$2 AND restored_at IS NULL`,
+          [input.userId, input.assetId, input.now],
+        );
+        await connection.query(
+          `UPDATE asset_storage_purge_items
+              SET status='deleted', error=NULL, updated_at=$4::timestamptz
+            WHERE user_id=$1 AND job_id=$2 AND asset_id=$3`,
+          [input.userId, input.jobId, input.assetId, input.now],
+        );
+      });
+    },
+
+    async finishPurgeJob(input: {
+      userId: string;
+      job: StoragePurgeJob;
+      error?: string;
+    }) {
+      const now = new Date().toISOString();
+      const completed: StoragePurgeJob = input.error
+        ? {
+            ...input.job,
+            status: 'failed',
+            phase: undefined,
+            updatedAt: now,
+            error: input.error,
+          }
+        : {
+            ...input.job,
+            status: 'completed',
+            phase: undefined,
+            updatedAt: now,
+            completedAt: now,
+            error: undefined,
+          };
+      await database.query(
+        `UPDATE asset_storage_purge_jobs
+            SET status=$3, job_json=$4::jsonb, updated_at=$5::timestamptz,
+                completed_at=$6::timestamptz
+          WHERE user_id=$1 AND job_id=$2`,
+        [
+          input.userId,
+          input.job.jobId,
+          completed.status,
+          completed,
+          now,
+          completed.completedAt ?? null,
+        ],
+      );
+      return completed;
     },
   };
 }

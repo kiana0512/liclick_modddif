@@ -35,6 +35,8 @@ import {
   runWithWorkspaceAssetMutationLock,
   workspaceAssetMutationKey,
 } from './workspaceAssetMutationCoordinator.js';
+import { deleteObjectStorageObject } from './assetTransferService.js';
+import { serverConfig } from '../config.js';
 
 const assetCategories = new Set([
   'models',
@@ -590,13 +592,13 @@ async function scanLocalStorage(
 function classifyCloudAsset(
   asset: LegacyStorageAsset,
 ): StorageBucketId {
-  if (asset.quarantined) return 'trash';
-  return asset.referenceBucket ?? 'temporary';
+  if (asset.referenceBucket) return asset.referenceBucket;
+  return asset.quarantined ? 'trash' : 'temporary';
 }
 
 function cloudDocumentPageSize() {
-  const configured = Number(process.env.LICLICK_STORAGE_DOCUMENT_PAGE_SIZE ?? 8);
-  if (!Number.isFinite(configured)) return 8;
+  const configured = Number(process.env.LICLICK_STORAGE_DOCUMENT_PAGE_SIZE ?? 32);
+  if (!Number.isFinite(configured)) return 32;
   return Math.max(1, Math.min(32, Math.trunc(configured)));
 }
 
@@ -604,11 +606,6 @@ function cloudAssetPageSize() {
   const configured = Number(process.env.LICLICK_STORAGE_ASSET_PAGE_SIZE ?? 256);
   if (!Number.isFinite(configured)) return 256;
   return Math.max(16, Math.min(512, Math.trunc(configured)));
-}
-
-function referenceBucket(kind: StorageDocumentKind): Exclude<StorageBucketId, 'temporary'> {
-  if (kind === 'current') return 'project-resources';
-  return kind;
 }
 
 async function scanCloudStorage(userId: string, scanId: string): Promise<InventoryResult> {
@@ -630,36 +627,14 @@ async function scanCloudStorage(userId: string, scanId: string): Promise<Invento
   for (const kind of ['current', 'history', 'trash'] satisfies StorageDocumentKind[]) {
     let cursor: StorageDocumentCursor | undefined;
     do {
-      const page = await postgresAssetStorageRepository.listStorageDocumentPage(
+      const page = await postgresAssetStorageRepository.appendStorageDocumentReferencePage(
         userId,
+        scanId,
         kind,
         cursor,
         cloudDocumentPageSize(),
       );
-      const bucket = referenceBucket(kind);
-      let references: Array<{
-        assetId: string;
-        bucketId: Exclude<StorageBucketId, 'temporary'>;
-      }> = [];
-      for (const document of page.documents) {
-        for (const assetId of document.assetIds) {
-          references.push({ assetId, bucketId: bucket });
-          if (references.length >= 1_000) {
-            await postgresAssetStorageRepository.appendInventoryReferences({
-              userId,
-              scanId,
-              references,
-            });
-            references = [];
-          }
-        }
-        scannedItemCount += 1;
-      }
-      await postgresAssetStorageRepository.appendInventoryReferences({
-        userId,
-        scanId,
-        references,
-      });
+      scannedItemCount += page.scannedDocumentCount;
       reportProgress('references');
       cursor = page.nextCursor;
       await new Promise<void>((resolve) => setImmediate(resolve));
@@ -1495,11 +1470,81 @@ function scheduleLocalPurge(userId: string, job: StoragePurgeJob) {
   purgePromises.set(job.jobId, promise);
 }
 
+function cloudPurgeConcurrency() {
+  const configured = Number(process.env.LICLICK_STORAGE_PURGE_CONCURRENCY ?? 4);
+  if (!Number.isFinite(configured)) return 4;
+  return Math.max(1, Math.min(8, Math.trunc(configured)));
+}
+
+async function runCloudPurge(userId: string, job: StoragePurgeJob) {
+  const repository = postgresAssetStorageRepository;
+  if (!repository) return;
+  const running = await repository.markPurgeJobRunning(userId, job);
+  try {
+    let cursor: string | undefined;
+    do {
+      const page = await repository.listPurgeItemPage(
+        userId,
+        running.jobId,
+        cursor,
+        64,
+      );
+      for (let offset = 0; offset < page.items.length; offset += cloudPurgeConcurrency()) {
+        const batch = page.items.slice(offset, offset + cloudPurgeConcurrency());
+        const results = await Promise.allSettled(
+          batch.map(async (item) => {
+            await deleteObjectStorageObject(item.objectKey);
+            await repository.markPurgeItemDeleted({
+              userId,
+              jobId: running.jobId,
+              assetId: item.assetId,
+              now: new Date().toISOString(),
+            });
+          }),
+        );
+        const rejected = results.find(
+          (result): result is PromiseRejectedResult => result.status === 'rejected',
+        );
+        if (rejected) throw rejected.reason;
+      }
+      cursor = page.nextCursor;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    } while (cursor);
+    await repository.finishPurgeJob({ userId, job: running });
+    void startStorageScan(userId);
+  } catch (error) {
+    await repository.finishPurgeJob({
+      userId,
+      job: running,
+      error: error instanceof Error ? error.message : 'Cloud storage purge failed.',
+    });
+  }
+}
+
+function scheduleCloudPurge(userId: string, job: StoragePurgeJob) {
+  if (purgePromises.has(job.jobId)) return;
+  const promise = runCloudPurge(userId, job).finally(() => {
+    if (purgePromises.get(job.jobId) === promise) purgePromises.delete(job.jobId);
+  });
+  purgePromises.set(job.jobId, promise);
+}
+
 async function startStoragePurgeUnlocked(input: {
   userId: string;
   idempotencyKey: string;
 }) {
-  if (postgresAssetStorageRepository) return undefined;
+  if (postgresAssetStorageRepository) {
+    const job = await postgresAssetStorageRepository.createPurgeJob({
+      userId: input.userId,
+      idempotencyKey: input.idempotencyKey,
+      jobId: `purge-${randomUUID()}`,
+      now: new Date().toISOString(),
+    });
+    if (job && (job.status === 'queued' || job.status === 'running')) {
+      scheduleCloudPurge(input.userId, job);
+    }
+    return job;
+  }
   const receiptHash = createHash('sha256').update(input.idempotencyKey).digest('hex').slice(0, 32);
   const jobId = `purge-${receiptHash}`;
   const replayed = await readJsonFile<StoragePurgeJob | undefined>(
@@ -1569,8 +1614,13 @@ export function startStoragePurge(input: { userId: string; idempotencyKey: strin
 }
 
 export async function getStoragePurgeJob(userId: string, jobId: string) {
-  if (!/^purge-[a-zA-Z0-9_-]{8,128}$/.test(jobId) || postgresAssetStorageRepository) {
-    return undefined;
+  if (!/^purge-[a-zA-Z0-9_-]{8,128}$/.test(jobId)) return undefined;
+  if (postgresAssetStorageRepository) {
+    const job = await postgresAssetStorageRepository.getPurgeJob(userId, jobId);
+    if (job && (job.status === 'queued' || job.status === 'running')) {
+      scheduleCloudPurge(userId, job);
+    }
+    return job;
   }
   return readJsonFile<StoragePurgeJob | undefined>(localPurgeJobPath(userId, jobId), undefined);
 }
@@ -1579,15 +1629,21 @@ export async function getStorageQuarantineStatus(
   userId: string,
 ): Promise<StorageQuarantineStatus> {
   if (postgresAssetStorageRepository) {
-    const overview = await getStorageOverview(userId);
-    const trash = overview.buckets.find((bucket) => bucket.id === 'trash');
+    const [summary, activePurgeJob] = await Promise.all([
+      postgresAssetStorageRepository.getCloudQuarantineSummary(userId),
+      postgresAssetStorageRepository.getActivePurgeJob(userId),
+    ]);
+    if (activePurgeJob) scheduleCloudPurge(userId, activePurgeJob);
+    const purgeSupported = serverConfig.objectStorage.enabled;
     return {
       backend: 'cloud-object-storage',
-      bytes: trash?.bytes ?? 0,
-      itemCount: trash?.itemCount ?? 0,
-      purgeSupported: false,
-      purgeUnavailableReason:
-        'Cloud physical purge requires the production object lifecycle worker.',
+      bytes: summary.bytes,
+      itemCount: summary.itemCount,
+      purgeSupported,
+      ...(!purgeSupported
+        ? { purgeUnavailableReason: 'Cloud object storage is not configured.' }
+        : {}),
+      ...(activePurgeJob ? { activePurgeJob } : {}),
     };
   }
   const [summary, activePurgeJob] = await Promise.all([

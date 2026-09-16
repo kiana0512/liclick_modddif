@@ -150,6 +150,40 @@ CREATE TABLE IF NOT EXISTS asset_storage_quarantine (
     ON DELETE RESTRICT
 );
 
+CREATE TABLE IF NOT EXISTS asset_storage_purge_jobs (
+  user_id TEXT NOT NULL REFERENCES cloud_users(user_id) ON DELETE CASCADE,
+  job_id TEXT NOT NULL,
+  idempotency_key TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('queued', 'running', 'completed', 'failed')),
+  job_json JSONB NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL,
+  updated_at TIMESTAMPTZ NOT NULL,
+  completed_at TIMESTAMPTZ,
+  PRIMARY KEY (user_id, job_id),
+  UNIQUE (user_id, idempotency_key)
+);
+
+CREATE INDEX IF NOT EXISTS asset_storage_purge_jobs_user_created_idx
+  ON asset_storage_purge_jobs (user_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS asset_storage_purge_items (
+  user_id TEXT NOT NULL,
+  job_id TEXT NOT NULL,
+  asset_id TEXT NOT NULL,
+  object_key TEXT NOT NULL,
+  size_bytes BIGINT NOT NULL CHECK (size_bytes >= 0),
+  status TEXT NOT NULL CHECK (status IN ('pending', 'deleted', 'failed')),
+  error TEXT,
+  updated_at TIMESTAMPTZ NOT NULL,
+  PRIMARY KEY (user_id, job_id, asset_id),
+  FOREIGN KEY (user_id, job_id)
+    REFERENCES asset_storage_purge_jobs (user_id, job_id)
+    ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS asset_storage_purge_items_pending_idx
+  ON asset_storage_purge_items (user_id, job_id, status, asset_id);
+
 CREATE INDEX IF NOT EXISTS asset_storage_quarantine_due_idx
   ON asset_storage_quarantine (delete_after, user_id)
   WHERE restored_at IS NULL AND deleted_at IS NULL;
