@@ -58,6 +58,12 @@ queuedFrame(); visible.tick(); visible.tick();
 assert.equal(continuations, 1, 'Paint and fallback racing must not duplicate work');
 
 const viewport = read('engine/viewport/ViewportCanvas.tsx');
+const editor = read('routes/EditorPage.tsx');
+assert.match(
+  editor,
+  /const activationRequested = detail\.activationRequested === true \|\| Boolean\(pendingRequest\);[\s\S]*?if \(!activationRequested\) return;[\s\S]*?pushToast\(/,
+  'Background prewarm failures stay quiet while explicit button-3 failures remain visible',
+);
 const preparation = viewport.slice(viewport.indexOf('const finishGpuPreparation = trackLocalRepaintPreparation'), viewport.indexOf('bindLocalRepaintResidentMaskOverride,', viewport.indexOf('const finishGpuPreparation = trackLocalRepaintPreparation')));
 assert.match(preparation, /const waitForFrame = waitForBrowserPaint/);
 assert.match(preparation, /const cancelStart = scheduleAfterBrowserPaint/);
@@ -113,13 +119,22 @@ const imageLoaderSource = viewport.slice(viewport.indexOf('const LOCAL_REPAINT_I
   viewport.indexOf('function reportLocalRepaintPrewarmProgress'));
 function imageLoaderEnvironment() {
   const images=[];
+  let assetReads=0, revoked=[];
   class Image {
     naturalWidth=4096; naturalHeight=2048;
     constructor() {images.push(this);}
     decode() {this.decodes=(this.decodes??0)+1;return new Promise((resolve,reject)=>{this.finishDecode=resolve;this.failDecode=reject;});}
   }
-  const load=new Function('Image',ts.transpileModule(imageLoaderSource,{compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText+'\nreturn loadImageElement;')(Image);
-  return {load,images};
+  const objectUrl = {
+    createObjectURL: () => 'blob:authenticated-mask',
+    revokeObjectURL: (url) => revoked.push(url),
+  };
+  const readWorkspaceAssetBlob = async () => {
+    assetReads++;
+    return new Blob(['mask'], { type: 'image/png' });
+  };
+  const load=new Function('Image','readWorkspaceAssetBlob','URL',ts.transpileModule(imageLoaderSource,{compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText+'\nreturn loadImageElement;')(Image,readWorkspaceAssetBlob,objectUrl);
+  return {load,images,get assetReads(){return assetReads;},revoked};
 }
 const flushImages=async()=>{for(let i=0;i<8;i++)await Promise.resolve();};
 const loader=imageLoaderEnvironment();
@@ -144,10 +159,19 @@ for(const fallback of ['unsupported','rejected']) {
   assert.equal(await request,image,'Loaded images remain usable when optional decode is unavailable/rejected');
 }
 const failed=loader.load('failed').catch(error=>error.message);
-loader.images.at(-1).onerror(); assert.match(await failed,/Could not load/);
+loader.images.at(-1).onerror(); assert.match(await failed,/无法读取/);
 const beforeRetry=loader.images.length, retried=loader.load('failed');
 assert.equal(loader.images.length,beforeRetry+1,'Load errors must not poison the cache');
 void loader.images.at(-1).onload(); loader.images.at(-1).finishDecode(); await retried;
+const protectedMask=loader.load('/workspace/project/assets/generations/repaint-mask.png');
+loader.images.at(-1).onerror(); await flushImages();
+const authenticatedImage=loader.images.at(-1);
+assert.equal(authenticatedImage.src,'blob:authenticated-mask');
+void authenticatedImage.onload(); authenticatedImage.finishDecode();
+assert.equal(await protectedMask,authenticatedImage,'Durable masks retry through the authenticated asset reader');
+assert.equal(loader.assetReads,1);
+assert.deepEqual(loader.revoked,['blob:authenticated-mask']);
+assert.equal(loader.load('/workspace/project/assets/generations/repaint-mask.png'),protectedMask,'Authenticated result stays shared');
 const bounded=imageLoaderEnvironment();
 const warm=async(url)=>{const p=bounded.load(url), image=bounded.images.at(-1);void image.onload();image.finishDecode();return p;};
 for(let i=0;i<6;i++)await warm(`image-${i}`);
