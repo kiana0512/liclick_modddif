@@ -65,6 +65,7 @@ import {
 } from '@/engine/paint/liveSurfacePaintPreviewRegistry';
 import { serializeCamera } from '@/engine/projection/ProjectionCamera';
 import { prewarmLocalRepaintProgram } from '@/engine/localRepaint/programPrewarm';
+import { inpaintSelectionDisplayShader } from '@/engine/localRepaint/selectionDisplay';
 import {
   consumeSelectionMask,
   getSelectionConsumptionMaterial,
@@ -5311,7 +5312,7 @@ function createInpaintMaskMaterial(maskTexture: THREE.CanvasTexture) {
       varying float vProjectorFacing;
       varying float vViewerFacing;
       ${inpaintDepthShader}
-
+      ${inpaintSelectionDisplayShader}
       void main() {
         if (projectionReady < 0.5) discard;
         if (
@@ -5332,7 +5333,7 @@ function createInpaintMaskMaterial(maskTexture: THREE.CanvasTexture) {
         float stripe = 1.0 - step(stripeWidth, coord);
         gl_FragColor = vec4(
           stripeColor,
-          mix(selectionFillOpacity, stripeOpacity, stripe) * maskAlpha
+          mix(selectionFillOpacity, stripeOpacity, stripe) * inpaintSelectionDisplayAlpha(maskAlpha)
         );
       }
     `,
@@ -5417,6 +5418,7 @@ function createAccumulatedInpaintMaskMaterial(maskTexture: THREE.Texture) {
       varying float vLiveProjectorFacing;
       varying float vViewerFacing;
       ${inpaintDepthShader}
+      ${inpaintSelectionDisplayShader}
       void main() {
         if (projectionReady < 0.5) discard;
         float maskAlpha = 0.0;
@@ -5457,7 +5459,7 @@ function createAccumulatedInpaintMaskMaterial(maskTexture: THREE.Texture) {
         gl_FragDepthEXT = clamp(gl_FragCoord.z - 0.00008, 0.0, 1.0);
         gl_FragColor = vec4(
           stripeColor,
-          mix(selectionFillOpacity, stripeOpacity, stripe) * maskAlpha
+          mix(selectionFillOpacity, stripeOpacity, stripe) * inpaintSelectionDisplayAlpha(maskAlpha)
         );
       }
     `,
@@ -5504,6 +5506,7 @@ function createLiveInpaintScreenPreview() {
       uniform float stripeOpacity;
       uniform float selectionFillOpacity;
       varying vec2 vScreenUv;
+      ${inpaintSelectionDisplayShader}
       void main() {
         if (previewReady < 0.5) discard;
         // Depth and canvas textures use opposite vertical origins. The captured
@@ -5518,7 +5521,7 @@ function createLiveInpaintScreenPreview() {
         float stripe = 1.0 - step(7.0, mod(gl_FragCoord.x + gl_FragCoord.y, 14.0));
         gl_FragColor = vec4(
           stripeColor,
-          mix(selectionFillOpacity, stripeOpacity, stripe) * maskAlpha
+          mix(selectionFillOpacity, stripeOpacity, stripe) * inpaintSelectionDisplayAlpha(maskAlpha)
         );
       }
     `,
