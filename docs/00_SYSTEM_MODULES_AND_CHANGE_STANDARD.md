@@ -111,7 +111,9 @@
 
 2026-09-15 M03：ALG-VIEW-INPUT-001/1.3.2 在鼠标接触前即让 R3F 悬停遵守 Alt 所有权；保留普通 hover 和已锁定拖动。旧实现拾取回归失败、新实现通过，用户实际首帧延迟需继续录制。无像素/持久化迁移，见 [Alt 悬停变更卡](changes/CHG-20260915-ALT-BRUSH-HOVER.md)。
 
-> 文档版本：`2.20.153`
+> 文档版本：`2.20.155`
+
+2026-09-16 UI-16 → M14（协作 M01/M12/M13/M15）：`ASSET-LIFECYCLE-GC` v0.3.4 将 Cloud 存储盘点从全量加载全部 Asset Transfer 与 Project/Revision JSON 改为 PostgreSQL 原生引用提取、键集分页和扫描专属暂存表。工程页默认 8 条、资产页默认 256 条；Node 只接收 assetId 投影和单页资产，候选按页批量落库，完成后原子切换快照，失败清理暂存且保留上一份可用快照。查询使用 45 秒 statement timeout，失败状态不会被自动扫描立即覆盖。`LOCAL-SETTINGS-REFRESH` v1.1.0 删除 3 秒固定请求风暴，改为单飞、前台可见刷新和 30 秒至 5 分钟指数退避。新增 `asset_storage_inventory_scan_references` 暂存表，无 Project/Revision/Asset Transfer Schema 语义变化；`STORAGE-INVENTORY-001/3` 分类规则、Command 幂等、Revision CAS、ownership、verified assets、隔离/删除规则、GPU/CPU/Worker/shader、投影/UV/重绘/export 与分辨率不变。5.6 MB 工程文档回归中 Node 响应小于 1 KiB；详细迁移、内存边界与回滚见 [Cloud 存储盘点有界化变更卡](changes/CHG-20260916-CLOUD-STORAGE-INVENTORY-BOUNDED.md)。
 
 2026-09-15 UI-06 → M03：`ALG-VIEW-SELECT-001/1.0.5` 将常驻线框预热绑定到 renderer/模型生命周期，透视/正交相机替换不重新编译或释放同一辅助材质，避免旧编译完成后释放当前材质。16 次相机替换旧实现启动 17 次编译，新实现一次；71 次显隐及卸载清理保持。GPU 线框/CPU 几何/Worker/shader、捕获/UV/重绘/导出、分辨率和 QA、持久化/Schema 均不变，无迁移。其他工具切换仍有长帧，不宣称全操作无卡顿，验证和回滚见 [线框相机生命周期变更卡](changes/CHG-20260915-WIREFRAME-CAMERA-LIFETIME.md)。
 

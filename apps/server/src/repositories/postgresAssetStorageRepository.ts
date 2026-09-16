@@ -1,4 +1,4 @@
-import type { StorageCleanupJob, StorageOverview } from '@liclick/contracts';
+import type { StorageBucketId, StorageCleanupJob, StorageOverview } from '@liclick/contracts';
 import {
   getSharedPgProjectSqlDatabase,
   type ProjectSqlConnection,
@@ -16,13 +16,31 @@ export type LegacyStorageAsset = {
   objectKey: string;
   createdAt: string;
   quarantined: boolean;
+  referenceBucket?: StorageBucketId;
 };
 
 export type StorageDocument = {
   ownerId: string;
   revisionId?: string;
   kind: 'current' | 'history' | 'trash';
-  document: unknown;
+  assetIds: string[];
+};
+
+export type StorageDocumentKind = StorageDocument['kind'];
+
+export type StorageDocumentCursor = {
+  projectId: string;
+  revisionNumber: number;
+};
+
+export type StorageDocumentPage = {
+  documents: StorageDocument[];
+  nextCursor?: StorageDocumentCursor;
+};
+
+export type LegacyStorageAssetPage = {
+  assets: LegacyStorageAsset[];
+  nextCursor?: string;
 };
 
 export type StorageInventoryCandidate = {
@@ -53,6 +71,26 @@ function validLegacyAsset(value: unknown): value is Omit<LegacyStorageAsset, 'qu
   );
 }
 
+function inventoryQueryTimeoutMs() {
+  const configured = Number(process.env.LICLICK_STORAGE_INVENTORY_QUERY_TIMEOUT_MS ?? 45_000);
+  if (!Number.isFinite(configured)) return 45_000;
+  return Math.max(5_000, Math.min(300_000, Math.trunc(configured)));
+}
+
+function runInventoryQuery<T>(
+  database: ProjectSqlDatabase,
+  operation: (connection: ProjectSqlConnection) => Promise<T>,
+) {
+  return database.withStatementTimeout
+    ? database.withStatementTimeout(inventoryQueryTimeoutMs(), operation)
+    : operation(database);
+}
+
+function boundedPageSize(value: number, maximum: number) {
+  if (!Number.isFinite(value)) return Math.min(128, maximum);
+  return Math.max(1, Math.min(maximum, Math.trunc(value)));
+}
+
 async function insertCandidates(
   connection: ProjectSqlConnection,
   userId: string,
@@ -60,25 +98,32 @@ async function insertCandidates(
   createdAt: string,
   candidates: StorageInventoryCandidate[],
 ) {
-  for (const candidate of candidates) {
-    await connection.query(
-      `INSERT INTO asset_storage_inventory_candidates (
-         user_id, scan_id, candidate_id, asset_id, project_id, category,
-         size_bytes, proof_json, created_at
-       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9::timestamptz)`,
-      [
-        userId,
-        scanId,
-        candidate.candidateId,
-        candidate.assetId,
-        candidate.projectId,
-        candidate.category,
-        candidate.sizeBytes,
-        candidate.proof,
-        createdAt,
-      ],
-    );
-  }
+  if (candidates.length === 0) return;
+  const rows = candidates.map((candidate) => ({
+    candidate_id: candidate.candidateId,
+    asset_id: candidate.assetId,
+    project_id: candidate.projectId,
+    category: candidate.category,
+    size_bytes: candidate.sizeBytes,
+    proof_json: candidate.proof,
+  }));
+  await connection.query(
+    `INSERT INTO asset_storage_inventory_candidates (
+       user_id, scan_id, candidate_id, asset_id, project_id, category,
+       size_bytes, proof_json, created_at
+     )
+     SELECT $1, $2, candidate_id, asset_id, project_id, category,
+            size_bytes, proof_json, $4::timestamptz
+       FROM jsonb_to_recordset($3::jsonb) AS candidate(
+         candidate_id TEXT,
+         asset_id TEXT,
+         project_id TEXT,
+         category TEXT,
+         size_bytes BIGINT,
+         proof_json JSONB
+       )`,
+    [userId, scanId, rows, createdAt],
+  );
 }
 
 export function createPostgresAssetStorageRepository(database: ProjectSqlDatabase) {
@@ -91,83 +136,299 @@ export function createPostgresAssetStorageRepository(database: ProjectSqlDatabas
       return result.rows[0]?.snapshot_json;
     },
 
-    async listLegacyAssets(userId: string) {
-      const result = await database.query<{ record_json: unknown; quarantined: boolean }>(
-        `SELECT t.record_json,
+    async listLegacyAssetPage(
+      userId: string,
+      scanId: string,
+      cursor: string | undefined,
+      requestedLimit: number,
+    ): Promise<LegacyStorageAssetPage> {
+      const limit = boundedPageSize(requestedLimit, 512);
+      return runInventoryQuery(database, async (connection) => {
+        const result = await connection.query<{
+          intent_id: string;
+          record_json: unknown;
+          quarantined: boolean;
+          bucket_id: StorageBucketId | null;
+        }>(
+          `SELECT t.intent_id, t.record_json, reference.bucket_id,
                 EXISTS (
                   SELECT 1 FROM asset_storage_quarantine q
                    WHERE q.user_id=t.user_id AND q.asset_id=t.asset_id
                      AND q.restored_at IS NULL AND q.deleted_at IS NULL
                 ) AS quarantined
            FROM asset_transfers t
-          WHERE t.user_id=$1 AND t.status='verified'
-          ORDER BY t.intent_id`,
-        [userId],
-      );
-      return result.rows.flatMap((row) =>
-        validLegacyAsset(row.record_json)
-          ? [{ ...row.record_json, quarantined: Boolean(row.quarantined) }]
-          : [],
-      );
+           LEFT JOIN asset_storage_inventory_scan_references reference
+             ON reference.user_id=t.user_id
+            AND reference.scan_id=$2
+            AND reference.asset_id=t.asset_id
+          WHERE t.user_id=$1 AND t.status='verified' AND t.intent_id>$3
+          ORDER BY t.intent_id
+          LIMIT $4`,
+          [userId, scanId, cursor ?? '', limit],
+        );
+        const assets = result.rows.flatMap((row) =>
+          validLegacyAsset(row.record_json)
+            ? [{
+                ...row.record_json,
+                quarantined: Boolean(row.quarantined),
+                ...(row.bucket_id ? { referenceBucket: row.bucket_id } : {}),
+              }]
+            : [],
+        );
+        const lastRow = result.rows.at(-1);
+        return {
+          assets,
+          ...(result.rows.length === limit && lastRow
+            ? { nextCursor: lastRow.intent_id }
+            : {}),
+        };
+      });
     },
 
-    async listStorageDocuments(userId: string): Promise<StorageDocument[]> {
-      const current = await database.query<{
-        project_id: string;
-        revision_id: string;
-        document_json: unknown;
-      }>(
-        `SELECT project_id, revision_id, document_json FROM project_documents
-          WHERE user_id=$1 AND deleted_at IS NULL ORDER BY project_id`,
-        [userId],
-      );
-      const history = await database.query<{
-        project_id: string;
-        revision_id: string;
-        document_json: unknown;
-      }>(
-        `SELECT r.project_id, r.revision_id, r.document_json
-           FROM project_document_revisions r
-           JOIN project_documents p
-             ON p.user_id=r.user_id AND p.project_id=r.project_id
-          WHERE r.user_id=$1 AND p.deleted_at IS NULL
-            AND r.revision_id<>p.revision_id
-          ORDER BY r.project_id, r.revision_number`,
-        [userId],
-      );
-      const trash = await database.query<{
-        project_id: string;
-        revision_id: string;
-        document_json: unknown;
-      }>(
-        `SELECT r.project_id, r.revision_id, r.document_json
-           FROM project_document_revisions r
-           JOIN project_documents p
-             ON p.user_id=r.user_id AND p.project_id=r.project_id
-          WHERE r.user_id=$1 AND p.deleted_at IS NOT NULL
-          ORDER BY r.project_id, r.revision_number`,
-        [userId],
-      );
-      return [
-        ...current.rows.map((row) => ({
-          ownerId: row.project_id,
-          revisionId: row.revision_id,
-          kind: 'current' as const,
-          document: row.document_json,
-        })),
-        ...history.rows.map((row) => ({
-          ownerId: row.project_id,
-          revisionId: row.revision_id,
-          kind: 'history' as const,
-          document: row.document_json,
-        })),
-        ...trash.rows.map((row) => ({
-          ownerId: row.project_id,
-          revisionId: row.revision_id,
-          kind: 'trash' as const,
-          document: row.document_json,
-        })),
-      ];
+    async listStorageDocumentPage(
+      userId: string,
+      kind: StorageDocumentKind,
+      cursor: StorageDocumentCursor | undefined,
+      requestedLimit: number,
+    ): Promise<StorageDocumentPage> {
+      const limit = boundedPageSize(requestedLimit, 32);
+      return runInventoryQuery(database, async (connection) => {
+        if (kind === 'current') {
+          const current = await connection.query<{
+            project_id: string;
+            revision_id: string;
+            revision_number: number;
+            asset_ids: string[];
+          }>(
+            `WITH page AS (
+               SELECT project_id, revision_id, revision_number, document_json
+                 FROM project_documents
+                WHERE user_id=$1 AND deleted_at IS NULL AND project_id>$2
+                ORDER BY project_id
+                LIMIT $3
+             )
+             SELECT page.project_id, page.revision_id, page.revision_number,
+                    ARRAY(
+                      SELECT DISTINCT asset_match[1]
+                        FROM regexp_matches(
+                          page.document_json::text,
+                          '(?:/assets/|objects/)(asset-[a-zA-Z0-9_-]{8,128})(?:/content)?',
+                          'g'
+                        ) AS captures(asset_match)
+                    ) AS asset_ids
+               FROM page
+              ORDER BY page.project_id`,
+            [userId, cursor?.projectId ?? '', limit],
+          );
+          const lastRow = current.rows.at(-1);
+          return {
+            documents: current.rows.map((row) => ({
+              ownerId: row.project_id,
+              revisionId: row.revision_id,
+              kind,
+              assetIds: row.asset_ids,
+            })),
+            ...(current.rows.length === limit && lastRow
+              ? {
+                  nextCursor: {
+                    projectId: lastRow.project_id,
+                    revisionNumber: lastRow.revision_number,
+                  },
+                }
+              : {}),
+          };
+        }
+        const revisions = await connection.query<{
+          project_id: string;
+          revision_id: string;
+          revision_number: number;
+          asset_ids: string[];
+        }>(
+          `WITH page AS (
+             SELECT r.project_id, r.revision_id, r.revision_number, r.document_json
+               FROM project_document_revisions r
+               JOIN project_documents p
+                 ON p.user_id=r.user_id AND p.project_id=r.project_id
+              WHERE r.user_id=$1
+                AND p.deleted_at IS ${kind === 'history' ? '' : 'NOT '}NULL
+                ${kind === 'history' ? 'AND r.revision_id<>p.revision_id' : ''}
+                AND (r.project_id, r.revision_number)>($2,$3)
+              ORDER BY r.project_id, r.revision_number
+              LIMIT $4
+           )
+           SELECT page.project_id, page.revision_id, page.revision_number,
+                  ARRAY(
+                    SELECT DISTINCT asset_match[1]
+                      FROM regexp_matches(
+                        page.document_json::text,
+                        '(?:/assets/|objects/)(asset-[a-zA-Z0-9_-]{8,128})(?:/content)?',
+                        'g'
+                      ) AS captures(asset_match)
+                  ) AS asset_ids
+             FROM page
+            ORDER BY page.project_id, page.revision_number`,
+          [userId, cursor?.projectId ?? '', cursor?.revisionNumber ?? -1, limit],
+        );
+        const lastRow = revisions.rows.at(-1);
+        return {
+          documents: revisions.rows.map((row) => ({
+            ownerId: row.project_id,
+            revisionId: row.revision_id,
+            kind,
+            assetIds: row.asset_ids,
+          })),
+          ...(revisions.rows.length === limit && lastRow
+            ? {
+                nextCursor: {
+                  projectId: lastRow.project_id,
+                  revisionNumber: lastRow.revision_number,
+                },
+              }
+            : {}),
+        };
+      });
+    },
+
+    async beginInventoryScan(userId: string, scanId: string) {
+      await runInventoryQuery(database, async (connection) => {
+        await connection.query(
+          `DELETE FROM asset_storage_inventory_candidates c
+            WHERE c.user_id=$1
+              AND (
+                c.scan_id=$2 OR NOT EXISTS (
+                  SELECT 1 FROM asset_storage_inventory_snapshots s
+                   WHERE s.user_id=c.user_id AND s.scan_id=c.scan_id
+                )
+              )`,
+          [userId, scanId],
+        );
+        await connection.query(
+          `DELETE FROM asset_storage_inventory_scan_references WHERE user_id=$1`,
+          [userId],
+        );
+      });
+    },
+
+    async appendInventoryReferences(input: {
+      userId: string;
+      scanId: string;
+      references: Array<{ assetId: string; bucketId: Exclude<StorageBucketId, 'temporary'> }>;
+    }) {
+      if (input.references.length === 0) return;
+      const priority: Record<Exclude<StorageBucketId, 'temporary'>, number> = {
+        'project-resources': 0,
+        history: 1,
+        trash: 2,
+      };
+      const deduplicated = new Map<
+        string,
+        Exclude<StorageBucketId, 'temporary'>
+      >();
+      for (const reference of input.references) {
+        const retained = deduplicated.get(reference.assetId);
+        if (!retained || priority[reference.bucketId] < priority[retained]) {
+          deduplicated.set(reference.assetId, reference.bucketId);
+        }
+      }
+      await runInventoryQuery(database, async (connection) => {
+        await connection.query(
+          `INSERT INTO asset_storage_inventory_scan_references (
+             user_id, scan_id, asset_id, bucket_id
+           )
+           SELECT $1, $2, asset_id, bucket_id
+             FROM jsonb_to_recordset($3::jsonb) AS reference(asset_id TEXT, bucket_id TEXT)
+           ON CONFLICT (user_id, scan_id, asset_id) DO UPDATE SET
+             bucket_id = CASE
+               WHEN EXCLUDED.bucket_id='project-resources' THEN EXCLUDED.bucket_id
+               WHEN asset_storage_inventory_scan_references.bucket_id='project-resources'
+                 THEN asset_storage_inventory_scan_references.bucket_id
+               WHEN EXCLUDED.bucket_id='history' THEN EXCLUDED.bucket_id
+               ELSE asset_storage_inventory_scan_references.bucket_id
+             END`,
+          [
+            input.userId,
+            input.scanId,
+            Array.from(deduplicated, ([assetId, bucketId]) => ({
+              asset_id: assetId,
+              bucket_id: bucketId,
+            })),
+          ],
+        );
+      });
+    },
+
+    async appendInventoryCandidates(input: {
+      userId: string;
+      scanId: string;
+      createdAt: string;
+      candidates: StorageInventoryCandidate[];
+    }) {
+      if (input.candidates.length === 0) return;
+      await runInventoryQuery(database, async (connection) => {
+        await insertCandidates(
+          connection,
+          input.userId,
+          input.scanId,
+          input.createdAt,
+          input.candidates,
+        );
+      });
+    },
+
+    async completeInventoryScan(input: {
+      userId: string;
+      overview: StorageOverview;
+      startedAt: string;
+    }) {
+      await runInventoryQuery(database, async (connection) => {
+        await connection.query(
+          `INSERT INTO asset_storage_inventory_snapshots (
+             user_id, scan_id, schema_version, rule_version, status,
+             snapshot_json, started_at, completed_at, updated_at
+           ) VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7::timestamptz,$8::timestamptz,$8::timestamptz)
+           ON CONFLICT (user_id) DO UPDATE SET
+             scan_id=EXCLUDED.scan_id,
+             schema_version=EXCLUDED.schema_version,
+             rule_version=EXCLUDED.rule_version,
+             status=EXCLUDED.status,
+             snapshot_json=EXCLUDED.snapshot_json,
+             started_at=EXCLUDED.started_at,
+             completed_at=EXCLUDED.completed_at,
+             updated_at=EXCLUDED.updated_at`,
+          [
+            input.userId,
+            input.overview.scanId,
+            input.overview.schemaVersion,
+            input.overview.ruleVersion,
+            input.overview.status,
+            input.overview,
+            input.startedAt,
+            input.overview.lastScannedAt,
+          ],
+        );
+        await connection.query(
+          `DELETE FROM asset_storage_inventory_candidates
+            WHERE user_id=$1 AND scan_id<>$2`,
+          [input.userId, input.overview.scanId],
+        );
+        await connection.query(
+          `DELETE FROM asset_storage_inventory_scan_references WHERE user_id=$1`,
+          [input.userId],
+        );
+      });
+    },
+
+    async discardInventoryScan(userId: string, scanId: string) {
+      await runInventoryQuery(database, async (connection) => {
+        await connection.query(
+          `DELETE FROM asset_storage_inventory_candidates WHERE user_id=$1 AND scan_id=$2`,
+          [userId, scanId],
+        );
+        await connection.query(
+          `DELETE FROM asset_storage_inventory_scan_references WHERE user_id=$1 AND scan_id=$2`,
+          [userId, scanId],
+        );
+      });
     },
 
     async replaceInventory(input: {

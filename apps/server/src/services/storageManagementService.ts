@@ -19,6 +19,8 @@ import {
 import {
   postgresAssetStorageRepository,
   type LegacyStorageAsset,
+  type StorageDocumentCursor,
+  type StorageDocumentKind,
   type StorageInventoryCandidate,
 } from '../repositories/postgresAssetStorageRepository.js';
 import {
@@ -52,6 +54,7 @@ const quarantineDirectoryName = 'storage-quarantine';
 const purgeDirectoryName = 'storage-purge';
 const scanPromises = new Map<string, Promise<StorageOverview>>();
 const scanProgress = new Map<string, StorageOverview>();
+const scanFailures = new Map<string, StorageOverview>();
 const cleanupPromises = new Map<string, Promise<void>>();
 const cleanupStartPromises = new Map<string, Promise<StorageCleanupJob | undefined>>();
 const purgePromises = new Map<string, Promise<void>>();
@@ -586,51 +589,120 @@ async function scanLocalStorage(
 
 function classifyCloudAsset(
   asset: LegacyStorageAsset,
-  current: Set<string>,
-  history: Set<string>,
-  trash: Set<string>,
 ): StorageBucketId {
   if (asset.quarantined) return 'trash';
-  if (current.has(asset.assetId)) return 'project-resources';
-  if (history.has(asset.assetId)) return 'history';
-  if (trash.has(asset.assetId)) return 'trash';
-  return 'temporary';
+  return asset.referenceBucket ?? 'temporary';
+}
+
+function cloudDocumentPageSize() {
+  const configured = Number(process.env.LICLICK_STORAGE_DOCUMENT_PAGE_SIZE ?? 8);
+  if (!Number.isFinite(configured)) return 8;
+  return Math.max(1, Math.min(32, Math.trunc(configured)));
+}
+
+function cloudAssetPageSize() {
+  const configured = Number(process.env.LICLICK_STORAGE_ASSET_PAGE_SIZE ?? 256);
+  if (!Number.isFinite(configured)) return 256;
+  return Math.max(16, Math.min(512, Math.trunc(configured)));
+}
+
+function referenceBucket(kind: StorageDocumentKind): Exclude<StorageBucketId, 'temporary'> {
+  if (kind === 'current') return 'project-resources';
+  return kind;
 }
 
 async function scanCloudStorage(userId: string, scanId: string): Promise<InventoryResult> {
   if (!postgresAssetStorageRepository) throw new Error('Cloud storage repository is unavailable.');
-  const [assets, documents] = await Promise.all([
-    postgresAssetStorageRepository.listLegacyAssets(userId),
-    postgresAssetStorageRepository.listStorageDocuments(userId),
-  ]);
-  const current = new Set<string>();
-  const history = new Set<string>();
-  const trash = new Set<string>();
-  for (const document of documents) {
-    const destination =
-      document.kind === 'current' ? current : document.kind === 'history' ? history : trash;
-    for (const assetId of extractCloudAssetIds(document.document)) destination.add(assetId);
-  }
+  await postgresAssetStorageRepository.beginInventoryScan(userId, scanId);
+  const startedAt = scanProgress.get(userId)?.scanStartedAt ?? new Date().toISOString();
   const buckets = emptyBuckets();
-  const candidates: StorageInventoryCandidate[] = [];
-  for (const asset of assets) {
-    const bucketId = classifyCloudAsset(asset, current, history, trash);
-    addToBucket(buckets[bucketId], asset.sizeBytes);
-    if (bucketId === 'temporary') {
-      candidates.push({
-        candidateId: `candidate-${asset.assetId}`,
-        assetId: asset.assetId,
-        projectId: asset.projectId,
-        category: asset.category,
-        sizeBytes: asset.sizeBytes,
-        proof: {
-          ruleVersion: STORAGE_INVENTORY_RULE_VERSION,
-          reason: 'not-referenced-by-current-retained-or-trash-project-document',
-          objectKeySha256: createHash('sha256').update(asset.objectKey).digest('hex'),
-        },
+  let scannedItemCount = 0;
+  const reportProgress = (phase: StorageScanPhase) => {
+    scanProgress.set(userId, createScanningProgress({
+      backend: 'cloud-object-storage',
+      buckets,
+      scanId,
+      startedAt,
+      phase,
+      scannedItemCount,
+    }));
+  };
+  for (const kind of ['current', 'history', 'trash'] satisfies StorageDocumentKind[]) {
+    let cursor: StorageDocumentCursor | undefined;
+    do {
+      const page = await postgresAssetStorageRepository.listStorageDocumentPage(
+        userId,
+        kind,
+        cursor,
+        cloudDocumentPageSize(),
+      );
+      const bucket = referenceBucket(kind);
+      let references: Array<{
+        assetId: string;
+        bucketId: Exclude<StorageBucketId, 'temporary'>;
+      }> = [];
+      for (const document of page.documents) {
+        for (const assetId of document.assetIds) {
+          references.push({ assetId, bucketId: bucket });
+          if (references.length >= 1_000) {
+            await postgresAssetStorageRepository.appendInventoryReferences({
+              userId,
+              scanId,
+              references,
+            });
+            references = [];
+          }
+        }
+        scannedItemCount += 1;
+      }
+      await postgresAssetStorageRepository.appendInventoryReferences({
+        userId,
+        scanId,
+        references,
       });
-    }
+      reportProgress('references');
+      cursor = page.nextCursor;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    } while (cursor);
   }
+  let assetCursor: string | undefined;
+  do {
+    const page = await postgresAssetStorageRepository.listLegacyAssetPage(
+      userId,
+      scanId,
+      assetCursor,
+      cloudAssetPageSize(),
+    );
+    const candidates: StorageInventoryCandidate[] = [];
+    for (const asset of page.assets) {
+      const bucketId = classifyCloudAsset(asset);
+      addToBucket(buckets[bucketId], asset.sizeBytes);
+      if (bucketId === 'temporary') {
+        candidates.push({
+          candidateId: `candidate-${asset.assetId}`,
+          assetId: asset.assetId,
+          projectId: asset.projectId,
+          category: asset.category,
+          sizeBytes: asset.sizeBytes,
+          proof: {
+            ruleVersion: STORAGE_INVENTORY_RULE_VERSION,
+            reason: 'not-referenced-by-current-retained-or-trash-project-document',
+            objectKeySha256: createHash('sha256').update(asset.objectKey).digest('hex'),
+          },
+        });
+      }
+      scannedItemCount += 1;
+    }
+    await postgresAssetStorageRepository.appendInventoryCandidates({
+      userId,
+      scanId,
+      createdAt: startedAt,
+      candidates,
+    });
+    reportProgress('assets');
+    assetCursor = page.nextCursor;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  } while (assetCursor);
   const bucketList = Object.values(buckets);
   const completedAt = new Date().toISOString();
   return {
@@ -646,22 +718,30 @@ async function scanCloudStorage(userId: string, scanId: string): Promise<Invento
       lastScannedAt: completedAt,
       buckets: bucketList,
     },
-    cloudCandidates: candidates,
+    cloudCandidates: [],
   };
 }
 
 async function persistInventory(userId: string, result: InventoryResult, startedAt: string) {
   if (postgresAssetStorageRepository) {
-    await postgresAssetStorageRepository.replaceInventory({
+    await postgresAssetStorageRepository.completeInventoryScan({
       userId,
       overview: result.overview,
-      candidates: result.cloudCandidates,
       startedAt,
     });
     return;
   }
   await ensureDir(localStorageMetadataDir(userId));
   await writeJsonFile(localSnapshotPath(userId), result.overview);
+}
+
+async function discardFailedInventory(userId: string, scanId: string) {
+  if (!postgresAssetStorageRepository) return;
+  try {
+    await postgresAssetStorageRepository.discardInventoryScan(userId, scanId);
+  } catch {
+    // A later scan removes orphan staging rows without touching the current snapshot.
+  }
 }
 
 async function discardStaleLocalCandidateManifests(userId: string, retainedScanId: string) {
@@ -714,16 +794,23 @@ async function runStorageScan(userId: string) {
     if (!postgresAssetStorageRepository) {
       await discardStaleLocalCandidateManifests(userId, scanId);
     }
+    scanFailures.delete(userId);
     return result.overview;
   } catch (error) {
+    await discardFailedInventory(userId, scanId);
+    const rawIssue = error instanceof Error ? error.message : 'Storage inventory failed.';
+    const issue = /statement timeout|canceling statement due to statement timeout/i.test(rawIssue)
+      ? '云端存储扫描超过 45 秒，已安全停止本轮扫描；没有移动或删除资产，请稍后重新扫描。'
+      : rawIssue;
     const overview = failedOverview(
       backend(),
-      error instanceof Error ? error.message : 'Storage inventory failed.',
+      issue,
     );
     if (!postgresAssetStorageRepository) {
       await ensureDir(localStorageMetadataDir(userId));
       await writeJsonFile(localSnapshotPath(userId), overview);
     }
+    scanFailures.set(userId, overview);
     return overview;
   }
 }
@@ -731,6 +818,7 @@ async function runStorageScan(userId: string) {
 export function startStorageScan(userId: string) {
   const existing = scanPromises.get(userId);
   if (existing) return existing;
+  scanFailures.delete(userId);
   const promise = runStorageScan(userId).finally(() => {
     if (scanPromises.get(userId) === promise) {
       scanPromises.delete(userId);
@@ -744,6 +832,8 @@ export function startStorageScan(userId: string) {
 export async function getStorageOverview(userId: string): Promise<StorageOverview> {
   const activeScan = scanPromises.get(userId);
   if (activeScan) return scanProgress.get(userId) ?? scanningOverview();
+  const failedScan = scanFailures.get(userId);
+  if (failedScan) return failedScan;
   if (interruptedCleanupUsers.delete(userId)) {
     void startStorageScan(userId);
     return scanProgress.get(userId) ?? scanningOverview();

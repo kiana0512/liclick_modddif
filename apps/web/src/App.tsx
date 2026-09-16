@@ -357,14 +357,52 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    const refresh = () => void refreshLocalSettings().catch(() => undefined);
-    const timer = window.setInterval(refresh, 3_000);
-    window.addEventListener('focus', refresh);
-    document.addEventListener('visibilitychange', refresh);
+    const successIntervalMs = 60_000;
+    const retryBaseMs = 30_000;
+    const retryMaximumMs = 300_000;
+    let disposed = false;
+    let inFlight = false;
+    let failureCount = 0;
+    let nextRefreshAt = Date.now() + successIntervalMs;
+    let timer: number | undefined;
+    const schedule = (delayMs: number) => {
+      if (disposed) return;
+      if (timer !== undefined) window.clearTimeout(timer);
+      nextRefreshAt = Date.now() + delayMs;
+      timer = window.setTimeout(refresh, delayMs);
+    };
+    const refresh = () => {
+      if (disposed || inFlight || document.visibilityState !== 'visible') return;
+      const remainingMs = nextRefreshAt - Date.now();
+      if (remainingMs > 0) {
+        schedule(remainingMs);
+        return;
+      }
+      inFlight = true;
+      void refreshLocalSettings()
+        .then(() => {
+          failureCount = 0;
+          schedule(successIntervalMs);
+        })
+        .catch(() => {
+          failureCount += 1;
+          schedule(Math.min(retryMaximumMs, retryBaseMs * 2 ** (failureCount - 1)));
+        })
+        .finally(() => {
+          inFlight = false;
+        });
+    };
+    const refreshWhenActive = () => {
+      if (document.visibilityState === 'visible' && Date.now() >= nextRefreshAt) refresh();
+    };
+    schedule(successIntervalMs);
+    window.addEventListener('focus', refreshWhenActive);
+    document.addEventListener('visibilitychange', refreshWhenActive);
     return () => {
-      window.clearInterval(timer);
-      window.removeEventListener('focus', refresh);
-      document.removeEventListener('visibilitychange', refresh);
+      disposed = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+      window.removeEventListener('focus', refreshWhenActive);
+      document.removeEventListener('visibilitychange', refreshWhenActive);
     };
   }, [refreshLocalSettings]);
 
