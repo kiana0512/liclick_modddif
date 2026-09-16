@@ -3,7 +3,7 @@ import type { LiclickGenerateTextureSingleViewInput } from '@/services/liclickAp
 import { urlToDataUrl } from '@/services/workspaceApiClient';
 import { blobToDataUrl, urlToImageData } from '@/engine/localRepaint/imageUtils';
 import {
-  findContentFraming,
+  findContentFramingCooperatively,
   restoredFrameLayout,
   validateFramedSilhouette,
 } from './contentFraming';
@@ -13,8 +13,9 @@ async function load(url: string, signal?: AbortSignal) {
   signal?.throwIfAborted();
   const dataUrl = await urlToDataUrl(url);
   signal?.throwIfAborted();
-  return new Promise<HTMLImageElement>((resolve, reject) => {
+  const decoded = await new Promise<HTMLImageElement>((resolve, reject) => {
     const image = new Image();
+    image.decoding = 'async';
     const finish = (error?: unknown) => {
       image.onload = image.onerror = null;
       signal?.removeEventListener('abort', abort);
@@ -30,6 +31,11 @@ async function load(url: string, signal?: AbortSignal) {
     signal?.addEventListener('abort', abort, { once: true });
     image.src = dataUrl;
   });
+  await decoded.decode?.().catch(() => undefined);
+  signal?.throwIfAborted();
+  await yieldToBrowserTask();
+  signal?.throwIfAborted();
+  return decoded;
 }
 
 async function encode(canvas: HTMLCanvasElement) {
@@ -50,7 +56,11 @@ export async function prepareContentFraming(input: LiclickGenerateTextureSingleV
   });
   if (coverage.width !== capture.width || coverage.height !== capture.height)
     throw new Error('模型轮廓与截图尺寸不一致。');
-  const framing = findContentFraming(coverage, normal, input.imageSize ?? '2K');
+  const framing = await findContentFramingCooperatively(coverage, normal, input.imageSize ?? '2K', async () => {
+    input.signal?.throwIfAborted();
+    await yieldToBrowserTask();
+    input.signal?.throwIfAborted();
+  });
   restoredFrameLayout(framing, framing.outputWidth!, framing.outputHeight!);
   const references = [...(input.referenceImages ?? [])];
   const alignedCount = normal ? 2 : 1;
