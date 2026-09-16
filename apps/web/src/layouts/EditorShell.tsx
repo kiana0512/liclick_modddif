@@ -174,7 +174,7 @@ export function EditorShell({
     <main className="relative h-screen min-h-[680px] overflow-hidden bg-ink text-white">
       <header className="pointer-events-none absolute left-3 right-3 top-3 z-30 flex flex-wrap items-start gap-2">
         <div className="flex min-w-0 items-start gap-2">
-          <div className="pointer-events-auto flex min-w-0 shrink-0 items-center gap-2 rounded-lg border border-white/10 bg-black/42 px-2 py-1.5 shadow-[0_12px_34px_rgba(0,0,0,0.32)] backdrop-blur-md">
+          <div className="pointer-events-auto flex h-16 min-w-0 shrink-0 items-center gap-2 rounded-lg border border-white/10 bg-black/42 px-2 py-1 shadow-[0_12px_34px_rgba(0,0,0,0.32)] backdrop-blur-md">
             <BrandMark
               compact
               className="flex"
@@ -239,12 +239,12 @@ export function EditorShell({
             </div>
           </div>
           {workflowSwitcher ? (
-            <div className="pointer-events-auto hidden min-w-0 overflow-x-auto sm:block">
+            <div className="pointer-events-auto hidden h-16 min-w-0 overflow-x-auto sm:block [&>nav]:h-full">
               {workflowSwitcher}
             </div>
           ) : null}
         </div>
-        <div className="pointer-events-auto flex shrink-0 items-center justify-start gap-2 rounded-lg border border-white/10 bg-black/42 p-1.5 shadow-[0_12px_34px_rgba(0,0,0,0.32)] backdrop-blur-md">
+        <div className="pointer-events-auto flex h-16 shrink-0 items-center justify-start gap-2 rounded-lg border border-white/10 bg-black/42 p-1.5 shadow-[0_12px_34px_rgba(0,0,0,0.32)] backdrop-blur-md">
           <div className="flex gap-1 lg:hidden">
             <Button
               variant="secondary"

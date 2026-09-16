@@ -230,10 +230,10 @@ export function TextureOnboardingTour({
   const compact = collapsed || position.compact;
   return (
     <>
-      <div className="pointer-events-auto relative max-w-[calc(100vw-32px)] self-center text-white">
+      <div className="pointer-events-auto relative h-16 max-w-[calc(100vw-32px)] text-white">
         <button
           ref={launcherRef}
-          className={`${buttonClass} h-9 whitespace-nowrap border-liclick-pink/50 bg-[#17131f] text-liclick-pink`}
+          className="h-full whitespace-nowrap rounded-lg border border-white/20 bg-black px-4 text-sm font-semibold text-white shadow-xl transition-colors hover:bg-[#161616] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/60"
           onClick={() => setMenu(!menu)}
           aria-expanded={menu}
         >

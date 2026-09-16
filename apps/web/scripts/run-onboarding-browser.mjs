@@ -46,7 +46,7 @@ try {
     .boundingBox();
   assert.ok(
     entryBox.x > resolutionBox.x + resolutionBox.width &&
-      Math.abs(entryBox.y - resolutionBox.y) < 12,
+      Math.abs(entryBox.y + entryBox.height / 2 - resolutionBox.y - resolutionBox.height / 2) < 1,
   );
   assert.equal(await page.getByRole('button', { name: '定位操作区', exact: true }).count(), 0);
   await launcher.click();
