@@ -288,8 +288,9 @@ function MoveDialog({
 export function ProjectsPage({ module, onBack, onOpenProject, onLogout }: ProjectsPageProps) {
   const [folders, setFolders] = useState<WorkspaceFolder[]>([]);
   const [sortMode, setSortMode] = useState<SortMode>('updated-desc');
-  const [, setServerState] = useState<'checking' | 'online' | 'offline'>('checking');
+  const [serverState, setServerState] = useState<'checking' | 'online' | 'offline'>('checking');
   const [pageNotice, setPageNotice] = useState<PageNotice | undefined>();
+  const [workspaceRefreshing, setWorkspaceRefreshing] = useState(false);
   const [activeFolderId, setActiveFolderId] = useState<FolderFilter>(undefined);
   const [nameDialog, setNameDialog] = useState<
     | { type: 'new-project' }
@@ -322,6 +323,7 @@ export function ProjectsPage({ module, onBack, onOpenProject, onLogout }: Projec
   }, [activeFolderId, projects, sortMode]);
 
   async function refreshWorkspace(showOfflineToast = false) {
+    setWorkspaceRefreshing(true);
     try {
       await getWorkspaceHealth();
       setServerState('online');
@@ -357,7 +359,7 @@ export function ProjectsPage({ module, onBack, onOpenProject, onLogout }: Projec
       if (showOfflineToast && !isAuthRequired) {
         setPageNotice({
           tone: 'error',
-          title: '本地工作区服务不可用',
+          title: t('workspaceOfflineToast'),
           description: t('workspaceOfflineHelp'),
         });
         pushToast({
@@ -367,6 +369,8 @@ export function ProjectsPage({ module, onBack, onOpenProject, onLogout }: Projec
           dedupeKey: 'workspace-server-offline',
         });
       }
+    } finally {
+      setWorkspaceRefreshing(false);
     }
   }
 
@@ -638,6 +642,11 @@ export function ProjectsPage({ module, onBack, onOpenProject, onLogout }: Projec
           >
             <div className="font-semibold">{pageNotice.title}</div>
             {pageNotice.description && <div className="mt-1 text-white/72">{pageNotice.description}</div>}
+            {serverState === 'offline' && (
+              <Button className="mt-3" disabled={workspaceRefreshing} onClick={() => void refreshWorkspace(true)}>
+                {workspaceRefreshing ? '正在加载…' : '重试加载'}
+              </Button>
+            )}
           </div>
         )}
 

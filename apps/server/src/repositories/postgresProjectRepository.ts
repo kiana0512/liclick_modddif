@@ -52,22 +52,41 @@ export function createPgProjectSqlDatabase(connectionString: string): ProjectSql
     idleTimeoutMillis: Number(process.env.LICLICK_POSTGRES_IDLE_TIMEOUT_MS ?? 30_000),
     connectionTimeoutMillis: Number(process.env.LICLICK_POSTGRES_CONNECT_TIMEOUT_MS ?? 5_000),
   });
+  // pg-pool removes failed idle clients itself. Handle the event so a database
+  // disconnect cannot terminate the API; never log connection details or SQL.
+  pool.on('error', () => {
+    console.error('[postgres] Idle connection lost; removed from pool.');
+  });
   const poolConnection = wrapPgConnection(pool);
   return {
     ...poolConnection,
     async transaction<T>(operation: (connection: ProjectSqlConnection) => Promise<T>) {
       const client = await pool.connect();
       const connection = wrapPgConnection(client);
+      let connectionError: Error | undefined;
+      let discardConnection = false;
+      const onError = (error: Error) => { connectionError ??= error; };
+      // Borrowed clients need a listener even between queries while application
+      // work is awaiting. Do not replay an uncertain COMMIT or generation task.
+      client.on('error', onError);
       try {
         await client.query('BEGIN');
         const result = await operation(connection);
+        if (connectionError) throw connectionError;
         await client.query('COMMIT');
         return result;
       } catch (error) {
-        await client.query('ROLLBACK');
+        if (!connectionError) {
+          try {
+            await client.query('ROLLBACK');
+          } catch {
+            discardConnection = true;
+          }
+        }
         throw error;
       } finally {
-        client.release();
+        client.release(discardConnection || Boolean(connectionError));
+        client.removeListener('error', onError);
       }
     },
     async withStatementTimeout<T>(
@@ -471,19 +490,24 @@ export function createPostgresProjectRepository(database: ProjectSqlDatabase): P
         >;
       }>(
         // Listing must not transfer/parse every capture, layer and generation.
-        // Keep values sourced from the same JSON document as the full loader.
+        // Expand the JSON once rather than detoasting a large document once per
+        // field. jsonb types preserve the original values and optional defaults.
         `SELECT slug, jsonb_build_object(
-                  'id', document_json->'id',
-                  'name', document_json->'name',
-                  'folderId', document_json->'folderId',
-                  'createdAt', document_json->'createdAt',
-                  'updatedAt', document_json->'updatedAt',
-                  'thumbnail', document_json->'thumbnail',
-                  'revision', document_json->'revision'
+                  'id', summary.id,
+                  'name', summary.name,
+                  'folderId', summary."folderId",
+                  'createdAt', summary."createdAt",
+                  'updatedAt', summary."updatedAt",
+                  'thumbnail', summary.thumbnail,
+                  'revision', summary.revision
                 ) AS document_json
-           FROM project_documents
-          WHERE user_id = $1 AND deleted_at IS NULL
-          ORDER BY updated_at DESC`,
+           FROM project_documents AS projects
+           CROSS JOIN LATERAL jsonb_to_record(projects.document_json) AS summary(
+             id jsonb, name jsonb, "folderId" jsonb, "createdAt" jsonb,
+             "updatedAt" jsonb, thumbnail jsonb, revision jsonb
+           )
+          WHERE projects.user_id = $1 AND projects.deleted_at IS NULL
+          ORDER BY projects.updated_at DESC`,
         [userId],
       );
       return result.rows.map(({ slug, document_json: project }) => ({

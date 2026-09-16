@@ -35,8 +35,8 @@ export const translations = {
     workspaceConnected: 'Local workspace connected',
     workspaceChecking: 'Checking local workspace',
     workspaceOffline: 'Offline / server unavailable',
-    workspaceOfflineToast: 'Local workspace server is not running.',
-    workspaceOfflineHelp: 'Keep the Liclick launcher terminal open, then retry.',
+    workspaceOfflineToast: 'Cloud workspace could not be loaded.',
+    workspaceOfflineHelp: 'The cloud service or database is temporarily unavailable. Retry loading later; an empty list does not mean your projects were deleted.',
     projectedPreviewLimit: 'Projected-layer preview limit reached',
     projectedPreviewLimitHelp:
       'The current direct stack needs {required} texture units, but this GPU exposes {available}. This update was not applied to prevent a black or incorrect preview.',
@@ -546,8 +546,8 @@ export const translations = {
     workspaceConnected: '本地工作区已连接',
     workspaceChecking: '正在检查本地工作区',
     workspaceOffline: '离线 / 服务未启动',
-    workspaceOfflineToast: '本地工作区服务未启动',
-    workspaceOfflineHelp: '请保持 Liclick 启动终端开启，然后重试。',
+    workspaceOfflineToast: '云端工作区加载失败',
+    workspaceOfflineHelp: '云端服务或数据库暂时不可用，请稍后重试加载。列表为空不代表项目已被删除。',
     projectedPreviewLimit: '投影图层预览已达到设备上限',
     projectedPreviewLimitHelp:
       '当前直接投影需要 {required} 个纹理单元，但此显卡仅提供 {available} 个。为避免模型黑屏或错误合成，本次更新未应用。',

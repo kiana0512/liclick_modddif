@@ -19,6 +19,7 @@
     "test:file-response-lifecycle": "node scripts/test-file-response-lifecycle.mjs",
     "test:pipeline-persistence": "node scripts/clean-dist.mjs && tsc -p tsconfig.json && node scripts/test-project-pipeline-persistence.mjs",
     "test:postgres-project-repository": "node scripts/clean-dist.mjs && tsc -p tsconfig.json && node scripts/test-postgres-project-repository.mjs",
+    "test:postgres-connection-lifecycle": "node scripts/clean-dist.mjs && tsc -p tsconfig.json && node scripts/test-postgres-connection-lifecycle.mjs",
     "test:postgres-project-soak": "node scripts/clean-dist.mjs && tsc -p tsconfig.json && node scripts/test-postgres-project-soak.mjs",
     "test:postgres-control-plane": "node scripts/clean-dist.mjs && tsc -p tsconfig.json && node scripts/test-postgres-control-plane.mjs",
     "test:performance-lab-persistence": "node scripts/clean-dist.mjs && tsc -p tsconfig.json && node scripts/test-performance-lab-persistence.mjs",
