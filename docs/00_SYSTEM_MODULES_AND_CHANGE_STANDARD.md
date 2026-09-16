@@ -1,5 +1,7 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
+2026-09-16 UI-01 → M12/M14：恢复已在 A100 验证但未进入 master 的 `DB-CONNECTION-RECOVERY/1.0.0` 与项目列表单次 JSON 展开修复。515da7f9 发布覆盖了线上独有修复，导致数据库断连再次触发 API 进程未处理 error 退出；本次通过正式 cherry-pick 61338e99 保留新手引导与最新存储更新。空闲/借出连接异常、ROLLBACK 失败保持原错误且丢弃坏连接，禁止重放不确定写入；列表只一次解压 JSON，前端保留缓存并提供重试与正确云端提示。无像素/Project Schema/数据迁移。发布前必须比较实际线上 SHA 与候选提交差异，线上 SHA 非候选祖先时逐项核对独有修复，不能仅以候选 master 健康检查替代。详见 [断连修复与覆盖事故](changes/CHG-20260916-DATABASE-DISCONNECT-RECOVERY.md)。
+
 2026-09-16 UI-01（协作 UI-05/UI-10）：`TEXTURE-ONBOARDING` v3.0.0 将新手主线缩为导入模型、添加参考图、生成纹理三步；单视图调整与局部重绘改为主动选学。关闭/Escape 只暂停，生成期间保留组件与项目进度；返回上一步进入手动复习，旧教程不重复弹出。生成完成需成功结果、回贴提交与可见图层；局部蒙版需真实内容，最后涂抹由用户明确确认。提示卡避让实际操作区，空间不足收起。只读消费现有业务状态，无 GPU/CPU/Worker/shader、生成请求、持久化/导出及 Project Schema 改动。浏览器本地进度使用 v3，保留 v1/v2 以便回滚。验证和范围见 [新手引导简化](changes/CHG-20260916-TEXTURE-ONBOARDING.md)。本轮未推送或部署。
 
 2026-09-16 账号菜单 → M13（纯 UI）：`USER-MENU-PRODUCT-LABEL` v1 在“退出登录”下方以分隔线和次要文字显示固定“版本 0.1”。这是上线前产品展示文案，不读取或覆盖前后端 release manifest、Git SHA、构建时间、package 版本及部署配置；正式上线时再调整文案。无算法、Schema、数据迁移或网络请求增加，移除此静态行即可回滚。尚未推送或部署。
@@ -115,7 +117,7 @@
 
 2026-09-15 M03：ALG-VIEW-INPUT-001/1.3.2 在鼠标接触前即让 R3F 悬停遵守 Alt 所有权；保留普通 hover 和已锁定拖动。旧实现拾取回归失败、新实现通过，用户实际首帧延迟需继续录制。无像素/持久化迁移，见 [Alt 悬停变更卡](changes/CHG-20260915-ALT-BRUSH-HOVER.md)。
 
-> 文档版本：`2.20.158`
+> 文档版本：`2.20.159`
 
 2026-09-16 UI-16 → M14（协作 M01/M12/M13/M15）：`ASSET-LIFECYCLE-GC` v0.4.0 / `STORAGE-INVENTORY-001/4` 将 Cloud 工程/Revision 引用页默认 8→32，并由单条 PostgreSQL CTE 完成分页、assetId 提取与引用 upsert，Node 不再回传引用数组后二次写库；每 256 条文档约 64→8 次数据库往返，保持 45 秒单查询上限与有界 Node 内存。当前 ready scan 引用索引保留到下一快照原子切换，旧 /3 快照自动重扫。Cloud 隔离区改按真实 quarantine 且排除重新可达对象统计；新增用户级幂等持久 purge job/item，以最多 4 并发签名 DeleteObject 后逐项事务删除 transfer、写 deleted_at，404/Pod 重启可安全重放。新增 `asset_storage_purge_jobs/items`，无 Project/Revision/Asset 内容迁移；Command/CAS/ownership/verified 及 GPU/CPU/Worker/shader、投影/UV/重绘/export、分辨率与 QA 不变。回滚前停 purge 并保留任务表，详见 [Cloud 存储盘点与物理清理变更卡](changes/CHG-20260916-CLOUD-STORAGE-INVENTORY-BOUNDED.md)。
 
