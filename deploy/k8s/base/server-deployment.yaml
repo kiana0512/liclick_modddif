@@ -79,26 +79,29 @@ spec:
               port: http
             initialDelaySeconds: 15
             periodSeconds: 20
-          # OOMKilled at the old 1Gi limit on 2026-09-10 (exit 137) after ~1h43m
-          # of local-repaint traffic. The memory is not V8 heap — Node had sized
-          # heap_size_limit to 524Mi from that cgroup and was nowhere near it —
-          # it's Buffers: this process holds whole images in memory while
-          # proxying ModelView inpaint and asset-service traffic (each repaint
-          # round trip is a handful of MB in, ~1.3MB out, and
-          # ASSET_SERVICE_MAX_UPLOAD_BYTES allows far larger artifacts). Buffers
-          # are external to the heap, so V8's own limit can't cap them and the
-          # cgroup is what has to give. Raising the limit also lets Node scale
-          # heap_size_limit up with it.
-          # Idle usage is ~400Mi; requests stay well under the limit on purpose
-          # so the burst is absorbed by node headroom (prod-worker-06 is at 64%
-          # of 125Gi requested) rather than being reserved permanently.
+          # Sized 4 CPU / 8Gi. Two different OOMs got us here, and they are not
+          # the same failure:
+          #   2026-09-10, 1Gi limit: OOMKilled by the kernel (exit 137). The
+          #     memory was Buffers, outside the V8 heap — whole images held in
+          #     memory while proxying ModelView inpaint and asset-service
+          #     traffic. V8's own limit cannot cap those, so the cgroup had to
+          #     give. Raised to 4Gi.
+          #   2026-09-16, 4Gi limit: V8 heap exhaustion (exit 134, SIGABRT,
+          #     "Reached heap limit"), crash-looping ~92s after every boot. Node
+          #     had auto-sized heap_size_limit to ~2Gi from the 4Gi cgroup, and
+          #     Mark-Compact freed almost nothing (2075 -> 2072 MB), i.e. ~2Gi of
+          #     live, reachable objects. Root cause not yet identified; see
+          #     NODE_OPTIONS in server-config.env for the heap split.
+          # Idle usage is ~50-400Mi, so this is headroom for bursts, not steady
+          # state. Requests stay well under the limit on purpose — the burst is
+          # absorbed by node headroom rather than reserved permanently.
           resources:
             requests:
-              cpu: 250m
-              memory: 512Mi
+              cpu: 1
+              memory: 1Gi
             limits:
-              cpu: "2"
-              memory: 4Gi
+              cpu: 4
+              memory: 8Gi
       volumes:
         - name: workspace
           persistentVolumeClaim:
