@@ -96,8 +96,20 @@ try {
   await page.evaluate(id => window.uvFixture.visibility(id, false), first.id);
   await click(0);
   assert.deepEqual(await state(), beforeHide, 'hidden target must not receive new pixels');
+  await page.evaluate(async () => (await import('/scripts/uv-repaint-viewport-fixture.mjs')).setupLayerCreationCheck());
+  const panel = page.locator('#layer-creation-check');
+  await panel.getByText('此前手动创建', { exact: true }).waitFor();
+  assert.equal(await panel.getByText('内部草稿', { exact: true }).count(), 0);
+  await page.getByRole('button', { name: '新建图层', exact: true }).click();
+  await page.waitForFunction(() => Boolean(window.createdLayerId));
+  const createdId = await page.evaluate(() => window.createdLayerId);
+  await panel.locator(`[data-layer-id="${createdId}"]`).waitFor();
+  assert.equal(await panel.locator('[data-layer-id]').count(), 2);
+  await page.evaluate(() => window.reloadCreatedLayers());
+  await panel.locator(`[data-layer-id="${createdId}"]`).waitFor();
+  assert.equal(await panel.locator('[data-layer-id]').count(), 2);
   assert.deepEqual(errors, []);
-  console.log(JSON.stringify({ passed: true, checks: ['nonblocking warning dismiss/reopen/create', 'same-layer multi-generation', 'exact pixel retention', 'visible GPU colors', 'PNG roundtrip', 'undo/redo', 'selected A/B', 'midstroke handoff', 'deleted/hidden target'], first, second, visible }));
+  console.log(JSON.stringify({ passed: true, checks: ['nonblocking warning dismiss/reopen/create', 'created layer visible in production panel after save/reload', 'standalone old draft visible, internal draft hidden', 'same-layer multi-generation', 'exact pixel retention', 'visible GPU colors', 'PNG roundtrip', 'undo/redo', 'selected A/B', 'midstroke handoff', 'deleted/hidden target'], first, second, visible }));
 } finally {
   await browser.close();
   await server.close();

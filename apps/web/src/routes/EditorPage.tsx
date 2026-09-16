@@ -165,6 +165,7 @@ import {
 } from '@/engine/localRepaint/seamHarmonizationMode';
 import { harmonizeLocalRepaintInWorker } from '@/engine/localRepaint/seamHarmonizationWorker';
 import { getSelectedLocalRepaintLayer, isContentAwareRepairLayer, isLocalRepaintDestinationLayer } from '@/engine/localRepaint/sessionLayer';
+import { createLocalRepaintDrawingLayer } from '@/engine/localRepaint/createDrawingLayer';
 import { RepaintLayerNotice } from '@/components/localRepaint/RepaintLayerNotice';
 import { paintHistoryBoundary } from '@/engine/paint/paintHistoryBoundary';
 import { resolveLocalRepaintBackgroundPrewarmDisposition } from '@/engine/localRepaint/backgroundPrewarmPolicy';
@@ -8057,9 +8058,7 @@ export function EditorPage({
               if (useProjectStore.getState().currentProjectId !== prompt.projectId ||
                 (useSceneStore.getState().selectedObjectId ?? importedModel?.objectId) !== prompt.objectId) return;
               captureHistory('新建局部重绘图层');
-              useLayerStore.getState().addEmptyLayer({
-                name: '局部重绘', objectId: prompt.objectId, role: 'local-repaint-draft',
-              });
+              createLocalRepaintDrawingLayer(prompt.objectId);
               setProjectLayers(useLayerStore.getState().layers);
               handleLocalRepaintFromToolbar();
             });

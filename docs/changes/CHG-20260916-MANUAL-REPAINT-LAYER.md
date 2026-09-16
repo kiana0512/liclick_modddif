@@ -1,5 +1,14 @@
 # CHG-20260916-MANUAL-REPAINT-LAYER
 
+## v1.1.1 修复新建层不可见
+
+- 根因：EditorPage 创建 UV 行时使用 `local-repaint-draft`，而 LayersPanel 旧规则无条件隐藏此角色。实际已创建和选中，但面板为零行。原测试仅验证 toast 回调，没有检查创建后的真实面板。
+- 新按钮调用独立 `createLocalRepaintDrawingLayer`，与面板“＋”同用 `addEmptyLayer` 创建普通 UV 行，名称为“局部重绘”；不再赋内部 draft 角色。历史边界、对象/项目校验、保存和继续绘制顺序保留。
+- `getUserVisibleLayers` 对旧版独立 UV draft 兼容显示：没有 generationId/captureId/camera/source/replacement 绑定，且未被其他行引用为 replacement 目标。真正内部/配对 draft 仍隐藏，名称不参与判定。只读派生列表，不迁移/删除/合并任何存储行，旧图层像素与 ID 不变。
+- 审计：GPU/CPU 绘制核、Worker、shader、蒙版、远端生成、完整分辨率、保存/export 协议及 Command/CAS/ownership 均不变。新层走已验证的普通 UV 手动绘制路径；旧层仅调整列表可见性。
+- 验证：执行生产 EditorPage 新建回调，确认新增/选中/传给保存/面板可见均为一层；新旧层序列化重载、旧配对层隐藏通过。真实 Edge/WebGL 点击黄色按钮，正式 LayersPanel 出现新行，Project store 保存并重载仍显示；两代同层像素保留、A/B 切层、PNG 往返、隐藏/删除保护仍通过。类型检查通过。
+- 回滚：恢复新建层参数及旧面板筛选即可，无数据库回滚或资产迁移。已创建普通 UV 层在旧版仍可见。用户已授权推送 master 和部署 A100，发布结果以实际发布核验为准。
+
 ## v1.1.0 顶部提示与填补层保护
 
 - 新建层提示使用现有 ToastHost 黄色 warning，替代居中模态框和黑色遮罩。保持显示直到关闭/操作/被其他提示替换；关闭后可重新触发，高优先级错误挡住提示时也可再次触发。
