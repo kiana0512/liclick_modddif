@@ -1,8 +1,8 @@
 import sharp from 'sharp';
 import { atlasReferenceDataUrlBudget, losslessReferenceDataUrl } from './pixelExactReferenceUpload.js';
 
-// REPAINT-COLOR-REFERENCE-UPLOAD/1.0.0. Only the explicitly identified GPT
-// combined colour guide may change RGB. Dimensions and alpha stay exact;
+// GPT-COLOR-REFERENCE-UPLOAD/1.1.0. Only the explicitly identified GPT repaint
+// or texture-map combined colour guide may change RGB. Dimensions and alpha stay exact;
 // normals, author masks, original captures and output textures are untouched.
 export async function prepareRepaintColorUploadArguments(dataUrl: string) {
   const lossless = await losslessReferenceDataUrl(dataUrl);

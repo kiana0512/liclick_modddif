@@ -1,5 +1,7 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
+2026-09-16 M04（协作 M03/M08/M12/M14）：`GPT-COLOR-REFERENCE-UPLOAD/1.1.0` 为 GPT texture-map 的第一张有 framing 的 Current model view 结合图复用已授权原尺寸 RGB 自适应压缩。只改上传副本，原尺寸/alpha、完整 JSON <4MB、个人账号隔离及无损法线/蒙版保持；材质与六视图两阶段入口不启用。真实 4096×3072 超限样本压缩到预算内，未付费生图；GPU/CPU/Worker/shader、投影/UV 合成权重、QA、原资产、持久化/导出、Command/CAS/ownership 不变，无迁移。详见 [多视图上传变更卡](changes/CHG-20260916-GPT-TEXTURE-COLOR-UPLOAD.md)。
+
 2026-09-16 M15：`SHADER-CHUNK-PACK/1.0.0` 对固定 Three.js 注册 shader 做构建期无损打包，运行时仅初始化一次；141 段字符串、ShaderLib 和导出保持，纯几何 Worker 删除整个解码池。修复 master 4334910b 的 CI 总 JS 超限，不提高预算、不禁用 QA、不改 GLSL 或 UV/投影/重绘像素算法。持久化、导出、Command/CAS/ownership 与资产不变，无迁移；验证和回滚见 [shader 打包变更卡](changes/CHG-20260916-CI-SHADER-CHUNK-PACK.md)。
 
 2026-09-15 M07（协作 M06/M09）：显隐优化 rebase 集成到 `c1f412c`，保留上游逐层贡献、直接 RGBA 上传、可取消交互等待、底图 SHA-256 校验及 GPU 缓冲复用；底图内容 revision 只补充校验键，不替代读取权限与字节验证。留边保留上游跨度缓存、分块队列和线性寻址，合入分段计时并从 Worker 回传；不恢复旧 seed 列表或替换为另一套位图缓存。回读与覆盖归约重叠时保留弱透明清理索引，countMs 为独立并行时段，不能与 readAndCorrectMs/conversionMs 相加当总耗时。直接颜色上传含在 displayUploadPrepareMs，细节仍见 residentUvUploadStages；遮罩/普通条带继续细分并共用可取消呈现屏障。前述独立分支基准保留为历史数据，不代表合并后的性能。像素公式、分辨率、QA、显式导出与持久化保持，无 Schema/资产迁移；回滚本次 rebase 提交可恢复上游实现。
@@ -72,7 +74,7 @@
 
 2026-09-15 M03：ALG-VIEW-INPUT-001/1.3.2 在鼠标接触前即让 R3F 悬停遵守 Alt 所有权；保留普通 hover 和已锁定拖动。旧实现拾取回归失败、新实现通过，用户实际首帧延迟需继续录制。无像素/持久化迁移，见 [Alt 悬停变更卡](changes/CHG-20260915-ALT-BRUSH-HOVER.md)。
 
-> 文档版本：`2.20.142`
+> 文档版本：`2.20.143`
 
 2026-09-15 UI-06 → M03：`ALG-VIEW-SELECT-001/1.0.5` 将常驻线框预热绑定到 renderer/模型生命周期，透视/正交相机替换不重新编译或释放同一辅助材质，避免旧编译完成后释放当前材质。16 次相机替换旧实现启动 17 次编译，新实现一次；71 次显隐及卸载清理保持。GPU 线框/CPU 几何/Worker/shader、捕获/UV/重绘/导出、分辨率和 QA、持久化/Schema 均不变，无迁移。其他工具切换仍有长帧，不宣称全操作无卡顿，验证和回滚见 [线框相机生命周期变更卡](changes/CHG-20260915-WIREFRAME-CAMERA-LIFETIME.md)。
 
