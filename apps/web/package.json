@@ -4,6 +4,7 @@
   "version": "0.1.3",
   "type": "module",
   "scripts": {
+    "test:generation-preview-status": "node scripts/test-generation-preview-status.mjs",
     "test:content-framing-bounds": "node scripts/test-content-framing-bounds.mjs",
     "test:uv-raster-layer-keys": "node scripts/test-uv-raster-layer-keys.mjs",
     "test:generation-server-persistence": "node scripts/test-generation-server-persistence.mjs",
