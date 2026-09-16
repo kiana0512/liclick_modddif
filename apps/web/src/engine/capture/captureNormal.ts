@@ -4,6 +4,11 @@ import type { CapturePassRequest, CapturePassOutput } from './captureTypes';
 
 type NormalCaptureSpace = 'view' | 'world' | 'object';
 
+// NORMAL-CAPTURE-MATERIAL/1.0.0: immutable normal programs belong to the
+// renderer, not an individual angle. Weak ownership retains at most three
+// materials; renderer.dispose() still releases its GPU program cache.
+const normalMaterials = new WeakMap<THREE.WebGLRenderer, Map<NormalCaptureSpace, THREE.Material>>();
+
 function createEncodedNormalMaterial(space: NormalCaptureSpace) {
   if (space === 'view') return new THREE.MeshNormalMaterial();
 
@@ -28,11 +33,25 @@ function createEncodedNormalMaterial(space: NormalCaptureSpace) {
   });
 }
 
+function getEncodedNormalMaterial(renderer: THREE.WebGLRenderer, space: NormalCaptureSpace) {
+  let materials = normalMaterials.get(renderer);
+  if (!materials) {
+    materials = new Map();
+    normalMaterials.set(renderer, materials);
+  }
+  let material = materials.get(space);
+  if (!material) {
+    material = createEncodedNormalMaterial(space);
+    materials.set(space, material);
+  }
+  return material;
+}
+
 export async function captureNormal(
   request: CapturePassRequest,
   options: { space?: NormalCaptureSpace; geometryGuide?: boolean } = {},
 ): Promise<CapturePassOutput> {
-  const material = createEncodedNormalMaterial(options.space ?? 'view');
+  const material = getEncodedNormalMaterial(request.gl, options.space ?? 'view');
   const restore = applyTargetOnlyMaterial(
     request.scene,
     request.objectId,
@@ -49,6 +68,5 @@ export async function captureNormal(
     };
   } finally {
     restore();
-    material.dispose();
   }
 }

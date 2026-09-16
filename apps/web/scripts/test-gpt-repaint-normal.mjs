@@ -181,11 +181,12 @@ const normalApi = load('../src/engine/capture/captureNormal.ts', {
     return 'normal-png';
   } },
 });
-await normalApi.captureNormal({ scene, objectId: 'object' }, { geometryGuide: true });
+const captureRenderer = {};
+await normalApi.captureNormal({ gl: captureRenderer, scene, objectId: 'object' }, { geometryGuide: true });
 failDraw = true;
-await assert.rejects(() => normalApi.captureNormal({ scene, objectId: 'object' }, { geometryGuide: true }), /draw failed/);
+await assert.rejects(() => normalApi.captureNormal({ gl: captureRenderer, scene, objectId: 'object' }, { geometryGuide: true }), /draw failed/);
 assert.equal(mesh.material, oldMaterial); assert.equal(other.visible, true); assert.equal(grid.visible, true);
-assert.equal(disposed, 2);
+assert.equal(disposed, 0, 'Renderer-owned normal material survives per-angle completion and draw failure');
 
 // Execute the production switch JSX, including click and disabled states.
 const panel = read('../src/components/panels/GeneratePanel.tsx');
