@@ -10,7 +10,7 @@ export type S3PresignConfig = {
 };
 
 type PresignInput = {
-  method: 'GET' | 'HEAD' | 'PUT';
+  method: 'DELETE' | 'GET' | 'HEAD' | 'PUT';
   objectKey: string;
   expiresInSeconds: number;
   headers?: Record<string, string>;
