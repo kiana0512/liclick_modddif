@@ -4,27 +4,64 @@ import {
   type GenerationFraming,
 } from '@liclick/contracts';
 
+type CoverageImage = Pick<ImageData, 'width' | 'height' | 'data'>;
+
+/** GPT-CONTENT-BOUNDS/1.0.0. Bounds depend only on each row's first/last
+ * covered pixel. Interior holes/colours never change the exact outer bounds.
+ * Yield every 16 rows, including empty rows, for cancellable cooperative scans.
+ */
+function* contentBounds({ width, height, data }: CoverageImage, normal: boolean, alpha: number) {
+  let left = width, top = height, right = -1, bottom = -1;
+  for (let y = 0; y < height; y++) {
+    const row = y * width * 4;
+    let first = 0, last = width - 1;
+    for (; first < width; first++) {
+      const i = row + first * 4;
+      if (data[i + 3] >= alpha && (normal || data[i] > 0)) break;
+    }
+    if (first < width) {
+      for (; last > first; last--) {
+        const i = row + last * 4;
+        if (data[i + 3] >= alpha && (normal || data[i] > 0)) break;
+      }
+      left = Math.min(left, first); right = Math.max(right, last);
+      top = Math.min(top, y); bottom = y;
+    }
+    if (y % 16 === 15) yield;
+  }
+  return [left, top, right, bottom] as const;
+}
+
+async function cooperativeBounds(image: CoverageImage, normal: boolean, alpha: number, checkpoint?: () => Promise<void>) {
+  await checkpoint?.();
+  const scan = contentBounds(image, normal, alpha);
+  let step = scan.next(), started = performance.now();
+  while (!step.done) {
+    if (checkpoint && performance.now() - started >= 4) {
+      await checkpoint(); started = performance.now();
+    }
+    step = scan.next();
+  }
+  return step.value;
+}
+
 /** Full geometry coverage: mask white channel or geometry-normal alpha, not material RGB. */
 export function findContentFraming(
   image: Pick<ImageData, 'width' | 'height' | 'data'>,
   normal = false,
   imageSize = '2K',
 ): GenerationFraming {
-  const { width, height, data } = image;
-  let x0 = width,
-    y0 = height,
-    x1 = -1,
-    y1 = -1;
-  for (let y = 0; y < height; y++)
-    for (let x = 0; x < width; x++) {
-      const i = (y * width + x) * 4;
-      if (data[i + 3] > 0 && (normal || data[i] > 0)) {
-        x0 = Math.min(x0, x);
-        y0 = Math.min(y0, y);
-        x1 = Math.max(x1, x);
-        y1 = Math.max(y1, y);
-      }
-    }
+  const scan = contentBounds(image, normal, 1);
+  let step = scan.next();
+  while (!step.done) step = scan.next();
+  return frameFromBounds(image, step.value, imageSize);
+}
+
+export async function findContentFramingCooperatively(image: CoverageImage, normal: boolean, imageSize: string, checkpoint: () => Promise<void>) {
+  return frameFromBounds(image, await cooperativeBounds(image, normal, 1, checkpoint), imageSize);
+}
+
+function frameFromBounds({ width, height }: CoverageImage, [x0, y0, x1, y1]: readonly number[], imageSize: string) {
   if (x1 < x0) throw new Error('未找到模型轮廓，未提交生成任务。');
   const w = x1 - x0 + 1,
     h = y1 - y0 + 1;
@@ -112,21 +149,7 @@ export async function validateFramedSilhouette(
   if (frame.version !== 2) return;
   const layout = restoredFrameLayout(frame, image.width, image.height),
     s = frame.subject!;
-  let left = image.width,
-    top = image.height,
-    right = -1,
-    bottom = -1;
-  const rows = Math.max(1, Math.floor(262144 / image.width));
-  for (let y = 0; y < image.height; y++) {
-    if (y % rows === 0) await checkpoint?.();
-    for (let x = 0; x < image.width; x++) {
-      if (image.data[(y * image.width + x) * 4 + 3] < 128) continue;
-      left = Math.min(left, x);
-      top = Math.min(top, y);
-      right = Math.max(right, x);
-      bottom = Math.max(bottom, y);
-    }
-  }
+  const [left, top, right, bottom] = await cooperativeBounds(image, true, 128, checkpoint);
   const sx = layout.width / frame.sourceWidth,
     sy = layout.height / frame.sourceHeight;
   const expected = [
