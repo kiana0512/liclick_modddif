@@ -6,6 +6,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { PGlite } from '@electric-sql/pglite';
+import { STORAGE_INVENTORY_RULE_VERSION } from '@liclick/contracts';
 
 const temporaryRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'li3d-storage-management-'));
 
@@ -553,7 +554,7 @@ try {
   );
   const cloudOverview = {
     schemaVersion: 1,
-    ruleVersion: 'STORAGE-INVENTORY-001/3',
+    ruleVersion: STORAGE_INVENTORY_RULE_VERSION,
     backend: 'cloud-object-storage',
     status: 'ready',
     quarantineDays: 7,
