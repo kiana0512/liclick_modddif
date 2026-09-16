@@ -1073,6 +1073,15 @@ export function GeneratePanel({
   const displayedPreviewIsGenerating = isRunningGeneration(displayedPreviewGeneration);
   const displayedPreviewFailed = displayedPreviewGeneration?.status === 'failed';
   const displayedPreviewCancelled = displayedPreviewGeneration?.metadata.cancelled === true;
+  // GEN-PREVIEW-STATUS/1.0.0: one message owns the preview, including retries
+  // that are preparing while the previous cancelled/failed row is still shown.
+  const previewStatus = displayedPreviewIsGenerating
+    ? 'running'
+    : displayedTexturePreviewMode === 'repaint' && localRepaintPreparation
+      ? 'preparing'
+      : displayedPreviewFailed
+        ? 'error'
+        : 'idle';
   const localRepaintPreparationCancellable = Boolean(
     submissionActive &&
     localRepaintPreparationAbortControllerRef.current &&
@@ -5553,7 +5562,7 @@ export function GeneratePanel({
                     className="h-full w-full object-contain"
                   />
                 </button>
-              ) : displayedTexturePreviewMode === 'repaint' ? (
+              ) : displayedTexturePreviewMode === 'repaint' && previewStatus === 'idle' ? (
                 <div className="grid h-full w-full place-items-center px-5 text-center">
                   <div className="grid gap-1">
                     <div className="text-sm font-semibold text-white/72">暂无局部重绘结果</div>
@@ -5597,14 +5606,12 @@ export function GeneratePanel({
                   </button>
                 </div>
               )}
-              {displayedPreviewIsGenerating && displayedPreviewGeneration && (
+              {previewStatus === 'running' && displayedPreviewGeneration && (
                 <div className={previewProgressOverlayClassName}>
                   <GenerationProgressStatus generation={displayedPreviewGeneration} />
                 </div>
               )}
-              {displayedTexturePreviewMode === 'repaint' &&
-                localRepaintPreparation &&
-                !displayedPreviewIsGenerating && (
+              {previewStatus === 'preparing' && localRepaintPreparation && (
                   <div className={previewProgressOverlayClassName}>
                     <LocalRepaintPreparationStatus
                       startedAt={localRepaintPreparation.startedAt}
@@ -5612,7 +5619,7 @@ export function GeneratePanel({
                     />
                   </div>
                 )}
-              {displayedPreviewFailed && !displayedPreviewIsGenerating && (
+              {previewStatus === 'error' && (
                 <div className="gen-preview-error">
                   <div className="grid gap-1">
                     <div className="text-sm font-semibold">
