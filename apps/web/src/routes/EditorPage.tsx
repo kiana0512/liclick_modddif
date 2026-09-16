@@ -5981,8 +5981,12 @@ export function EditorPage({
         }
       }
       if (detail.status !== 'failed') return;
+      const activationRequested = detail.activationRequested === true || Boolean(pendingRequest);
       pendingLocalRepaintActivationRequestRef.current = undefined;
       setLocalRepaintActivationQueued(false);
+      // Background prewarming is opportunistic and will retry when the tool is
+      // opened. Keep red errors for an explicit button-3 request only.
+      if (!activationRequested) return;
       pushToast({
         tone: 'error',
         title: '局部重绘 GPU 准备失败',

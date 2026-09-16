@@ -6,6 +6,7 @@ import {
   findContentFramingCooperatively,
   restoredFrameLayout,
   validateFramedSilhouette,
+  type FramedSilhouettePolicy,
 } from './contentFraming';
 import { yieldToBrowserTask } from '@/utils/browserScheduling';
 
@@ -99,6 +100,7 @@ export async function restoreContentFraming(
   url: string,
   framing: GenerationFraming,
   signal?: AbortSignal,
+  silhouettePolicy: FramedSilhouettePolicy = 'strict',
 ) {
   const image = await load(url, signal);
   const layout = restoredFrameLayout(framing, image.naturalWidth, image.naturalHeight);
@@ -110,7 +112,7 @@ export async function restoreContentFraming(
     await validateFramedSilhouette(framing, pixels, async () => {
       signal?.throwIfAborted();
       await yieldToBrowserTask();
-    });
+    }, silhouettePolicy);
     signal?.throwIfAborted();
   }
   const canvas = document.createElement('canvas');

@@ -133,6 +133,13 @@ for (const imageSize of ['1K', '2K', '4K']) {
     );
     const changed = coverage(f.outputWidth, f.outputHeight, { ...box, w: Math.floor(box.w / 2) });
     await assert.rejects(() => validateFramedSilhouette(f, changed), /轮廓/);
+    await assert.rejects(() => validateFramedSilhouette(f, changed, undefined, 'capture-mask'), /轮廓/);
+    const feathered = coverage(f.outputWidth, f.outputHeight, {
+      x: box.x + Math.round(box.w * 0.04), y: box.y + Math.round(box.h * 0.03),
+      w: Math.round(box.w * 0.92), h: Math.round(box.h * 0.94),
+    });
+    await assert.rejects(() => validateFramedSilhouette(f, feathered), /轮廓/);
+    await validateFramedSilhouette(f, feathered, undefined, 'capture-mask');
     await assert.rejects(
       () =>
         validateFramedSilhouette(
@@ -241,10 +248,11 @@ const clientModule = evaluate(
           exactIds: ['guide'],
         };
       },
-      restoreContentFraming: async (url, frame, signal) => {
+      restoreContentFraming: async (url, frame, signal, policy) => {
         signal?.throwIfAborted();
         restores++;
         assert.deepEqual(frame, exact);
+        assert.equal(policy, 'capture-mask');
         return 'restored:' + url;
       },
     },
@@ -273,12 +281,12 @@ try {
   reply = { id: 'job', status: 'running', framing: exact };
   await client.generateTextureSingleView(input);
   assert.equal(restores, 1);
-  reply = { id: 'job', status: 'succeeded', resultUrl: 'remote', framing: exact };
+  reply = { id: 'job', status: 'succeeded', resultUrl: 'remote', framing: exact, workflow: 'texture-map' };
   const polled = await client.getGenerationJob('job');
   assert.equal(polled.resultUrl, 'restored:remote');
   assert.equal((await clientModule.restoreFramedJobResult(polled)).resultUrl, 'restored:remote');
   assert.equal(restores, 2, 'Never apply the crop twice');
-  reply = { jobs: [{ id: 'job', status: 'succeeded', resultUrl: 'remote', framing: exact }] };
+  reply = { jobs: [{ id: 'job', status: 'succeeded', resultUrl: 'remote', framing: exact, workflow: 'texture-map' }] };
   const jobs = await client.listGenerationJobs('project');
   assert.equal(restores, 2, 'Listing historical jobs must not decode every image');
   assert.equal((await clientModule.restoreFramedJobResult(jobs[0])).resultUrl, 'restored:remote');

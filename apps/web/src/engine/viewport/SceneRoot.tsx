@@ -2132,6 +2132,17 @@ const ImportedModel = memo(function ImportedModel({
           layer.visible &&
           (layer.role === 'local-repaint-overlay' || layer.role === 'local-repaint-draft'),
       );
+      const visibleUvStack = getVisibleUvLayerStack(
+        objectUvLayers,
+        importedModel.objectId,
+        'top-to-bottom',
+      ).filter((layer) => layer.role !== 'content-aware-underlay');
+      const topLocalRepaintUvLayer = visibleUvStack.find(
+        (layer) => layer.role === 'local-repaint-overlay' || layer.role === 'local-repaint-draft',
+      );
+      const visibleLowerUvLayers = topLocalRepaintUvLayer
+        ? visibleUvStack.filter((layer) => layer.id !== topLocalRepaintUvLayer.id)
+        : visibleUvStack;
       const visibleContentAwareUvLayers = objectUvLayers.filter(
         (layer) => layer.visible && layer.role === 'content-aware-underlay',
       );
@@ -2158,12 +2169,12 @@ const ImportedModel = memo(function ImportedModel({
         opacity: contentAwareOpacity ?? 0,
       };
       const residentSingleUvTexture =
-        visibleOrdinaryUvLayers.length === 1
-          ? getReadyResidentPreviewTexture(visibleOrdinaryUvLayers[0].imageUrl, gl)
+        visibleLowerUvLayers.length === 1
+          ? getReadyResidentPreviewTexture(visibleLowerUvLayers[0].imageUrl, gl)
           : undefined;
-      const visibleUvKey = residentUvVisibilityKey(visibleOrdinaryUvLayers);
+      const visibleUvKey = residentUvVisibilityKey(visibleLowerUvLayers);
       const residentCompositeUvTexture =
-        visibleOrdinaryUvLayers.length > 1
+        visibleLowerUvLayers.length > 1
           ? residentUvPresentationCacheRef.current.get(visibleUvKey)
           : undefined;
       const residentUvTexture = residentSingleUvTexture ?? residentCompositeUvTexture;
@@ -2172,7 +2183,7 @@ const ImportedModel = memo(function ImportedModel({
       const hasLowerRepaintUv = visibleLocalRepaintUvLayers.length > 1;
       let requiresMaterialReconciliation = false;
       if (
-        visibleOrdinaryUvLayers.length > 0 &&
+        visibleLowerUvLayers.length > 0 &&
         !residentUvTexture &&
         pendingUvVisibilityRenderKeyRef.current !== visibleUvKey
       ) {
@@ -2182,28 +2193,24 @@ const ImportedModel = memo(function ImportedModel({
       const uvMaterialUpdated = syncProjectedLayerResidentTextureVisibilityInObject(
         importedModel.group,
         {
-          ...(residentUvTexture && !hasLowerRepaintUv
-            ? { uvOverlayTexture: residentUvTexture }
-            : {}),
+          ...(residentUvTexture ? { uvOverlayTexture: residentUvTexture } : {}),
           // A composed editing stack must stay unlit when it contains any layer
           // other than the final merged UV. The direct single-layer path below
           // preserves PBR for role=merged-uv.
           uvOverlayRenderedColor: hasLowerRepaintUv
-            ? uvPresentationRef.current.renderedColor
+            ? visibleLowerUvLayers.some(usesUnlitRenderedColor)
             : visibleOrdinaryUvLayers.some(usesUnlitRenderedColor),
           ...(contentAwareTexture ? { baseTexture: contentAwareTexture } : {}),
-          ...(hasLowerRepaintUv
-            ? {}
-            : residentUvTexture
-              ? {
-                  uvOverlayOpacity:
-                    visibleOrdinaryUvLayers.length === 1 ? visibleOrdinaryUvLayers[0].opacity : 1,
-                }
-              : visibleOrdinaryUvLayers.length === 0
-                ? { uvOverlayOpacity: 0 }
-                : {}),
+          ...(residentUvTexture
+            ? {
+                uvOverlayOpacity:
+                  visibleLowerUvLayers.length === 1 ? visibleLowerUvLayers[0].opacity : 1,
+              }
+            : visibleLowerUvLayers.length === 0
+              ? { uvOverlayOpacity: 0 }
+              : {}),
           uvOverlayBelowProjected: Number.isFinite(currentMergedUvBoundaryOrder),
-          topUvOverlayOpacity: visibleLocalRepaintUvLayers[0]?.opacity ?? 0,
+          topUvOverlayOpacity: topLocalRepaintUvLayer?.opacity ?? 0,
           // A multi-layer repair presentation is composed asynchronously below.
           // Do not clear the last valid base texture while that exact composite is
           // decoding/uploading; its owner effect will atomically publish the pair.
@@ -2928,13 +2935,12 @@ const ImportedModel = memo(function ImportedModel({
     { colorSpace: THREE.NoColorSpace, maxSize: proxyTextureMaxSize },
   );
   const visibleResidentUvKey = useMemo(
-    () =>
-      residentUvVisibilityKey(
-        stableVisibleUvLayers.filter(
-          (layer) => layer.role !== 'local-repaint-overlay' && layer.role !== 'local-repaint-draft',
-        ),
-      ),
-    [stableVisibleUvLayers],
+    // The top repaint owns a dedicated sampler, but every older repaint is a
+    // real input to the lower UV composite. Key that exact lower stack. If all
+    // repaint rows are removed from the key, the second repaint reuses the
+    // cached merged-UV-only texture and hides the first repaint forever.
+    () => residentUvVisibilityKey(nonLiveUvLayers),
+    [nonLiveUvLayers],
   );
   const cachedExactUvTexture = directUvLayer
     ? undefined

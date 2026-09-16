@@ -36,6 +36,7 @@ import {
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useToastStore } from '@/stores/toastStore';
 import { useT } from '@/stores/i18nStore';
+import { readWorkspaceAssetBlob } from '@/services/workspaceApiClient';
 import { useWorkspaceLayoutStore } from '@/components/workspace/workspaceLayoutStore';
 import {
   getLiveProjectedCanvasState,
@@ -6099,6 +6100,25 @@ function createInpaintMaskCaptureMaterial(
 const LOCAL_REPAINT_IMAGE_CACHE_LIMIT = 6;
 const localRepaintImageElementCache = new Map<string, Promise<HTMLImageElement>>();
 
+function isDurableLocalRepaintAssetUrl(url: string) {
+  return /(?:^|\/)assets\/(?:generations|layers|captures)\/[^?#]+/i.test(url) ||
+    /\/workspace\/[^?#]+/i.test(url) ||
+    /\/api\/projects\/[^/]+\/assets\/[^/]+\/content(?:[?#]|$)/i.test(url);
+}
+
+function decodeLocalRepaintImage(url: string) {
+  return new Promise<HTMLImageElement>((resolve, reject) => {
+    const image = new Image();
+    image.crossOrigin = 'anonymous';
+    image.onload = async () => {
+      await image.decode?.().catch(() => undefined);
+      resolve(image);
+    };
+    image.onerror = () => reject(new Error('无法读取局部重绘蒙版。'));
+    image.src = url;
+  });
+}
+
 function loadImageElement(url: string) {
   const cached = localRepaintImageElementCache.get(url);
   if (cached) {
@@ -6106,18 +6126,23 @@ function loadImageElement(url: string) {
     localRepaintImageElementCache.set(url, cached);
     return cached;
   }
-  const pending = new Promise<HTMLImageElement>((resolve, reject) => {
-    const image = new Image();
-    image.crossOrigin = 'anonymous';
-    image.onload = async () => {
-      // Loading bytes does not guarantee decoded pixels. Keep every shared
-      // consumer behind the decoder so drawImage/initTexture need not force it.
-      await image.decode?.().catch(() => undefined);
-      resolve(image);
-    };
-    image.onerror = () => reject(new Error('Could not load local repaint mask.'));
-    image.src = url;
-  });
+  const pending = (async () => {
+    try {
+      return await decodeLocalRepaintImage(url);
+    } catch (directError) {
+      if (!isDurableLocalRepaintAssetUrl(url)) throw directError;
+      const blob = await readWorkspaceAssetBlob(url);
+      if (!blob.size || (blob.type && !blob.type.startsWith('image/'))) {
+        throw new Error('局部重绘蒙版资源无效。');
+      }
+      const objectUrl = URL.createObjectURL(blob);
+      try {
+        return await decodeLocalRepaintImage(objectUrl);
+      } finally {
+        URL.revokeObjectURL(objectUrl);
+      }
+    }
+  })();
   localRepaintImageElementCache.set(url, pending);
   while (localRepaintImageElementCache.size > LOCAL_REPAINT_IMAGE_CACHE_LIMIT) {
     const oldest = localRepaintImageElementCache.keys().next().value as string | undefined;

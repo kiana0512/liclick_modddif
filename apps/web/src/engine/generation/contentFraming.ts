@@ -6,6 +6,8 @@ import {
 
 type CoverageImage = Pick<ImageData, 'width' | 'height' | 'data'>;
 
+export type FramedSilhouettePolicy = 'strict' | 'capture-mask';
+
 /** GPT-CONTENT-BOUNDS/1.0.0. Bounds depend only on each row's first/last
  * covered pixel. Interior holes/colours never change the exact outer bounds.
  * Yield every 16 rows, including empty rows, for cancellable cooperative scans.
@@ -145,6 +147,7 @@ export async function validateFramedSilhouette(
   frame: GenerationFraming,
   image: Pick<ImageData, 'width' | 'height' | 'data'>,
   checkpoint?: () => Promise<void>,
+  policy: FramedSilhouettePolicy = 'strict',
 ) {
   if (frame.version !== 2) return;
   const layout = restoredFrameLayout(frame, image.width, image.height),
@@ -159,7 +162,10 @@ export async function validateFramedSilhouette(
     (s.top + s.height) * sy - layout.top,
   ];
   const actual = [left, top, right + 1, bottom + 1];
-  const tolerance = Math.max(16, Math.max(s.width * sx, s.height * sy) * 0.02);
+  // Texture-map layers are clipped again by the immutable capture mask. A wider
+  // edge tolerance accepts alpha feathering but still rejects empty/half/shifted returns.
+  const relaxed = policy === 'capture-mask';
+  const tolerance = Math.max(relaxed ? 32 : 16, Math.max(s.width * sx, s.height * sy) * (relaxed ? 0.12 : 0.02));
   if (right < left || actual.some((v, i) => Math.abs(v - expected[i]) > tolerance))
     throw new Error('远端回图透明轮廓与模型不对齐，已保留结果并停止回贴，未自动重新生成。');
 }

@@ -207,11 +207,12 @@ async function requestJson<T>(
   return payload as T;
 }
 
-export async function restoreFramedJobResult<T extends { resultUrl?: string; resultUrls?: string[]; framing?: GenerationFraming; framingRestored?: boolean }>(result: T, signal?: AbortSignal): Promise<T> {
+export async function restoreFramedJobResult<T extends { resultUrl?: string; resultUrls?: string[]; framing?: GenerationFraming; framingRestored?: boolean; workflow?: 'liclick' | 'texture-map' | 'local-repaint' }>(result: T, signal?: AbortSignal, workflow = result.workflow): Promise<T> {
   if (!result.resultUrl || !result.framing || result.framingRestored) return result;
   const { restoreContentFraming } = await import('@/engine/generation/contentFramingImages');
   const urls = [...new Set([result.resultUrl, ...(result.resultUrls ?? [])])];
-  const restored = await mapWithConcurrency(urls, 1, url => restoreContentFraming(url, result.framing!, signal));
+  const policy = workflow === 'texture-map' ? 'capture-mask' : 'strict';
+  const restored = await mapWithConcurrency(urls, 1, url => restoreContentFraming(url, result.framing!, signal, policy));
   signal?.throwIfAborted();
   return { ...result, resultUrl: restored[0], resultUrls: restored, framingRestored: true };
 }
@@ -278,7 +279,7 @@ export function createLiclickApiClient(config: LiclickApiConfig = {}): LiclickAp
           references: preparedReferences.map(({ id, name, url }) => ({ id, name, url })),
         }),
       });
-      const result = await restoreFramedJobResult(response, input.signal);
+      const result = await restoreFramedJobResult(response, input.signal, input.workflow);
       const generationId = input.clientGenerationId ?? result.id;
       return {
         id: generationId,
