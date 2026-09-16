@@ -1,5 +1,7 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
+2026-09-16 UI-10 → M08：`PAINT-MASK-BRUSH-DEFAULT` v1.0.1 将视口蒙版加选/减选画笔初始大小从 45 调整为 35；应用重绘画笔仍为 30，普通绘制/橡皮、羽化和用户手动调节不变。只修改初始设置，GPU/CPU/Worker/shader 像素核、分辨率、保存及导出协议不变，无 Schema/数据迁移；回滚默认常量到 45 即可。详见 [画笔默认值记录](changes/CHG-20260912-LOCAL-REPAINT-BRUSH-DEFAULT.md)。本轮尚未推送或部署。
+
 2026-09-16 UI-10/UI-11 → M08（协作 M03）：`ALG-LR-MANUAL-TARGET` v1.1.1 修复黄色“新建图层”按钮将用户层误标为内部 draft、导致图层列表隐藏的问题。显式创建普通 UV 层，与面板新建使用同一 store 动作；旧版无生成/捕获/相机/投影配对的独立 draft 只读显示，不改 ID、像素、顺序或数据库。真正生成绑定/配对的内部 draft 继续隐藏。GPU/CPU/Worker/shader、绘制核、保存/export 协议不变。生产创建回调与真实图层面板点击/重载验证通过；详见 [手动局部重绘目标层变更卡](changes/CHG-20260916-MANUAL-REPAINT-LAYER.md)。
 
 2026-09-16 UI-06/UI-10 → M08：`ALG-LR-MANUAL-TARGET` v1.1.0 将新建绘制层模态框改为现有顶部黄色 warning 提示，显式“新建图层”按钮沿用历史边界、创建/选中/开始绘制流程。关闭不创建，不遮挡编辑器；内容识别填补层（含旧 ID/generation 标记）禁止作为手动绘制目标，并在写回时保护。GPU/CPU 像素核、Worker/shader、分辨率、保存/导出协议不变，无迁移。回滚提示组件及目标保护即可恢复上版交互；详见 [手动局部重绘目标层变更卡](changes/CHG-20260916-MANUAL-REPAINT-LAYER.md)。本轮尚未推送或部署。
