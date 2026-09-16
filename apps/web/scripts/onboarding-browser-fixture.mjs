@@ -1,6 +1,8 @@
 import React from 'react';
 import { createRoot } from 'react-dom/client';
 import { TextureOnboardingTour } from '/src/components/editor/TextureOnboardingTour.tsx';
+import { EditorShell } from '/src/layouts/EditorShell.tsx';
+import { WorkflowModuleSwitcher } from '/src/features/workflow/WorkflowModuleSwitcher.tsx';
 import { useWorkspaceLayoutStore } from '/src/components/workspace/workspaceLayoutStore.ts';
 import '/src/styles/globals.css';
 const host = document.createElement('div');
@@ -27,6 +29,28 @@ for (const [index, name] of targets.entries()) {
 }
 let root = createRoot(host);
 let props;
+function render() {
+  root.render(
+    React.createElement(EditorShell, {
+      projectName: '新项目11',
+      workspaceLabel: 'Saved',
+      onBack() {},
+      exportMenu: null,
+      bottomToolbar: null,
+      center: null,
+      panels: [],
+      workflowSwitcher: React.createElement(WorkflowModuleSwitcher, {
+        activeModule: 'texture',
+        compact: true,
+        onOpenTexture() {},
+        onOpenRetopology() {},
+        onOpenUv() {},
+        onOpenBake() {},
+      }),
+      onboarding: React.createElement(TextureOnboardingTour, props),
+    }),
+  );
+}
 window.fixture = {
   mount(id, suspended = false) {
     props = {
@@ -37,16 +61,16 @@ window.fixture = {
       suspended,
     };
     useWorkspaceLayoutStore.getState().setMode('scene');
-    root.render(React.createElement(TextureOnboardingTour, props));
+    render();
   },
   remount() {
     root.unmount();
     root = createRoot(host);
-    root.render(React.createElement(TextureOnboardingTour, props));
+    render();
   },
   suspend(value) {
     props = { ...props, suspended: value };
-    root.render(React.createElement(TextureOnboardingTour, props));
+    render();
   },
   complete(name, value = true, generation = 'existing') {
     const target = document.querySelector(`[data-texture-onboarding="${name}"]`);

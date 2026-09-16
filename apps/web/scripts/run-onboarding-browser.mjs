@@ -39,6 +39,28 @@ try {
   await page.waitForFunction(() => Boolean(window.fixture));
   await page.evaluate(() => window.fixture.mount('browser-main'));
   await page.getByRole('dialog', { name: '基础入门：导入模型', exact: true }).waitFor();
+  const launcher = page.getByRole('button', { name: '新手引导 · 1/3', exact: true });
+  const entryBox = await launcher.boundingBox();
+  const resolutionBox = await page
+    .getByRole('button', { name: 'Resolution', exact: true })
+    .boundingBox();
+  assert.ok(
+    entryBox.x > resolutionBox.x + resolutionBox.width &&
+      Math.abs(entryBox.y - resolutionBox.y) < 12,
+  );
+  assert.equal(await page.getByRole('button', { name: '定位操作区', exact: true }).count(), 0);
+  await launcher.click();
+  for (const width of [1200, 1024, 768, 640, 360]) {
+    await page.setViewportSize({ width, height: 800 });
+    await page.waitForTimeout(100);
+    const box = await page.getByRole('region', { name: '新手引导菜单', exact: true }).boundingBox();
+    assert.ok(
+      box.x >= 0 && box.x + box.width <= width && box.y + box.height <= 800,
+      `menu must fit inside the ${width}px viewport`,
+    );
+  }
+  await page.setViewportSize({ width: 1200, height: 800 });
+  await launcher.click();
   const card = await page.getByRole('dialog').boundingBox();
   const target = await page.locator('[data-texture-onboarding="import-model"]').boundingBox();
   assert.ok(card.x >= target.x + target.width, 'card must not obscure the import control');
@@ -136,8 +158,8 @@ try {
     const t = document.querySelector('[data-texture-onboarding="import-model"]');
     t.style.cssText = 'position:fixed;left:8px;top:8px;width:344px;height:624px';
   });
-  await page.getByRole('button', { name: '基础入门 1/3', exact: true }).waitFor();
-  await page.getByRole('button', { name: '基础入门 1/3', exact: true }).click();
+  await page.getByRole('button', { name: '新手引导 · 1/3', exact: true }).waitFor();
+  await page.getByRole('button', { name: '新手引导 · 1/3', exact: true }).click();
   await page.getByRole('region', { name: '新手引导菜单', exact: true }).waitFor();
   await page.getByRole('button', { name: '暂停引导', exact: true }).click();
   await page.setViewportSize({ width: 1200, height: 800 });
@@ -147,7 +169,7 @@ try {
     window.fixture.mount('missing-target');
   });
   await page
-    .getByText('操作区暂未显示，请先定位；如仍未出现，请先导入并选中模型。', { exact: true })
+    .getByText('请展开左侧对应面板；如仍未显示，请先导入并选中模型。', { exact: true })
     .waitFor();
   assert.deepEqual(errors, []);
   console.log(

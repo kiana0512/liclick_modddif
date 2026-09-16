@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { X } from 'lucide-react';
 import { useWorkspaceLayoutStore } from '@/components/workspace/workspaceLayoutStore';
@@ -60,6 +60,22 @@ export function TextureOnboardingTour({
   const [cardHeight, setCardHeight] = useState(230);
   const [, setViewportRevision] = useState(0);
   const cardRef = useRef<HTMLElement>(null);
+  const launcherRef = useRef<HTMLButtonElement>(null);
+  const [menuPosition, setMenuPosition] = useState({ left: 16, top: 64 });
+  useLayoutEffect(() => {
+    if (!menu) return;
+    const positionMenu = () => {
+      const rect = launcherRef.current?.getBoundingClientRect();
+      if (rect)
+        setMenuPosition({
+          left: Math.max(16, Math.min(rect.left, innerWidth - 296)),
+          top: rect.bottom + 8,
+        });
+    };
+    positionMenu();
+    window.addEventListener('resize', positionMenu);
+    return () => window.removeEventListener('resize', positionMenu);
+  }, [menu]);
   const mode = useWorkspaceLayoutStore((state) => state.mode);
   const initialLaunch = useRef(progress.status === 'active');
   useEffect(() => {
@@ -92,12 +108,17 @@ export function TextureOnboardingTour({
     layout.showPanel(panel);
     layout.setPanelCollapsed(panel, false);
     // Wait for the expanded panel to mount before locating its operation.
-    requestAnimationFrame(() =>
-      requestAnimationFrame(() =>
+    let frame = requestAnimationFrame(() => {
+      frame = requestAnimationFrame(() =>
         findTarget(step.target)?.scrollIntoView({ block: 'nearest', inline: 'nearest' }),
-      ),
-    );
+      );
+    });
+    return () => cancelAnimationFrame(frame);
   }, [step.target]);
+
+  useEffect(() => {
+    if (active && !collapsed && !menu) return reveal();
+  }, [active, collapsed, menu, reveal]);
 
   useEffect(() => {
     if (!active) return;
@@ -207,164 +228,163 @@ export function TextureOnboardingTour({
   const width = Math.min(304, innerWidth - 32);
   const position = placeTourCard(targetRect, width, cardHeight, innerWidth, innerHeight);
   const compact = collapsed || position.compact;
-  const launcher = !active || compact;
-  return createPortal(
-    <div className="pointer-events-none fixed inset-0 z-[180] text-white" aria-live="polite">
-      {active && targetRect && !menu && !compact && (
-        <div
-          className="pointer-events-none fixed rounded-xl border-2 border-liclick-pink"
-          style={{
-            left: targetRect.left,
-            top: targetRect.top,
-            width: targetRect.width,
-            height: targetRect.height,
-          }}
-        />
-      )}
-      {(launcher || menu) && (
-        <div className="pointer-events-auto fixed right-4 top-[72px] max-w-[calc(100vw-32px)]">
-          <button
-            className={`${buttonClass} bg-[#17131f]`}
-            onClick={() => setMenu(!menu)}
-            aria-expanded={menu}
-          >
-            {active
-              ? `${labels[progress.track]} ${progress.step + 1}/${tutorials[progress.track].length}`
-              : progress.status === 'done'
-                ? '引导已完成 · 进阶教程'
-                : '新手引导'}
-          </button>
-          {menu && (
-            <section
-              aria-label="新手引导菜单"
-              className="mt-2 grid w-[280px] max-w-full gap-2 rounded-xl border border-white/20 bg-[#17131f] p-4 shadow-xl"
-            >
-              {active && (
-                <>
-                  <p className="text-sm font-semibold">{step.title}</p>
-                  <p className="text-sm text-white/75">{step.body}</p>
-                  {(progress.review || confirm) && (
-                    <button
-                      className={buttonClass}
-                      disabled={!complete}
-                      onClick={() => {
-                        advance();
-                        setMenu(false);
-                      }}
-                    >
-                      {confirm ? '已涂抹并确认效果' : '下一步'}
-                    </button>
-                  )}
-                </>
-              )}
-              <p className="mb-1 text-sm text-white/70">
-                基础三步：导入模型 → 添加参考图 → 生成纹理
-              </p>
-              {progress.status !== 'done' && (
-                <button
-                  className={buttonClass}
-                  onClick={() => {
-                    update({ ...progress, status: 'active' });
-                    setMenu(false);
-                    setCollapsed(false);
-                    reveal();
-                  }}
-                >
-                  继续{labels[progress.track]} · 第 {progress.step + 1} 步
-                </button>
-              )}
-              <button className={buttonClass} onClick={() => start('basic')}>
-                重新学习基础入门
-              </button>
-              <button className={buttonClass} onClick={() => start('single')}>
-                选学：单视图调整
-              </button>
-              <button className={buttonClass} onClick={() => start('repaint')}>
-                选学：局部重绘
-              </button>
-              {active && (
-                <button
-                  className={buttonClass}
-                  onClick={() => {
-                    pause();
-                    setMenu(false);
-                  }}
-                >
-                  暂停引导
-                </button>
-              )}
-              <button className={buttonClass} onClick={() => setMenu(false)}>
-                收起菜单
-              </button>
-            </section>
-          )}
-        </div>
-      )}
-      {active && !compact && !menu && (
-        <section
-          ref={cardRef}
-          role="dialog"
-          aria-modal="false"
-          aria-label={`${labels[progress.track]}：${step.title}`}
-          className="pointer-events-auto fixed rounded-xl border border-white/20 bg-[#17131f] p-4 shadow-xl"
-          style={{
-            left: position.left,
-            top: position.top,
-            width,
-            maxHeight: 'calc(100vh - 96px)',
-            overflowY: 'auto',
-          }}
+  return (
+    <>
+      <div className="pointer-events-auto relative max-w-[calc(100vw-32px)] self-center text-white">
+        <button
+          ref={launcherRef}
+          className={`${buttonClass} h-9 whitespace-nowrap border-liclick-pink/50 bg-[#17131f] text-liclick-pink`}
+          onClick={() => setMenu(!menu)}
+          aria-expanded={menu}
         >
-          <div className="flex items-start justify-between gap-3">
-            <div>
-              <div className="text-xs text-liclick-pink">
-                {labels[progress.track]} · {progress.step + 1}/{tutorials[progress.track].length}
-              </div>
-              <h2 className="mt-1 text-lg font-bold">{step.title}</h2>
-            </div>
-            <button
-              className="rounded p-1 hover:bg-white/10"
-              aria-label="暂停引导"
-              title="暂停，下次可继续"
-              onClick={pause}
-            >
-              <X className="h-4 w-4" />
-            </button>
-          </div>
-          <p className="mt-2 text-sm leading-6 text-white/75">{step.body}</p>
-          {!targetRect && (
-            <p className="mt-2 text-xs text-white/60">
-              操作区暂未显示，请先定位；如仍未出现，请先导入并选中模型。
-            </p>
-          )}
-          <div className="mt-3 flex flex-wrap gap-2">
-            {progress.step > 0 && (
+          {active
+            ? `新手引导 · ${progress.step + 1}/${tutorials[progress.track].length}`
+            : progress.status === 'done'
+              ? '引导已完成 · 进阶教程'
+              : '新手引导'}
+        </button>
+        {menu && (
+          <section
+            aria-label="新手引导菜单"
+            className="fixed grid w-[280px] max-w-[calc(100vw-32px)] gap-2 overflow-y-auto rounded-xl border border-white/20 bg-[#17131f] p-4 shadow-xl"
+            style={{ ...menuPosition, maxHeight: `calc(100vh - ${menuPosition.top + 16}px)` }}
+          >
+            {active && (
+              <>
+                <p className="text-sm font-semibold">{step.title}</p>
+                <p className="text-sm text-white/75">{step.body}</p>
+                {(progress.review || confirm) && (
+                  <button
+                    className={buttonClass}
+                    disabled={!complete}
+                    onClick={() => {
+                      advance();
+                      setMenu(false);
+                    }}
+                  >
+                    {confirm ? '已涂抹并确认效果' : '下一步'}
+                  </button>
+                )}
+              </>
+            )}
+            <p className="mb-1 text-sm text-white/70">基础三步：导入模型 → 添加参考图 → 生成纹理</p>
+            {progress.status !== 'done' && (
               <button
                 className={buttonClass}
-                onClick={() => update({ ...progress, step: progress.step - 1, review: true })}
+                onClick={() => {
+                  update({ ...progress, status: 'active' });
+                  setMenu(false);
+                  setCollapsed(false);
+                  useWorkspaceLayoutStore.getState().setMode('texture');
+                }}
               >
-                上一步
+                继续{labels[progress.track]} · 第 {progress.step + 1} 步
               </button>
             )}
-            <button className={buttonClass} onClick={reveal}>
-              定位操作区
+            <button className={buttonClass} onClick={() => start('basic')}>
+              重新学习基础入门
             </button>
-            <button className={buttonClass} onClick={() => setCollapsed(true)}>
-              收起
+            <button className={buttonClass} onClick={() => start('single')}>
+              选学：单视图调整
             </button>
-            {(progress.review || confirm) && (
-              <button className={buttonClass} disabled={!complete} onClick={advance}>
-                {confirm
-                  ? '已涂抹并确认效果'
-                  : progress.step === tutorials[progress.track].length - 1
-                    ? '完成引导'
-                    : '下一步'}
+            <button className={buttonClass} onClick={() => start('repaint')}>
+              选学：局部重绘
+            </button>
+            {active && (
+              <button
+                className={buttonClass}
+                onClick={() => {
+                  pause();
+                  setMenu(false);
+                }}
+              >
+                暂停引导
               </button>
             )}
-          </div>
-        </section>
+            <button className={buttonClass} onClick={() => setMenu(false)}>
+              收起菜单
+            </button>
+          </section>
+        )}
+      </div>
+      {createPortal(
+        <div className="pointer-events-none fixed inset-0 z-[180] text-white" aria-live="polite">
+          {active && targetRect && !menu && !compact && (
+            <div
+              className="pointer-events-none fixed rounded-xl border-2 border-liclick-pink"
+              style={{
+                left: targetRect.left,
+                top: targetRect.top,
+                width: targetRect.width,
+                height: targetRect.height,
+              }}
+            />
+          )}
+          {active && !compact && !menu && (
+            <section
+              ref={cardRef}
+              role="dialog"
+              aria-modal="false"
+              aria-label={`${labels[progress.track]}：${step.title}`}
+              className="pointer-events-auto fixed rounded-xl border border-white/20 bg-[#17131f] p-4 shadow-xl"
+              style={{
+                left: position.left,
+                top: position.top,
+                width,
+                maxHeight: 'calc(100vh - 96px)',
+                overflowY: 'auto',
+              }}
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <div className="text-xs text-liclick-pink">
+                    {labels[progress.track]} · {progress.step + 1}/
+                    {tutorials[progress.track].length}
+                  </div>
+                  <h2 className="mt-1 text-lg font-bold">{step.title}</h2>
+                </div>
+                <button
+                  className="rounded p-1 hover:bg-white/10"
+                  aria-label="暂停引导"
+                  title="暂停，下次可继续"
+                  onClick={pause}
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+              <p className="mt-2 text-sm leading-6 text-white/75">{step.body}</p>
+              {!targetRect && (
+                <p className="mt-2 text-xs text-white/60">
+                  请展开左侧对应面板；如仍未显示，请先导入并选中模型。
+                </p>
+              )}
+              <div className="mt-3 flex flex-wrap gap-2">
+                {progress.step > 0 && (
+                  <button
+                    className={buttonClass}
+                    onClick={() => update({ ...progress, step: progress.step - 1, review: true })}
+                  >
+                    上一步
+                  </button>
+                )}
+                <button className={buttonClass} onClick={() => setCollapsed(true)}>
+                  收起
+                </button>
+                {(progress.review || confirm) && (
+                  <button className={buttonClass} disabled={!complete} onClick={advance}>
+                    {confirm
+                      ? '已涂抹并确认效果'
+                      : progress.step === tutorials[progress.track].length - 1
+                        ? '完成引导'
+                        : '下一步'}
+                  </button>
+                )}
+              </div>
+            </section>
+          )}
+        </div>,
+        document.body,
       )}
-    </div>,
-    document.body,
+    </>
   );
 }
