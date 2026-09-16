@@ -62,6 +62,8 @@ const frame = current.findContentFraming({ width: 1, height: 1, data: new Uint8C
 assert.throws(() => current.restoredFrameLayout(frame, frame.outputWidth - 1, frame.outputHeight), /远端回图比例异常/);
 await assert.rejects(() => current.validateFramedSilhouette(frame, { width: frame.outputWidth, height: frame.outputHeight,
   data: new Uint8ClampedArray(frame.outputWidth * frame.outputHeight * 4) }), /透明轮廓与模型不对齐/);
+await assert.rejects(() => current.validateFramedSilhouette(frame, { width: frame.outputWidth, height: frame.outputHeight,
+  data: new Uint8ClampedArray(frame.outputWidth * frame.outputHeight * 4) }, undefined, 'capture-mask'), /透明轮廓与模型不对齐/);
 
 // Execute the real image-loader function to check async decode, compatibility
 // when decode rejects, and cancellation while an otherwise loaded image decodes.

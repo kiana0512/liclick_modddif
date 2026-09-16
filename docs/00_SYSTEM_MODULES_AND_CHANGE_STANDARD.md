@@ -1,5 +1,7 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
+2026-09-16 M04（协作 M03/M06/M08）：`GPT-RETURN-SILHOUETTE-QA/1.1.0` 对普通 texture-map 返图使用“粗粒度位置校验＋冻结采集蒙版精确裁切”；允许生图服务的轻微 alpha 羽化，仍拒绝空轮廓、明显缩放或偏移。局部重绘保留原严格边界校验；返图尺寸/比例、冻结相机、完整分辨率、GPU/CPU/Worker/shader、UV 权重/投影、持久化/导出及 Command/CAS/ownership/verified assets 不变，无迁移；详见 [返图轮廓与采集蒙版协作校验](changes/CHG-20260916-GPT-RETURN-SILHOUETTE-QA.md)。
+
 2026-09-16 M03（协作 M04）：`NORMAL-CAPTURE-MATERIAL/1.0.0` / `ALG-CAP-005` v1.0.1 按离屏 renderer 与 normal space 弱持有至多三份不可变法线材质，消除多视角重复编译；renderer 释放仍回收 GPU 程序。真实 49,152 三角形、三个空间各十视角对照完整 RGBA 一致，程序创建 30→3，总耗时约 702–742→568–569ms。相机、法线公式、完整分辨率、其他 pass、UV 权重/QA、持久化/导出及 Command/CAS/ownership/verified assets 不变，无迁移；详见 [法线采集材质复用](changes/CHG-20260916-NORMAL-CAPTURE-MATERIAL-REUSE.md)。
 
 2026-09-16 M07（协作 M03/M08/M09/M12/M13）：`MASKED-PROJECTED-PNG/1.0.0` 将逐层投影蒙版输出的私有 RGBA 转交 Worker PNG 编码，串行一个全尺寸 Canvas，失败释放并保持原 pixel/兼容消息。4K 两种 alpha 策略完整 decoded RGBA 一致，旧四次 51–60ms 长任务、新四次无 >50ms 长任务；总编码/处理仍约 1.6–1.9s，不宣称用户全流程零掉帧。原缓存借用像素不转移，GPU/CPU/Worker/shader、UV 权重、QA、相机/framing、分辨率、Command/CAS/ownership/verified assets 与保存/导出保持，无持久迁移；详见 [蒙版 PNG Worker 变更卡](changes/CHG-20260916-MASKED-PROJECTED-PNG-WORKER.md)。
@@ -86,7 +88,7 @@
 
 2026-09-15 M03：ALG-VIEW-INPUT-001/1.3.2 在鼠标接触前即让 R3F 悬停遵守 Alt 所有权；保留普通 hover 和已锁定拖动。旧实现拾取回归失败、新实现通过，用户实际首帧延迟需继续录制。无像素/持久化迁移，见 [Alt 悬停变更卡](changes/CHG-20260915-ALT-BRUSH-HOVER.md)。
 
-> 文档版本：`2.20.149`
+> 文档版本：`2.20.150`
 
 2026-09-15 UI-06 → M03：`ALG-VIEW-SELECT-001/1.0.5` 将常驻线框预热绑定到 renderer/模型生命周期，透视/正交相机替换不重新编译或释放同一辅助材质，避免旧编译完成后释放当前材质。16 次相机替换旧实现启动 17 次编译，新实现一次；71 次显隐及卸载清理保持。GPU 线框/CPU 几何/Worker/shader、捕获/UV/重绘/导出、分辨率和 QA、持久化/Schema 均不变，无迁移。其他工具切换仍有长帧，不宣称全操作无卡顿，验证和回滚见 [线框相机生命周期变更卡](changes/CHG-20260915-WIREFRAME-CAMERA-LIFETIME.md)。
 

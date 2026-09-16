@@ -6,6 +6,8 @@ import {
 
 type CoverageImage = Pick<ImageData, 'width' | 'height' | 'data'>;
 
+export type FramedSilhouettePolicy = 'strict' | 'capture-mask';
+
 /** GPT-CONTENT-BOUNDS/1.0.0. Bounds depend only on each row's first/last
  * covered pixel. Interior holes/colours never change the exact outer bounds.
  * Yield every 16 rows, including empty rows, for cancellable cooperative scans.
@@ -145,6 +147,7 @@ export async function validateFramedSilhouette(
   frame: GenerationFraming,
   image: Pick<ImageData, 'width' | 'height' | 'data'>,
   checkpoint?: () => Promise<void>,
+  policy: FramedSilhouettePolicy = 'strict',
 ) {
   if (frame.version !== 2) return;
   const layout = restoredFrameLayout(frame, image.width, image.height),
@@ -160,6 +163,24 @@ export async function validateFramedSilhouette(
   ];
   const actual = [left, top, right + 1, bottom + 1];
   const tolerance = Math.max(16, Math.max(s.width * sx, s.height * sy) * 0.02);
-  if (right < left || actual.some((v, i) => Math.abs(v - expected[i]) > tolerance))
+  let invalid = right < left;
+  if (!invalid && policy === 'capture-mask') {
+    // Texture-map layers are clipped again by the immutable capture mask before
+    // projection. Allow harmless provider alpha feathering while still rejecting
+    // a grossly shifted/scaled return that would paint the wrong surface detail.
+    const expectedWidth = expected[2] - expected[0], expectedHeight = expected[3] - expected[1];
+    const actualWidth = actual[2] - actual[0], actualHeight = actual[3] - actual[1];
+    const overlapWidth = Math.max(0, Math.min(expected[2], actual[2]) - Math.max(expected[0], actual[0]));
+    const overlapHeight = Math.max(0, Math.min(expected[3], actual[3]) - Math.max(expected[1], actual[1]));
+    const centerDeltaX = Math.abs((actual[0] + actual[2] - expected[0] - expected[2]) / 2);
+    const centerDeltaY = Math.abs((actual[1] + actual[3] - expected[1] - expected[3]) / 2);
+    invalid = actualWidth / expectedWidth < 0.65 || actualWidth / expectedWidth > 1.5 ||
+      actualHeight / expectedHeight < 0.65 || actualHeight / expectedHeight > 1.5 ||
+      overlapWidth / Math.min(expectedWidth, actualWidth) < 0.75 ||
+      overlapHeight / Math.min(expectedHeight, actualHeight) < 0.75 ||
+      centerDeltaX > Math.max(32, expectedWidth * 0.12) ||
+      centerDeltaY > Math.max(32, expectedHeight * 0.12);
+  } else if (!invalid) invalid = actual.some((v, i) => Math.abs(v - expected[i]) > tolerance);
+  if (invalid)
     throw new Error('远端回图透明轮廓与模型不对齐，已保留结果并停止回贴，未自动重新生成。');
 }
