@@ -10,7 +10,7 @@
 - 设计算法：
   - STORAGE-INVENTORY-001/3：已实现的双后端引用盘点、候选快照、近期资产保护与单飞调度协议
   - ASSET-CONTENT-DEDUP v0.2.0：用户隔离的内容寻址与双存储适配
-  - ASSET-LIFECYCLE-GC v0.3.3：已实现引用标记、扫描候选快照、单飞任务、本地高密度目录快速隔离与显式二次确认的 Workspace 后台物理清空；恢复与 Cloud 物理回收仍待实施
+  - ASSET-LIFECYCLE-GC v0.3.4：已实现引用标记、扫描候选快照、单飞任务、Cloud PostgreSQL 有界分页、本地高密度目录快速隔离与显式二次确认的 Workspace 后台物理清空；恢复与 Cloud 物理回收仍待实施
   - ASSET-QUOTA-RESERVATION v0.2.0：配额预留、提交和释放
   - ASSET-ROLE-COMPRESSION v0.2.0：按资产角色生成有版本、跨解码器验证的无损或展示派生物
 - 候选协议：Asset Transfer v2
@@ -23,6 +23,8 @@
 已实现：共享 Storage Overview/Cleanup Job 契约；4517 Workspace 文件适配器；Cloud PostgreSQL 引用盘点与逻辑隔离适配器；异步扫描、scanId 新鲜度校验、清理幂等键；首页账号菜单摘要与按需加载管理弹窗；`004_asset_storage_v2_shadow.sql` 影子 Schema；本地文件移入用户专属隔离区。大目录盘点采用有界并发 `stat`、流式遍历和实时进度，扫描时原子生成与 scanId 绑定的有界 NDJSON 候选快照，避免把百万路径放入内存或在用户确认后重复全量盘点。清理开始时重新读取当前/历史引用，并对快照候选逐项验证路径、引用、类型和字节长度；扫描后新增文件不进入任务，后来恢复引用或发生变化的候选被跳过，其余候选继续处理。
 
 Phase 1.5 增加 Workspace 隔离区主动永久清空：浏览器要求输入“永久删除”二次确认；服务端创建幂等 purge job，以目录 rename 先把 `storage-quarantine` 原子摘除到 `storage-purge/<jobId>`，HTTP 立即返回，随后异步递归释放文件。服务重启会继续 queued/running purge；扫描通过 cleanup/purge job 账本计算隔离与待释放字节，不再重复 stat 已隔离的百万文件。真实工作区快速隔离 156,104 个文件、137,976,470,315 B 用时 8.55s，后续增量扫描用时 1.3s。
+
+Phase 1.6 将 Cloud 盘点改为数据库原生有界执行。PostgreSQL 在服务端从 JSONB 文档投影 assetId，按工程/Revision 复合键和 Asset Transfer intentId 做键集分页；扫描引用写入 `asset_storage_inventory_scan_references`，数据库按 current > history > trash 去重，未引用候选按资产页批量写入。Node 不再同时保留全部文档 JSON、全部资产和全部候选；成功时原子切换 snapshot，失败或重启后删除孤立暂存行并保留旧快照。单条查询 45 秒超时，浏览器轮询失败使用有界退避。默认工程页 8 条、资产页 256 条，可通过部署环境在 1–32 / 16–512 的安全范围调整。5.6 MB 单工程文档测试中 Node 仅接收 assetId 投影，序列化结果小于 1 KiB。
 
 尚未实现且不得误报为已生效：Asset Transfer v2 内容寻址上传、物理 Blob 去重、配额预留、隔离恢复 UI/API、自动到期清理、Cloud 对象存储物理删除 Worker/`DeleteObject`、PNG canonical 优化或 WebP 预览派生。影子 Schema 已加入迁移脚本，但本次没有连接生产数据库、没有执行生产迁移、没有压缩或永久删除任何生产资产；Workspace 永久清空也只会在用户完成明确二次确认后执行。
 
@@ -182,7 +184,7 @@ mimeType 不作为内容唯一键，但完成时必须与允许的声明及对�
 - 所有失败/过期 intent 释放预留；reconciler 定期纠正进程崩溃造成的残留预留。
 - 系统低空间时优先暂停新写入和清理 staging，不得缩短 current/pinned/合法保留数据窗口。
 
-## 9. ASSET-LIFECYCLE-GC v0.3.2
+## 9. ASSET-LIFECYCLE-GC v0.3.4
 
 ### 9.1 权威根集合
 

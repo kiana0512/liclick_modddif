@@ -110,6 +110,14 @@ CREATE TABLE IF NOT EXISTS asset_storage_inventory_candidates (
 CREATE INDEX IF NOT EXISTS asset_storage_inventory_candidates_scan_idx
   ON asset_storage_inventory_candidates (user_id, scan_id, candidate_id);
 
+CREATE TABLE IF NOT EXISTS asset_storage_inventory_scan_references (
+  user_id TEXT NOT NULL REFERENCES cloud_users(user_id) ON DELETE CASCADE,
+  scan_id TEXT NOT NULL,
+  asset_id TEXT NOT NULL,
+  bucket_id TEXT NOT NULL CHECK (bucket_id IN ('project-resources', 'history', 'trash')),
+  PRIMARY KEY (user_id, scan_id, asset_id)
+);
+
 CREATE TABLE IF NOT EXISTS asset_storage_cleanup_jobs (
   user_id TEXT NOT NULL REFERENCES cloud_users(user_id) ON DELETE CASCADE,
   job_id TEXT NOT NULL,
