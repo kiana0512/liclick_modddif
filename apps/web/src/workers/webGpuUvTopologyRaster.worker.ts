@@ -1,4 +1,4 @@
-export {};
+import { rasterizeUvTriangleCenters } from '../engine/bake/uvPixelCenterRaster';
 
 const GPU_BUFFER_USAGE_MAP_READ = 0x0001;
 const GPU_BUFFER_USAGE_COPY_DST = 0x0008;
@@ -63,7 +63,7 @@ type RasterResponse =
       type: 'result';
       id: number;
       mask: ArrayBuffer;
-      backend: 'webgpu-worker' | 'offscreen-canvas-worker';
+      backend: 'webgpu-worker' | 'cpu-pixel-center-worker';
       gpuAccepted: boolean;
       mismatchedPixels: number;
       rawMismatchedPixels: number;
@@ -178,19 +178,13 @@ function getPipeline(device: GpuDevice) {
   return pipeline;
 }
 
-function rasterizeCanvasGold(
+function rasterizePixelCenterGold(
   triangles: Float32Array,
   width: number,
   height: number,
 ) {
   const startedAt = performance.now();
-  if (typeof OffscreenCanvas === 'undefined') {
-    throw new Error('OffscreenCanvas is unavailable for UV topology calibration.');
-  }
-  const canvas = new OffscreenCanvas(width, height);
-  const context = canvas.getContext('2d', { willReadFrequently: true });
-  if (!context) throw new Error('Could not create Worker Canvas2D topology gold raster.');
-  context.fillStyle = '#ffffff';
+  const mask = new Uint8Array(width * height);
   for (let offset = 0; offset < triangles.length; offset += 6) {
     const x0 = triangles[offset] * width;
     const y0 = (1 - triangles[offset + 1]) * height;
@@ -198,18 +192,7 @@ function rasterizeCanvasGold(
     const y1 = (1 - triangles[offset + 3]) * height;
     const x2 = triangles[offset + 4] * width;
     const y2 = (1 - triangles[offset + 5]) * height;
-    if (![x0, y0, x1, y1, x2, y2].every(Number.isFinite)) continue;
-    context.beginPath();
-    context.moveTo(x0, y0);
-    context.lineTo(x1, y1);
-    context.lineTo(x2, y2);
-    context.closePath();
-    context.fill();
-  }
-  const rgba = context.getImageData(0, 0, width, height).data;
-  const mask = new Uint8Array(width * height);
-  for (let index = 0; index < mask.length; index += 1) {
-    mask[index] = rgba[index * 4 + 3] >= 128 ? 1 : 0;
+    rasterizeUvTriangleCenters(mask, width, height, x0, y0, x1, y1, x2, y2);
   }
   return { mask, durationMs: performance.now() - startedAt };
 }
@@ -291,12 +274,12 @@ async function rasterizeWebGpu(
 async function handleRaster(request: RasterRequest) {
   const startedAt = performance.now();
   const triangles = new Float32Array(request.triangles);
-  const cpuGold = rasterizeCanvasGold(triangles, request.width, request.height);
+  const cpuGold = rasterizePixelCenterGold(triangles, request.width, request.height);
   const device = request.preferWebGpu ? await getDevice() : undefined;
   if (!device) {
     return {
       mask: cpuGold.mask,
-      backend: 'offscreen-canvas-worker' as const,
+      backend: 'cpu-pixel-center-worker' as const,
       gpuAccepted: false,
       mismatchedPixels: 0,
       rawMismatchedPixels: 0,
@@ -338,7 +321,7 @@ async function handleRaster(request: RasterRequest) {
     mask: gpuAccepted ? gpu.mask : cpuGold.mask,
     backend: gpuAccepted
       ? ('webgpu-worker' as const)
-      : ('offscreen-canvas-worker' as const),
+      : ('cpu-pixel-center-worker' as const),
     gpuAccepted,
     mismatchedPixels,
     rawMismatchedPixels,

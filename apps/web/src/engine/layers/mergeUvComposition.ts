@@ -8,7 +8,7 @@ import { compareUvLayersForComposition } from './uvLayerComposition';
  * trusted to match the live layer stack. Version 10 includes native UV repaint
  * above projections. Historical UV assets remain authored underlays.
  */
-export const UV_MERGE_COMPOSITION_VERSION = 10;
+export const UV_MERGE_COMPOSITION_VERSION = 11;
 
 export function compositeRenderedColorMaskUnderInPlace(
   frontMask: Uint8Array,

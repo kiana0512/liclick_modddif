@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import ts from 'typescript';
 import * as THREE from 'three';
+import * as pixelRaster from '../src/engine/bake/uvPixelCenterRaster.ts';
 import { padUvIslandGuttersWithTopology as reference } from './fixtures/uv-gutter-b3431cb.ts';
 
 const source = await readFile(new URL('../src/engine/bake/dilation.ts', import.meta.url), 'utf8');
@@ -9,7 +10,10 @@ let clock = 0;
 const api = {};
 new Function('require', 'exports', 'performance', ts.transpileModule(source, {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
-}).outputText)(name => { assert.equal(name, 'three'); return THREE; }, api, { now: () => clock += 10 });
+}).outputText)(name => {
+  if (name === './uvPixelCenterRaster.ts') return pixelRaster;
+  assert.equal(name, 'three'); return THREE;
+}, api, { now: () => clock += 10 });
 const size = 128, topology = new Uint8Array(size * size);
 const original = new Uint8ClampedArray(size * size * 4).fill(91), coverage = topology.slice();
 for (let y = 8; y < size - 8; y++) for (let x = 8; x < size - 8; x++) {

@@ -4,7 +4,7 @@ import { snapshotUvSeamGeometry, matchesUvSeamGeometry, type UvSeamGeometrySnaps
 
 export type WebGpuUvTopologyRasterResult = {
   mask: Uint8Array<ArrayBuffer>;
-  backend: 'webgpu-worker' | 'offscreen-canvas-worker';
+  backend: 'webgpu-worker' | 'cpu-pixel-center-worker';
   gpuAccepted: boolean;
   mismatchedPixels: number;
   rawMismatchedPixels: number;
@@ -234,7 +234,7 @@ async function serializeUvTriangles(root: THREE.Object3D) {
 
 /**
  * Runs a genuine Worker-owned WebGPU render pipeline. The first topology for a
- * model/resolution is compared pixel-for-pixel with the same Canvas2D gold
+ * model/resolution is compared pixel-for-pixel with the same pixel-centre gold
  * raster inside the Worker. A mismatch publishes the gold mask, never the GPU
  * candidate, so enabling this path cannot change UV repair quality.
  */
@@ -254,7 +254,7 @@ export async function rasterizeUvTopologyMaskWithWebGpu(
   const preferWebGpu =
     typeof window === 'undefined' ||
     new URLSearchParams(window.location.search).get('webGpuUvTopology') !== '0';
-  const cacheKey = `${root.uuid}:${revisionByRoot.get(root)}:${width}x${height}:pixel-center-uv-extent-v2:${preferWebGpu ? 'gpu' : 'compat'}`;
+  const cacheKey = `${root.uuid}:${revisionByRoot.get(root)}:${width}x${height}:pixel-center-uv-extent-v3:${preferWebGpu ? 'gpu' : 'compat'}`;
   const cached = cache.get(cacheKey);
   if (cached) return cached.then(result => ({...result, serializeMs, gpuMs:0, cpuGoldMs:0, totalMs:serializeMs}));
   const promise = (async () => {

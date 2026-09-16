@@ -28,6 +28,7 @@
     "test:masked-projected-png-worker": "node scripts/test-masked-projected-png-worker.mjs",
     "test:native-uv-merge": "node scripts/test-native-uv-merge.mjs",
     "check:native-uv-browser": "node scripts/run-uv-repaint-browser.mjs --viewport",
+    "check:uv-repaint-alpha-edge": "node scripts/run-uv-repaint-alpha-edge.mjs",
     "test:uv-source-lookahead": "node scripts/test-uv-source-lookahead.mjs",
     "test:fbx-temporary-uv": "node scripts/test-fbx-temporary-uv.mjs",
     "test:merge-final-preparation": "node scripts/test-merge-final-preparation.mjs",
