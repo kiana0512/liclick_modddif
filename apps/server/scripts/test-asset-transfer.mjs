@@ -35,6 +35,12 @@ const handler = async (request, response) => {
     response.end();
     return;
   }
+  if (request.method === 'DELETE') {
+    objects.delete(url.pathname);
+    response.writeHead(204, { 'access-control-allow-origin': '*' });
+    response.end();
+    return;
+  }
   const object = objects.get(url.pathname);
   if (!object) {
     response.writeHead(404);
@@ -98,6 +104,7 @@ try {
     completeAssetUploadIntent,
     createAssetDownloadUrl,
     createAssetUploadIntent,
+    deleteObjectStorageObject,
   } = await import('../dist/services/assetTransferService.js');
 
   const userId = 'asset-transfer-test-user';
@@ -148,6 +155,13 @@ try {
   assert.equal(
     await createAssetDownloadUrl('different-user', created.project.id, intent.assetId),
     undefined,
+  );
+  await deleteObjectStorageObject(
+    decodeURIComponent(new URL(downloadUrl).pathname.split('/liclick-test/')[1]),
+  );
+  assert.equal((await fetch(downloadUrl)).status, 404);
+  await deleteObjectStorageObject(
+    decodeURIComponent(new URL(downloadUrl).pathname.split('/liclick-test/')[1]),
   );
 
   assert.equal(heads, 1);

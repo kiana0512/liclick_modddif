@@ -445,6 +445,40 @@ try {
   }
   const pagingScanId = 'scan-paging-12345678';
   await repository.beginInventoryScan('storage-cloud-user', pagingScanId);
+  const directReferenceScanId = 'scan-direct-reference-12345678';
+  await repository.beginInventoryScan('storage-cloud-user', directReferenceScanId);
+  for (const kind of ['current', 'history', 'trash']) {
+    let cursor;
+    do {
+      const page = await repository.appendStorageDocumentReferencePage(
+        'storage-cloud-user',
+        directReferenceScanId,
+        kind,
+        cursor,
+        1,
+      );
+      cursor = page.nextCursor;
+    } while (cursor);
+  }
+  const directBuckets = new Map();
+  let directAssetCursor;
+  do {
+    const page = await repository.listLegacyAssetPage(
+      'storage-cloud-user',
+      directReferenceScanId,
+      directAssetCursor,
+      2,
+    );
+    for (const asset of page.assets) directBuckets.set(asset.assetId, asset.referenceBucket);
+    directAssetCursor = page.nextCursor;
+  } while (directAssetCursor);
+  assert.deepEqual(Object.fromEntries(directBuckets), {
+    'asset-current-12345678': 'project-resources',
+    'asset-history-12345678': 'history',
+    'asset-trash-12345678': 'trash',
+    'asset-unused-12345678': undefined,
+  });
+  await repository.discardInventoryScan('storage-cloud-user', directReferenceScanId);
   const referencePages = await Promise.all([
     repository.listStorageDocumentPage('storage-cloud-user', 'current', undefined, 1),
     repository.listStorageDocumentPage('storage-cloud-user', 'history', undefined, 1),
@@ -540,11 +574,11 @@ try {
     startedAt: now,
     candidates: [
       {
-        candidateId: 'candidate-asset-cloud-12345678',
-        assetId: 'asset-cloud-12345678',
-        projectId: 'project-cloud',
+        candidateId: 'candidate-asset-unused-12345678',
+        assetId: 'asset-unused-12345678',
+        projectId: 'project-active',
         category: 'layers',
-        sizeBytes: 4096,
+        sizeBytes: 103,
         proof: { reason: 'test-unreferenced' },
       },
     ],
@@ -559,7 +593,7 @@ try {
     deleteAfter: new Date(Date.now() + 7 * 86_400_000).toISOString(),
   });
   assert.equal(cloudJob?.status, 'completed');
-  assert.equal(cloudJob?.processedBytes, 4096);
+  assert.equal(cloudJob?.processedBytes, 103);
   assert.equal(
     (
       await repository.createQuarantineJob({
@@ -578,6 +612,83 @@ try {
       WHERE user_id='storage-cloud-user'`,
   );
   assert.equal(quarantineCount.rows[0].count, 1);
+  await repository.appendInventoryReferences({
+    userId: 'storage-cloud-user',
+    scanId: cloudOverview.scanId,
+    references: [{
+      assetId: 'asset-unused-12345678',
+      bucketId: 'project-resources',
+    }],
+  });
+  assert.deepEqual(await repository.getCloudQuarantineSummary('storage-cloud-user'), {
+    itemCount: 0,
+    bytes: 0,
+  });
+  assert.equal(
+    await repository.createPurgeJob({
+      userId: 'storage-cloud-user',
+      idempotencyKey: 'cloud-purge-protected-12345678',
+      jobId: 'purge-cloud-protected-12345678',
+      now,
+    }),
+    undefined,
+  );
+  await repository.discardInventoryScan('storage-cloud-user', cloudOverview.scanId);
+  assert.deepEqual(await repository.getCloudQuarantineSummary('storage-cloud-user'), {
+    itemCount: 1,
+    bytes: 103,
+  });
+  const purgeJob = await repository.createPurgeJob({
+    userId: 'storage-cloud-user',
+    idempotencyKey: 'cloud-purge-idempotency-12345678',
+    jobId: 'purge-cloud-12345678',
+    now,
+  });
+  assert.equal(purgeJob?.status, 'queued');
+  assert.equal(purgeJob?.targetBytes, 103);
+  assert.equal(purgeJob?.targetCount, 1);
+  assert.equal(
+    (
+      await repository.createPurgeJob({
+        userId: 'storage-cloud-user',
+        idempotencyKey: 'cloud-purge-idempotency-12345678',
+        jobId: 'purge-cloud-replayed',
+        now,
+      })
+    )?.jobId,
+    purgeJob?.jobId,
+  );
+  const runningPurge = await repository.markPurgeJobRunning('storage-cloud-user', purgeJob);
+  const purgeItems = await repository.listPurgeItemPage(
+    'storage-cloud-user',
+    runningPurge.jobId,
+    undefined,
+    64,
+  );
+  assert.deepEqual(purgeItems.items, [{
+    assetId: 'asset-unused-12345678',
+    objectKey: 'objects/asset-unused-12345678',
+    sizeBytes: 103,
+  }]);
+  await repository.markPurgeItemDeleted({
+    userId: 'storage-cloud-user',
+    jobId: runningPurge.jobId,
+    assetId: 'asset-unused-12345678',
+    now,
+  });
+  const completedPurge = await repository.finishPurgeJob({
+    userId: 'storage-cloud-user',
+    job: runningPurge,
+  });
+  assert.equal(completedPurge.status, 'completed');
+  assert.equal(
+    (await repository.getPurgeJob('storage-cloud-user', runningPurge.jobId))?.status,
+    'completed',
+  );
+  assert.deepEqual(await repository.getCloudQuarantineSummary('storage-cloud-user'), {
+    itemCount: 0,
+    bytes: 0,
+  });
   await sql.close();
 
   console.log('storage management tests passed');

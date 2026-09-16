@@ -331,3 +331,41 @@ export async function createAssetDownloadUrl(
     expiresInSeconds: Math.min(300, config.signedUrlTtlSeconds),
   });
 }
+
+export async function deleteObjectStorageObject(objectKey: string) {
+  const config = assertObjectStorageConfigured();
+  if (
+    !objectKey ||
+    objectKey.startsWith('/') ||
+    objectKey.includes('\\') ||
+    objectKey.split('/').some((segment) => !segment || segment === '.' || segment === '..')
+  ) {
+    throw new AssetTransferError('Object storage key is invalid.', 400, 'ASSET_OBJECT_KEY_INVALID');
+  }
+  const deleteUrl = presigner()({
+    method: 'DELETE',
+    objectKey,
+    expiresInSeconds: Math.min(120, config.signedUrlTtlSeconds),
+  });
+  let lastStatus = 0;
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      const response = await fetch(deleteUrl, {
+        method: 'DELETE',
+        signal: AbortSignal.timeout(30_000),
+      });
+      lastStatus = response.status;
+      if (response.ok || response.status === 404) return;
+      if (response.status !== 429 && response.status < 500) break;
+    } catch (error) {
+      lastError = error;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100 * 2 ** attempt));
+  }
+  throw new AssetTransferError(
+    `Object storage delete failed (${lastStatus || (lastError instanceof Error ? lastError.message : 'network error')}).`,
+    502,
+    'ASSET_OBJECT_DELETE_FAILED',
+  );
+}

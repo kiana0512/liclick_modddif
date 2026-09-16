@@ -1,5 +1,5 @@
 export const STORAGE_OVERVIEW_SCHEMA_VERSION = 1 as const;
-export const STORAGE_INVENTORY_RULE_VERSION = 'STORAGE-INVENTORY-001/3' as const;
+export const STORAGE_INVENTORY_RULE_VERSION = 'STORAGE-INVENTORY-001/4' as const;
 
 export const STORAGE_BUCKET_IDS = [
   'project-resources',
