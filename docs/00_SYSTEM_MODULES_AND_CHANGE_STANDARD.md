@@ -2,6 +2,10 @@
 
 2026-09-16 master/release 集成（M15，`CLOUD-DEPLOYMENT` v1.0.0）：将 `master` 提交 `0bb0e6ec` 合入 `release`，保留 release 现有 K8s、Nginx、数据库、对象存储、Ceph 完整性、IDaaS 与资源配置。业务源码采用 master 的视口输入、投影选区显示、局部重绘、生成稳定性和 UV 性能修复；完整分辨率、QA、Project Command、Revision CAS、ownership、verified assets、持久化与导出约束不放宽，无 Schema 或资产迁移。最终 release 合并提交以 `[deploy]` 触发 server/web 同一不可变 SHA 镜像与串行部署；失败时 server/web/db-push 一同回滚到 `35db5bc4` 对应镜像，保留数据库、工程、对象资产和 PVC。线上结果以 release 流水线及 `/api/release`、health、ready 核验为准。
 
+2026-09-16 账号菜单 → M13（纯 UI）：`USER-MENU-PRODUCT-LABEL` v1 在“退出登录”下方以分隔线和次要文字显示固定“版本 0.1”。这是上线前产品展示文案，不读取或覆盖前后端 release manifest、Git SHA、构建时间、package 版本及部署配置；正式上线时再调整文案。无算法、Schema、数据迁移或网络请求增加，移除此静态行即可回滚。尚未推送或部署。
+
+2026-09-16 UI-10 → M08：`PAINT-MASK-BRUSH-DEFAULT` v1.0.1 将视口蒙版加选/减选画笔初始大小从 45 调整为 35；应用重绘画笔仍为 30，普通绘制/橡皮、羽化和用户手动调节不变。只修改初始设置，GPU/CPU/Worker/shader 像素核、分辨率、保存及导出协议不变，无 Schema/数据迁移；回滚默认常量到 45 即可。详见 [画笔默认值记录](changes/CHG-20260912-LOCAL-REPAINT-BRUSH-DEFAULT.md)。本轮尚未推送或部署。
+
 2026-09-16 UI-10/UI-11 → M08（协作 M03）：`ALG-LR-MANUAL-TARGET` v1.1.1 修复黄色“新建图层”按钮将用户层误标为内部 draft、导致图层列表隐藏的问题。显式创建普通 UV 层，与面板新建使用同一 store 动作；旧版无生成/捕获/相机/投影配对的独立 draft 只读显示，不改 ID、像素、顺序或数据库。真正生成绑定/配对的内部 draft 继续隐藏。GPU/CPU/Worker/shader、绘制核、保存/export 协议不变。生产创建回调与真实图层面板点击/重载验证通过；详见 [手动局部重绘目标层变更卡](changes/CHG-20260916-MANUAL-REPAINT-LAYER.md)。
 
 2026-09-16 UI-06/UI-10 → M08：`ALG-LR-MANUAL-TARGET` v1.1.0 将新建绘制层模态框改为现有顶部黄色 warning 提示，显式“新建图层”按钮沿用历史边界、创建/选中/开始绘制流程。关闭不创建，不遮挡编辑器；内容识别填补层（含旧 ID/generation 标记）禁止作为手动绘制目标，并在写回时保护。GPU/CPU 像素核、Worker/shader、分辨率、保存/导出协议不变，无迁移。回滚提示组件及目标保护即可恢复上版交互；详见 [手动局部重绘目标层变更卡](changes/CHG-20260916-MANUAL-REPAINT-LAYER.md)。本轮尚未推送或部署。
@@ -111,7 +115,9 @@
 
 2026-09-15 M03：ALG-VIEW-INPUT-001/1.3.2 在鼠标接触前即让 R3F 悬停遵守 Alt 所有权；保留普通 hover 和已锁定拖动。旧实现拾取回归失败、新实现通过，用户实际首帧延迟需继续录制。无像素/持久化迁移，见 [Alt 悬停变更卡](changes/CHG-20260915-ALT-BRUSH-HOVER.md)。
 
-> 文档版本：`2.20.155`
+> 文档版本：`2.20.156`
+
+2026-09-16 M14/M15：`ASSET-LIFECYCLE-GC` v0.3.5 修复生产 `node-postgres` 将 JavaScript 数组编码为 PostgreSQL array、导致 `jsonb_to_recordset` 报 `invalid input syntax for type json` 的驱动边界差异。引用与候选批次现在显式序列化为 JSON 文本；分页、分类、快照切换、权限、对象和清理语义不变，无数据迁移。4517/PGlite 与生产驱动参数回归覆盖该边界；回滚 v0.3.4 会恢复 Cloud 扫描失败。
 
 2026-09-16 UI-16 → M14（协作 M01/M12/M13/M15）：`ASSET-LIFECYCLE-GC` v0.3.4 将 Cloud 存储盘点从全量加载全部 Asset Transfer 与 Project/Revision JSON 改为 PostgreSQL 原生引用提取、键集分页和扫描专属暂存表。工程页默认 8 条、资产页默认 256 条；Node 只接收 assetId 投影和单页资产，候选按页批量落库，完成后原子切换快照，失败清理暂存且保留上一份可用快照。查询使用 45 秒 statement timeout，失败状态不会被自动扫描立即覆盖。`LOCAL-SETTINGS-REFRESH` v1.1.0 删除 3 秒固定请求风暴，改为单飞、前台可见刷新和 30 秒至 5 分钟指数退避。新增 `asset_storage_inventory_scan_references` 暂存表，无 Project/Revision/Asset Transfer Schema 语义变化；`STORAGE-INVENTORY-001/3` 分类规则、Command 幂等、Revision CAS、ownership、verified assets、隔离/删除规则、GPU/CPU/Worker/shader、投影/UV/重绘/export 与分辨率不变。5.6 MB 工程文档回归中 Node 响应小于 1 KiB；详细迁移、内存边界与回滚见 [Cloud 存储盘点有界化变更卡](changes/CHG-20260916-CLOUD-STORAGE-INVENTORY-BOUNDED.md)。
 

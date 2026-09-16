@@ -6,7 +6,7 @@
 - 主模块：M14 数据与对象存储
 - 界面入口：UI-16 存储与清理
 - 协作模块：M01 Cloud 工程、M12 状态与历史、M13 Cloud 集成、M15 测试与发布
-- 算法版本：`ASSET-LIFECYCLE-GC` v0.3.4、`LOCAL-SETTINGS-REFRESH` v1.1.0
+- 算法版本：`ASSET-LIFECYCLE-GC` v0.3.5、`LOCAL-SETTINGS-REFRESH` v1.1.0
 - 分类协议：`STORAGE-INVENTORY-001/3` 保持不变
 
 ## 问题与根因
@@ -23,6 +23,7 @@
 4. 未引用候选每页批量写入。扫描完成后在事务中更新 snapshot 并移除旧候选；失败只删除本次暂存，上一份 ready 快照及候选不变。
 5. 盘点 SQL 使用 45 秒 `statement_timeout`。超时返回明确失败状态；显式“重新扫描”可立即重试，普通 GET 不会无限重启失败扫描。
 6. local-settings 刷新保持单飞，只在页面可见时执行；成功间隔 60 秒，失败按 30、60、120、240、300 秒退避。
+7. 生产 `node-postgres` 的 JSONB 批次参数显式序列化为 JSON 文本，避免 JavaScript 数组被编码为 PostgreSQL array；PGlite 与生产参数适配器均覆盖。
 
 内存上界由“账号全部文档 + 全部资产 + 全部候选”降为“数据库单页 + 单页候选”。数据库暂存容量仍随唯一引用数增长，但不进入 Node 堆，并受 scanId、账号和迁移表约束。
 
@@ -46,6 +47,6 @@
 
 ## 迁移与回滚
 
-部署先执行既有 Cloud migration，再启动新 server。旧 snapshot 和候选无需重建；用户显式重新扫描时采用 v0.3.4 执行器。
+部署先执行既有 Cloud migration，再启动新 server。旧 snapshot 和候选无需重建；用户显式重新扫描时采用 v0.3.5 执行器。
 
 回滚前停止活动 storage scan，再回退 server/web 镜像。`asset_storage_inventory_scan_references` 只保存暂存引用，可保留；确认没有活动扫描后也可独立删除。不得删除 snapshot、candidate、quarantine、Project、Revision 或对象资产。回滚会恢复全量加载的 OOM 风险，因此生产回滚优先恢复上一镜像并暂时关闭重新扫描入口，而不是仅依赖扩大内存。

@@ -336,6 +336,10 @@ export function UserMenu({ onLogout }: UserMenuProps) {
           <button type="button" onClick={() => void handleLogout()} className="mt-1 flex w-full items-center gap-2 rounded px-3 py-2 text-left text-sm text-white/76 transition hover:bg-white/10 hover:text-white">
             <LogOut className="h-4 w-4" />{t('logout')}
           </button>
+          {/* Product label stays fixed until launch; independent of deployment metadata. */}
+          <div className="mt-2 border-t border-white/10 px-3 pb-1 pt-3 text-xs text-white/46">
+            版本 0.1
+          </div>
         </div>
       )}
       {storageOpen ? (

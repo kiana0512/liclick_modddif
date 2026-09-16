@@ -335,8 +335,12 @@ try {
   );
   const repository = createPostgresAssetStorageRepository(sql);
   const timeoutCalls = [];
+  const jsonBatchParameters = [];
   const timeoutConnection = {
-    async query() {
+    async query(statement, parameters) {
+      if (statement.includes('jsonb_to_recordset') && typeof parameters?.[2] === 'string') {
+        jsonBatchParameters.push(parameters[2]);
+      }
       return { rows: [], affectedRows: 0 };
     },
   };
@@ -352,7 +356,27 @@ try {
   });
   await timeoutRepository.listLegacyAssetPage('bounded-user', 'scan-bounded', undefined, 128);
   await timeoutRepository.listStorageDocumentPage('bounded-user', 'current', undefined, 4);
-  assert.deepEqual(timeoutCalls, [45_000, 45_000]);
+  await timeoutRepository.appendInventoryReferences({
+    userId: 'bounded-user',
+    scanId: 'scan-bounded',
+    references: [{ assetId: 'asset-bounded-12345678', bucketId: 'project-resources' }],
+  });
+  await timeoutRepository.appendInventoryCandidates({
+    userId: 'bounded-user',
+    scanId: 'scan-bounded',
+    createdAt: new Date().toISOString(),
+    candidates: [{
+      candidateId: 'candidate-bounded-12345678',
+      assetId: 'asset-bounded-12345678',
+      projectId: 'project-bounded',
+      category: 'layers',
+      sizeBytes: 1,
+      proof: { reason: 'bounded-driver-json' },
+    }],
+  });
+  assert.deepEqual(timeoutCalls, [45_000, 45_000, 45_000, 45_000]);
+  assert.equal(jsonBatchParameters.length, 2);
+  assert.deepEqual(jsonBatchParameters.map((value) => JSON.parse(value).length), [1, 1]);
   const now = new Date().toISOString();
   await sql.query(
     `INSERT INTO cloud_users (
