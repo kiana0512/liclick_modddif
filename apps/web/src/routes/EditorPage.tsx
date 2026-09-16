@@ -8041,13 +8041,13 @@ export function EditorPage({
           panels={panelDefinitions}
         />
       </div>
-      {!editorTaskRunning && (
-        <TextureOnboardingTour
-          projectId={project.id}
-          projectCreatedAt={project.createdAt}
-          forceStart={showOnboarding}
-        />
-      )}
+      <TextureOnboardingTour
+        key={project.id}
+        projectId={project.id}
+        projectCreatedAt={project.createdAt}
+        forceStart={showOnboarding}
+        suspended={editorTaskRunning}
+      />
       {repaintLayerPrompt && (
         <RepaintLayerNotice
           onCancel={() => setRepaintLayerPrompt(undefined)}

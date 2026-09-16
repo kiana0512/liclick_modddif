@@ -127,6 +127,8 @@ export function BottomToolDock({
   const repaintGuideActive = workflowGuide.step === 'repaint';
   const setGuideStep = (step: RepaintGuideState['step']) =>
     setWorkflowGuide((current) => ({ ...current, step }));
+  const paintMaskHasContent = useSceneStore((state) => state.paintMaskHasContent);
+  const repaintGenerationId = useSceneStore((state) => state.localRepaintProjectionSource?.generationId);
   const paintMaskSettings = useSceneStore((state) => state.paintMaskSettings);
   const paintMaskPresentationVisible = useSceneStore(
     (state) => state.paintMaskPresentationVisible,
@@ -355,14 +357,6 @@ export function BottomToolDock({
         onInteractionLocked?.();
       }}
       data-texture-onboarding="edit-tools"
-      data-onboarding-complete={
-        paintTool === 'eraser' ||
-        paintTool === 'inpaint-add' ||
-        paintTool === 'inpaint-subtract' ||
-        paintTool === 'inpaint-apply'
-          ? 'true'
-          : 'false'
-      }
       className="relative mx-auto flex max-w-[calc(100vw-24px)] items-center gap-1 overflow-visible rounded-lg border border-white/10 bg-[#101225]/92 p-1 shadow-[0_12px_34px_rgba(0,0,0,0.36)] backdrop-blur"
     >
       {!isTextureMode && (
@@ -539,6 +533,8 @@ export function BottomToolDock({
                       }
                       toggleMenu('inpaint-add');
                     }}
+                    data-texture-onboarding="repaint-mask"
+                    data-onboarding-complete={paintMaskHasContent ? 'true' : 'false'}
                     aria-label="蒙版绘制：左键执行当前加选或减选工具"
                   >
                     <span className="relative grid place-items-center">
@@ -576,6 +572,9 @@ export function BottomToolDock({
                       onLocalImageGeneration();
                       setActiveMenu(undefined);
                     }}
+                    data-texture-onboarding="repaint-generate"
+                    data-onboarding-generation={repaintGenerationId}
+                    data-onboarding-complete={localRepaintReady && !localImageGenerationRunning ? 'true' : 'false'}
                     aria-label={localImageGenerationRunning ? '局部生图（处理中）' : '局部生图'}
                   >
                     <ImagePlus className="h-4.5 w-4.5" />
@@ -614,6 +613,8 @@ export function BottomToolDock({
                       localRepaintActivationQueued && runningWorkflowButton,
                       !localRepaintActivationAvailable && lockedWorkflowButton,
                     )}
+                    data-texture-onboarding="repaint-apply"
+                    data-onboarding-complete={localRepaintReady && !localImageGenerationRunning ? 'true' : 'false'}
                     data-local-repaint-apply="true"
                     aria-busy={localRepaintActivationQueued}
                     onClick={() => {

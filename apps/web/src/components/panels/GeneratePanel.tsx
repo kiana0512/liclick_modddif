@@ -1028,6 +1028,8 @@ export function GeneratePanel({
     tabGenerations.filter((generation) => generation.mode === 'single'),
   );
   const previewGeneration = activeProjectGeneration ?? latestTabGeneration ?? tabGenerations[0];
+  const onboardingProjectionApplied = useLayerStore(state => state.layers.some(layer =>
+    layer.generationId === previewGeneration?.id && Boolean(layer.generationId) && layer.visible && layer.opacity > 0));
   const previewIsGenerating = isRunningGeneration(previewGeneration);
   // A toolbar repaint request owns the synchronous submit lock before its
   // Generation row exists. Reflect that preparation window in the panel CTA
@@ -5343,10 +5345,15 @@ export function GeneratePanel({
     <div
       ref={generateActionRef}
       data-texture-onboarding="generate-texture"
+      data-onboarding-generation={previewGeneration?.id}
+      data-onboarding-view={displayedTexturePreviewMode}
       data-onboarding-complete={
         previewGeneration?.status === 'succeeded' &&
         Boolean(previewGeneration.resultUrl) &&
-        isTextureMapGeneration(previewGeneration)
+        isTextureMapGeneration(previewGeneration) &&
+        hasProjectionCommit(previewGeneration) &&
+        !workflowSubmissionLocked &&
+        onboardingProjectionApplied
           ? 'true'
           : 'false'
       }
