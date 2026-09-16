@@ -1,5 +1,7 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
+2026-09-16 M07（协作 M03/M08/M09/M12/M13）：`MASKED-PROJECTED-PNG/1.0.0` 将逐层投影蒙版输出的私有 RGBA 转交 Worker PNG 编码，串行一个全尺寸 Canvas，失败释放并保持原 pixel/兼容消息。4K 两种 alpha 策略完整 decoded RGBA 一致，旧四次 51–60ms 长任务、新四次无 >50ms 长任务；总编码/处理仍约 1.6–1.9s，不宣称用户全流程零掉帧。原缓存借用像素不转移，GPU/CPU/Worker/shader、UV 权重、QA、相机/framing、分辨率、Command/CAS/ownership/verified assets 与保存/导出保持，无持久迁移；详见 [蒙版 PNG Worker 变更卡](changes/CHG-20260916-MASKED-PROJECTED-PNG-WORKER.md)。
+
 2026-09-16 M12（协作 M04/M08/M14）：`GENERATION-ASSET-REFERENCE/1.0.1` / `GENERATION-IMAGE-SOURCE/1.0.0` 对不可变 data:image/ 原字节准备设置 64MiB/32 项完整 URL 缓存，减少历史 Base64 读取/摘要重复；不缓存权限或跨工程资产。`GPT-GROUP-STATUS-CHECKPOINT/1.0.0` 仅重叠已提交分组的状态保存与返图观察，付费前相机 checkpoint、组末保存与下一组呈现仍 await；不重提生成。原像素、GPU/CPU/Worker/shader、UV 权重/QA、Command/CAS/ownership/verified assets 与导出保持，无迁移；详见 [生成保存延迟变更卡](changes/CHG-20260916-GENERATION-SAVE-LATENCY.md)。
 
 2026-09-16 UI-05/M04：`GEN-PREVIEW-STATUS/1.0.0` 统一预览文字优先级为生成中、准备中、取消/失败、空闲，防止局部重绘空提示与取消/错误文案重叠；重试准备期间隐藏旧终态提示。只改渲染条件，已保存结果、任务取消/提交、GPU/CPU/Worker/shader、投影/UV/export、保存和分辨率不变，无 Schema 或数据迁移。真实 JSX 状态组合与回滚见 [预览文案互斥](changes/CHG-20260916-PREVIEW-STATUS.md)。
@@ -82,7 +84,7 @@
 
 2026-09-15 M03：ALG-VIEW-INPUT-001/1.3.2 在鼠标接触前即让 R3F 悬停遵守 Alt 所有权；保留普通 hover 和已锁定拖动。旧实现拾取回归失败、新实现通过，用户实际首帧延迟需继续录制。无像素/持久化迁移，见 [Alt 悬停变更卡](changes/CHG-20260915-ALT-BRUSH-HOVER.md)。
 
-> 文档版本：`2.20.147`
+> 文档版本：`2.20.148`
 
 2026-09-15 UI-06 → M03：`ALG-VIEW-SELECT-001/1.0.5` 将常驻线框预热绑定到 renderer/模型生命周期，透视/正交相机替换不重新编译或释放同一辅助材质，避免旧编译完成后释放当前材质。16 次相机替换旧实现启动 17 次编译，新实现一次；71 次显隐及卸载清理保持。GPU 线框/CPU 几何/Worker/shader、捕获/UV/重绘/导出、分辨率和 QA、持久化/Schema 均不变，无迁移。其他工具切换仍有长帧，不宣称全操作无卡顿，验证和回滚见 [线框相机生命周期变更卡](changes/CHG-20260915-WIREFRAME-CAMERA-LIFETIME.md)。
 
