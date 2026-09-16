@@ -3,10 +3,10 @@ import { events } from '@react-three/fiber';
 const paintPointers = new WeakMap<EventTarget, number | undefined>();
 const navigationPointers = new WeakMap<EventTarget, number | undefined>();
 
-/** ALG-VIEW-INPUT-001/1.3.2: both hover paths share pre-contact Alt ownership. */
+/** ALG-VIEW-INPUT-001/1.4.0: both hover paths reserve Alt and held MMB. */
 export function isViewportNavigationPointer(target: EventTarget, event: Pick<PointerEvent, 'altKey' | 'pointerId' | 'buttons'>) {
   const pointerId = navigationPointers.get(target);
-  return event.altKey || (pointerId !== undefined && pointerId === event.pointerId && event.buttons !== 0);
+  return event.altKey || (event.buttons & 4) !== 0 || (pointerId !== undefined && pointerId === event.pointerId && event.buttons !== 0);
 }
 
 // Native brush ownership survives pointer capture release and tool changes
@@ -35,7 +35,7 @@ export const createViewportEvents: typeof events = (store) => {
     const pointerDown = handlers.onPointerDown;
     handlers.onPointerDown = (event) => {
       const pointer = event as PointerEvent;
-      const navigates = pointer.altKey && pointer.button >= 0 && pointer.button <= 2 && pointer.pointerType !== 'touch';
+      const navigates = (pointer.altKey || pointer.button === 1) && pointer.button >= 0 && pointer.button <= 2 && pointer.pointerType !== 'touch';
       navigationPointers.set(event.target!, navigates ? pointer.pointerId : undefined);
       if (!navigates) pointerDown?.(event);
     };

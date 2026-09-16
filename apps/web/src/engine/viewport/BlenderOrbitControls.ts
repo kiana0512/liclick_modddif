@@ -266,11 +266,12 @@ export class BlenderOrbitControls {
   }
 
   private getPointerAction(event: PointerEvent): PointerAction | undefined {
-    // ALG-VIEW-INPUT-001 v1.3.0: latch Alt navigation at contact so releasing
-    // the modifier during a drag cannot switch its owner to a paint tool.
-    if (!event.altKey || event.pointerType === 'touch') return undefined;
-    if (event.button === 0) return 'orbit';
+    // ALG-VIEW-INPUT-001 v1.4.0: MMB pans without Alt; other bindings stay.
+    // Latch at contact so modifier changes cannot switch ownership mid-drag.
+    if (event.pointerType === 'touch') return undefined;
     if (event.button === 1) return 'pan';
+    if (!event.altKey) return undefined;
+    if (event.button === 0) return 'orbit';
     if (event.button === 2) return 'dolly';
     return undefined;
   }

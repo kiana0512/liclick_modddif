@@ -60,7 +60,7 @@ function CenteredObjectTransformControls({
       inputControls.enabled = true;
     };
     const reserveNavigation = (event: PointerEvent) => {
-      if (!event.altKey || event.pointerType === 'touch' || event.button < 0 || event.button > 2 || draggingRef.current || !inputControls.enabled) return;
+      if ((!event.altKey && event.button !== 1) || event.pointerType === 'touch' || event.button < 0 || event.button > 2 || draggingRef.current || !inputControls.enabled) return;
       navigationPointer = event.pointerId;
       inputControls.enabled = false;
     };

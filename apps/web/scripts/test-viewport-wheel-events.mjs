@@ -130,14 +130,21 @@ try {
       : new THREE.PerspectiveCamera(45,1,.1,100);
     camera.position.z=5; camera.updateMatrixWorld();
     const controls = new BlenderOrbitControls(camera,input);
-    for (const button of [0,1,2]) {
+    for (const button of [0,2]) {
       const initial=camera.position.clone();
       input.emit('pointerdown',{button,clientX:0,clientY:0});
       input.emit('pointermove',{clientX:30,clientY:20});
       input.emit('pointerup',{button});
       assert(camera.position.equals(initial));
-      assert.equal(camera.zoom,1, 'Unmodified drags do not navigate');
+      assert.equal(camera.zoom,1, 'Unmodified left/right drags do not navigate');
     }
+    const beforePan=camera.position.clone(), beforeTarget=controls.target.clone();
+    input.emit('pointerdown',{button:1,clientX:0,clientY:0});
+    input.emit('pointermove',{buttons:4,clientX:30,clientY:20});
+    input.emit('pointerup',{button:1});
+    assert(!controls.target.equals(beforeTarget),'MMB alone must pan');
+    assert(camera.position.clone().sub(controls.target).distanceTo(beforePan.sub(beforeTarget))<1e-9,'Pan preserves direction/distance');
+    assert.equal(camera.zoom,1,'Pan does not zoom');
     const target=controls.target.clone(), rotation=camera.quaternion.clone();
     input.emit('pointerdown',{button:2,altKey:true,clientX:0,clientY:0});
     input.emit('pointermove',{clientX:50,clientY:0,altKey:false});
@@ -158,7 +165,7 @@ try {
     assert(input.hasPointerCapture(1));
     controls.dispose(); assert(!input.hasPointerCapture(1));
   }
-  for(const button of [0,1,2]) {
+  for(const [button,altKey] of [[0,true],[1,true],[2,true],[1,false]]) {
     const navigation=makeScene(createViewportEvents);
     navigation.mesh.__r3f.handlers.onPointerMove = () => {};
     // The modifier is pressed before the mouse contact. R3F must not perform
@@ -166,7 +173,7 @@ try {
     for (let i=0;i<120;i++) navigation.target.emit('pointermove',{altKey:true,buttons:0});
     assert.equal(navigation.counts().raycasts,0,'Held Alt before contact must not raycast');
     for(const type of ['pointerdown','pointermove','pointerup','click','dblclick','contextmenu'])
-      navigation.target.emit(type,{button,buttons:type==='pointermove' ? [1,4,2][button] : 0,altKey:type==='pointerdown'});
+      navigation.target.emit(type,{button,buttons:type==='pointermove' ? [1,4,2][button] : 0,altKey:altKey && type==='pointerdown'});
     assert.equal(navigation.counts().raycasts,0,'Alt navigation and released-modifier tails do not pick/select');
     navigation.mesh.__r3f.handlers.onPointerMove = () => {};
     navigation.target.emit('pointermove',{buttons:0});
@@ -336,12 +343,12 @@ try {
   assert.match(viewport, /activePointerIdRef.current = event.pointerId;\s*setViewportPaintPointer\(canvas, event.pointerId\);\s*try/, 'Recovered pen contact must rebind its pointer identity');
   assert.match(viewport, /pointerListenerGenerationRef.current !== listenerGeneration\) return;\s*setViewportPaintPointer\(canvas\);/, 'Final unmount clears ownership, effect replacement preserves it');
   assert.match(viewport, /<Canvas\s[\s\S]*?events=\{createViewportEvents\}/, 'The live viewport must use the tested event manager');
-  const altGuard=viewport.match(/if \(event.altKey\) \{([\s\S]*?)\n {6}\}/)?.[0];
+  const altGuard=viewport.match(/if \(event.altKey \|\| event.button === 1\) \{([\s\S]*?)\n {6}\}/)?.[0];
   const hoverStart = viewport.indexOf('    let hoverCursorFrame = 0;');
   const hoverEnd = viewport.indexOf('    // Both selection and generated', hoverStart);
   assert(hoverStart > 0 && hoverEnd > hoverStart);
   const hoverCode = ts.transpile(viewport.slice(hoverStart, hoverEnd));
-  for (const button of [0, 1, 2]) {
+  for (const [button,altKey] of [[0,true],[1,true],[2,true],[1,false]]) {
     const nav = makeScene(createViewportEvents);
     nav.target.style = { cursor: 'none' };
     let picks = 0, frame;
@@ -351,9 +358,9 @@ try {
       nav.target, isViewportNavigationPointer, { current: { setAttribute() {} } }, paintRef, () => { picks++; });
     const flush = () => { const callback = frame; frame = undefined; callback?.(); };
     hover({ pointerId: 1, buttons: 0, clientX: 10, clientY: 10 });
-    nav.target.emit('pointerdown', { button, altKey: true });
+    nav.target.emit('pointerdown', { button, altKey });
     for (let i = 0; i < 200; i++) {
-      hover({ pointerId: 1, buttons: [1,4,2][button], altKey: i < 100, clientX: i, clientY: i });
+      hover({ pointerId: 1, buttons: [1,4,2][button], altKey: altKey && i < 100, clientX: i, clientY: i });
       flush();
     }
     assert.equal(picks, 0, 'Native brush hover must not pick during any Alt drag, including modifier release');
@@ -371,14 +378,14 @@ try {
     let hidden=false; const canvas={style:{cursor:'none'}};
     assert.equal(checkAltGuard({altKey:true,button},{current:{setAttribute:()=>{hidden=true;}}},canvas),undefined);
     assert(hidden); assert.equal(canvas.style.cursor,'');
-    assert.equal(checkAltGuard({altKey:false,button},{},canvas),'paint');
+    assert.equal(checkAltGuard({altKey:false,button},{current:{setAttribute(){}}},canvas),button===1 ? undefined : 'paint');
   }
   assert(viewport.indexOf(altGuard)<viewport.indexOf('const rightModelEraseContact'), 'Alt exits before paint/erase dispatch');
   const transformSource = await readFile(new URL('../src/engine/viewport/ObjectTransformControls.tsx', import.meta.url), 'utf8');
   const transformGuard = transformSource.match(/useEffect\(\(\) => \{([\s\S]*?)\}, \[gl\]\);/)?.[1];
   assert(transformGuard);
   const attachGuard = new Function('controlsRef','draggingRef','gl','window',ts.transpile(transformGuard));
-  for (const releaseType of ['pointerup','pointercancel','lostpointercapture']) {
+  for (const releaseType of ['pointerup','pointercancel','lostpointercapture']) for (const contact of [{altKey:true,button:0},{altKey:false,button:1}]) {
     const canvas = new InputTarget(), win = new InputTarget();
     const control = {enabled:true}, dragging = {current:false};
     const cleanup = attachGuard({current:control},dragging,{domElement:canvas},win);
@@ -386,7 +393,7 @@ try {
     dragging.current=true;
     canvas.emit('pointerdown',{altKey:true}); assert(control.enabled,'An existing object drag retains ownership');
     dragging.current=false;
-    canvas.emit('pointerdown',{altKey:true}); assert.equal(control.enabled,false,'Alt contact disables native gizmo input');
+    canvas.emit('pointerdown',contact); assert.equal(control.enabled,false,'Navigation contact disables native gizmo input');
     win.emit('pointerup',{pointerId:99}); assert.equal(control.enabled,false);
     (releaseType==='lostpointercapture' ? canvas : win).emit(releaseType,{altKey:false});
     assert(control.enabled,'Gizmo input recovers after released-modifier tails and cancellation');
@@ -400,7 +407,7 @@ try {
   const sceneSource = await readFile(new URL('../src/engine/viewport/SceneRoot.tsx', import.meta.url), 'utf8');
   assert.doesNotMatch(sceneSource, /onWheel\s*=/);
   console.log('Viewport wheel regression passed: 1021 -> 0 picks; perspective/orthographic zoom, click, miss and cleanup preserved.');
-  console.log('Viewport buttons passed: Alt+LMB orbit, Alt+MMB pan, Alt+RMB dolly, plain paint/erase and wheel zoom.');
+  console.log('Viewport buttons passed: Alt+LMB orbit, MMB pan (Alt optional), Alt+RMB dolly, plain paint/erase and wheel zoom.');
   console.log('Native paint tail regression passed: 60 strokes / 120 -> 0 redundant picks; DOM delivery, selection reset, canvas/pointer isolation and capture cleanup preserved.');
 } finally {
   await server.close();

@@ -15187,9 +15187,9 @@ function SurfacePaintOverlay() {
       }
       if (!enabled) return;
       cancelPendingHoverCursor();
-      // Alt navigation owns the contact even when it begins on the model.
+      // Alt navigation and MMB pan own contact even when it begins on the model.
       // Return before picking/painting and let the native camera listener run.
-      if (event.altKey) {
+      if (event.altKey || event.button === 1) {
         cursorCircleRef.current?.setAttribute('visibility', 'hidden');
         canvas.style.cursor = '';
         return;
