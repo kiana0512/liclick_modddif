@@ -66,6 +66,7 @@ import {
 import { serializeCamera } from '@/engine/projection/ProjectionCamera';
 import { prewarmLocalRepaintProgram } from '@/engine/localRepaint/programPrewarm';
 import { inpaintSelectionDisplayShader } from '@/engine/localRepaint/selectionDisplay';
+import { ProjectedSelectionDisplay, snapshotPendingSelection, restorePendingSelectionCamera, type PendingSelectionProjection, type ProjectedSelectionState } from '@/engine/localRepaint/projectedSelectionDisplay';
 import {
   consumeSelectionMask,
   getSelectionConsumptionMaterial,
@@ -3980,6 +3981,7 @@ type UvPaintLayer = {
   maskTexture: THREE.CanvasTexture;
   maskMaterial: THREE.ShaderMaterial;
   accumulatedMaskMaterial: THREE.ShaderMaterial;
+  projectedSelectionDisplay?: ProjectedSelectionDisplay;
   accumulatedMaskTarget: THREE.WebGLRenderTarget;
   accumulatedMaskOverlays: THREE.Mesh[];
   accumulatedMaskReady: boolean;
@@ -3995,6 +3997,7 @@ type UvPaintLayer = {
   maskProjectorMatrix: THREE.Matrix4;
   maskProjectorObjectMatrix: THREE.Matrix4;
   maskProjectorPositionLocal: THREE.Vector3;
+  maskProjectionCamera?: THREE.Camera;
   maskProjectionReady: boolean;
   maskDepthTarget?: THREE.WebGLRenderTarget;
   maskDepthReady: boolean;
@@ -4010,6 +4013,16 @@ type InpaintProjectionSource = {
   projectorPositionLocal: THREE.Vector3;
   depthTarget?: THREE.WebGLRenderTarget;
 };
+
+function getSelectionProjectionSource(layer: UvPaintLayer): InpaintProjectionSource {
+  return {
+    texture: layer.projectionTexture,
+    projectorMatrix: layer.maskProjectorMatrix,
+    projectorObjectMatrix: layer.maskProjectorObjectMatrix,
+    projectorPositionLocal: layer.maskProjectorPositionLocal,
+    depthTarget: layer.maskDepthReady ? layer.maskDepthTarget : undefined,
+  };
+}
 
 type InpaintMaskProjectionSnapshot = InpaintProjectionSource & {
   material: THREE.ShaderMaterial;
@@ -4388,6 +4401,9 @@ type PaintDirtyRect = {
 type SurfaceStrokePaintTool = PaintToolMode | 'inpaint-apply-erase';
 
 type InpaintMaskHistoryState = {
+  projectedSelection?: ProjectedSelectionState;
+  pendingProjection?: PendingSelectionProjection;
+  pendingMeshes?: Set<THREE.Mesh>;
   accumulatedPixels: Uint8Array;
   accumulatedReady: boolean;
   accumulatedMeshes: Set<THREE.Mesh>;
@@ -5750,6 +5766,7 @@ function updateInpaintProjectionCamera(
   object.updateWorldMatrix(true, false);
   layer.maskProjectorMatrix.copy(camera.projectionMatrix).multiply(camera.matrixWorldInverse);
   layer.maskProjectorObjectMatrix.copy(object.matrixWorld);
+  layer.maskProjectionCamera = camera.clone();
   layer.maskProjectorPositionLocal
     .setFromMatrixPosition(camera.matrixWorld)
     .applyMatrix4(inpaintObjectMatrixInverseScratch.copy(object.matrixWorld).invert());
@@ -5979,6 +5996,7 @@ function disposeUvPaintLayer(layer?: UvPaintLayer) {
   layer.maskTexture.dispose();
   layer.maskMaterial.dispose();
   layer.accumulatedMaskMaterial.dispose();
+  layer.projectedSelectionDisplay?.dispose();
   (layer.inpaintMaterialBindings ?? []).forEach(({ mesh, original, patched }) => {
     if (mesh.material === patched) mesh.material = original;
     (Array.isArray(patched) ? patched : [patched]).forEach(restoreInpaintPatchedMaterial);
@@ -8222,6 +8240,12 @@ function SurfacePaintOverlay() {
         maskTexture,
         maskMaterial,
         accumulatedMaskMaterial,
+        projectedSelectionDisplay: target === 'inpaint-mask'
+          ? new ProjectedSelectionDisplay(gl, (description) => useToastStore.getState().pushToast({
+              tone: 'warning', title: '选区显示已切换为 UV 兼容模式', description,
+              dedupeKey: 'selection-projection-fallback',
+            }))
+          : undefined,
         accumulatedMaskTarget,
         accumulatedMaskOverlays: [],
         accumulatedMaskReady: false,
@@ -8255,7 +8279,7 @@ function SurfacePaintOverlay() {
       layerRef.current = paintLayer;
       return paintLayer;
     },
-    [deactivateLiveInpaintScreenPreview, getPaintableMeshes, paintTool, textureResolutionSetting],
+    [deactivateLiveInpaintScreenPreview, getPaintableMeshes, gl, paintTool, textureResolutionSetting],
   );
 
   const prepareProjectedEraserGpuPreview = useCallback(
@@ -8445,7 +8469,8 @@ function SurfacePaintOverlay() {
         (overlay) => overlay.parent === mesh,
       );
       if (!accumulatedOverlay) {
-        accumulatedOverlay = new THREE.Mesh(mesh.geometry, layer.accumulatedMaskMaterial);
+        accumulatedOverlay = new THREE.Mesh(mesh.geometry,
+          layer.projectedSelectionDisplay?.enabled ? layer.projectedSelectionDisplay.material : layer.accumulatedMaskMaterial);
         accumulatedOverlay.name = 'Liclick Accumulated Inpaint Mask Overlay';
         accumulatedOverlay.userData.liclickPaintOverlay = true;
         accumulatedOverlay.userData.liclickInpaintMaskOverlay = true;
@@ -8478,6 +8503,7 @@ function SurfacePaintOverlay() {
 
   const ensureInpaintMaskOverlaysForModel = useCallback(
     (layer: UvPaintLayer, model: SurfacePaintTarget) => {
+      layer.projectedSelectionDisplay?.prepare(camera);
       // Migrate paint layers created by an older HMR generation in place.
       layer.directMaskReadyMeshes ??= new Set();
       // The selection texture lives in screen space and may span several
@@ -8549,7 +8575,8 @@ function SurfacePaintOverlay() {
           return false;
         }
         retainedAccumulatedOverlays.set(parent, overlay);
-        overlay.material = layer.accumulatedMaskMaterial;
+        overlay.material = layer.projectedSelectionDisplay?.enabled
+          ? layer.projectedSelectionDisplay.material : layer.accumulatedMaskMaterial;
         return true;
       });
       meshes.forEach((mesh) => ensureOverlayForMesh(layer, mesh));
@@ -8903,11 +8930,11 @@ function SurfacePaintOverlay() {
   );
 
   const captureInpaintProjectionDepth = useCallback(
-    (layer: UvPaintLayer, model: SurfacePaintTarget) => {
+    (layer: UvPaintLayer, model: SurfacePaintTarget, frozenCamera?: THREE.Camera) => {
       if (
         layerRef.current !== layer ||
         layer.objectId !== model.objectId ||
-        hasInpaintProjectionCameraChanged(layer, camera)
+        (!frozenCamera && hasInpaintProjectionCameraChanged(layer, camera))
       )
         return false;
       const width = Math.max(1, layer.projectionCanvas.width);
@@ -8943,7 +8970,7 @@ function SurfacePaintOverlay() {
         gl.setRenderTarget(target);
         gl.setClearColor('#ffffff', 1);
         gl.clear(true, true, true);
-        gl.render(scene, camera);
+        gl.render(scene, frozenCamera ?? camera);
         layer.maskDepthReady = true;
         bindInpaintDepthTarget(layer.maskMaterial, target, true);
         bindInpaintDepthTarget(layer.accumulatedMaskMaterial, target, true);
@@ -9031,6 +9058,7 @@ function SurfacePaintOverlay() {
         operation,
       );
       layer.accumulatedMaskReady = true;
+      layer.projectedSelectionDisplay?.archive(getSelectionProjectionSource(layer), operation);
       if (operation === 'add') {
         layer.currentProjectionMeshes.forEach((mesh) => layer.accumulatedMaskMeshes.add(mesh));
       }
@@ -9287,10 +9315,29 @@ function SurfacePaintOverlay() {
 
   useEffect(() => () => inpaintDepthMaterial.dispose(), [inpaintDepthMaterial]);
 
+  useEffect(() => useEditorHistoryStore.subscribe((state) => {
+    const checkpoint = inpaintMaskHistoryCheckpointRef.current?.state.projectedSelection;
+    layerRef.current?.projectedSelectionDisplay?.collect([
+      ...state.past.flatMap(step => step.kind === 'runtime' ? step.retainedStates ?? [] : []),
+      ...state.future.flatMap(step => step.kind === 'runtime' ? step.retainedStates ?? [] : []),
+      ...(checkpoint ? [checkpoint] : []),
+    ]);
+  }), []);
+
   useFrame(() => {
     const model = getTargetModel();
     const layer = layerRef.current;
     if (model && layer?.objectId === model.objectId) {
+      const display = layer.projectedSelectionDisplay;
+      if (display) {
+        model.group.updateWorldMatrix(true, false);
+        display.update(model.group.matrixWorld,
+          currentProjectionHasContentRef.current ? getSelectionProjectionSource(layer) : undefined,
+          currentProjectionOperationRef.current, layer.maskInverted);
+        layer.accumulatedMaskOverlays.forEach(overlay => {
+          overlay.material = display.enabled ? display.material : layer.accumulatedMaskMaterial;
+        });
+      }
       // Imported/projected materials may be swapped asynchronously after the
       // local-repaint tool opens. Detect that one-time ownership change and
       // rebind the direct mask path; the fallback overlay stays visible until
@@ -9329,14 +9376,20 @@ function SurfacePaintOverlay() {
   });
 
   const captureInpaintMaskHistoryState = useCallback(
-    (layer: UvPaintLayer): InpaintMaskHistoryState => ({
+    (layer: UvPaintLayer): InpaintMaskHistoryState => {
+      return {
+      projectedSelection: layer.projectedSelectionDisplay?.snapshot(),
+      pendingProjection: currentProjectionHasContentRef.current && layer.maskProjectionCamera
+        ? snapshotPendingSelection(getSelectionProjectionSource(layer), layer.maskProjectionCamera) : undefined,
+      pendingMeshes: new Set(layer.currentProjectionMeshes),
       accumulatedPixels: readInpaintAccumulationPixels(gl, layer.accumulatedMaskTarget),
       accumulatedReady: layer.accumulatedMaskReady,
       accumulatedMeshes: new Set(layer.accumulatedMaskMeshes),
       currentProjectionOperation: currentProjectionOperationRef.current,
       maskHasContent: maskHasContentRef.current,
       maskInverted: layer.maskInverted,
-    }),
+      };
+    },
     [gl],
   );
 
@@ -9373,16 +9426,34 @@ function SurfacePaintOverlay() {
       layer.accumulatedMaskReady = state.accumulatedReady;
       layer.accumulatedMaskMeshes = new Set(state.accumulatedMeshes);
       layer.currentProjectionMeshes.clear();
+      const pending = state.pendingProjection;
+      if (pending) {
+        layer.projectionCanvas.width = pending.canvas.width;
+        layer.projectionCanvas.height = pending.canvas.height;
+        layer.projectionContext.drawImage(pending.canvas, 0, 0);
+        layer.maskProjectorMatrix.copy(pending.projectorMatrix);
+        layer.maskProjectorObjectMatrix.copy(pending.projectorObjectMatrix);
+        layer.maskProjectorPositionLocal.copy(pending.projectorPositionLocal);
+        layer.maskProjectionCamera = pending.camera.clone();
+        model.group.updateWorldMatrix(true, false);
+        captureInpaintProjectionDepth(layer, model, restorePendingSelectionCamera(pending, model.group.matrixWorld));
+        state.pendingMeshes?.forEach(mesh => layer.currentProjectionMeshes.add(mesh));
+      }
       layer.maskInverted = state.maskInverted;
-      currentProjectionHasContentRef.current = false;
+      layer.projectedSelectionDisplay?.restore(state.projectedSelection);
+      currentProjectionHasContentRef.current = Boolean(pending);
       currentProjectionOperationRef.current = state.currentProjectionOperation;
       maskHasContentRef.current = state.maskHasContent;
       maskDirtyRef.current = false;
       paintMaskContentPublishedRef.current = state.maskHasContent;
       const uniforms = layer.accumulatedMaskMaterial.uniforms;
-      uniforms.projectionReady.value = state.accumulatedReady || state.maskInverted ? 1 : 0;
+      uniforms.projectionReady.value = state.accumulatedReady || pending || state.maskInverted ? 1 : 0;
       if (uniforms.baseReady) uniforms.baseReady.value = state.accumulatedReady ? 1 : 0;
-      if (uniforms.liveOperation) uniforms.liveOperation.value = 0;
+      if (uniforms.liveOperation) uniforms.liveOperation.value = pending ? (state.currentProjectionOperation === 'add' ? 1 : -1) : 0;
+      if (pending) {
+        uniforms.liveProjectorMatrix.value.copy(pending.projectorMatrix);
+        uniforms.liveProjectorPosition.value.copy(pending.projectorPositionLocal).applyMatrix4(model.group.matrixWorld);
+      }
       if (uniforms.maskInverted) uniforms.maskInverted.value = state.maskInverted ? 1 : 0;
       layer.accumulatedMaskOverlays.forEach((overlay) => {
         const parent = overlay.parent;
@@ -9391,7 +9462,7 @@ function SurfacePaintOverlay() {
           !layer.directMaskReadyMeshes.has(parent) &&
           shouldRenderInpaintMaskOnMesh(layer, parent) &&
           readShouldShowInpaintMask() &&
-          (state.accumulatedReady || state.maskInverted);
+          (state.accumulatedReady || Boolean(pending) || state.maskInverted);
       });
       scheduleProjectionTextureUpdate(layer.projectionTexture, true);
       setPaintMaskDataUrl(undefined, state.maskHasContent);
@@ -9400,6 +9471,7 @@ function SurfacePaintOverlay() {
     },
     [
       cancelIdleInpaintArchive,
+      captureInpaintProjectionDepth,
       deactivateLiveInpaintScreenPreview,
       gl,
       invalidate,
@@ -10006,6 +10078,7 @@ function SurfacePaintOverlay() {
   const resetPaintMaskRuntime = useCallback(() => {
     const layer = layerRef.current;
     if (!layer) return;
+    layer.projectedSelectionDisplay?.clear();
     inpaintMaskHistoryCheckpointRef.current = undefined;
     deactivateLiveInpaintScreenPreview();
     layer.maskContext.clearRect(0, 0, layer.maskCanvas.width, layer.maskCanvas.height);
@@ -10096,6 +10169,7 @@ function SurfacePaintOverlay() {
         inpaintMaskHistoryCheckpointRef.current = { layer, state: after };
         useEditorHistoryStore.getState().captureRuntime({
           label: action === 'clear' ? '清空蒙版' : '反转蒙版',
+          retainedStates: [before.projectedSelection, after.projectedSelection].filter((s): s is ProjectedSelectionState => Boolean(s)),
           undo: () => restoreInpaintMaskHistoryState(layer, model, before),
           redo: () => restoreInpaintMaskHistoryState(layer, model, after),
         });
@@ -13760,6 +13834,10 @@ function SurfacePaintOverlay() {
           layer.accumulatedMaskTarget.width,
         );
         if (!patches.length) return undefined;
+        // A native-UV consumption cannot be represented by a screen projector.
+        // Keep the exact remaining author selection instead of showing stale red.
+        layer.projectedSelectionDisplay?.useUvFallback();
+        after.projectedSelection = layer.projectedSelectionDisplay?.snapshot();
         after.accumulatedReady = true;
         after.maskHasContent = selectionPixelsHaveContent(
           after.accumulatedPixels,
@@ -13768,6 +13846,7 @@ function SurfacePaintOverlay() {
         // Publish the already-updated GPU target without another full texture upload.
         restoreInpaintMaskHistoryState(layer, model, after, false);
         const metadata = (state: InpaintMaskHistoryState) => ({
+          projectedSelection: state.projectedSelection,
           accumulatedReady: state.accumulatedReady,
           accumulatedMeshes: state.accumulatedMeshes,
           currentProjectionOperation: state.currentProjectionOperation,
@@ -13775,12 +13854,12 @@ function SurfacePaintOverlay() {
           maskInverted: state.maskInverted,
         });
         const states = { before: metadata(before), after: metadata(after) };
-        return (side: 'before' | 'after') => {
+        return Object.assign((side: 'before' | 'after') => {
           if (layerRef.current !== layer || layer.objectId !== model.objectId) return;
           const accumulatedPixels = readInpaintAccumulationPixels(gl, layer.accumulatedMaskTarget);
           applySelectionPixelPatches(accumulatedPixels, patches, side);
           restoreInpaintMaskHistoryState(layer, model, { ...states[side], accumulatedPixels });
-        };
+        }, { retainedStates: [before.projectedSelection, after.projectedSelection].filter((s): s is ProjectedSelectionState => Boolean(s)) });
       } catch (error) {
         console.warn('[Liclick 3D Texture] Repaint selection consumption skipped:', error);
         return undefined;
@@ -13900,6 +13979,7 @@ function SurfacePaintOverlay() {
       };
       useEditorHistoryStore.getState().captureRuntime({
         label: draft.localRepaintHistoryBeforeHasContent ? '局部重绘笔画' : '局部重绘首笔',
+        retainedStates: restoreSelection?.retainedStates,
         undo: () => applyTiles('before'),
         redo: () => applyTiles('after'),
       });
@@ -13907,15 +13987,14 @@ function SurfacePaintOverlay() {
     }
     if (!draft.layer || !draft.inpaintHistoryBefore || !draft.inpaintHistoryModel) return;
 
-    // Keep pointer-up free of the full UV accumulation pass. The live projector
-    // remains the exact visible/history authority; camera/tool changes and
-    // button 2 still force the same lossless archive before consuming it.
+    // Keep the exact live screen mask in history without forcing a UV bake.
     scheduleIdleInpaintArchive(draft.layer, draft.inpaintHistoryModel);
     maskHasContentRef.current = true;
     const after = captureInpaintMaskHistoryState(draft.layer);
     inpaintMaskHistoryCheckpointRef.current = { layer: draft.layer, state: after };
     const before = draft.inpaintHistoryBefore;
     useEditorHistoryStore.getState().captureRuntime({
+      retainedStates: [before.projectedSelection, after.projectedSelection].filter((s): s is ProjectedSelectionState => Boolean(s)),
       label:
         draft.inpaintHistoryBefore.currentProjectionOperation === 'subtract'
           ? '蒙版减选笔画'

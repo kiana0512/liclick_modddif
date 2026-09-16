@@ -14,7 +14,7 @@ import {
   trackLiveUvCommit,
 } from '@/engine/projection/liveProjectedCanvasTextureRegistry';
 
-type Restore = (side: 'before' | 'after') => void;
+type Restore = ((side: 'before' | 'after') => void) & { retainedStates?: readonly object[] };
 type StrokeCommit = {
   erase: boolean;
   invalidate: () => void;
@@ -82,7 +82,9 @@ export async function createNativeUvRepaintSession(input: {
       const epoch = paintHistoryBoundary.version;
       const patchesPromise = live.end();
       let restore: Restore | undefined;
+      const retainedStates: object[] = [];
       const discard = useEditorHistoryStore.getState().captureRuntime({
+        retainedStates,
         label: stroke.erase ? 'UV 局部重绘擦除' : 'UV 局部重绘笔画',
         undo: () => restore?.('before'),
         redo: () => restore?.('after'),
@@ -102,6 +104,7 @@ export async function createNativeUvRepaintSession(input: {
           !stroke.erase && stroke.consume
             ? stroke.consume(createUvRepaintSelectionCanvas(patches, live.resolution))
             : undefined;
+        retainedStates.push(...(restoreSelection?.retainedStates ?? []));
         restore = (side) => {
           (stroke.owner() ?? live).publish(patches, side, true);
           restoreSelection?.(side);

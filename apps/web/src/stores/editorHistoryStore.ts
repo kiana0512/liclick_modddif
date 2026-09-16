@@ -17,6 +17,9 @@ type EditorRuntimeStep = {
   label?: string;
   undo: () => void;
   redo: () => void;
+  // Opaque, session-only GPU resource roots. Render owners observe history
+  // changes to reclaim resources; these handles are never persisted.
+  retainedStates?: readonly object[];
 };
 
 type EditorSnapshotStep = {

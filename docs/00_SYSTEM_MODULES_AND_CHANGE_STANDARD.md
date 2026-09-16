@@ -1,5 +1,9 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
+2026-09-16 UI-06/M08（协作 M03）：`PROJECTED-SELECTION-DISPLAY/1.0.0` 接入正式 ViewportCanvas，冻结屏幕投影显示不读取模型 UV，保留作者蒙版与原空闲归档时机。数组纹理有界缓存、同视角合批、会话撤销/重做与清空/反选接入；旧 UV-only 状态、消耗选区或超预算时回退原 UV 显示。真实约 200 万三角形车辆涂画/旋转约 60FPS，UV 置零显示字节一致、作者蒙版撤销摘要一致。GPU/CPU 显示历史变更、Worker/远端/持久化/export 不变，无 Schema 迁移；预算、兼容限制与回滚见 [正式投影显示](changes/CHG-20260916-PROJECTED-SELECTION-DISPLAY.md)。下方四槽原型记录仅作历史参考。
+
+2026-09-16 UI-06/M08：`PROJECTED-SELECTION-PREVIEW/0.1.0` 为独立本地显示验证原型，尚未接入正式编辑器。直接读取投影 mask/depth 与相机，不采样模型 UV；按序加/减并反选，深度比较使用接收平面修正至采样中心以减少转动噪点。最多四个快照，超限明确报错；不宣称无限笔画、完整历史/重载及性能已完成。真实模型离屏更换 UV 坐标显示字节一致、显示/旋转不改变 UV 数据、擦除撤销恢复通过。GPU/CPU/Worker/捕获/保存/远端/UV/export 生产链路完全未接入此原型，无 Schema/数据迁移。仅本地效果评审，未推送或部署；详见 [投影显示原型](changes/CHG-20260916-PROJECTED-SELECTION-PREVIEW.md)。
+
 2026-09-16 UI-06/UI-10 → M08（协作 M03）：`INPAINT-SELECTION-DISPLAY/1.0.0` 仅对红条纹反馈用 smoothstep(0.01,0.08,coverage) 稳定 UV 岛边缘的弱覆盖，三种实时/累计预览共用；保留原 discard、前后面、深度、擦除和反选语义。不新增纹理、采样、读回或全图补边；作者蒙版、GPU 累积、CPU/Worker、Capture/GPT 输入、保存、UV/export、分辨率与 QA 保持，无 Schema 或资产迁移。约 200 万三角形模型四视角隔离测试弱显示像素减少约 94–97%，捕获字节不变；不承诺修补零覆盖裂缝。验证、边缘语义与回滚见 [选区显示强度](changes/CHG-20260916-INPAINT-SELECTION-DISPLAY.md)。
 
 2026-09-16 M03（协作 M04）：`NORMAL-CAPTURE-MATERIAL/1.0.0` / `ALG-CAP-005` v1.0.1 按离屏 renderer 与 normal space 弱持有至多三份不可变法线材质，消除多视角重复编译；renderer 释放仍回收 GPU 程序。真实 49,152 三角形、三个空间各十视角对照完整 RGBA 一致，程序创建 30→3，总耗时约 702–742→568–569ms。相机、法线公式、完整分辨率、其他 pass、UV 权重/QA、持久化/导出及 Command/CAS/ownership/verified assets 不变，无迁移；详见 [法线采集材质复用](changes/CHG-20260916-NORMAL-CAPTURE-MATERIAL-REUSE.md)。

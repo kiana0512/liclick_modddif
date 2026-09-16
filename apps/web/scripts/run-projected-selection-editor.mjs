@@ -1,0 +1,86 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { createServer } from 'vite';
+const {chromium}=await import(process.env.PLAYWRIGHT_MODULE?pathToFileURL(process.env.PLAYWRIGHT_MODULE).href:'playwright');
+const root=fileURLToPath(new URL('..',import.meta.url));
+const artifacts=path.resolve(process.env.SELECTION_ARTIFACTS??path.join(root,'../../.codex-tmp/selection-editor'));
+fs.mkdirSync(artifacts,{recursive:true});
+const server=await createServer({root,configFile:false,appType:'custom',cacheDir:'node_modules/.vite-selection-editor',
+  optimizeDeps:{entries:['scripts/projected-selection-editor-fixture.mjs'],include:['fflate']},resolve:{alias:{'@':`${root}/src`}},server:{host:'127.0.0.1',port:5197,strictPort:true}});
+server.middlewares.use('/__fixture',(_q,r)=>{r.setHeader('Content-Type','text/html');r.end('<!doctype html><title>Selection editor acceptance</title>');});
+if(process.env.SELECTION_CAR_FILE)server.middlewares.use('/__selection_car.fbx',(_q,r)=>{r.setHeader('Content-Type','application/octet-stream');fs.createReadStream(process.env.SELECTION_CAR_FILE).pipe(r);});
+await server.listen();console.log('PREVIEW_URL='+server.resolvedUrls.local[0]+'__fixture');
+const browser=await chromium.launch({channel:'msedge',headless:true});
+let page;
+try{
+  page=await browser.newPage({viewport:{width:1280,height:960},deviceScaleFactor:Number(process.env.SELECTION_DPR??1)});
+  for(const url of ['**/api/**','**/__li3d_eraser_perf'])await page.route(url,r=>r.fulfill({json:{}}));
+  const errors=[];page.on('pageerror',e=>{errors.push(e.message);console.log('PAGE_ERROR',e.message);});
+  page.on('console',m=>{if(m.type()==='error'){errors.push(m.text());console.log('CONSOLE_ERROR',m.text());}});
+  await page.goto(server.resolvedUrls.local[0]+'__fixture');
+  const setup=await page.evaluate(async car=>(await import('/scripts/projected-selection-editor-fixture.mjs')).setup(car),Boolean(process.env.SELECTION_CAR_FILE));
+  console.log('SETUP',JSON.stringify(setup));
+  await page.waitForTimeout(1200);
+  const box=await page.locator('canvas').first().boundingBox();
+  const stroke=async(x0,y0,x1,y1,steps=16)=>{
+    await page.mouse.move(box.x+x0*box.width,box.y+y0*box.height);await page.mouse.down();
+    await page.mouse.move(box.x+x1*box.width,box.y+y1*box.height,{steps});await page.mouse.up();
+    await page.evaluate(()=>window.selectionFixture.settle());
+  };
+  await page.evaluate(()=>window.selectionFixture.start());
+  await stroke(.42,.42,.58,.42);
+  const cold=await page.evaluate(()=>window.selectionFixture.stop());
+  await page.evaluate(()=>window.selectionFixture.start());
+  for(let i=0;i<5;i++)await stroke(.40,.44+i*.022,.62,.44+i*.022,22);
+  const warm=await page.evaluate(()=>window.selectionFixture.stop());
+  await page.mouse.move(20,25);
+  await page.waitForTimeout(1000);
+  const archived=await page.evaluate(()=>window.selectionFixture.state());
+  if(!archived.overlays.some(o=>o.visible&&o.count>0&&o.live===0))throw Error('Idle projection archive missing: '+JSON.stringify(archived));
+  console.log('DRAWN',JSON.stringify(await page.evaluate(()=>window.selectionFixture.state())));
+  await page.screenshot({path:path.join(artifacts,'selection-editor-painted.png')});
+  const before=await page.evaluate(()=>window.selectionFixture.capture());
+  if(!before)throw Error('Author mask capture missing');
+  const independent=await page.evaluate(()=>window.selectionFixture.uvIndependent());
+  if(!independent)throw Error('Pure selection display depends on model UV');
+  await page.evaluate(()=>window.selectionFixture.erase());await page.waitForTimeout(150);
+  await stroke(.48,.40,.48,.60);
+  await page.mouse.move(20,25);
+  await page.screenshot({path:path.join(artifacts,'selection-editor-erased.png')});
+  const erased=await page.evaluate(()=>window.selectionFixture.capture());if(erased===before)throw Error('Erase did not affect author mask');
+  await page.evaluate(()=>window.selectionFixture.undo());await page.evaluate(()=>window.selectionFixture.settle());
+  const undone=await page.evaluate(()=>window.selectionFixture.capture());if(undone!==before){
+    console.log('UNDO_STATE',JSON.stringify(await page.evaluate(()=>window.selectionFixture.state())));
+    for(const [name,url]of [['before',before],['erased',erased],['undone',undone]])if(url?.startsWith('data:'))fs.writeFileSync(path.join(artifacts,'mask-'+name+'.png'),Buffer.from(url.split(',')[1],'base64'));
+    console.log('MASK_URLS',before?.slice(0,80),undone?.slice(0,80));
+    throw Error('Undo did not restore exact author mask');
+  }
+  await page.evaluate(()=>window.selectionFixture.redo());await page.evaluate(()=>window.selectionFixture.settle());
+  if(await page.evaluate(()=>window.selectionFixture.capture())!==erased)throw Error('Redo mask mismatch');
+  await page.evaluate(()=>window.selectionFixture.undo());await page.evaluate(()=>window.selectionFixture.settle());
+  await page.evaluate(()=>window.selectionFixture.invert());await page.evaluate(()=>window.selectionFixture.settle());
+  if(!(await page.evaluate(()=>window.selectionFixture.state())).overlays.some(o=>o.inverted===1))throw Error('Invert display missing');
+  await page.evaluate(()=>window.selectionFixture.undo());await page.evaluate(()=>window.selectionFixture.settle());
+  await page.evaluate(()=>window.selectionFixture.clear());await page.evaluate(()=>window.selectionFixture.settle());
+  if((await page.evaluate(()=>window.selectionFixture.state())).content)throw Error('Clear failed');
+  await page.evaluate(()=>window.selectionFixture.undo());await page.evaluate(()=>window.selectionFixture.settle());
+  if(await page.evaluate(()=>window.selectionFixture.capture())!==before)throw Error('Undo clear failed');
+  await page.evaluate(()=>window.selectionFixture.add());await page.waitForTimeout(100);
+  for(let i=0;i<6;i++){await page.evaluate(i=>window.selectionFixture.selectView(i+1),i);await stroke(.47,.47,.5,.49,4);}
+  const many=await page.evaluate(()=>window.selectionFixture.state());
+  if(!many.overlays.some(o=>o.count>4))throw Error('More than four views were not retained: '+JSON.stringify(many));
+  await page.evaluate(()=>window.selectionFixture.start());
+  for(let i=0;i<30;i++)await page.evaluate(i=>window.selectionFixture.selectView(i*.15),i);
+  const orbit=await page.evaluate(()=>window.selectionFixture.stop());
+  await page.mouse.move(20,25);await page.screenshot({path:path.join(artifacts,'selection-editor-orbit.png')});
+  if(errors.length)throw Error(errors.join('\n'));
+  if(many.warnings.length)throw Error(many.warnings.join('\n'));
+  const stats=values=>{const a=[...values].sort((a,b)=>a-b);return {n:a.length,p50:a[Math.floor(a.length*.5)]??0,p95:a[Math.floor(a.length*.95)]??0,max:a.at(-1)??0};};
+  const summarize=metrics=>Object.fromEntries(Object.entries(metrics).map(([key,values])=>[key,stats(values)]));
+  const result={setup,uvIndependent:independent,authorUndoRedoExact:true,clearInvertUndo:true,multipleViews:many,cold:summarize(cold),warm:summarize(warm),orbit:summarize(orbit),errors};
+  fs.writeFileSync(path.join(artifacts,'selection-editor-results.json'),JSON.stringify(result,null,2));console.log(JSON.stringify(result));
+}finally{
+  if(page)await page.screenshot({path:path.join(artifacts,'selection-editor-last.png')}).catch(()=>{});
+  await browser.close();if(!process.argv.includes('--serve'))await server.close();
+}
