@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { rasterizeUvTriangleCenters } from './uvPixelCenterRaster.ts';
 
 export function getUvDilationPixels(resolution: number, requestedPixels: number) {
   return Math.min(32, Math.max(requestedPixels, Math.ceil(resolution / 256)));
@@ -102,11 +103,12 @@ function* rasterizeUvTopologyMaskSteps(
   coverageMode: 'pixel-center' | 'conservative' = 'pixel-center',
 ) {
   const canvas = document.createElement('canvas');
-  canvas.width = width;
-  canvas.height = height;
+  canvas.width = coverageMode === 'pixel-center' ? 1 : width;
+  canvas.height = coverageMode === 'pixel-center' ? 1 : height;
   const context = canvas.getContext('2d', { willReadFrequently: true });
   if (!context) throw new Error('Could not create UV topology mask.');
   context.fillStyle = '#ffffff';
+  const topology = new Uint8Array(width * height);
 
   const meshes: THREE.Mesh[] = [];
   root.traverse((object) => {
@@ -131,6 +133,11 @@ function* rasterizeUvTopologyMaskSteps(
         y: (1 - uv.getY(vertexIndex)) * height,
       }));
       if (points.some((point) => !Number.isFinite(point.x) || !Number.isFinite(point.y))) continue;
+      if (coverageMode === 'pixel-center') {
+        rasterizeUvTriangleCenters(topology, width, height,
+          points[0].x, points[0].y, points[1].x, points[1].y, points[2].x, points[2].y);
+        continue;
+      }
       context.beginPath();
       context.moveTo(points[0].x, points[0].y);
       context.lineTo(points[1].x, points[1].y);
@@ -140,17 +147,13 @@ function* rasterizeUvTopologyMaskSteps(
     }
   }
 
+  if (coverageMode === 'pixel-center') return topology;
   const alpha = context.getImageData(0, 0, width, height).data;
-  const topology = new Uint8Array(width * height);
-  const alphaThreshold = coverageMode === 'conservative' ? 1 : 128;
+  const alphaThreshold = 1;
   for (let index = 0; index < topology.length; index += 1) {
     if (index % 8192 === 0) yield;
-    // Gutter padding needs pixel-centre coverage so a faint anti-aliasing fringe
-    // cannot become a no-man's-land outside the island. Hole repair has the
-    // opposite requirement: high-poly atlases contain many sub-pixel triangles,
-    // and dropping their faint samples breaks the topology into pepper-like
-    // gaps. Keep these two masks distinct instead of trading one artifact for
-    // the other.
+    // Hole repair retains conservative area coverage. Gutter membership above
+    // uses pixel centres so an antialiased fringe cannot block filter padding.
     topology[index] = alpha[index * 4 + 3] >= alphaThreshold ? 1 : 0;
   }
   return topology;

@@ -4,6 +4,8 @@
 
 2026-09-16 UI-06 → M03（协作 M08）：`ALG-VIEW-INPUT-001` v1.4.0 将平移改为直接中键拖动，兼容原 Alt＋中键；Alt＋左键旋转、Alt＋右键拖动缩放、滚轮及普通绘制/擦除不变。相机、R3F 拾取、画笔悬停/按下、变换工具同时避让中键，保持指针归属和结束清理。透视/正交平移、原导航与拾取回归、类型检查通过。只改输入路由，GPU/CPU/Worker/shader、蒙版/UV/export、保存和 Schema 不变，无数据迁移；回滚四处输入判断及对应测试即可恢复 Alt 必需。此次本地修改，尚未推送或部署。
 
+2026-09-16 M07（协作 M06/M08/M09）：`UV-GUTTER-TOPOLOGY/3` / UV composition 11 修正抗锯齿面积阈值与 GPU UV 像素中心不一致造成的切层白点。CPU/Worker 校准共用像素中心光栅，仅补岛外留边，保持未涂抹内部、原生 RGBA、相机、完整分辨率与 QA；派生缓存键升级，无工程/资产迁移，Command/CAS/ownership/verified assets 不变。真实车辆 A/B、WebGL 三角形与合成回归通过。详见 [白点与留边拓扑](changes/CHG-20260916-UV-GUTTER-PIXEL-CENTER.md)。
+
 2026-09-16 UI-06/M08（协作 M03）：`PROJECTED-SELECTION-DISPLAY/1.0.0` 接入正式 ViewportCanvas，冻结屏幕投影显示不读取模型 UV，保留作者蒙版与原空闲归档时机。数组纹理有界缓存、同视角合批、会话撤销/重做与清空/反选接入；旧 UV-only 状态、消耗选区或超预算时回退原 UV 显示。真实约 200 万三角形车辆涂画/旋转约 60FPS，UV 置零显示字节一致、作者蒙版撤销摘要一致。GPU/CPU 显示历史变更、Worker/远端/持久化/export 不变，无 Schema 迁移；预算、兼容限制与回滚见 [正式投影显示](changes/CHG-20260916-PROJECTED-SELECTION-DISPLAY.md)。下方四槽原型记录仅作历史参考。
 
 2026-09-16 UI-06/M08：`PROJECTED-SELECTION-PREVIEW/0.1.0` 为独立本地显示验证原型，尚未接入正式编辑器。直接读取投影 mask/depth 与相机，不采样模型 UV；按序加/减并反选，深度比较使用接收平面修正至采样中心以减少转动噪点。最多四个快照，超限明确报错；不宣称无限笔画、完整历史/重载及性能已完成。真实模型离屏更换 UV 坐标显示字节一致、显示/旋转不改变 UV 数据、擦除撤销恢复通过。GPU/CPU/Worker/捕获/保存/远端/UV/export 生产链路完全未接入此原型，无 Schema/数据迁移。仅本地效果评审，未推送或部署；详见 [投影显示原型](changes/CHG-20260916-PROJECTED-SELECTION-PREVIEW.md)。
@@ -24,6 +26,8 @@
 2026-09-16 UI-05/M04：`GEN-PREVIEW-STATUS/1.0.0` 统一预览文字优先级为生成中、准备中、取消/失败、空闲，防止局部重绘空提示与取消/错误文案重叠；重试准备期间隐藏旧终态提示。只改渲染条件，已保存结果、任务取消/提交、GPU/CPU/Worker/shader、投影/UV/export、保存和分辨率不变，无 Schema 或数据迁移。真实 JSX 状态组合与回滚见 [预览文案互斥](changes/CHG-20260916-PREVIEW-STATUS.md)。
 
 2026-09-16 M03（协作 M04/M08/M06/M07）：`GPT-CONTENT-BOUNDS/1.0.0` 以逐行两侧精确边界减少取景/返图扫描，合作入口按 4ms 让出并保留空行取消；加载等待异步 decode，拒绝提示保留可绘制兼容。4K 扫描约 71–80→5–8ms，配对裁切和 native 还原字节一致；不放宽远端比例/透明轮廓错误，不改 framing v1/v2、相机、法线/mask/depth、UV 权重或完整分辨率。GPU/CPU/Worker/shader、QA、持久化/导出及 Command/CAS/ownership/资产保持，无迁移；详见 [返图扫描延迟变更卡](changes/CHG-20260916-FRAMING-BOUNDS-LATENCY.md)。
+
+2026-09-16 M06（协作 M08/M07/M09）：`ALG-PROJ-007` v2.1.14 修复原生局部重绘从 GPU owner 切到 Canvas/PNG/多层合成后的透明边缘黑缝。UV 颜色统一在线性预乘 alpha 空间插值，普通 UV 下层 source-over 只计算一次 alpha；保留作者 RGBA、绘制/擦除/历史、投影权重、完整分辨率、QA、持久化和导出协议。真实 WebGL 硬边/羽化转换及六种材质数值回归通过，无资产迁移；原工程新构建验收待完成。详见 [重绘黑缝变更卡](changes/CHG-20260916-UV-REPAINT-ALPHA-EDGE.md)。
 
 2026-09-16 M07（协作 M06/M03/M08/M09）：`UV-RASTER-LAYER-KEY/1.0.0` 以 owner 私有完整字符串身份减少 Base64 URL 重复序列化；64MiB/2048 条上限，溢出不淘汰而回退原字符串，dispose 释放。全部像素输入、逐层 UV/权重、GPU/CPU/Worker/shader、取消/几何/来源验证、QA、完整分辨率及持久化/导出保持。2K 七层旧/新核 20 次显隐最终字节和覆盖计数一致，无迁移；仍有 GPU 合成/回读耗时，不宣称全流程实时。详见 [返图 UV 缓存键优化](changes/CHG-20260916-UV-RASTER-LAYER-KEY.md)。
 

@@ -191,7 +191,7 @@ export class ResidentProjectedUvDisplay {
           projectId: request.projectId!, objectId: request.sourceModel.objectId,
           resolution: request.resolution, group: request.sourceModel.group,
           layers: [...request.sourceLayers, ...(request.underlayLayers ?? [])].filter(layer => layer.visible && layer.opacity > 0),
-          purpose: this.skipUvSeams ? 'resident-uv-display-3-no-seams' : 'resident-uv-display-2',
+          purpose: this.skipUvSeams ? 'resident-uv-display-4-no-seams' : 'resident-uv-display-4',
         })).catch(() => undefined) : Promise.resolve(undefined);
       if (!interactive && !restored && !this.front) {
         persistentKey = await keyPromise;
