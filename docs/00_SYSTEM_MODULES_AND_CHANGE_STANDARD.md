@@ -1,5 +1,7 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
+2026-09-16 M12（协作 M04/M08/M14）：`GENERATION-ASSET-REFERENCE/1.0.1` / `GENERATION-IMAGE-SOURCE/1.0.0` 对不可变 data:image/ 原字节准备设置 64MiB/32 项完整 URL 缓存，减少历史 Base64 读取/摘要重复；不缓存权限或跨工程资产。`GPT-GROUP-STATUS-CHECKPOINT/1.0.0` 仅重叠已提交分组的状态保存与返图观察，付费前相机 checkpoint、组末保存与下一组呈现仍 await；不重提生成。原像素、GPU/CPU/Worker/shader、UV 权重/QA、Command/CAS/ownership/verified assets 与导出保持，无迁移；详见 [生成保存延迟变更卡](changes/CHG-20260916-GENERATION-SAVE-LATENCY.md)。
+
 2026-09-16 M03（协作 M04/M08/M06/M07）：`GPT-CONTENT-BOUNDS/1.0.0` 以逐行两侧精确边界减少取景/返图扫描，合作入口按 4ms 让出并保留空行取消；加载等待异步 decode，拒绝提示保留可绘制兼容。4K 扫描约 71–80→5–8ms，配对裁切和 native 还原字节一致；不放宽远端比例/透明轮廓错误，不改 framing v1/v2、相机、法线/mask/depth、UV 权重或完整分辨率。GPU/CPU/Worker/shader、QA、持久化/导出及 Command/CAS/ownership/资产保持，无迁移；详见 [返图扫描延迟变更卡](changes/CHG-20260916-FRAMING-BOUNDS-LATENCY.md)。
 
 2026-09-16 M07（协作 M06/M03/M08/M09）：`UV-RASTER-LAYER-KEY/1.0.0` 以 owner 私有完整字符串身份减少 Base64 URL 重复序列化；64MiB/2048 条上限，溢出不淘汰而回退原字符串，dispose 释放。全部像素输入、逐层 UV/权重、GPU/CPU/Worker/shader、取消/几何/来源验证、QA、完整分辨率及持久化/导出保持。2K 七层旧/新核 20 次显隐最终字节和覆盖计数一致，无迁移；仍有 GPU 合成/回读耗时，不宣称全流程实时。详见 [返图 UV 缓存键优化](changes/CHG-20260916-UV-RASTER-LAYER-KEY.md)。
@@ -78,7 +80,7 @@
 
 2026-09-15 M03：ALG-VIEW-INPUT-001/1.3.2 在鼠标接触前即让 R3F 悬停遵守 Alt 所有权；保留普通 hover 和已锁定拖动。旧实现拾取回归失败、新实现通过，用户实际首帧延迟需继续录制。无像素/持久化迁移，见 [Alt 悬停变更卡](changes/CHG-20260915-ALT-BRUSH-HOVER.md)。
 
-> 文档版本：`2.20.145`
+> 文档版本：`2.20.146`
 
 2026-09-15 UI-06 → M03：`ALG-VIEW-SELECT-001/1.0.5` 将常驻线框预热绑定到 renderer/模型生命周期，透视/正交相机替换不重新编译或释放同一辅助材质，避免旧编译完成后释放当前材质。16 次相机替换旧实现启动 17 次编译，新实现一次；71 次显隐及卸载清理保持。GPU 线框/CPU 几何/Worker/shader、捕获/UV/重绘/导出、分辨率和 QA、持久化/Schema 均不变，无迁移。其他工具切换仍有长帧，不宣称全操作无卡顿，验证和回滚见 [线框相机生命周期变更卡](changes/CHG-20260915-WIREFRAME-CAMERA-LIFETIME.md)。
 

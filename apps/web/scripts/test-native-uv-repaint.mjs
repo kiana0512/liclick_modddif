@@ -168,6 +168,9 @@ try {
     { id: 'generated', resultUrl: inline, metadata: { resultUrls: [inline, 'https://provider.test/existing'], framingRestored: true } },
   ] };
   let generationUploadCount = 0;
+  const originalFetch = globalThis.fetch;
+  let generationReads = 0;
+  globalThis.fetch = (...args) => { generationReads++; return originalFetch(...args); };
   const uploadGeneration = async (blob, filename, category) => {
     generationUploadCount++;
     assert.equal(category, 'generations');
@@ -181,12 +184,15 @@ try {
   assert.ok(JSON.stringify(compactGenerationProject).length < 2048, 'Images must not be duplicated inside project JSON');
   assert.deepEqual(await persistRuntimeLayerAssets(generationSnapshot, uploadGeneration), compactGenerationProject);
   assert.equal(generationUploadCount, 1, 'A repeated snapshot reuses the verified project-scoped SHA upload');
+  assert.equal(generationReads, 1, 'repeated saves must not decode/hash the same inline history again');
   await persistRuntimeLayerAssets({ ...generationSnapshot, id: 'another-owned-project' }, uploadGeneration);
   assert.equal(generationUploadCount, 2, 'Asset cache must not cross project ownership');
+  assert.equal(generationReads, 1, 'source bytes can be reused but each project still owns a separate upload');
   const failedGenerationProject = { ...generationSnapshot, id: 'failed-generation-assets' };
   await assert.rejects(persistRuntimeLayerAssets(failedGenerationProject, async () => { throw Error('generation upload failed'); }), /generation upload failed/);
   await assert.rejects(persistRuntimeLayerAssets(failedGenerationProject, async () => inline), /尚未持久化/);
   await persistRuntimeLayerAssets(failedGenerationProject, uploadGeneration);
+  globalThis.fetch = originalFetch;
   const apiSource = await readFile(new URL('../src/services/workspaceApiClient.ts', import.meta.url), 'utf8');
   assert.match(apiSource, /async function saveProjectDirect[\s\S]*?await persistRuntimeLayerAssets[\s\S]*?executeProjectCommand/,
     'both saveProject and updateLatestProject must persist runtime assets before document CAS');

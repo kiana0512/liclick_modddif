@@ -20,6 +20,7 @@
     "test:shader-chunk-pack": "node scripts/test-shader-chunk-pack.mjs",
     "test:projected-warmup-framebuffer": "node scripts/test-projected-warmup-framebuffer.mjs",
     "test:native-uv-repaint": "node scripts/test-native-uv-repaint.mjs",
+    "test:generation-image-source-cache": "node scripts/test-generation-image-source-cache.mjs",
     "test:native-uv-merge": "node scripts/test-native-uv-merge.mjs",
     "check:native-uv-browser": "node scripts/run-uv-repaint-browser.mjs --viewport",
     "test:uv-source-lookahead": "node scripts/test-uv-source-lookahead.mjs",

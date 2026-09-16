@@ -3480,7 +3480,12 @@ export function GeneratePanel({
         }),
       );
     });
-    await saveGenerationStateBestEffort();
+    // The paired jobs already have server IDs and their camera checkpoint was
+    // saved before submission. Observe returned images while this status-only
+    // save runs; the final group checkpoint still drains the same save queue
+    // before the next group's capture/submission can start.
+    if (pairContext) void saveGenerationStateBestEffort();
+    else await saveGenerationStateBestEffort();
 
     // Multi-view generation/network/persistence may finish one view at a time, but a
     // different projected-layer count requires a different shader and texture

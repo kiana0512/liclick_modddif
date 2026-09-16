@@ -142,9 +142,11 @@ assert.equal(
   '第 2/7 组',
 );
 assert.equal(compactProgressLabel('生成纹理贴图 · 第 2/7 组'), '生成纹理贴图 · 第 2/7 组');
-async function fixture(failedView, fullyCovered = false, mode = 'stable', preset = 'custom', names = ['front', 'left', 'back', 'right', 'top', 'bottom'], captureError) {
+async function fixture(failedView, fullyCovered = false, mode = 'stable', preset = 'custom', names = ['front', 'left', 'back', 'right', 'top', 'bottom'], captureError, slowStatusSave = false) {
   let sequence = 0, rows = [], frozen = false, repairCount = 0, whitePresentation = false;
   const jobs = new Map(), requests = [], captures = [], saved = [];
+  const checkpoint = defer();
+  let statusSaves = 0, observedWhileSaving = false;
   const project = { id: 'project', captures: [], settings: { imageGeneration: { textureMultiviewMode: mode } } };
   const sceneRoot = new THREE.Group(), resident = new THREE.ShaderMaterial({ name: 'LiclickProjectedLayerStack:layers' });
   sceneRoot.add(new THREE.Mesh(new THREE.BoxGeometry(), resident));
@@ -199,7 +201,10 @@ async function fixture(failedView, fullyCovered = false, mode = 'stable', preset
     persistCaptureAssets: async (items) => items,
     updateProjectById: (_, patch) => Object.assign(project, patch),
     saveCriticalProjectState: async (patch) => { saved.push(patch); },
-    saveGenerationStateBestEffort: async () => {},
+    saveGenerationStateBestEffort: async () => {
+      statusSaves++;
+      if (slowStatusSave && statusSaves === 1) await checkpoint.promise;
+    },
     start: (job) => jobs.set(job.id, job), addProjectGeneration: () => {}, finish: () => {},
     syncGeneration: (job) => jobs.set(job.id, job),
     isCancelledGeneration: () => false,
@@ -214,6 +219,11 @@ async function fixture(failedView, fullyCovered = false, mode = 'stable', preset
       return jobs.get(id);
     },
     waitForLiclickGeneration: async (job) => {
+      if (slowStatusSave && !observedWhileSaving) {
+        observedWhileSaving = true;
+        assert.equal(statusSaves, 1, 'status checkpoint started before result observation');
+        checkpoint.resolve();
+      }
       if (job.metadata.cameraViewId === failedView) throw new Error('controlled network failure');
       return { ...job, status: 'succeeded', resultUrl: `result:${job.id}` };
     },
@@ -228,8 +238,19 @@ async function fixture(failedView, fullyCovered = false, mode = 'stable', preset
   let error;
   try { await start({ id: 'material' }, make(names), 'multi'); }
   catch (reason) { error = reason; }
-  return { requests, captures, rows, error, repairCount, jobs };
+  return { requests, captures, rows, error, repairCount, jobs, observedWhileSaving };
 }
+const slowSaveRun = fixture(undefined, false, 'fast', 'custom', undefined, undefined, true);
+const slowSaveResult = await Promise.race([
+  slowSaveRun,
+  new Promise((_, reject) => {
+    const timeout = setTimeout(() => reject(Error('result polling waited for status-only save')), 1500);
+    void slowSaveRun.finally(() => clearTimeout(timeout));
+  }),
+]);
+assert.ifError(slowSaveResult.error);
+assert.equal(slowSaveResult.observedWhileSaving, true);
+assert.equal(slowSaveResult.rows.length, 6, 'all groups still complete and checkpoint');
 const success = await fixture();
 assert.ifError(success.error);
 assert.deepEqual(success.captures, [['front', 'back'], ['left', 'right', 'top', 'bottom']]);

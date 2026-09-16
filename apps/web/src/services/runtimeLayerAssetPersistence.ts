@@ -1,4 +1,5 @@
 import type { Project } from '@/types/project';
+import { GenerationImageSourceCache } from './generationImageSourceCache';
 type LiveLayerAssetSource = {
   flush: () => Promise<void>;
   blob: (url: string) => Promise<Blob> | undefined;
@@ -19,20 +20,25 @@ const isRuntimeUrl = (url: unknown): url is string =>
 
 type AssetUpload = (blob: Blob, filename: string, category?: 'layers' | 'generations') => Promise<string>;
 const generationUploads = new Map<string, Promise<string>>();
+const generationSources = new GenerationImageSourceCache();
 
-/** GENERATION-ASSET-REFERENCE/1.0.0: keep immutable image bytes out of JSON.
+/** GENERATION-ASSET-REFERENCE/1.0.1: keep immutable image bytes out of JSON.
  * Only verified upload results are reused, keyed by project and file SHA256. */
 async function persistGenerationAssets(project: Project, upload: AssetUpload): Promise<Project> {
   const durable = new Map<string, string>();
   const resolve = async (url: unknown, filename: string) => {
     if (typeof url !== 'string' || !url.startsWith('data:image/')) return url;
     if (durable.has(url)) return durable.get(url)!;
-    const response = await fetch(url);
-    if (!response.ok) throw new Error('生成图片读取失败，工程未保存。');
-    const blob = await response.blob();
-    if (!blob.size) throw new Error('生成图片为空，工程未保存。');
-    const digest = globalThis.crypto?.subtle && await crypto.subtle.digest('SHA-256', await blob.arrayBuffer());
-    const key = digest && project.id + ':' + Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
+    const { blob, digest } = await generationSources.prepare(url, async () => {
+      const response = await fetch(url);
+      if (!response.ok) throw new Error('生成图片读取失败，工程未保存。');
+      const blob = await response.blob();
+      if (!blob.size) throw new Error('生成图片为空，工程未保存。');
+      const hash = globalThis.crypto?.subtle && await crypto.subtle.digest('SHA-256', await blob.arrayBuffer());
+      const digest = hash ? Array.from(new Uint8Array(hash), byte => byte.toString(16).padStart(2, '0')).join('') : undefined;
+      return { blob, digest };
+    });
+    const key = digest && project.id + ':' + digest;
     let pending = key ? generationUploads.get(key) : undefined;
     if (!pending) {
       pending = upload(blob, filename, 'generations').then(saved => {
