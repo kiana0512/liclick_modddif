@@ -1,5 +1,7 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
+2026-09-16 M07（协作 M06/M03/M08/M09）：`UV-RASTER-LAYER-KEY/1.0.0` 以 owner 私有完整字符串身份减少 Base64 URL 重复序列化；64MiB/2048 条上限，溢出不淘汰而回退原字符串，dispose 释放。全部像素输入、逐层 UV/权重、GPU/CPU/Worker/shader、取消/几何/来源验证、QA、完整分辨率及持久化/导出保持。2K 七层旧/新核 20 次显隐最终字节和覆盖计数一致，无迁移；仍有 GPU 合成/回读耗时，不宣称全流程实时。详见 [返图 UV 缓存键优化](changes/CHG-20260916-UV-RASTER-LAYER-KEY.md)。
+
 2026-09-16 M04（协作 M03/M08/M12/M14）：`GPT-COLOR-REFERENCE-UPLOAD/1.1.0` 为 GPT texture-map 的第一张有 framing 的 Current model view 结合图复用已授权原尺寸 RGB 自适应压缩。只改上传副本，原尺寸/alpha、完整 JSON <4MB、个人账号隔离及无损法线/蒙版保持；材质与六视图两阶段入口不启用。真实 4096×3072 超限样本压缩到预算内，未付费生图；GPU/CPU/Worker/shader、投影/UV 合成权重、QA、原资产、持久化/导出、Command/CAS/ownership 不变，无迁移。详见 [多视图上传变更卡](changes/CHG-20260916-GPT-TEXTURE-COLOR-UPLOAD.md)。
 
 2026-09-16 M15：`SHADER-CHUNK-PACK/1.0.0` 对固定 Three.js 注册 shader 做构建期无损打包，运行时仅初始化一次；141 段字符串、ShaderLib 和导出保持，纯几何 Worker 删除整个解码池。修复 master 4334910b 的 CI 总 JS 超限，不提高预算、不禁用 QA、不改 GLSL 或 UV/投影/重绘像素算法。持久化、导出、Command/CAS/ownership 与资产不变，无迁移；验证和回滚见 [shader 打包变更卡](changes/CHG-20260916-CI-SHADER-CHUNK-PACK.md)。
@@ -74,7 +76,7 @@
 
 2026-09-15 M03：ALG-VIEW-INPUT-001/1.3.2 在鼠标接触前即让 R3F 悬停遵守 Alt 所有权；保留普通 hover 和已锁定拖动。旧实现拾取回归失败、新实现通过，用户实际首帧延迟需继续录制。无像素/持久化迁移，见 [Alt 悬停变更卡](changes/CHG-20260915-ALT-BRUSH-HOVER.md)。
 
-> 文档版本：`2.20.143`
+> 文档版本：`2.20.144`
 
 2026-09-15 UI-06 → M03：`ALG-VIEW-SELECT-001/1.0.5` 将常驻线框预热绑定到 renderer/模型生命周期，透视/正交相机替换不重新编译或释放同一辅助材质，避免旧编译完成后释放当前材质。16 次相机替换旧实现启动 17 次编译，新实现一次；71 次显隐及卸载清理保持。GPU 线框/CPU 几何/Worker/shader、捕获/UV/重绘/导出、分辨率和 QA、持久化/Schema 均不变，无迁移。其他工具切换仍有长帧，不宣称全操作无卡顿，验证和回滚见 [线框相机生命周期变更卡](changes/CHG-20260915-WIREFRAME-CAMERA-LIFETIME.md)。
 

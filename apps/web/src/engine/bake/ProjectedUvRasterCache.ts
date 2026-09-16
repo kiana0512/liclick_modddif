@@ -4,6 +4,7 @@ import type { GpuLayerSourceSize } from './gpuUvBakeRenderer';
 import { ResidentQualityComposite } from './residentQualityComposite';
 import { compactUvContribution, type UvContributionTiles } from './uvContributionTiles';
 import { UvContributionArchive } from './UvContributionArchive';
+import type { Layer } from '@/types/layer';
 
 type Entry = {
   color: THREE.WebGLRenderTarget;
@@ -43,8 +44,32 @@ export class ProjectedUvRasterCache {
   private residentStates = new Map<number, ResidentState>();
   private residentWorkingStates = new Map<number, ResidentState>();
   private programs = new Map<string, THREE.ShaderMaterial>();
+  private sourceKeys = new Map<string, number>();
+  private sourceKeyBytes = 0;
+  private nextSourceKey = 0;
   private readonly contextLost = () => this.clear();
   constructor(private readonly budget = 256 * 1024 * 1024, private readonly contributions = false) {}
+
+  /** UV-RASTER-LAYER-KEY/1.0.0. Exact strings, not hashes. Avoid re-encoding
+   * multi-megabyte data URLs in every derived key. IDs are private to this
+   * owner and never reused; overflow keeps the original string without eviction.
+   * The table retains at most 2048 strings / 64 MiB of UTF-16 source text.
+   */
+  layerKey(layer: Layer) {
+    if (this.disposed) throw new DOMException('UV raster owner disposed.', 'AbortError');
+    return JSON.stringify({ ...layer, visible: true, name: '', order: 0 }, (name, value) => {
+      if (!name.endsWith('Url') || typeof value !== 'string') return value;
+      let id = this.sourceKeys.get(value);
+      if (id === undefined) {
+        const bytes = value.length * 2;
+        if (this.sourceKeys.size >= 2048 || this.sourceKeyBytes + bytes > 64 * 1024 * 1024) return value;
+        id = ++this.nextSourceKey;
+        this.sourceKeys.set(value, id);
+        this.sourceKeyBytes += bytes;
+      }
+      return ['uv-url', id];
+    });
+  }
 
   prepare(renderer: THREE.WebGLRenderer, scope: string, keys: string[]) {
     if (this.disposed) throw new DOMException('UV raster owner disposed.', 'AbortError');
@@ -201,6 +226,8 @@ export class ProjectedUvRasterCache {
   }
   dispose() {
     this.disposed = true;
+    this.sourceKeys.clear();
+    this.sourceKeyBytes = 0;
     this.renderer?.domElement.removeEventListener('webglcontextlost', this.contextLost);
     this.renderer = undefined;
     this.clear();

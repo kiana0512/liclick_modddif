@@ -1693,7 +1693,9 @@ export async function bakeProjectedLayerRastersWithGpu(
   let residentAccumulateMs = 0;
   let sourcePreparationWaitMs=0,textureUploadMs=0,layerReadbackWaitMs=0;
   const rasterCache = input.rasterCache;
-  const fullKeys = input.layers.map(layer => JSON.stringify({ ...layer, visible: true, name: '', order: 0 }));
+  const fullKeys = input.layers.map(layer => rasterCache
+    ? rasterCache.layerKey(layer)
+    : JSON.stringify({ ...layer, visible: true, name: '', order: 0 }));
   const keys = fullKeys.map(key => key + (input.region ? JSON.stringify(input.region) : ''));
   if (rasterCache) {
     const geometry = meshes.map(({ source }) => [source.uuid, source.matrixWorld.elements,
