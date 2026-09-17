@@ -94,7 +94,7 @@ assert.equal(request.resolution, '4K', 'The project/UV resolution is not downgra
 assert.equal(request.aspectRatio, '1:1');
 assert.equal(request.quality, 'max');
 assert.equal(request.model, 'gpt-image-2.5-flare');
-assert.match(panel, /return submitGptTextureView\(\s*generationId,\s*pendingGeneration.prompt,\s*modelViewReference,\s*materialReference,\s*capture/);
+assert.match(panel, /return submitGptTextureViewWithSilhouetteRetry\(\s*pendingGeneration,\s*modelViewReference,\s*materialReference,\s*capture,\s*signal/);
 assert.match(textureMapPrompts, /只在图一指定的待补全区域绘制材质，不重新生成物体/);
 assert.match(
   textureMapPrompts,

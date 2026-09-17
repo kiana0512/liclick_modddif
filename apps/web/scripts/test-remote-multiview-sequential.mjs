@@ -122,8 +122,8 @@ assert.match(
 );
 assert.match(
   flow,
-  /usesGptTextureGeneration\(view\)[\s\S]*?submitGptTextureView\([\s\S]*?waitForLiclickGeneration\(alignedGeneration\)/,
-  'top and bottom views must switch to GPT2 while staying inside the serial projection chain',
+  /usesGptTextureGeneration\(view\)[\s\S]*?submitGptTextureViewWithSilhouetteRetry\([\s\S]*?waitForGptTextureGenerationWithSilhouetteRetry\(/,
+  'top and bottom views must switch to GPT2 with bounded silhouette recovery inside the serial projection chain',
 );
 assert.match(
   panel,

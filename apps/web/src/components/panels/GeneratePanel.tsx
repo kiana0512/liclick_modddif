@@ -2508,6 +2508,134 @@ export function GeneratePanel({
     });
   }
 
+  async function markSilhouetteRetryFailed(
+    generation: Generation,
+    error: unknown,
+  ): Promise<never> {
+    const retryPolicy = await import('@/engine/generation/gptReturnSilhouetteRetry');
+    const failure = retryPolicy.isGptReturnSilhouetteMismatch(error)
+      ? retryPolicy.terminalSilhouetteRetryError()
+      : error instanceof Error
+        ? error
+        : new Error(String(error));
+    syncGeneration(createFailedGeneration(generation, failure.message));
+    await saveGenerationStateBestEffort();
+    throw failure;
+  }
+
+  async function submitSilhouetteAlignmentRetry(
+    failedGeneration: Generation,
+    failure: unknown,
+    modelViewReference: ReferenceImage,
+    materialReference: ReferenceImage,
+    capture: Capture,
+    signal?: AbortSignal,
+  ): Promise<Generation> {
+    const retryPolicy = await import('@/engine/generation/gptReturnSilhouetteRetry');
+    if (!retryPolicy.isGptReturnSilhouetteMismatch(failure)) throw failure;
+    if (
+      retryPolicy.silhouetteRetryAttempt(failedGeneration.metadata) >=
+      retryPolicy.GPT_SILHOUETTE_RETRY_LIMIT
+    ) {
+      return markSilhouetteRetryFailed(failedGeneration, failure);
+    }
+    throwIfTexturePipelineCancelled(signal);
+    const { generation: retryPending, viewLabel } =
+      retryPolicy.createTextureMapSilhouetteRetry(failedGeneration);
+    const retryId = retryPending.id;
+    const retryPrompt = retryPending.prompt;
+    syncGeneration(
+      createFailedGeneration(failedGeneration, retryPolicy.SILHOUETTE_RETRY_FAILURE_MESSAGE, {
+        silhouetteRetryGenerationId: retryId,
+      }),
+    );
+    start(retryPending);
+    addProjectGeneration(retryPending);
+    setGenerateNotice({
+      tone: 'warning',
+      message: `${viewLabel} 远端回图发生构图漂移，正在使用同一冻结视角自动重试一次。`,
+    });
+    await saveGenerationStateBestEffort();
+    throwIfTexturePipelineCancelled(signal);
+    try {
+      const submitted = await submitGptTextureView(
+        retryId,
+        retryPrompt,
+        modelViewReference,
+        materialReference,
+        capture,
+      );
+      const aligned: Generation = {
+        ...retryPending,
+        ...submitted,
+        metadata: {
+          ...mergeGenerationMetadataPreservingStartedAt(retryPending.metadata, submitted.metadata),
+          serverSubmitted: true,
+          serverJobId: submitted.metadata.serverJobId ?? submitted.id,
+          silhouetteRetryOf: failedGeneration.id,
+          silhouetteRetryAttempt: 1,
+        },
+      };
+      syncGeneration(aligned);
+      return aligned;
+    } catch (error) {
+      return markSilhouetteRetryFailed(retryPending, error);
+    }
+  }
+
+  async function submitGptTextureViewWithSilhouetteRetry(
+    pendingGeneration: Generation,
+    modelViewReference: ReferenceImage,
+    materialReference: ReferenceImage,
+    capture: Capture,
+    signal?: AbortSignal,
+  ): Promise<Generation> {
+    try {
+      return await submitGptTextureView(
+        pendingGeneration.id,
+        pendingGeneration.prompt,
+        modelViewReference,
+        materialReference,
+        capture,
+      );
+    } catch (error) {
+      return submitSilhouetteAlignmentRetry(
+        pendingGeneration,
+        error,
+        modelViewReference,
+        materialReference,
+        capture,
+        signal,
+      );
+    }
+  }
+
+  async function waitForGptTextureGenerationWithSilhouetteRetry(
+    generation: Generation,
+    modelViewReference: ReferenceImage,
+    materialReference: ReferenceImage,
+    capture: Capture,
+    signal?: AbortSignal,
+  ): Promise<Generation> {
+    try {
+      return await waitForLiclickGeneration(generation);
+    } catch (error) {
+      const retry = await submitSilhouetteAlignmentRetry(
+        generation,
+        error,
+        modelViewReference,
+        materialReference,
+        capture,
+        signal,
+      );
+      try {
+        return await waitForLiclickGeneration(retry);
+      } catch (retryError) {
+        return markSilhouetteRetryFailed(retry, retryError);
+      }
+    }
+  }
+
   function waitForProjectedMaterialResident(
     objectId: string,
     signal?: AbortSignal,
@@ -2746,12 +2874,12 @@ export function GeneratePanel({
               objectId,
               isPrimary: false,
             };
-            const submitted = await submitGptTextureView(
-              generationId,
-              submittedPrompt,
+            const submitted = await submitGptTextureViewWithSilhouetteRetry(
+              pendingGeneration,
               modelViewReference,
               materialReference,
               generationCapture,
+              signal,
             );
             const alignedGeneration: Generation = {
               ...pendingGeneration,
@@ -2763,7 +2891,13 @@ export function GeneratePanel({
               },
             };
             syncGeneration(alignedGeneration);
-            remoteGeneration = await waitForLiclickGeneration(alignedGeneration);
+            remoteGeneration = await waitForGptTextureGenerationWithSilhouetteRetry(
+              alignedGeneration,
+              modelViewReference,
+              materialReference,
+              generationCapture,
+              signal,
+            );
           } else {
             const imageDataUrl = await urlToDataUrl(generationCapture.colorUrl);
             const completionMaskDataUrl =
@@ -3377,12 +3511,12 @@ export function GeneratePanel({
               { signal },
             );
           }
-          return submitGptTextureView(
-            generationId,
-            pendingGeneration.prompt,
+          return submitGptTextureViewWithSilhouetteRetry(
+            pendingGeneration,
             modelViewReference,
             materialReference,
             capture,
+            signal,
           );
         },
       ),
@@ -3484,13 +3618,29 @@ export function GeneratePanel({
     if (isMultiviewRequest) useLayerStore.getState().beginProjectedPreviewBatch();
     try {
       let completedTextureViewCount = 0;
+      const waitForSubmittedTextureGeneration = (generation: Generation) => {
+        if (usesRemoteSingleView) return waitForLiclickGeneration(generation);
+        const pending = pendingGenerations.find(
+          (candidate) =>
+            candidate.capture.id === generation.captureId ||
+            candidate.viewId === generation.metadata.cameraViewId,
+        );
+        if (!pending) return waitForLiclickGeneration(generation);
+        return waitForGptTextureGenerationWithSilhouetteRetry(
+          generation,
+          pending.modelViewReference,
+          materialReference,
+          pending.capture,
+          signal,
+        );
+      };
       const completeView = async (generation: Generation, ready?: Generation) => {
         try {
           throwIfTexturePipelineCancelled(signal);
           if (textureBatchWasCancelled() || isCancelledGeneration(generation)) {
             throw new Error('用户已终止纹理贴图生成任务。');
           }
-          const completed = ready ?? (await waitForLiclickGeneration(generation));
+          const completed = ready ?? (await waitForSubmittedTextureGeneration(generation));
           syncGeneration(completed);
           const completedProjectId =
             typeof completed.metadata.projectId === 'string'
@@ -3550,9 +3700,9 @@ export function GeneratePanel({
         }
       };
       const completionResults = pairContext
-        ? await pairContext.scheduler.settleGptPairInOrder(
+          ? await pairContext.scheduler.settleGptPairInOrder(
             submittedGenerations,
-            waitForLiclickGeneration,
+            waitForSubmittedTextureGeneration,
             completeView,
           )
         : await Promise.allSettled(

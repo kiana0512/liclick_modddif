@@ -6,6 +6,23 @@ const source = readFileSync(
   new URL('../src/engine/generation/contentFraming.ts', import.meta.url),
   'utf8',
 );
+const silhouetteSource = readFileSync(
+  new URL('../src/engine/generation/contentFramingSilhouette.ts', import.meta.url),
+  'utf8',
+);
+const retrySource = readFileSync(
+  new URL('../src/engine/generation/gptReturnSilhouetteRetry.ts', import.meta.url),
+  'utf8',
+);
+const retryModule = { exports: {} };
+new Function(
+  'module',
+  'exports',
+  ts.transpileModule(retrySource, {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+  }).outputText,
+)(retryModule, retryModule.exports);
+const retryPolicy = retryModule.exports;
 const module = { exports: {} };
 new Function(
   'module',
@@ -15,7 +32,24 @@ new Function(
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
   }).outputText,
 )(module, module.exports, () => contracts);
-const { findContentFraming, restoredFrameLayout, validateFramedSilhouette } = module.exports;
+const silhouetteModule = { exports: {} };
+new Function(
+  'module',
+  'exports',
+  'require',
+  ts.transpileModule(silhouetteSource, {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+  }).outputText,
+)(silhouetteModule, silhouetteModule.exports, (name) => {
+  assert.equal(name, './contentFraming');
+  return module.exports;
+});
+const { findContentFraming, restoredFrameLayout } = module.exports;
+const { validateFramedSilhouette } = silhouetteModule.exports;
+const retryPrompt = retryPolicy.buildTextureMapSilhouetteRetryPrompt('original');
+assert.match(retryPrompt, /透明的像素继续保持透明/);
+assert.equal(retryPolicy.buildTextureMapSilhouetteRetryPrompt(retryPrompt), retryPrompt);
+assert.equal(retryPolicy.createTextureMapSilhouetteRetryId('job'), 'job-silhouette-retry-1');
 function coverage(width, height, rect, normal = false) {
   const data = new Uint8ClampedArray(width * height * 4);
   for (let y = rect.y; y < rect.y + rect.h; y++)
@@ -80,6 +114,28 @@ const exact = {
   width: 1710,
   height: 1470,
 };
+const frontBottomIncident = {
+  version: 2,
+  sourceWidth: 2048,
+  sourceHeight: 2048,
+  left: -1,
+  top: -4,
+  width: 2050,
+  height: 2050,
+  cropBounds: { left: -1, top: 247, width: 2050, height: 1549 },
+  subject: { left: 20, top: 268, width: 2008, height: 1507 },
+  ratioWidth: 1,
+  ratioHeight: 1,
+  outputWidth: 2048,
+  outputHeight: 2048,
+};
+const incidentMismatch = await validateFramedSilhouette(
+  frontBottomIncident,
+  coverage(2048, 2048, { x: 0, y: 272, w: 2048, h: 1776 }, true),
+  undefined,
+  'capture-mask',
+).catch((error) => error);
+assert.equal(incidentMismatch.code, 'GPT_RETURN_SILHOUETTE_MISMATCH');
 assert.deepEqual(contracts.generationOutputSize(69, 100, '1K'), { width: 848, height: 1232 });
 assert.throws(() => contracts.generationOutputSize(0, 1, '2K'));
 for (const [w, h, ow, oh] of [
@@ -132,6 +188,8 @@ for (const imageSize of ['1K', '2K', '4K']) {
       /cancel/,
     );
     const changed = coverage(f.outputWidth, f.outputHeight, { ...box, w: Math.floor(box.w / 2) });
+    const mismatch = await validateFramedSilhouette(f, changed, undefined, 'capture-mask').catch((error) => error);
+    assert.equal(mismatch.code, 'GPT_RETURN_SILHOUETTE_MISMATCH');
     await assert.rejects(() => validateFramedSilhouette(f, changed), /轮廓/);
     await assert.rejects(() => validateFramedSilhouette(f, changed, undefined, 'capture-mask'), /轮廓/);
     const feathered = coverage(f.outputWidth, f.outputHeight, {
@@ -239,6 +297,15 @@ const clientModule = evaluate(
         return output;
       },
     },
+    '@/engine/generation/contentFramingRestore': {
+      restoreContentFraming: async (url, frame, signal, policy) => {
+        signal?.throwIfAborted();
+        restores++;
+        assert.deepEqual(frame, exact);
+        assert.equal(policy, 'capture-mask');
+        return 'restored:' + url;
+      },
+    },
     '@/engine/generation/contentFramingImages': {
       prepareContentFraming: async () => {
         prepared++;
@@ -247,13 +314,6 @@ const clientModule = evaluate(
           references: [{ id: 'guide', name: 'guide', url: 'cropped-guide' }],
           exactIds: ['guide'],
         };
-      },
-      restoreContentFraming: async (url, frame, signal, policy) => {
-        signal?.throwIfAborted();
-        restores++;
-        assert.deepEqual(frame, exact);
-        assert.equal(policy, 'capture-mask');
-        return 'restored:' + url;
       },
     },
   },
@@ -393,7 +453,23 @@ const imageAdapter = evaluate(
       },
     },
     './contentFraming': module.exports,
+    './contentFramingSilhouette': silhouetteModule.exports,
     '@/utils/browserScheduling': { yieldToBrowserTask: async () => {} },
+  },
+);
+const restoreAdapter = evaluate(
+  readFileSync(
+    new URL('../src/engine/generation/contentFramingRestore.ts', import.meta.url),
+    'utf8',
+  ),
+  {
+    '@/engine/localRepaint/imageUtils': {
+      urlToImageData: async (url) => fixtures.get(url),
+    },
+    '@/utils/browserScheduling': { yieldToBrowserTask: async () => {} },
+    './contentFraming': module.exports,
+    './contentFramingImages': imageAdapter,
+    './contentFramingSilhouette': silhouetteModule.exports,
   },
 );
 try {
@@ -475,7 +551,7 @@ try {
       h: Math.round(s.height * scale),
     }),
   );
-  const restoredUrl = await imageAdapter.restoreContentFraming('remote-output', f);
+  const restoredUrl = await restoreAdapter.restoreContentFraming('remote-output', f);
   assert.equal(
     fixtures.get(restoredUrl).width,
     restoredFrameLayout(f, f.outputWidth, f.outputHeight).width,
@@ -484,7 +560,7 @@ try {
   const before = canvases.length;
   const abort = new globalThis.AbortController();
   abort.abort();
-  await assert.rejects(() => imageAdapter.restoreContentFraming('remote-output', f, abort.signal));
+  await assert.rejects(() => restoreAdapter.restoreContentFraming('remote-output', f, abort.signal));
   assert.equal(canvases.length, before);
 } finally {
   globalThis.Image = originalImage;

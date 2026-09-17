@@ -6,8 +6,6 @@ import {
 
 type CoverageImage = Pick<ImageData, 'width' | 'height' | 'data'>;
 
-export type FramedSilhouettePolicy = 'strict' | 'capture-mask';
-
 /** GPT-CONTENT-BOUNDS/1.0.0. Bounds depend only on each row's first/last
  * covered pixel. Interior holes/colours never change the exact outer bounds.
  * Yield every 16 rows, including empty rows, for cancellable cooperative scans.
@@ -34,7 +32,7 @@ function* contentBounds({ width, height, data }: CoverageImage, normal: boolean,
   return [left, top, right, bottom] as const;
 }
 
-async function cooperativeBounds(image: CoverageImage, normal: boolean, alpha: number, checkpoint?: () => Promise<void>) {
+export async function cooperativeBounds(image: CoverageImage, normal: boolean, alpha: number, checkpoint?: () => Promise<void>) {
   await checkpoint?.();
   const scan = contentBounds(image, normal, alpha);
   let step = scan.next(), started = performance.now();
@@ -140,32 +138,4 @@ export function restoredFrameLayout(frame: GenerationFraming, width: number, hei
     patchWidth: (frame.width * fullWidth) / frame.sourceWidth,
     patchHeight: (frame.height * fullHeight) / frame.sourceHeight,
   };
-}
-
-/** Conservative silhouette check only: no claim to detect internal deformation. */
-export async function validateFramedSilhouette(
-  frame: GenerationFraming,
-  image: Pick<ImageData, 'width' | 'height' | 'data'>,
-  checkpoint?: () => Promise<void>,
-  policy: FramedSilhouettePolicy = 'strict',
-) {
-  if (frame.version !== 2) return;
-  const layout = restoredFrameLayout(frame, image.width, image.height),
-    s = frame.subject!;
-  const [left, top, right, bottom] = await cooperativeBounds(image, true, 128, checkpoint);
-  const sx = layout.width / frame.sourceWidth,
-    sy = layout.height / frame.sourceHeight;
-  const expected = [
-    s.left * sx - layout.left,
-    s.top * sy - layout.top,
-    (s.left + s.width) * sx - layout.left,
-    (s.top + s.height) * sy - layout.top,
-  ];
-  const actual = [left, top, right + 1, bottom + 1];
-  // Texture-map layers are clipped again by the immutable capture mask. A wider
-  // edge tolerance accepts alpha feathering but still rejects empty/half/shifted returns.
-  const relaxed = policy === 'capture-mask';
-  const tolerance = Math.max(relaxed ? 32 : 16, Math.max(s.width * sx, s.height * sy) * (relaxed ? 0.12 : 0.02));
-  if (right < left || actual.some((v, i) => Math.abs(v - expected[i]) > tolerance))
-    throw new Error('远端回图透明轮廓与模型不对齐，已保留结果并停止回贴，未自动重新生成。');
 }

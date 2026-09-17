@@ -5,6 +5,7 @@ import ts from 'typescript';
 import * as contracts from '../../../packages/contracts/dist/index.js';
 
 const source = readFileSync(new URL('../src/engine/generation/contentFraming.ts', import.meta.url), 'utf8');
+const silhouetteSource = readFileSync(new URL('../src/engine/generation/contentFramingSilhouette.ts', import.meta.url), 'utf8');
 function load(clock = performance) {
   const module = { exports: {} };
   new Function('module', 'exports', 'require', 'performance', ts.transpileModule(source, {
@@ -15,6 +16,13 @@ function load(clock = performance) {
   return module.exports;
 }
 const current = load();
+const silhouetteModule = { exports: {} };
+new Function('module', 'exports', 'require', ts.transpileModule(silhouetteSource, {
+  compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+}).outputText)(silhouetteModule, silhouetteModule.exports, name => {
+  assert.equal(name, './contentFraming'); return current;
+});
+const { validateFramedSilhouette } = silhouetteModule.exports;
 let seed = 17;
 const random = () => (seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0);
 for (let fixture = 0; fixture < 120; fixture++) {
@@ -60,10 +68,10 @@ await assert.rejects(() => timed.findContentFramingCooperatively(empty, false, '
 assert.equal(checkpoints, 2);
 const frame = current.findContentFraming({ width: 1, height: 1, data: new Uint8ClampedArray([255, 255, 255, 255]) });
 assert.throws(() => current.restoredFrameLayout(frame, frame.outputWidth - 1, frame.outputHeight), /远端回图比例异常/);
-await assert.rejects(() => current.validateFramedSilhouette(frame, { width: frame.outputWidth, height: frame.outputHeight,
-  data: new Uint8ClampedArray(frame.outputWidth * frame.outputHeight * 4) }), /透明轮廓与模型不对齐/);
-await assert.rejects(() => current.validateFramedSilhouette(frame, { width: frame.outputWidth, height: frame.outputHeight,
-  data: new Uint8ClampedArray(frame.outputWidth * frame.outputHeight * 4) }, undefined, 'capture-mask'), /透明轮廓与模型不对齐/);
+await assert.rejects(() => validateFramedSilhouette(frame, { width: frame.outputWidth, height: frame.outputHeight,
+  data: new Uint8ClampedArray(frame.outputWidth * frame.outputHeight * 4) }), /透明轮廓不对齐/);
+await assert.rejects(() => validateFramedSilhouette(frame, { width: frame.outputWidth, height: frame.outputHeight,
+  data: new Uint8ClampedArray(frame.outputWidth * frame.outputHeight * 4) }, undefined, 'capture-mask'), /透明轮廓不对齐/);
 
 // Execute the real image-loader function to check async decode, compatibility
 // when decode rejects, and cancellation while an otherwise loaded image decodes.

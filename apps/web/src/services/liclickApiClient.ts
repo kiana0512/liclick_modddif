@@ -209,7 +209,7 @@ async function requestJson<T>(
 
 export async function restoreFramedJobResult<T extends { resultUrl?: string; resultUrls?: string[]; framing?: GenerationFraming; framingRestored?: boolean; workflow?: 'liclick' | 'texture-map' | 'local-repaint' }>(result: T, signal?: AbortSignal, workflow = result.workflow): Promise<T> {
   if (!result.resultUrl || !result.framing || result.framingRestored) return result;
-  const { restoreContentFraming } = await import('@/engine/generation/contentFramingImages');
+  const { restoreContentFraming } = await import('@/engine/generation/contentFramingRestore');
   const urls = [...new Set([result.resultUrl, ...(result.resultUrls ?? [])])];
   const policy = workflow === 'texture-map' ? 'capture-mask' : 'strict';
   const restored = await mapWithConcurrency(urls, 1, url => restoreContentFraming(url, result.framing!, signal, policy));

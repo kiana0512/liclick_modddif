@@ -4,6 +4,8 @@
 
 2026-09-17 M04（协作 M03/M08）：`GPT-CONTENT-FRAMING/2.2.0` 修复远端输入仅画布为正方形、短边背景仍被长方形 clip 清空的问题。上传引导图直接按长边方框截取完整原始 RGBA，颜色/法线共用坐标；仅超出源图的区域保留透明。比例、边距、回贴映射及历史 framing v1/v2 不变。GPU/CPU/Worker/shader、投影/UV/export、分辨率、QA、Schema/Command/CAS/ownership 均不改，无迁移。横图、竖图、触边和双引导逐像素回归旧失败、新通过。详见 [远端输入方形裁切](changes/CHG-20260917-SQUARE-INPUT-CROP.md)。本轮仅本地修改，尚未推送或部署。
 
+2026-09-17 M04（协作 M03/M06/M08/M12/M13）：`GPT-RETURN-SILHOUETTE-QA/1.2.0` / `GPT-SILHOUETTE-RETRY/1.0.0` / `ALG-GEN-001/002` v1.3.1 实测“前下 45°”失败回图在预期主体底部之外新增大面积半透明背景/光晕，Alpha 底边外扩约 269 px，不放宽 12% 轮廓门禁。仅对稳定轮廓错误码，复用同一冻结 Capture/相机/参考/分辨率及确定性任务 ID 自动替代当前视角 1 次；恢复提示禁止背景、光晕、移动和裁切。第二次异常仍 fail-closed，两份结果均保留，无无界重试；同组成功视角不丢失。framing 提交与返图恢复/QA 按需分包，重试构造从 Editor 热包下沉；实测 Editor/framing/总 JS 余量分别为 `1034 B` / `1005 B` / `35449 B`，不调高预算。不改 GPU/CPU/Worker/shader、投影/UV/export、像素、Schema、Command/CAS/ownership/verified assets，无迁移；见 [GPT 轮廓漂移有界重试](changes/CHG-20260917-GPT-SILHOUETTE-RETRY.md)。
+
 2026-09-17 M07（协作 M05/M06/M08/M09）：`LOCAL-BOUNDARY-REPAIR/1.3.1` / `CONTENT-REPAIR-WORKER-RESULT/1.0.0` 令正式内容填补发布只从 Worker 接收稀疏 RGBA 与统计，不再在 UI 线程保留未消费的 `repairedMask`、`sourceExclusionMask`；4K 少驻留约 32 MiB。诊断/测试调用默认仍返回完整结果，遗漏请求的诊断时 fail-closed。CPU/Worker 像素、GPU/shader、投影/UV/repaint/export、分辨率、QA、Schema/Command/CAS/ownership/verified assets 不变，无迁移；Edge 2K 精简 Worker/主线程 RGBA 字节差 0，4K 精简 Worker 通过。回滚与验证见 [内容填补 Worker 结果内存收敛](changes/CHG-20260917-CONTENT-REPAIR-WORKER-RESULT.md)。
 
 2026-09-17 M15（协作 M04）：`RELEASE-PREPUSH/1.2.0` 修复发布前仅执行 lint/build 而遗漏其他 verify 任务的问题；从 CI 配置发现全部 verify script，保留各任务变量与任意失败即停止，再执行 build 和 256 字节余量门禁。多视图旧测试不再硬编码临时上传 ID，实际持久化行为由 reference-binding 回归覆盖新建、光照原位替换、独立参考、重复处理、选择与保存。生产功能、UV/GPU/CPU/Worker/shader、QA、Schema/Command/CAS/ownership 和资产不变，无迁移；回滚仅涉及测试与发布脚本。详见 [CI 回归修复](changes/CHG-20260917-CI-REFERENCE-SELECTION.md)。
@@ -1316,6 +1318,7 @@ M15 / CLOUD-DEPLOYMENT v1.0.0（2026-09-03）：正常合并 release 部署历�
 
 | 版本 | 日期 | 基线 | 变更 |
 | --- | --- | --- | --- |
+| `2.20.174` | 2026-09-17 | `GPT 轮廓漂移有界重试` | M04（协作 M03/M06/M08/M12/M13）：`GPT-RETURN-SILHOUETTE-QA/1.2.0` / `GPT-SILHOUETTE-RETRY/1.0.0` / `ALG-GEN-001/002` v1.3.1 保留轮廓门禁，仅对确认的远端构图漂移使用同冻结视角和确定性 ID 替代 1 次，再失败即停止；无数据迁移。 |
 | `2.20.173` | 2026-09-17 | `导入智能 UV 投射` | M02/M10/M13：IMPORT-UV-REPAIR v1.2.0，临时工作网格投射后仅回写 UV；无数据迁移。 |
 | `2.20.172` | 2026-09-17 | `多视图光照处理` | M04/M12/M13：REFERENCE-LIGHTING v1.0.0 一次去光照，REFERENCE-GROUP-BINDING v1.2.0 原位保留绑定；无数据迁移，未推送部署。 |
 | `2.20.171` | 2026-09-17 | `移除导入自动减面` | M02/M10/M13：IMPORT-DECIMATE retired，IMPORT-UV-REPAIR v1.1.0 保留明确确认的 UV 修复；恢复处理前 200 万面门禁，浏览器边界/UV 回归、Server UV 测试及 Web 类型检查通过，无迁移，未推送部署。 |

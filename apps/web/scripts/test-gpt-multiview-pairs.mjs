@@ -128,11 +128,18 @@ let textureEntryDeclaration;
 let compactProgressLabelDeclaration;
 function visit(node) {
   if (ts.isFunctionDeclaration(node) && node.name?.text === 'handleTextureMapGenerate') textureEntryDeclaration = node.getText(ast);
-  if (ts.isFunctionDeclaration(node) && ['handleGptPairedMultiviewGenerate', 'handleTextureMapMultiviewGenerate'].includes(node.name?.text)) declarations.push(node.getText(ast));
+  if (ts.isFunctionDeclaration(node) && [
+    'markSilhouetteRetryFailed',
+    'submitSilhouetteAlignmentRetry',
+    'submitGptTextureViewWithSilhouetteRetry',
+    'waitForGptTextureGenerationWithSilhouetteRetry',
+    'handleGptPairedMultiviewGenerate',
+    'handleTextureMapMultiviewGenerate',
+  ].includes(node.name?.text)) declarations.push(node.getText(ast));
   if (ts.isFunctionDeclaration(node) && node.name?.text === 'compactTextureProgressButtonLabel') compactProgressLabelDeclaration = node.getText(ast);
   ts.forEachChild(node, visit);
 }
-visit(ast); assert.equal(declarations.length, 2); assert(compactProgressLabelDeclaration);
+visit(ast); assert.equal(declarations.length, 6); assert(compactProgressLabelDeclaration);
 const compactProgressLabel = new Function(
   `${compile(compactProgressLabelDeclaration)}; return compactTextureProgressButtonLabel;`,
 )();
@@ -142,7 +149,7 @@ assert.equal(
   '第 2/7 组',
 );
 assert.equal(compactProgressLabel('生成纹理贴图 · 第 2/7 组'), '生成纹理贴图 · 第 2/7 组');
-async function fixture(failedView, fullyCovered = false, mode = 'stable', preset = 'custom', names = ['front', 'left', 'back', 'right', 'top', 'bottom'], captureError, slowStatusSave = false) {
+async function fixture(failedView, fullyCovered = false, mode = 'stable', preset = 'custom', names = ['front', 'left', 'back', 'right', 'top', 'bottom'], captureError, slowStatusSave = false, silhouetteFailure) {
   let sequence = 0, rows = [], frozen = false, repairCount = 0, whitePresentation = false;
   const jobs = new Map(), requests = [], captures = [], saved = [];
   const checkpoint = defer();
@@ -151,10 +158,46 @@ async function fixture(failedView, fullyCovered = false, mode = 'stable', preset
   const sceneRoot = new THREE.Group(), resident = new THREE.ShaderMaterial({ name: 'LiclickProjectedLayerStack:layers' });
   sceneRoot.add(new THREE.Mesh(new THREE.BoxGeometry(), resident));
   const active = () => { assert.equal(frozen, false, 'capture must not run against a frozen preview'); };
-  const scope = {
-    require: (name) => name.endsWith('gptMultiviewPairs') ? scheduler : {
-      buildTextureMapPrompt: () => 'initial', buildTextureMapCompletionPrompt: () => 'completion',
+  const silhouetteRetryPolicy = {
+    GPT_SILHOUETTE_RETRY_LIMIT: 1,
+    SILHOUETTE_RETRY_FAILURE_MESSAGE: 'alignment drift; retrying once',
+    silhouetteRetryAttempt: (metadata) => metadata.silhouetteRetryAttempt ?? 0,
+    isGptReturnSilhouetteMismatch: (error) => error?.code === 'GPT_RETURN_SILHOUETTE_MISMATCH',
+    terminalSilhouetteRetryError: () => new Error('连续两次 alignment failed'),
+    createTextureMapSilhouetteRetry: (failed) => {
+      const id = `${failed.id}-silhouette-retry-1`;
+      return {
+        viewLabel: failed.metadata.cameraViewLabel ?? 'current',
+        generation: {
+          ...failed,
+          id,
+          prompt: `alignment-retry:${failed.prompt}`,
+          resultUrl: undefined,
+          status: 'running',
+          metadata: {
+            ...failed.metadata,
+            clientGenerationId: id,
+            serverJobId: undefined,
+            taskId: undefined,
+            completedAt: undefined,
+            error: undefined,
+            framingRestored: undefined,
+            generationFraming: undefined,
+            serverSubmitted: false,
+            startedAt: new Date().toISOString(),
+            silhouetteRetryOf: failed.id,
+            silhouetteRetryAttempt: 1,
+          },
+        },
+      };
     },
+  };
+  const scope = {
+    require: (name) => name.endsWith('gptMultiviewPairs')
+      ? scheduler
+      : name.endsWith('gptReturnSilhouetteRetry')
+        ? silhouetteRetryPolicy
+        : { buildTextureMapPrompt: () => 'initial', buildTextureMapCompletionPrompt: () => 'completion' },
     captureObjectId: 'object', currentProject: project, selectedCameraViewPreset: preset,
     singleViewProvider: 'gpt', prompt: 'user draft', imageModel: 'gpt', resolution: '2k', resolutionToSize: { '2k': 2048 },
     objects: [{ id: 'object' }], t: (key) => key, console,
@@ -215,14 +258,34 @@ async function fixture(failedView, fullyCovered = false, mode = 'stable', preset
       assert.equal(reference.id, 'material', 'second input remains the user-selected material reference');
       assert(saved.some((patch) => patch.captures?.some((item) => item.id === capture.id)), 'capture must be durable before submission');
       requests.push({ id, prompt, guide, capture });
-      assert.equal(capture.maskUrl, `original-mask-${jobs.get(id).metadata.cameraViewId}`);
-      return jobs.get(id);
+      const job = jobs.get(id);
+      assert.equal(capture.maskUrl, `original-mask-${job.metadata.cameraViewId}`);
+      if (
+        silhouetteFailure?.stage === 'submit' &&
+        job.metadata.cameraViewId === silhouetteFailure.view &&
+        silhouetteFailure.failures > (job.metadata.silhouetteRetryAttempt ?? 0)
+      ) {
+        throw Object.assign(new Error('silhouette mismatch'), {
+          code: 'GPT_RETURN_SILHOUETTE_MISMATCH',
+        });
+      }
+      return job;
     },
     waitForLiclickGeneration: async (job) => {
       if (slowStatusSave && !observedWhileSaving) {
         observedWhileSaving = true;
         assert.equal(statusSaves, 1, 'status checkpoint started before result observation');
         checkpoint.resolve();
+      }
+      if (
+        silhouetteFailure &&
+        (silhouetteFailure?.stage ?? 'wait') === 'wait' &&
+        job.metadata.cameraViewId === silhouetteFailure.view &&
+        (silhouetteFailure.failures > (job.metadata.silhouetteRetryAttempt ?? 0))
+      ) {
+        throw Object.assign(new Error('silhouette mismatch'), {
+          code: 'GPT_RETURN_SILHOUETTE_MISMATCH',
+        });
       }
       if (job.metadata.cameraViewId === failedView) throw new Error('controlled network failure');
       return { ...job, status: 'succeeded', resultUrl: `result:${job.id}` };
@@ -268,6 +331,30 @@ assert(failure.error);
 assert.deepEqual(failure.captures, [['front', 'back']]);
 assert.deepEqual(failure.rows.map((row) => row.id), ['front']);
 assert.equal(failure.repairCount, 0);
+const recoveredSilhouette = await fixture(
+  undefined, false, 'fast', 'custom', undefined, undefined, false,
+  { view: 'front', failures: 1 },
+);
+assert.ifError(recoveredSilhouette.error);
+assert.equal(recoveredSilhouette.requests.length, 7, 'one rejected silhouette submits exactly one replacement view');
+assert.equal(recoveredSilhouette.requests.filter((request) => request.capture.id === 'capture-front').length, 2);
+assert.match(recoveredSilhouette.requests.find((request) => request.id.endsWith('-silhouette-retry-1')).prompt, /^alignment-retry:/);
+assert.deepEqual(recoveredSilhouette.rows.map((row) => row.id), recoveredSilhouette.captures.flat());
+const recoveredImmediateSilhouette = await fixture(
+  undefined, false, 'fast', 'custom', undefined, undefined, false,
+  { view: 'front', failures: 1, stage: 'submit' },
+);
+assert.ifError(recoveredImmediateSilhouette.error);
+assert.equal(recoveredImmediateSilhouette.requests.length, 7, 'an immediate bad response also receives only one replacement');
+assert.deepEqual(recoveredImmediateSilhouette.rows.map((row) => row.id), recoveredImmediateSilhouette.captures.flat());
+const rejectedSilhouette = await fixture(
+  undefined, false, 'fast', 'custom', undefined, undefined, false,
+  { view: 'front', failures: 2 },
+);
+assert.match(String(rejectedSilhouette.error), /连续两次/);
+assert.equal(rejectedSilhouette.requests.length, 3, 'the retry budget cannot create a submission storm');
+assert.deepEqual(rejectedSilhouette.rows.map((row) => row.id), ['back'], 'the successful sibling remains projected');
+assert.equal(rejectedSilhouette.repairCount, 0);
 for (const [preset, expected] of [['preset-1', expected1], ['preset-2', expected2]]) for (const stored of [undefined, 'stable', 'fast', 'unknown']) {
   const result = await fixture(undefined, false, stored, preset, expected.flat());
   assert.ifError(result.error);
