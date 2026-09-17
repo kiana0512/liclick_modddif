@@ -20,7 +20,7 @@ export async function run(requested = Number(new globalThis.URLSearchParams(glob
   const mainStart = performance.now(), main = width <= 2048 ? await runSurfaceAwareRepair(input, { useWorker: false }) : undefined;
   const mainMs = performance.now() - mainStart;
   const workerStart = performance.now();
-  const worker = await runSurfaceAwareRepair(input);
+  const worker = await runSurfaceAwareRepair(input, { includeDiagnostics: false });
   const workerMs = performance.now() - workerStart;
   let mismatches = 0;
   for (let i = 0; i < original.length; i++) {
@@ -29,7 +29,8 @@ export async function run(requested = Number(new globalThis.URLSearchParams(glob
   }
   check(mismatches === 0, 'worker/main bytes identical');
   check(worker.stats.globalFallbackPixels === 0 && worker.stats.sourceRegionLockedComponents === 0, 'no global/single-color fallback');
-  check(worker.repairedMask[width - 50] === 0, 'blank foreign component stays open');
+  check(worker.filledRgba[(width - 50) * 4 + 3] === 0, 'blank foreign component stays open');
+  check(!('repairedMask' in worker) && !('sourceExclusionMask' in worker), 'production result omits diagnostic masks');
   check(worker.stats.repairedPixels === 128 * height && worker.stats.maxDistanceReached === 64,
     'wide gap fills beyond the initial 16px, without borrowing from foreign components');
   const center = (midpoint * width + midpoint) * 4;

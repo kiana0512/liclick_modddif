@@ -22,7 +22,18 @@ export interface RunSurfaceAwareRepairOptions {
     rgba?: boolean;
     writeMask?: boolean;
   };
+  /**
+   * Return the two full-resolution diagnostic masks. Production publishing only
+   * needs sparse RGBA + stats and disables this to avoid retaining another two
+   * atlas-sized buffers on the main thread. Defaults to true for compatibility.
+   */
+  includeDiagnostics?: boolean;
 }
+
+export type SurfaceAwareRepairPublishResult = Pick<
+  SurfaceAwareRepairResult,
+  'filledRgba' | 'stats'
+>;
 
 function createAbortError() {
   return new DOMException('Surface-aware repair was cancelled.', 'AbortError');
@@ -86,10 +97,13 @@ async function runOnMainThread(
   // Normal editor execution uses the Worker; load the identical compatibility
   // kernel only when needed instead of adding it to the editor's initial route.
   const { repairSurfaceTexture } = await import('./surfaceAwareRepair');
-  return repairSurfaceTexture(copiedInput, {
+  const result = repairSurfaceTexture(copiedInput, {
     signal: options.signal,
     onProgress: options.onProgress,
   });
+  return options.includeDiagnostics === false
+    ? { filledRgba: result.filledRgba, stats: result.stats }
+    : result;
 }
 
 /**
@@ -98,8 +112,16 @@ async function runOnMainThread(
  */
 export function runSurfaceAwareRepair(
   input: SurfaceAwareRepairInput,
+  options: RunSurfaceAwareRepairOptions & { includeDiagnostics: false },
+): Promise<SurfaceAwareRepairPublishResult>;
+export function runSurfaceAwareRepair(
+  input: SurfaceAwareRepairInput,
+  options?: RunSurfaceAwareRepairOptions,
+): Promise<SurfaceAwareRepairResult>;
+export function runSurfaceAwareRepair(
+  input: SurfaceAwareRepairInput,
   options: RunSurfaceAwareRepairOptions = {},
-): Promise<SurfaceAwareRepairResult> {
+): Promise<SurfaceAwareRepairResult | SurfaceAwareRepairPublishResult> {
   if (options.signal?.aborted) return Promise.reject(createAbortError());
   if (options.useWorker === false || typeof Worker === 'undefined') {
     return runOnMainThread(copyInput(input, options), options);
@@ -108,7 +130,7 @@ export function runSurfaceAwareRepair(
   // duplicating those 4K arrays once in JS before postMessage copies them again.
   const copiedInput = copyInput(input, options, true);
 
-  return new Promise<SurfaceAwareRepairResult>((resolve, reject) => {
+  return new Promise<SurfaceAwareRepairResult | SurfaceAwareRepairPublishResult>((resolve, reject) => {
     const worker = new Worker(new URL('./surfaceAwareRepair.worker.ts', import.meta.url), {
       type: 'module',
     });
@@ -118,8 +140,8 @@ export function runSurfaceAwareRepair(
       worker.terminate();
     };
     const finish = (
-      callback: (value: SurfaceAwareRepairResult) => void,
-      value: SurfaceAwareRepairResult,
+      callback: (value: SurfaceAwareRepairResult | SurfaceAwareRepairPublishResult) => void,
+      value: SurfaceAwareRepairResult | SurfaceAwareRepairPublishResult,
     ) => {
       if (settled) return;
       settled = true;
@@ -144,11 +166,22 @@ export function runSurfaceAwareRepair(
         fail(new Error(response.error));
         return;
       }
-      finish(resolve, {
+      const publishResult: SurfaceAwareRepairPublishResult = {
         filledRgba: new Uint8ClampedArray(response.filledRgba),
+        stats: response.stats,
+      };
+      if (options.includeDiagnostics === false) {
+        finish(resolve, publishResult);
+        return;
+      }
+      if (!response.repairedMask || !response.sourceExclusionMask) {
+        fail(new Error('Surface-aware repair worker omitted requested diagnostic masks.'));
+        return;
+      }
+      finish(resolve, {
+        ...publishResult,
         repairedMask: new Uint8Array(response.repairedMask),
         sourceExclusionMask: new Uint8Array(response.sourceExclusionMask),
-        stats: response.stats,
       });
     };
     worker.onerror = (event) => {
@@ -197,6 +230,7 @@ export function runSurfaceAwareRepair(
       lockToDominantSourceRegion: copiedInput.lockToDominantSourceRegion,
       localBoundaryBlend: copiedInput.localBoundaryBlend,
       adaptiveGapDistance: copiedInput.adaptiveGapDistance,
+      includeDiagnostics: options.includeDiagnostics !== false,
     };
     // RGBA/writeMask are disposable copies (or explicitly transferred caller
     // buffers). Keep cached topology sources attached and let structured clone

@@ -4,6 +4,8 @@
 
 2026-09-17 M04（协作 M03/M08）：`GPT-CONTENT-FRAMING/2.2.0` 修复远端输入仅画布为正方形、短边背景仍被长方形 clip 清空的问题。上传引导图直接按长边方框截取完整原始 RGBA，颜色/法线共用坐标；仅超出源图的区域保留透明。比例、边距、回贴映射及历史 framing v1/v2 不变。GPU/CPU/Worker/shader、投影/UV/export、分辨率、QA、Schema/Command/CAS/ownership 均不改，无迁移。横图、竖图、触边和双引导逐像素回归旧失败、新通过。详见 [远端输入方形裁切](changes/CHG-20260917-SQUARE-INPUT-CROP.md)。本轮仅本地修改，尚未推送或部署。
 
+2026-09-17 M07（协作 M05/M06/M08/M09）：`LOCAL-BOUNDARY-REPAIR/1.3.1` / `CONTENT-REPAIR-WORKER-RESULT/1.0.0` 令正式内容填补发布只从 Worker 接收稀疏 RGBA 与统计，不再在 UI 线程保留未消费的 `repairedMask`、`sourceExclusionMask`；4K 少驻留约 32 MiB。诊断/测试调用默认仍返回完整结果，遗漏请求的诊断时 fail-closed。CPU/Worker 像素、GPU/shader、投影/UV/repaint/export、分辨率、QA、Schema/Command/CAS/ownership/verified assets 不变，无迁移；Edge 2K 精简 Worker/主线程 RGBA 字节差 0，4K 精简 Worker 通过。回滚与验证见 [内容填补 Worker 结果内存收敛](changes/CHG-20260917-CONTENT-REPAIR-WORKER-RESULT.md)。
+
 2026-09-17 M15（协作 M04）：`RELEASE-PREPUSH/1.2.0` 修复发布前仅执行 lint/build 而遗漏其他 verify 任务的问题；从 CI 配置发现全部 verify script，保留各任务变量与任意失败即停止，再执行 build 和 256 字节余量门禁。多视图旧测试不再硬编码临时上传 ID，实际持久化行为由 reference-binding 回归覆盖新建、光照原位替换、独立参考、重复处理、选择与保存。生产功能、UV/GPU/CPU/Worker/shader、QA、Schema/Command/CAS/ownership 和资产不变，无迁移；回滚仅涉及测试与发布脚本。详见 [CI 回归修复](changes/CHG-20260917-CI-REFERENCE-SELECTION.md)。
 
 2026-09-17 模型导入 → M02（协作 M10/M13）：`IMPORT-UV-REPAIR` v1.2.0 按用户要求改为 Blender 智能 UV 投射（66°），保留平均岛尺度、0.001 排布边距与按需补足 1e-6 外边界。为支持非索引 GLB，仅在临时 UV 工作网格恢复同位置顶点连接，按原面角写回 UV，不导出临时网格；原始几何、面数、材质及法线保持普通 Blender 回读语义。确认弹窗、0–1/退化 QA、GPU/CPU/Worker/shader、分辨率、保存/export、Schema/Command/CAS/ownership 不变；无存量工程迁移。真实 400162 面模型回读 UV 合格，2K 原始前后视图 GPU 投影通过。详见 [智能 UV 投射](changes/CHG-20260917-IMPORT-SMART-UV.md)。

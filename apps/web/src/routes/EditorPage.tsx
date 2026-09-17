@@ -7124,6 +7124,9 @@ export function EditorPage({
           {
             signal: abortController.signal,
             transferOwnership: { rgba: true, writeMask: true },
+            // Publishing consumes only sparse RGBA + stats. Keeping two extra
+            // 4K byte masks would retain another 32 MiB on the UI thread.
+            includeDiagnostics: false,
             onProgress: silentForeground
               ? undefined
               : (progress) =>

@@ -42,6 +42,35 @@ test('worker launch transfers disposable pixels but keeps resident topology buff
   }
 });
 
+test('production worker result omits atlas-sized diagnostics without changing sparse RGBA or stats', async () => {
+  const f = fixture(4);
+  let request;
+  const PreviousWorker = globalThis.Worker;
+  globalThis.Worker = class {
+    postMessage(nextRequest) {
+      request = nextRequest;
+      globalThis.queueMicrotask(() => this.onmessage({
+        data: {
+          kind: 'result',
+          filledRgba: new ArrayBuffer(16),
+          stats: { repairedPixels: 1, outputChecksum: 42 },
+        },
+      }));
+    }
+    terminate() {}
+  };
+  try {
+    const result = await runSurfaceAwareRepair(f, { includeDiagnostics: false });
+    assert.equal(request.includeDiagnostics, false);
+    assert.equal(result.filledRgba.byteLength, 16);
+    assert.equal(result.stats.outputChecksum, 42);
+    assert.equal('repairedMask' in result, false);
+    assert.equal('sourceExclusionMask' in result, false);
+  } finally {
+    if (PreviousWorker === undefined) delete globalThis.Worker; else globalThis.Worker = PreviousWorker;
+  }
+});
+
 test('a narrow seam interpolates both local boundaries instead of a constant or nearest-owner stripe', () => {
   const f = fixture(9); pixel(f, 0, [110, 80, 75]); pixel(f, 8, [150, 100, 95]); f.writeMask.fill(255, 1, 8);
   const before = f.rgba.slice(); const repaired = repairSurfaceTexture(f);

@@ -29,6 +29,14 @@
 
 ## 3. 本轮小范围稳定性修复
 
+### 3.0a 内容填补 Worker 结果内存
+
+- 主模块：`M07`；契约 `LOCAL-BOUNDARY-REPAIR/1.3.1` / `CONTENT-REPAIR-WORKER-RESULT/1.0.0`。
+- 风险：正式发布只读取稀疏 RGBA 与统计，旧 Worker 协议仍把两张完整 byte mask 转移并驻留在 UI 线程；4K 增加约 32 MiB 瞬时保留，连续填补、上传和 PNG 编码重叠时扩大 GC/内存压力。
+- 修复：生产调用显式关闭诊断回传；诊断与测试默认契约不变，Worker 内部仍完整计算 mask、checksum 和 QA 统计。
+- 证据：专项 32/32；Edge 2K 精简 Worker/主线程 RGBA 字节差 0；Edge 4K 精简 Worker 修复 524,288 texel，真实空洞透明、无全局兜底。本次不宣称 4K 计算耗时已经解决。
+- 变更卡：[CHG-20260917-CONTENT-REPAIR-WORKER-RESULT](changes/CHG-20260917-CONTENT-REPAIR-WORKER-RESULT.md)。
+
 ### 3.0 放大视图内容填补深色斜线
 
 - 主模块：`M07`，协作 `M05/M06/M08/M09`；契约 `LOCAL-BOUNDARY-REPAIR/1.3.0` / `ALG-CA-001` v1.1.0。
@@ -86,7 +94,7 @@
 | P1 | `M06` `ProjectedLayerMaterial.ts` + `SceneRoot.tsx` | 5,437 + 5,231 行；材质驻留、上传、编译、生命周期高度耦合 | 禁止凭文件大小重写。只在真实 profile 锁定上传、编译或发布阶段后做单点修复，并跑 WebGL 像素 parity、取消和资源释放回归 |
 | P1 | `M04/M12` `EditorPage.tsx` + `GeneratePanel.tsx` | 7,894 + 5,769 个非空行；页面仍承担跨任务编排 | 不在本轮拆层。优先减少可测的重复序列化、重复捕获或无关订阅，不移动算法常量到 React/Zustand |
 | P1 | `M07` UV 合成与回读 | 两个核心 Bake 文件各约 2.1K 行，且有 CPU/GPU/Worker/shader/export 对应实现 | 所有性能修改必须做完整字节/像素 parity、4K、取消和资源所有权检查；不得降分辨率或跳过 QA |
-| P1（本轮已修确定性缺口） | `M07` 内容识别填补 | 4K 分量门槛会丢弃已显示为深色斜线的小缺口；复杂 4K Worker 仍为秒级 | 已保留全部严格 core 斜线 texel并移除无效 seam 工作；继续以真实工程记录总耗时、未达 texel 和最大帧，不用降低分辨率掩盖热点 |
+| P1（本轮已修确定性缺口与结果驻留） | `M07` 内容识别填补 | 4K 分量门槛会丢弃已显示为深色斜线的小缺口；旧发布结果额外驻留约 32 MiB 诊断 mask；复杂 4K Worker 仍为秒级 | 已保留全部严格 core 斜线 texel、移除无效 seam 工作并停止生产回传未消费 mask；继续以真实工程记录总耗时、未达 texel、内存峰值和最大帧，不用降低分辨率掩盖热点 |
 | P1 | `M10/M13` Bake Job 文件持久化 | 历史并发请求已共享扫描，列表 metadata 与产物验收已异步化；但远端轮询状态通过 `persist()` 同步 `mkdirSync/writeFileSync` 重写 `job.json`，任务与共享卷增多时仍可阻塞同进程其他用户请求 | 下一补丁优先做同 Job 串行、可等待、崩溃一致的异步持久化；不得丢终态、重排状态或牺牲重启恢复，先加故障注入和写入顺序回归 |
 | P2（已修复，待生产观测） | `M13` UV/拓扑历史远端刷新 | 已使用全局 8、单用户 4、同 Job in-flight 合并和 2.75 秒响应等待预算；严格 TLS 多身份冒烟通过 | 生产记录队列深度、等待预算命中率、远端 P95/P99 和持久记录滞后；不因本地模拟通过而宣称生产容量完成 |
 | P1 | `M10/M13` Bake 下载与 ZIP | 历史输出 metadata 已异步，但单文件下载和 ZIP 归档仍通过 `getNormalBakeOutputPath` / `bakeArchiveService` 使用同步 exists/stat；多用户集中下载时共享卷延迟仍进入 HTTP 热路径 | 改为异步 metadata/打开文件并保留普通文件、owner、成功终态、通道及归档字节门禁；与 Job 持久化分开提交 |

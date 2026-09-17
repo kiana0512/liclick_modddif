@@ -31,6 +31,7 @@ export interface SurfaceRepairWorkerRequest {
   lockToDominantSourceRegion?: boolean;
   localBoundaryBlend?: boolean;
   adaptiveGapDistance?: boolean;
+  includeDiagnostics?: boolean;
 }
 
 export type SurfaceRepairWorkerResponse =
@@ -38,8 +39,8 @@ export type SurfaceRepairWorkerResponse =
   | {
       kind: 'result';
       filledRgba: ArrayBuffer;
-      repairedMask: ArrayBuffer;
-      sourceExclusionMask: ArrayBuffer;
+      repairedMask?: ArrayBuffer;
+      sourceExclusionMask?: ArrayBuffer;
       stats: SurfaceRepairStats;
     }
   | { kind: 'error'; error: string };
@@ -94,16 +95,23 @@ workerScope.onmessage = (event) => {
     const filledRgba = result.filledRgba.buffer as ArrayBuffer;
     const repairedMask = result.repairedMask.buffer as ArrayBuffer;
     const sourceExclusionMask = result.sourceExclusionMask.buffer as ArrayBuffer;
-    workerScope.postMessage(
-      {
-        kind: 'result',
-        filledRgba,
-        repairedMask,
-        sourceExclusionMask,
-        stats: result.stats,
-      },
-      [filledRgba, repairedMask, sourceExclusionMask],
-    );
+    if (request.includeDiagnostics === false) {
+      workerScope.postMessage(
+        { kind: 'result', filledRgba, stats: result.stats },
+        [filledRgba],
+      );
+    } else {
+      workerScope.postMessage(
+        {
+          kind: 'result',
+          filledRgba,
+          repairedMask,
+          sourceExclusionMask,
+          stats: result.stats,
+        },
+        [filledRgba, repairedMask, sourceExclusionMask],
+      );
+    }
   } catch (error) {
     workerScope.postMessage({
       kind: 'error',
