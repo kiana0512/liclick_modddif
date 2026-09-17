@@ -1287,6 +1287,26 @@ try {
     'Compact loops must still obey the device sampler budget.');
   hybrid.dispose(); simpleHybrid.dispose(); liveDepth.dispose();
   const sceneStore = await server.ssrLoadModule('/src/stores/sceneStore.ts');
+  sceneStore.useSceneStore.getState().setPaintTool('none');
+  const maskActivationBaseline = sceneStore.useSceneStore.getState().paintToolActivationRevision;
+  sceneStore.useSceneStore.getState().setPaintTool('inpaint-add');
+  assert.equal(
+    sceneStore.useSceneStore.getState().paintToolActivationRevision,
+    maskActivationBaseline + 1,
+    'Entering the mask tool must arm one viewport session.',
+  );
+  sceneStore.useSceneStore.getState().setPaintTool('inpaint-add');
+  assert.equal(
+    sceneStore.useSceneStore.getState().paintToolActivationRevision,
+    maskActivationBaseline + 2,
+    'Repeated activation of the highlighted mask tool must publish a recovery command.',
+  );
+  sceneStore.useSceneStore.getState().setPaintTool('none');
+  assert.equal(
+    sceneStore.useSceneStore.getState().paintToolActivationRevision,
+    maskActivationBaseline + 2,
+    'Leaving paint mode must not create a false mask recovery command.',
+  );
   const visibilityLayers = [
     { id: 'visibility-a', type: 'projected', visible: true, order: 0 },
     { id: 'visibility-b', type: 'projected', visible: true, order: 1 },

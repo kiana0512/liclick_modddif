@@ -525,10 +525,11 @@ export function BottomToolDock({
                     onClick={() => {
                       // The mask step is a mode selector, not an on/off toggle.
                       onOpenLocalRepaintPanel?.();
-                      // Repeated clicks only open or close its settings menu so
-                      // the resident repaint presentation stays mounted.
+                      // Reassert an already selected mask tool as well. The
+                      // viewport consumes that activation token to recover a
+                      // stale overlay/pointer session without a page refresh.
+                      onPaintToolChange(isMaskPaintTool ? paintTool : 'inpaint-add');
                       if (!isMaskPaintTool) {
-                        onPaintToolChange('inpaint-add');
                         setGuideStep('generate');
                       }
                       toggleMenu('inpaint-add');

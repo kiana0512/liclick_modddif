@@ -6925,6 +6925,7 @@ function SurfacePaintOverlay() {
   const paintInputFrameRef = useRef<number>();
   const activePointerIdRef = useRef<number>();
   const pointerCancelRecoveryTimerRef = useRef<number>();
+  const rearmPaintMaskInputSessionRef = useRef<() => void>(() => undefined);
   const strokePaintToolRef = useRef<SurfaceStrokePaintTool>();
   const lastPaintActivityAtRef = useRef(0);
   const strokeTelemetryRef = useRef<StrokeTelemetrySnapshot & { startedAt: number }>();
@@ -7124,6 +7125,9 @@ function SurfacePaintOverlay() {
     [invalidate],
   );
   const paintTool = useSceneStore((state) => state.paintTool);
+  const paintToolActivationRevision = useSceneStore(
+    (state) => state.paintToolActivationRevision,
+  );
   const displayMode = useSceneStore((state) => state.displayMode);
   const paintMaskResetRevision = useSceneStore((state) => state.paintMaskResetRevision);
   const paintMaskInvertRevision = useSceneStore((state) => state.paintMaskInvertRevision);
@@ -10262,6 +10266,11 @@ function SurfacePaintOverlay() {
 
   useEffect(() => {
     if (!isInpaintMode) return;
+    // Re-entering an already highlighted tool is an explicit recovery command.
+    // Finish any orphaned pointer draft before rebuilding the presentation;
+    // otherwise a lost capture can keep every later pointerdown behind the
+    // isPainting guard until a full page reload recreates this component.
+    rearmPaintMaskInputSessionRef.current();
     const model = getTargetModel();
     if (!model) return;
     const layer = syncInpaintMaskProjection(model);
@@ -10292,6 +10301,7 @@ function SurfacePaintOverlay() {
     ensureInpaintMaskOverlaysForModel,
     getTargetModel,
     isInpaintMode,
+    paintToolActivationRevision,
     shouldShowInpaintMask,
     scheduleInpaintProjectionDepth,
     syncInpaintMaskProjection,
@@ -15152,6 +15162,22 @@ function SurfacePaintOverlay() {
       }
       return true;
     };
+    const rearmPaintMaskInputSession = () => {
+      clearPointerCancelRecovery();
+      if (isPaintingRef.current) {
+        finishPaintStroke(undefined, 'pointercancel');
+        return;
+      }
+      const activePointerId = activePointerIdRef.current;
+      if (activePointerId !== undefined && canvas.hasPointerCapture(activePointerId)) {
+        canvas.releasePointerCapture(activePointerId);
+      }
+      activePointerIdRef.current = undefined;
+      strokePaintToolRef.current = undefined;
+      setViewportPaintPointer(canvas);
+      setOrbitControlsEnabled(true);
+    };
+    rearmPaintMaskInputSessionRef.current = rearmPaintMaskInputSession;
     const handlePointerMove = (event: globalThis.PointerEvent) => {
       if (isPaintingRef.current) {
         if (activePointerIdRef.current === undefined && !tryResumeInterruptedStroke(event)) return;
@@ -15496,6 +15522,9 @@ function SurfacePaintOverlay() {
       // a real component unmount has no replacement and performs the teardown.
       queueMicrotask(() => {
         if (pointerListenerGenerationRef.current !== listenerGeneration) return;
+        if (rearmPaintMaskInputSessionRef.current === rearmPaintMaskInputSession) {
+          rearmPaintMaskInputSessionRef.current = () => undefined;
+        }
         setViewportPaintPointer(canvas);
         if (isPaintingRef.current) flushPendingPaintTargets();
         pendingPaintTargetsRef.current = [];

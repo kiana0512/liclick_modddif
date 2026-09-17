@@ -86,6 +86,31 @@ assert.match(
   'returning to either mask brush must restore mask presentation',
 );
 assert.match(
+  bottomToolDock,
+  /onPaintToolChange\(isMaskPaintTool \? paintTool : 'inpaint-add'\)/,
+  'clicking the highlighted mask step must reassert the current tool instead of swallowing recovery',
+);
+assert.match(
+  sceneStore,
+  /const isMaskTool =[\s\S]*paintToolActivationRevision = isMaskTool[\s\S]*state\.paintToolActivationRevision \+ 1/,
+  'each mask-tool activation must publish a fresh ephemeral viewport command token',
+);
+assert.match(
+  viewportCanvas,
+  /rearmPaintMaskInputSessionRef\.current\(\);[\s\S]*?syncInpaintMaskProjection\(model\)/,
+  'the viewport must close orphaned input before rebuilding the selected-mask presentation',
+);
+assert.match(
+  viewportCanvas,
+  /isPaintingRef\.current[\s\S]*?finishPaintStroke\(undefined, 'pointercancel'\)[\s\S]*?setViewportPaintPointer\(canvas\)/,
+  'mask-session recovery must handle both an orphaned live stroke and stale pointer ownership',
+);
+assert.match(
+  viewportCanvas,
+  /isInpaintMode,[\s\S]*paintToolActivationRevision,[\s\S]*shouldShowInpaintMask/,
+  'repeated activation must rerun the mask projection/overlay synchronization effect',
+);
+assert.match(
   viewportCanvas,
   /shouldShowColorPaintOverlays &&\s*paintMaskPresentationVisible &&/,
   'the viewport mask must honor its independent presentation flag',

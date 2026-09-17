@@ -114,8 +114,8 @@ assert.match(
 );
 assert.match(
   bottomToolDock,
-  /if \(!isMaskPaintTool\) \{\s*onPaintToolChange\('inpaint-add'\)/,
-  'the mask button must select the mask tool idempotently',
+  /onPaintToolChange\(isMaskPaintTool \? paintTool : 'inpaint-add'\);[\s\S]*?if \(!isMaskPaintTool\) \{\s*setGuideStep\('generate'\)/,
+  'the mask button must keep its current mode while rearming an already selected viewport session',
 );
 assert.doesNotMatch(
   bottomToolDock,

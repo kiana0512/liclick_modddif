@@ -353,7 +353,11 @@ try {
   assert([...paint.target.listeners.values()].every((listeners) => listeners.size === 0));
   assert.match(viewport, /if \(!result\) return;\s*setViewportPaintPointer\(canvas, event.pointerId\);/, 'Only a real consumed brush hit claims the gesture');
   assert.match(viewport, /activePointerIdRef.current = event.pointerId;\s*setViewportPaintPointer\(canvas, event.pointerId\);\s*try/, 'Recovered pen contact must rebind its pointer identity');
-  assert.match(viewport, /pointerListenerGenerationRef.current !== listenerGeneration\) return;\s*setViewportPaintPointer\(canvas\);/, 'Final unmount clears ownership, effect replacement preserves it');
+  assert.match(
+    viewport,
+    /pointerListenerGenerationRef.current !== listenerGeneration\) return;[\s\S]*?rearmPaintMaskInputSessionRef\.current = \(\) => undefined;[\s\S]*?setViewportPaintPointer\(canvas\);/,
+    'Final unmount clears recovery and pointer ownership, while effect replacement preserves both',
+  );
   assert.match(viewport, /<Canvas\s[\s\S]*?events=\{createViewportEvents\}/, 'The live viewport must use the tested event manager');
   const altGuard=viewport.match(/if \(event.altKey \|\| event.button === 1\) \{([\s\S]*?)\n {6}\}/)?.[0];
   const hoverStart = viewport.indexOf('    let hoverCursorFrame = 0;');

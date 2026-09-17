@@ -1,5 +1,7 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
+2026-09-17 M08（协作 M03/UI-06/UI-10）：`INPAINT-TOOL-SESSION/1.0.0` 修复局部重绘“绘制蒙版”按钮仍显示激活、但视口偶发不再接收笔画，刷新后恢复的问题。每次进入或重复点击蒙版工具发布非持久 activation revision；视口先结束失去捕获的孤立笔画、释放旧 pointer ownership，再按当前模型重同步投影、深度和覆盖层，尤其清除历史 GPU direct-ready 标记。普通点击、当前加/减选模式及作者蒙版保持；不使用延时重试，不重置已画内容。GPU/shader 像素核、CPU/Worker、Capture/GPT 输入、UV/repaint/export、分辨率、QA、Project Command/CAS/ownership/verified assets 与 Schema 不变，无数据迁移。回滚移除 activation revision 和重激活处理即可；详见 [蒙版工具会话自愈](changes/CHG-20260917-INPAINT-TOOL-SESSION.md)。本轮尚未推送或部署。
+
 2026-09-17 M07（协作 M08/M11）：`UV-MANUAL-PAINT-COMPOSITION/1.0.0` / UV composition 12 将无专用 role 的普通 UV 绘制层纳入手动/自动合并和模型导出，不再依赖旧原生重绘 ID。底图/内容修补仍在投影下面，绘制层按现有 UV 栈顺序 source-over，保留原透明度；显隐、对象过滤、内部 draft 及旧版重绘兼容保持。GPU Worker、CPU fallback、预热和 FBX/GLB 共用新分类；普通模型导出先等待 live commit。原分辨率、QA、shader/绘制内核、持久化/CAS/ownership/verified assets 不变，无 Schema 或资产迁移；不自动改写旧合并图。详见 [手动 UV 重绘合并修复](changes/CHG-20260917-MANUAL-UV-MERGE.md)。本轮未推送或部署。
 
 2026-09-17 M04（协作 M03/M08）：`GPT-CONTENT-FRAMING/2.2.0` 修复远端输入仅画布为正方形、短边背景仍被长方形 clip 清空的问题。上传引导图直接按长边方框截取完整原始 RGBA，颜色/法线共用坐标；仅超出源图的区域保留透明。比例、边距、回贴映射及历史 framing v1/v2 不变。GPU/CPU/Worker/shader、投影/UV/export、分辨率、QA、Schema/Command/CAS/ownership 均不改，无迁移。横图、竖图、触边和双引导逐像素回归旧失败、新通过。详见 [远端输入方形裁切](changes/CHG-20260917-SQUARE-INPUT-CROP.md)。本轮仅本地修改，尚未推送或部署。

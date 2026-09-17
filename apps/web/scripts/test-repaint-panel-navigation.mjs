@@ -12,7 +12,11 @@ assert.deepEqual(calls, [['tab','repaint'],['preview','repaint'],['tab','repaint
 assert.doesNotMatch(effect[1], /Generation|Prompt|Reference|paintTool/);
 const dock = read('components/editor/BottomToolDock.tsx');
 assert.equal((dock.match(/onOpenLocalRepaintPanel\?\.\(\)/g) || []).length, 3);
-assert.match(dock, /onOpenLocalRepaintPanel\?\.\(\);\s*\/\/ Repeated clicks/);
+assert.match(
+  dock,
+  /onOpenLocalRepaintPanel\?\.\(\);[\s\S]*?onPaintToolChange\(isMaskPaintTool \? paintTool : 'inpaint-add'\)/,
+  'repeated mask-panel requests must also rearm the current viewport paint session',
+);
 const editor = read('routes/EditorPage.tsx');
 assert.match(editor, /onOpenLocalRepaintPanel=\{handleOpenLocalRepaintPanel\}/);
 assert.match(editor, /openLocalRepaintPanelRequestKey=\{openLocalRepaintPanelRequestKey\}/);
