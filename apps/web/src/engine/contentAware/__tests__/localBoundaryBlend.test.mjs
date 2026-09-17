@@ -104,7 +104,10 @@ test('blend is deterministic, cancellable, and radius scales without lowering ou
   let abort = false;
   assert.throws(() => repairSurfaceTexture(f, { shouldAbort: () => abort, onProgress: (p) => { if (p.phase === 'blending') abort = true; } }), /cancelled/);
   for (const size of [1024, 2048, 4096, 8192]) {
-    const p = createVisibleSurfaceCompletionPolicy(size).propagation;
+    const policy = createVisibleSurfaceCompletionPolicy(size);
+    const p = policy.propagation;
+    assert.equal(policy.gapMask.minimumComponentPixels, 1);
+    assert.equal(policy.gapMask.minimumComponentSpan, 0);
     assert.equal(p.maxDistance, size / 128); assert.equal(p.localBoundaryBlend, true);
     assert.equal(p.adaptiveGapDistance, true);
     assert.equal(p.fillUnreachableWithGlobalAverage, false); assert.equal(p.maxSeamCrossings, 0);
@@ -126,6 +129,26 @@ test('adaptive distance fills a wide gap from original boundaries without promot
   assert.ok(rgb(result,128)[0] > 120 && rgb(result,128)[0] < 150, 'both boundaries blend at the centre');
   for(let i=1;i<progress.length;i++) assert.ok(progress[i]>=progress[i-1], 'expansion never resets progress');
   assert.deepEqual(f.rgba, original);
+});
+
+test('flat local colour reaches a byte-identical fixed point without spending all blend iterations', () => {
+  const f = fixture(65);
+  pixel(f, 0, [132, 84, 96]);
+  pixel(f, 64, [132, 84, 96]);
+  f.writeMask.fill(255, 1, 64);
+  const blendingProgress = [];
+
+  const result = repairSurfaceTexture(f, {
+    onProgress: progress => {
+      if (progress.phase === 'blending') blendingProgress.push(progress);
+    },
+  });
+
+  assert.equal(result.stats.repairedPixels, 63);
+  assert.equal(blendingProgress.length, 1);
+  for (let index = 1; index < 64; index += 1) {
+    assert.deepEqual(rgb(result, index), [132, 84, 96]);
+  }
 });
 
 test('adaptive distance follows a winding selected gap, never jumps an unselected barrier', () => {

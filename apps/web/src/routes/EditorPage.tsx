@@ -1303,9 +1303,9 @@ export function EditorPage({
         repairResolution,
         {
           includeInvisible: false,
-          includeSeamLinks: true,
-          seamBandPixels: 1,
-          minimumSeamNormalDot: 0.72,
+          // LOCAL-BOUNDARY-REPAIR never crosses UV seams. Do not spend the
+          // prewarm budget rasterizing seam links that the Worker must ignore.
+          includeSeamLinks: false,
           yieldIntervalMs: 4,
         },
       );
@@ -7012,12 +7012,10 @@ export function EditorPage({
               repairResolution,
               {
                 includeInvisible: false,
-                // A bounded physical-seam bridge can seed a fully blank UV island.
-                // The repair core limits propagation to one seam crossing so colour
-                // cannot cascade through an arbitrary chain of neighbouring islands.
-                includeSeamLinks: true,
-                seamBandPixels: 1,
-                minimumSeamNormalDot: 0.72,
+                // The production policy has maxSeamCrossings=0. Keeping seam
+                // links disabled preserves same-region colour safety and avoids
+                // unnecessary topology work on complex models.
+                includeSeamLinks: false,
                 yieldIntervalMs: 4,
                 signal: abortController.signal,
                 onProgress: silentForeground
@@ -7119,7 +7117,6 @@ export function EditorPage({
             // the detected holes plus padding before propagating colour.
             topologyMask: topology.topologyMask,
             topologyRegionIds: topology.regionIds,
-            seamLinks: topology.seamLinks,
             // Complete every reachable hatch-visible texel in one Worker pass.
             // The queue remains O(N); adaptive filling stays inside selected
             // gaps and same-region original boundaries, never foreign seams.

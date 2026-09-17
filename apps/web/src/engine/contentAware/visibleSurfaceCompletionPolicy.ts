@@ -51,7 +51,6 @@ export function createVisibleSurfaceCompletionPolicy(
   if (!Number.isSafeInteger(pixelCount) || pixelCount > 0xffffffff) {
     throw new RangeError(`Visible-surface completion is too large: ${width}x${height}.`);
   }
-  const megapixelScale = pixelCount / (1024 * 1024);
   return {
     gapMask: {
       // This is the live shader's exact hatch feather boundary. Running at the
@@ -59,10 +58,14 @@ export function createVisibleSurfaceCompletionPolicy(
       hardAlphaThreshold: EMPTY_PROJECTION_MAX_VISIBLE_ALPHA,
       weakAlphaThreshold: 64,
       weakGrowPixels: 1,
-      // Restore the original quality filter: isolated raster misses must not
-      // seed a visible repair layer, while long narrow seams are retained.
-      minimumComponentPixels: Math.max(4, Math.round(16 * megapixelScale)),
-      minimumComponentSpan: Math.max(4, Math.round(12 * Math.sqrt(megapixelScale))),
+      // Every texel at or below the live hatch boundary is already a visible
+      // product defect. Do not scale a noise filter with atlas resolution: at
+      // 4K that rejected short cracks and triangular edge gaps that become
+      // obvious when the user zooms in. Generic mask callers keep their noise
+      // filtering defaults; the production visible-surface contract retains
+      // even a single hatch-visible texel inside the strict UV core.
+      minimumComponentPixels: 1,
+      minimumComponentSpan: 0,
     },
     propagation: {
       // Do not borrow a material from another island (e.g. outer skin into

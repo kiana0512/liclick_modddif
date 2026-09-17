@@ -766,7 +766,7 @@ function blendLocalBoundaryColors(
   const scratch = new Uint8ClampedArray(count * 3);
   const iterations = Math.min(64, Math.max(8, input.maxDistance * 2));
   const colorDistanceLimit = 3 * 48 * 48;
-  // LOCAL-BOUNDARY-REPAIR/1.2.1: topology, owners and original donor colors
+  // LOCAL-BOUNDARY-REPAIR/1.3.0: topology, owners and original donor colors
   // are immutable throughout Jacobi blending. Cache four accepted edges in
   // one byte per repaired pixel; preserve direction order and every iteration.
   const edges = new Uint8Array(count);
@@ -812,14 +812,26 @@ function blendLocalBoundaryColors(
       scratch[slot * 3 + 2] = blue / weight;
       if ((slot & 0x3fff) === 0) checkAbort();
     }
+    let changed = false;
     for (let slot = 0; slot < count; slot += 1) {
       const offset = queue[slot] * 4;
+      if (
+        output[offset] !== scratch[slot * 3] ||
+        output[offset + 1] !== scratch[slot * 3 + 1] ||
+        output[offset + 2] !== scratch[slot * 3 + 2]
+      ) {
+        changed = true;
+      }
       output[offset] = scratch[slot * 3];
       output[offset + 1] = scratch[slot * 3 + 1];
       output[offset + 2] = scratch[slot * 3 + 2];
       if ((slot & 0x3fff) === 0) checkAbort();
     }
     report('blending', 0.93, 0.05, iteration + 1, iterations, true);
+    // A byte-identical Jacobi pass is a fixed point: every following pass is
+    // guaranteed to reproduce the same bytes, so stopping here changes only
+    // latency, never the published texture.
+    if (!changed) break;
   }
 }
 

@@ -10,6 +10,8 @@
 
 2026-09-17 模型导入 → M02（协作 M10/M13）：`IMPORT-DECIMATE` v1.0.1 修复 FBX 转非索引 GLB 后各三角片断开导致简化漏面的问题，Blender 初次导入启用共享顶点恢复，保持每面角 UV；新增每对象表面积 [0.8,1.2] 保留率门禁，导出回读再验。真实服务样本 199999 面，面积比 1.000355，浏览器灰模和贴图无花斑；旧输出面积比仅 0.372370。用户确认、绘制/UV 内核、CPU/GPU/Worker/shader、Schema/Command/CAS/ownership 不变，无迁移；已有损坏结果需从源文件重新处理。并按用户要求删除确认框服务器/20万面描述。详见 [导入减面修复记录](changes/CHG-20260917-IMPORT-DECIMATE.md)。未推送或部署。
 
+2026-09-17 M07（协作 M05/M06/M08/M09）：`LOCAL-BOUNDARY-REPAIR/1.3.0` / `ALG-CA-001` v1.1.0 将实时 shader 已显示为深色斜线的严格 UV core 缺口全部保留，不再按 4K 面积分量误删短裂缝；真实几何空隙、core 外保守 halo、跨 region/UV seam、全局平均兜底仍禁止。正式策略固定不跨 seam，因此编辑器不再构建/传递无效 seam links；局部混合仅在完整一轮字节无变化时结束。GPU/shader、分辨率、QA、持久化/export、Command/CAS/ownership/verified assets 与 Schema 不变，无迁移；Edge 2K Worker/主线程字节差 0，4K Worker 夹具通过，复杂真实模型仍需用户工程视觉验收。回滚与验证见 [放大视图深色斜线缺口修复](changes/CHG-20260917-CONTENT-AWARE-HATCH-GAPS.md)。
+
 2026-09-17 M13（协作 M10/M15）：`ASSET-HISTORY-REFRESH/1.0.0` 将 UV/拓扑历史的非终态远端刷新纳入进程级有界协调器；全局最多 8 路、单用户最多 4 路，同一用户/Job 的同时请求共享一个 in-flight Promise。历史 HTTP 请求最多等待 2.75 秒，超出后返回已有持久记录，剩余刷新继续有界完成；远端失败仍保留旧记录。limit、排序、可信 kind 恢复、终态、产物、ownership、PostgreSQL/本地持久化、Asset TLS 与 API 均不变。两个身份、12 个活动任务、16 个并发历史读取的严格 TLS 冒烟测得全局 8/8、单用户 <=4、每 Job 一次远端访问；实现提交为 `d745d066`，无 Schema/数据迁移。详见 [Asset 历史刷新并发变更卡](changes/CHG-20260917-ASSET-HISTORY-REFRESH-CONCURRENCY.md)。
 
 2026-09-17 模型导入 → M02（协作 M10/M13）：`IMPORT-DECIMATE` v1.0.0 在总三角面严格超过 150 万时弹窗，确认后服务端 Blender 简化至约 20 万面，再检查 UV；异常 UV 必须单独确认才执行现有展开/排布/内缩。取消或失败不注册模型；保存最终 GLB 并保留源单位，原文件及存量工程不变。原 200 万面门禁移至处理后；CPU/GPU/Worker/shader、绘制/烘焙 QA、Schema、Command/CAS/ownership 不变。无迁移，回滚入口与前置面数门禁，保留已生成资产。详见 [高面数导入减面](changes/CHG-20260917-IMPORT-DECIMATE.md)。实现已随 `20baefc2` 进入 `master`，未据此声明生产部署。
@@ -1059,9 +1061,9 @@ GPU 仅改变准备条件与调度；CPU、Worker、shader、投影/UV/export �
 
 | ALG ID / 名称 | 版本 | 定义 |
 | --- | --- | --- |
-| `ALG-CA-001` 覆盖缺口检测 | `1.0.0` | 从投影 coverage/confidence 构造待修复 mask，排除已有可靠投影 |
+| `ALG-CA-001` 覆盖缺口检测 | `1.1.0` | 按实时空洞斜线阈值构造待修复 mask；正式策略保留严格 UV core 内全部可见缺口，排除可靠投影、core 外 halo 与真实几何空隙 |
 | `ALG-CA-002` UV 表面拓扑 | `1.0.0` | UV 三角形 region、可选物理 seam link、normal dot 门限；预热并缓存 |
-| `ALG-CA-003` 表面约束传播 | `1.0.0` | Worker 在同一表面/region 内传播颜色，不跨无关 UV island |
+| `ALG-CA-003` 表面约束传播 | `1.3.0` | Worker 在同一表面/region 内传播颜色，不跨 UV seam；局部混合达到字节固定点后结束，不改变最终 RGBA |
 | `ALG-CA-004` Underlay 原子发布 | `1.0.0` | 生成 `uv + content-aware-underlay`，GPU 预热后一次发布，合并时永远在投影之下 |
 
 本地兼容填充的搜索半径为 `clamp(ceil(max(ROI.w,ROI.h)×0.2),16,48)`，迭代 2 次；它不能冒充远端生成或覆盖有效投影颜色。
