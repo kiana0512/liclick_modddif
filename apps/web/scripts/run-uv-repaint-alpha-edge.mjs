@@ -24,7 +24,9 @@ try {
   const result = await page.evaluate(async () => {
     const { run } = await import('/scripts/uv-repaint-alpha-edge-fixture.mjs');
     const { run: topology } = await import('/scripts/uv-gutter-raster-fixture.mjs');
-    return [await topology(), await run(0), await run(0.7)];
+    const { run: islands } = await import('/scripts/uv-repaint-island-edge-fixture.mjs');
+    return [await topology(), await run(0), await run(0.7),
+      await islands(64), await islands(512), await islands(2048, 0.4), await islands(4096, 0.4)];
   });
   assert.deepEqual(errors, []);
   console.log(JSON.stringify(result));

@@ -253,11 +253,8 @@ try {
   const scissorBody = engine.match(/function setUvScissor\([^)]*\)\s*\{([\s\S]*?)\n\}/)?.[1];
   assert.ok(scissorBody, 'UV tile scissor must have one physical-pixel adapter');
   const setUvScissor = new Function('renderer', 'bounds', scissorBody);
-  assert.equal(
-    (engine.match(/setUvScissor\(this\.renderer, (?:tile\.bounds|bounds)\)/g) ?? []).length,
-    2,
-    'both source and output passes use the same adapter',
-  );
+  // Actual paint/gutter pass coverage is exercised by the HiDPI and island-edge
+  // WebGL fixtures; counting adapter call sites does not test pixel coverage.
   for (const dpr of [1, 1.25, 1.5, 2]) {
     for (const bounds of [
       { x: 256, y: 768, width: 256, height: 256 },

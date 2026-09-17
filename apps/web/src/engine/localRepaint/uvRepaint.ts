@@ -5,7 +5,7 @@ import {
   type UvRepaintPatch,
 } from './uvRepaintState';
 
-// ALG-LR-UV-PAINT v1.1.5. Shared UV pixels intentionally share color/alpha.
+// ALG-LR-UV-PAINT v1.2.0. Shared UV pixels intentionally share color/alpha.
 type Tile = { bounds: Rect; surfaces: Array<{ mesh: THREE.Mesh; box: THREE.Box3 }> };
 type Stroke = {
   before?: Map<number, Promise<Uint8Array<ArrayBuffer>>>;
@@ -167,6 +167,8 @@ export class UvRepaint {
   private tiles = new Map<number, Tile>();
   private source: THREE.WebGLRenderTarget;
   private output: THREE.WebGLRenderTarget;
+  private gutterMask?: THREE.WebGLRenderTarget;
+  private gutterMaterial?: THREE.ShaderMaterial;
   private ids = target(1, true);
   private brush: THREE.ShaderMaterial;
   private identity: THREE.ShaderMaterial;
@@ -321,13 +323,13 @@ export class UvRepaint {
           const columns = Math.ceil(resolution / UV_REPAINT_TILE_SIZE);
           const maxTile = columns - 1;
           for (
-            let y = Math.floor((minV * resolution) / UV_REPAINT_TILE_SIZE);
-            y <= Math.min(maxTile, Math.floor((maxV * resolution) / UV_REPAINT_TILE_SIZE));
+            let y = Math.max(0, Math.floor((minV * resolution - 1) / UV_REPAINT_TILE_SIZE));
+            y <= Math.min(maxTile, Math.floor((maxV * resolution + 1) / UV_REPAINT_TILE_SIZE));
             y++
           ) {
             for (
-              let x = Math.floor((minU * resolution) / UV_REPAINT_TILE_SIZE);
-              x <= Math.min(maxTile, Math.floor((maxU * resolution) / UV_REPAINT_TILE_SIZE));
+              let x = Math.max(0, Math.floor((minU * resolution - 1) / UV_REPAINT_TILE_SIZE));
+              x <= Math.min(maxTile, Math.floor((maxU * resolution + 1) / UV_REPAINT_TILE_SIZE));
               x++
             ) {
               const key = y * columns + x;
@@ -495,6 +497,79 @@ export class UvRepaint {
         return this.renderer.compileAsync(this.scene, camera);
       });
       if (this.disposed) throw new Error('UV 绘制准备已取消。');
+      if (material) {
+        this.gutterMask = target(this.resolution);
+        this.gutterMask.texture.format = THREE.RedFormat;
+        const core = new THREE.ShaderMaterial({
+          vertexShader: 'void main(){gl_Position=vec4(uv*2.0-1.0,0.0,1.0);}',
+          fragmentShader: 'void main(){gl_FragColor=vec4(1.0);}',
+          side: THREE.DoubleSide,
+          depthTest: false,
+          depthWrite: false,
+          blending: THREE.NoBlending,
+          toneMapped: false,
+        });
+        try {
+          this.meshes.forEach((mesh) => {
+            mesh.material = core;
+          });
+          await isolated(this.renderer, () => {
+            this.renderer.setRenderTarget(this.gutterMask!);
+            return this.renderer.compileAsync(this.scene, camera);
+          });
+          if (this.disposed) throw new Error('UV 绘制准备已取消。');
+          isolated(this.renderer, () => {
+            this.renderer.setRenderTarget(this.gutterMask!);
+            this.renderer.clear();
+            this.renderer.render(this.scene, camera);
+          });
+        } finally {
+          core.dispose();
+        }
+        // A bilinear footprint extends one texel outside the strict UV core.
+        // Copy the nearest core texel, including zero/partial alpha; never seek
+        // a more opaque donor or write into unpainted/erased surface pixels.
+        this.gutterMaterial = new THREE.ShaderMaterial({
+          vertexShader: 'void main(){gl_Position=vec4(position.xy,0.0,1.0);}',
+          fragmentShader: `uniform sampler2D coreMap,paintMap;uniform float copyOnly;
+            void main(){
+              ivec2 p=ivec2(gl_FragCoord.xy),size=textureSize(coreMap,0),donor=p;
+              if(copyOnly<0.5&&texelFetch(coreMap,p,0).r==0.0){
+                int best=3;
+                for(int y=-1;y<=1;y++)for(int x=-1;x<=1;x++){
+                  ivec2 q=p+ivec2(x,y);int distance=x*x+y*y;
+                  if(distance<best&&all(greaterThanEqual(q,ivec2(0)))&&all(lessThan(q,size))){
+                    if(texelFetch(coreMap,q,0).r>0.0){best=distance;donor=q;}
+                  }
+                }
+              }
+              gl_FragColor=texelFetch(paintMap,donor,0);
+            }`,
+          uniforms: {
+            coreMap: { value: this.gutterMask.texture },
+            paintMap: { value: this.output.texture },
+            copyOnly: { value: 0 },
+          },
+          depthTest: false,
+          depthWrite: false,
+          blending: THREE.NoBlending,
+          toneMapped: false,
+        });
+        await isolated(this.renderer, () => {
+          const composite = this.composite.material;
+          try {
+            this.composite.material = this.gutterMaterial!;
+            this.renderer.setRenderTarget(this.source);
+            return this.renderer.compileAsync(this.compositeScene, camera);
+          } finally {
+            this.composite.material = composite;
+          }
+        });
+        if (this.disposed) throw new Error('UV 绘制准备已取消。');
+      }
+      this.meshes.forEach((mesh) => {
+        mesh.material = this.identity;
+      });
       isolated(this.renderer, () => {
         this.renderer.setRenderTarget(this.ids);
         this.renderer.clear();
@@ -674,6 +749,30 @@ export class UvRepaint {
         setUvScissor(this.renderer, tile.bounds);
         this.renderer.render(this.compositeScene, input.camera);
       }
+      if (this.gutterMaterial) {
+        // Reuse stamp scratch; no readback or extra full RGBA target per stroke.
+        // Finish every scratch tile before publishing, so donor reads all see
+        // the same authored output. History already owns these padded tiles.
+        try {
+          this.composite.material = this.gutterMaterial;
+          this.renderer.setRenderTarget(this.source);
+          for (const [, tile] of touched) {
+            setUvScissor(this.renderer, tile.bounds);
+            this.renderer.render(this.compositeScene, input.camera);
+          }
+          this.gutterMaterial.uniforms.paintMap.value = this.source.texture;
+          this.gutterMaterial.uniforms.copyOnly.value = 1;
+          this.renderer.setRenderTarget(this.output);
+          for (const [, tile] of touched) {
+            setUvScissor(this.renderer, tile.bounds);
+            this.renderer.render(this.compositeScene, input.camera);
+          }
+        } finally {
+          this.composite.material = composite;
+          this.gutterMaterial.uniforms.paintMap.value = this.output.texture;
+          this.gutterMaterial.uniforms.copyOnly.value = 0;
+        }
+      }
     });
     return true;
   }
@@ -743,6 +842,8 @@ export class UvRepaint {
     this.outputAlive = preserveOutput;
     const release = () => {
       this.source.dispose();
+      this.gutterMask?.dispose();
+      this.gutterMaterial?.dispose();
       if (!preserveOutput) this.output.dispose();
       this.ids.dispose();
       this.brush.dispose();
