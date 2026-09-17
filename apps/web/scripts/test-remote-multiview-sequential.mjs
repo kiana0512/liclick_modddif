@@ -61,9 +61,23 @@ assert(
 );
 const persistPairedFlow = panel.slice(persistPairedStart, persistPairedEnd);
 
-// New jobs always use ModelView; legacy GPT functions remain readable/recoverable.
-assert.match(panel, /const \[singleViewProvider\] = useState<SingleViewProvider>\('remote'\)/);
-assert.doesNotMatch(panel, /setSingleViewProvider|<SegmentedControl<SingleViewProvider>|data-single-view-provider=/);
+// Both providers are selectable; GPT is the initial selection, shared by tabs.
+assert.match(panel, /const \[singleViewProvider, setSingleViewProvider\] = useState<SingleViewProvider>\('gpt'\)/);
+const switchSource = panel.match(/<SegmentedControl<SingleViewProvider>[\s\S]*?\/>/)?.[0];
+assert.ok(switchSource);
+for (const value of ['gpt', 'remote']) assert.ok(switchSource.includes(`value: '${value}'`));
+assert.match(switchSource, /label: 'GPT'/);
+assert.match(switchSource, /label: 'ModelView'/);
+assert.equal((switchSource.match(/disabled: workflowConfigurationLocked \|\| workflowSubmissionLocked/g) ?? []).length, 2);
+const onChangeSource = switchSource.match(/onChange=\{\(provider\) => \{([\s\S]*?)\}\}/)?.[1];
+assert.ok(onChangeSource);
+for (const configurationLocked of [false, true]) for (const submissionLocked of [false, true]) {
+  const changes = [];
+  const switchProvider = new Function('provider', 'workflowConfigurationLocked', 'workflowSubmissionLocked', 'setSingleViewProvider', onChangeSource);
+  for (const provider of ['remote', 'gpt', 'remote']) switchProvider(provider, configurationLocked, submissionLocked, value => changes.push(value));
+  assert.deepEqual(changes, configurationLocked || submissionLocked ? [] : ['remote', 'gpt', 'remote']);
+}
+assert.match(panel, /\(isTextureMapTab && singleViewProvider === 'gpt'\) \|\| isGptLocalRepaint/);
 assert.doesNotMatch(panel, /label: 'GPT2'|label: '远端'/);
 const routeStart = panel.indexOf('async function handleTextureMapMultiviewGenerate(');
 const routeEnd = panel.indexOf('    const objectId = captureObjectId;', routeStart);
@@ -71,14 +85,14 @@ assert(routeStart >= 0 && routeEnd > routeStart);
 const routeJs = ts.transpileModule(`${panel.slice(routeStart, routeEnd)}\n}`, {
   compilerOptions: { target: ts.ScriptTarget.ES2022 },
 }).outputText;
-const providerBinding = panel.match(/const \[singleViewProvider\] = useState<SingleViewProvider>\('remote'\);/)[0];
+const providerBinding = panel.match(/const \[singleViewProvider, setSingleViewProvider\] = useState<SingleViewProvider>\('gpt'\);/)[0];
 const bindingJs = ts.transpileModule(providerBinding, {
   compilerOptions: { target: ts.ScriptTarget.ES2022 },
 }).outputText;
-for (const mode of ['single', 'multi']) {
+for (const provider of ['gpt', 'remote']) for (const mode of ['single', 'multi']) {
   const calls = [];
   const scope = {
-    useState: (initial) => [initial, () => { throw new Error('Provider must stay fixed'); }],
+    useState: () => [provider, () => {}],
     throwIfTexturePipelineCancelled: () => {}, captureObjectId: 'object',
     requireFeishuLogin: async () => { calls.push('remote-login'); return true; },
     requirePersonalLiclickAccount: async () => { calls.push('gpt-login'); },
@@ -88,7 +102,10 @@ for (const mode of ['single', 'multi']) {
   };
   const route = new Function(...Object.keys(scope), `${bindingJs}\n${routeJs}\nreturn handleTextureMapMultiviewGenerate;`)(...Object.values(scope));
   await route({ id: 'material' }, [{ id: 'front' }, { id: 'top' }, { id: 'custom' }], mode);
-  assert.deepEqual(calls, mode === 'multi' ? ['remote-login', 'remote-generation'] : ['remote-login'], `${mode} must use ModelView, including pole views`);
+  const expected = provider === 'remote'
+    ? mode === 'multi' ? ['remote-login', 'remote-generation'] : ['remote-login']
+    : mode === 'multi' ? ['gpt-login', 'gpt-pairs'] : ['gpt-login'];
+  assert.deepEqual(calls, expected, `${provider}/${mode} must use its own authorization and route`);
 }
 assert.match(
   panel,

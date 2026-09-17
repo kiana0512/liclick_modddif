@@ -631,8 +631,8 @@ export function GeneratePanel({
   const t = useT();
   const [tab, setTab] = useState<GenerateTab>('multiview');
   const [textureViewMode, setTextureViewMode] = useState<TextureViewMode>('multi');
-  // New texture jobs use ModelView at every angle; historical GPT jobs remain readable.
-  const [singleViewProvider] = useState<SingleViewProvider>('remote');
+  // TEXTURE-PROVIDER-SWITCH/1.0.0: share selection across single/multiview tabs.
+  const [singleViewProvider, setSingleViewProvider] = useState<SingleViewProvider>('gpt');
   const [texturePreviewMode, setTexturePreviewMode] = useState<TexturePreviewMode>('multi');
   useEffect(() => {
     if (!openLocalRepaintPanelRequestKey) return;
@@ -5617,6 +5617,20 @@ export function GeneratePanel({
               }}
               className="mb-2"
             />
+            {isTextureMapTab && (
+              <SegmentedControl<SingleViewProvider>
+                value={singleViewProvider}
+                options={[
+                  { value: 'gpt', label: 'GPT', disabled: workflowConfigurationLocked || workflowSubmissionLocked },
+                  { value: 'remote', label: 'ModelView', disabled: workflowConfigurationLocked || workflowSubmissionLocked },
+                ]}
+                onChange={(provider) => {
+                  if (workflowConfigurationLocked || workflowSubmissionLocked) return;
+                  setSingleViewProvider(provider);
+                }}
+                className="mb-2"
+              />
+            )}
             {isLocalRepaintTab && (
               <SegmentedControl<'modelview' | 'gpt'>
                 value={generationSettings.localRepaintProvider}
