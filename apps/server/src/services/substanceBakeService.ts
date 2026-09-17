@@ -162,6 +162,7 @@ class BakeRequestError extends Error {
 
 const jobs = new Map<string, InternalJob>();
 const monitors = new Set<string>();
+let bakeJobIndexRefresh: Promise<Map<string, string[]>> | undefined;
 const maxLogLines = 400;
 const outputFileNames: Record<BakeChannelId, string> = {
   baseColor: 'basecolor.png',
@@ -581,15 +582,16 @@ function appendLog(job: InternalJob, message: string) {
   persist(job);
 }
 
-function pngSize(filePath: string) {
+async function pngSize(filePath: string) {
   const header = Buffer.alloc(24);
-  const descriptor = fs.openSync(filePath, 'r');
+  const descriptor = await fs.promises.open(filePath, 'r');
   try {
-    if (fs.readSync(descriptor, header, 0, header.length, 0) !== header.length) {
+    const { bytesRead } = await descriptor.read(header, 0, header.length, 0);
+    if (bytesRead !== header.length) {
       throw new Error('PNG output is truncated.');
     }
   } finally {
-    fs.closeSync(descriptor);
+    await descriptor.close();
   }
   if (!header.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) {
     throw new Error('Remote bake output is not a readable PNG.');
@@ -747,7 +749,7 @@ async function downloadArtifacts(job: InternalJob, payload: RemoteJobPayload) {
     }
     const localPath = job.outputPaths[channel];
     if (!alreadyPersisted) await fs.promises.writeFile(localPath, data);
-    const dimensions = pngSize(localPath);
+    const dimensions = await pngSize(localPath);
     if (
       dimensions.width !== job.settings.resolution ||
       dimensions.height !== job.settings.resolution
@@ -792,7 +794,14 @@ async function downloadArtifacts(job: InternalJob, payload: RemoteJobPayload) {
         cachedChannel && job.settings.channels.includes(cachedChannel)
           ? job.outputPaths[cachedChannel]
           : path.join(outputDirectory, safeName);
-      if (fs.existsSync(cachedPath) && fs.statSync(cachedPath).size === artifact.size_bytes) {
+      let cachedSize: number | undefined;
+      try {
+        cachedSize = (await fs.promises.stat(cachedPath)).size;
+      } catch {
+        // Missing, unreadable or concurrently replaced cache entries are
+        // treated as misses and re-downloaded through the verified path.
+      }
+      if (cachedSize === artifact.size_bytes) {
         const cachedData = await fs.promises.readFile(cachedPath);
         const cachedSha = createHash('sha256').update(cachedData).digest('hex');
         if (cachedSha === artifact.sha256.toLowerCase()) {
@@ -829,7 +838,17 @@ async function downloadArtifacts(job: InternalJob, payload: RemoteJobPayload) {
 
   if (job.settings.generateRoughnessFromBakedBaseColor) {
     const bakedBaseColorPath = job.outputPaths.baseColor;
-    if (!outputs.baseColor || !fs.existsSync(bakedBaseColorPath)) {
+    let bakedBaseColorExists = false;
+    if (outputs.baseColor) {
+      try {
+        await fs.promises.access(bakedBaseColorPath);
+        bakedBaseColorExists = true;
+      } catch {
+        // Keep the existing product error instead of publishing a roughness
+        // task from a missing or unreadable Base Color.
+      }
+    }
+    if (!outputs.baseColor || !bakedBaseColorExists) {
       throw new Error('自动生成 Roughness 需要烘焙后的 Base Color，但该产物不存在。');
     }
     job.progress = 98;
@@ -854,7 +873,7 @@ async function downloadArtifacts(job: InternalJob, payload: RemoteJobPayload) {
     }
     const finalRoughnessPath = job.outputPaths.roughness;
     await fs.promises.writeFile(finalRoughnessPath, roughnessResult.data);
-    const roughnessDimensions = pngSize(finalRoughnessPath);
+    const roughnessDimensions = await pngSize(finalRoughnessPath);
     if (
       roughnessDimensions.width !== job.settings.resolution ||
       roughnessDimensions.height !== job.settings.resolution
@@ -967,6 +986,20 @@ function loadJob(id: string) {
   try {
     const job = internalJobFromPersisted(
       JSON.parse(fs.readFileSync(persistedPath, 'utf8')) as NormalBakeJob,
+    );
+    jobs.set(id, job);
+    return job;
+  } catch {
+    return undefined;
+  }
+}
+
+async function loadJobAsync(id: string) {
+  if (!/^[a-zA-Z0-9_-]+$/.test(id)) return undefined;
+  const persistedPath = path.join(serverConfig.workspaceDir, 'bake-jobs', id, 'job.json');
+  try {
+    const job = internalJobFromPersisted(
+      JSON.parse(await fs.promises.readFile(persistedPath, 'utf8')) as NormalBakeJob,
     );
     jobs.set(id, job);
     return job;
@@ -1258,19 +1291,56 @@ export function getNormalBakeJob(id: string, userId: string) {
   return publicJob(job);
 }
 
-export function listNormalBakeJobs(userId: string, limit = 30) {
+export async function listNormalBakeJobs(userId: string, limit = 30) {
   const normalizedUserId = userId.trim();
   if (!normalizedUserId) return [];
-  const jobsDirectory = path.join(serverConfig.workspaceDir, 'bake-jobs');
-  if (!fs.existsSync(jobsDirectory)) return [];
+  if (!bakeJobIndexRefresh) {
+    bakeJobIndexRefresh = (async () => {
+      const jobsDirectory = path.join(serverConfig.workspaceDir, 'bake-jobs');
+      let entries: fs.Dirent[];
+      try {
+        entries = await fs.promises.readdir(jobsDirectory, { withFileTypes: true });
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+          return new Map<string, string[]>();
+        }
+        throw error;
+      }
+      const jobIds = entries
+        .filter((entry) => entry.isDirectory() && /^[a-zA-Z0-9_-]+$/.test(entry.name))
+        .map((entry) => entry.name);
+      let nextIndex = 0;
+      await Promise.all(Array.from({ length: Math.min(8, jobIds.length) }, async () => {
+        while (nextIndex < jobIds.length) {
+          const id = jobIds[nextIndex];
+          nextIndex += 1;
+          if (!jobs.has(id)) await loadJobAsync(id);
+        }
+      }));
+      const jobIdsByOwner = new Map<string, string[]>();
+      for (const id of jobIds) {
+        const ownerUserId = jobs.get(id)?.ownerUserId;
+        // Missing owner ids deliberately remain orphaned. Never infer ownership
+        // from a project name or expose an old job to the current employee.
+        if (!ownerUserId) continue;
+        const ownerJobIds = jobIdsByOwner.get(ownerUserId) ?? [];
+        ownerJobIds.push(id);
+        jobIdsByOwner.set(ownerUserId, ownerJobIds);
+      }
+      return jobIdsByOwner;
+    })().finally(() => {
+      bakeJobIndexRefresh = undefined;
+    });
+  }
 
   const candidates: NormalBakeJob[] = [];
-  for (const entry of fs.readdirSync(jobsDirectory, { withFileTypes: true })) {
-    if (!entry.isDirectory() || !/^[a-zA-Z0-9_-]+$/.test(entry.name)) continue;
-    const job = getNormalBakeJob(entry.name, normalizedUserId);
-    // Missing owner ids deliberately remain orphaned. Never infer ownership
-    // from a project name or expose an old job to the current employee.
-    if (job) candidates.push(job);
+  const jobIdsByOwner = await bakeJobIndexRefresh;
+  for (const id of jobIdsByOwner.get(normalizedUserId) ?? []) {
+    const job = jobs.get(id);
+    if (!job || job.ownerUserId !== normalizedUserId) continue;
+    resumePrematurelyCancelledRemoteJob(job);
+    if (!['succeeded', 'failed', 'cancelled'].includes(job.status)) void monitorRemoteJob(job);
+    candidates.push(publicJob(job));
   }
 
   return candidates
@@ -1281,6 +1351,29 @@ export function listNormalBakeJobs(userId: string, limit = 30) {
         : right.id.localeCompare(left.id);
     })
     .slice(0, Math.min(100, Math.max(1, Math.trunc(limit) || 30)));
+}
+
+export async function getNormalBakeOutputMetadata(
+  id: string,
+  userId: string,
+  channel: BakeChannelId = 'normal',
+) {
+  const job = jobs.get(id) ?? await loadJobAsync(id);
+  if (
+    !job ||
+    job.ownerUserId !== userId ||
+    job.status !== 'succeeded' ||
+    !job.settings.channels.includes(channel)
+  ) {
+    return undefined;
+  }
+  const outputPath = job.outputPaths[channel];
+  try {
+    const metadata = await fs.promises.stat(outputPath);
+    return metadata.isFile() ? { path: outputPath, sizeBytes: metadata.size } : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 export async function recoverNormalBakeJobArtifacts(id: string) {

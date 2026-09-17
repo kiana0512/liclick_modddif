@@ -210,6 +210,36 @@ try {
     Buffer.from('history-legacy-bake-output'),
   );
 
+  const concurrentUsers = [userA, userB];
+  const expectedBakeIdsByUser = new Map([
+    [userA.id, [aBakeId]],
+    [userB.id, [bBakeId]],
+  ]);
+  for (let userIndex = 0; userIndex < 8; userIndex += 1) {
+    const user = await login(
+      baseUrl,
+      `Concurrent History User ${userIndex}`,
+      `history-concurrent-${userIndex}@liclick.test`,
+    );
+    concurrentUsers.push(user);
+    const expectedIds = [];
+    for (let jobIndex = 0; jobIndex < 4; jobIndex += 1) {
+      const jobId = `bake_history_concurrent_${userIndex}_${jobIndex}`;
+      expectedIds.push(jobId);
+      await seedBake(
+        workspaceDir,
+        bakeFixture(
+          jobId,
+          user.id,
+          `concurrent-${userIndex}-${jobIndex}_high.fbx`,
+          `2026-08-${String(3 + userIndex).padStart(2, '0')}T${String(10 + jobIndex).padStart(2, '0')}:00:00.000Z`,
+        ),
+        Buffer.from(`history-concurrent-${userIndex}-${jobIndex}-output`),
+      );
+    }
+    expectedBakeIdsByUser.set(user.id, expectedIds.reverse());
+  }
+
   const assetOwnership = {
     jobs: {
       'asset-uv-new-owner-a': {
@@ -316,8 +346,24 @@ try {
     JSON.stringify(assetOwnership, null, 2),
   );
 
-  const aBakeHistory = await getHistory(baseUrl, userA.cookie, 'bake');
-  const bBakeHistory = await getHistory(baseUrl, userB.cookie, 'bake');
+  // Forty simultaneous authenticated reads exercise shared directory scanning,
+  // bounded artifact metadata I/O, and strict owner isolation under contention.
+  const concurrentHistoryReads = await Promise.all(
+    concurrentUsers.flatMap((user) => Array.from({ length: 4 }, async () => ({
+      user,
+      records: await getHistory(baseUrl, user.cookie, 'bake'),
+    }))),
+  );
+  for (const { user, records } of concurrentHistoryReads) {
+    assert.deepEqual(
+      records.map((record) => record.id),
+      expectedBakeIdsByUser.get(user.id),
+      'Concurrent bake history must contain only the authenticated user records.',
+    );
+    assert(!records.some((record) => record.id === legacyBakeId));
+  }
+  const aBakeHistory = concurrentHistoryReads.find(({ user }) => user.id === userA.id).records;
+  const bBakeHistory = concurrentHistoryReads.find(({ user }) => user.id === userB.id).records;
   assert.deepEqual(aBakeHistory.map((record) => record.id), [aBakeId]);
   assert.deepEqual(bBakeHistory.map((record) => record.id), [bBakeId]);
   assert(!aBakeHistory.some((record) => record.id === legacyBakeId));
@@ -400,7 +446,7 @@ try {
   );
   assert(!bRetopologyHistory.some((record) => record.id === 'asset-legacy-owner-a'));
 
-  console.log('Task history smoke passed: ownership, legacy deny, parameters, and controlled downloads.');
+  console.log('Task history smoke passed: concurrent ownership isolation, legacy deny, parameters, and controlled downloads.');
 } catch (error) {
   if (serverOutput.trim()) console.error(serverOutput.trim());
   throw error;

@@ -2,7 +2,13 @@
 
 2026-09-17 模型导入 → M02（协作 M10/M13）：`IMPORT-DECIMATE` v1.0.0 在总三角面严格超过 150 万时弹窗，确认后服务端 Blender 简化至约 20 万面，再检查 UV；异常 UV 必须单独确认才执行现有展开/排布/内缩。取消或失败不注册模型；保存最终 GLB 并保留源单位，原文件及存量工程不变。原 200 万面门禁移至处理后；CPU/GPU/Worker/shader、绘制/烘焙 QA、Schema、Command/CAS/ownership 不变。无迁移，回滚入口与前置面数门禁，保留已生成资产。详见 [高面数导入减面](changes/CHG-20260917-IMPORT-DECIMATE.md)。本轮未推送或部署。
 
-2026-09-17 模型导入 → M02（协作 M10/M13）：`IMPORT-UV-REPAIR` v1.0.0 检查 UV0 越界、非有限、缺失及 Float32 退化三角形；异常模型先弹窗，明确同意改变 UV 后才调用受认证的服务端 Blender 展开/排布/按需内缩。取消、修复或回读 QA 失败不加入工程。外边界补足 1e-6 余量，保留 0.001 岛排布 margin；保存修复后 GLB，正常模型和存量工程不改。源物理单位随对象保留；CPU/GPU/Worker/shader、绘制/烘焙阈值、Schema、Command/CAS/ownership 不变。无迁移，回滚关闭新入口并保留已修复资产。原贴图不转烘焙，确认框明确告知可能错位。详见 [导入 UV 修复变更卡](changes/CHG-20260917-IMPORT-UV-REPAIR.md)。本轮未推送或部署。
+2026-09-17 模型导入 → M02（协作 M10/M13）：`IMPORT-UV-REPAIR` v1.0.0 检查 UV0 越界、非有限、缺失及 Float32 退化三角形；异常模型先弹窗，明确同意改变 UV 后才调用受认证的服务端 Blender 展开/排布/按需内缩。取消、修复或回读 QA 失败不加入工程。外边界补足 1e-6 余量，保留 0.001 岛排布 margin；保存修复后 GLB，正常模型和存量工程不改。源物理单位随对象保留；CPU/GPU/Worker/shader、绘制/烘焙阈值、Schema、Command/CAS/ownership 不变。无迁移，回滚关闭新入口并保留已修复资产。原贴图不转烘焙，确认框明确告知可能错位。已随 `32ad28ce` 进入 `master`；独立真实浏览器回归及 Server 回归通过，尚未据此声明生产部署。详见 [导入 UV 修复变更卡](changes/CHG-20260917-IMPORT-UV-REPAIR.md)。
+
+2026-09-17 M10（协作 M13/M15）：`BAKE-ARTIFACT-IO/1.1.0` 将远端 Bake 产物缓存尺寸检查、自动 Roughness 的 Base Color 存在检查和 PNG 24-byte 文件头验收从同步文件 API 改为 `fs.promises` / 异步 FileHandle；缓存异常仍按未命中重新下载，完整写入、SHA-256、MIME、通道、分辨率和失败后不发布保持。GPU/CPU/Worker/shader、像素/QA、远端幂等、Job JSON、Project Command、Revision CAS、ownership、verified assets 和 Schema 不变，无迁移。已随 `2222576c` 进入 `master`，最终 Server 24/24 与正式 pre-push 门禁通过；回滚与验证见 [Bake 产物异步 I/O 变更卡](changes/CHG-20260917-BAKE-ARTIFACT-ASYNC-IO.md)。
+
+2026-09-17 M13/M15（协作 M10）：`BAKE-HISTORY-LIST/1.1.0` 将 Bake 历史 HTTP 请求中的目录、Job JSON 和输出 metadata 改为异步读取；同时到达的多用户请求共享一次目录扫描与最多 8 路未缓存读取，批次按持久化 owner 建索引，单请求逐任务构造输出以限制 I/O 扇出。owner 隔离、无 owner 旧任务拒绝、排序、limit、未终态监控恢复和 Job JSON 保持不变；10 身份/34 归属任务/40 并发请求冒烟通过。`ASSET-TRANSFER-TEST-PORT/1.0.0` 令本地对象存储夹具避开 WHATWG Fetch 禁止端口。两项均不改变 GPU/CPU/Worker/shader、投影/UV/重绘/export、分辨率、QA、Project Command、Revision CAS、ownership、verified assets 或 Schema，无迁移；已随 `2222576c` 进入 `master`，正式构建为 104 chunks / 3,214,864 bytes，Cloud release-readiness 仍因 8 项真实生产证据为 `in_progress` 而拒绝发布。见 [Bake 历史并发变更卡](changes/CHG-20260917-BAKE-HISTORY-CONCURRENCY.md) 与 [2026-09-17 性能稳定性审计](PERFORMANCE_STABILITY_RISK_AUDIT_2026-09-17.zh-CN.md)。
+
+2026-09-17 M15：本地 API 冒烟的缺失图层引用恢复夹具改为显式种入旧版 `<layer-id>.png` / mask / depth 确定性文件，再验证现有 legacy repair；不再要求该兼容路径从当前 UUID 防冲突上传文件中猜测随机 URL。生产代码、资产推断、ownership、verified assets、Project/Revision Schema 均不变，无迁移。
 
 2026-09-16 UI-01：`EDITOR-HEADER-STYLE` v1.0.0 统一贴图工作台项目头、贴图/UV/烘焙切换栏、视角/分辨率工具组和新手引导外框为 64px 高度，内容垂直居中；新手引导改为不透明黑底白字，使用与工作流按钮一致的 text-sm / font-semibold。仅当前编辑器样式调整，不改变其他工作流页、教程进度、导航/绘制/生成、CPU/GPU/Worker/shader、Schema 或保存/导出。无迁移；回滚两个生产组件的样式即可。详见 [新手引导变更卡](changes/CHG-20260916-TEXTURE-ONBOARDING.md)。本轮未推送或部署。
 
@@ -127,7 +133,7 @@
 
 2026-09-15 M03：ALG-VIEW-INPUT-001/1.3.2 在鼠标接触前即让 R3F 悬停遵守 Alt 所有权；保留普通 hover 和已锁定拖动。旧实现拾取回归失败、新实现通过，用户实际首帧延迟需继续录制。无像素/持久化迁移，见 [Alt 悬停变更卡](changes/CHG-20260915-ALT-BRUSH-HOVER.md)。
 
-> 文档版本：`2.20.164`
+> 文档版本：`2.20.168`
 
 2026-09-16 UI-16 → M14（协作 M01/M12/M13/M15）：`ASSET-LIFECYCLE-GC` v0.4.0 / `STORAGE-INVENTORY-001/4` 将 Cloud 工程/Revision 引用页默认 8→32，并由单条 PostgreSQL CTE 完成分页、assetId 提取与引用 upsert，Node 不再回传引用数组后二次写库；每 256 条文档约 64→8 次数据库往返，保持 45 秒单查询上限与有界 Node 内存。当前 ready scan 引用索引保留到下一快照原子切换，旧 /3 快照自动重扫。Cloud 隔离区改按真实 quarantine 且排除重新可达对象统计；新增用户级幂等持久 purge job/item，以最多 4 并发签名 DeleteObject 后逐项事务删除 transfer、写 deleted_at，404/Pod 重启可安全重放。新增 `asset_storage_purge_jobs/items`，无 Project/Revision/Asset 内容迁移；Command/CAS/ownership/verified 及 GPU/CPU/Worker/shader、投影/UV/重绘/export、分辨率与 QA 不变。回滚前停 purge 并保留任务表，详见 [Cloud 存储盘点与物理清理变更卡](changes/CHG-20260916-CLOUD-STORAGE-INVENTORY-BOUNDED.md)。
 
@@ -708,7 +714,7 @@ LI3D Cloud 控制面（无状态 Node.js App）
 | --- | --- | --- | --- |
 | `UI-01` | 工程头 | 返回项目、重命名、Saved/Saving/Failed；调用 `M01/M12` | Project Command/Revision |
 | `UI-02` | 贴图/UV/烘焙 | 工作流导航；调用 `M10/M12`，不在标签按钮内执行算法 | route + Pipeline stage |
-| `UI-03` | 工作区/下载/分辨率 | 场景、贴图、法线、导出、1K/2K/4K/8K | settings + export intent |
+| `UI-03` | 工作区/下载/分辨率 | 场景、贴图、法线、导出；贴图工作台当前可选 1K/2K/4K，旧工程 8K 只读兼容 | settings + export intent |
 | `UI-04` | 对象面板 | 选择、显隐、聚焦、变换、复制、删除、导入、排列 | SceneObject + Project document |
 | `UI-05` | 生成面板 | 多视图、单视图、局部重绘与提示词智能润色；提交/恢复任务并创建 Layer | Prompt + Capture + Generation + projected Layer |
 | `UI-06` | 中央视口 | Three 场景、实时投影、选择、表面画笔、局部预览 | GPU material/session state |
@@ -850,7 +856,7 @@ v1.3.7 普通投影蒙版 GPU 存储尺寸修复（M06/M12，协作 M03）：1×
 | content-aware underlay | 只读计算结果 | 必须先显式创建普通 UV 可编辑副本；原 underlay 不变 |
 | normal/patch | 无 | fail-closed；normal 禁止颜色橡皮，patch 先合并为 UV |
 
-覆盖公式为 `effectiveCoverage = authoredCoverage × editKeepCoverage`。UV 图层在提交时把 keep coverage 合入该层 alpha；projected 图层把它保存为 UV0 灰度 keep mask；局部重绘沿用独立作者 mask。GPU 实时材质、GPU UV bake、CPU UV rasterizer、UV Worker source-over、图层合并和模型导出都消费同一结果。普通 projected 橡皮的可见实时蒙版必须使用项目选择的 1K/2K/4K/8K；512 Canvas 只能作为不可见的延迟持久化草稿，不能参与屏幕显示、正式遮罩或导出。其他明确登记的交互代理不改变其正式完整分辨率要求，不得以旧 2K 上限作为最终结果。
+覆盖公式为 `effectiveCoverage = authoredCoverage × editKeepCoverage`。UV 图层在提交时把 keep coverage 合入该层 alpha；projected 图层把它保存为 UV0 灰度 keep mask；局部重绘沿用独立作者 mask。GPU 实时材质、GPU UV bake、CPU UV rasterizer、UV Worker source-over、图层合并和模型导出都消费同一结果。普通 projected 橡皮的可见实时蒙版必须使用项目分辨率；贴图工作台新选择为 1K/2K/4K，旧工程 8K 仍按原尺寸只读兼容，禁止静默降采样。512 Canvas 只能作为不可见的延迟持久化草稿，不能参与屏幕显示、正式遮罩或导出。其他明确登记的交互代理不改变其正式完整分辨率要求，不得以旧 2K 上限作为最终结果。
 
 v1.2.0 的交互调度只优化普通 projected keep-mask：原始鼠标/压感笔事件在每个显示帧仅保留最后一个表面命中，512 代理画布用连续笔刷段补齐帧间路径；复用 pointer-down 画布边界，停止逐帧上传仅用于延迟细化的 projection texture。抬笔后等待 48ms 无输入窗口，再让出一个任务执行持久画布、历史瓦片和图层发布，不再等待可能延迟数秒的 requestIdleCallback；切层/切模型时优先完成旧笔画提交，再释放旧 live mask，交接期间不接收新笔画。高分辨率投影补缝仍在 3000ms 交互空闲后运行。普通/合并 UV 橡皮继续使用密集 BVH/UV 重采样，局部重绘作者 coverage、最终分辨率和覆盖公式均不变。
 
@@ -892,7 +898,7 @@ Layer 以可选 `eraserAlgorithmVersion=1` 标记首次采用该语义的内容�
 | `ALG-PROJ-004` Top-3 颜色一致性合成 | `3.0.0` | 普通单视图与多视图 | 每个普通投影视角均作为候选；每 texel 保留 score 最高 3 个，按 coverage、depth、angle、edge 与线性 RGB 一致度组合，不依赖图层顺序硬覆盖 | WebGPU parity 不通过使用 CPU exact 输出 |
 | `ALG-PROJ-005` 单视图投影适配 | `3.0.0` | single-view layer | 只负责将供应方 RGB 清理为捕获原尺寸的全不透明投影源，并用独立 capture mask/depth 定义 footprint；合成完全委托 `ALG-PROJ-004`，旧 `single-view-priority-v1`/距离场 Alpha 在读取时惰性移除 | 缺 capture mask 时停止安全升级；不恢复 priority source-over |
 | `ALG-PROJ-006` Literal Overlay | `2.1.0` | 局部重绘 | authored coverage 直接 source-over；单层直接 mask sampler 支持 resident 交接；实时与常驻有材质片元共用真实相机几何深度，不以前推偏移覆盖外壳 | mask/source 未就绪不发布半层；空诊断面保留原后移规则 |
-| `ALG-PROJ-007` GPU 驻留与分块 | `2.1.3` | ProjectedLayerMaterial / SceneRoot / PreviewCompositor | 普通预览与 bulk 在解码/上传期间固定缓存；live 纹理同参数读取不置脏，显式发布/参数变化仍更新；每个 array stripe 上传前解除 PBO 绑定并在 finally 恢复；只对可见工作区当前对象预热，隐藏对象取消未完成 array 构建；array 失败时允许预算内精确 direct stack，否则渐进合成自动退避重试，总尝试最多 4 次 | 保留上一有效材质或合法 UV bootstrap；晚到发布不得复活隐藏 UV；不降低生产 UV 输出尺寸 |
+| `ALG-PROJ-007` GPU 驻留与分块 | `2.1.14` | ProjectedLayerMaterial / SceneRoot / PreviewCompositor | 在既有驻留、预热、分块上传和有界恢复上，UV 颜色统一在线性预乘 alpha 空间插值，普通 UV 下层 source-over 只计算一次 alpha；完整语义见 2026-09-16 变更卡 | 保留上一有效材质或合法 UV bootstrap；晚到发布不得复活隐藏 UV；不降低生产 UV 输出尺寸 |
 
 ### 6.1 当前生产常量
 
@@ -1071,7 +1077,7 @@ Bake 设置包含 resolution、frontal/rear distance、distance/cage、cage infl
 | `ALG-IN-001` 格式路由导入 | GLB/GLTF 正式，FBX/OBJ 兼容；按扩展名/loader 解析为统一 LoadedModel |
 | `ALG-IN-002` 模型归一化 | 通过父 Group 居中、落地、适配相机，不改 mesh 原始顶点 |
 | `ALG-IN-003` 多模型放置 | 按已有场景包围盒并排放置，保留独立 objectId 与 transform |
-| `ALG-VIEW-INPUT-001` 视口输入路由 v1.1.0 | 滚轮交给原生相机控制器按帧累计；画笔接管的手势尾部不重复拾取，普通选择/hover/捕获保持原分发 |
+| `ALG-VIEW-INPUT-001` 视口输入路由 v1.4.1 | Alt＋左键旋转；中键直接平移（Alt 兼容）；Alt＋右键左/上缩小、右/下放大；滚轮按帧缩放；导航与画笔/选择保持独占归属 |
 | `ALG-VIEW-SELECT-001` 多模型选择资源驻留 v1.0.4 | 选择框复用且每帧核对当前对象，不依赖旧 React 选择；捕获恢复恰好一次；仅真实取景计算 bounds；预热复制跳过应用元数据，保留 Three 子类/几何/材质状态；按 renderer 串行选择预热，跳过过期排队任务，保留模型/工具所有权与交互门控及全部 GPU 阶段 |
 | `ALG-CAP-001` 相机序列化 | position/quaternion/target/near/far/fov/zoom/P/V/world/aspect 完整保存 |
 | `ALG-CAP-002` Color 捕获 | 线性 RT + 输出变换；viewport/clay/target-only/flat 明确区分 |
@@ -1092,9 +1098,9 @@ Bake 设置包含 resolution、frontal/rear distance、distance/cage、cage infl
 | `ALG-OUT-001` 纹理/模型导出 | BaseColor 与 GLB/GLTF/FBX/OBJ/STL/ZIP；验证 UV 方向和颜色空间 |
 | `ALG-OUT-002` 快照/转台 | 当前视口设置生成静态图或视频，不改变 Layer 作者数据 |
 
-### 11.1 单/多视图双提供方契约
+### 11.1 单/多视图提供方兼容契约
 
-- UI：`UI-05` 的单视图与多视图都显示 `GPT2 / 远端` 切换；默认保持 `GPT2`，局部重绘不受此选择影响。
+- UI：`UI-05` 当前新建单视图与多视图固定使用 GPT，不显示或持久化 `GPT2 / 远端` 切换；历史 ModelView 结果和兼容执行分支继续可读。局部重绘仍有独立的“原局部重绘 / GPT 局部重绘”选择，不与 texture-map 提供方混用。
 - 模块：`M04` 生成编排；远端适配由同源 `/api/modelview/single-view` 进入 Node 控制面，浏览器不得直接持有 API Key 或跳过局域网 TLS 校验。
 - GPT2 输入与行为：单视图初始白模、已有贴图补全及多视图统一使用 `textureMapPrompts.ts` 的材质补全模板；图一锁定全部几何、视图与排版，图二只提供白模内部的特有材质外观。继续使用 LiClick/Atlas 任务提交、轮询、取消和投影流程。
 - 远端输入：必填当前视角 clay 白模 `image`、已选多视图材质参考 `material_image`；`prompt` 可空且最长 4096 字符；禁止发送 mask、seed、noise_seed、模型名、采样步数或工作流节点参数。
@@ -1290,6 +1296,9 @@ M15 / CLOUD-DEPLOYMENT v1.0.0（2026-09-03）：正常合并 release 部署历�
 
 | 版本 | 日期 | 基线 | 变更 |
 | --- | --- | --- | --- |
+| `2.20.166` | 2026-09-17 | `32ad28ce + 多用户并发稳定性续优化` | M13/M10/M15：`BAKE-HISTORY-LIST/1.1.0` 合并同时到达的目录扫描，按 owner 建批次索引，异步读取输出 metadata 并逐任务限制 I/O 扇出；10 身份、34 任务、40 并发请求隔离冒烟通过。保留 `IMPORT-UV-REPAIR/1.0.0`。无 Schema、资产或数据迁移。 |
+| `2.20.165` | 2026-09-17 | `32ad28ce + Bake 产物续优化` | M10/M13/M15：`BAKE-ARTIFACT-IO/1.1.0` 异步化远端 Bake 缓存检查、Base Color access 与 PNG 文件头验收；输出字节、SHA、尺寸、失败门禁和持久化格式不变，无迁移。 |
+| `2.20.164` | 2026-09-17 | `32ad28ce + 历史稳定性补丁` | M13/M15（协作 M10）：`BAKE-HISTORY-LIST/1.0.0` 将 Bake 历史目录与 Job JSON 改为最多 8 路异步有界读取；`ASSET-TRANSFER-TEST-PORT/1.0.0` 避开 Fetch 禁止端口造成的随机测试失败。同步当前分辨率、投影/输入版本和提供方文档。无算法像素、Schema、资产或数据迁移。 |
 | `2.20.83` | 2026-09-14 | `6f26336 + 本次六视图模板更新` | M04/UI-05、`MULTIVIEW-REFERENCE-PROMPT` v1.1.0：使用用户确认的 Base Color / Albedo 模板去除参考光影，保留材质纹理、六视图布局、补充要求和旧结果复用。无数据迁移；实际生图效果另行验收。 |
 | `2.20.81` | 2026-09-12 | `c1b948f + 本地待提交` | `ALG-ERASE-001` v1.5.1 / `UV-DISPLAY-BUFFER` v1.3.1：当前 projected 层常驻预热中性 GPU mask 与 exact stack；异步准备期间的首笔屏幕段在接管前完整补放，活动手势无缝继续，已完成手势不回弹。图层/模型/分辨率变化释放重建；Schema/资产不变，无迁移。同步验证 #630458 对应的 projection-performance 共享预算门禁。见 CHG-20260912-ERASER-RESIDENT-PREWARM。 |
 | `2.20.80` | 2026-09-12 | `251700e + 0c0ff44` | `GPT-MULTIVIEW-PAIR-SEQUENCE` v1.4.0：固定 2+4 分组并发并整合生成区布局；同时保留 `ALG-ERASE-001` v1.5.0 的全分辨率 GPU 跟手蒙版。投影/UV/export、分辨率、质量与资产协议不变，无迁移。见 CHG-20260912-GENERATION-ACTION-FAST。 |
