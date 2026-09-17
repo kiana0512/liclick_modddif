@@ -76,7 +76,6 @@ import {
   buildContentAwareSurfaceTopology,
   CONTENT_AWARE_REPAIR_REQUEST_EVENT,
   createVisibleSurfaceCompletionPolicy,
-  runSurfaceAwareRepair,
   CONTENT_AWARE_UV_MAX_RESOLUTION,
   type ContentAwareRepairRequestDetail,
 } from '@/engine/contentAware';
@@ -1304,8 +1303,8 @@ export function EditorPage({
         repairResolution,
         {
           includeInvisible: false,
-          // LOCAL-BOUNDARY-REPAIR never crosses UV seams. Do not spend the
-          // prewarm budget rasterizing seam links that the Worker must ignore.
+          // Prewarm only the common no-seam pass. Rare residual islands build
+          // verified physical seam links lazily after that pass reports them.
           includeSeamLinks: false,
           yieldIntervalMs: 4,
         },
@@ -7011,9 +7010,8 @@ export function EditorPage({
               repairResolution,
               {
                 includeInvisible: false,
-                // The production policy has maxSeamCrossings=0. Keeping seam
-                // links disabled preserves same-region colour safety and avoids
-                // unnecessary topology work on complex models.
+                // Keep the common pass seam-free. The bounded fallback builds
+                // links on demand only when this pass proves a residual exists.
                 includeSeamLinks: false,
                 yieldIntervalMs: 4,
                 signal: abortController.signal,
@@ -7103,56 +7101,50 @@ export function EditorPage({
             progress: 0.74,
           });
         }
-        const repair = await runSurfaceAwareRepair(
-          {
-            width: repairResolution,
-            height: repairResolution,
-            rgba: workingImageData.data,
-            writeMask: detectedGaps.mask,
-            // The input is already the final quality-ranked composite of all
-            // six projections. This FBX shares its complete UV atlas between
-            // two surface components, so excluding conflict texels would
-            // exclude every possible donor. The repair engine still excludes
-            // the detected holes plus padding before propagating colour.
-            topologyMask: topology.topologyMask,
-            topologyRegionIds: topology.regionIds,
-            // Complete every reachable hatch-visible texel in one Worker pass.
-            // The queue remains O(N); adaptive filling stays inside selected
-            // gaps and same-region original boundaries, never foreign seams.
-            ...completionPolicy.propagation,
-          },
-          {
-            signal: abortController.signal,
-            transferOwnership: { rgba: true, writeMask: true },
-            // Publishing consumes only sparse RGBA + stats. Keeping two extra
-            // 4K byte masks would retain another 32 MiB on the UI thread.
-            includeDiagnostics: false,
-            onProgress: silentForeground
-              ? undefined
-              : (progress) =>
-                  setManualBakeProgress({
-                    title: t('contentAwareRepair'),
-                    detail: t('contentAwareRepairFilling'),
-                    progress: 0.74 + progress.progress * 0.2,
-                  }),
-          },
+        const { runVisibleSurfaceRepairWithFallback } = await import(
+          '@/engine/contentAware/runBoundedSeamFallbackRepair'
         );
-        reportRepairRunState('running', 'repair-worker-ready', {
-          repairedPixels: repair.stats.repairedPixels,
-          outputChecksum: repair.stats.outputChecksum,
+        const repair = await runVisibleSurfaceRepairWithFallback({
+          root: targetModel.group,
+          width: repairResolution,
+          height: repairResolution,
+          rgba: workingImageData.data,
+          writeMask: detectedGaps.mask,
+          topology,
+          propagation: completionPolicy.propagation,
+          signal: abortController.signal,
+          onProgress: silentForeground
+            ? undefined
+            : (progress) =>
+                setManualBakeProgress({
+                  title: t('contentAwareRepair'),
+                  detail: t('contentAwareRepairFilling'),
+                  progress: 0.74 + progress * 0.24,
+                }),
         });
-        console.info('[Liclick Content Aware] Surface repair', JSON.stringify(repair.stats));
-        if (repair.stats.repairedPixels === 0) {
+        const { filledRgba, repairedPixels, unresolvedPixels, outputChecksum } = repair;
+        reportRepairRunState('running', 'repair-worker-ready', {
+          repairedPixels,
+          unresolvedPixels,
+          outputChecksum,
+          seamLinkCount: repair.seamLinkCount,
+          seamTopologyBuildTimeMs: repair.seamTopologyBuildTimeMs,
+        });
+        console.info('[Liclick Content Aware] Surface repair', JSON.stringify({
+          initial: repair.initialStats,
+          fallback: repair.fallbackStats,
+        }));
+        if (repairedPixels === 0) {
           throw new Error(t('contentAwareRepairNoReachableSource'));
         }
         // `filledRgba` is intentionally sparse: only successfully repaired gap
         // texels are opaque. It never contains a flattened copy of source layers.
-        const repairTexture = new ImageData(repair.filledRgba, repairResolution, repairResolution);
+        const repairTexture = new ImageData(filledRgba, repairResolution, repairResolution);
         if (!silentForeground) {
           setManualBakeProgress({
             title: t('contentAwareRepair'),
             detail: t('contentAwareRepairFilling'),
-            progress: 0.96,
+            progress: 0.99,
           });
         }
         if (!benchmarkOnly) captureHistory('创建独立内容识别 UV 修补图层');
@@ -7166,16 +7158,17 @@ export function EditorPage({
         if (!benchmarkOnly) setProjectLayers(useLayerStore.getState().layers);
         reportRepairRunState('complete', 'atomic-publish', {
           layerId: repairLayer.id,
-          repairedPixels: repair.stats.repairedPixels,
-          outputChecksum: repair.stats.outputChecksum,
+          repairedPixels,
+          unresolvedPixels,
+          outputChecksum,
         });
         options?.taskContext?.markFirstResult({ layerId: repairLayer.id });
         if (!benchmarkOnly && !silentForeground) {
           pushToast({
-            tone: repair.stats.unresolvedPixels > 0 ? 'warning' : 'success',
+            tone: unresolvedPixels > 0 ? 'warning' : 'success',
             title: t('contentAwareFillComplete'),
-            description: `${t('uvRepairLayerCreated')}: ${repairLayer.name} · ${repair.stats.repairedPixels.toLocaleString()} px` +
-              (repair.stats.unresolvedPixels > 0 ? `；仍有 ${repair.stats.unresolvedPixels.toLocaleString()} px 缺少可靠边界颜色，可使用局部重绘补充。` : ''),
+            description: `${t('uvRepairLayerCreated')}: ${repairLayer.name} · ${repairedPixels.toLocaleString()} px` +
+              (unresolvedPixels > 0 ? `；仍有 ${unresolvedPixels.toLocaleString()} px 缺少可靠边界颜色，可使用局部重绘补充。` : ''),
             dedupeKey: `content-aware-repair:${repairLayer.id}`,
           });
         }

@@ -1,5 +1,7 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
+2026-09-17 M07（协作 M05/M06/M08/M09）：`LOCAL-BOUNDARY-REPAIR/1.4.0` / `CONTENT-REPAIR-SEAM-FALLBACK/1.0.0` 为首轮同 region 修复后仍无 donor 的余量增加按需 fallback：只有统计确认残余才构建同 Mesh/同材质/法线兼容的物理 seam links，第二轮最多跨一条 seam 且只能写 residual mask；全局平均、跨材质和岛链传播仍禁止。Worker 原地回传已转移 source/mask 并在 Worker 内合并两轮稀疏 RGBA，避免 4K continuation 复制；fallback 为 lazy chunk，常规首屏与无余量任务不加载。GPU/shader、投影/UV/repaint/export、分辨率、QA、Schema/Command/CAS/ownership/verified assets 不变，无迁移；孤立无可靠 donor 的表面仍明确保留余量。回滚与验证见 [内容填补按需物理缝余量修复](changes/CHG-20260917-CONTENT-REPAIR-BOUNDED-SEAM-FALLBACK.md)。
+
 2026-09-17 M08（协作 M03/UI-06/UI-10）：`INPAINT-TOOL-SESSION/1.0.0` 修复局部重绘“绘制蒙版”按钮仍显示激活、但视口偶发不再接收笔画，刷新后恢复的问题。每次进入或重复点击蒙版工具发布非持久 activation revision；视口先结束失去捕获的孤立笔画、释放旧 pointer ownership，再按当前模型重同步投影、深度和覆盖层，尤其清除历史 GPU direct-ready 标记。普通点击、当前加/减选模式及作者蒙版保持；不使用延时重试，不重置已画内容。GPU/shader 像素核、CPU/Worker、Capture/GPT 输入、UV/repaint/export、分辨率、QA、Project Command/CAS/ownership/verified assets 与 Schema 不变，无数据迁移。回滚移除 activation revision 和重激活处理即可；详见 [蒙版工具会话自愈](changes/CHG-20260917-INPAINT-TOOL-SESSION.md)。本轮尚未推送或部署。
 
 2026-09-17 M07（协作 M08/M11）：`UV-MANUAL-PAINT-COMPOSITION/1.0.0` / UV composition 12 将无专用 role 的普通 UV 绘制层纳入手动/自动合并和模型导出，不再依赖旧原生重绘 ID。底图/内容修补仍在投影下面，绘制层按现有 UV 栈顺序 source-over，保留原透明度；显隐、对象过滤、内部 draft 及旧版重绘兼容保持。GPU Worker、CPU fallback、预热和 FBX/GLB 共用新分类；普通模型导出先等待 live commit。原分辨率、QA、shader/绘制内核、持久化/CAS/ownership/verified assets 不变，无 Schema 或资产迁移；不自动改写旧合并图。详见 [手动 UV 重绘合并修复](changes/CHG-20260917-MANUAL-UV-MERGE.md)。本轮未推送或部署。

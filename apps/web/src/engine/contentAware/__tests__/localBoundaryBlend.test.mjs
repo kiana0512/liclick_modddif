@@ -87,13 +87,13 @@ test('a narrow seam interpolates both local boundaries instead of a constant or 
   assert.equal(repaired.stats.sourceRegionLockedComponents, 0);
 });
 
-test('mouth pink uses its own boundary, never the nearby yellow skin or foreign seam link', () => {
+test('no-seam fast path keeps mouth pink on its own boundary', () => {
   const f = fixture(14);
   f.topologyRegionIds.fill(2, 6);
   for (let i = 0; i < 6; i++) pixel(f, i, [230, 175, 35]);
   pixel(f, 6, [140, 80, 90]); pixel(f, 13, [160, 100, 105]); f.writeMask.fill(255, 7, 13);
   f.seamLinks = new Uint32Array([5, 9]);
-  const repaired = repairSurfaceTexture({ ...f, maxSeamCrossings: 1, fillUnreachableWithGlobalAverage: true, lockToDominantSourceRegion: true });
+  const repaired = repairSurfaceTexture({ ...f, maxSeamCrossings: 0, fillUnreachableWithGlobalAverage: true, lockToDominantSourceRegion: true });
   for (let i = 7; i < 13; i++) {
     const [r, g, b] = rgb(repaired, i);
     assert.ok(r >= 140 && r <= 160 && g <= 100 && b >= 90, 'only pink local boundary colors');

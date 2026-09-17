@@ -98,8 +98,9 @@ export interface SurfaceAwareRepairInput {
    * colour stripes.
    */
   lockToDominantSourceRegion?: boolean;
-  /** LOCAL-BOUNDARY-REPAIR v1.1: same-region boundary interpolation.
-   * Disables foreign seam donors, dominant single-color locking and global fill.
+  /** LOCAL-BOUNDARY-REPAIR v1.4: local boundary interpolation.
+   * Keeps dominant single-color locking and global fill disabled. Physical seam
+   * donors remain disabled unless maxSeamCrossings is explicitly greater than 0.
    */
   localBoundaryBlend?: boolean;
   /** Expand beyond maxDistance through the selected gap only, using original
@@ -149,6 +150,72 @@ export interface SurfaceAwareRepairResult {
   /** Sampling-only mask, including sourcePaddingPixels. Never use as layer alpha. */
   sourceExclusionMask: Uint8Array<ArrayBuffer>;
   stats: SurfaceRepairStats;
+}
+
+export type SurfaceRepairContinuationInput = {
+  sourceRgba: Uint8ClampedArray<ArrayBuffer>;
+  unresolvedMask: Uint8Array<ArrayBuffer>;
+};
+
+/**
+ * Reuses transferred source buffers for a bounded follow-up pass. Successfully
+ * repaired texels become opaque donors and are removed from the remaining mask,
+ * without allocating another full-resolution source image or mask.
+ */
+export function prepareSurfaceRepairContinuation(
+  sourceRgba: Uint8ClampedArray<ArrayBuffer>,
+  writeMask: Uint8Array<ArrayBuffer>,
+  result: SurfaceAwareRepairResult,
+): SurfaceRepairContinuationInput | undefined {
+  if (result.stats.unresolvedPixels <= 0) return undefined;
+  for (let index = 0; index < writeMask.length; index += 1) {
+    if (result.repairedMask[index] === 0) continue;
+    const offset = index * 4;
+    sourceRgba[offset] = result.filledRgba[offset];
+    sourceRgba[offset + 1] = result.filledRgba[offset + 1];
+    sourceRgba[offset + 2] = result.filledRgba[offset + 2];
+    sourceRgba[offset + 3] = result.filledRgba[offset + 3];
+    writeMask[index] = 0;
+  }
+  return { sourceRgba, unresolvedMask: writeMask };
+}
+
+/** Merges a later sparse pass without replacing higher-confidence earlier pixels. */
+export function mergeSparseSurfaceRepairRgba(
+  accumulated: Uint8ClampedArray<ArrayBuffer>,
+  next: Uint8ClampedArray<ArrayBuffer>,
+) {
+  if (accumulated.length !== next.length) {
+    throw new RangeError('Sparse surface repair layers must have identical byte lengths.');
+  }
+  for (let offset = 0; offset < next.length; offset += 4) {
+    const nextAlpha = next[offset + 3];
+    const accumulatedAlpha = accumulated[offset + 3];
+    const accumulatedEmpty =
+      accumulatedAlpha === 0 &&
+      accumulated[offset] === 0 &&
+      accumulated[offset + 1] === 0 &&
+      accumulated[offset + 2] === 0;
+    if (nextAlpha === 0 ? !accumulatedEmpty : accumulatedAlpha !== 0) continue;
+    accumulated[offset] = next[offset];
+    accumulated[offset + 1] = next[offset + 1];
+    accumulated[offset + 2] = next[offset + 2];
+    accumulated[offset + 3] = nextAlpha;
+  }
+  return accumulated;
+}
+
+export function checksumSurfaceRepairRgba(
+  rgba: Uint8ClampedArray<ArrayBuffer>,
+  checkAbort?: () => void,
+) {
+  let checksum = 0x811c9dc5;
+  for (let offset = 0; offset < rgba.length; offset += 1) {
+    checksum ^= rgba[offset];
+    checksum = Math.imul(checksum, 0x01000193);
+    if ((offset & 0xfffff) === 0) checkAbort?.();
+  }
+  return checksum >>> 0;
 }
 
 export interface SurfaceRepairHooks {
@@ -254,7 +321,12 @@ function normalizeInput(input: SurfaceAwareRepairInput): NormalizedInput {
     topologyMask: input.topologyMask,
     seamLinks: input.seamLinks,
     topologyRegionIds: input.topologyRegionIds,
-    maxSeamCrossings: input.localBoundaryBlend ? 0 : clampInteger(input.maxSeamCrossings, 255, 0, 255),
+    maxSeamCrossings: clampInteger(
+      input.maxSeamCrossings,
+      input.localBoundaryBlend ? 0 : 255,
+      0,
+      255,
+    ),
     sourcePaddingPixels: clampInteger(input.sourcePaddingPixels, 8, 0, pixelCount),
     maxDistance: clampInteger(input.maxDistance, 128, 0, pixelCount),
     minSourceAlpha: clampInteger(input.minSourceAlpha, 250, 1, 255),
@@ -970,7 +1042,11 @@ export function repairSurfaceTexture(
           const neighbor = seams.targets[edge];
           const nextSeamCrossings = (seamCrossings?.[index] ?? 0) + 1;
           if (nextSeamCrossings > input.maxSeamCrossings) continue;
-          if (owner[neighbor] !== -1 || input.topologyMask[neighbor] === 0) {
+          if (
+            owner[neighbor] !== -1 ||
+            input.topologyMask[neighbor] === 0 ||
+            (input.adaptiveGapDistance && input.writeMask[neighbor] === 0)
+          ) {
             continue;
           }
           owner[neighbor] = source;
@@ -1255,13 +1331,7 @@ export function repairSurfaceTexture(
     repairedMask[queue[queueIndex]] = 0;
   }
 
-  let outputChecksum = 0x811c9dc5;
-  for (let offset = 0; offset < filledRgba.length; offset += 1) {
-    outputChecksum ^= filledRgba[offset];
-    outputChecksum = Math.imul(outputChecksum, 0x01000193);
-    if ((offset & 0xfffff) === 0) checkAbort();
-  }
-  outputChecksum >>>= 0;
+  const outputChecksum = checksumSurfaceRepairRgba(filledRgba, checkAbort);
 
   const stats: SurfaceRepairStats = {
     pixelCount: input.pixelCount,

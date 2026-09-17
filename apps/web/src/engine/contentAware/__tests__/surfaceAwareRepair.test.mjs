@@ -3,6 +3,7 @@ import test from 'node:test';
 import { readFileSync } from 'node:fs';
 
 import { repairSurfaceTexture } from '../surfaceAwareRepair.ts';
+import { runSurfaceAwareRepair } from '../runSurfaceAwareRepair.ts';
 import { createVisibleSurfaceCompletionPolicy } from '../visibleSurfaceCompletionPolicy.ts';
 
 test('cached boundary edges preserve complete v1.2.0 golden pixels', () => {
@@ -155,6 +156,8 @@ test('bounded seam propagation seeds one blank neighbour without cascading acros
     requireCompleteComponents: true,
     lockToDominantSourceRegion: true,
     dominantSourceColorThreshold: 18,
+    localBoundaryBlend: true,
+    adaptiveGapDistance: true,
   });
 
   for (const index of [1, 2, 5, 6, 7]) {
@@ -166,6 +169,69 @@ test('bounded seam propagation seeds one blank neighbour without cascading acros
   }
   assert.equal(result.stats.repairedPixels, 5);
   assert.equal(result.stats.partialComponentsDiscarded, 1);
+});
+
+test('unresolved continuation reuses buffers and merges one bounded physical-seam pass', async () => {
+  const width = 8;
+  const rgba = new Uint8ClampedArray(width * 4);
+  const writeMask = new Uint8Array(width);
+  const topologyMask = new Uint8Array(width);
+  const topologyRegionIds = new Uint32Array(width);
+  for (const index of [0, 1, 2]) {
+    topologyMask[index] = 1;
+    topologyRegionIds[index] = 1;
+  }
+  for (const index of [5, 6, 7]) {
+    topologyMask[index] = 1;
+    topologyRegionIds[index] = 2;
+  }
+  setPixel(rgba, 0, [154, 88, 42]);
+  for (const index of [1, 2, 5, 6, 7]) writeMask[index] = 255;
+  const propagation = {
+    sourcePaddingPixels: 0,
+    maxDistance: 4,
+    minSourceAlpha: 224,
+    sourceColorOutlierThreshold: 0,
+    connectivity: 4,
+    coverageSkirtPixels: 0,
+    outputBleedPixels: 0,
+    fillUnreachableWithGlobalAverage: false,
+    requireCompleteComponents: false,
+    localBoundaryBlend: true,
+    adaptiveGapDistance: true,
+  };
+  const first = await runSurfaceAwareRepair(
+    { width, height: 1, rgba, writeMask, topologyMask, topologyRegionIds, ...propagation, maxSeamCrossings: 0 },
+    { useWorker: false, includeDiagnostics: false, returnUnresolvedInput: true },
+  );
+  assert.equal(first.stats.repairedPixels, 2);
+  assert.equal(first.stats.unresolvedPixels, 3);
+  assert.ok(first.continuationSourceRgba);
+  assert.ok(first.unresolvedMask);
+
+  const second = await runSurfaceAwareRepair(
+    {
+      width,
+      height: 1,
+      rgba: first.continuationSourceRgba,
+      writeMask: first.unresolvedMask,
+      topologyMask,
+      topologyRegionIds,
+      seamLinks: new Uint32Array([2, 5]),
+      ...propagation,
+      maxSeamCrossings: 1,
+    },
+    {
+      useWorker: false,
+      includeDiagnostics: false,
+      accumulatedFilledRgba: first.filledRgba,
+    },
+  );
+  assert.equal(second.stats.repairedPixels, 3);
+  assert.equal(second.stats.unresolvedPixels, 0);
+  for (const index of [1, 2, 5, 6, 7]) {
+    assert.deepEqual(Array.from(second.filledRgba.subarray(index * 4, index * 4 + 4)), [154, 88, 42, 255]);
+  }
 });
 
 test('competing source pixels inside one donor region cannot split a gap into two colours', () => {

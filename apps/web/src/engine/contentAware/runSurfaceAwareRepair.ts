@@ -28,12 +28,22 @@ export interface RunSurfaceAwareRepairOptions {
    * atlas-sized buffers on the main thread. Defaults to true for compatibility.
    */
   includeDiagnostics?: boolean;
+  /** Return transferred source RGBA + only the unresolved write mask when gaps remain. */
+  returnUnresolvedInput?: boolean;
+  /**
+   * Transfer and merge an earlier sparse pass into this result. Earlier opaque
+   * pixels keep priority; the caller must treat this buffer as consumed.
+   */
+  accumulatedFilledRgba?: Uint8ClampedArray<ArrayBuffer>;
 }
 
 export type SurfaceAwareRepairPublishResult = Pick<
   SurfaceAwareRepairResult,
   'filledRgba' | 'stats'
->;
+> & {
+  continuationSourceRgba?: Uint8ClampedArray<ArrayBuffer>;
+  unresolvedMask?: Uint8Array<ArrayBuffer>;
+};
 
 function createAbortError() {
   return new DOMException('Surface-aware repair was cancelled.', 'AbortError');
@@ -96,14 +106,42 @@ async function runOnMainThread(
 ) {
   // Normal editor execution uses the Worker; load the identical compatibility
   // kernel only when needed instead of adding it to the editor's initial route.
-  const { repairSurfaceTexture } = await import('./surfaceAwareRepair');
+  const {
+    checksumSurfaceRepairRgba,
+    mergeSparseSurfaceRepairRgba,
+    prepareSurfaceRepairContinuation,
+    repairSurfaceTexture,
+  } = await import('./surfaceAwareRepair.ts');
   const result = repairSurfaceTexture(copiedInput, {
     signal: options.signal,
     onProgress: options.onProgress,
   });
+  const continuation = options.returnUnresolvedInput
+    ? prepareSurfaceRepairContinuation(
+        copiedInput.rgba as Uint8ClampedArray<ArrayBuffer>,
+        copiedInput.writeMask as Uint8Array<ArrayBuffer>,
+        result,
+      )
+    : undefined;
+  const filledRgba = options.accumulatedFilledRgba
+    ? mergeSparseSurfaceRepairRgba(options.accumulatedFilledRgba, result.filledRgba)
+    : result.filledRgba;
+  const publishResult: SurfaceAwareRepairPublishResult = {
+    filledRgba,
+    stats:
+      filledRgba === result.filledRgba
+        ? result.stats
+        : { ...result.stats, outputChecksum: checksumSurfaceRepairRgba(filledRgba) },
+    ...(continuation
+      ? {
+          continuationSourceRgba: continuation.sourceRgba,
+          unresolvedMask: continuation.unresolvedMask,
+        }
+      : {}),
+  };
   return options.includeDiagnostics === false
-    ? { filledRgba: result.filledRgba, stats: result.stats }
-    : result;
+    ? publishResult
+    : { ...result, ...publishResult };
 }
 
 /**
@@ -169,6 +207,12 @@ export function runSurfaceAwareRepair(
       const publishResult: SurfaceAwareRepairPublishResult = {
         filledRgba: new Uint8ClampedArray(response.filledRgba),
         stats: response.stats,
+        ...(response.continuationSourceRgba && response.unresolvedMask
+          ? {
+              continuationSourceRgba: new Uint8ClampedArray(response.continuationSourceRgba),
+              unresolvedMask: new Uint8Array(response.unresolvedMask),
+            }
+          : {}),
       };
       if (options.includeDiagnostics === false) {
         finish(resolve, publishResult);
@@ -201,6 +245,12 @@ export function runSurfaceAwareRepair(
     const sourceExclusionBuffer = sourceExclusionMask?.buffer as ArrayBuffer | undefined;
     const seamLinksBuffer = seamLinks?.buffer as ArrayBuffer | undefined;
     const topologyRegionBuffer = topologyRegionIds?.buffer as ArrayBuffer | undefined;
+    const accumulatedFilledRgba = options.accumulatedFilledRgba;
+    const accumulatedFilledRgbaBuffer = accumulatedFilledRgba
+      ? canTransferWholeView(accumulatedFilledRgba)
+        ? accumulatedFilledRgba.buffer
+        : new Uint8ClampedArray(accumulatedFilledRgba).buffer
+      : undefined;
     const request: SurfaceRepairWorkerRequest = {
       width: copiedInput.width,
       height: copiedInput.height,
@@ -231,11 +281,14 @@ export function runSurfaceAwareRepair(
       localBoundaryBlend: copiedInput.localBoundaryBlend,
       adaptiveGapDistance: copiedInput.adaptiveGapDistance,
       includeDiagnostics: options.includeDiagnostics !== false,
+      returnUnresolvedInput: options.returnUnresolvedInput === true,
+      ...(accumulatedFilledRgbaBuffer ? { accumulatedFilledRgba: accumulatedFilledRgbaBuffer } : {}),
     };
     // RGBA/writeMask are disposable copies (or explicitly transferred caller
     // buffers). Keep cached topology sources attached and let structured clone
     // create the Worker's immutable copies.
     const transfer: Transferable[] = [rgbaBuffer, writeMaskBuffer];
+    if (accumulatedFilledRgbaBuffer) transfer.push(accumulatedFilledRgbaBuffer);
     try {
       worker.postMessage(request, transfer);
     } catch (error) {

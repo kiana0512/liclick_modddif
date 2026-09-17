@@ -1,4 +1,7 @@
 import {
+  checksumSurfaceRepairRgba,
+  mergeSparseSurfaceRepairRgba,
+  prepareSurfaceRepairContinuation,
   repairSurfaceTexture,
   type SurfaceAwareRepairInput,
   type SurfaceRepairConnectivity,
@@ -32,6 +35,8 @@ export interface SurfaceRepairWorkerRequest {
   localBoundaryBlend?: boolean;
   adaptiveGapDistance?: boolean;
   includeDiagnostics?: boolean;
+  returnUnresolvedInput?: boolean;
+  accumulatedFilledRgba?: ArrayBuffer;
 }
 
 export type SurfaceRepairWorkerResponse =
@@ -41,6 +46,8 @@ export type SurfaceRepairWorkerResponse =
       filledRgba: ArrayBuffer;
       repairedMask?: ArrayBuffer;
       sourceExclusionMask?: ArrayBuffer;
+      continuationSourceRgba?: ArrayBuffer;
+      unresolvedMask?: ArrayBuffer;
       stats: SurfaceRepairStats;
     }
   | { kind: 'error'; error: string };
@@ -90,15 +97,44 @@ workerScope.onmessage = (event) => {
     const result = repairSurfaceTexture(input, {
       onProgress: (progress) => workerScope.postMessage({ kind: 'progress', progress }),
     });
+    const continuation = request.returnUnresolvedInput
+      ? prepareSurfaceRepairContinuation(
+          input.rgba as Uint8ClampedArray<ArrayBuffer>,
+          input.writeMask as Uint8Array<ArrayBuffer>,
+          result,
+        )
+      : undefined;
+    const publishedRgba = request.accumulatedFilledRgba
+      ? mergeSparseSurfaceRepairRgba(
+          new Uint8ClampedArray(request.accumulatedFilledRgba),
+          result.filledRgba,
+        )
+      : result.filledRgba;
+    const publishedStats =
+      publishedRgba === result.filledRgba
+        ? result.stats
+        : { ...result.stats, outputChecksum: checksumSurfaceRepairRgba(publishedRgba) };
     // The core always allocates these arrays locally, so their backing stores are
     // transferable ArrayBuffers (never caller-supplied SharedArrayBuffers).
-    const filledRgba = result.filledRgba.buffer as ArrayBuffer;
+    const filledRgba = publishedRgba.buffer as ArrayBuffer;
     const repairedMask = result.repairedMask.buffer as ArrayBuffer;
     const sourceExclusionMask = result.sourceExclusionMask.buffer as ArrayBuffer;
+    const continuationSourceRgba = continuation?.sourceRgba.buffer;
+    const unresolvedMask = continuation?.unresolvedMask.buffer;
+    const continuationTransfer = continuation
+      ? [continuationSourceRgba!, unresolvedMask!]
+      : [];
     if (request.includeDiagnostics === false) {
       workerScope.postMessage(
-        { kind: 'result', filledRgba, stats: result.stats },
-        [filledRgba],
+        {
+          kind: 'result',
+          filledRgba,
+          ...(continuationSourceRgba && unresolvedMask
+            ? { continuationSourceRgba, unresolvedMask }
+            : {}),
+          stats: publishedStats,
+        },
+        [filledRgba, ...continuationTransfer],
       );
     } else {
       workerScope.postMessage(
@@ -107,9 +143,12 @@ workerScope.onmessage = (event) => {
           filledRgba,
           repairedMask,
           sourceExclusionMask,
-          stats: result.stats,
+          ...(continuationSourceRgba && unresolvedMask
+            ? { continuationSourceRgba, unresolvedMask }
+            : {}),
+          stats: publishedStats,
         },
-        [filledRgba, repairedMask, sourceExclusionMask],
+        [filledRgba, repairedMask, sourceExclusionMask, ...continuationTransfer],
       );
     }
   } catch (error) {

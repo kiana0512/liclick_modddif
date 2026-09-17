@@ -21,13 +21,23 @@
 | Server 回归 | 通过 | 25/25；新增 Asset 历史刷新协调器契约，并保留导入 UV、Bake、PostgreSQL、ownership 等既有回归 |
 | Cloud boundary | 通过但范围有限 | 只扫描 `apps/web/src`、`apps/server/src`、`packages/contracts/src`；不等于全仓没有历史 4618/安装器代码 |
 | Project repository boundary | 通过 | 业务层未扩散文件系统 Project Repository |
-| 生产构建与包体 | 通过 | 最终候选 105 个 JS chunks，共 3,217,996 bytes；Cloud 产物 218 个文件、25.04 MiB；现有各分包预算均未提高，额外 256-byte reserve 检查通过；Editor route 尚余 2,675 bytes，仍需保持警惕 |
+| 生产构建与包体 | 通过 | 当前 release 候选 108 个 JS chunks，共 3,227,295 bytes；Cloud 产物 221 个文件、25.04 MiB；现有各分包预算均未提高，额外 256-byte reserve 检查通过；Editor route 尚余 4,249 bytes，仍需保持警惕 |
 | 本地 API / 集成 Web 冒烟 | 通过 | API 启动、鉴权、工程/资产、CORS/HEAD/隔离与集成 SPA/API 边界通过；旧资产恢复夹具修正后重跑通过 |
 | Cloud 部署模拟 | 通过 | OAuth/PKCE、代理路径、对象直传重试、幂等、优雅停机和重启恢复通过 |
 | 模型导入独立浏览器回归 | 通过 | `check:import-uv-browser` 使用实际 Playwright 浏览器执行；除 Float32 UV、indexed/小面积、确认/取消/Escape/切工程、失败 QA、修复文件再加载和释放外，也覆盖严格 150 万面减面阈值、>200 万面可处理、保留 UV 绕过、减面与 UV 分步授权及两阶段重载；该脚本不在默认 Web 147 项内 |
 | Cloud release readiness | **未通过，禁止据此发布** | 仓库矩阵仍有 8 项 required capability 为 `in_progress`：真实 SSO、真实贴图工作流、生产 UV/Bake/拓扑、工具箱能力、交互性能、生产数据面 |
 
 ## 3. 本轮小范围稳定性修复
+
+### 3.0b 内容填补余量的按需物理缝 fallback
+
+- 主模块：`M07`，协作 `M05/M06/M08/M09`；契约 `LOCAL-BOUNDARY-REPAIR/1.4.0` / `CONTENT-REPAIR-SEAM-FALLBACK/1.0.0`。
+- 风险：严格同 region 策略会让“本 UV 岛完全空白、但同一真实网格表面的相邻 UV 岛已有可靠颜色”的区域永久没有 donor；直接启用全局平均或无界跨 seam 会造成跨材质污染。
+- 修复：保留首轮 no-seam 快路径；只有首轮确有 residual 才按需构建同 Mesh/同材质/法线兼容的物理 seam links，第二轮最多跨一条 seam 且只写 residual mask。首轮 buffer 原地回传、收缩和 Worker 内合并，不复制一套 4K continuation RGBA+mask。
+- 并发/性能边界：工作仍在浏览器 Worker，服务器控制面与生产计算服务不增加请求扇出；无 residual 时不构建 seam 拓扑、不加载 6.68 KB fallback chunk。复杂残余模型会多一次拓扑与 Worker pass，这是明确的质量换时延边界。
+- 质量边界：不保证孤立且无可靠 donor 的区域达到字面 100%；跨 Mesh、跨材质、硬法线不兼容和第二条 seam 仍 fail-closed，不用全局平均色掩盖。
+- 证据：专项 33/33、拓扑、UV seam/gutter 冻结核、单视图 completion、TypeScript、生产构建及 256-byte 包体预留通过；Edge 2048² Worker/主线程首轮字节差 0，零拷贝 residual + 单物理缝第二轮余量 0、控制台 0 error；Editor route 494,775 / 499,024 bytes，release 总 JS 3,227,295 / 3,256,500 bytes。
+- 变更卡：[CHG-20260917-CONTENT-REPAIR-BOUNDED-SEAM-FALLBACK](changes/CHG-20260917-CONTENT-REPAIR-BOUNDED-SEAM-FALLBACK.md)。
 
 ### 3.0a 内容填补 Worker 结果内存
 
