@@ -399,7 +399,7 @@ const imageAdapter = evaluate(
 try {
   fixtures.set('normal', coverage(220, 220, { x: 30, y: 70, w: 150, h: 60 }, true));
   const combined = coverage(220, 220, { x: 0, y: 0, w: 220, h: 220 });
-  // Nonconstant opaque background proves newly added padding is not copied from the source.
+  // Nonconstant opaque background must survive across the full square crop.
   for (let i = 0; i < combined.data.length; i += 4) combined.data[i] = (i / 4) % 251;
   fixtures.set('combined', combined);
   const capture = { width: 220, height: 220, normalUrl: 'normal', maskUrl: 'author-mask' };
@@ -417,8 +417,7 @@ try {
   assert.deepEqual(preparedInput.exactIds, ['combined', 'normal']);
   assert.equal(preparedInput.references[2], references[2]);
   assert.equal(capture.maskUrl, 'author-mask');
-  const f = preparedInput.framing,
-    c = f.cropBounds;
+  const f = preparedInput.framing;
   for (let index = 0; index < 2; index++) {
     const actual = fixtures.get(preparedInput.references[index].url),
       sourcePixels = fixtures.get(references[index].url);
@@ -427,10 +426,6 @@ try {
         const sx = x + f.left,
           sy = y + f.top;
         const inside =
-          sx >= c.left &&
-          sy >= c.top &&
-          sx < c.left + c.width &&
-          sy < c.top + c.height &&
           sx >= 0 &&
           sy >= 0 &&
           sx < 220 &&
@@ -441,6 +436,33 @@ try {
             inside ? sourcePixels.data[(sy * 220 + sx) * 4 + channel] : 0,
           );
       }
+  }
+  // Texture inputs must keep the short-axis background, including portrait
+  // car captures. Also cover frames extending beyond the original canvas:
+  // only genuinely missing source pixels may become transparent.
+  for (const bounds of [
+    { x: 80, y: 20, w: 60, h: 180 },
+    { x: 20, y: 80, w: 180, h: 60 },
+    { x: 0, y: 0, w: 60, h: 200 },
+  ]) {
+    fixtures.set('full-mask', coverage(220, 220, bounds));
+    const result = await imageAdapter.prepareContentFraming({
+      workflow: 'texture-map', imageSize: '2K',
+      capture: { width: 220, height: 220, maskUrl: 'full-mask' },
+      referenceImages: [references[0], references[2]],
+    });
+    const frame = result.framing;
+    const pixels = fixtures.get(result.references[0].url);
+    assert.equal(pixels.width, pixels.height);
+    assert.deepEqual(result.exactIds, ['combined']);
+    assert.equal(result.references[1], references[2]);
+    for (let y = 0; y < pixels.height; y++) for (let x = 0; x < pixels.width; x++) {
+      const sx = x + frame.left, sy = y + frame.top;
+      const inside = sx >= 0 && sy >= 0 && sx < 220 && sy < 220;
+      for (let channel = 0; channel < 4; channel++)
+        assert.equal(pixels.data[(y * pixels.width + x) * 4 + channel],
+          inside ? combined.data[(sy * 220 + sx) * 4 + channel] : 0);
+    }
   }
   const scale = f.outputWidth / f.width,
     s = f.subject;
@@ -469,5 +491,5 @@ try {
   globalThis.document = originalDocument;
 }
 console.log(
-  'Framing image adapter: byte-exact paired crop, transparent padding, unchanged references/mask, native return and cancellation passed.',
+  'Framing image adapter: full square background, byte-exact paired crop, source-edge padding, unchanged references/mask, native return and cancellation passed.',
 );

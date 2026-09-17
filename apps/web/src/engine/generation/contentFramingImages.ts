@@ -76,11 +76,9 @@ export async function prepareContentFraming(input: LiclickGenerateTextureSingleV
     try {
       const ctx = canvas.getContext('2d');
       if (!ctx) throw new Error('无法创建裁切画布。');
-      // Integer translation only: no resize, no colour/alpha replacement, same crop for both guides.
-      const c = framing.cropBounds!;
-      ctx.beginPath();
-      ctx.rect(c.left - framing.left, c.top - framing.top, c.width, c.height);
-      ctx.clip();
+      // GPT-CONTENT-FRAMING/2.2.0: the canvas itself is the square crop.
+      // Keep source background across its short axis; a second rectangular
+      // clip would erase it into transparent bands. Both guides stay aligned.
       ctx.drawImage(image, -framing.left, -framing.top);
       references[index] = {
         ...references[index],

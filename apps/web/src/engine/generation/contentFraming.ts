@@ -74,7 +74,7 @@ function frameFromBounds({ width, height }: CoverageImage, [x0, y0, x1, y1]: rea
     width: w + border * 2,
     height: h + border * 2,
   };
-  // Square input and square generation; preserve source pixels by padding only.
+  // Square crop and generation; preserve source pixels without resampling.
   const output = generationOutputSize(1, 1, imageSize);
   const cw = Math.max(content.width, content.height), ch = cw;
   return validateGenerationFraming({

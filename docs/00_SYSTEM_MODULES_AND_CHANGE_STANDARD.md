@@ -2,6 +2,8 @@
 
 2026-09-17 M07（协作 M08/M11）：`UV-MANUAL-PAINT-COMPOSITION/1.0.0` / UV composition 12 将无专用 role 的普通 UV 绘制层纳入手动/自动合并和模型导出，不再依赖旧原生重绘 ID。底图/内容修补仍在投影下面，绘制层按现有 UV 栈顺序 source-over，保留原透明度；显隐、对象过滤、内部 draft 及旧版重绘兼容保持。GPU Worker、CPU fallback、预热和 FBX/GLB 共用新分类；普通模型导出先等待 live commit。原分辨率、QA、shader/绘制内核、持久化/CAS/ownership/verified assets 不变，无 Schema 或资产迁移；不自动改写旧合并图。详见 [手动 UV 重绘合并修复](changes/CHG-20260917-MANUAL-UV-MERGE.md)。本轮未推送或部署。
 
+2026-09-17 M04（协作 M03/M08）：`GPT-CONTENT-FRAMING/2.2.0` 修复远端输入仅画布为正方形、短边背景仍被长方形 clip 清空的问题。上传引导图直接按长边方框截取完整原始 RGBA，颜色/法线共用坐标；仅超出源图的区域保留透明。比例、边距、回贴映射及历史 framing v1/v2 不变。GPU/CPU/Worker/shader、投影/UV/export、分辨率、QA、Schema/Command/CAS/ownership 均不改，无迁移。横图、竖图、触边和双引导逐像素回归旧失败、新通过。详见 [远端输入方形裁切](changes/CHG-20260917-SQUARE-INPUT-CROP.md)。本轮仅本地修改，尚未推送或部署。
+
 2026-09-17 M15（协作 M04）：`RELEASE-PREPUSH/1.2.0` 修复发布前仅执行 lint/build 而遗漏其他 verify 任务的问题；从 CI 配置发现全部 verify script，保留各任务变量与任意失败即停止，再执行 build 和 256 字节余量门禁。多视图旧测试不再硬编码临时上传 ID，实际持久化行为由 reference-binding 回归覆盖新建、光照原位替换、独立参考、重复处理、选择与保存。生产功能、UV/GPU/CPU/Worker/shader、QA、Schema/Command/CAS/ownership 和资产不变，无迁移；回滚仅涉及测试与发布脚本。详见 [CI 回归修复](changes/CHG-20260917-CI-REFERENCE-SELECTION.md)。
 
 2026-09-17 模型导入 → M02（协作 M10/M13）：`IMPORT-UV-REPAIR` v1.2.0 按用户要求改为 Blender 智能 UV 投射（66°），保留平均岛尺度、0.001 排布边距与按需补足 1e-6 外边界。为支持非索引 GLB，仅在临时 UV 工作网格恢复同位置顶点连接，按原面角写回 UV，不导出临时网格；原始几何、面数、材质及法线保持普通 Blender 回读语义。确认弹窗、0–1/退化 QA、GPU/CPU/Worker/shader、分辨率、保存/export、Schema/Command/CAS/ownership 不变；无存量工程迁移。真实 400162 面模型回读 UV 合格，2K 原始前后视图 GPU 投影通过。详见 [智能 UV 投射](changes/CHG-20260917-IMPORT-SMART-UV.md)。
@@ -149,7 +151,7 @@
 
 2026-09-15 M03：ALG-VIEW-INPUT-001/1.3.2 在鼠标接触前即让 R3F 悬停遵守 Alt 所有权；保留普通 hover 和已锁定拖动。旧实现拾取回归失败、新实现通过，用户实际首帧延迟需继续录制。无像素/持久化迁移，见 [Alt 悬停变更卡](changes/CHG-20260915-ALT-BRUSH-HOVER.md)。
 
-> 文档版本：`2.20.174`
+> 文档版本：`2.20.176`
 
 2026-09-16 UI-16 → M14（协作 M01/M12/M13/M15）：`ASSET-LIFECYCLE-GC` v0.4.0 / `STORAGE-INVENTORY-001/4` 将 Cloud 工程/Revision 引用页默认 8→32，并由单条 PostgreSQL CTE 完成分页、assetId 提取与引用 upsert，Node 不再回传引用数组后二次写库；每 256 条文档约 64→8 次数据库往返，保持 45 秒单查询上限与有界 Node 内存。当前 ready scan 引用索引保留到下一快照原子切换，旧 /3 快照自动重扫。Cloud 隔离区改按真实 quarantine 且排除重新可达对象统计；新增用户级幂等持久 purge job/item，以最多 4 并发签名 DeleteObject 后逐项事务删除 transfer、写 deleted_at，404/Pod 重启可安全重放。新增 `asset_storage_purge_jobs/items`，无 Project/Revision/Asset 内容迁移；Command/CAS/ownership/verified 及 GPU/CPU/Worker/shader、投影/UV/重绘/export、分辨率与 QA 不变。回滚前停 purge 并保留任务表，详见 [Cloud 存储盘点与物理清理变更卡](changes/CHG-20260916-CLOUD-STORAGE-INVENTORY-BOUNDED.md)。
 
