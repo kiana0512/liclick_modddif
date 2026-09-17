@@ -1,4 +1,4 @@
-// IMPORT-UV-REPAIR v1.2.0. Smart UV Project in a UV-only workspace.
+// IMPORT-UV-REPAIR v1.3.0. Merge by distance before Smart UV Project.
 export const importUvRepairScript = String.raw`
 import bpy, json, math, sys
 from mathutils import Vector
@@ -11,20 +11,50 @@ meshes = [o for o in bpy.context.scene.objects if o.type == 'MESH']
 if not meshes:
     raise RuntimeError('模型没有可展开的网格')
 originals = meshes
-for obj in originals:
-    obj.data.calc_loop_triangles()
-source_count = sum(len(obj.data.loop_triangles) for obj in originals)
-meshes = []
+merge_distance = 0.0001
+source_areas = {}
+merged_vertices = 0
+
+def validate_surface(objects):
+    if len(objects) != len(originals):
+        raise RuntimeError('合并顶点后零件数量不一致')
+    for obj in objects:
+        original_area = source_areas.get(obj.name, 0)
+        area = sum(face.area for face in obj.data.polygons)
+        if (not obj.data.polygons or original_area <= 0 or
+                not math.isfinite(area) or not 0.99 <= area/original_area <= 1.01):
+            raise RuntimeError('按距离合并导致零件消失或表面明显改变，请手动处理模型')
+        if any(not math.isfinite(c) for v in obj.data.vertices for c in v.co):
+            raise RuntimeError('合并后模型坐标无效')
+
 for obj in originals:
     if obj.modifiers or obj.data.shape_keys:
         raise RuntimeError('暂不支持自动修复带骨骼或形态键的模型')
     obj.data = obj.data.copy()
+    source_areas[obj.name] = sum(face.area for face in obj.data.polygons)
+    before = len(obj.data.vertices)
+    bpy.ops.object.select_all(action='DESELECT')
+    obj.select_set(True)
+    bpy.context.view_layer.objects.active = obj
+    bpy.ops.object.mode_set(mode='EDIT')
+    bpy.ops.mesh.select_all(action='SELECT')
+    # Same per-object local-space operation as Edit Mode > Merge by Distance.
+    bpy.ops.mesh.remove_doubles(threshold=merge_distance, use_unselected=False)
+    bpy.ops.object.mode_set(mode='OBJECT')
+    merged_vertices += before - len(obj.data.vertices)
+validate_surface(originals)
+for obj in originals:
+    obj.data.calc_loop_triangles()
+# Collapsed/duplicate faces can disappear during merging. UV projection itself
+# must preserve the triangle count of the merged geometry, including round trip.
+source_count = sum(len(obj.data.loop_triangles) for obj in originals)
+meshes = []
+for obj in originals:
     if not obj.data.uv_layers:
         obj.data.uv_layers.new(name='UVMap')
     obj.data.uv_layers.active_index = 0
     obj.data.uv_layers[0].active_render = True
-    # Exact-position connectivity exists only in a UV workspace. The original
-    # vertex/corner normals, material assignments and geometry stay untouched.
+    # The UV-only workspace preserves the already-merged geometry and corners.
     points, vertices, remap = {}, [], []
     for vertex in obj.data.vertices:
         key = tuple(vertex.co)
@@ -99,6 +129,7 @@ bpy.ops.object.select_all(action='DESELECT')
 for obj in meshes:
     obj.select_set(True)
 count = validate(meshes)
+validate_surface(meshes)
 if count != source_count:
     raise RuntimeError('UV 修复改变了三角形数量')
 bpy.ops.export_scene.gltf(filepath=target, export_format='GLB', use_selection=True,
@@ -107,8 +138,11 @@ bpy.ops.export_scene.gltf(filepath=target, export_format='GLB', use_selection=Tr
 bpy.ops.object.select_all(action='SELECT')
 bpy.ops.object.delete(use_global=False)
 bpy.ops.import_scene.gltf(filepath=target)
-verified = validate([o for o in bpy.context.scene.objects if o.type == 'MESH'])
+round_trip = [o for o in bpy.context.scene.objects if o.type == 'MESH']
+validate_surface(round_trip)
+verified = validate(round_trip)
 if verified != count:
     raise RuntimeError('修复导出后的三角形数量不一致')
-print('IMPORT_UV_REPAIR_OK ' + json.dumps({'triangles': count, 'version': '1.2.0'}))
+print('IMPORT_UV_REPAIR_OK ' + json.dumps({'triangles': count, 'mergedVertices': merged_vertices,
+      'mergeDistance': merge_distance, 'version': '1.3.0'}))
 `;
