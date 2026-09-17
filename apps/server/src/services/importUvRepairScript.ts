@@ -1,6 +1,6 @@
-// IMPORT-UV-REPAIR v1.0.0. Bundled with the server; never execute uploaded scripts.
+// IMPORT-UV-REPAIR v1.2.0. Smart UV Project in a UV-only workspace.
 export const importUvRepairScript = String.raw`
-import bpy, bmesh, json, math, sys
+import bpy, json, math, sys
 from mathutils import Vector
 
 source, target = sys.argv[sys.argv.index('--') + 1:]
@@ -10,7 +10,12 @@ bpy.ops.import_scene.gltf(filepath=source)
 meshes = [o for o in bpy.context.scene.objects if o.type == 'MESH']
 if not meshes:
     raise RuntimeError('模型没有可展开的网格')
-for obj in meshes:
+originals = meshes
+for obj in originals:
+    obj.data.calc_loop_triangles()
+source_count = sum(len(obj.data.loop_triangles) for obj in originals)
+meshes = []
+for obj in originals:
     if obj.modifiers or obj.data.shape_keys:
         raise RuntimeError('暂不支持自动修复带骨骼或形态键的模型')
     obj.data = obj.data.copy()
@@ -18,19 +23,30 @@ for obj in meshes:
         obj.data.uv_layers.new(name='UVMap')
     obj.data.uv_layers.active_index = 0
     obj.data.uv_layers[0].active_render = True
-    bm = bmesh.new()
-    bm.from_mesh(obj.data)
-    for edge in bm.edges:
-        edge.seam = edge.seam or len(edge.link_faces) != 2 or edge.calc_face_angle(0) > math.radians(66)
-    bm.to_mesh(obj.data)
-    bm.free()
+    # Exact-position connectivity exists only in a UV workspace. The original
+    # vertex/corner normals, material assignments and geometry stay untouched.
+    points, vertices, remap = {}, [], []
+    for vertex in obj.data.vertices:
+        key = tuple(vertex.co)
+        if key not in points:
+            points[key] = len(vertices)
+            vertices.append(key)
+        remap.append(points[key])
+    faces = [[remap[i] for i in face.vertices] for face in obj.data.polygons]
+    mesh = bpy.data.meshes.new('UV_Workspace')
+    mesh.from_pydata(vertices, [], faces)
+    mesh.uv_layers.new(name='UVMap')
+    work = bpy.data.objects.new('UV_Workspace', mesh)
+    bpy.context.collection.objects.link(work)
+    work.matrix_world = obj.matrix_world.copy()
+    meshes.append(work)
 bpy.ops.object.select_all(action='DESELECT')
 for obj in meshes:
     obj.select_set(True)
 bpy.context.view_layer.objects.active = meshes[0]
 bpy.ops.object.mode_set(mode='EDIT')
 bpy.ops.mesh.select_all(action='SELECT')
-bpy.ops.uv.unwrap(method='ANGLE_BASED', margin=0.001)
+bpy.ops.uv.smart_project(angle_limit=math.radians(66), island_margin=0.001)
 bpy.ops.uv.average_islands_scale()
 bpy.ops.uv.pack_islands(margin=0.001)
 bpy.ops.object.mode_set(mode='OBJECT')
@@ -64,7 +80,27 @@ def validate(objects):
             triangles += 1
     return triangles
 
+for original, work in zip(originals, meshes):
+    if len(original.data.polygons) != len(work.data.polygons):
+        raise RuntimeError('UV 工作网格面数不一致')
+    for dest, source_face in zip(original.data.polygons, work.data.polygons):
+        if len(dest.loop_indices) != len(source_face.loop_indices):
+            raise RuntimeError('UV 工作网格面角不一致')
+        for d, s in zip(dest.loop_indices, source_face.loop_indices):
+            if original.data.vertices[original.data.loops[d].vertex_index].co != work.data.vertices[work.data.loops[s].vertex_index].co:
+                raise RuntimeError('UV 工作网格面角顺序不一致')
+            original.data.uv_layers[0].data[d].uv = work.data.uv_layers[0].data[s].uv
+for work in meshes:
+    mesh = work.data
+    bpy.data.objects.remove(work, do_unlink=True)
+    bpy.data.meshes.remove(mesh)
+meshes = originals
+bpy.ops.object.select_all(action='DESELECT')
+for obj in meshes:
+    obj.select_set(True)
 count = validate(meshes)
+if count != source_count:
+    raise RuntimeError('UV 修复改变了三角形数量')
 bpy.ops.export_scene.gltf(filepath=target, export_format='GLB', use_selection=True,
                           export_animations=False, export_yup=True)
 # Round trip through the serialized Float32 attributes, not just Blender's live data.
@@ -74,5 +110,5 @@ bpy.ops.import_scene.gltf(filepath=target)
 verified = validate([o for o in bpy.context.scene.objects if o.type == 'MESH'])
 if verified != count:
     raise RuntimeError('修复导出后的三角形数量不一致')
-print('IMPORT_UV_REPAIR_OK ' + json.dumps({'triangles': count, 'version': '1.0.0'}))
+print('IMPORT_UV_REPAIR_OK ' + json.dumps({'triangles': count, 'version': '1.2.0'}))
 `;
