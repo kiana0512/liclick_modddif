@@ -1,11 +1,13 @@
-// IMPORT-DECIMATE v1.0.0. Preserve materials/UV; UV changes need a separate consent.
+// IMPORT-DECIMATE v1.0.1. Restore shared vertices before edge-collapse decimation.
 export const importDecimateScript = String.raw`
 import bpy, json, sys, math
 
 source, target = sys.argv[sys.argv.index('--') + 1:]
 bpy.ops.object.select_all(action='SELECT')
 bpy.ops.object.delete(use_global=False)
-bpy.ops.import_scene.gltf(filepath=source)
+# FBXLoader → GLTFExporter can emit non-indexed triangles. Reconnect identical
+# position/normal vertices (UV remains per loop), or decimation deletes islands.
+bpy.ops.import_scene.gltf(filepath=source, merge_vertices=True)
 meshes = [o for o in bpy.context.scene.objects if o.type == 'MESH']
 
 def count(obj):
@@ -13,6 +15,7 @@ def count(obj):
     return len(obj.data.loop_triangles)
 
 counts = [count(obj) for obj in meshes]
+source_areas = {obj.name: sum(p.area for p in obj.data.polygons) for obj in meshes}
 total = sum(counts)
 budget = 200000
 if total <= 1500000:
@@ -47,6 +50,13 @@ def validate(objects):
         raise RuntimeError('减面结果未达到约 20 万三角面')
     if any(not math.isfinite(c) for o in objects for v in o.data.vertices for c in v.co):
         raise RuntimeError('减面结果坐标无效')
+    for obj in objects:
+        original_area = source_areas.get(obj.name, 0)
+        area = sum(p.area for p in obj.data.polygons)
+        # A count-only gate accepts disconnected triangle deletion. Reject major
+        # surface loss, both before export and after the serialized round trip.
+        if original_area <= 0 or not 0.8 <= area/original_area <= 1.2:
+            raise RuntimeError('减面导致表面大幅损失或异常，模型未导入')
     return triangles
 
 validate(meshes)
@@ -59,5 +69,5 @@ bpy.ops.object.select_all(action='SELECT')
 bpy.ops.object.delete(use_global=False)
 bpy.ops.import_scene.gltf(filepath=target)
 triangles = validate([o for o in bpy.context.scene.objects if o.type == 'MESH'])
-print('IMPORT_DECIMATE_OK ' + json.dumps({'inputTriangles': total, 'triangles': triangles, 'version': '1.0.0'}))
+print('IMPORT_DECIMATE_OK ' + json.dumps({'inputTriangles': total, 'triangles': triangles, 'version': '1.0.1'}))
 `;

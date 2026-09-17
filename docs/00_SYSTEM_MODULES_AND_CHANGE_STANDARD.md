@@ -1,5 +1,7 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
+2026-09-17 模型导入 → M02（协作 M10/M13）：`IMPORT-DECIMATE` v1.0.1 修复 FBX 转非索引 GLB 后各三角片断开导致简化漏面的问题，Blender 初次导入启用共享顶点恢复，保持每面角 UV；新增每对象表面积 [0.8,1.2] 保留率门禁，导出回读再验。真实服务样本 199999 面，面积比 1.000355，浏览器灰模和贴图无花斑；旧输出面积比仅 0.372370。用户确认、绘制/UV 内核、CPU/GPU/Worker/shader、Schema/Command/CAS/ownership 不变，无迁移；已有损坏结果需从源文件重新处理。并按用户要求删除确认框服务器/20万面描述。详见 [导入减面修复记录](changes/CHG-20260917-IMPORT-DECIMATE.md)。未推送或部署。
+
 2026-09-17 模型导入 → M02（协作 M10/M13）：`IMPORT-DECIMATE` v1.0.0 在总三角面严格超过 150 万时弹窗，确认后服务端 Blender 简化至约 20 万面，再检查 UV；异常 UV 必须单独确认才执行现有展开/排布/内缩。取消或失败不注册模型；保存最终 GLB 并保留源单位，原文件及存量工程不变。原 200 万面门禁移至处理后；CPU/GPU/Worker/shader、绘制/烘焙 QA、Schema、Command/CAS/ownership 不变。无迁移，回滚入口与前置面数门禁，保留已生成资产。详见 [高面数导入减面](changes/CHG-20260917-IMPORT-DECIMATE.md)。本轮未推送或部署。
 
 2026-09-17 模型导入 → M02（协作 M10/M13）：`IMPORT-UV-REPAIR` v1.0.0 检查 UV0 越界、非有限、缺失及 Float32 退化三角形；异常模型先弹窗，明确同意改变 UV 后才调用受认证的服务端 Blender 展开/排布/按需内缩。取消、修复或回读 QA 失败不加入工程。外边界补足 1e-6 余量，保留 0.001 岛排布 margin；保存修复后 GLB，正常模型和存量工程不改。源物理单位随对象保留；CPU/GPU/Worker/shader、绘制/烘焙阈值、Schema、Command/CAS/ownership 不变。无迁移，回滚关闭新入口并保留已修复资产。原贴图不转烘焙，确认框明确告知可能错位。已随 `32ad28ce` 进入 `master`；独立真实浏览器回归及 Server 回归通过，尚未据此声明生产部署。详见 [导入 UV 修复变更卡](changes/CHG-20260917-IMPORT-UV-REPAIR.md)。
@@ -133,7 +135,7 @@
 
 2026-09-15 M03：ALG-VIEW-INPUT-001/1.3.2 在鼠标接触前即让 R3F 悬停遵守 Alt 所有权；保留普通 hover 和已锁定拖动。旧实现拾取回归失败、新实现通过，用户实际首帧延迟需继续录制。无像素/持久化迁移，见 [Alt 悬停变更卡](changes/CHG-20260915-ALT-BRUSH-HOVER.md)。
 
-> 文档版本：`2.20.168`
+> 文档版本：`2.20.169`
 
 2026-09-16 UI-16 → M14（协作 M01/M12/M13/M15）：`ASSET-LIFECYCLE-GC` v0.4.0 / `STORAGE-INVENTORY-001/4` 将 Cloud 工程/Revision 引用页默认 8→32，并由单条 PostgreSQL CTE 完成分页、assetId 提取与引用 upsert，Node 不再回传引用数组后二次写库；每 256 条文档约 64→8 次数据库往返，保持 45 秒单查询上限与有界 Node 内存。当前 ready scan 引用索引保留到下一快照原子切换，旧 /3 快照自动重扫。Cloud 隔离区改按真实 quarantine 且排除重新可达对象统计；新增用户级幂等持久 purge job/item，以最多 4 并发签名 DeleteObject 后逐项事务删除 transfer、写 deleted_at，404/Pod 重启可安全重放。新增 `asset_storage_purge_jobs/items`，无 Project/Revision/Asset 内容迁移；Command/CAS/ownership/verified 及 GPU/CPU/Worker/shader、投影/UV/重绘/export、分辨率与 QA 不变。回滚前停 purge 并保留任务表，详见 [Cloud 存储盘点与物理清理变更卡](changes/CHG-20260916-CLOUD-STORAGE-INVENTORY-BOUNDED.md)。
 
