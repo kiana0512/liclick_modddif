@@ -1,5 +1,7 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
+2026-09-17 M04（协作 M12/UI-05）：`TEXTURE-GENERATION-RECOVERY-OWNERSHIP/1.0.0` / `GPT-SILHOUETTE-RETRY/1.0.1` 为前台单/多视图纹理流程建立项目级恢复写入所有权，后台单任务轮询、历史恢复在流程期间不接管 texture-map 校验/状态，跨越所有权变化的迟到成功或异常均丢弃；结束后恢复后台接管。QA 阈值、同一冻结视角重试一次、组内有序回贴与组间等待不改。被 QA 拒绝及已被重试替代的结果不反复恢复；单个历史任务异常不阻断其余任务。仅新增可选结果 metadata，无 Schema/数据迁移；GPU/CPU/Worker/shader、像素、分辨率、UV/export、Command/CAS/ownership/verified assets 保持不变。回滚移除恢复所有权门禁及可选拒绝标记消费者，历史资产保留。详见 [QA 与后台恢复所有权](changes/CHG-20260917-TEXTURE-QA-RECOVERY-OWNERSHIP.md)。本轮未推送或部署。
+
 2026-09-17 M08（UI-10，协作 M05/M12）：`MASK-CLEAR-SHORTCUT/1.0.0` 将清空蒙版默认快捷键从 Ctrl+Shift+D 改为 Ctrl+D（沿用 primary 修饰键的 Mac Cmd 兼容）。按用户确认移除复制图层的默认快捷键及菜单 Ctrl+D 标签，保留复制菜单与自定义快捷键能力；清空提示同步为 CTRL D。现有清空历史、输入框保护、任务锁、preventDefault 与撤销入口不变；GPU/CPU/Worker/shader、蒙版像素算法、持久化、导出、Schema/Command/CAS/ownership 无变更。仅默认配置调整，无数据迁移，显式用户 overrides 保留；回滚恢复两项旧默认和标签即可。功能回归覆盖 Ctrl/Cmd+D、旧组合不触发、无复制冲突、菜单保留及自定义覆盖。本轮未推送或部署。
 
 2026-09-17 M04（UI-05）：`TEXTURE-PROVIDER-SWITCH/1.0.0` 修正单/多视图入口被固定为 ModelView 的产品行为，在模式页签下恢复 GPT / ModelView 两项切换，默认 GPT；两个页签共用会话选择，生成中双重锁定，避免在途请求混用 provider。GPT 原成组生成与参数/提示词恢复可达，ModelView 全角度纯白输入及逐视角串行不变；局部重绘独立开关不改。无持久化或像素算法变更，GPU/CPU/Worker/shader、UV/export、分辨率、QA、Schema/Command/CAS/ownership 不变，无迁移；回滚仅移除切换并恢复固定 provider。详见 [生成模型切换](changes/CHG-20260917-TEXTURE-PROVIDER-SWITCH.md)。尚未推送或部署。
@@ -171,7 +173,7 @@
 
 2026-09-15 M03：ALG-VIEW-INPUT-001/1.3.2 在鼠标接触前即让 R3F 悬停遵守 Alt 所有权；保留普通 hover 和已锁定拖动。旧实现拾取回归失败、新实现通过，用户实际首帧延迟需继续录制。无像素/持久化迁移，见 [Alt 悬停变更卡](changes/CHG-20260915-ALT-BRUSH-HOVER.md)。
 
-> 文档版本：`2.20.182`
+> 文档版本：`2.20.183`
 
 2026-09-16 UI-16 → M14（协作 M01/M12/M13/M15）：`ASSET-LIFECYCLE-GC` v0.4.0 / `STORAGE-INVENTORY-001/4` 将 Cloud 工程/Revision 引用页默认 8→32，并由单条 PostgreSQL CTE 完成分页、assetId 提取与引用 upsert，Node 不再回传引用数组后二次写库；每 256 条文档约 64→8 次数据库往返，保持 45 秒单查询上限与有界 Node 内存。当前 ready scan 引用索引保留到下一快照原子切换，旧 /3 快照自动重扫。Cloud 隔离区改按真实 quarantine 且排除重新可达对象统计；新增用户级幂等持久 purge job/item，以最多 4 并发签名 DeleteObject 后逐项事务删除 transfer、写 deleted_at，404/Pod 重启可安全重放。新增 `asset_storage_purge_jobs/items`，无 Project/Revision/Asset 内容迁移；Command/CAS/ownership/verified 及 GPU/CPU/Worker/shader、投影/UV/重绘/export、分辨率与 QA 不变。回滚前停 purge 并保留任务表，详见 [Cloud 存储盘点与物理清理变更卡](changes/CHG-20260916-CLOUD-STORAGE-INVENTORY-BOUNDED.md)。
 

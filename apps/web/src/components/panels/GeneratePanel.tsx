@@ -1,4 +1,9 @@
 import { sameGenerationRecovery } from '@/services/generationRecoveryComparison';
+import {
+  createTextureGenerationRecoveryOwnership,
+  isRejectedTextureReturn,
+  textureReturnQaFailureMetadata,
+} from '@/engine/generation/textureGenerationRecoveryOwnership';
 import { isServerWorkspace } from '@/services/isServerWorkspace';
 import { buildMultiviewPrompt } from '../../services/multiviewReferencePrompt';
 import { usesCaptureMaskTextureProjection, preservesGeneratedSourceAlpha, textureProjectionIgnoresSourceAlpha } from '@/engine/generation/textureProjectionPolicy';
@@ -900,6 +905,7 @@ export function GeneratePanel({
   // A project has one mutation pipeline. While any generation channel owns
   // this lock, every other authoring action stays read-only.
   const submitLocksRef = useRef(new Set<GenerateChannel>());
+  const textureRecoveryOwnershipRef = useRef(createTextureGenerationRecoveryOwnership());
   const cancelledGenerationIdsRef = useRef(new Set<string>());
   const cancelledTextureBatchIdsRef = useRef(new Set<string>());
   const generationPollFailureCountsRef = useRef(new Map<string, number>());
@@ -1318,6 +1324,15 @@ export function GeneratePanel({
         return { changed: false, needsPersist: false };
 
       const existing = projectGeneration ?? storeGeneration;
+      const recoveryIsCurrent = textureRecoveryOwnershipRef.current.backgroundTicket(
+        recoveryProjectId, job.workflow ?? existing?.metadata.workflow,
+      );
+      if (
+        !recoveryIsCurrent() ||
+        isRejectedTextureReturn(projectGeneration?.metadata) ||
+        isRejectedTextureReturn(storeGeneration?.metadata)
+      )
+        return { changed: false, needsPersist: false };
       // Foreground repaint owns clipping and completion; do not publish its raw result early.
       if (existing?.metadata.provider === 'liclick-atlas' && isLocalRepaintGeneration(existing) && generationAbortControllersRef.current.has(existing.id))
         return { changed: false, needsPersist: false };
@@ -1332,8 +1347,24 @@ export function GeneratePanel({
       let resultUrl =
         workspaceResultUrl ?? existing?.resultUrl ?? fallback?.resultUrl ?? job.resultUrl;
       if (!workspaceResultUrl && job.framing && resultUrl === job.resultUrl) {
-        resultUrl = (await restoreFramedJobResult(job)).resultUrl;
-        if (cancelled) return { changed: false, needsPersist: false };
+        try {
+          resultUrl = (await restoreFramedJobResult(job)).resultUrl;
+        } catch (error) {
+          if (cancelled || !recoveryIsCurrent()) return { changed: false, needsPersist: false };
+          const qaFailure = textureReturnQaFailureMetadata(error);
+          if (!qaFailure.returnQaRejected) throw error;
+          const rejected = existing ?? {
+            id: job.clientGenerationId ?? job.id,
+            mode: 'single' as const,
+            prompt: job.prompt,
+            referenceIds: job.referenceIds,
+            status: 'failed' as const,
+            metadata: { projectId: recoveryProjectId, workflow: job.workflow, serverJobId: job.id },
+          };
+          syncGeneration(createFailedGeneration(rejected, getUserFacingGenerationError(error), qaFailure));
+          return { changed: true, needsPersist: false };
+        }
+        if (cancelled || !recoveryIsCurrent()) return { changed: false, needsPersist: false };
       }
       const status = resultUrl ? ('succeeded' as const) : job.status;
       let generation: Generation = {
@@ -1379,7 +1410,7 @@ export function GeneratePanel({
         },
       };
       generation = await prepareCloudRepaintCompletion(generation, liveProject?.captures ?? []);
-      if (cancelled || generationIdentityIds(generation).some((id) => cancelledGenerationIdsRef.current.has(id)))
+      if (cancelled || !recoveryIsCurrent() || generationIdentityIds(generation).some((id) => cancelledGenerationIdsRef.current.has(id)))
         return { changed: false, needsPersist: false };
       const needsPersist =
         Boolean(generation.resultUrl) && !isWorkspaceAssetUrl(generation.resultUrl);
@@ -1411,7 +1442,15 @@ export function GeneratePanel({
         let didChange = false;
         let shouldPersist = false;
         for (const job of [...jobs].reverse()) {
-          const reconciliation = await reconcileJob(job);
+          let reconciliation;
+          try {
+            reconciliation = await reconcileJob(job);
+          } catch (error) {
+            if (cancelled) return;
+            // A broken historical result must not starve other jobs' recovery.
+            retry = isRetryableGenerationPollError(error) || retry;
+            continue;
+          }
           didChange = reconciliation.changed || didChange;
           if (reconciliation.needsPersist && job.resultUrl) {
             const persistenceKey = `${job.id}:${job.resultUrl}`;
@@ -1425,7 +1464,7 @@ export function GeneratePanel({
         if (didChange || shouldPersist) {
           window.dispatchEvent(new Event(IMMEDIATE_PROJECT_SAVE_EVENT));
         }
-        retry = jobs.some((job) => job.status === 'running' || job.status === 'queued');
+        retry = retry || jobs.some((job) => job.status === 'running' || job.status === 'queued');
       } catch (error) {
         if (cancelled) return;
         // Older local components do not expose project-level recovery. The
@@ -1455,7 +1494,7 @@ export function GeneratePanel({
       window.removeEventListener('online', wakeReconciliation);
       document.removeEventListener('visibilitychange', wakeReconciliation);
     };
-  }, [authStatus, currentProjectId, syncGeneration]);
+  }, [authStatus, currentProjectId, submissionActive, syncGeneration]);
 
   const markGenerationFailed = useCallback(
     (
@@ -1638,6 +1677,11 @@ export function GeneratePanel({
   useEffect(() => {
     const generationToPoll = activeReferenceGeneration ?? previewGeneration;
     if (!generationToPoll || generationToPoll.resultUrl) return undefined;
+    const recoveryIsCurrent = textureRecoveryOwnershipRef.current.backgroundTicket(
+      generationMetadataString(generationToPoll, 'projectId') ?? currentProjectId,
+      generationToPoll.metadata.workflow,
+    );
+    if (isRejectedTextureReturn(generationToPoll.metadata)) return undefined;
     if (generationToPoll.status !== 'queued' && generationToPoll.status !== 'running')
       return undefined;
     if (cancelledGenerationIdsRef.current.has(generationToPoll.id)) return undefined;
@@ -1662,6 +1706,9 @@ export function GeneratePanel({
       failUnsubmittedGeneration(generationToPoll);
       return undefined;
     }
+    // Keep the pre-submission watchdog; only the result polling/QA is owned
+    // by the foreground sequence once the server has accepted the job.
+    if (!recoveryIsCurrent()) return undefined;
     const taskId =
       generationMetadataString(generationToPoll, 'taskId');
     const clientGenerationId =
@@ -1685,11 +1732,12 @@ export function GeneratePanel({
     }
 
     async function pollJob() {
+      if (!recoveryIsCurrent()) return;
       const controller = new AbortController();
       requestAbortController = controller;
       try {
         const result = await client.getGenerationJob(jobId, { signal: controller.signal });
-        if (cancelled || controller.signal.aborted) return;
+        if (cancelled || controller.signal.aborted || !recoveryIsCurrent()) return;
         if (result.message) {
           generationPollFailureCountsRef.current.set(jobId, 2);
           setGenerateNotice({ tone: 'warning', message: result.message });
@@ -1715,7 +1763,7 @@ export function GeneratePanel({
           const restored = await prepareCloudRepaintCompletion(generation,
             useProjectStore.getState().projects.find((project) => project.id === generation.metadata.projectId)?.captures ?? [],
             controller.signal);
-          if (cancelled || controller.signal.aborted) return;
+          if (cancelled || controller.signal.aborted || !recoveryIsCurrent()) return;
           syncGeneration(restored);
           window.dispatchEvent(new Event(IMMEDIATE_PROJECT_SAVE_EVENT));
           console.info('[Liclick 3D Texture] Restored generation result:', generation.id);
@@ -1760,7 +1808,7 @@ export function GeneratePanel({
           return;
         }
       } catch (error) {
-        if (cancelled || controller.signal.aborted) return;
+        if (cancelled || controller.signal.aborted || !recoveryIsCurrent()) return;
         const message = error instanceof Error ? error.message : '';
         if (/Generation job not found|生成任务已失效|没有找到.*任务/i.test(message)) {
           clearPollRetryFeedback();
@@ -1773,7 +1821,9 @@ export function GeneratePanel({
         }
         if (!isRetryableGenerationPollError(error)) {
           clearPollRetryFeedback();
-          markGenerationFailed(generationToPoll, getUserFacingGenerationError(error));
+          markGenerationFailed(
+            generationToPoll, getUserFacingGenerationError(error), textureReturnQaFailureMetadata(error),
+          );
           return;
         }
         const failureCount = (generationPollFailureCountsRef.current.get(jobId) ?? 0) + 1;
@@ -1818,6 +1868,8 @@ export function GeneratePanel({
     };
   }, [
     activeReferenceGeneration,
+    currentProjectId,
+    submissionActive,
     dismissToastByDedupeKey,
     failUnsubmittedGeneration,
     markGenerationFailed,
@@ -2518,7 +2570,9 @@ export function GeneratePanel({
       : error instanceof Error
         ? error
         : new Error(String(error));
-    syncGeneration(createFailedGeneration(generation, failure.message));
+    syncGeneration(createFailedGeneration(
+      generation, failure.message, textureReturnQaFailureMetadata(error),
+    ));
     await saveGenerationStateBestEffort();
     throw failure;
   }
@@ -2547,6 +2601,7 @@ export function GeneratePanel({
     syncGeneration(
       createFailedGeneration(failedGeneration, retryPolicy.SILHOUETTE_RETRY_FAILURE_MESSAGE, {
         silhouetteRetryGenerationId: retryId,
+        ...textureReturnQaFailureMetadata(failure),
       }),
     );
     start(retryPending);
@@ -4739,6 +4794,7 @@ export function GeneratePanel({
     requestedViewMode: TextureViewMode = textureViewMode,
   ) {
     let pipelineAbortController: AbortController | undefined;
+    let releaseTextureRecoveryOwnership: (() => void) | undefined;
     try {
       if (workflowSubmissionLocked || submitLocksRef.current.size > 0 || previewIsGenerating) {
         notifyWorkflowOperationLocked();
@@ -4758,6 +4814,8 @@ export function GeneratePanel({
         return;
       }
       submitLocksRef.current.add('multiview');
+      if (currentProjectId)
+        releaseTextureRecoveryOwnership = textureRecoveryOwnershipRef.current.begin(currentProjectId);
       setSubmissionActive(true);
       pipelineAbortController = new AbortController();
       texturePipelineAbortControllerRef.current = pipelineAbortController;
@@ -4810,6 +4868,7 @@ export function GeneratePanel({
       finish();
       setTexturePipelineProgress(undefined);
     } finally {
+      releaseTextureRecoveryOwnership?.();
       if (texturePipelineAbortControllerRef.current === pipelineAbortController) {
         texturePipelineAbortControllerRef.current = undefined;
       }

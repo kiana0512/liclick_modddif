@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 import ts from 'typescript';
 import * as THREE from 'three';
+import { ownershipPolicy } from './test-texture-generation-recovery-ownership.mjs';
 
 const read = (name) => readFile(new URL(`../src/${name}`, import.meta.url), 'utf8');
 const compile = (source) => ts.transpileModule(source, { compilerOptions: {
@@ -193,6 +194,7 @@ async function fixture(failedView, fullyCovered = false, mode = 'stable', preset
     },
   };
   const scope = {
+    ...ownershipPolicy,
     require: (name) => name.endsWith('gptMultiviewPairs')
       ? scheduler
       : name.endsWith('gptReturnSilhouetteRetry')
@@ -252,7 +254,7 @@ async function fixture(failedView, fullyCovered = false, mode = 'stable', preset
     syncGeneration: (job) => jobs.set(job.id, job),
     isCancelledGeneration: () => false,
     getUserFacingGenerationError: (error) => String(error),
-    createFailedGeneration: (job, error) => ({ ...job, status: 'failed', metadata: { ...job.metadata, error } }),
+    createFailedGeneration: (job, error, extra = {}) => ({ ...job, status: 'failed', metadata: { ...job.metadata, ...extra, error } }),
     mergeGenerationMetadataPreservingStartedAt: (a, b) => ({ ...a, ...b }),
     submitGptTextureView: async (id, prompt, guide, reference, capture) => {
       assert.equal(reference.id, 'material', 'second input remains the user-selected material reference');
@@ -398,9 +400,11 @@ assert.match(generationErrors.getUserFacingGenerationError(internalAbort), /æ„å
 
 async function testEntryFailure(error, cancel = false) {
   const notices = [], toasts = [], logged = [], locks = new Set();
+  const ownership = ownershipPolicy.createTextureGenerationRecoveryOwnership();
   let progress, finished = 0, saved = 0;
   const scope = {
     ...generationErrors, textureViewMode: 'multi', cameraViews: make(['front', 'back']),
+    currentProjectId: 'project', textureRecoveryOwnershipRef: { current: ownership },
     workflowSubmissionLocked: false, previewIsGenerating: false,
     selectedSingleReference: undefined, selectedMultiviewReference: { id: 'reference' },
     submitLocksRef: { current: locks }, texturePipelineAbortControllerRef: {},
@@ -412,12 +416,14 @@ async function testEntryFailure(error, cancel = false) {
     console: { error: (...args) => logged.push(args) },
     handleTextureMapMultiviewGenerate: async (_ref, _views, _mode, signal) => {
       assert.equal(signal.aborted, false);
+      assert.equal(ownership.backgroundTicket('project', 'texture-map')(), false);
       if (cancel) scope.texturePipelineAbortControllerRef.current.abort('user-cancelled-texture-generation');
       throw error;
     },
   };
   const entry = new Function(...Object.keys(scope), `${compile(textureEntryDeclaration)}; return handleTextureMapGenerate;`)(...Object.values(scope));
   await entry();
+  assert.equal(ownership.backgroundTicket('project', 'texture-map')(), true, 'error/cancel releases foreground ownership');
   assert.equal(locks.size, 0); assert.equal(finished, 1); assert.equal(progress, undefined);
   assert.equal(scope.texturePipelineAbortControllerRef.current, undefined);
   if (cancel) {

@@ -1,6 +1,6 @@
 import type { Generation } from '@/types/generation';
 
-// GPT-RETURN-SILHOUETTE-QA/1.2.0 and GPT-SILHOUETTE-RETRY/1.0.0.
+// GPT-RETURN-SILHOUETTE-QA/1.2.0 and GPT-SILHOUETTE-RETRY/1.0.1.
 export const GPT_SILHOUETTE_RETRY_LIMIT = 1;
 export const SILHOUETTE_RETRY_FAILURE_MESSAGE = '远端回图构图漂移，已保留结果并自动重试当前视角一次。';
 
@@ -53,6 +53,9 @@ export function createTextureMapSilhouetteRetry(failed: Generation) {
         taskId: undefined,
         completedAt: undefined,
         error: undefined,
+        returnQaRejected: undefined,
+        returnQaErrorCode: undefined,
+        silhouetteRetryGenerationId: undefined,
         framingRestored: undefined,
         generationFraming: undefined,
         serverSubmitted: false,
