@@ -1,11 +1,11 @@
 # CHG-20260917：UV/拓扑历史远端刷新并发稳定性
 
-> 状态：In Progress  
-> Owner：Codex  
-> 日期：2026-09-17  
-> 分支：`master`  
-> 基线 commit：`bb5a1d0209b3c767e2c3d7379d57909e73ab93a8`  
-> 最终 commit/tag：待填写
+> 状态：Verified
+> Owner：Codex
+> 日期：2026-09-17
+> 分支：`master`
+> 基线 commit：`5481e23c`
+> 实现 commit：`d745d066`
 
 ## 1. 问题与证据
 
@@ -44,16 +44,26 @@
 
 ## 6. 验证
 
-待实现后填写。必须覆盖两个以上身份、重复请求合并、全局/单用户上限、远端失败保留、owner 隔离、Server/Web 回归、本地/API/集成 Web 冒烟和正式 pre-push。
+| 验证项 | 结果 |
+| --- | --- |
+| 协调器专项 | 全局 3/3、单 owner <=2、相同 owner/item 共享、失败释放槽位、16ms 等待预算返回 |
+| 真实 HTTP 历史冒烟 | 两个身份、12 个活动任务、16 个同时读取；严格 TLS；全局 8/8、单用户 <=4、每 Job 一次远端访问 |
+| 数据与隔离 | 终态更新、服务重启恢复、legacy 无 mode 拒绝、owner 下载与跨用户拒绝通过 |
+| 完整回归 | Server 25/25、Web 147/147 通过 |
+| 冒烟与浏览器 | 本地 API、集成 Web、独立模型导入 Playwright 回归通过 |
+| 正式推送门禁 | `verify:prepush`、Cloud 构建/产物/部署模拟、包体及额外 256-byte reserve 通过；218 个 Cloud 文件、25.04 MiB，105 个 JS chunks、3,217,996 bytes |
+| 发布拒绝门禁 | 按预期拒绝；8 项真实生产能力仍为 `in_progress`，未被本变更绕过 |
+
+已执行：Server typecheck、Server lint、`test:asset-history-refresh`、`test:task-history`、Server 25 项、Web 147 项、完整本地/集成冒烟、独立模型导入浏览器回归与正式 pre-push。合并最新远端代码后以上门禁均已重跑。
 
 ## 7. 文档与评审
 
-- [ ] 已更新唯一准则中的当前实现/参数/文件位置
-- [ ] 已更新当前性能稳定性审计
+- [x] 已更新唯一准则中的当前实现/参数/文件位置
+- [x] 已更新当前性能稳定性审计
 - [x] 已判断 Schema/Workspace 版本：不变
-- [ ] 已检查真实 HTTP 输出，而不仅是源码形状
+- [x] 已检查真实 HTTP 输出，而不仅是源码形状
 
 ## 8. 结论
 
-- 合并/发布决定：验证后决定。
+- 合并/发布决定：本地专项、完整回归、冒烟和正式推送门禁通过，可推送 `master`；Cloud release-readiness 仍拒绝，因此不据此声明生产部署或可直接上线。
 - 遗留问题：Bake Job 同步持久化与下载/ZIP 同步 exists/stat 另立后续 CHG，不在本次混改。

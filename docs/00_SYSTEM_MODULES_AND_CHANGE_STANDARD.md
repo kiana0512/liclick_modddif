@@ -1,6 +1,8 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
-2026-09-17 模型导入 → M02（协作 M10/M13）：`IMPORT-DECIMATE` v1.0.0 在总三角面严格超过 150 万时弹窗，确认后服务端 Blender 简化至约 20 万面，再检查 UV；异常 UV 必须单独确认才执行现有展开/排布/内缩。取消或失败不注册模型；保存最终 GLB 并保留源单位，原文件及存量工程不变。原 200 万面门禁移至处理后；CPU/GPU/Worker/shader、绘制/烘焙 QA、Schema、Command/CAS/ownership 不变。无迁移，回滚入口与前置面数门禁，保留已生成资产。详见 [高面数导入减面](changes/CHG-20260917-IMPORT-DECIMATE.md)。本轮未推送或部署。
+2026-09-17 M13（协作 M10/M15）：`ASSET-HISTORY-REFRESH/1.0.0` 将 UV/拓扑历史的非终态远端刷新纳入进程级有界协调器；全局最多 8 路、单用户最多 4 路，同一用户/Job 的同时请求共享一个 in-flight Promise。历史 HTTP 请求最多等待 2.75 秒，超出后返回已有持久记录，剩余刷新继续有界完成；远端失败仍保留旧记录。limit、排序、可信 kind 恢复、终态、产物、ownership、PostgreSQL/本地持久化、Asset TLS 与 API 均不变。两个身份、12 个活动任务、16 个并发历史读取的严格 TLS 冒烟测得全局 8/8、单用户 <=4、每 Job 一次远端访问；实现提交为 `d745d066`，无 Schema/数据迁移。详见 [Asset 历史刷新并发变更卡](changes/CHG-20260917-ASSET-HISTORY-REFRESH-CONCURRENCY.md)。
+
+2026-09-17 模型导入 → M02（协作 M10/M13）：`IMPORT-DECIMATE` v1.0.0 在总三角面严格超过 150 万时弹窗，确认后服务端 Blender 简化至约 20 万面，再检查 UV；异常 UV 必须单独确认才执行现有展开/排布/内缩。取消或失败不注册模型；保存最终 GLB 并保留源单位，原文件及存量工程不变。原 200 万面门禁移至处理后；CPU/GPU/Worker/shader、绘制/烘焙 QA、Schema、Command/CAS/ownership 不变。无迁移，回滚入口与前置面数门禁，保留已生成资产。详见 [高面数导入减面](changes/CHG-20260917-IMPORT-DECIMATE.md)。实现已随 `20baefc2` 进入 `master`，未据此声明生产部署。
 
 2026-09-17 模型导入 → M02（协作 M10/M13）：`IMPORT-UV-REPAIR` v1.0.0 检查 UV0 越界、非有限、缺失及 Float32 退化三角形；异常模型先弹窗，明确同意改变 UV 后才调用受认证的服务端 Blender 展开/排布/按需内缩。取消、修复或回读 QA 失败不加入工程。外边界补足 1e-6 余量，保留 0.001 岛排布 margin；保存修复后 GLB，正常模型和存量工程不改。源物理单位随对象保留；CPU/GPU/Worker/shader、绘制/烘焙阈值、Schema、Command/CAS/ownership 不变。无迁移，回滚关闭新入口并保留已修复资产。原贴图不转烘焙，确认框明确告知可能错位。已随 `32ad28ce` 进入 `master`；独立真实浏览器回归及 Server 回归通过，尚未据此声明生产部署。详见 [导入 UV 修复变更卡](changes/CHG-20260917-IMPORT-UV-REPAIR.md)。
 
@@ -133,7 +135,7 @@
 
 2026-09-15 M03：ALG-VIEW-INPUT-001/1.3.2 在鼠标接触前即让 R3F 悬停遵守 Alt 所有权；保留普通 hover 和已锁定拖动。旧实现拾取回归失败、新实现通过，用户实际首帧延迟需继续录制。无像素/持久化迁移，见 [Alt 悬停变更卡](changes/CHG-20260915-ALT-BRUSH-HOVER.md)。
 
-> 文档版本：`2.20.168`
+> 文档版本：`2.20.169`
 
 2026-09-16 UI-16 → M14（协作 M01/M12/M13/M15）：`ASSET-LIFECYCLE-GC` v0.4.0 / `STORAGE-INVENTORY-001/4` 将 Cloud 工程/Revision 引用页默认 8→32，并由单条 PostgreSQL CTE 完成分页、assetId 提取与引用 upsert，Node 不再回传引用数组后二次写库；每 256 条文档约 64→8 次数据库往返，保持 45 秒单查询上限与有界 Node 内存。当前 ready scan 引用索引保留到下一快照原子切换，旧 /3 快照自动重扫。Cloud 隔离区改按真实 quarantine 且排除重新可达对象统计；新增用户级幂等持久 purge job/item，以最多 4 并发签名 DeleteObject 后逐项事务删除 transfer、写 deleted_at，404/Pod 重启可安全重放。新增 `asset_storage_purge_jobs/items`，无 Project/Revision/Asset 内容迁移；Command/CAS/ownership/verified 及 GPU/CPU/Worker/shader、投影/UV/重绘/export、分辨率与 QA 不变。回滚前停 purge 并保留任务表，详见 [Cloud 存储盘点与物理清理变更卡](changes/CHG-20260916-CLOUD-STORAGE-INVENTORY-BOUNDED.md)。
 
@@ -1296,6 +1298,7 @@ M15 / CLOUD-DEPLOYMENT v1.0.0（2026-09-03）：正常合并 release 部署历�
 
 | 版本 | 日期 | 基线 | 变更 |
 | --- | --- | --- | --- |
+| `2.20.169` | 2026-09-17 | `d745d066 + Asset 历史并发稳定性` | M13（协作 M10/M15）：`ASSET-HISTORY-REFRESH/1.0.0` 为 UV/拓扑非终态远端刷新增加进程级全局 8、单用户 4 的并发上限、同用户/Job in-flight 合并与 2.75 秒 HTTP 等待预算；严格 TLS 并发冒烟通过。持久记录、ownership、Asset API/TLS、Schema 与产物语义不变，无迁移。 |
 | `2.20.166` | 2026-09-17 | `32ad28ce + 多用户并发稳定性续优化` | M13/M10/M15：`BAKE-HISTORY-LIST/1.1.0` 合并同时到达的目录扫描，按 owner 建批次索引，异步读取输出 metadata 并逐任务限制 I/O 扇出；10 身份、34 任务、40 并发请求隔离冒烟通过。保留 `IMPORT-UV-REPAIR/1.0.0`。无 Schema、资产或数据迁移。 |
 | `2.20.165` | 2026-09-17 | `32ad28ce + Bake 产物续优化` | M10/M13/M15：`BAKE-ARTIFACT-IO/1.1.0` 异步化远端 Bake 缓存检查、Base Color access 与 PNG 文件头验收；输出字节、SHA、尺寸、失败门禁和持久化格式不变，无迁移。 |
 | `2.20.164` | 2026-09-17 | `32ad28ce + 历史稳定性补丁` | M13/M15（协作 M10）：`BAKE-HISTORY-LIST/1.0.0` 将 Bake 历史目录与 Job JSON 改为最多 8 路异步有界读取；`ASSET-TRANSFER-TEST-PORT/1.0.0` 避开 Fetch 禁止端口造成的随机测试失败。同步当前分辨率、投影/输入版本和提供方文档。无算法像素、Schema、资产或数据迁移。 |
