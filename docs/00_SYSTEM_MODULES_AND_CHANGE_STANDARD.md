@@ -4,6 +4,8 @@
 
 2026-09-17 M08（UI-10，协作 M05/M12）：`MASK-CLEAR-SHORTCUT/1.0.0` 将清空蒙版默认快捷键从 Ctrl+Shift+D 改为 Ctrl+D（沿用 primary 修饰键的 Mac Cmd 兼容）。按用户确认移除复制图层的默认快捷键及菜单 Ctrl+D 标签，保留复制菜单与自定义快捷键能力；清空提示同步为 CTRL D。现有清空历史、输入框保护、任务锁、preventDefault 与撤销入口不变；GPU/CPU/Worker/shader、蒙版像素算法、持久化、导出、Schema/Command/CAS/ownership 无变更。仅默认配置调整，无数据迁移，显式用户 overrides 保留；回滚恢复两项旧默认和标签即可。功能回归覆盖 Ctrl/Cmd+D、旧组合不触发、无复制冲突、菜单保留及自定义覆盖。本轮未推送或部署。
 
+2026-09-17 UI-06/UI-10 → M08：`ALG-LR-UV-PAINT` v1.2.0 / UV_REPAINT_VERSION=5 修复刷上去即出现的 UV 岛细黑缝。按原分辨率 WebGL strict core，仅在岛外双线性足迹复制最近 core RGBA，透明/羽化 donor 保持，不补岛内孔洞或放宽作者/深度/可见性。留边纳入脏瓦片、撤销/重做/擦除与原 CPU 读回、Worker 合成、PNG/合并/export；复用 scratch，新增 R8 core。64–4K 实时接缝暗化 8→0，既有 HiDPI/遮挡/alpha/保存回归通过。旧资产不自动迁移，重刷命中区域生效；Schema/Command/CAS/ownership/verified assets、分辨率、QA 与 M06 采样不变。详见 [UV 重绘岛外留边](changes/CHG-20260917-UV-REPAINT-ISLAND-GUTTER.md)。本轮未推送或部署。
+
 2026-09-17 M04（UI-05）：`TEXTURE-PROVIDER-SWITCH/1.0.0` 修正单/多视图入口被固定为 ModelView 的产品行为，在模式页签下恢复 GPT / ModelView 两项切换，默认 GPT；两个页签共用会话选择，生成中双重锁定，避免在途请求混用 provider。GPT 原成组生成与参数/提示词恢复可达，ModelView 全角度纯白输入及逐视角串行不变；局部重绘独立开关不改。无持久化或像素算法变更，GPU/CPU/Worker/shader、UV/export、分辨率、QA、Schema/Command/CAS/ownership 不变，无迁移；回滚仅移除切换并恢复固定 provider。详见 [生成模型切换](changes/CHG-20260917-TEXTURE-PROVIDER-SWITCH.md)。尚未推送或部署。
 
 2026-09-17 M04（协作 M08/M12/M13）：`MODELVIEW-SINGLE-WHITE/1.0.0` 按用户确认将单/多视图所有角度（含顶/底）统一走 ModelView，多视图严格按预览顺序等待生成、回贴与 GPU resident 后再请求下一视角。无贴图整物体使用黑底纯白图一与参考图两字段，已有贴图补全使用纯白缺口合成图、参考图及原外扩 RGB 蒙版三字段；覆盖率仍由 alpha 判断，禁止 RGB 白色启发式。旧提示词不发送，远端采用 2026-09-17 内置提示词版本；更新幂等后缀与 45/46 分钟等待上限。Worker 增加显式远端白色策略，不改变 GPT 重绘/旧 GPT 补全、GPU/shader、UV、回贴/导出、分辨率、QA、Schema、Command/CAS/ownership 与 verified assets。无数据迁移；历史结果保留，回滚需配套远端工作流。详见 [单/多视图纯白输入](changes/CHG-20260917-MODELVIEW-SINGLE-WHITE.md)。尚未推送或部署。
