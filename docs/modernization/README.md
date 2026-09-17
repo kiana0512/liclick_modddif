@@ -1,5 +1,7 @@
 # LI3D 现代化迭代总纲
 
+> 历史说明：本文件记录 2026-08 的迁移决策与阶段状态，其中 `codex/modernization`、`desktop-legacy` 和阶段完成度不是 2026-09-17 当前分支/运行时说明。当前真值以 [系统模块与变更唯一准则](../00_SYSTEM_MODULES_AND_CHANGE_STANDARD.md)、[文档地图](../README.md) 和 [性能稳定性审计](../PERFORMANCE_STABILITY_RISK_AUDIT_2026-09-17.zh-CN.md) 为准。
+
 状态：已批准执行，采用隔离仓库渐进迁移。
 
 2026-08-22 的功能对齐、稳定性、真实服务成功/失败证据和剩余发布阻断见 [CLOSING_REPORT_2026-08-22.zh-CN.md](./CLOSING_REPORT_2026-08-22.zh-CN.md)；上一轮记录保留在 [HANDOFF_2026-08-21.zh-CN.md](./HANDOFF_2026-08-21.zh-CN.md)。

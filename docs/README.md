@@ -8,11 +8,12 @@
 
 ## 当前真源
 
-开发团队接手零组件云端版请从 [零组件云端版开发交接包](零组件云端版开发交接包/README.md) 开始；它统一了阅读顺序、API、账号数据、A100 运维、功能验收和生产待办。
+开发团队先阅读本页、[系统模块与变更唯一准则](00_SYSTEM_MODULES_AND_CHANGE_STANDARD.md) 和 [2026-09-17 性能稳定性审计](PERFORMANCE_STABILITY_RISK_AUDIT_2026-09-17.zh-CN.md)。[零组件云端版开发交接包](零组件云端版开发交接包/README.md) 是 2026-08-23 的历史交接快照，用于追溯当时 API、账号数据、A100 运维和验收状态，不能覆盖当前代码与准则。
 
 | 主题 | 文档 |
 | --- | --- |
 | 模块边界、界面调用、算法参数、图层语义、版本和变更规范（唯一准则） | [00_SYSTEM_MODULES_AND_CHANGE_STANDARD.md](00_SYSTEM_MODULES_AND_CHANGE_STANDARD.md) |
+| 当前全仓性能稳定性、风险热点与最小修复 | [PERFORMANCE_STABILITY_RISK_AUDIT_2026-09-17.zh-CN.md](PERFORMANCE_STABILITY_RISK_AUDIT_2026-09-17.zh-CN.md) |
 | 总览、运行方式、功能状态、已知问题 | [../README.md](../README.md) |
 | 现代化架构、收尾汇总与真实服务证据 | [modernization/README.md](modernization/README.md)、[modernization/CLOSING_REPORT_2026-08-22.zh-CN.md](modernization/CLOSING_REPORT_2026-08-22.zh-CN.md)、[modernization/FEATURE_ACCEPTANCE_MATRIX.md](modernization/FEATURE_ACCEPTANCE_MATRIX.md) |
 | 产品目标与功能矩阵 | [00_PRODUCT_GOAL.md](00_PRODUCT_GOAL.md)、[01_MODDDIF_FEATURE_BREAKDOWN.md](01_MODDDIF_FEATURE_BREAKDOWN.md) |
@@ -47,7 +48,7 @@
 ## 历史与规划文档
 
 - `08_4_WEEK_MVP_PLAN.md`、`28_TEXTURE_MAPPING_MODE_PLAN.md` 和 `39`–`42` 是计划/规格；其中一部分后来已实现，状态以当前真源为准。
-- `29`–`38` 是 2026 年 7 月的性能、桌面安装器和发布审计。桌面安装器结论不适用于当前 Browser Service + Local Component 架构。
+- `29`–`38` 是 2026 年 7 月的性能、桌面安装器和发布审计。桌面安装器结论不适用于当前 browser zero-install + LI3D Cloud + production compute 架构。
 - `HANDOFF_*`、`MASTER_UPLOAD_*`、`MERGE_*`、`OPTIMIZATION_*`、`TODAY_*`、`*_UPDATE_*` 与仓库根目录日期/merge notes 是变更历史。
 - `performance/LI3D_PERFORMANCE_OPTIMIZATION_PHASE_*` 是分阶段优化记录；它们解释为什么代码这样演进，不替代当前功能说明。
 

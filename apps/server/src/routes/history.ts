@@ -1,4 +1,3 @@
-import fs from 'node:fs';
 import path from 'node:path';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { requireAuth } from '../auth/authMiddleware.js';
@@ -10,7 +9,7 @@ import {
 } from '../services/assetJobOwnership.js';
 import { fetchAssetJobSnapshot } from '../services/assetProcessingProxy.js';
 import {
-  getNormalBakeOutputPath,
+  getNormalBakeOutputMetadata,
   listNormalBakeJobs,
   type BakeChannelId,
   type NormalBakeJob,
@@ -103,20 +102,16 @@ function bakeParameters(job: NormalBakeJob): HistoryParameter[] {
   ];
 }
 
-function bakeOutputs(job: NormalBakeJob, userId: string): HistoryOutput[] {
+async function bakeOutputs(job: NormalBakeJob, userId: string): Promise<HistoryOutput[]> {
   const outputs: HistoryOutput[] = [];
   let totalBytes = 0;
   const base = bakeEnglishBase(job);
   for (const channel of job.settings.channels) {
     const output = job.outputs?.[channel] ?? (channel === 'normal' ? job.output : undefined);
-    const outputPath = getNormalBakeOutputPath(job.id, userId, channel);
-    if (!output || !outputPath) continue;
-    let sizeBytes = 0;
-    try {
-      sizeBytes = fs.statSync(outputPath).size;
-    } catch {
-      continue;
-    }
+    if (!output) continue;
+    const metadata = await getNormalBakeOutputMetadata(job.id, userId, channel);
+    if (!metadata) continue;
+    const { sizeBytes } = metadata;
     totalBytes += sizeBytes;
     outputs.push({
       id: channel,
@@ -141,7 +136,7 @@ function bakeOutputs(job: NormalBakeJob, userId: string): HistoryOutput[] {
   return outputs;
 }
 
-function bakeHistoryRecord(job: NormalBakeJob, userId: string): HistoryRecord {
+async function bakeHistoryRecord(job: NormalBakeJob, userId: string): Promise<HistoryRecord> {
   return {
     id: job.id,
     module: 'bake',
@@ -151,7 +146,7 @@ function bakeHistoryRecord(job: NormalBakeJob, userId: string): HistoryRecord {
     createdAt: job.createdAt,
     ...(job.finishedAt ? { finishedAt: job.finishedAt } : {}),
     parameters: bakeParameters(job),
-    outputs: bakeOutputs(job, userId),
+    outputs: await bakeOutputs(job, userId),
     ...(cleanText(job.error) ? { error: cleanText(job.error) } : {}),
   };
 }
@@ -326,13 +321,21 @@ export async function handleHistoryRoute(
   }
   const requestedLimit = Number(url.searchParams.get('limit') ?? 30);
   const limit = Math.min(100, Math.max(1, Number.isFinite(requestedLimit) ? Math.trunc(requestedLimit) : 30));
-  const records = module === 'bake'
-    ? listNormalBakeJobs(user.id, limit).map((job) => bakeHistoryRecord(job, user.id))
-    : groupedAssetHistoryRecords(
-        module,
-        await refreshedAssetHistory(user.id, module, limit),
-        limit,
-      );
+  let records: HistoryRecord[];
+  if (module === 'bake') {
+    records = [];
+    // Process one job at a time so a 100-row request cannot fan out into
+    // hundreds of concurrent filesystem operations on a shared server.
+    for (const job of await listNormalBakeJobs(user.id, limit)) {
+      records.push(await bakeHistoryRecord(job, user.id));
+    }
+  } else {
+    records = groupedAssetHistoryRecords(
+      module,
+      await refreshedAssetHistory(user.id, module, limit),
+      limit,
+    );
+  }
   sendJson(response, 200, { records });
   return true;
 }

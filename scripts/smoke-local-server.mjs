@@ -283,6 +283,18 @@ try {
     created.slug,
     'project.liclick.json',
   );
+  // Missing-reference recovery is intentionally a legacy compatibility path:
+  // it recognizes the old deterministic <layer-id> filenames, while current
+  // uploads use collision-safe UUID filenames. Seed the exact legacy layout
+  // instead of incorrectly expecting a random current upload to be guessed.
+  const legacyLayerDirectory = path.join(path.dirname(rawProjectPath), 'assets', 'layers');
+  await Promise.all([
+    fs.writeFile(path.join(legacyLayerDirectory, 'smoke-layer.png'), 'legacy-layer-image'),
+    fs.writeFile(path.join(legacyLayerDirectory, 'smoke-layer-mask.png'), 'legacy-layer-mask'),
+    fs.writeFile(path.join(legacyLayerDirectory, 'smoke-layer-depth.png'), 'legacy-layer-depth'),
+  ]);
+  const legacyLayerBaseUrl = `${baseUrl}/workspace/users/${encodeURIComponent(loggedIn.user.id)}`
+    + `/projects/${encodeURIComponent(created.slug)}/assets/layers`;
   const damagedProject = JSON.parse(await fs.readFile(rawProjectPath, 'utf8'));
   const foreignWorkspaceRecoveryUrl =
     'http://127.0.0.1:9/workspace/users/atlas-user/recoveries/modelview-inpaint/result.png';
@@ -307,9 +319,9 @@ try {
   );
   assert.equal(repairedProjectResponse.status, 200);
   const repairedProject = await repairedProjectResponse.json();
-  assert.equal(repairedProject.project.layers[0].imageUrl, layerImageAsset.asset.url);
-  assert.equal(repairedProject.project.layers[0].maskUrl, layerMaskAsset.asset.url);
-  assert.equal(repairedProject.project.layers[0].depthUrl, layerDepthAsset.asset.url);
+  assert.equal(repairedProject.project.layers[0].imageUrl, `${legacyLayerBaseUrl}/smoke-layer.png`);
+  assert.equal(repairedProject.project.layers[0].maskUrl, `${legacyLayerBaseUrl}/smoke-layer-mask.png`);
+  assert.equal(repairedProject.project.layers[0].depthUrl, `${legacyLayerBaseUrl}/smoke-layer-depth.png`);
   assert.equal(
     repairedProject.project.generations[0].resultUrl,
     foreignWorkspaceRecoveryUrl,
