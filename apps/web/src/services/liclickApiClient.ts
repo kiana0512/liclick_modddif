@@ -65,7 +65,7 @@ export type LiclickGenerateTextureSingleViewInput = GenerateTextureInput & {
   /** Local preparation only: aligned geometry guides must not be resampled. */
   pixelExactReferenceIds?: string[];
   signal?: AbortSignal;
-  referencePipeline?: 'six-view-delight-v1';
+  referencePipeline?: 'six-view-delight-v1' | 'delight-only-v1';
   clientGenerationId?: string;
   projectId?: string;
   prompt: string;

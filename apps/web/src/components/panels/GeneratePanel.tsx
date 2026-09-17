@@ -1842,7 +1842,8 @@ export function GeneratePanel({
         Boolean(
           sourceReferenceId &&
           references.some(
-            (reference) => reference.id === sourceReferenceId && !isMultiviewReference(reference),
+            (reference) => reference.id === sourceReferenceId &&
+              (!isMultiviewReference(reference) || generation.metadata.referenceOperation === 'lighting'),
           ),
         ) &&
         !references.some((reference) => reference.generationId === generation.id) &&
@@ -1853,7 +1854,8 @@ export function GeneratePanel({
     const sourceReferenceId =
       generationMetadataString(completedReferenceGeneration, 'sourceReferenceId');
     const sourceReference = references.find(
-      (reference) => reference.id === sourceReferenceId && !isMultiviewReference(reference),
+      (reference) => reference.id === sourceReferenceId &&
+        (!isMultiviewReference(reference) || completedReferenceGeneration.metadata.referenceOperation === 'lighting'),
     );
     if (!sourceReference) return;
     const persistPairedMultiviewReference = persistPairedMultiviewReferenceRef.current;
@@ -4427,7 +4429,7 @@ export function GeneratePanel({
     // without changing the user's current generation tab. The paired image is
     // pipeline state, not a navigation request: single-view generation must
     // remain on single view after the background reference step completes.
-    referenceStore.setSelectedReferences([multiviewReference.id]);
+    referenceStore.setSelectedReferences([nextReferences[0]!.id]);
     syncGeneration({ ...generation, metadata: { ...generation.metadata, referenceBindingApplied: true } });
     setProjectReferences(nextReferences);
     await saveCriticalProjectState({ references: nextReferences });
@@ -4439,6 +4441,7 @@ export function GeneratePanel({
     singleReference: ReferenceImage,
     onProgress?: (progress: number, label: string) => void,
   ) {
+    const lighting = isMultiviewReference(singleReference);
     const groupId = referenceGroupId(singleReference);
     let pendingGeneration: Generation | undefined;
     setReferenceGroupGenerationState({ groupId, status: 'generating' });
@@ -4446,7 +4449,7 @@ export function GeneratePanel({
       onProgress?.(8, '检查多视图参考');
       await requirePersonalLiclickAccount();
       onProgress?.(16, '提交多视图参考');
-      const submittedPrompt = await buildMultiviewPrompt(liclickPrompt);
+      const submittedPrompt = lighting ? '对当前多视图进行光照处理，保持基础色、视角和排版。' : await buildMultiviewPrompt(liclickPrompt);
       const generationId = createId('reference-multiview');
       pendingGeneration = {
         id: generationId,
@@ -4464,6 +4467,8 @@ export function GeneratePanel({
           referenceGroupId: groupId,
           sourceReferenceId: singleReference.id,
           referenceRole: 'multi-view',
+          referenceOperation: lighting ? 'lighting' : undefined,
+          referenceBindingSourceId: lighting ? singleReference.derivedFromReferenceId ?? singleReference.id : singleReference.id,
           serverSubmitted: false,
           startedAt: new Date().toISOString(),
         },
@@ -4484,10 +4489,11 @@ export function GeneratePanel({
         visibleOnly: true,
         upscale: false,
         model: 'gpt-image-2.5-sunburst',
-        quality: 'low',
-        referencePipeline: 'six-view-delight-v1',
-        aspectRatio: '3:2',
-        imageSize: resolveRequestImageSize(imageSize, '3:2'),
+        quality: lighting ? 'medium' : 'low',
+        referencePipeline: lighting ? 'delight-only-v1' : 'six-view-delight-v1',
+        pixelExactReferenceIds: lighting ? [singleReference.id] : undefined,
+        aspectRatio: lighting ? 'auto' : '3:2',
+        imageSize: lighting ? 'auto' : resolveRequestImageSize(imageSize, '3:2'),
         count: 1,
       });
       const alignedGeneration: Generation = {
@@ -4500,11 +4506,13 @@ export function GeneratePanel({
           referenceGroupId: groupId,
           sourceReferenceId: singleReference.id,
           referenceRole: 'multi-view',
+          referenceOperation: lighting ? 'lighting' : undefined,
+          referenceBindingSourceId: lighting ? singleReference.derivedFromReferenceId ?? singleReference.id : singleReference.id,
           serverSubmitted: true,
           serverJobId: submitted.metadata.serverJobId ?? submitted.id,
         },
       };
-      onProgress?.(32, '生成多视图参考');
+      onProgress?.(32, lighting ? '光照处理中' : '生成多视图参考');
       if (isCancelledGeneration(pendingGeneration) || isCancelledGeneration(alignedGeneration)) {
         generationIdentityIds(alignedGeneration).forEach((id) =>
           cancelledGenerationIdsRef.current.add(id),
@@ -4560,21 +4568,22 @@ export function GeneratePanel({
   }
 
   async function handleGeneratePairedMultiview(singleReference: ReferenceImage) {
+    const lighting = isMultiviewReference(singleReference);
     if (workflowSubmissionLocked || submitLocksRef.current.size > 0) {
       notifyWorkflowOperationLocked();
       return;
     }
     submitLocksRef.current.add('single');
     setSubmissionActive(true);
-    setTexturePipelineProgress({ active: true, progress: 4, label: '准备多视图参考' });
-    setGenerateNotice({ tone: 'info', message: '正在保存多视图参考。' });
+    setTexturePipelineProgress({ active: true, progress: 4, label: lighting ? '准备光照处理' : '准备多视图参考' });
+    setGenerateNotice({ tone: 'info', message: lighting ? '光照处理中' : '正在保存多视图参考。' });
     try {
       await generatePairedMultiviewReference(singleReference, updateTexturePipelineProgress);
       await waitForBrowserPaint();
       setGenerateNotice(undefined);
       pushToast({
         tone: 'success',
-        title: '多视图已补全',
+        title: lighting ? '光照处理完成' : '多视图已补全',
         description: '多视图参考已保存，可直接生成纹理贴图。',
       });
     } catch (error) {
@@ -4584,7 +4593,7 @@ export function GeneratePanel({
       }
       const message = getUserFacingGenerationError(error, multiviewGenerationFailureFallback);
       setGenerateNotice({ tone: 'error', message });
-      pushToast({ tone: 'error', title: '多视图生成失败', description: message });
+      pushToast({ tone: 'error', title: lighting ? '光照处理失败' : '多视图生成失败', description: message });
     } finally {
       submitLocksRef.current.delete('single');
       setSubmissionActive(submitLocksRef.current.size > 0);

@@ -86,7 +86,7 @@ try {
   const requestCall = find(paired, n => ts.isCallExpression(n) && ts.isPropertyAccessExpression(n.expression)
     && n.expression.name.text === 'generateTextureSingleView');
   const make = compile(`export function request() { return ${requestCall.arguments[0].getText(panel)}; }`, {}, {
-    generationId: 'client-job', currentProject: { id: 'project' }, submittedPrompt: input().prompt,
+    lighting: false, generationId: 'client-job', currentProject: { id: 'project' }, submittedPrompt: input().prompt,
     singleReference: { id: 'original', name: 'original.png', url: 'https://example.test/original.png' },
     resolution: 2048, imageSize: '2K', resolveRequestImageSize: value => value,
   });
@@ -110,6 +110,16 @@ try {
   assert.equal(wireRequest.aspectRatio, '3:2');
   assert.equal(frontend.metadata.serverJobId, 'stable-server-job');
   assert.equal(frontend.resultUrl, undefined);
+
+  const lightRequest = compile(`export function request() { return ${requestCall.arguments[0].getText(panel)}; }`, {}, {
+    lighting: true, generationId: 'lighting-client', currentProject: { id: 'project' }, submittedPrompt: '光照处理',
+    singleReference: { id: 'uploaded-multi', name: 'multi.png', url: first }, resolution: 2048, imageSize: '2K', resolveRequestImageSize: value => value,
+  }).request();
+  await client.generateTextureSingleView(lightRequest);
+  assert.equal(wireRequest.referencePipeline, 'delight-only-v1');assert.equal(wireRequest.quality, 'medium');
+  assert.equal(wireRequest.aspectRatio, 'auto');assert.equal(wireRequest.imageSize, 'auto');
+  assert.deepEqual(wireRequest.references, [{ id: 'uploaded-multi', name: 'multi.png', url: first }]);
+  assert.deepEqual(lightRequest.pixelExactReferenceIds, ['uploaded-multi']);
 
   // Exercise actual route submission, forced first-stage settings, polling and publication.
   const calls = [];
@@ -226,6 +236,29 @@ try {
   }, async () => submission('two', final));
   assert.equal(receiptFailure.status, 'failed');
   assert.equal(receiptFailure.resultUrl, undefined);
+
+  // Existing multi-view lighting submits exactly one medium-quality request.
+  const lightCalls = [];
+  const lighting = harness(path.join(root, 'lighting-only'), async request => {
+    lightCalls.push(request); return submission('light-only', final);
+  });
+  const lightInput = { ...input(), referencePipeline: 'delight-only-v1', prompt: 'untrusted custom prompt', quality: 'low', count: 4 };
+  const edited = lighting.createGenerationJob('lighting-only', { id: 'owner', atlasHomeDir: path.join(root, 'atlas-homes', 'owner') }, lightInput);
+  await edited.promise;
+  assert.equal(lightCalls.length, 1);
+  assert.equal(lightCalls[0].prompt, lighting.referenceDelightPrompt);
+  assert.equal(lightCalls[0].quality, 'medium');assert.equal(lightCalls[0].model, model);assert.equal(lightCalls[0].count, 1);
+  assert.equal(lightCalls[0].aspectRatio, 'auto');assert.equal(lightCalls[0].imageSize, 'auto');
+  assert.deepEqual(lightCalls[0].references, lightInput.references);
+  assert.equal(edited.referenceDelight, undefined);assert.equal(edited.resultUrl, final);
+  assert.equal(lighting.referenceStageMessage(edited), '光照处理中');
+  const resumedLight = { ...job(), input: lightInput, taskId: 'light-running' };
+  const resumeLight = harness(path.join(root, 'lighting-resume'), async () => { throw Error('No resubmit'); }, async id => {
+    assert.equal(id, 'light-running'); return { resultUrl: final, status: 'succeeded', raw: {} };
+  });
+  resumeLight.startGenerationJob(resumedLight);await resumedLight.promise;
+  assert.equal(resumedLight.resultUrl, final);assert.equal(resumedLight.referenceDelight, undefined);
+  console.log('PASS: lighting-only uses shared prompt, one medium request, auto source framing, result and resume without six-view generation.');
 
   // A first-stage failure never starts de-lighting; a second failure never publishes stage one.
   for (const stage of [1, 2]) {

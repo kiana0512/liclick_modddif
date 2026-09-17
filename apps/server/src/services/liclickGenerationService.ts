@@ -15,7 +15,7 @@ type ReferenceInput = {
 
 export type GenerateImageInput = {
   framing?: GenerationFraming;
-  referencePipeline?: 'six-view-delight-v1';
+  referencePipeline?: 'six-view-delight-v1' | 'delight-only-v1';
   clientGenerationId?: string;
   projectId?: string;
   workflow?: 'liclick' | 'texture-map' | 'local-repaint';

@@ -13,7 +13,7 @@ const transpile = source => ts.transpileModule(source, {
 const persistSource = panel.slice(panel.indexOf('  async function persistPairedMultiviewReference('),
   panel.indexOf('  persistPairedMultiviewReferenceRef.current ='));
 const recoverySource = panel.slice(panel.indexOf('    const completedReferenceGeneration = latestPairedGenerations'),
-  panel.indexOf('    if (!completedReferenceGeneration) return;'));
+  panel.indexOf('    const persistPairedMultiviewReference =', panel.indexOf('    const completedReferenceGeneration =')));
 assert.ok(recoverySource.length > 0, 'Exercise the actual recovery gate');
 const recover = new Function('latestPairedGenerations', 'generations', 'references', 'currentProject',
   'pairedGenerationPersistenceRef', 'isMultiviewReference', 'generationMetadataString',
@@ -137,3 +137,40 @@ for (const change of ['newer-task', 'deleted-source', 'switched-project']) {
   assert.equal(racing.saves.length, 0);
 }
 console.log('Reference binding passed: latest replacement, durable selection, stale-history repair, reload, deletion, ownership and late-result guards.');
+
+// Lighting edits replace the selected multi-view in place and retain its single-view binding.
+const lightingJob = { ...generation('light-job', '03'), referenceIds: [oldReference.id],
+  metadata: { ...generation('light-job', '03').metadata, sourceReferenceId: oldReference.id,
+    referenceOperation: 'lighting', referenceBindingSourceId: source.id } };
+const lit = harness([oldJob, lightingJob]);
+assert.equal(lit.recover().id, lightingJob.id);
+const litResult = await lit.persist(oldReference, lightingJob);
+assert.equal(litResult.id, oldReference.id);
+assert.deepEqual(lit.state.selectedReferenceIds, [oldReference.id]);
+assert.deepEqual(lit.saves[0].references.filter(r => r.isPrimary).map(r => r.id), [oldReference.id]);
+assert.equal(litResult.name, oldReference.name);
+assert.equal(litResult.derivedFromReferenceId, source.id);
+assert.equal(litResult.generationId, lightingJob.id);
+assert.equal(litResult.url, '/verified/light-job.png');
+assert.equal(lit.state.references.filter(r => r.id === oldReference.id).length, 1);
+assert.equal(resolveLocalRepaintMaterialReference({ references: lit.state.references, selectedReferenceIds: [source.id] }).url, litResult.url);
+const litReload = harness(lit.saves[0].generations, lit.saves[0].references);
+assert.equal(litReload.recover(), undefined);
+const failedLighting = harness([oldJob, { ...lightingJob, status: 'failed', resultUrl: undefined }]);
+assert.equal(failedLighting.recover(), undefined, 'Failed lighting must not resurrect an older generation');
+const lightUploadFailure = harness([lightingJob]);
+lightUploadFailure.setUpload(async () => { throw Error('upload unavailable'); });
+await assert.rejects(lightUploadFailure.persist(oldReference, lightingJob), /upload unavailable/);
+assert.equal(lightUploadFailure.state.references.find(r => r.id === oldReference.id).url, oldReference.url);
+const standalone = { ...oldReference, id: 'uploaded-multi', referenceGroupId: 'uploaded-multi', derivedFromReferenceId: undefined };
+const standaloneJob = { ...lightingJob, metadata: { ...lightingJob.metadata, sourceReferenceId: standalone.id, referenceBindingSourceId: standalone.id } };
+const solo = harness([standaloneJob], [standalone, other]);
+assert.equal(solo.recover().id, standaloneJob.id);
+const soloResult = await solo.persist(standalone, standaloneJob);
+assert.equal(soloResult.id, standalone.id);assert.equal(soloResult.derivedFromReferenceId, undefined);
+const againJob = { ...standaloneJob, id: 'light-again', metadata: { ...standaloneJob.metadata, startedAt: '2026-09-14T08:04:00Z' } };
+solo.store.generations.unshift(againJob);
+await solo.persist(soloResult, againJob);
+assert.equal(solo.state.references.filter(r => r.id === standalone.id).length, 1);
+assert.equal(solo.state.references[0].generationId, againJob.id);
+console.log('Lighting references: paired/standalone/repeat, replacement, original binding, durable reload and failure retention passed.');

@@ -426,22 +426,9 @@ export function ReferenceGroupPicker({
   }
 
   function generateMultiviewFor(reference: ReferenceImage) {
-    const sourceReference =
-      referenceRole(reference) === 'single-view'
-        ? reference
-        : references.find(
-            (item) =>
-              referenceRole(item) === 'single-view' &&
-              referenceGroupId(item) === referenceGroupId(reference),
-          );
-    if (!sourceReference) {
-      setUploadError('该多视图没有关联的单视图，无法再次生成多视图。');
-      setOpenReferenceMenuId(undefined);
-      return;
-    }
-    setSelectedReferences([sourceReference.id]);
+    setSelectedReferences([reference.id]);
     setOpenReferenceMenuId(undefined);
-    onGenerateMultiview(sourceReference);
+    onGenerateMultiview(reference);
   }
 
   function handleAddInput(event: ChangeEvent<HTMLInputElement>) {
@@ -640,7 +627,7 @@ export function ReferenceGroupPicker({
                       onClick={() => generateMultiviewFor(reference)}
                     >
                       {state?.status === 'generating' ? <LoaderCircle className="h-3.5 w-3.5 animate-spin text-liclick-pink" /> : <Sparkles className="h-3.5 w-3.5 text-liclick-pink" />}
-                      {state?.status === 'generating' ? '正在生成' : '生成多视图'}
+                      {state?.status === 'generating' ? '处理中' : role === 'multi-view' ? '光照处理' : '生成多视图'}
                     </button>
                     <button type="button" role="menuitem" className="flex h-8 items-center gap-2 rounded-md px-2 text-left text-[10px] text-white/78 transition hover:bg-white/[0.07] hover:text-white" onClick={() => { setPreviewReference(reference); setOpenReferenceMenuId(undefined); }}>
                       <Eye className="h-3.5 w-3.5" />预览图

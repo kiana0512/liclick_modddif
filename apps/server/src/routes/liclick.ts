@@ -1,4 +1,4 @@
-import { advanceReferenceDelight, referenceStageMessage } from '../services/referenceDelightPipeline.js';
+import { advanceReferenceDelight, prepareReferencePipelineInput, referenceStageMessage } from '../services/referenceDelightPipeline.js';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -617,7 +617,7 @@ function createGenerationJob(
   user: AuthUser,
   input: GenerateImageInput,
 ): GenerationJob {
-  if (input.referencePipeline === 'six-view-delight-v1') input = { ...input, model: 'gpt-image-2.5-sunburst', quality: 'low', count: 1 };
+  input = prepareReferencePipelineInput(input);
   const now = new Date().toISOString();
   const job: GenerationJob = {
     id: jobId,
@@ -1169,8 +1169,11 @@ export async function handleLiclickRoute(
       try { buildExtraParams(input, []); }
       catch (error) { sendJson(response, 400, { error: error instanceof Error ? error.message : 'Invalid generation framing.' }); return true; }
     }
-    if (input.referencePipeline && (input.referencePipeline !== 'six-view-delight-v1' || input.workflow !== 'liclick')) {
+    if (input.referencePipeline && (!['six-view-delight-v1', 'delight-only-v1'].includes(input.referencePipeline) || input.workflow !== 'liclick')) {
       sendJson(response, 400, { error: 'Invalid multiview reference pipeline.' }); return true;
+    }
+    if (input.referencePipeline === 'delight-only-v1' && (input.references?.length !== 1 || !input.references[0]?.url)) {
+      sendJson(response, 400, { error: '光照处理需要一张多视图参考图。' }); return true;
     }
     const projectId = input.projectId ?? 'default';
     const workflow = input.workflow === 'local-repaint' ? 'local-repaint' : input.workflow === 'texture-map' ? 'texture-map' : 'liclick';
