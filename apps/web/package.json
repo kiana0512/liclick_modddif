@@ -4,6 +4,7 @@
   "version": "0.1.3",
   "type": "module",
   "scripts": {
+    "check:import-uv-browser": "node scripts/run-import-uv-repair-browser.mjs",
     "test:manual-repaint-layer": "node scripts/test-manual-repaint-layer.mjs",
     "test:projected-selection-display": "node scripts/test-projected-selection-display.mjs",
     "test:projected-selection-preview": "node scripts/test-projected-selection-preview.mjs",

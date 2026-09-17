@@ -1,5 +1,7 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
+2026-09-17 模型导入 → M02（协作 M10/M13）：`IMPORT-UV-REPAIR` v1.0.0 检查 UV0 越界、非有限、缺失及 Float32 退化三角形；异常模型先弹窗，明确同意改变 UV 后才调用受认证的服务端 Blender 展开/排布/按需内缩。取消、修复或回读 QA 失败不加入工程。外边界补足 1e-6 余量，保留 0.001 岛排布 margin；保存修复后 GLB，正常模型和存量工程不改。源物理单位随对象保留；CPU/GPU/Worker/shader、绘制/烘焙阈值、Schema、Command/CAS/ownership 不变。无迁移，回滚关闭新入口并保留已修复资产。原贴图不转烘焙，确认框明确告知可能错位。详见 [导入 UV 修复变更卡](changes/CHG-20260917-IMPORT-UV-REPAIR.md)。本轮未推送或部署。
+
 2026-09-16 UI-01：`EDITOR-HEADER-STYLE` v1.0.0 统一贴图工作台项目头、贴图/UV/烘焙切换栏、视角/分辨率工具组和新手引导外框为 64px 高度，内容垂直居中；新手引导改为不透明黑底白字，使用与工作流按钮一致的 text-sm / font-semibold。仅当前编辑器样式调整，不改变其他工作流页、教程进度、导航/绘制/生成、CPU/GPU/Worker/shader、Schema 或保存/导出。无迁移；回滚两个生产组件的样式即可。详见 [新手引导变更卡](changes/CHG-20260916-TEXTURE-ONBOARDING.md)。本轮未推送或部署。
 
 2026-09-16 UI-06 → M03：`ALG-VIEW-INPUT-001` v1.4.1 将 Alt＋右键拖动改为左/上缩小、右/下放大；仅反转拖动缩放输入符号，保持 0.005 灵敏度、滚轮、旋转、中键平移、相机界限与指针归属。透视/正交四方向和双向界限执行真实控制器回归。GPU/CPU/Worker/shader 绘制、捕获、UV/export、保存及 Schema 不变，无迁移；回滚仅恢复拖动符号和对应测试。详见 [Alt 视角导航变更卡](changes/CHG-20260915-ALT-VIEWPORT-NAVIGATION.md)。本轮未推送或部署。
@@ -123,7 +125,7 @@
 
 2026-09-15 M03：ALG-VIEW-INPUT-001/1.3.2 在鼠标接触前即让 R3F 悬停遵守 Alt 所有权；保留普通 hover 和已锁定拖动。旧实现拾取回归失败、新实现通过，用户实际首帧延迟需继续录制。无像素/持久化迁移，见 [Alt 悬停变更卡](changes/CHG-20260915-ALT-BRUSH-HOVER.md)。
 
-> 文档版本：`2.20.162`
+> 文档版本：`2.20.163`
 
 2026-09-16 UI-16 → M14（协作 M01/M12/M13/M15）：`ASSET-LIFECYCLE-GC` v0.4.0 / `STORAGE-INVENTORY-001/4` 将 Cloud 工程/Revision 引用页默认 8→32，并由单条 PostgreSQL CTE 完成分页、assetId 提取与引用 upsert，Node 不再回传引用数组后二次写库；每 256 条文档约 64→8 次数据库往返，保持 45 秒单查询上限与有界 Node 内存。当前 ready scan 引用索引保留到下一快照原子切换，旧 /3 快照自动重扫。Cloud 隔离区改按真实 quarantine 且排除重新可达对象统计；新增用户级幂等持久 purge job/item，以最多 4 并发签名 DeleteObject 后逐项事务删除 transfer、写 deleted_at，404/Pod 重启可安全重放。新增 `asset_storage_purge_jobs/items`，无 Project/Revision/Asset 内容迁移；Command/CAS/ownership/verified 及 GPU/CPU/Worker/shader、投影/UV/重绘/export、分辨率与 QA 不变。回滚前停 purge 并保留任务表，详见 [Cloud 存储盘点与物理清理变更卡](changes/CHG-20260916-CLOUD-STORAGE-INVENTORY-BOUNDED.md)。
 

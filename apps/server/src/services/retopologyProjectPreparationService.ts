@@ -76,7 +76,7 @@ function terminateProcessTree(child: ChildProcess) {
   killer.on('close', () => clearTimeout(fallback));
 }
 
-function runProcess(
+export function runProcess(
   executable: string,
   args: string[],
   options: {
@@ -234,7 +234,7 @@ async function inspectBlender(executablePath: string) {
   };
 }
 
-async function resolveBlenderExecutable() {
+export async function resolveBlenderExecutable() {
   if (cachedBlender && await executableFile(cachedBlender.executablePath)) {
     return cachedBlender;
   }

@@ -4,6 +4,7 @@
   "version": "0.1.3",
   "type": "module",
   "scripts": {
+    "test:import-uv-repair": "node scripts/clean-dist.mjs && tsc -p tsconfig.json && node scripts/test-import-uv-repair.mjs",
     "test:gpt-texture-color-reference-upload": "node scripts/clean-dist.mjs && tsc -p tsconfig.json && node scripts/test-gpt-texture-color-reference-upload.mjs",
     "test:repaint-color-reference-upload": "node scripts/clean-dist.mjs && tsc -p tsconfig.json && node scripts/test-repaint-color-reference-upload.mjs",
     "test:pixel-exact-reference-upload": "node scripts/clean-dist.mjs && tsc -p tsconfig.json && node scripts/test-pixel-exact-reference-upload.mjs",

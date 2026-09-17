@@ -109,6 +109,8 @@ import {
   syncProjectedLayerMaterialProjection,
 } from '@/engine/projection/ProjectedLayerMaterial';
 import { loadModelFromFile, loadModelFromUrl } from '@/engine/loaders/loadModelFromFile';
+import { disposeImportCandidate, prepareModelUvImport } from '@/engine/loaders/prepareModelUvImport';
+import { useModelUvRepairConfirmation } from '@/components/editor/ModelUvRepairDialog';
 import {
   assertModelTriangleLimit,
   disposeRejectedModel,
@@ -984,6 +986,7 @@ export function EditorPage({
   const automaticBakeEntryRef = useRef<string>();
   const modelImportRunningRef = useRef(false);
   const modelImportRevisionRef = useRef(0);
+  const uvRepairConfirmation = useModelUvRepairConfirmation();
   const modelImportProgressTimerRef = useRef<number>();
   const contentAwareRepairRunningRef = useRef(false);
   const contentAwareRepairAbortControllerRef = useRef<AbortController>();
@@ -2614,6 +2617,7 @@ export function EditorPage({
       uvSets: object.uvSets,
       boundingBox: object.boundingBox ?? loaded.result.boundingBox,
       originalBoundingBox: object.originalBoundingBox ?? loaded.result.originalBoundingBox,
+      sourceUnitScaleFactor: object.sourceUnitScaleFactor ?? loaded.result.sourceUnitScaleFactor,
       importNormalizationTransform:
         object.importNormalizationTransform ?? loaded.result.importNormalizationTransform,
       childMeshCount: object.childMeshCount ?? loaded.result.childMeshCount,
@@ -3502,6 +3506,8 @@ export function EditorPage({
     onProgress?: (event: ModelImportProgressEvent, detail?: string) => void,
     isCurrentImport: () => boolean = () => true,
   ) {
+    let candidate: Awaited<ReturnType<typeof loadModelFromFile>> | undefined;
+    let registered = false;
     try {
       onProgress?.({ phase: 'preparing', phaseProgress: 0 });
       const parsedModel = await loadModelFromFile(
@@ -3521,8 +3527,17 @@ export function EditorPage({
         if (parsedModel.sourceUrl.startsWith('blob:')) URL.revokeObjectURL(parsedModel.sourceUrl);
         throw limitError;
       }
+      const prepared = await prepareModelUvImport({
+        file, parsed: parsedModel, resources: resourceFiles,
+        normalize: { normalize: importSettings.normalizeOnImport, ground: importSettings.groundOnImport, targetMaxDimension: 3 },
+        confirm: uvRepairConfirmation.confirm, isCurrent: isCurrentImport,
+        progress: detail => onProgress?.({ phase: 'materials' }, detail),
+      });
+      if (!prepared) return false;
+      candidate = prepared.loaded;
+      assertModelTriangleLimit(candidate.root, TEXTURE_MODEL_TRIANGLE_LIMIT);
       const loaded = placeImportedModelBesideScene(
-        parsedModel,
+        prepared.loaded,
         useSceneStore.getState().importedModels,
       );
       if (!isCurrentImport()) return false;
@@ -3537,8 +3552,8 @@ export function EditorPage({
           const saved = await saveBlobAsset({
             projectId: project.id,
             category: 'models',
-            blob: file,
-            filename: `${object.id}-${file.name}`,
+            blob: prepared.file,
+            filename: `${object.id}-${prepared.file.name}`,
             onProgress: ({ loadedBytes, totalBytes }) =>
               onProgress?.(
                 { phase: 'persisting', loadedBytes, totalBytes },
@@ -3563,6 +3578,7 @@ export function EditorPage({
       onProgress?.({ phase: 'persisting', phaseProgress: 1 }, t('modelImportSavingFile'));
       onProgress?.({ phase: 'registering', phaseProgress: 0.15 }, t('modelImportAddingToScene'));
       setImportedModel(loaded.result, object);
+      registered = true;
       if (shouldFocusImportedModelAfterImport(useWorkspaceLayoutStore.getState().mode)) {
         focusCameraOrbitOnObjectId(object.id);
       }
@@ -3625,6 +3641,8 @@ export function EditorPage({
         description: error instanceof Error ? error.message : 'The model could not be loaded.',
       });
       return false;
+    } finally {
+      if (candidate && !registered) disposeImportCandidate(candidate);
     }
   }
 
@@ -3709,6 +3727,7 @@ export function EditorPage({
     } finally {
       modelImportRunningRef.current = false;
       setModelImportBusy(false);
+      if (loadedFileCount === 0 && isCurrentImport()) setModelImportProgress(undefined);
       if (modelInputRef.current) modelInputRef.current.value = '';
     }
   }
@@ -8109,6 +8128,7 @@ export function EditorPage({
           onLaunch={() => void handlePhotoshopLaunch()}
         />
       ) : null}
+      {uvRepairConfirmation.dialog}
       {modelImportProgress
         ? createPortal(<AutoBakeProgressBar progress={modelImportProgress} />, document.body)
         : manualBakeProgress
