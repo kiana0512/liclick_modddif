@@ -61,8 +61,10 @@ assert.match(
 );
 const panelAst = ts.createSourceFile('GeneratePanel.tsx', panel, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
 let submitView;
+let handleReference;
 function findSubmitView(node) {
   if (ts.isFunctionDeclaration(node) && node.name?.text === 'submitGptTextureView') submitView = node;
+  if (ts.isFunctionDeclaration(node) && node.name?.text === 'handleGeneratePairedMultiview') handleReference = node;
   ts.forEachChild(node, findSubmitView);
 }
 findSubmitView(panelAst);
@@ -124,14 +126,45 @@ assert.doesNotMatch(
   'the old whole-surface fallback prompt must not remain',
 );
 
+assert.ok(handleReference, 'The reference action must exist.');
+const handleReferenceJs = ts.transpileModule(handleReference.getText(panelAst), {
+  compilerOptions: { target: ts.ScriptTarget.ES2022 },
+}).outputText;
+for (const lighting of [false, true]) {
+  for (const outcome of ['success', 'failure', 'cancelled']) {
+    const progress = [], active = [], toasts = [], inputs = [];
+    const locks = new Set();
+    const reference = { id: lighting ? 'multi' : 'single' };
+    const updateProgress = () => {};
+    const scope = {
+      isMultiviewReference: () => lighting, workflowSubmissionLocked: false,
+      submitLocksRef: { current: locks }, notifyWorkflowOperationLocked: () => assert.fail('Unexpected lock'),
+      setSubmissionActive: value => active.push(value),
+      setTexturePipelineProgress: value => progress.push(value), setGenerateNotice: () => {},
+      updateTexturePipelineProgress: updateProgress,
+      generatePairedMultiviewReference: async (input, onProgress) => {
+        inputs.push(input);
+        assert.equal(onProgress, updateProgress);
+        assert.equal(locks.has('single'), true);
+        if (outcome !== 'success') throw new Error(outcome);
+      },
+      waitForBrowserPaint: async () => {}, pushToast: toast => toasts.push(toast),
+      isGenerationCancellation: error => error.message === 'cancelled',
+      getUserFacingGenerationError: error => error.message, multiviewGenerationFailureFallback: 'failed',
+    };
+    const handle = new Function(...Object.keys(scope), `${handleReferenceJs}; return handleGeneratePairedMultiview;`)(...Object.values(scope));
+    await handle(reference);
+    assert.deepEqual(inputs, [reference]);
+    assert.deepEqual(progress, [{ active: true, progress: 4,
+      label: lighting ? '准备光照处理' : '准备多视图参考' }, undefined]);
+    assert.deepEqual(active, [true, false]);
+    assert.equal(locks.size, 0, 'Success, failure and cancellation must all clear the shared CTA lock');
+    assert.deepEqual(toasts.map(toast => toast.tone), outcome === 'cancelled' ? [] : [outcome === 'success' ? 'success' : 'error']);
+  }
+}
 assert.match(
   panel,
-  /async function handleGeneratePairedMultiview[\s\S]*?setTexturePipelineProgress\(\{ active: true, progress: 4, label: '准备多视图参考' \}\)[\s\S]*?generatePairedMultiviewReference\(singleReference, updateTexturePipelineProgress\)[\s\S]*?setTexturePipelineProgress\(undefined\)/,
-  'standalone single-view reference completion must drive and clear the shared CTA progress',
-);
-assert.match(
-  panel,
-  /onProgress\?\.\(16, '提交多视图参考'\)[\s\S]*?onProgress\?\.\(32, '生成多视图参考'\)[\s\S]*?onProgress\?\.\(88, '保存多视图参考'\)[\s\S]*?onProgress\?\.\(100, '多视图参考已就绪'\)/,
+  /onProgress\?\.\(16, '提交多视图参考'\)[\s\S]*?onProgress\?\.\(32, lighting \? '光照处理中' : '生成多视图参考'\)[\s\S]*?onProgress\?\.\(88, '保存多视图参考'\)[\s\S]*?onProgress\?\.\(100, '多视图参考已就绪'\)/,
   'paired multiview generation must publish monotonic submission, generation and persistence phases',
 );
 assert.match(

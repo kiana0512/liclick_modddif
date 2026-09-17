@@ -160,11 +160,9 @@ assert.match(
   /if \(isTextureMap\)[\s\S]*?pipelineController\.abort\('user-cancelled-texture-generation'\)/,
   'terminating a texture generation must abort the active remote request and prevent later views',
 );
-assert.match(
-  persistPairedFlow,
-  /setSelectedReferences\(\[multiviewReference\.id\]\)/,
-  'the generated multiview reference must remain selected for the texture pipeline',
-);
+// Selection and persisted identity are exercised by test-reference-binding.mjs
+// against this actual function for both new six-view results and in-place
+// lighting edits. The latter must select the retained ID, not the upload ID.
 assert.doesNotMatch(
   persistPairedFlow,
   /setTexturePreviewMode\('multi'\)|setTextureViewMode\('multi'\)|setTab\('multiview'\)/,

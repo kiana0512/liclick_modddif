@@ -70,6 +70,7 @@ function harness(jobs = [newJob, oldJob], references = [source, oldReference, ot
 // Reproduce replacement after page reload: the removed older history must never be restored.
 const app = harness();
 const replacement = await app.persist(source, newJob);
+assert.notEqual(replacement.id, oldReference.id, 'A new six-view result replaces the older paired reference');
 assert.equal(replacement.generationId, newJob.id);
 assert.equal(replacement.isPrimary, true);
 assert.equal(replacement.derivedFromReferenceId, source.id);
@@ -168,9 +169,12 @@ const solo = harness([standaloneJob], [standalone, other]);
 assert.equal(solo.recover().id, standaloneJob.id);
 const soloResult = await solo.persist(standalone, standaloneJob);
 assert.equal(soloResult.id, standalone.id);assert.equal(soloResult.derivedFromReferenceId, undefined);
+assert.deepEqual(solo.state.selectedReferenceIds, [soloResult.id]);
+assert.deepEqual(solo.saves[0].references.filter(r => r.isPrimary).map(r => r.id), [soloResult.id]);
 const againJob = { ...standaloneJob, id: 'light-again', metadata: { ...standaloneJob.metadata, startedAt: '2026-09-14T08:04:00Z' } };
 solo.store.generations.unshift(againJob);
 await solo.persist(soloResult, againJob);
+assert.deepEqual(solo.state.selectedReferenceIds, [standalone.id]);
 assert.equal(solo.state.references.filter(r => r.id === standalone.id).length, 1);
 assert.equal(solo.state.references[0].generationId, againJob.id);
 console.log('Lighting references: paired/standalone/repeat, replacement, original binding, durable reload and failure retention passed.');

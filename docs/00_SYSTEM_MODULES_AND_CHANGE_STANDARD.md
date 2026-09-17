@@ -1,5 +1,7 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
+2026-09-17 M15（协作 M04）：`RELEASE-PREPUSH/1.2.0` 修复发布前仅执行 lint/build 而遗漏其他 verify 任务的问题；从 CI 配置发现全部 verify script，保留各任务变量与任意失败即停止，再执行 build 和 256 字节余量门禁。多视图旧测试不再硬编码临时上传 ID，实际持久化行为由 reference-binding 回归覆盖新建、光照原位替换、独立参考、重复处理、选择与保存。生产功能、UV/GPU/CPU/Worker/shader、QA、Schema/Command/CAS/ownership 和资产不变，无迁移；回滚仅涉及测试与发布脚本。详见 [CI 回归修复](changes/CHG-20260917-CI-REFERENCE-SELECTION.md)。
+
 2026-09-17 模型导入 → M02（协作 M10/M13）：`IMPORT-UV-REPAIR` v1.2.0 按用户要求改为 Blender 智能 UV 投射（66°），保留平均岛尺度、0.001 排布边距与按需补足 1e-6 外边界。为支持非索引 GLB，仅在临时 UV 工作网格恢复同位置顶点连接，按原面角写回 UV，不导出临时网格；原始几何、面数、材质及法线保持普通 Blender 回读语义。确认弹窗、0–1/退化 QA、GPU/CPU/Worker/shader、分辨率、保存/export、Schema/Command/CAS/ownership 不变；无存量工程迁移。真实 400162 面模型回读 UV 合格，2K 原始前后视图 GPU 投影通过。详见 [智能 UV 投射](changes/CHG-20260917-IMPORT-SMART-UV.md)。
 
 2026-09-17 参考图菜单 UI-05 → M04（协作 M12/M13）：`REFERENCE-LIGHTING` v1.0.0 为已有多视图增加“光照处理”，直接以当前图提交一次 Sunburst medium，复用保色去光照提示词，不生成六视图。`REFERENCE-GROUP-BINDING` v1.2.0 在处理成功并持久化图片后原位替换多视图，保持 ID、分组及来源单视图绑定；上传独立多视图和重复处理也支持，失败保留旧图，取消/锁/重载沿用现有任务机制。新增可选任务 metadata 与 pipeline 值，无 Project Schema 或数据迁移；GPU/CPU/Worker/shader、贴图/重绘/export 像素不变。详见 [多视图光照处理](changes/CHG-20260917-REFERENCE-LIGHTING.md)。本轮未推送或部署。
@@ -143,7 +145,7 @@
 
 2026-09-15 M03：ALG-VIEW-INPUT-001/1.3.2 在鼠标接触前即让 R3F 悬停遵守 Alt 所有权；保留普通 hover 和已锁定拖动。旧实现拾取回归失败、新实现通过，用户实际首帧延迟需继续录制。无像素/持久化迁移，见 [Alt 悬停变更卡](changes/CHG-20260915-ALT-BRUSH-HOVER.md)。
 
-> 文档版本：`2.20.173`
+> 文档版本：`2.20.174`
 
 2026-09-16 UI-16 → M14（协作 M01/M12/M13/M15）：`ASSET-LIFECYCLE-GC` v0.4.0 / `STORAGE-INVENTORY-001/4` 将 Cloud 工程/Revision 引用页默认 8→32，并由单条 PostgreSQL CTE 完成分页、assetId 提取与引用 upsert，Node 不再回传引用数组后二次写库；每 256 条文档约 64→8 次数据库往返，保持 45 秒单查询上限与有界 Node 内存。当前 ready scan 引用索引保留到下一快照原子切换，旧 /3 快照自动重扫。Cloud 隔离区改按真实 quarantine 且排除重新可达对象统计；新增用户级幂等持久 purge job/item，以最多 4 并发签名 DeleteObject 后逐项事务删除 transfer、写 deleted_at，404/Pod 重启可安全重放。新增 `asset_storage_purge_jobs/items`，无 Project/Revision/Asset 内容迁移；Command/CAS/ownership/verified 及 GPU/CPU/Worker/shader、投影/UV/重绘/export、分辨率与 QA 不变。回滚前停 purge 并保留任务表，详见 [Cloud 存储盘点与物理清理变更卡](changes/CHG-20260916-CLOUD-STORAGE-INVENTORY-BOUNDED.md)。
 
