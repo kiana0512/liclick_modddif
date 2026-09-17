@@ -103,7 +103,7 @@ try {
   // handler/Blender output is tested separately; inject that output at fetch here.
   await page.unrouteAll();page.setDefaultTimeout(120000);
   await page.evaluate(async()=>{
-   fixture.bytes.real=await(await fetch('/real-car.glb')).arrayBuffer();
+   fixture.bytes.real=await(await window.fetch('/real-car.glb')).arrayBuffer();
    const fetchOriginal=window.fetch.bind(window);fixture.processingRequests=[];
    window.fetch=(url,options)=>{
     if(String(url).includes('/api/asset-processing/')){
