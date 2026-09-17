@@ -176,7 +176,7 @@ assert.match(
 assert.match(worker, /projectionGapMaskFromAlpha\(currentPixels, targetMask\)/);
 assert.doesNotMatch(worker, /inferProjectionGapMask/, 'new captures must not infer coverage from artwork RGB');
 assert.match(worker, /texturedPixelCount >= Math\.max\(64, Math\.round\(objectPixelCount \* 0\.0005\)\)/);
-assert.match(worker, /compositeEdgeRadius = isSingleViewCompletion \? 0/);
+assert.match(worker, /compositeEdgeRadius = 0/);
 for (const policy of [
   /Math\.round\(24 \* scale\)/,
   /Math\.round\(64 \* scale\)/,
@@ -190,7 +190,7 @@ assert.match(worker, /const submittedMask = boxBlur\([\s\S]*?dilated/);
 assert.match(worker, /if \(compositeCore\[index\] > 0\) submittedMask\[index\] = 255/);
 assert.match(worker, /pixels\[offset\] = value[\s\S]*?pixels\[offset \+ 3\] = 255/);
 assert.match(worker, /submittedMaskBlob/);
-assert.doesNotMatch(worker, /white|gray|grey.*threshold/i, 'coverage must not use a white/grey color heuristic');
+assert.doesNotMatch(worker, /(?:white|gray|grey).*threshold/i, 'coverage must not use a white/grey color heuristic');
 
 const expansionCoreSource = `${worker.slice(
   worker.indexOf('type MaskBounds'),
@@ -274,16 +274,16 @@ for (const mode of ['local', 'single']) {
     async (url) => blobs.get(url), pending,
     () => ({ postMessage(payload, { transfer }) {
       posts.push(payload);
-      assert.deepEqual(transfer, [payload.currentEffect, payload.clayPreview, payload.inputMask]);
+      assert.deepEqual(transfer, [payload.currentEffect, payload.inputMask, ...(payload.clayPreview ? [payload.clayPreview] : [])]);
       assert.equal(payload.currentEffect.source, blobs.get('effect'));
-      assert.equal(payload.clayPreview.source, blobs.get('clay'));
+      assert.equal(payload.clayPreview?.source, mode === 'single' ? blobs.get('clay') : undefined);
       assert.equal(payload.inputMask.source, blobs.get('mask'));
       pending.get(payload.id).resolve({ id: payload.id, mode: payload.mode });
     } }),
   );
-  assert.deepEqual(await prepare({ mode, currentEffectUrl: 'effect', clayPreviewUrl: 'clay', maskUrl: 'mask' }), { id: 1, mode });
-  assert.equal(bitmaps.length, 3);
-  assert.equal(posts.length, 1, 'One complete, ordered input triplet reaches the Worker');
+  assert.deepEqual(await prepare({ mode, currentEffectUrl: 'effect', clayPreviewUrl: mode === 'single' ? 'clay' : undefined, maskUrl: 'mask' }), { id: 1, mode });
+  assert.equal(bitmaps.length, mode === 'single' ? 3 : 2);
+  assert.equal(posts.length, 1, 'One complete input reaches the Worker; ModelView no longer decodes clay');
 }
 
 console.log('Single-view texture completion and local repaint bitmap dispatch regression checks passed.');

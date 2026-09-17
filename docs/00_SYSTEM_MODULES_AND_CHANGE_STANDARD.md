@@ -4,6 +4,8 @@
 
 2026-09-17 模型导入 → M02（协作 M10/M13）：按用户要求恢复 `IMPORT-DECIMATE` v1.0.2。导入总三角面严格超过 150 万时确认，服务端 Blender 精简修改器 COLLAPSE 以约 20 万面为目标；保留 v1.0.1 共享顶点恢复和减面/回读表面积保护。减面后异常 UV 仍单独确认，沿用当前智能 UV 投射 v1.2.0，不恢复旧基于角度展开。此前简化步骤隐藏的服务器/目标面数确认文案继续隐藏。GPU/CPU/Worker/shader 读取最终资产，绘制/烘焙/保存/export、Schema/Command/CAS/ownership 不变，无存量迁移。详见 [恢复减面](changes/CHG-20260917-IMPORT-DECIMATE.md)。尚未推送或部署。
 
+2026-09-17 M08（协作 M04/M12/M13）：`MODELVIEW-WHITE-INPUT/1.0.0` 适配 `2026.09.17-li3d4500-defaultprompt-steps2-r1`。原局部重绘图一改为效果图内纯白选区，图二参考、图三原外扩蒙版保持；不再捕获多余白模。智能润色项目开关默认关闭，默认仅三图、无 prompt；显式开启才走既有润色覆盖。新增策略 fingerprint/幂等后缀，保留冻结相机、作者蒙版、回贴、图层及持久化安全边界；GPT/单视图、GPU/shader/UV/export、分辨率与 QA 不变。无资产迁移；可选设置兼容旧项目，回滚需前后端与远端工作流协调。见 [三图纯白输入变更](changes/CHG-20260917-MODELVIEW-WHITE-INPUT.md)。本轮未推送或部署。
+
 2026-09-17 M07（协作 M05/M06/M08/M09）：`LOCAL-BOUNDARY-REPAIR/1.4.0` / `CONTENT-REPAIR-SEAM-FALLBACK/1.0.0` 为首轮同 region 修复后仍无 donor 的余量增加按需 fallback：只有统计确认残余才构建同 Mesh/同材质/法线兼容的物理 seam links，第二轮最多跨一条 seam 且只能写 residual mask；全局平均、跨材质和岛链传播仍禁止。Worker 原地回传已转移 source/mask 并在 Worker 内合并两轮稀疏 RGBA，避免 4K continuation 复制；fallback 为 lazy chunk，常规首屏与无余量任务不加载。GPU/shader、投影/UV/repaint/export、分辨率、QA、Schema/Command/CAS/ownership/verified assets 不变，无迁移；孤立无可靠 donor 的表面仍明确保留余量。回滚与验证见 [内容填补按需物理缝余量修复](changes/CHG-20260917-CONTENT-REPAIR-BOUNDED-SEAM-FALLBACK.md)。
 
 2026-09-17 M08（协作 M03/UI-06/UI-10）：`INPAINT-TOOL-SESSION/1.0.0` 修复局部重绘“绘制蒙版”按钮仍显示激活、但视口偶发不再接收笔画，刷新后恢复的问题。每次进入或重复点击蒙版工具发布非持久 activation revision；视口先结束失去捕获的孤立笔画、释放旧 pointer ownership，再按当前模型重同步投影、深度和覆盖层，尤其清除历史 GPU direct-ready 标记。普通点击、当前加/减选模式及作者蒙版保持；不使用延时重试，不重置已画内容。GPU/shader 像素核、CPU/Worker、Capture/GPT 输入、UV/repaint/export、分辨率、QA、Project Command/CAS/ownership/verified assets 与 Schema 不变，无数据迁移。回滚移除 activation revision 和重激活处理即可；详见 [蒙版工具会话自愈](changes/CHG-20260917-INPAINT-TOOL-SESSION.md)。本轮尚未推送或部署。
@@ -163,7 +165,7 @@
 
 2026-09-15 M03：ALG-VIEW-INPUT-001/1.3.2 在鼠标接触前即让 R3F 悬停遵守 Alt 所有权；保留普通 hover 和已锁定拖动。旧实现拾取回归失败、新实现通过，用户实际首帧延迟需继续录制。无像素/持久化迁移，见 [Alt 悬停变更卡](changes/CHG-20260915-ALT-BRUSH-HOVER.md)。
 
-> 文档版本：`2.20.178`
+> 文档版本：`2.20.179`
 
 2026-09-16 UI-16 → M14（协作 M01/M12/M13/M15）：`ASSET-LIFECYCLE-GC` v0.4.0 / `STORAGE-INVENTORY-001/4` 将 Cloud 工程/Revision 引用页默认 8→32，并由单条 PostgreSQL CTE 完成分页、assetId 提取与引用 upsert，Node 不再回传引用数组后二次写库；每 256 条文档约 64→8 次数据库往返，保持 45 秒单查询上限与有界 Node 内存。当前 ready scan 引用索引保留到下一快照原子切换，旧 /3 快照自动重扫。Cloud 隔离区改按真实 quarantine 且排除重新可达对象统计；新增用户级幂等持久 purge job/item，以最多 4 并发签名 DeleteObject 后逐项事务删除 transfer、写 deleted_at，404/Pod 重启可安全重放。新增 `asset_storage_purge_jobs/items`，无 Project/Revision/Asset 内容迁移；Command/CAS/ownership/verified 及 GPU/CPU/Worker/shader、投影/UV/重绘/export、分辨率与 QA 不变。回滚前停 purge 并保留任务表，详见 [Cloud 存储盘点与物理清理变更卡](changes/CHG-20260916-CLOUD-STORAGE-INVENTORY-BOUNDED.md)。
 

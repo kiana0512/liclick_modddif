@@ -70,7 +70,7 @@ const modelviewInpaintCaPath = path.resolve(
 const modelviewInpaintApiKey =
   process.env.LICLICK_MODELVIEW_INPAINT_API_KEY?.trim() ?? '';
 const modelviewInpaintTimeoutMs = Number(
-  process.env.LICLICK_MODELVIEW_INPAINT_TIMEOUT_MS ?? 1_900_000,
+  process.env.LICLICK_MODELVIEW_INPAINT_TIMEOUT_MS ?? 2_700_000,
 );
 const modelviewSingleViewUrl =
   process.env.LICLICK_MODELVIEW_SINGLE_VIEW_URL?.trim() ||

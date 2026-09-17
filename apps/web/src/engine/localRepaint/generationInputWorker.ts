@@ -73,7 +73,7 @@ async function readImageBlob(url: string) {
 async function prepareWorkerInput(input: {
   mode: 'local' | 'single' | 'gpt-local';
   currentEffectUrl: string;
-  clayPreviewUrl: string;
+  clayPreviewUrl?: string;
   maskUrl: string;
 }) {
   if (
@@ -85,10 +85,10 @@ async function prepareWorkerInput(input: {
   }
   const blobs = await Promise.all([
     readImageBlob(input.currentEffectUrl),
-    readImageBlob(input.clayPreviewUrl),
     readImageBlob(input.maskUrl),
+    ...(input.clayPreviewUrl ? [readImageBlob(input.clayPreviewUrl)] : []),
   ]);
-  const [currentEffect, clayPreview, inputMask] = await Promise.all(
+  const [currentEffect, inputMask, clayPreview] = await Promise.all(
     blobs.map((blob) => createImageBitmap(blob)),
   );
   const id = nextRequestId++;
@@ -96,11 +96,11 @@ async function prepareWorkerInput(input: {
     pendingRequests.set(id, { resolve, reject });
     try {
       const payload = { mode: input.mode, id, currentEffect, clayPreview, inputMask };
-      getWorker().postMessage(payload, { transfer: [currentEffect, clayPreview, inputMask] });
+      getWorker().postMessage(payload, { transfer: [currentEffect, inputMask, ...(clayPreview ? [clayPreview] : [])] });
     } catch (error) {
       pendingRequests.delete(id);
       currentEffect.close();
-      clayPreview.close();
+      clayPreview?.close();
       inputMask.close();
       reject(error instanceof Error ? error : new Error(String(error)));
     }
@@ -110,7 +110,7 @@ async function prepareWorkerInput(input: {
 export async function prepareLocalRepaintGenerationInput(input: {
   gptGuide?: boolean;
   currentEffectUrl: string;
-  clayPreviewUrl: string;
+  clayPreviewUrl?: string;
   authoredMaskUrl: string;
 }): Promise<PreparedLocalRepaintGenerationInput> {
   const result = (await prepareWorkerInput({

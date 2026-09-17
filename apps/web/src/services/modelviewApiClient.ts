@@ -25,6 +25,7 @@ type ModelviewGenerationInput = {
 };
 
 export type ModelviewInpaintInput = ModelviewGenerationInput & {
+  promptPolishEnabled?: boolean;
   mask: {
     path: string;
     dataUrl: string;
@@ -167,6 +168,7 @@ export function createModelviewApiClient() {
     ): Promise<Generation> {
       const result = await requestJson<ModelviewResponse>('/api/modelview/inpaint', {
         method: 'POST',
+        timeoutMs: 2_760_000,
         signal: options?.signal,
         body: JSON.stringify(input),
       });
@@ -174,7 +176,7 @@ export function createModelviewApiClient() {
         input,
         result,
         'modelview-int8',
-        '2026.08.28-cd48a78-truev3-gguf-mask-4input-rseed-r1',
+        '2026.09.17-li3d4500-defaultprompt-steps2-r1',
         'inpaint',
       );
     },

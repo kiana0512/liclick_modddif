@@ -146,7 +146,7 @@ assert.match(
 );
 assert.match(
   generatePanelSource,
-  /image: \{ path: 'current-effect\.png',[\s\S]*materialImage: \{[\s\S]*mask: \{ path: `\$\{generationId\}-mask\.png`/,
+  /image: \{ path: 'preview-white-filled\.png',[\s\S]*materialImage: \{[\s\S]*mask: \{ path: `\$\{generationId\}-mask\.png`/,
   'the local repaint request must submit current effect, material reference and mask',
 );
 assert.match(

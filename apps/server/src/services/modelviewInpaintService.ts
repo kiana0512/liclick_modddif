@@ -24,6 +24,7 @@ type ModelviewGenerationInput = {
 };
 
 export type ModelviewInpaintInput = ModelviewGenerationInput & {
+  promptPolishEnabled?: boolean;
   mask: ModelviewControlFile;
 };
 
@@ -103,10 +104,10 @@ function serviceDefinition(kind: ModelviewServiceKind): ModelviewServiceDefiniti
     apiKey: serverConfig.modelviewInpaintApiKey,
     timeoutMs: serverConfig.modelviewInpaintTimeoutMs,
     jobPrefix: 'modelview-inpaint',
-    idempotencySuffix: 'inpaint:4input-rseed-r1',
+    idempotencySuffix: 'inpaint:li3d4500-defaultprompt-steps2-r1',
     filenameSuffix: 'modelview-int8',
     source: 'modelview-inpaint',
-    workflow: '2026.08.28-cd48a78-truev3-gguf-mask-4input-rseed-r1',
+    workflow: '2026.09.17-li3d4500-defaultprompt-steps2-r1',
     finalNode: 'SaveImage #29',
   };
 }
@@ -434,7 +435,13 @@ async function generateModelviewImage(
   if (inpaintInput && !inpaintInput.mask?.dataUrl) {
     throw new ModelviewInpaintError(`${operationLabel}蒙版不能为空。`, 422);
   }
-  const prompt = input.prompt?.trim() ?? '';
+  // ModelView's new workflow owns the default prompt. Never let a stale client
+  // or saved prompt override it unless the user explicitly enabled polishing.
+  const prompt = kind === 'inpaint' && inpaintInput?.promptPolishEnabled !== true
+    ? '' : input.prompt?.trim() ?? '';
+  if (kind === 'inpaint' && inpaintInput?.promptPolishEnabled === true && !prompt) {
+    throw new ModelviewInpaintError('智能润色已开启，但没有可提交的提示词。', 422);
+  }
   if (Array.from(prompt).length > 4096) {
     throw new ModelviewInpaintError(`${operationLabel}提示词不能超过 4096 个字符。`, 400);
   }

@@ -350,6 +350,7 @@ const defaultImageGenerationSettings = {
   textureGptModel: 'gpt-image-2.5-sunburst',
   textureGptQuality: 'high',
   localRepaintProvider: 'modelview' as 'modelview' | 'gpt',
+  localRepaintSmartPolish: false,
   gptRepaintUseMaterialReference: false,
   model: 'gpt-image-2' as LiclickImageModel,
   aspectRatio: 'auto' as LiclickAspectRatio,
@@ -645,7 +646,7 @@ export function GeneratePanel({
   const promptPolishRequestRef = useRef(0);
   const promptValueRef = useRef({ key: '', value: '' });
   const localRepaintResolvedPromptCacheRef = useRef(
-    new Map<string, { prompt: string; source: 'user-request' | 'default-seam' | 'single-view-template' | 'geometry-normal-v1' }>(),
+    new Map<string, { prompt: string; source: 'user-request' | 'default-seam' | 'single-view-template' | 'geometry-normal-v1' | 'workflow-default' }>(),
   );
   const [previewImageOpen, setPreviewImageOpen] = useState(false);
   const [subjectFilledPreview, setSubjectFilledPreview] = useState<{
@@ -780,6 +781,7 @@ export function GeneratePanel({
   const textureGptQuality = resolveGptTextureQuality(generationSettings.textureGptQuality, textureGptModel);
   const isGptLocalRepaint = generationSettings.localRepaintProvider === 'gpt';
   const gptRepaintUseMaterialReference = generationSettings.gptRepaintUseMaterialReference === true;
+  const localRepaintSmartPolish = generationSettings.localRepaintSmartPolish === true;
   const imageModel = isTextureMapTab || (isLocalRepaintTab && isGptLocalRepaint)
     ? textureGptModel
     : (generationSettings.model as LiclickImageModel);
@@ -3999,7 +4001,7 @@ export function GeneratePanel({
       await waitForBrowserPaint();
       await waitForBrowserPaint();
       // ModelView receives one square 2K composite: authored BaseColor outside
-      // the user's selection and the aligned clay geometry preview inside it.
+      // the selection and exact RGB white inside. GPT retains its clay guide.
       // Qwen receives the clean authored view instead, plus the original
       // authored mask and full multiview reference, so neither placeholder
       // shading nor the remote-only blending margin biases its diagnosis.
@@ -4045,15 +4047,17 @@ export function GeneratePanel({
       let clayPreviewUrl: string | undefined;
       let preparedGenerationInput: Awaited<ReturnType<typeof prepareLocalRepaintGenerationInput>>;
       try {
-        const clayPreview = await captureCurrentColorPreview({
-          objectId,
-          resolution: LOCAL_REPAINT_INPUT_RESOLUTION,
-          framing: 'current',
-          colorMode: 'clay-target',
-          aspect: captureAspect,
-          cameraSnapshot: captureCameraSnapshot,
-        });
-        clayPreviewUrl = clayPreview.colorUrl;
+        if (isGptLocalRepaint) {
+          const clayPreview = await captureCurrentColorPreview({
+            objectId,
+            resolution: LOCAL_REPAINT_INPUT_RESOLUTION,
+            framing: 'current',
+            colorMode: 'clay-target',
+            aspect: captureAspect,
+            cameraSnapshot: captureCameraSnapshot,
+          });
+          clayPreviewUrl = clayPreview.colorUrl;
+        }
         setLocalRepaintPreparation((current) => ({
           startedAt: current?.startedAt ?? Date.now(),
           detail: '正在融合当前效果与蒙版预览',
@@ -4115,6 +4119,8 @@ export function GeneratePanel({
         ]);
       const promptFingerprint = JSON.stringify({
         prompt: requestPrompt,
+        modelviewPromptPolicy: 'white-selection-default-v1',
+        smartPolish: isGptLocalRepaint ? undefined : localRepaintSmartPolish,
         promptTemplatePolicy: LOCAL_REPAINT_PROMPT_TEMPLATE_POLICY,
         promptSource: rawUserPrompt ? 'user-request' : 'default-seam',
         projectId: currentProject.id,
@@ -4125,11 +4131,13 @@ export function GeneratePanel({
         camera: capture.camera,
         objectMatrixWorld: captureObjectMatrixWorld,
         surfaceSignature,
-        sourceComposition: isGptLocalRepaint ? 'gpt-clay-selection-coverage-v1' : 'flat-clay-mask-v1',
+        sourceComposition: isGptLocalRepaint ? 'gpt-clay-selection-coverage-v1' : 'flat-white-mask-v1',
       });
       let resolvedPrompt = isGptLocalRepaint
         ? { prompt: (await import('@/engine/localRepaint/gptRepaintPrompt')).buildGptRepaintPrompt(rawUserPrompt, gptRepaintUseMaterialReference), source: 'geometry-normal-v1' as const }
-        : localRepaintResolvedPromptCacheRef.current.get(promptFingerprint);
+        : !localRepaintSmartPolish
+          ? { prompt: '', source: 'workflow-default' as const }
+          : localRepaintResolvedPromptCacheRef.current.get(promptFingerprint);
       if (!resolvedPrompt) {
         const persistedResolution = useGenerationStore
           .getState()
@@ -4220,7 +4228,8 @@ export function GeneratePanel({
           provider: isGptLocalRepaint ? 'liclick-atlas' : 'modelview-int8',
           model: isGptLocalRepaint ? textureGptModel : undefined,
           workflow: 'local-repaint',
-          modelviewWorkflow: isGptLocalRepaint ? undefined : '2026.08.28-cd48a78-truev3-gguf-mask-4input-rseed-r1',
+          modelviewWorkflow: isGptLocalRepaint ? undefined : '2026.09.17-li3d4500-defaultprompt-steps2-r1',
+          promptPolishEnabled: isGptLocalRepaint ? undefined : localRepaintSmartPolish,
           clientGenerationId: generationId,
           projectId: currentProject.id,
           objectId,
@@ -4234,8 +4243,8 @@ export function GeneratePanel({
           promptSource: resolvedPrompt.source,
           promptFingerprint,
           userPrompt: rawUserPrompt,
-          sourceColorMode: isGptLocalRepaint ? 'gpt-clay-selection-coverage-v1' : 'flat-clay-mask-v1',
-          sourceComposition: isGptLocalRepaint ? 'gpt-clay-selection-coverage-v1' : 'flat-clay-mask-v1',
+          sourceColorMode: isGptLocalRepaint ? 'gpt-clay-selection-coverage-v1' : 'flat-white-mask-v1',
+          sourceComposition: isGptLocalRepaint ? 'gpt-clay-selection-coverage-v1' : 'flat-white-mask-v1',
           maskExpansionRadius: preparedGenerationInput.dilationRadius,
           maskFeatherRadius: preparedGenerationInput.featherRadius,
           resultComposition: 'direct-v1',
@@ -4257,7 +4266,9 @@ export function GeneratePanel({
         tone: 'info',
         message: isGptLocalRepaint
           ? `正在提交结合图、法线图${materialReference ? '、材质参考图' : ''}和提示词。`
-          : '正在提交当前效果图、材质参考图、蒙版和提示词。',
+          : localRepaintSmartPolish
+            ? '正在提交纯白选区效果图、参考图、外扩蒙版和润色提示词。'
+            : '正在提交纯白选区效果图、参考图和外扩蒙版。',
       });
       if (localRepaintPreparationAbortControllerRef.current === requestAbortController) {
         localRepaintPreparationAbortControllerRef.current = undefined;
@@ -4326,8 +4337,9 @@ export function GeneratePanel({
           materialReferenceRole: isMultiviewReference(materialReference!)
             ? 'multi-view'
             : 'single-view',
-          prompt: effectivePrompt,
-          image: { path: 'current-effect.png', dataUrl: currentEffectDataUrl },
+          promptPolishEnabled: localRepaintSmartPolish,
+          ...(localRepaintSmartPolish ? { prompt: effectivePrompt } : {}),
+          image: { path: 'preview-white-filled.png', dataUrl: currentEffectDataUrl },
           materialImage: {
             path: `${generationId}-${materialReference!.id}-material-reference.png`,
             dataUrl: materialReferenceDataUrl,
@@ -5680,6 +5692,23 @@ export function GeneratePanel({
                 </button>
               </div>
             )}
+            {isLocalRepaintTab && !isGptLocalRepaint && (
+              <div className="mb-2 flex items-center justify-between gap-2 text-xs text-white/75">
+                <span>智能润色</span>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-label="局部重绘智能润色"
+                  aria-checked={localRepaintSmartPolish}
+                  disabled={workflowConfigurationLocked || workflowSubmissionLocked}
+                  title="关闭使用远端内置提示词；开启后按编辑要求润色并覆盖提示词"
+                  onClick={() => updateGenerationSettings({ localRepaintSmartPolish: !localRepaintSmartPolish })}
+                  className={`relative h-5 w-9 shrink-0 rounded-full transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-fuchsia-400 disabled:opacity-40 ${localRepaintSmartPolish ? 'bg-fuchsia-500' : 'bg-white/20'}`}
+                >
+                  <span className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-transform ${localRepaintSmartPolish ? 'left-0.5 translate-x-4' : 'left-0.5'}`} />
+                </button>
+              </div>
+            )}
           </div>
         )}
         <div className="gen-preview-body">
@@ -5875,7 +5904,7 @@ export function GeneratePanel({
                 </span>
                 {isLocalRepaintTab ? (
                   <span className="text-[11px] font-medium text-white/46">
-                    {isGptLocalRepaint ? '法线辅助局部修复' : '生成时优化提示词'}
+                    {isGptLocalRepaint ? '法线辅助局部修复' : localRepaintSmartPolish ? '生成时优化提示词' : '使用远端内置提示词'}
                   </span>
                 ) : (
                   <button
@@ -5897,6 +5926,7 @@ export function GeneratePanel({
               </div>
               <textarea
                 value={prompt}
+                disabled={isLocalRepaintTab && !isGptLocalRepaint && !localRepaintSmartPolish}
                 aria-label={isLocalRepaintTab ? '补充提示词（可选）' : '纹理提示词（可选）'}
                 data-task-preview-allowed="true"
                 maxLength={
@@ -5905,7 +5935,7 @@ export function GeneratePanel({
                     : undefined
                 }
                 placeholder={
-                  isLocalRepaintTab ? '可输入本次编辑要求' : undefined
+                  isLocalRepaintTab ? (!isGptLocalRepaint && !localRepaintSmartPolish ? '开启智能润色后可输入编辑要求' : '可输入本次编辑要求') : undefined
                 }
                 onChange={(event) => {
                   if (isLocalRepaintTab) {

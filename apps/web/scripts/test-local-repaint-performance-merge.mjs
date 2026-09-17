@@ -42,7 +42,7 @@ assert.match(panel, /onLocalImageGenerationSettled/);
 assert.doesNotMatch(panel, /GPU 纹理准备失败/);
 assert.match(panel, /displayedTexturePreviewMode/);
 assert.match(panel, /createModelviewApiClient\(\)\.generateInpaint\(/);
-assert.match(panel, /image: \{ path: 'current-effect\.png'/);
+assert.match(panel, /image: \{ path: 'preview-white-filled\.png'/);
 assert.match(
   panel,
   /materialImage: \{[\s\S]*path: `\$\{generationId\}-\$\{materialReference!\.id\}-material-reference\.png`/,
@@ -70,7 +70,7 @@ assert.doesNotMatch(panel, /viewportReference: \{/);
 assert.doesNotMatch(serverInpaint, /input\.viewportReference/);
 assert.doesNotMatch(serverInpaint, /field: 'viewport_reference'/);
 assert.match(serverInpaint, /field: 'image' \| 'material_image' \| 'mask'/);
-assert.match(serverInpaint, /inpaint:4input-rseed-r1/);
+assert.match(serverInpaint, /inpaint:li3d4500-defaultprompt-steps2-r1/);
 assert.match(panel, /resultComposition: 'direct-v1'/);
 assert.match(panel, /cancelledTextureBatchIdsRef/);
 assert.match(panel, /generationBelongsToObject/);

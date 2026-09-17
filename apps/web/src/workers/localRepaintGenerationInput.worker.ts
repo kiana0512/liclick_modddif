@@ -5,7 +5,7 @@ type GenerationInputWorkerRequest = {
   mode: 'local' | 'single' | 'gpt-local';
   id: number;
   currentEffect: ImageBitmap;
-  clayPreview: ImageBitmap;
+  clayPreview?: ImageBitmap;
   inputMask: ImageBitmap;
 };
 
@@ -512,19 +512,18 @@ self.onmessage = async (event: MessageEvent<GenerationInputWorkerRequest>) => {
     if (
       width <= 0 ||
       height <= 0 ||
-      clayPreview.width !== width ||
-      clayPreview.height !== height ||
+      (request.mode !== 'local' && (!clayPreview || clayPreview.width !== width || clayPreview.height !== height)) ||
       inputMask.width !== width ||
       inputMask.height !== height
     ) {
       throw new Error('Texture input dimensions differ.');
     }
     const currentPixels = readPixels(currentEffect, width, height);
-    const clayPixels = readPixels(clayPreview, width, height);
+    const clayPixels = clayPreview ? readPixels(clayPreview, width, height) : undefined;
     finishPhase('read-input-pixels');
     if (request.mode === 'gpt-local') {
       const maskPixels = readPixels(inputMask, width, height);
-      const composite = composeGptRepaintGuide(currentPixels.data, clayPixels.data, maskPixels.data);
+      const composite = composeGptRepaintGuide(currentPixels.data, clayPixels!.data, maskPixels.data);
       const canvas = new OffscreenCanvas(width, height);
       const context = canvas.getContext('2d');
       if (!context) throw new Error('Could not encode GPT repaint guide.');
@@ -589,7 +588,9 @@ self.onmessage = async (event: MessageEvent<GenerationInputWorkerRequest>) => {
       throw new Error('Input mask is empty.');
     }
     finishPhase('build-core-mask');
-    const compositeEdgeRadius = isSingleViewCompletion ? 0 : Math.max(1, Math.round(1.5 * scale));
+    // MODELVIEW-WHITE-INPUT/1.0.0: exact white marking, no grey/clay edge.
+    // The independent sampling mask retains its existing expansion/feathering.
+    const compositeEdgeRadius = 0;
     const compositeAlpha = boxBlur(
       compositeCore,
       width,
@@ -627,15 +628,19 @@ self.onmessage = async (event: MessageEvent<GenerationInputWorkerRequest>) => {
         const alpha = compositeAlpha[index] / 255;
         if (alpha <= 0) continue;
         const offset = index * 4;
+        if (!isSingleViewCompletion) {
+          compositePixels.fill(255, offset, offset + 4);
+          continue;
+        }
         for (let channel = 0; channel < 4; channel += 1) {
           compositePixels[offset + channel] = Math.round(
             currentPixels.data[offset + channel] * (1 - alpha) +
-              clayPixels.data[offset + channel] * alpha,
+              clayPixels!.data[offset + channel] * alpha,
           );
         }
       }
     }
-    finishPhase('blend-clay-composite');
+    finishPhase(isSingleViewCompletion ? 'blend-clay-composite' : 'fill-white-selection');
 
     const dilated = dilateMask(compositeCore, width, height, dilationRadius, coreBounds);
     const dilatedBounds = expandMaskBounds(coreBounds, dilationRadius, width, height);
@@ -689,7 +694,7 @@ self.onmessage = async (event: MessageEvent<GenerationInputWorkerRequest>) => {
     self.postMessage(response);
   } finally {
     currentEffect.close();
-    clayPreview.close();
+    clayPreview?.close();
     inputMask.close();
   }
 };

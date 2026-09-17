@@ -299,7 +299,7 @@ if (process.env.LICLICK_BENCHMARK_MASK_PNG === '1') {
 assert.match(
   panelSource,
   /prepareLocalRepaintGenerationInput\(\{[\s\S]*?currentEffectUrl: flatCurrentEffectUrl,[\s\S]*?clayPreviewUrl,[\s\S]*?authoredMaskUrl: currentPaintMaskDataUrl/,
-  'ModelView input must use the authored-effect/clay composite.',
+  'Repaint input must use the frozen authored effect and original mask; clay is optional for GPT only.',
 );
 assert.match(
   panelSource,
@@ -355,4 +355,92 @@ assert.match(
 assert.match(workerSource, /const dilated = dilateMask\(compositeCore/);
 assert.match(workerSource, /if \(compositeCore\[index\] > 0\) submittedMask\[index\] = 255/);
 
-console.log('Local repaint generation input tests passed.');
+// Execute the complete production Worker. The canvas shim exposes exact RGBA
+// instead of PNG encoding; the separate browser check covers real PNG round trips.
+class PixelCanvas {
+  constructor(width, height) { this.width = width; this.height = height; }
+  getContext() {
+    return { clearRect() {}, drawImage: bitmap => { this.pixels = bitmap.data; },
+      getImageData: () => ({ data: this.pixels, width: this.width, height: this.height }),
+      putImageData: pixels => { this.pixels = pixels.data; } };
+  }
+  async convertToBlob() { return new Blob([this.pixels], { type: 'image/png' }); }
+}
+const workerRuntime = { postMessage: value => { workerRuntime.result = value; } };
+new Function('self', 'OffscreenCanvas', 'ImageData', ts.transpileModule(
+  workerSource.replace(/^import[^\n]+\n/gm, '').replace(/export \{\};?/, ''),
+  { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None } },
+).outputText)(workerRuntime, PixelCanvas, class { constructor(data, width, height) { Object.assign(this, { data, width, height }); } });
+const w = 128, h = 96;
+const original = new Uint8ClampedArray(w * h * 4);
+const selection = new Uint8ClampedArray(original.length);
+const strength = new Uint8Array(w * h);
+for (let i = 0; i < w * h; i++) {
+  original.set([i % 213, i % 137, i % 89, 255], i * 4);
+  const x = i % w, y = Math.floor(i / w);
+  const value = x >= 33 && x < 70 && y >= 20 && y < 60 ? 255 : 0;
+  strength[i] = value;
+  selection.set([value, value, value, 255], i * 4);
+}
+let closed = 0;
+const bitmap = data => ({ width: w, height: h, data, close: () => { closed++; } });
+await workerRuntime.onmessage({ data: { id: 1, mode: 'local', currentEffect: bitmap(original), inputMask: bitmap(selection) } });
+assert.equal(workerRuntime.result.error, undefined, 'ModelView accepts effect + mask without any clay capture');
+const marked = new Uint8Array(await workerRuntime.result.compositeBlob.arrayBuffer());
+const submitted = new Uint8Array(await workerRuntime.result.submittedMaskBlob.arrayBuffer());
+const { core, bounds } = buildCompositeCoreMask(strength, w, h, Math.max(w, h) / 2048);
+for (let i = 0; i < w * h; i++) {
+  assert.deepEqual([...marked.subarray(i * 4, i * 4 + 4)], core[i] ? [255,255,255,255] : [...original.subarray(i * 4, i * 4 + 4)],
+    'Selected pixels are opaque white; every protected pixel stays byte-identical');
+}
+const radius = workerRuntime.result.dilationRadius, feather = workerRuntime.result.featherRadius;
+const expectedMask = boxBlur(dilateMask(core, w, h, radius, bounds), w, h, feather,
+  { minX: Math.max(0,bounds.minX-radius), minY: Math.max(0,bounds.minY-radius), maxX: Math.min(w-1,bounds.maxX+radius), maxY: Math.min(h-1,bounds.maxY+radius) });
+for (let i = 0; i < expectedMask.length; i++) {
+  const expected = core[i] ? 255 : expectedMask[i];
+  assert.deepEqual([...submitted.subarray(i*4,i*4+4)], [expected,expected,expected,255], 'Existing dilated/feathered RGB mask unchanged');
+}
+assert.equal(closed, 2, 'Both transferred bitmaps are released');
+await workerRuntime.onmessage({ data: { id: 2, mode: 'local', currentEffect: bitmap(original), inputMask: bitmap(new Uint8ClampedArray(selection.length)) } });
+assert.match(workerRuntime.result.error, /蒙版为空/);
+assert.equal(closed, 4);
+
+assert.match(panelSource, /localRepaintSmartPolish: false/);
+assert.match(panelSource, /aria-label="局部重绘智能润色"[\s\S]*?aria-checked=\{localRepaintSmartPolish\}/);
+assert.match(panelSource, /\.\.\.\(localRepaintSmartPolish \? \{ prompt: effectivePrompt \} : \{\}\)/);
+assert.match(panelSource, /if \(isGptLocalRepaint\) \{\s*const clayPreview = await captureCurrentColorPreview/);
+// Execute prompt resolution from the real component with the switch off, stale
+// text and throwing cache/network stubs. No old prompt lookup/polish is allowed.
+const resolution = panelSource.slice(panelSource.indexOf('let resolvedPrompt = isGptLocalRepaint'), panelSource.indexOf('const effectivePrompt = resolvedPrompt.prompt;') + 'const effectivePrompt = resolvedPrompt.prompt;'.length);
+const resolveJs = ts.transpileModule(resolution, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+const mustNotRun = () => assert.fail('Default workflow must bypass prompt cache, preparation and Qwen');
+const resolveScope = { isGptLocalRepaint: false, localRepaintSmartPolish: false,
+  rawUserPrompt: 'stale previous request', localRepaintResolvedPromptCacheRef: { current: { get: mustNotRun } },
+  useGenerationStore: { getState: mustNotRun }, prepareLocalRepaintPromptPolishInputs: mustNotRun,
+  createLiclickApiClient: mustNotRun, requestAbortController: { signal: { aborted: false } } };
+const resolved = await new Function(...Object.keys(resolveScope), `return (async()=>{${resolveJs}; return {effectivePrompt, source:resolvedPrompt.source};})();`)(...Object.values(resolveScope));
+assert.deepEqual(resolved, { effectivePrompt: '', source: 'workflow-default' });
+let polishCalls = 0;
+const cache = new Map();
+const enabledScope = { ...resolveScope, localRepaintSmartPolish: true,
+  localRepaintResolvedPromptCacheRef: { current: cache },
+  useGenerationStore: { getState: () => ({ generations: [] }) },
+  materialReference: { id: 'ref', name: 'reference' }, objectId: 'object', objects: [],
+  promptFingerprint: 'new-white-policy', requestPrompt: 'repair this part',
+  captureCameraSnapshot: {}, promptAnalysisCurrentEffectUrl: 'clean-effect',
+  currentPaintMaskDataUrl: 'original-mask', currentPaintMaskRevision: 8,
+  useSceneStore: { getState: () => ({ paintMaskRevision: 8 }) },
+  setLocalRepaintPreparation() {}, setGenerateNotice() {},
+  requestAbortController: new globalThis.AbortController(),
+  prepareLocalRepaintPromptPolishInputs: async input => {
+    assert.equal(input.currentEffectUrl, 'clean-effect');
+    assert.equal(input.maskUrl, 'original-mask');
+    return { referenceImage: { name: 'reference' }, currentEffectImage: {}, maskImage: {} };
+  },
+  createLiclickApiClient: () => ({ polishPrompt: async () => { polishCalls++; return 'polished repair'; } }),
+};
+const runEnabled = () => new Function(...Object.keys(enabledScope), `return (async()=>{${resolveJs}; return effectivePrompt;})();`)(...Object.values(enabledScope));
+assert.equal(await runEnabled(), 'polished repair');
+assert.equal(await runEnabled(), 'polished repair');
+assert.equal(polishCalls, 1, 'Explicit enable runs Qwen once; same frozen input reuses the new-policy cache');
+console.log('Local repaint: pure white pixels, unchanged mask expansion, no clay input, default-off prompt/cache/network and existing morphology tests passed.');
