@@ -499,7 +499,7 @@ export function BottomToolDock({
                         >
                           <span>{labels.resetInpaintRegion}</span>
                           <span className="rounded bg-white/16 px-1.5 py-0.5 text-[10px] text-white/76">
-                            CTRL SHIFT D
+                            CTRL D
                           </span>
                         </button>
                         <button

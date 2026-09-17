@@ -1690,7 +1690,6 @@ function LayerMenu({
             ) : null)}
           <MenuButton onClick={() => run(onDuplicate)} icon={<Copy className="h-4 w-4" />}>
             {t('duplicate')}
-            <span className="ml-auto rounded bg-white/85 px-1 text-xs text-[#202020]">CTRL D</span>
           </MenuButton>
           {eraserPolicy.requiresEditableUvCopy && (
             <MenuButton
