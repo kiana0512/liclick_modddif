@@ -5,7 +5,7 @@
 - 主模块：`M10` 生产 UV/拓扑/Bake。
 - 协作模块：`M13` 控制面稳定性、`M15` 回归门禁。
 - 契约：`BAKE-ARTIFACT-IO/1.1.0`。
-- 状态：production scheduling patch；不修改烘焙算法或产物格式。
+- 状态：已随 `2222576c` 进入 `master`；不修改烘焙算法或产物格式，尚未据此声明生产部署。
 
 ## 问题
 
@@ -26,7 +26,9 @@ GPU/CPU/Worker/shader、Substance profile、Bake 通道、像素、颜色空间�
 
 - `test:bake-artifact-plan` 执行编译后的实际 Roughness 阶段，覆盖 access/read/remote/MIME/write/dimensions 六类失败和成功发布顺序。
 - 回归同时检查 `downloadArtifacts` 与 `pngSize` 不再调用同步文件 API。
-- Server typecheck、lint、完整 regression 必须通过。
+- 最终 `master` 的 Server regression 24/24、全仓 typecheck、lint、正式 `verify:prepush`、Cloud 构建/产物/包体/部署模拟均通过。
+- 正式 Web 产物为 104 chunks / 3,214,864 bytes；未提高预算，额外 256-byte reserve 检查通过。
+- Cloud release-readiness 仍按既有矩阵拒绝发布；本卡不替代真实生产 Substance、硬件性能或数据面验收。
 
 ## 迁移与回滚
 

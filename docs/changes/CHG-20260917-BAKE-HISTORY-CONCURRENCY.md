@@ -5,7 +5,7 @@
 - 主模块：`M13` Cloud 控制面稳定性。
 - 协作模块：`M10` 生产 Bake、`M15` 回归门禁。
 - 契约：`BAKE-HISTORY-LIST/1.1.0`。
-- 状态：小范围调度与文件 I/O 修复；不迁移 Bake Job 数据。
+- 状态：已随 `2222576c` 进入 `master`；小范围调度与文件 I/O 修复，不迁移 Bake Job 数据，尚未据此声明生产部署。
 
 ## 问题
 
@@ -27,7 +27,9 @@ Bake 历史列表虽然已把 Job JSON 读取异步化，但多个用户同时�
 - 任务历史冒烟创建 10 个独立身份、34 个带 owner 的 Bake Job 和 1 个无 owner 旧任务。
 - 同时发起 40 个鉴权历史请求，逐请求验证只返回当前身份任务、排序一致、无 owner 任务不可见。
 - 继续验证匿名下载 401、跨用户下载 404、owner 下载字节一致，以及 UV/拓扑历史隔离。
-- 发布前还必须通过 Server/Web 完整回归、全仓 typecheck/lint、边界检查与生产构建门禁。
+- 最终 `master` 的 Server regression 24/24、Web regression 147/147、全仓 typecheck/lint、正式 `verify:prepush`、Cloud boundary、生产构建与部署模拟通过。
+- 正式 Web 产物为 104 chunks / 3,214,864 bytes，原预算及额外 256-byte reserve 检查均通过。
+- Cloud release-readiness 仍有 8 项 required capability 为 `in_progress`；本地并发冒烟不等同于生产共享卷压测或正式发布批准。
 
 ## 迁移与回滚
 
