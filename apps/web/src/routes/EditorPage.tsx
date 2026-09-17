@@ -113,7 +113,6 @@ import { disposeImportCandidate, prepareModelUvImport } from '@/engine/loaders/p
 import { useModelUvRepairConfirmation } from '@/components/editor/ModelUvRepairDialog';
 import {
   assertModelTriangleLimit,
-  disposeRejectedModel,
   TEXTURE_MODEL_TRIANGLE_LIMIT,
 } from '@/engine/loaders/modelTriangleLimit';
 import {
@@ -3520,13 +3519,6 @@ export function EditorPage({
         resourceFiles,
         (event) => onProgress?.(event),
       );
-      try {
-        assertModelTriangleLimit(parsedModel.root, TEXTURE_MODEL_TRIANGLE_LIMIT);
-      } catch (limitError) {
-        disposeRejectedModel(parsedModel.root);
-        if (parsedModel.sourceUrl.startsWith('blob:')) URL.revokeObjectURL(parsedModel.sourceUrl);
-        throw limitError;
-      }
       const prepared = await prepareModelUvImport({
         file, parsed: parsedModel, resources: resourceFiles,
         normalize: { normalize: importSettings.normalizeOnImport, ground: importSettings.groundOnImport, targetMaxDimension: 3 },

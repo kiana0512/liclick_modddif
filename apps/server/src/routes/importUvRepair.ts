@@ -5,6 +5,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { corsHeaders, readBinaryBody, sendJson } from './httpUtils.js';
 import { resolveBlenderExecutable, runProcess } from '../services/retopologyProjectPreparationService.js';
 import { importUvRepairScript } from '../services/importUvRepairScript.js';
+import { importDecimateScript } from '../services/importDecimateScript.js';
 
 let active = false;
 const maxBytes = 256 * 1024 * 1024;
@@ -23,11 +24,13 @@ export function validateRepairGlb(data: Buffer) {
 
 /** Called only after assetProcessing's authentication and origin gates. */
 export async function handleImportUvRepair(request: IncomingMessage, response: ServerResponse, url: URL) {
+  const decimate = url.pathname === '/api/asset-processing/import-decimate';
+  const label = decimate ? '减面' : 'UV 修复';
   if (request.method !== 'POST') { sendJson(response, 405, { error: 'Method not allowed.' }); return; }
-  if (url.searchParams.get('consent') !== 'change-uv-v1') {
-    sendJson(response, 400, { error: '必须先确认允许修改 UV' }); return;
+  if (url.searchParams.get('consent') !== (decimate ? 'change-topology-v1' : 'change-uv-v1')) {
+    sendJson(response, 400, { error: decimate ? '必须先确认允许减面' : '必须先确认允许修改 UV' }); return;
   }
-  if (active) { sendJson(response, 429, { error: 'UV 修复服务忙，请稍后重新导入' }); return; }
+  if (active) { sendJson(response, 429, { error: '模型处理服务忙，请稍后重新导入' }); return; }
   active = true;
   const controller = new AbortController();
   const abort = () => { if (!response.writableEnded) controller.abort(); };
@@ -42,16 +45,16 @@ export async function handleImportUvRepair(request: IncomingMessage, response: S
     const source = path.join(directory, 'input.glb'), output = path.join(directory, 'repaired.glb');
     const script = path.join(directory, 'repair.py');
     await fs.writeFile(source, input);
-    await fs.writeFile(script, importUvRepairScript);
+    await fs.writeFile(script, decimate ? importDecimateScript : importUvRepairScript);
     const result = await runProcess(blender.executablePath, ['--background', '--factory-startup', '--disable-autoexec',
       '--python-exit-code', '1', '--python', script, '--', source, output], {
       cwd: directory, timeoutMs: 180_000, signal: controller.signal,
       environment: { ...process.env, PYTHONNOUSERSITE: '1', OMP_NUM_THREADS: '2' },
     });
     if (result.aborted) return;
-    if (result.timedOut) throw new Error('UV 修复超时，模型未导入，请简化模型后重试');
-    if (result.code !== 0 || !result.stdout.includes('IMPORT_UV_REPAIR_OK')) {
-      throw new Error('Blender 未能修复此模型的 UV，模型未导入；请检查零面积几何或手动展 UV');
+    if (result.timedOut) throw new Error(`${label}超时，模型未导入，请简化模型后重试`);
+    if (result.code !== 0 || !result.stdout.includes(decimate ? 'IMPORT_DECIMATE_OK' : 'IMPORT_UV_REPAIR_OK')) {
+      throw new Error(`Blender 未能完成${label}，模型未导入；请检查模型几何或手动处理`);
     }
     if ((await fs.stat(output)).size > maxBytes) throw new Error('修复后模型过大，未导入');
     const repaired = await fs.readFile(output);

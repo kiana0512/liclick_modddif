@@ -21,6 +21,17 @@ try{
  assert.equal((await fetch(base)).status,405);
  assert.equal((await fetch(base,{method:'POST',body:'not consented'})).status,400);
  assert.equal((await fetch(base+'?consent=false',{method:'POST',body:'not consented'})).status,400);
+ const decimate=base.replace('/repair','/api/asset-processing/import-decimate');
+ assert.equal((await fetch(decimate,{method:'POST',body:'not consented'})).status,400);
+ assert.equal((await fetch(decimate+'?consent=change-uv-v1',{method:'POST',body:'UV consent is not topology consent'})).status,400);
+ assert.equal((await fetch(base+'?consent=change-topology-v1',{method:'POST',body:'topology consent is not UV consent'})).status,400);
+ if(process.env.DECIMATE_INPUT){
+  const response=await fetch(decimate+'?consent=change-topology-v1',{method:'POST',body:await readFile(process.env.DECIMATE_INPUT)});
+  if(!response.ok)throw Error(await response.text());
+  const bytes=Buffer.from(await response.arrayBuffer());validateRepairGlb(bytes);
+  if(process.env.DECIMATE_OUTPUT)await writeFile(process.env.DECIMATE_OUTPUT,bytes);
+  console.log('Real Blender HTTP decimation returned verified embedded GLB ('+bytes.length+' bytes).');
+ }
  if(process.env.UV_REPAIR_INPUT){
   const response=await fetch(base+'?consent=change-uv-v1',{method:'POST',body:await readFile(process.env.UV_REPAIR_INPUT)});
   if(!response.ok)throw Error(await response.text());
