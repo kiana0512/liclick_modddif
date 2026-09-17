@@ -9,6 +9,10 @@ import {
 } from '../services/assetJobOwnership.js';
 import { fetchAssetJobSnapshot } from '../services/assetProcessingProxy.js';
 import {
+  createAssetHistoryRefreshCoordinator,
+  waitForAssetHistoryRefreshBudget,
+} from '../services/assetHistoryRefreshCoordinator.js';
+import {
   getNormalBakeOutputMetadata,
   listNormalBakeJobs,
   type BakeChannelId,
@@ -44,6 +48,12 @@ type HistoryRecord = {
   outputs: HistoryOutput[];
   error?: string;
 };
+
+const assetHistoryRefreshCoordinator = createAssetHistoryRefreshCoordinator({
+  globalConcurrency: 8,
+  perOwnerConcurrency: 4,
+});
+const assetHistoryRefreshWaitBudgetMs = 2_750;
 
 const bakeChannelLabels: Record<BakeChannelId, string> = {
   baseColor: 'Base Color',
@@ -288,17 +298,23 @@ async function refreshedAssetHistory(
   const initial = (await listAssetJobHistory(userId, undefined, 100))
     .filter((record) => !record.mode || record.mode === module)
     .slice(0, Math.max(limit, 30));
-  await Promise.all(initial.map(async (record) => {
+  const refreshes = initial.map((record) => {
     const status = record.status?.toUpperCase();
-    if (status && ['SUCCEEDED', 'FAILED', 'CANCELLED'].includes(status)) return;
-    try {
-      const snapshot = await fetchAssetJobSnapshot(record.jobId, 2_500);
-      await updateAssetJobSnapshot(record.jobId, userId, snapshot);
-    } catch {
-      // The durable local record remains visible when the remote worker is
-      // offline or its retention window has expired.
-    }
-  }));
+    if (status && ['SUCCEEDED', 'FAILED', 'CANCELLED'].includes(status)) return undefined;
+    return assetHistoryRefreshCoordinator.schedule(userId, record.jobId, async () => {
+      try {
+        const snapshot = await fetchAssetJobSnapshot(record.jobId, 2_500);
+        await updateAssetJobSnapshot(record.jobId, userId, snapshot);
+      } catch {
+        // The durable local record remains visible when the remote worker is
+        // offline or its retention window has expired.
+      }
+    });
+  }).filter((refresh): refresh is Promise<void> => Boolean(refresh));
+  // A slow or unavailable worker must not hold the history response until all
+  // queued records have exhausted their individual remote timeouts. Remaining
+  // refreshes continue behind the bounded process-wide coordinator.
+  await waitForAssetHistoryRefreshBudget(refreshes, assetHistoryRefreshWaitBudgetMs);
   return listAssetJobHistory(userId, module, module === 'retopology' ? 100 : limit);
 }
 
