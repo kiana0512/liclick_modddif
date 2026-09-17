@@ -2,8 +2,6 @@ import * as THREE from 'three';
 
 export const TEXTURE_MODEL_TRIANGLE_LIMIT = 2_000_000;
 export const AUTO_UV_MODEL_TRIANGLE_LIMIT = 70_000;
-export const IMPORT_DECIMATE_THRESHOLD = 1_500_000;
-export const IMPORT_DECIMATE_TARGET = 200_000;
 
 export function countModelTriangles(root: THREE.Object3D) {
   let triangles = 0;

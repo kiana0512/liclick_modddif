@@ -31,7 +31,7 @@ export async function waitForImportTextures(model: LoadedModel, signal: AbortSig
 
 export type ModelImportProcessingInput = {
   file: File; parsed: LoadedModel; resources: File[]; normalize: NormalizeImportedModelOptions;
-  confirm: (name: string, report: ModelUvReport, signal: AbortSignal, operation?: 'uv' | 'decimate') => Promise<boolean>;
+  confirm: (name: string, report: ModelUvReport, signal: AbortSignal) => Promise<boolean>;
   isCurrent: () => boolean; progress: (message: string) => void;
 };
 
