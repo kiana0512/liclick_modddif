@@ -81,7 +81,7 @@ pnpm simulate:cloud-deployment -- --serve
 ## 发布与数据规则
 
 - `master` 是当前代码基线；每次只处理一个明确问题，合并前执行对应回归和发布门禁，不从历史 `codex/modernization` 文档反推当前分支策略。
-- 2026-09-17 文档同步基线为 `2222576c5bada19b1ff65850b95d6c0cfd1c17ca`：本地正式 `verify:prepush`、Server 24/24、Web 147/147、独立导入 UV 浏览器回归、Cloud 构建/产物/部署模拟均通过；正式 Web 产物为 104 chunks / 3,214,864 bytes。该记录不等同于生产部署或远端流水线已完成。
+- 2026-09-17 当前运行时代码基线为 `d745d066`：UV/拓扑历史远端刷新已限制为全局 8 路、单用户 4 路并合并相同 Job 的同时请求。合并 `origin/master@5481e23c` 后，正式 `verify:prepush`、Server 25/25、Web 147/147、本地 API/集成 Web 冒烟及独立导入浏览器回归均通过；Cloud 产物为 218 个文件、25.04 MiB，Web 为 105 个 JS chunks、3,217,996 bytes。Cloud release-readiness 仍因 8 项真实生产证据为 `in_progress` 而拒绝发布；该记录不等同于生产部署或远端流水线已完成。
 - Web、Server、协议和 Schema 必须来自同一 Git SHA 与 Release Manifest；同一 SHA 只构建一次。
 - 生产 Secret、OAuth Token、Cookie、证书私钥、工作区资产和测试账号数据不得提交 Git。
 - Cloud 构建不得包含安装器、`127.0.0.1:4618`、本地守护进程或本地身份桥接回退。

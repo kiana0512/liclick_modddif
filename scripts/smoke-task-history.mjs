@@ -1,14 +1,17 @@
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
+import https from 'node:https';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
+import { promisify } from 'node:util';
 
 const repoRoot = path.resolve(import.meta.dirname, '..');
 const serverEntry = path.join(repoRoot, 'apps', 'server', 'dist', 'index.js');
 const allowedOrigin = 'http://127.0.0.1:5173';
+const execFileAsync = promisify(execFile);
 
 async function reservePort() {
   const server = net.createServer();
@@ -50,6 +53,74 @@ async function stopChild(child) {
     new Promise((resolve) => setTimeout(resolve, 2_000)),
   ]);
   if (child.exitCode === null) child.kill('SIGKILL');
+}
+
+async function listen(server) {
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  const address = server.address();
+  assert(address && typeof address === 'object');
+  return `https://127.0.0.1:${address.port}`;
+}
+
+async function closeServer(server) {
+  if (!server.listening) return;
+  await new Promise((resolve, reject) => {
+    server.close((error) => (error ? reject(error) : resolve()));
+  });
+}
+
+async function createStrictTlsFixture(workspaceDir) {
+  const tlsDirectory = path.join(workspaceDir, 'asset-history-tls');
+  const certificatePath = path.join(tlsDirectory, 'ca-cert.pem');
+  const privateKeyPath = path.join(tlsDirectory, 'server-key.pem');
+  await fs.mkdir(tlsDirectory, { recursive: true });
+  const candidates = [
+    process.env.OPENSSL_BINARY,
+    ...(process.platform === 'win32'
+      ? [
+          'C:\\Program Files\\Git\\usr\\bin\\openssl.exe',
+          'C:\\Program Files\\Git\\mingw64\\bin\\openssl.exe',
+        ]
+      : []),
+    'openssl',
+  ].filter(Boolean);
+  let openssl;
+  for (const candidate of candidates) {
+    if (candidate === 'openssl') {
+      openssl = candidate;
+      break;
+    }
+    try {
+      await fs.access(candidate);
+      openssl = candidate;
+      break;
+    } catch {
+      // Try the next platform location.
+    }
+  }
+  assert(openssl, 'OpenSSL is required for the strict-TLS Asset history fixture.');
+  await execFileAsync(
+    openssl,
+    [
+      'req', '-x509', '-newkey', 'rsa:2048', '-sha256', '-nodes',
+      '-keyout', privateKeyPath,
+      '-out', certificatePath,
+      '-days', '1',
+      '-subj', '/CN=127.0.0.1',
+      '-addext', 'subjectAltName=IP:127.0.0.1',
+      '-addext', 'basicConstraints=critical,CA:TRUE',
+      '-addext', 'keyUsage=critical,digitalSignature,keyEncipherment,keyCertSign',
+    ],
+    { timeout: 15_000, windowsHide: true },
+  );
+  return {
+    certificatePath,
+    certificate: await fs.readFile(certificatePath),
+    privateKey: await fs.readFile(privateKeyPath),
+  };
 }
 
 async function login(baseUrl, displayName, email) {
@@ -165,25 +236,84 @@ function outputUrl(baseUrl, value) {
 const port = await reservePort();
 const workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), 'li3d-task-history-smoke-'));
 const baseUrl = `http://127.0.0.1:${port}`;
-let serverOutput = '';
-const child = spawn(process.execPath, [serverEntry], {
-  cwd: repoRoot,
-  env: {
-    ...process.env,
-    AUTH_MODE: 'dev-mock',
-    LICLICK_ENABLE_ATLAS_LOCAL_LOGIN: 'false',
-    LICLICK_FRONTEND_URL: allowedOrigin,
-    LICLICK_PUBLIC_WORKSPACE_URL: baseUrl,
-    LICLICK_WORKSPACE_DIR: workspaceDir,
-    SERVER_HOST: '127.0.0.1',
-    SERVER_PORT: String(port),
-    SESSION_SECRET: 'task-history-smoke-secret-not-for-production',
-  },
-  stdio: ['ignore', 'pipe', 'pipe'],
-  windowsHide: true,
+const assetTls = await createStrictTlsFixture(workspaceDir);
+const assetRequestCountByJob = new Map();
+const activeAssetRequestsByOwner = new Map();
+const maximumAssetRequestsByOwner = new Map();
+let activeAssetRequests = 0;
+let maximumAssetRequests = 0;
+const assetServer = https.createServer({
+  cert: assetTls.certificate,
+  key: assetTls.privateKey,
+}, async (request, response) => {
+  const match = /^\/api\/v1\/assets\/jobs\/([^/]+)$/.exec(request.url ?? '');
+  if (request.method !== 'GET' || !match) {
+    response.writeHead(404).end();
+    return;
+  }
+  const jobId = decodeURIComponent(match[1]);
+  const ownerKey = jobId.includes('-active-a-') ? 'owner-a' : jobId.includes('-active-b-') ? 'owner-b' : 'legacy';
+  assetRequestCountByJob.set(jobId, (assetRequestCountByJob.get(jobId) ?? 0) + 1);
+  activeAssetRequests += 1;
+  maximumAssetRequests = Math.max(maximumAssetRequests, activeAssetRequests);
+  const ownerActive = (activeAssetRequestsByOwner.get(ownerKey) ?? 0) + 1;
+  activeAssetRequestsByOwner.set(ownerKey, ownerActive);
+  maximumAssetRequestsByOwner.set(
+    ownerKey,
+    Math.max(maximumAssetRequestsByOwner.get(ownerKey) ?? 0, ownerActive),
+  );
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    if (ownerKey === 'legacy') {
+      response.writeHead(404, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({ error: 'expired legacy task' }));
+      return;
+    }
+    response.writeHead(200, { 'content-type': 'application/json' });
+    response.end(JSON.stringify({
+      job_id: jobId,
+      kind: ownerKey === 'owner-a' ? 'UV_PROCESS_V2' : 'RETOPOLOGY',
+      status: 'SUCCEEDED',
+      progress: 100,
+      updated_at: '2026-08-02T12:00:00.000Z',
+      finished_at: '2026-08-02T12:00:00.000Z',
+      artifacts: [],
+    }));
+  } finally {
+    activeAssetRequests -= 1;
+    activeAssetRequestsByOwner.set(
+      ownerKey,
+      (activeAssetRequestsByOwner.get(ownerKey) ?? 1) - 1,
+    );
+  }
 });
-child.stdout.on('data', (chunk) => { serverOutput += chunk.toString(); });
-child.stderr.on('data', (chunk) => { serverOutput += chunk.toString(); });
+const assetServiceBaseUrl = await listen(assetServer);
+let serverOutput = '';
+function startWorkspaceServer() {
+  const serverChild = spawn(process.execPath, [serverEntry], {
+    cwd: repoRoot,
+    env: {
+      ...process.env,
+      AUTH_MODE: 'dev-mock',
+      ASSET_SERVICE_API_TOKEN: 'task-history-smoke-asset-token',
+      ASSET_SERVICE_BASE_URL: assetServiceBaseUrl,
+      ASSET_SERVICE_CA_CERT_PATH: assetTls.certificatePath,
+      LICLICK_ENABLE_ATLAS_LOCAL_LOGIN: 'false',
+      LICLICK_FRONTEND_URL: allowedOrigin,
+      LICLICK_PUBLIC_WORKSPACE_URL: baseUrl,
+      LICLICK_WORKSPACE_DIR: workspaceDir,
+      SERVER_HOST: '127.0.0.1',
+      SERVER_PORT: String(port),
+      SESSION_SECRET: 'task-history-smoke-secret-not-for-production',
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+    windowsHide: true,
+  });
+  serverChild.stdout.on('data', (chunk) => { serverOutput += chunk.toString(); });
+  serverChild.stderr.on('data', (chunk) => { serverOutput += chunk.toString(); });
+  return serverChild;
+}
+let child = startWorkspaceServer();
 
 try {
   await waitForHealth(baseUrl, child);
@@ -339,12 +469,43 @@ try {
       },
     },
   };
+  const activeAssetJobIdsByOwner = { 'owner-a': [], 'owner-b': [] };
+  for (let index = 0; index < 6; index += 1) {
+    const uvJobId = `asset-uv-active-a-${index}`;
+    const retopologyJobId = `asset-retopology-active-b-${index}`;
+    activeAssetJobIdsByOwner['owner-a'].push(uvJobId);
+    activeAssetJobIdsByOwner['owner-b'].push(retopologyJobId);
+    assetOwnership.jobs[uvJobId] = {
+      userId: userA.id,
+      createdAt: `2026-08-03T10:${String(index).padStart(2, '0')}:00.000Z`,
+      mode: 'uv',
+      sourceName: `active-a-${index}.fbx`,
+      status: 'RUNNING',
+      progress: 50,
+    };
+    assetOwnership.jobs[retopologyJobId] = {
+      userId: userB.id,
+      createdAt: `2026-08-03T11:${String(index).padStart(2, '0')}:00.000Z`,
+      mode: 'retopology',
+      sourceName: `active-b-${index}.fbx`,
+      status: 'RUNNING',
+      progress: 50,
+    };
+  }
   const configDirectory = path.join(workspaceDir, 'config');
   await fs.mkdir(configDirectory, { recursive: true });
   await fs.writeFile(
     path.join(configDirectory, 'asset-processing-jobs.json'),
     JSON.stringify(assetOwnership, null, 2),
   );
+  // Exercise the real restart-recovery path. The service intentionally caches
+  // its durable ownership database; direct fixture writes are only visible to
+  // a newly started process, just like files restored before a production Pod
+  // starts.
+  await stopChild(child);
+  serverOutput = '';
+  child = startWorkspaceServer();
+  await waitForHealth(baseUrl, child);
 
   // Forty simultaneous authenticated reads exercise shared directory scanning,
   // bounded artifact metadata I/O, and strict owner isolation under contention.
@@ -402,7 +563,37 @@ try {
   assert.equal(ownerDownload.status, 200);
   assert.deepEqual(Buffer.from(await ownerDownload.arrayBuffer()), aOutput);
 
-  const aUvHistory = await getHistory(baseUrl, userA.cookie, 'uv');
+  const concurrentAssetHistoryReads = await Promise.all([
+    ...Array.from({ length: 8 }, () => getHistory(baseUrl, userA.cookie, 'uv')),
+    ...Array.from({ length: 8 }, () => getHistory(baseUrl, userB.cookie, 'retopology')),
+  ]);
+  assert(
+    maximumAssetRequests <= 8,
+    `Asset history exceeded the process refresh limit: ${maximumAssetRequests}.`,
+  );
+  assert(
+    (maximumAssetRequestsByOwner.get('owner-a') ?? 0) <= 4,
+    'UV history exceeded the per-user refresh limit.',
+  );
+  assert(
+    (maximumAssetRequestsByOwner.get('owner-b') ?? 0) <= 4,
+    'Retopology history exceeded the per-user refresh limit.',
+  );
+  for (const jobId of [...activeAssetJobIdsByOwner['owner-a'], ...activeAssetJobIdsByOwner['owner-b']]) {
+    assert.equal(
+      assetRequestCountByJob.get(jobId),
+      1,
+      `Concurrent reads must share the in-flight refresh for ${jobId}.`,
+    );
+  }
+  const aUvHistory = concurrentAssetHistoryReads[0];
+  for (const jobId of activeAssetJobIdsByOwner['owner-a']) {
+    assert.equal(
+      aUvHistory.find((record) => record.id === jobId)?.status,
+      'succeeded',
+      'UV refresh must publish the remote terminal snapshot before the fast test budget expires.',
+    );
+  }
   assert(aUvHistory.some((record) => record.id === 'asset-uv-new-owner-a'));
   assert(!aUvHistory.some((record) => record.id === 'asset-retopology-new-owner-b'));
   assert(
@@ -417,7 +608,14 @@ try {
     'UV history must expose only the final FBX and Blender files.',
   );
 
-  const bRetopologyHistory = await getHistory(baseUrl, userB.cookie, 'retopology');
+  const bRetopologyHistory = concurrentAssetHistoryReads[8];
+  for (const jobId of activeAssetJobIdsByOwner['owner-b']) {
+    assert.equal(
+      bRetopologyHistory.find((record) => record.id === jobId)?.status,
+      'succeeded',
+      'Retopology refresh must publish the remote terminal snapshot before the fast test budget expires.',
+    );
+  }
   assert(bRetopologyHistory.some((record) => record.id === 'asset-retopology-new-owner-b'));
   assert(!bRetopologyHistory.some((record) => record.id === 'asset-uv-new-owner-a'));
   const bRetopologyRecord = bRetopologyHistory.find(
@@ -446,11 +644,15 @@ try {
   );
   assert(!bRetopologyHistory.some((record) => record.id === 'asset-legacy-owner-a'));
 
-  console.log('Task history smoke passed: concurrent ownership isolation, legacy deny, parameters, and controlled downloads.');
+  console.log(
+    `Task history smoke passed: ownership isolation, shared Asset refresh, ` +
+    `global ${maximumAssetRequests}/8, per-user <=4, legacy deny and controlled downloads.`,
+  );
 } catch (error) {
   if (serverOutput.trim()) console.error(serverOutput.trim());
   throw error;
 } finally {
   await stopChild(child);
+  await closeServer(assetServer);
   await fs.rm(workspaceDir, { recursive: true, force: true });
 }
