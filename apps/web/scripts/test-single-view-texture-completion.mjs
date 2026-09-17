@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import ts from 'typescript';
+import { projectionGapMaskFromAlpha } from '../src/engine/projection/projectionCoverageContract.mjs';
 
 const root = path.resolve(import.meta.dirname, '..');
 const [panel, textureMapPrompts, workerClient, worker] = await Promise.all([
@@ -46,7 +47,7 @@ assert.match(
 );
 assert.match(
   panel,
-  /usesRemoteSingleViewInpaint = true[\s\S]*?generateSingleViewInpaint\([\s\S]*?mask:\s*\{[\s\S]*?completion-mask\.png[\s\S]*?completionMaskDataUrl/,
+  /usesRemoteSingleViewInpaint = singleViewCompletion\.hasVisibleTexture[\s\S]*?generateSingleViewInpaint\([\s\S]*?mask:\s*\{[\s\S]*?completion-mask\.png[\s\S]*?completionMaskDataUrl/,
   'remote partial coverage must route the fused image and RGB gap mask to single-view inpaint',
 );
 assert.match(
@@ -286,4 +287,63 @@ for (const mode of ['local', 'single']) {
   assert.equal(posts.length, 1, 'One complete input reaches the Worker; ModelView no longer decodes clay');
 }
 
-console.log('Single-view texture completion and local repaint bitmap dispatch regression checks passed.');
+// Execute the production Worker: remote white input must preserve authored
+// pixels and byte-identical dilation, while the legacy GPT guide stays clay.
+class PixelCanvas {
+  constructor(width, height) { Object.assign(this, { width, height }); }
+  getContext() { return {
+    clearRect() {}, drawImage: image => { this.data = image.data; },
+    getImageData: () => ({ data: this.data, width: this.width, height: this.height }),
+    putImageData: image => { this.data = image.data; },
+  }; }
+  async convertToBlob() { return new Blob([this.data]); }
+}
+const runtime = { postMessage(value) { this.result = value; } };
+new Function('self', 'OffscreenCanvas', 'ImageData', 'projectionGapMaskFromAlpha',
+  ts.transpileModule(worker.replace(/^import[^\n]+\n/gm, '').replace(/export \{\};?/, ''),
+    { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None } }).outputText,
+)(runtime, PixelCanvas, class { constructor(data, width, height) { Object.assign(this, { data, width, height }); } }, projectionGapMaskFromAlpha);
+const width = 128, height = 128;
+const effect = new Uint8ClampedArray(width * height * 4);
+const clay = new Uint8ClampedArray(effect.length);
+const objectPixels = new Uint8ClampedArray(effect.length);
+for (let i = 0; i < width * height; i++) {
+  const x = i % width, y = Math.floor(i / width);
+  const inside = x >= 8 && x < 120 && y >= 8 && y < 120;
+  const gap = inside && x >= 45 && x < 85 && y >= 45 && y < 85;
+  effect.set([i % 173, i % 131, i % 83, gap ? 0 : 255], i * 4);
+  clay.set([123, 124, 125, 255], i * 4);
+  objectPixels.set([inside ? 255 : 0, inside ? 255 : 0, inside ? 255 : 0, 255], i * 4);
+}
+let released = 0;
+const bitmap = data => ({ data, width, height, close() { released++; } });
+async function runWhite(whiteFill, fullObject = false, pixels = effect) {
+  await runtime.onmessage({ data: { id: 42, mode: 'single', whiteFill, fullObject,
+    currentEffect: bitmap(pixels), inputMask: bitmap(objectPixels),
+    ...(whiteFill ? {} : { clayPreview: bitmap(clay) }),
+  } });
+  assert.equal(runtime.result.error, undefined);
+  return runtime.result;
+}
+const legacy = await runWhite(false);
+const remote = await runWhite(true);
+assert.equal(released, 5, 'Remote white input releases two bitmaps, legacy GPT three');
+assert.equal(remote.uncoveredPixelCount, 1600);
+assert.equal(remote.hasVisibleTexture, true);
+assert.deepEqual(await remote.submittedMaskBlob.arrayBuffer(), await legacy.submittedMaskBlob.arrayBuffer(),
+  'Remote expansion and feathering must be byte-identical to the previous completion mask');
+const output = new Uint8Array(await remote.compositeBlob.arrayBuffer());
+for (let i = 0; i < width * height; i++) {
+  const expected = !objectPixels[i * 4] ? [0, 0, 0, 255]
+    : effect[i * 4 + 3] < 255 ? [255, 255, 255, 255] : [...effect.subarray(i * 4, i * 4 + 4)];
+  assert.deepEqual([...output.subarray(i * 4, i * 4 + 4)], expected);
+}
+const allWhite = await runWhite(true, true);
+assert.equal(allWhite.hasVisibleTexture, false);
+const fullPixels = new Uint8Array(await allWhite.compositeBlob.arrayBuffer());
+for (let i = 0; i < width * height; i++) assert.deepEqual([...fullPixels.subarray(i * 4, i * 4 + 4)],
+  objectPixels[i * 4] ? [255, 255, 255, 255] : [0, 0, 0, 255]);
+const covered = await runWhite(true, false, clay);
+assert.equal(covered.uncoveredPixelCount, 0);
+assert.equal(covered.compositeBlob, undefined, 'Covered views must be skipped rather than regenerated');
+console.log('Single-view completion: remote white/black pixels, unchanged RGB expanded mask, full/partial/covered inputs and legacy GPT passed.');

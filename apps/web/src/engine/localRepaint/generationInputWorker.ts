@@ -75,6 +75,8 @@ async function prepareWorkerInput(input: {
   currentEffectUrl: string;
   clayPreviewUrl?: string;
   maskUrl: string;
+  whiteFill?: boolean;
+  fullObject?: boolean;
 }) {
   if (
     typeof Worker === 'undefined' ||
@@ -95,7 +97,8 @@ async function prepareWorkerInput(input: {
   return new Promise<WorkerResult>((resolve, reject) => {
     pendingRequests.set(id, { resolve, reject });
     try {
-      const payload = { mode: input.mode, id, currentEffect, clayPreview, inputMask };
+      const payload = { mode: input.mode, id, currentEffect, clayPreview, inputMask,
+        whiteFill: input.whiteFill, fullObject: input.fullObject };
       getWorker().postMessage(payload, { transfer: [currentEffect, inputMask, ...(clayPreview ? [clayPreview] : [])] });
     } catch (error) {
       pendingRequests.delete(id);
@@ -134,12 +137,16 @@ export async function prepareSingleViewTextureCompletion(input: {
   currentEffectUrl: string;
   clayPreviewUrl: string;
   objectMaskUrl: string;
+  whiteFill?: boolean;
+  fullObject?: boolean;
 }): Promise<PreparedSingleViewTextureCompletion> {
   const result = (await prepareWorkerInput({
     mode: 'single',
     currentEffectUrl: input.currentEffectUrl,
-    clayPreviewUrl: input.clayPreviewUrl,
+    clayPreviewUrl: input.whiteFill ? undefined : input.clayPreviewUrl,
     maskUrl: input.objectMaskUrl,
+    whiteFill: input.whiteFill,
+    fullObject: input.fullObject,
   })) as SingleViewWorkerResult;
   return {
     imageUrl: result.compositeBlob

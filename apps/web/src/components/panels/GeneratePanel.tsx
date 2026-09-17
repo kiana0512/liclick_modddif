@@ -27,7 +27,6 @@ import {
 } from '@/engine/generation/singleViewAutoProjection';
 import {
   insertCameraViewByPreviewOrder,
-  usesGptTextureGeneration,
 } from '@/engine/generation/remoteMultiviewSequence';
 import {
   createCaptureMaskedProjectionImage,
@@ -632,9 +631,8 @@ export function GeneratePanel({
   const t = useT();
   const [tab, setTab] = useState<GenerateTab>('multiview');
   const [textureViewMode, setTextureViewMode] = useState<TextureViewMode>('multi');
-  // Single/multiview share GPT-only session state. No setter or persisted
-  // provider is accepted; historical remote results remain readable.
-  const [singleViewProvider] = useState<SingleViewProvider>('gpt');
+  // New texture jobs use ModelView at every angle; historical GPT jobs remain readable.
+  const [singleViewProvider] = useState<SingleViewProvider>('remote');
   const [texturePreviewMode, setTexturePreviewMode] = useState<TexturePreviewMode>('multi');
   useEffect(() => {
     if (!openLocalRepaintPanelRequestKey) return;
@@ -2372,7 +2370,7 @@ export function GeneratePanel({
       throwIfTexturePipelineCancelled(signal);
       if (!viewSnapshots.has(view.id)) viewSnapshots.set(view.id, options.cameraSnapshot ??
         await frameGenerationCapture(captureObjectId, 1, view.viewDirection, view.viewUp, signal, false,
-          singleViewProvider === 'remote' && !usesGptTextureGeneration(view) ? 0.92 : 0.98));
+          singleViewProvider === 'remote' ? 0.92 : 0.98));
     }
     return withStableClayTargetPresentation(captureObjectId, async () => {
       const captures: Partial<Record<string, Capture>> = {};
@@ -2712,9 +2710,7 @@ export function GeneratePanel({
     const originalActiveViewId = activeCameraViewId;
     const textureBatchId = createId('remote-multiview-batch');
     const textureBatchWasCancelled = () => cancelledTextureBatchIdsRef.current.has(textureBatchId);
-    const texturePrompt = prompt.trim();
     const modelviewClient = createModelviewApiClient();
-    const texturePromptBuilders = await import('@/engine/generation/textureMapPrompts');
     let projectedGenerationCount = 0;
     let skippedViewCount = 0;
 
@@ -2767,8 +2763,9 @@ export function GeneratePanel({
         let generationCapture = capturedView.capture;
         let completion: PreparedSingleViewTextureCompletion | undefined;
         let usesInpaint = false;
-        if (hasVisibleTextureLayerCandidate(objectId)) {
-          const currentEffect = await captureCurrentColorPreview({
+        {
+          const hasExistingTexture = hasVisibleTextureLayerCandidate(objectId);
+          const currentEffect = hasExistingTexture ? await captureCurrentColorPreview({
             objectId,
             resolution: resolutionToSize[resolution],
             framing: 'fit-object',
@@ -2777,12 +2774,14 @@ export function GeneratePanel({
             cameraSnapshot: capturedView.cameraSnapshot,
             viewDirection: view.viewDirection,
             viewUp: view.viewUp,
-          });
+          }) : { colorUrl: capturedView.capture.colorUrl };
           throwIfTexturePipelineCancelled(signal);
           completion = await prepareSingleViewTextureCompletion({
             currentEffectUrl: currentEffect.colorUrl,
             clayPreviewUrl: capturedView.capture.colorUrl,
             objectMaskUrl: capturedView.capture.maskUrl,
+            whiteFill: true,
+            fullObject: !hasExistingTexture,
           });
           if (completion.hasVisibleTexture && completion.uncoveredPixelCount === 0) {
             skippedViewCount += 1;
@@ -2792,11 +2791,11 @@ export function GeneratePanel({
             );
             continue;
           }
-          if (completion.hasVisibleTexture) {
+          {
             if (!completion.imageUrl || !completion.completionMaskUrl) {
               throw new Error(remoteFailureMessage);
             }
-            usesInpaint = true;
+            usesInpaint = completion.hasVisibleTexture;
             generationCapture = { ...capturedView.capture, colorUrl: completion.imageUrl };
             persistedCaptures = await persistCaptureAssets(
               [
@@ -2813,19 +2812,10 @@ export function GeneratePanel({
           }
         }
 
-        const usesGptView = usesGptTextureGeneration(view);
-        const submittedPrompt = usesGptView
-          ? usesInpaint
-            ? texturePromptBuilders.buildTextureMapCompletionPrompt(prompt)
-            : texturePromptBuilders.buildTextureMapPrompt(prompt)
-          : texturePrompt;
-
         const generationId = createId(`remote-multiview-${view.id}`);
         const modelViewReferenceId = `${generationCapture.id}-model-view-${view.id}`;
         const commonMetadata: Generation['metadata'] = {
-          provider: usesGptView
-            ? 'liclick-atlas'
-            : usesInpaint
+          provider: usesInpaint
               ? 'modelview-single-view-inpaint'
               : 'modelview-single-view',
           workflow: 'texture-map',
@@ -2837,7 +2827,8 @@ export function GeneratePanel({
           materialReferenceId: materialReference.id,
           modelViewReferenceId,
           multiview: false,
-          singleViewProvider: usesGptView ? 'gpt' : 'remote',
+          singleViewProvider: 'remote',
+          sourceComposition: 'flat-white-mask-v1',
           autoProjectExpected: true,
           cameraView: capturedView.cameraView,
           cameraViewId: view.id,
@@ -2850,7 +2841,7 @@ export function GeneratePanel({
         const pendingGeneration: Generation = {
           id: generationId,
           mode: 'single',
-          prompt: submittedPrompt,
+          prompt: '',
           referenceIds: [modelViewReferenceId, materialReference.id],
           captureId: generationCapture.id,
           status: 'running',
@@ -2861,46 +2852,12 @@ export function GeneratePanel({
         await saveGenerationStateBestEffort();
         updateTexturePipelineProgress(
           42 + (index / viewCount) * 50,
-          `远端多视图 ${stepLabel} · ${usesGptView ? 'GPT 2.5' : '远端'}生成${view.label}`,
+          `远端多视图 ${stepLabel} · 生成${view.label}`,
         );
 
         try {
           let remoteGeneration: Generation;
-          if (usesGptView) {
-            const modelViewReference: ReferenceImage = {
-              id: modelViewReferenceId,
-              name: `Current model view - ${view.label}`,
-              url: generationCapture.colorUrl,
-              width: generationCapture.width,
-              height: generationCapture.height,
-              objectId,
-              isPrimary: false,
-            };
-            const submitted = await submitGptTextureViewWithSilhouetteRetry(
-              pendingGeneration,
-              modelViewReference,
-              materialReference,
-              generationCapture,
-              signal,
-            );
-            const alignedGeneration: Generation = {
-              ...pendingGeneration,
-              ...submitted,
-              metadata: {
-                ...mergeGenerationMetadataPreservingStartedAt(commonMetadata, submitted.metadata),
-                serverSubmitted: true,
-                serverJobId: submitted.metadata.serverJobId ?? submitted.id,
-              },
-            };
-            syncGeneration(alignedGeneration);
-            remoteGeneration = await waitForGptTextureGenerationWithSilhouetteRetry(
-              alignedGeneration,
-              modelViewReference,
-              materialReference,
-              generationCapture,
-              signal,
-            );
-          } else {
+          {
             const imageDataUrl = await urlToDataUrl(generationCapture.colorUrl);
             const completionMaskDataUrl =
               usesInpaint && completion?.completionMaskUrl
@@ -2912,7 +2869,6 @@ export function GeneratePanel({
                   {
                     clientGenerationId: generationId,
                     projectId: currentProject.id,
-                    prompt: texturePrompt || undefined,
                     captureId: generationCapture.id,
                     objectId,
                     image: {
@@ -2939,7 +2895,6 @@ export function GeneratePanel({
                   {
                     clientGenerationId: generationId,
                     projectId: currentProject.id,
-                    prompt: texturePrompt || undefined,
                     captureId: generationCapture.id,
                     objectId,
                     image: {
@@ -3177,9 +3132,6 @@ export function GeneratePanel({
       if (!(await requireFeishuLogin())) {
         throw new Error('未完成飞书登录，无法使用远端纹理生成服务。');
       }
-      if (isMultiviewRequest && requestedViews.some(usesGptTextureGeneration)) {
-        await requirePersonalLiclickAccount();
-      }
     } else {
       if (!pairContext) await requirePersonalLiclickAccount();
     }
@@ -3198,7 +3150,7 @@ export function GeneratePanel({
       ? undefined
       : await import('@/engine/generation/textureMapPrompts');
     let texturePrompt = usesRemoteSingleView
-      ? prompt.trim()
+      ? ''
       : texturePromptBuilders!.buildTextureMapPrompt(prompt);
     const objectMatrixWorld = getImportedModelMatrixWorld(objectId);
     const shouldInspectExistingSingleViewTexture =
@@ -3275,21 +3227,24 @@ export function GeneratePanel({
     }
     let singleViewCompletion: PreparedSingleViewTextureCompletion | undefined;
     let usesRemoteSingleViewInpaint = false;
-    if (currentSingleViewEffectUrl) {
+    if (currentSingleViewEffectUrl || usesRemoteSingleView) {
       const currentViewCapture = capturedViews[0]?.capture;
       if (currentViewCapture?.maskUrl) {
         updateTexturePipelineProgress(38, '合成单视图补全引导图');
         try {
           singleViewCompletion = await prepareSingleViewTextureCompletion({
-            currentEffectUrl: currentSingleViewEffectUrl,
+            currentEffectUrl: currentSingleViewEffectUrl ?? currentViewCapture.colorUrl,
             clayPreviewUrl: currentViewCapture.colorUrl,
             objectMaskUrl: currentViewCapture.maskUrl,
+            whiteFill: usesRemoteSingleView,
+            fullObject: !currentSingleViewEffectUrl,
           });
-          if (singleViewCompletion.hasVisibleTexture) {
+          if (singleViewCompletion.hasVisibleTexture || usesRemoteSingleView) {
             if (usesRemoteSingleView && singleViewCompletion.uncoveredPixelCount === 0) {
               throw new Error('当前视角已经全部有贴图，没有需要远端补全的白模区域。');
             }
             const completionGuideUrl = singleViewCompletion.imageUrl ?? currentSingleViewEffectUrl;
+            if (!completionGuideUrl) throw new Error('无法准备单视图纯白输入。');
             capturedViews = capturedViews.map((view, index) =>
               index === 0
                 ? {
@@ -3308,7 +3263,7 @@ export function GeneratePanel({
               if (!singleViewCompletion.completionMaskUrl) {
                 throw new Error('无法生成远端单视图补全蒙版，请重试。');
               }
-              usesRemoteSingleViewInpaint = true;
+              usesRemoteSingleViewInpaint = singleViewCompletion.hasVisibleTexture;
             } else {
               texturePrompt = texturePromptBuilders!.buildTextureMapCompletionPrompt(prompt);
             }
@@ -3465,7 +3420,6 @@ export function GeneratePanel({
                 {
                   clientGenerationId: generationId,
                   projectId: currentProject?.id,
-                  prompt: texturePrompt || undefined,
                   captureId: capture.id,
                   objectId: object?.id,
                   image: {
@@ -3493,7 +3447,6 @@ export function GeneratePanel({
               {
                 clientGenerationId: generationId,
                 projectId: currentProject?.id,
-                prompt: texturePrompt || undefined,
                 captureId: capture.id,
                 objectId: object?.id,
                 image: {
@@ -5532,7 +5485,7 @@ export function GeneratePanel({
         canCancelGeneration ? 'grid grid-cols-[1fr_52px] gap-2' : ''
       }`}
     >
-      {(isTextureMapTab || isGptLocalRepaint) && (
+      {((isTextureMapTab && singleViewProvider === 'gpt') || isGptLocalRepaint) && (
         <GptGenerationOptions
           model={textureGptModel}
           quality={textureGptQuality}
@@ -5895,7 +5848,11 @@ export function GeneratePanel({
               </section>
             )}
 
-            <section className="gen-prompt-section">
+            {isTextureMapTab && singleViewProvider === 'remote' ? (
+              <div className="gen-prompt-section text-xs text-white/55">
+                ModelView · 使用远端内置提示词 · 多视图逐视角串行生成
+              </div>
+            ) : <section className="gen-prompt-section">
               <div className="flex items-center justify-between gap-2">
                 <span className="text-sm font-semibold text-white/88">
                   {isLocalRepaintTab
@@ -5950,7 +5907,7 @@ export function GeneratePanel({
                 }}
                 className="generate-prompt-adaptive gen-prompt-input"
               />
-            </section>
+            </section>}
 
             {(isTextureMapTab || (isLocalRepaintTab && (!isGptLocalRepaint || gptRepaintUseMaterialReference))) && (
               <section

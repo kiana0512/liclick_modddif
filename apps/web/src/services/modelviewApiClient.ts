@@ -48,7 +48,7 @@ async function requestJson<T>(
   path: string,
   init?: RequestInit & { timeoutMs?: number },
 ): Promise<T> {
-  const { timeoutMs = 1_920_000, headers, signal, ...fetchInit } = init ?? {};
+  const { timeoutMs = 2_760_000, headers, signal, ...fetchInit } = init ?? {};
   const requestHeaders = new Headers(headers);
   if (fetchInit.body && !requestHeaders.has('content-type')) {
     requestHeaders.set('content-type', 'application/json');
@@ -143,7 +143,7 @@ export function createModelviewApiClient() {
         input,
         result,
         'modelview-single-view',
-        '2026.08.26-c0e6218-single-view-4step-r1',
+        '2026.09.17-li3d4500-single-view-4step-r1',
       );
     },
     async generateSingleViewInpaint(
@@ -159,7 +159,7 @@ export function createModelviewApiClient() {
         input,
         result,
         'modelview-single-view-inpaint',
-        '2026.08.31-e39ed5f-single-view-inpaint-4input-rseed-steps2-r1',
+        '2026.09.17-li3d4500-single-view-inpaint-2step-r1',
       );
     },
     async generateInpaint(

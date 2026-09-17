@@ -76,7 +76,7 @@ const [workspacePort, modelviewPort] = await Promise.all([reservePort(), reserve
 const workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), 'liclick-modelview-smoke-'));
 const workspaceBaseUrl = `http://127.0.0.1:${workspacePort}`;
 const { createModelviewIdempotencyKey } = await import('../apps/server/dist/services/modelviewIdempotency.js');
-const suffixes = ['single-view:4step-r1', 'single-view-inpaint:4input-rseed-steps2-r1', 'inpaint:li3d4500-defaultprompt-steps2-r1'];
+const suffixes = ['single-view:li3d4500-4step-r1', 'single-view-inpaint:li3d4500-steps2-r1', 'inpaint:li3d4500-defaultprompt-steps2-r1'];
 for (const suffix of suffixes) {
   for (const length of [1, 128 - suffix.length - 1, 128 - suffix.length, 104, 160, 500]) {
     const id = 'x'.repeat(length);
@@ -110,9 +110,9 @@ const modelviewMock = http.createServer(async (request, response) => {
     assert.match(
       request.headers['idempotency-key'] ?? '',
       isSingleView
-        ? /:single-view:4step-r1$/
+        ? /:single-view:li3d4500-4step-r1$/
         : isSingleViewInpaint
-          ? /:single-view-inpaint:4input-rseed-steps2-r1$/
+          ? /:single-view-inpaint:li3d4500-steps2-r1$/
           : /:inpaint:li3d4500-defaultprompt-steps2-r1$/,
     );
     if (String(request.headers['idempotency-key']).length > 128) {
@@ -134,10 +134,10 @@ const modelviewMock = http.createServer(async (request, response) => {
     assert.doesNotMatch(bodyText, /name="seed"/);
     assert.doesNotMatch(bodyText, /name="noise_seed"/);
     assert.match(bodyText, /Content-Type: image\/png/);
-    const usesPrompt = isSingleView || isSingleViewInpaint || String(request.headers['idempotency-key']).startsWith('smoke-polished:');
+    const usesPrompt = String(request.headers['idempotency-key']).startsWith('smoke-polished:');
     if (!usesPrompt) {
       assert.deepEqual([...bodyText.matchAll(/Content-Disposition: form-data; name="([^"]+)"/g)].map(match => match[1]),
-        ['image', 'material_image', 'mask'], 'Default workflow receives exactly three image fields, no prompt or parameters');
+        isSingleView ? ['image', 'material_image'] : ['image', 'material_image', 'mask'], 'Default workflows receive only their image fields, no prompt or parameters');
       assert.equal(body.includes(Buffer.from('修复纸张边缘')), false, 'Stale prompt must not override workflow default');
     } else assert(
       body.includes(
@@ -382,7 +382,7 @@ try {
   assert.equal(singleViewInpaintResult.output?.source, 'modelview-single-view-inpaint');
   assert.equal(
     singleViewInpaintResult.output?.workflow,
-    '2026.08.31-e39ed5f-single-view-inpaint-4input-rseed-steps2-r1',
+    '2026.09.17-li3d4500-single-view-inpaint-2step-r1',
   );
   const singleViewInpaintSaved = await fetch(singleViewInpaintResult.resultUrl, {
     headers: { Cookie: cookie, Origin: allowedOrigin },
@@ -412,7 +412,7 @@ try {
   const singleViewResult = await singleView.json();
   assert.equal(singleViewResult.modelviewJobId, 'mock-modelview-single-view-job-1');
   assert.equal(singleViewResult.output?.source, 'modelview-single-view');
-  assert.equal(singleViewResult.output?.workflow, '2026.08.26-c0e6218-single-view-4step-r1');
+  assert.equal(singleViewResult.output?.workflow, '2026.09.17-li3d4500-single-view-4step-r1');
   const singleViewSaved = await fetch(singleViewResult.resultUrl, {
     headers: { Cookie: cookie, Origin: allowedOrigin },
   });
@@ -431,7 +431,7 @@ try {
   assert.equal(observedRequests[0].idempotencyKey, observedRequests[1].idempotencyKey);
   assert.equal(observedRequests[0].sha256, observedRequests[1].sha256);
   console.log(
-    'ModelView smoke passed: default three-image repaint omits prompts, explicit polishing overrides, single-view unchanged, stable retry bytes/keys, X-Job-ID and PNG persistence.',
+    'ModelView smoke passed: two/three-image workflows omit stale prompts, explicit local polishing overrides, stable retry bytes/keys, X-Job-ID and PNG persistence.',
   );
 } catch (error) {
   if (serverOutput.trim()) console.error(serverOutput.trim());

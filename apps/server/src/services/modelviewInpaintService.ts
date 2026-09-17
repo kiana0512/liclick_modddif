@@ -73,10 +73,10 @@ function serviceDefinition(kind: ModelviewServiceKind): ModelviewServiceDefiniti
       apiKey: serverConfig.modelviewSingleViewInpaintApiKey,
       timeoutMs: serverConfig.modelviewSingleViewInpaintTimeoutMs,
       jobPrefix: 'modelview-single-view-inpaint',
-      idempotencySuffix: 'single-view-inpaint:4input-rseed-steps2-r1',
+      idempotencySuffix: 'single-view-inpaint:li3d4500-steps2-r1',
       filenameSuffix: 'modelview-single-view-inpaint',
       source: 'modelview-single-view-inpaint',
-      workflow: '2026.08.31-e39ed5f-single-view-inpaint-4input-rseed-steps2-r1',
+      workflow: '2026.09.17-li3d4500-single-view-inpaint-2step-r1',
       finalNode: 'SaveImage #29',
     };
   }
@@ -89,10 +89,10 @@ function serviceDefinition(kind: ModelviewServiceKind): ModelviewServiceDefiniti
       apiKey: serverConfig.modelviewSingleViewApiKey,
       timeoutMs: serverConfig.modelviewSingleViewTimeoutMs,
       jobPrefix: 'modelview-single-view',
-      idempotencySuffix: 'single-view:4step-r1',
+      idempotencySuffix: 'single-view:li3d4500-4step-r1',
       filenameSuffix: 'modelview-single-view',
       source: 'modelview-single-view',
-      workflow: '2026.08.26-c0e6218-single-view-4step-r1',
+      workflow: '2026.09.17-li3d4500-single-view-4step-r1',
       finalNode: 'SaveImage #29',
     };
   }
@@ -437,8 +437,8 @@ async function generateModelviewImage(
   }
   // ModelView's new workflow owns the default prompt. Never let a stale client
   // or saved prompt override it unless the user explicitly enabled polishing.
-  const prompt = kind === 'inpaint' && inpaintInput?.promptPolishEnabled !== true
-    ? '' : input.prompt?.trim() ?? '';
+  const prompt = kind === 'inpaint' && inpaintInput?.promptPolishEnabled === true
+    ? input.prompt?.trim() ?? '' : '';
   if (kind === 'inpaint' && inpaintInput?.promptPolishEnabled === true && !prompt) {
     throw new ModelviewInpaintError('智能润色已开启，但没有可提交的提示词。', 422);
   }

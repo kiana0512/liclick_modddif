@@ -7,6 +7,8 @@ type GenerationInputWorkerRequest = {
   currentEffect: ImageBitmap;
   clayPreview?: ImageBitmap;
   inputMask: ImageBitmap;
+  whiteFill?: boolean;
+  fullObject?: boolean;
 };
 
 type GenerationInputWorkerResponse =
@@ -498,6 +500,7 @@ self.onmessage = async (event: MessageEvent<GenerationInputWorkerRequest>) => {
   const request = event.data;
   const { id, currentEffect, clayPreview, inputMask } = request;
   const isSingleViewCompletion = request.mode === 'single';
+  const whiteSingleView = isSingleViewCompletion && request.whiteFill === true;
   const startedAt = performance.now();
   try {
     const phaseDurationsMs: Record<string, number> = {};
@@ -512,7 +515,7 @@ self.onmessage = async (event: MessageEvent<GenerationInputWorkerRequest>) => {
     if (
       width <= 0 ||
       height <= 0 ||
-      (request.mode !== 'local' && (!clayPreview || clayPreview.width !== width || clayPreview.height !== height)) ||
+      (request.mode !== 'local' && !whiteSingleView && (!clayPreview || clayPreview.width !== width || clayPreview.height !== height)) ||
       inputMask.width !== width ||
       inputMask.height !== height
     ) {
@@ -539,9 +542,13 @@ self.onmessage = async (event: MessageEvent<GenerationInputWorkerRequest>) => {
     let objectPixelCount = 0;
     let uncoveredPixelCount = 0;
     let texturedPixelCount = 0;
+    let singleViewHasTexture = false;
+    let singleViewObjectMask: Uint8ClampedArray | undefined;
     if (isSingleViewCompletion) {
       const targetMask = readObjectMask(inputMask, width, height);
-      const gapMask = projectionGapMaskFromAlpha(currentPixels, targetMask);
+      singleViewObjectMask = targetMask.data;
+      const gapMask = whiteSingleView && request.fullObject
+        ? targetMask : projectionGapMaskFromAlpha(currentPixels, targetMask);
       for (let index = 0; index < targetMask.data.length; index += 1) {
         if ((targetMask.data[index] ?? 0) === 0) continue;
         objectPixelCount += 1;
@@ -551,7 +558,8 @@ self.onmessage = async (event: MessageEvent<GenerationInputWorkerRequest>) => {
       texturedPixelCount = Math.max(0, objectPixelCount - uncoveredPixelCount);
       const hasVisibleTexture =
         texturedPixelCount >= Math.max(64, Math.round(objectPixelCount * 0.0005));
-      if (!hasVisibleTexture || uncoveredPixelCount === 0) {
+      singleViewHasTexture = hasVisibleTexture;
+      if ((!hasVisibleTexture && !whiteSingleView) || uncoveredPixelCount === 0) {
         self.postMessage({
           id,
           hasVisibleTexture,
@@ -559,7 +567,10 @@ self.onmessage = async (event: MessageEvent<GenerationInputWorkerRequest>) => {
         } satisfies GenerationInputWorkerResponse);
         return;
       }
-      compositeCore = Uint8Array.from(gapMask.data, (value) => (value > 0 ? 255 : 0));
+      compositeCore = Uint8Array.from(
+        whiteSingleView && !hasVisibleTexture ? targetMask.data : gapMask.data,
+        (value) => (value > 0 ? 255 : 0),
+      );
       coreBounds = getMaskBounds(compositeCore, width, height);
     } else {
       const maskPixels = readPixels(inputMask, width, height);
@@ -620,6 +631,16 @@ self.onmessage = async (event: MessageEvent<GenerationInputWorkerRequest>) => {
     );
 
     const compositePixels = new Uint8ClampedArray(currentPixels.data);
+    // MODELVIEW-SINGLE-WHITE/1.0.0: remote guides are opaque black outside the
+    // frozen object silhouette. Coverage is derived from alpha, never RGB.
+    if (whiteSingleView && singleViewObjectMask) {
+      for (let index = 0; index < singleViewObjectMask.length; index += 1) {
+        if (singleViewObjectMask[index]) continue;
+        const offset = index * 4;
+        compositePixels.fill(0, offset, offset + 3);
+        compositePixels[offset + 3] = 255;
+      }
+    }
     const compositeBounds = expandMaskBounds(coreBounds, compositeEdgeRadius, width, height);
     for (let y = compositeBounds.minY; y <= compositeBounds.maxY; y += 1) {
       const row = y * width;
@@ -628,7 +649,7 @@ self.onmessage = async (event: MessageEvent<GenerationInputWorkerRequest>) => {
         const alpha = compositeAlpha[index] / 255;
         if (alpha <= 0) continue;
         const offset = index * 4;
-        if (!isSingleViewCompletion) {
+        if (!isSingleViewCompletion || whiteSingleView) {
           compositePixels.fill(255, offset, offset + 4);
           continue;
         }
@@ -640,7 +661,7 @@ self.onmessage = async (event: MessageEvent<GenerationInputWorkerRequest>) => {
         }
       }
     }
-    finishPhase(isSingleViewCompletion ? 'blend-clay-composite' : 'fill-white-selection');
+    finishPhase(isSingleViewCompletion && !whiteSingleView ? 'blend-clay-composite' : 'fill-white-selection');
 
     const dilated = dilateMask(compositeCore, width, height, dilationRadius, coreBounds);
     const dilatedBounds = expandMaskBounds(coreBounds, dilationRadius, width, height);
@@ -673,7 +694,7 @@ self.onmessage = async (event: MessageEvent<GenerationInputWorkerRequest>) => {
           id,
           compositeBlob,
           submittedMaskBlob,
-          hasVisibleTexture: true,
+          hasVisibleTexture: singleViewHasTexture,
           uncoveredPixelCount,
         }
       : {
