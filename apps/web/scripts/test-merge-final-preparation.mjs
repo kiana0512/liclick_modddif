@@ -8,7 +8,7 @@ const code=ts.transpileModule(source.replace(/^import[^\n]+\n/gm,''),{
 let calls=0,encodeCalls=0,pause,previewPause,liveRevision=1,yields=0,idleChecks=0,clock=0,snapshots=0,released=0;
 const overFlags=[];
 const scope={exports:{},AbortController:globalThis.AbortController,DOMException,
-  isNativeUvRepaintLayer:layer=>layer.id?.startsWith('local-repaint-uv-native-v1'),
+  isUvPaintLayer:layer=>layer.type==='uv' && (layer.id?.startsWith('local-repaint-uv-native-v1') || !layer.role),
   flushLiveUvCommits:async()=>{},isLiveProjectedCanvasUrl:url=>url==='live-native',
   getLiveProjectedTextureBlob:async()=>new Blob(['committed-uv']),
   URL:{createObjectURL:()=>{snapshots++;return '2';},revokeObjectURL:()=>{released++;}},
@@ -98,7 +98,9 @@ assert.equal(large.length,8*1048576,'shared source buffer remains owned by prepa
 await api.prepareMergeFinal('native',image,[{imageUrl:'live-native',opacity:1}]);
 assert.equal(new Uint8Array(await api.getPreparedMergePng('native',[{imageUrl:'live-native',opacity:1}]).arrayBuffer())[0],8);
 assert.equal(snapshots,1);assert.equal(released,1,'native UV Worker snapshot released');
-await api.prepareMergeFinal('native-over',image,[{id:'local-repaint-uv-native-v1-test',imageUrl:'live-native',opacity:0.5}]);
+await api.prepareMergeFinal('native-over',image,[{id:'local-repaint-uv-native-v1-test',type:'uv',imageUrl:'live-native',opacity:0.5}]);
 assert.equal(overFlags.at(-1),true,'prepared native repaint must cover projection, not sit below it');
 assert(overFlags.slice(0,-1).every(flag=>!flag),'existing underlay composition is unchanged');
+await api.prepareMergeFinal('manual-over',image,[{id:'manual-uuid',type:'uv',imageUrl:'2',opacity:0.5}]);
+assert.equal(overFlags.at(-1),true,'prepared manual UUID repaint must also cover projection');
 console.log('Final Merge preparation: ordered underlays, immutable inputs, deduplication, exact cache keys, bounded copy scheduling, native UV snapshots and stale-result cancellation passed.');

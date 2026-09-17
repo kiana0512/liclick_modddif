@@ -1,8 +1,9 @@
 import * as THREE from 'three';
-import { prepareFbxModelExport } from '../src/engine/export/texturedExportUtils.ts';
+import { prepareFbxModelExport, prepareTexturedModelExport } from '../src/engine/export/texturedExportUtils.ts';
 import { exportModelFbx } from '../src/engine/export/exportFbx.ts';
 import { bakeVisibleProjectedLayersToTexture } from '../src/engine/bake/bakeProjectedLayerToTexture.ts';
-import { getMergeUvPostprocessOptions } from '../src/engine/layers/mergeUvComposition.ts';
+import { getMergeUvPostprocessOptions, compareUvMergeSources, compositeRgbaUnderInPlace, isUvPaintLayer } from '../src/engine/layers/mergeUvComposition.ts';
+import { compositeRgbaUrlUnderWithWebGpu } from '../src/engine/performance/webGpuRgbaComposite.ts';
 import { encodeRgbaPngBlob } from '../src/utils/encodeRgbaPng.ts';
 import { serializeCamera } from '../src/engine/projection/ProjectionCamera.ts';
 import { useLayerStore } from '../src/stores/layerStore.ts';
@@ -10,9 +11,10 @@ import { useSceneStore } from '../src/stores/sceneStore.ts';
 import { useProjectStore } from '../src/stores/projectStore.ts';
 import { useSettingsStore } from '../src/stores/settingsStore.ts';
 const check = (condition, message) => { if (!condition) throw Error(message); };
-const imageUrl = (paint) => {
-  const canvas = document.createElement('canvas'); canvas.width = canvas.height = 64;
-  paint(canvas.getContext('2d')); return canvas.toDataURL();
+const imageUrl = (paint, size=64) => {
+  const canvas = document.createElement('canvas'); canvas.width = canvas.height = size;
+  const context=canvas.getContext('2d');context.scale(size/64,size/64);
+  paint(context); return canvas.toDataURL();
 };
 async function pixels(blob) {
   const bitmap = await window.createImageBitmap(blob);
@@ -89,6 +91,57 @@ export async function run() {
     check(embedded.width === 2048 && embedded.data[center + 1] === unmerged.data[center + 1], 'valid 2K embedded authored texture');
   }
   check(useLayerStore.getState().layers === layers && useProjectStore.getState().getCurrentProject() === initialProject, 'FBX downloads preserve source state');
+  // Reproduce selected-UV repaint: ordinary UUIDs, no role/name discriminator.
+  const paint = (id, color, order, opacity=1) => ({id,name:'User renamed layer',type:'uv',
+    visible:true,objectId:'fixture',order,opacity,blendMode:'normal',
+    imageUrl:imageUrl(ctx=>{ctx.fillStyle=color;ctx.fillRect(16,16,32,32);},2048)});
+  const manual = [paint('manual-upper','#ff0000',0,0.5),paint('manual-lower','#0000ff',1)];
+  const manualLayers = [...manual,...layers.map(layer=>({...layer,order:layer.order+2})),
+    {...paint('hidden','#00ff00',0),visible:false}, {...paint('other','#00ff00',0),objectId:'other'}];
+  useLayerStore.setState({layers:manualLayers});
+  const beforeMerge = await pixels((await prepareFbxModelExport(input)).textureBlob);
+  const sample = image => [...image.data.slice(center,center+4)];
+  check(JSON.stringify(sample(beforeMerge))===JSON.stringify([128,0,128,255]),'two manual layers, half opacity, hidden/object isolation');
+  // Exercise the same CPU/GPU-worker branch choice as explicit editor merge.
+  let cpu = bake.imageData.data.slice(), gpu = cpu.slice();
+  let mergeBackend;
+  for (const layer of [...manual].sort(compareUvMergeSources)) {
+    const bitmap = await window.createImageBitmap(await (await window.fetch(layer.imageUrl)).blob());
+    const canvas = document.createElement('canvas'); canvas.width=canvas.height=2048;
+    const ctx=canvas.getContext('2d');ctx.drawImage(bitmap,0,0,2048,2048);bitmap.close();
+    cpu=compositeRgbaUnderInPlace(ctx.getImageData(0,0,2048,2048).data,cpu,1,layer.opacity);
+    const result=await compositeRgbaUrlUnderWithWebGpu(gpu,layer.imageUrl,2048,2048,layer.opacity,undefined,isUvPaintLayer(layer));
+    gpu=result.data;mergeBackend=result.metrics.backend;
+  }
+  let manualMergeMismatches=0;
+  for(let i=0;i<cpu.length;i++) if(cpu[i]!==gpu[i]) manualMergeMismatches++;
+  check(manualMergeMismatches===0,`manual UV CPU/worker full-byte parity: ${manualMergeMismatches}, ${mergeBackend}`);
+  const manualMergedUrl=URL.createObjectURL(await encodeRgbaPngBlob(2048,2048,cpu));
+  useLayerStore.setState({layers:[{id:'merged-manual',name:'Merged',type:'uv',role:'merged-uv',
+    visible:true,opacity:1,order:0,objectId:'fixture',imageUrl:manualMergedUrl}]});
+  const afterMerge=await pixels((await prepareFbxModelExport(input)).textureBlob);
+  let manualExportMismatches=0;
+  for(let i=0;i<afterMerge.data.length;i++) if(afterMerge.data[i]!==beforeMerge.data[i]) manualExportMismatches++;
+  check(manualExportMismatches===0,'manual repaint survives merge/export without duplicate opacity');
+  // GLB/GLTF/OBJ share this preparation; use a valid original base for that path.
+  material.map=null;
+  useLayerStore.setState({layers:manualLayers});
+  const standard=await prepareTexturedModelExport(input);
+  const standardPixel=sample(await pixels(standard.textureBlob));
+  // Canvas source-over uses the browser's premultiplied 8-bit rounding rather
+  // than the merge kernel's straight-alpha rounding. Compare with that API.
+  const golden=document.createElement('canvas');golden.width=golden.height=2048;
+  const goldenContext=golden.getContext('2d',{willReadFrequently:true});
+  for(const layer of [...manual].sort(compareUvMergeSources)) {
+    const bitmap=await window.createImageBitmap(await (await window.fetch(layer.imageUrl)).blob());
+    goldenContext.globalAlpha=layer.opacity;goldenContext.drawImage(bitmap,0,0);bitmap.close();
+  }
+  const expectedPixel=[...goldenContext.getImageData(1024,1024,1,1).data];
+  check(JSON.stringify(standardPixel)===JSON.stringify(expectedPixel),`standard model export retains manual repaint: ${standardPixel}, expected ${expectedPixel}`);
+  standard.texture?.dispose();URL.revokeObjectURL(manualMergedUrl);
+  material.map=new THREE.Texture(original);
   URL.revokeObjectURL(mergedUrl); renderer.dispose(); geometry.dispose(); material.map.dispose(); material.dispose();
-  return { resolution: '2048x2048', manualMergeByteMismatches: mismatches, fbxBytes: sizes, originalImageUndecodable: true, repaintPresent: true, sourceStateUnchanged: true };
+  return { resolution: '2048x2048', manualMergeByteMismatches: mismatches, manualPaintWorkerMismatches:manualMergeMismatches,
+    manualPaintExportMismatches:manualExportMismatches, mergeBackend, standardExportPixel:standardPixel,
+    fbxBytes: sizes, originalImageUndecodable: true, repaintPresent: true, sourceStateUnchanged: true };
 }

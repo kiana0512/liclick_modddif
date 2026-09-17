@@ -1,8 +1,8 @@
 import type { BakedTexture } from '@/engine/bake/uvBakeTypes';
-import { isNativeUvRepaintLayer } from '@/engine/localRepaint/uvRepaintState';
 import { isLocalRepaintProjectedLayer } from '@/engine/bake/projectedOverlayComposition';
 import {
   isContentAwareUvUnderlay,
+  isUvPaintLayer,
 } from '@/engine/layers/mergeUvComposition';
 import type { Layer } from '@/types/layer';
 import type { TextureBakeHandoff } from '@/types/project';
@@ -101,7 +101,7 @@ export function findVisibleProjectedLayerIdsForBake(
     .map((layer) => layer.id);
 }
 
-function findVisibleContentAwareUvLayerIdsForBake(
+function findVisibleUvDeltaLayerIdsForBake(
   layers: readonly Layer[],
   objectId: string | undefined,
 ) {
@@ -111,7 +111,7 @@ function findVisibleContentAwareUvLayerIdsForBake(
       (layer) =>
         layer.visible &&
         Boolean(layer.imageUrl) &&
-        (isContentAwareUvUnderlay(layer) || isNativeUvRepaintLayer(layer)) &&
+        (isContentAwareUvUnderlay(layer) || isUvPaintLayer(layer)) &&
         (!layer.objectId || layer.objectId === objectId),
     )
     .map((layer) => layer.id);
@@ -164,7 +164,7 @@ export function resolveBakeUvMergePlan(
       Boolean(layer.imageUrl) && layer.id !== mergedLayer?.id &&
       (!layer.objectId || layer.objectId === objectId),
     ).sort(compareLayers).map((layer) => layer.id),
-    ...findVisibleContentAwareUvLayerIdsForBake(layers, objectId),
+    ...findVisibleUvDeltaLayerIdsForBake(layers, objectId),
   ];
   const sourceLayerIds = [...projectedLayerIds, ...uvUnderlayLayerIds];
 
@@ -182,7 +182,8 @@ export function resolveBakeUvMergePlan(
 
   // A content-aware layer is a sparse underlay. Without either an existing
   // merged base or a projected front layer it cannot form a complete BaseColor.
-  if (projectedLayerIds.length > 0 || (mergedLayer && uvUnderlayLayerIds.length > 0)) {
+  const hasUvPaint = layers.some((layer) => uvUnderlayLayerIds.includes(layer.id) && isUvPaintLayer(layer));
+  if (projectedLayerIds.length > 0 || hasUvPaint || (mergedLayer && uvUnderlayLayerIds.length > 0)) {
     return {
       action: 'merge',
       objectId,

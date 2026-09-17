@@ -92,6 +92,14 @@ try {
   composition.compositeRgbaUnderInPlace(expected, new Uint8ClampedArray([0, 0, 200, 255]), 1);
   assert.deepEqual(encoded[0].data, [...expected], 'same deterministic merge source-under pixels');
   assert.deepEqual(flattened[0][2].map((l) => l.id), ['patch'], 'local UV remains final override, merged UV not applied twice');
+  for (const target of ['scene','object']) {
+    const manual = layer('manual-uuid', {type:'uv',name:'Renamed repaint',opacity:0.5});
+    reset([layer('projection'),manual,
+      {...manual,id:'hidden',visible:false},{...manual,id:'other',objectId:'other'}]);
+    await run(target);
+    assert.deepEqual(encoded[0].data,[67,0,133,192], 'Manual UV covers projection exactly once with its opacity');
+    assert.deepEqual(flattened[0][2],[], 'Already merged paint must not be composited twice');
+  }
   reset([layer('merged', { type: 'uv', role: 'merged-uv', uvMergeVersion: 6 })]);
   await run(); assert.equal(bakeCalls.length, 0); assert.equal(flattened[0][2][0].id, 'merged');
   for (const size of ['1K', '2K', '4K', '8K']) {

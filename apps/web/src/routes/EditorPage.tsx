@@ -131,6 +131,7 @@ import {
   getRgbaAlphaCoverageRatio,
   compareUvMergeSources,
   isFlattenableUvMergeSource,
+  isUvPaintLayer,
   UV_MERGE_COMPOSITION_VERSION,
 } from '@/engine/layers/mergeUvComposition';
 import {
@@ -4971,9 +4972,7 @@ export function EditorPage({
       let mergedRgba = mergedImageData.data;
       readbackDurationMs = performance.now() - readbackStartedAt;
 
-      // Flatten selected UV sources underneath projection coverage. This is
-      // the step that used to be silently skipped, causing a selected content-
-      // aware repair layer to disappear after merge.
+      // Bases/repair fill beneath projections; authored UV paint covers them.
       const uvCompositeStartedAt = performance.now();
       let mergedImageUrl: string | undefined;
       let mergedOutputBytes = 0;
@@ -4992,7 +4991,7 @@ export function EditorPage({
               bakeResolution,
               layer.opacity,
               options?.taskContext?.signal,
-              isNativeUvRepaintLayer(layer),
+              isUvPaintLayer(layer),
             );
             const metrics: WebGpuRgbaCompositeMetrics = result.metrics;
             mergedRgba = result.data;
@@ -5022,7 +5021,7 @@ export function EditorPage({
           }
         } else {
           const source = await urlToImageData(uvSourceUrl, bakeResolution, bakeResolution);
-          mergedRgba = isNativeUvRepaintLayer(layer)
+          mergedRgba = isUvPaintLayer(layer)
             ? compositeRgbaUnderInPlace(source.data, mergedRgba, 1, layer.opacity)
             : compositeRgbaUnderInPlace(mergedRgba, source.data, layer.opacity);
         }
