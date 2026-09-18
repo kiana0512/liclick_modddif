@@ -26,16 +26,16 @@ type ModelviewGenerationInput = {
 
 export type ModelviewSingleViewInpaintInput = ModelviewGenerationInput & {
   promptPolishEnabled?: boolean;
+  normalImage: { path: string; dataUrl: string };
   mask: {
     path: string;
     dataUrl: string;
   };
 };
 
-export type ModelviewSingleViewInput = ModelviewGenerationInput;
-export type ModelviewInpaintInput = ModelviewSingleViewInpaintInput & {
-  normalImage: { path: string; dataUrl: string };
-};
+type ModelviewNormalInput = { normalImage: { path: string; dataUrl: string } };
+export type ModelviewSingleViewInput = ModelviewGenerationInput & ModelviewNormalInput;
+export type ModelviewInpaintInput = ModelviewSingleViewInpaintInput;
 
 type ModelviewResponse = {
   id: string;
@@ -145,7 +145,7 @@ export function createModelviewApiClient() {
         input,
         result,
         'modelview-single-view',
-        '2026.09.17-li3d4500-single-view-4step-r1',
+        '2026.09.18-refcontrol-normal-single-view-4step-r1',
       );
     },
     async generateSingleViewInpaint(
@@ -161,7 +161,7 @@ export function createModelviewApiClient() {
         input,
         result,
         'modelview-single-view-inpaint',
-        '2026.09.17-li3d4500-single-view-inpaint-2step-r1',
+        '2026.09.18-refcontrol-normal-single-view-inpaint-2step-r1',
       );
     },
     async generateInpaint(

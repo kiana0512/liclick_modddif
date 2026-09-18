@@ -26,13 +26,12 @@ type ModelviewGenerationInput = {
 export type ModelviewSingleViewInpaintInput = ModelviewGenerationInput & {
   promptPolishEnabled?: boolean;
   mask: ModelviewControlFile;
-};
-
-export type ModelviewInpaintInput = ModelviewSingleViewInpaintInput & {
   normalImage: ModelviewControlFile;
 };
 
-export type ModelviewSingleViewInput = ModelviewGenerationInput;
+export type ModelviewInpaintInput = ModelviewSingleViewInpaintInput;
+type ModelviewNormalInput = { normalImage: ModelviewControlFile };
+export type ModelviewSingleViewInput = ModelviewGenerationInput & ModelviewNormalInput;
 
 type ModelviewServiceKind = 'inpaint' | 'single-view' | 'single-view-inpaint';
 
@@ -77,10 +76,10 @@ function serviceDefinition(kind: ModelviewServiceKind): ModelviewServiceDefiniti
       apiKey: serverConfig.modelviewSingleViewInpaintApiKey,
       timeoutMs: serverConfig.modelviewSingleViewInpaintTimeoutMs,
       jobPrefix: 'modelview-single-view-inpaint',
-      idempotencySuffix: 'single-view-inpaint:li3d4500-steps2-r1',
+      idempotencySuffix: 'single-view-inpaint:refcontrol-normal-2step-r1',
       filenameSuffix: 'modelview-single-view-inpaint',
       source: 'modelview-single-view-inpaint',
-      workflow: '2026.09.17-li3d4500-single-view-inpaint-2step-r1',
+      workflow: '2026.09.18-refcontrol-normal-single-view-inpaint-2step-r1',
       finalNode: 'SaveImage #29',
     };
   }
@@ -93,10 +92,10 @@ function serviceDefinition(kind: ModelviewServiceKind): ModelviewServiceDefiniti
       apiKey: serverConfig.modelviewSingleViewApiKey,
       timeoutMs: serverConfig.modelviewSingleViewTimeoutMs,
       jobPrefix: 'modelview-single-view',
-      idempotencySuffix: 'single-view:li3d4500-4step-r1',
+      idempotencySuffix: 'single-view:refcontrol-normal-4step-r1',
       filenameSuffix: 'modelview-single-view',
       source: 'modelview-single-view',
-      workflow: '2026.09.17-li3d4500-single-view-4step-r1',
+      workflow: '2026.09.18-refcontrol-normal-single-view-4step-r1',
       finalNode: 'SaveImage #29',
     };
   }
@@ -269,6 +268,34 @@ async function validateInpaintImageAndMask(image: { buffer: Buffer }, mask: { bu
         : '无法校验当前效果图与蒙版。',
       422,
     );
+  }
+}
+
+async function validateNormalImage(image: { buffer: Buffer }, normal: { buffer: Buffer }) {
+  try {
+    const [imageMetadata, normalMetadata] = await Promise.all([
+      sharp(image.buffer, { failOn: 'error' }).metadata(),
+      sharp(normal.buffer, { failOn: 'error' }).metadata(),
+    ]);
+    if (
+      !imageMetadata.width || !imageMetadata.height ||
+      !normalMetadata.width || !normalMetadata.height
+    ) {
+      throw new ModelviewInpaintError('主图或法线图缺少有效尺寸。', 422);
+    }
+    if (
+      imageMetadata.width !== normalMetadata.width ||
+      imageMetadata.height !== normalMetadata.height
+    ) {
+      throw new ModelviewInpaintError(
+        `法线图尺寸 ${normalMetadata.width}×${normalMetadata.height} 必须与主图 ${imageMetadata.width}×${imageMetadata.height} 完全一致。`,
+        422,
+      );
+    }
+    await sharp(normal.buffer, { failOn: 'error' }).stats();
+  } catch (error) {
+    if (error instanceof ModelviewInpaintError) throw error;
+    throw new ModelviewInpaintError('主图或法线图不是可读取的有效图片。', 422);
   }
 }
 
@@ -445,9 +472,9 @@ async function generateModelviewImage(
   if (inpaintInput && !inpaintInput.mask?.dataUrl) {
     throw new ModelviewInpaintError(`${operationLabel}蒙版不能为空。`, 422);
   }
-  const normalInput = kind === 'inpaint' ? (input as ModelviewInpaintInput).normalImage : undefined;
-  if (kind === 'inpaint' && !normalInput?.dataUrl) {
-    throw new ModelviewInpaintError('局部重绘法线图不能为空。', 422);
+  const normalInput = input.normalImage;
+  if (!normalInput?.dataUrl) {
+    throw new ModelviewInpaintError(`${operationLabel}需要同一视角的法线图。`, 422);
   }
   // ModelView's new workflow owns the default prompt. Never let a stale client
   // or saved prompt override it unless the user explicitly enabled polishing.
@@ -470,8 +497,9 @@ async function generateModelviewImage(
   const mask = inpaintInput
     ? dataUrlToBuffer(inpaintInput.mask.dataUrl, `${operationLabel}蒙版`)
     : undefined;
-  const normal = normalInput ? dataUrlToBuffer(normalInput.dataUrl, '局部重绘法线图') : undefined;
+  const normal = dataUrlToBuffer(normalInput.dataUrl, `${operationLabel}法线图`);
   if (mask) await validateInpaintImageAndMask(image, mask, normal);
+  else await validateNormalImage(image, normal);
   const boundaryHash = createHash('sha256').update(idempotencyKey).digest('hex').slice(0, 32);
   const boundary = `----Li3DModelview${boundaryHash}`;
   const body = multipartBody({

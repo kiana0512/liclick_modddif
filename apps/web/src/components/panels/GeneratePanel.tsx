@@ -2919,7 +2919,13 @@ export function GeneratePanel({
         try {
           let remoteGeneration: Generation;
           {
-            const imageDataUrl = await urlToDataUrl(generationCapture.colorUrl);
+            if (!generationCapture.normalUrl) {
+              throw new Error('当前视角法线图不可用，请重新捕获后重试。');
+            }
+            const [imageDataUrl, normalDataUrl] = await Promise.all([
+              urlToDataUrl(generationCapture.colorUrl),
+              urlToDataUrl(generationCapture.normalUrl),
+            ]);
             const completionMaskDataUrl =
               usesInpaint && completion?.completionMaskUrl
                 ? await urlToDataUrl(completion.completionMaskUrl)
@@ -2932,6 +2938,10 @@ export function GeneratePanel({
                     projectId: currentProject.id,
                     captureId: generationCapture.id,
                     objectId,
+                    normalImage: {
+                      path: `${generationCapture.id}-normal.png`,
+                      dataUrl: normalDataUrl,
+                    },
                     image: {
                       path: `${generationCapture.id}-current-effect.png`,
                       dataUrl: imageDataUrl,
@@ -2958,6 +2968,10 @@ export function GeneratePanel({
                     projectId: currentProject.id,
                     captureId: generationCapture.id,
                     objectId,
+                    normalImage: {
+                      path: `${generationCapture.id}-normal.png`,
+                      dataUrl: normalDataUrl,
+                    },
                     image: {
                       path: `${generationCapture.id}-white-model.png`,
                       dataUrl: imageDataUrl,
@@ -3493,13 +3507,18 @@ export function GeneratePanel({
         async ({ capture, generationId, modelViewReference, pendingGeneration }) => {
           throwIfTexturePipelineCancelled(signal);
           if (usesRemoteSingleView && modelviewClient) {
-            const [singleViewDataUrl, materialDataUrl, completionMaskDataUrl] = await Promise.all([
-              urlToDataUrl(capture.colorUrl),
-              urlToDataUrl(materialReference.url),
-              usesRemoteSingleViewInpaint && singleViewCompletion?.completionMaskUrl
-                ? urlToDataUrl(singleViewCompletion.completionMaskUrl)
-                : Promise.resolve(undefined),
-            ]);
+            if (!capture.normalUrl) {
+              throw new Error('当前视角法线图不可用，请重新捕获后重试。');
+            }
+            const [singleViewDataUrl, materialDataUrl, completionMaskDataUrl, normalDataUrl] =
+              await Promise.all([
+                urlToDataUrl(capture.colorUrl),
+                urlToDataUrl(materialReference.url),
+                usesRemoteSingleViewInpaint && singleViewCompletion?.completionMaskUrl
+                  ? urlToDataUrl(singleViewCompletion.completionMaskUrl)
+                  : Promise.resolve(undefined),
+                urlToDataUrl(capture.normalUrl),
+              ]);
             throwIfTexturePipelineCancelled(signal);
             if (usesRemoteSingleViewInpaint) {
               if (!completionMaskDataUrl) {
@@ -3511,6 +3530,10 @@ export function GeneratePanel({
                   projectId: currentProject?.id,
                   captureId: capture.id,
                   objectId: object?.id,
+                  normalImage: {
+                    path: `${capture.id}-normal.png`,
+                    dataUrl: normalDataUrl,
+                  },
                   image: {
                     path: `${capture.id}-current-effect.png`,
                     dataUrl: singleViewDataUrl,
@@ -3538,6 +3561,10 @@ export function GeneratePanel({
                 projectId: currentProject?.id,
                 captureId: capture.id,
                 objectId: object?.id,
+                normalImage: {
+                  path: `${capture.id}-normal.png`,
+                  dataUrl: normalDataUrl,
+                },
                 image: {
                   path: `${capture.id}-white-model.png`,
                   dataUrl: singleViewDataUrl,

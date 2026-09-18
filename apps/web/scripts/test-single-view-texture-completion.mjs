@@ -58,17 +58,51 @@ assert.match(
 assert.match(
   panel,
   /return modelviewClient\.generateSingleView\([\s\S]*?white-model\.png/,
-  'remote all-clay views must retain the original two-image generation path',
+  'remote all-clay views must retain the full-generation endpoint and original white image',
 );
 const panelAst = ts.createSourceFile('GeneratePanel.tsx', panel, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
 let submitView;
 let handleReference;
+let submitRemoteView;
 function findSubmitView(node) {
   if (ts.isFunctionDeclaration(node) && node.name?.text === 'submitGptTextureView') submitView = node;
   if (ts.isFunctionDeclaration(node) && node.name?.text === 'handleGeneratePairedMultiview') handleReference = node;
+  if (ts.isArrowFunction(node) && node.parameters[0]?.getText(panelAst).includes('capture, generationId, modelViewReference, pendingGeneration')) submitRemoteView = node;
   ts.forEachChild(node, findSubmitView);
 }
 findSubmitView(panelAst);
+assert.ok(submitRemoteView, 'The actual per-view submit callback must exist');
+const remoteSubmitJs = ts.transpileModule(`const submit = ${submitRemoteView.getText(panelAst)};`, {
+  compilerOptions: { target: ts.ScriptTarget.ES2022 },
+}).outputText;
+for (const inpaint of [false, true]) for (const normalUrl of ['same-camera-normal', undefined]) {
+  const calls = [];
+  const signal = new AbortController().signal;
+  const scope = {
+    signal, throwIfTexturePipelineCancelled() {}, usesRemoteSingleView: true,
+    usesRemoteSingleViewInpaint: inpaint, currentProject: { id: 'project' }, object: { id: 'object' },
+    materialReference: { id: 'reference', url: 'reference-bytes' }, referenceGroupId: () => 'group',
+    singleViewCompletion: { completionMaskUrl: 'unchanged-expanded-mask' }, urlToDataUrl: async url => url,
+    modelviewClient: Object.fromEntries(['generateSingleView', 'generateSingleViewInpaint'].map(name =>
+      [name, async (input, options) => { calls.push({ name, input, options }); return 'result'; }])),
+  };
+  const submit = new Function(...Object.keys(scope), `${remoteSubmitJs}; return submit;`)(...Object.values(scope));
+  const input = { capture: { id: 'capture', colorUrl: 'unchanged-whitefill', normalUrl },
+    generationId: 'generation', modelViewReference: { id: 'view' } };
+  if (!normalUrl) {
+    await assert.rejects(submit(input), /法线图不可用/);
+    assert.equal(calls.length, 0);
+    continue;
+  }
+  assert.equal(await submit(input), 'result');
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].name, inpaint ? 'generateSingleViewInpaint' : 'generateSingleView');
+  assert.deepEqual(calls[0].input.normalImage, { path: 'capture-normal.png', dataUrl: normalUrl });
+  assert.equal(calls[0].input.image.dataUrl, 'unchanged-whitefill');
+  assert.equal(calls[0].input.mask?.dataUrl, inpaint ? 'unchanged-expanded-mask' : undefined);
+  assert.equal(calls[0].input.prompt, undefined);
+  assert.equal(calls[0].options.signal, signal);
+}
 assert.ok(submitView, 'The shared GPT submission helper must exist.');
 const submitJs = ts.transpileModule(submitView.getText(panelAst), {
   compilerOptions: { target: ts.ScriptTarget.ES2022 },

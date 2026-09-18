@@ -157,7 +157,7 @@ for (const outcome of ['success', 'covered', 'cancel', 'failure']) {
   const views = ['front', 'top', 'bottom'].map((id, i) => ({ id, label: id,
     viewDirection: i === 0 ? [0, 0, 1] : [0, i === 1 ? 1 : -1, 0], viewUp: [0, 1, 0] }));
   const captures = views.map(view => ({ viewId: view.id, cameraView: {}, cameraSnapshot: { view: view.id },
-    capture: { id: view.id, colorUrl: 'clay-' + view.id, maskUrl: 'mask-' + view.id, width: 2048, height: 2048 } }));
+    capture: { id: view.id, colorUrl: 'clay-' + view.id, maskUrl: 'mask-' + view.id, normalUrl: 'normal-' + view.id, width: 2048, height: 2048 } }));
   const calls = [], projected = [], committed = [];
   let requests = 0, residents = 0, restored = 0, cancelled = false, settleResident;
   const remote = async (kind, input) => {
@@ -165,6 +165,8 @@ for (const outcome of ['success', 'covered', 'cancel', 'failure']) {
     requests++;
     assert.equal(input.prompt, undefined);
     assert.equal(input.image.dataUrl, 'white-' + input.captureId);
+    assert.equal(input.normalImage.dataUrl, 'normal-' + input.captureId, 'Every angle must submit its own unchanged captured normal');
+    assert.equal(input.normalImage.path, input.captureId + '-normal.png');
     assert.equal(input.materialImage.dataUrl, 'material');
     assert.equal(Boolean(input.mask), kind === 'inpaint');
     calls.push([kind, input.captureId]);
