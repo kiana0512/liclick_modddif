@@ -8552,6 +8552,7 @@ function SurfacePaintOverlay() {
     canUseSurfacePaint,
     getTargetModel,
     getUvPaintLayer,
+    gl,
     invalidate,
     isEditingPersistedLocalRepaint,
     paintTool,
@@ -8896,7 +8897,7 @@ function SurfacePaintOverlay() {
         'liclick:projected-material-resident',
         handleProjectedMaterialResident,
       );
-  }, [syncLocalRepaintGpuOverlayActivity]);
+  }, [gl, syncLocalRepaintGpuOverlayActivity]);
 
   useEffect(() => {
     if (
@@ -12456,7 +12457,7 @@ function SurfacePaintOverlay() {
       cancelIdleInpaintArchive,
       getInpaintMaskHistoryCheckpoint,
       camera,
-      gl.domElement,
+      gl,
       invalidate,
       ensureLiveLocalRepaintComposite,
       paintTool,
@@ -13906,7 +13907,7 @@ function SurfacePaintOverlay() {
     ensureLiveLocalRepaintComposite,
     getTargetModel,
     camera,
-    gl.domElement,
+    gl,
     localRepaintProjectionSource,
     pushToast,
     queueLocalRepaintUvCommit,
