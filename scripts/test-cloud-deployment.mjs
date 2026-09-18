@@ -172,6 +172,11 @@ test('master verifies both containers with no publishing and release retains eve
 
 test('runtime packaging and migration agree on paths and preserve existing PVC', () => {
   const docker = read('deploy/Dockerfile');
+  assert.match(docker, /until corepack prepare pnpm@9\.15\.4 --activate/);
+  assert.match(docker, /corepack prepare failed after \$\{prepare_attempt\} attempts/);
+  assert.match(docker, /until pnpm install --frozen-lockfile/);
+  assert.match(docker, /pnpm install failed after \$\{install_attempt\} attempts/);
+  assert.equal((docker.match(/-ge 3/g) ?? []).length, 2);
   assert.match(docker, /COPY packages\/contracts\/package.json/);
   assert.match(docker, /pnpm run build:release/);
   assert.match(docker, /pnpm run check:cloud-artifact/);

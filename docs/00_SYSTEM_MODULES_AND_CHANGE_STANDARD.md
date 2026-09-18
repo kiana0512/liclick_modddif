@@ -1,5 +1,7 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
+2026-09-18 M15：`CI-CONTAINER-DEPENDENCY-RETRY/1.0.0` 修复 master `4fb1d8ec` pipeline `633789` 仅 server 容器在 Corepack 下载中被远端断开而失败的问题。Docker deps 阶段对固定 pnpm 9.15.4 准备与 frozen-lockfile 安装分别最多尝试 3 次，等待 5/10 秒；连续失败仍阻断，不更换 registry、依赖、基础镜像，不跳过 verify/build/包体/Cloud 产物门禁。server/web 镜像目标、推送与部署规则不变；浏览器/服务端功能、GPU/CPU/Worker/shader、投影/UV/重绘/Bake 像素、分辨率、QA、Schema/Command/CAS/ownership/verified assets 和导出均不变，无迁移。验证、边界与回滚见 [容器依赖重试变更卡](changes/CHG-20260918-CI-CONTAINER-DEPENDENCY-RETRY.md)。
+
 2026-09-18 M10/M13（协作 M15）：`BAKE-DOWNLOAD-METADATA/1.0.0` 将 Bake 单图下载与 ZIP 清单构造中的 Job 冷读取、输出存在性和文件大小检查从同步文件 API 改为异步 metadata。所有入口继续要求成功终态、持久化 owner、已请求通道和普通文件；ZIP 按通道顺序逐项检查，避免一次请求扩大共享卷 I/O 扇出，文件名、CRC/ZIP64、HEAD/GET 与流式背压不变。GPU/CPU/Worker/shader、Bake 像素/通道/分辨率/QA、远端幂等、Job JSON、Project Command/CAS/ownership/verified assets、Schema 和导出字节均不变，无迁移。验证与回滚见 [Bake 下载异步 metadata 变更卡](changes/CHG-20260918-BAKE-DOWNLOAD-ASYNC-METADATA.md)。
 
 2026-09-17 M04（协作 M12/UI-05）：`TEXTURE-GENERATION-RECOVERY-OWNERSHIP/1.0.0` / `GPT-SILHOUETTE-RETRY/1.0.1` 为前台单/多视图纹理流程建立项目级恢复写入所有权，后台单任务轮询、历史恢复在流程期间不接管 texture-map 校验/状态，跨越所有权变化的迟到成功或异常均丢弃；结束后恢复后台接管。QA 阈值、同一冻结视角重试一次、组内有序回贴与组间等待不改。被 QA 拒绝及已被重试替代的结果不反复恢复；单个历史任务异常不阻断其余任务。仅新增可选结果 metadata，无 Schema/数据迁移；GPU/CPU/Worker/shader、像素、分辨率、UV/export、Command/CAS/ownership/verified assets 保持不变。回滚移除恢复所有权门禁及可选拒绝标记消费者，历史资产保留。详见 [QA 与后台恢复所有权](changes/CHG-20260917-TEXTURE-QA-RECOVERY-OWNERSHIP.md)。本轮未推送或部署。
@@ -178,7 +180,7 @@
 
 2026-09-15 M03：ALG-VIEW-INPUT-001/1.3.2 在鼠标接触前即让 R3F 悬停遵守 Alt 所有权；保留普通 hover 和已锁定拖动。旧实现拾取回归失败、新实现通过，用户实际首帧延迟需继续录制。无像素/持久化迁移，见 [Alt 悬停变更卡](changes/CHG-20260915-ALT-BRUSH-HOVER.md)。
 
-> 文档版本：`2.20.185`
+> 文档版本：`2.20.186`
 
 2026-09-16 UI-16 → M14（协作 M01/M12/M13/M15）：`ASSET-LIFECYCLE-GC` v0.4.0 / `STORAGE-INVENTORY-001/4` 将 Cloud 工程/Revision 引用页默认 8→32，并由单条 PostgreSQL CTE 完成分页、assetId 提取与引用 upsert，Node 不再回传引用数组后二次写库；每 256 条文档约 64→8 次数据库往返，保持 45 秒单查询上限与有界 Node 内存。当前 ready scan 引用索引保留到下一快照原子切换，旧 /3 快照自动重扫。Cloud 隔离区改按真实 quarantine 且排除重新可达对象统计；新增用户级幂等持久 purge job/item，以最多 4 并发签名 DeleteObject 后逐项事务删除 transfer、写 deleted_at，404/Pod 重启可安全重放。新增 `asset_storage_purge_jobs/items`，无 Project/Revision/Asset 内容迁移；Command/CAS/ownership/verified 及 GPU/CPU/Worker/shader、投影/UV/重绘/export、分辨率与 QA 不变。回滚前停 purge 并保留任务表，详见 [Cloud 存储盘点与物理清理变更卡](changes/CHG-20260916-CLOUD-STORAGE-INVENTORY-BOUNDED.md)。
 
@@ -1341,6 +1343,7 @@ M15 / CLOUD-DEPLOYMENT v1.0.0（2026-09-03）：正常合并 release 部署历�
 
 | 版本 | 日期 | 基线 | 变更 |
 | --- | --- | --- | --- |
+| `2.20.186` | 2026-09-18 | `容器依赖引导重试` | M15：`CI-CONTAINER-DEPENDENCY-RETRY/1.0.0` 为 Docker 固定 pnpm 准备和冻结安装增加最多 3 次的有限重试；连续失败仍阻断，无运行时或数据迁移。 |
 | `2.20.185` | 2026-09-18 | `Bake 下载异步 metadata` | M10/M13（协作 M15）：`BAKE-DOWNLOAD-METADATA/1.0.0` 移除单图/ZIP HTTP 热路径同步 exists/stat，保持 owner、成功终态、通道、普通文件和归档字节门禁；无迁移。 |
 | `2.20.184` | 2026-09-18 | `Bake Job 异步原子持久化` | M10/M13（协作 M15）：`BAKE-JOB-PERSISTENCE/1.0.0` 以同 Job 串行、不同 Job 并行的异步原子替换保存 `job.json`，终态显式等待；故障注入验证失败保留上一完整快照且队列可恢复。状态/JSON/资产/Schema 不变，无迁移，未推送部署。 |
 | `2.20.174` | 2026-09-17 | `GPT 轮廓漂移有界重试` | M04（协作 M03/M06/M08/M12/M13）：`GPT-RETURN-SILHOUETTE-QA/1.2.0` / `GPT-SILHOUETTE-RETRY/1.0.0` / `ALG-GEN-001/002` v1.3.1 保留轮廓门禁，仅对确认的远端构图漂移使用同冻结视角和确定性 ID 替代 1 次，再失败即停止；无数据迁移。 |
