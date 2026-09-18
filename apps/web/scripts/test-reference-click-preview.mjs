@@ -8,6 +8,12 @@ const source = await readFile(
 
 assert.match(
   source,
+  /state\?\.status === 'generating' \? '处理中' : role === 'multi-view' \? '去光影处理' : '生成多视图'/,
+  'multi-view menu uses the requested delight label without changing single-view or busy labels',
+);
+
+assert.match(
+  source,
   /onClick=\{\(\) => \{\s*if \(disabled \|\| selected\) \{\s*setPreviewReference\(reference\);\s*return;\s*\}\s*selectReference\(reference\);\s*\}\}/,
   'locked tasks only preview; otherwise unselected references select and selected references preview',
 );

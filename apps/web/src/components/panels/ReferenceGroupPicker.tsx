@@ -627,7 +627,7 @@ export function ReferenceGroupPicker({
                       onClick={() => generateMultiviewFor(reference)}
                     >
                       {state?.status === 'generating' ? <LoaderCircle className="h-3.5 w-3.5 animate-spin text-liclick-pink" /> : <Sparkles className="h-3.5 w-3.5 text-liclick-pink" />}
-                      {state?.status === 'generating' ? '处理中' : role === 'multi-view' ? '光照处理' : '生成多视图'}
+                      {state?.status === 'generating' ? '处理中' : role === 'multi-view' ? '去光影处理' : '生成多视图'}
                     </button>
                     <button type="button" role="menuitem" className="flex h-8 items-center gap-2 rounded-md px-2 text-left text-[10px] text-white/78 transition hover:bg-white/[0.07] hover:text-white" onClick={() => { setPreviewReference(reference); setOpenReferenceMenuId(undefined); }}>
                       <Eye className="h-3.5 w-3.5" />预览图
