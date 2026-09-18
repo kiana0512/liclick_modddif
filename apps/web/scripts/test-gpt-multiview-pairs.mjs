@@ -13,7 +13,14 @@ const scheduler = {};
 const materialIdentity = {};
 new Function('exports', compile(await read('engine/projection/projectedMaterialIdentity.ts')))(materialIdentity);
 new Function('exports', 'require', compile(await read('engine/generation/gptMultiviewPairs.ts')))(scheduler, () => materialIdentity);
-const { planGptViewPairs, runGptViewPairs, settleGptPairInOrder, hasResidentGptLayers, waitForGptPairPresentation } = scheduler;
+const {
+  planGptViewPairs,
+  runGptViewPairs,
+  settleGptPairInOrder,
+  gptPairCompletionDisposition,
+  hasResidentGptLayers,
+  waitForGptPairPresentation,
+} = scheduler;
 const make = (names) => names.map((id) => ({ id, value: id, label: id, viewDirection: [0, 0, 1] }));
 const expected1 = [['front', 'back'], ['front-left', 'back-right'], ['left', 'right'], ['back-left', 'front-right'], ['top', 'bottom']];
 const expected2 = [['front', 'back'], ['left', 'right'], ['right-top', 'left-bottom'], ['front-top', 'back-bottom'], ['left-top', 'right-bottom'], ['back-top', 'front-bottom'], ['top', 'bottom']];
@@ -35,6 +42,12 @@ assert.deepEqual(ids(planGptViewPairs(make(['front', 'top', 'front']), 'preset-1
 assert.deepEqual(planGptViewPairs([], 'custom'), []);
 assert.deepEqual(planGptViewPairs([], 'custom', 'fast'), []);
 assert.deepEqual(ids(planGptViewPairs(make(['front', 'top', 'front']), 'preset-1', 'fast')), [['front'], ['top']]);
+assert.equal(gptPairCompletionDisposition(2, 2, 0), 'complete');
+assert.equal(gptPairCompletionDisposition(2, 1, 1), 'continue-after-qa');
+assert.equal(gptPairCompletionDisposition(4, 2, 2), 'continue-after-qa');
+assert.equal(gptPairCompletionDisposition(2, 1, 0), 'stop');
+assert.equal(gptPairCompletionDisposition(2, 0, 1), 'stop');
+assert.equal(gptPairCompletionDisposition(2, 3, 0), 'stop');
 
 const defer = () => { let resolve; const promise = new Promise((r) => { resolve = r; }); return { promise, resolve }; };
 const first = defer(), second = defer(), presentation = defer();
@@ -164,7 +177,10 @@ async function fixture(failedView, fullyCovered = false, mode = 'stable', preset
     SILHOUETTE_RETRY_FAILURE_MESSAGE: 'alignment drift; retrying once',
     silhouetteRetryAttempt: (metadata) => metadata.silhouetteRetryAttempt ?? 0,
     isGptReturnSilhouetteMismatch: (error) => error?.code === 'GPT_RETURN_SILHOUETTE_MISMATCH',
-    terminalSilhouetteRetryError: () => new Error('连续两次 alignment failed'),
+    terminalSilhouetteRetryError: () => Object.assign(
+      new Error('连续两次 alignment failed'),
+      { code: 'GPT_RETURN_SILHOUETTE_MISMATCH' },
+    ),
     createTextureMapSilhouetteRetry: (failed) => {
       const id = `${failed.id}-silhouette-retry-1`;
       return {
@@ -267,8 +283,8 @@ async function fixture(failedView, fullyCovered = false, mode = 'stable', preset
         job.metadata.cameraViewId === silhouetteFailure.view &&
         silhouetteFailure.failures > (job.metadata.silhouetteRetryAttempt ?? 0)
       ) {
-        throw Object.assign(new Error('silhouette mismatch'), {
-          code: 'GPT_RETURN_SILHOUETTE_MISMATCH',
+        throw Object.assign(new Error('return QA mismatch'), {
+          code: silhouetteFailure.code ?? 'GPT_RETURN_SILHOUETTE_MISMATCH',
         });
       }
       return job;
@@ -285,8 +301,8 @@ async function fixture(failedView, fullyCovered = false, mode = 'stable', preset
         job.metadata.cameraViewId === silhouetteFailure.view &&
         (silhouetteFailure.failures > (job.metadata.silhouetteRetryAttempt ?? 0))
       ) {
-        throw Object.assign(new Error('silhouette mismatch'), {
-          code: 'GPT_RETURN_SILHOUETTE_MISMATCH',
+        throw Object.assign(new Error('return QA mismatch'), {
+          code: silhouetteFailure.code ?? 'GPT_RETURN_SILHOUETTE_MISMATCH',
         });
       }
       if (job.metadata.cameraViewId === failedView) throw new Error('controlled network failure');
@@ -353,10 +369,24 @@ const rejectedSilhouette = await fixture(
   undefined, false, 'fast', 'custom', undefined, undefined, false,
   { view: 'front', failures: 2 },
 );
-assert.match(String(rejectedSilhouette.error), /连续两次/);
-assert.equal(rejectedSilhouette.requests.length, 3, 'the retry budget cannot create a submission storm');
-assert.deepEqual(rejectedSilhouette.rows.map((row) => row.id), ['back'], 'the successful sibling remains projected');
-assert.equal(rejectedSilhouette.repairCount, 0);
+assert.ifError(rejectedSilhouette.error);
+assert.equal(rejectedSilhouette.requests.length, 7, 'the retry budget cannot create a submission storm');
+assert.deepEqual(rejectedSilhouette.captures, [['front', 'back'], ['left', 'right', 'top', 'bottom']]);
+assert.deepEqual(
+  rejectedSilhouette.rows.map((row) => row.id),
+  ['back', 'left', 'right', 'top', 'bottom'],
+  'the rejected view is skipped while its sibling and later group continue',
+);
+assert.equal(rejectedSilhouette.repairCount, 1);
+const rejectedRatio = await fixture(
+  undefined, false, 'fast', 'custom', undefined, undefined, false,
+  { view: 'front', failures: 1, code: 'GPT_RETURN_FRAME_RATIO_MISMATCH' },
+);
+assert.ifError(rejectedRatio.error);
+assert.equal(rejectedRatio.requests.length, 6, 'ratio QA does not consume the silhouette retry budget');
+assert.deepEqual(rejectedRatio.captures, [['front', 'back'], ['left', 'right', 'top', 'bottom']]);
+assert.deepEqual(rejectedRatio.rows.map((row) => row.id), ['back', 'left', 'right', 'top', 'bottom']);
+assert.equal(rejectedRatio.repairCount, 1);
 for (const [preset, expected] of [['preset-1', expected1], ['preset-2', expected2]]) for (const stored of [undefined, 'stable', 'fast', 'unknown']) {
   const result = await fixture(undefined, false, stored, preset, expected.flat());
   assert.ifError(result.error);

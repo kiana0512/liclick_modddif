@@ -1,7 +1,7 @@
 import type { Object3D, Mesh, Material } from 'three';
 import { isResidentProjectedMaterial } from '../projection/projectedMaterialIdentity';
 
-// GPT-MULTIVIEW-PAIR-SEQUENCE v1.4.0. Fixed accelerated groups; preview order unchanged.
+// GPT-MULTIVIEW-PAIR-SEQUENCE v1.4.1. QA-only rejection may advance; transport/projection failures stop.
 const presetPairs = {
   'preset-1': [
     ['front', 'back'],
@@ -72,6 +72,29 @@ export async function runGptViewPairs<T>(
     await execute(pairs[index]!, index);
     assertActive();
   }
+}
+
+export type GptPairCompletionDisposition = 'complete' | 'continue-after-qa' | 'stop';
+
+export function gptPairCompletionDisposition(
+  expected: number,
+  projected: number,
+  qaRejected: number,
+): GptPairCompletionDisposition {
+  if (
+    !Number.isSafeInteger(expected) ||
+    !Number.isSafeInteger(projected) ||
+    !Number.isSafeInteger(qaRejected) ||
+    expected < 1 ||
+    projected < 0 ||
+    projected > expected ||
+    qaRejected < 0
+  ) {
+    return 'stop';
+  }
+  const missing = expected - projected;
+  if (missing === 0) return 'complete';
+  return qaRejected === missing ? 'continue-after-qa' : 'stop';
 }
 
 // Jobs wait in parallel, but commits never depend on network completion order.

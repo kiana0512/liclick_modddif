@@ -167,7 +167,23 @@ for (const imageSize of ['1K', '2K', '4K']) {
     const s = f.outputWidth / f.width;
     assert.ok(Math.abs(l.left - f.left * s) <= 0.5);
     assert.ok(Math.abs(l.top - f.top * s) <= 0.5);
-    assert.throws(() => restoredFrameLayout(f, f.outputWidth + 16, f.outputHeight), /比例/);
+    const nativeWidth = Math.round(f.outputWidth / 2);
+    const nativeHeight = Math.round(f.outputHeight / 2);
+    const native = restoredFrameLayout(f, nativeWidth, nativeHeight);
+    assert.equal(native.patchWidth, nativeWidth, 'same-ratio native provider width is preserved');
+    assert.equal(native.patchHeight, nativeHeight, 'same-ratio native provider height is preserved');
+    assert.doesNotThrow(
+      () => restoredFrameLayout(f, f.outputWidth + 16, f.outputHeight),
+      'one provider grid quantum is not a ratio failure',
+    );
+    let ratioError;
+    try {
+      restoredFrameLayout(f, f.outputWidth + 64, f.outputHeight);
+    } catch (error) {
+      ratioError = error;
+    }
+    assert.match(String(ratioError), /比例/);
+    assert.equal(ratioError.code, 'GPT_RETURN_FRAME_RATIO_MISMATCH');
     const box = {
       x: Math.round((rect.x - f.left) * s),
       y: Math.round((rect.y - f.top) * s),

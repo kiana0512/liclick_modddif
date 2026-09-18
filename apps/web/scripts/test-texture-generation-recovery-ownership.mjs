@@ -8,7 +8,12 @@ const compile = (source) => ts.transpileModule(source, { compilerOptions: {
 } }).outputText;
 export const ownershipPolicy = {};
 new Function('exports', compile(await read('engine/generation/textureGenerationRecoveryOwnership.ts')))(ownershipPolicy);
-const { createTextureGenerationRecoveryOwnership, isRejectedTextureReturn, textureReturnQaFailureMetadata } = ownershipPolicy;
+const {
+  createTextureGenerationRecoveryOwnership,
+  isRejectedTextureReturn,
+  isTextureReturnQaFailure,
+  textureReturnQaFailureMetadata,
+} = ownershipPolicy;
 const owner = createTextureGenerationRecoveryOwnership();
 const oldTicket = owner.backgroundTicket('p', 'texture-map');
 assert(oldTicket());
@@ -25,7 +30,12 @@ releaseSecond();
 assert(!oldTicket(), 'an in-flight response crossing the entire session stays stale');
 assert(owner.backgroundTicket('p', 'texture-map')(), 'reload/idle recovery remains available');
 const qaError = () => Object.assign(new Error('返图透明轮廓不对齐。'), { code: 'GPT_RETURN_SILHOUETTE_MISMATCH' });
+const ratioQaError = () => Object.assign(new Error('返图比例不对齐。'), { code: 'GPT_RETURN_FRAME_RATIO_MISMATCH' });
+assert(isTextureReturnQaFailure(qaError()));
+assert(isTextureReturnQaFailure(ratioQaError()));
 assert(isRejectedTextureReturn(textureReturnQaFailureMetadata(qaError())));
+assert(isRejectedTextureReturn(textureReturnQaFailureMetadata(ratioQaError())));
+assert(!isTextureReturnQaFailure(new Error('network')));
 assert(isRejectedTextureReturn({ silhouetteRetryGenerationId: 'retry' }));
 assert(!isRejectedTextureReturn({ silhouetteRetryOf: 'original' }));
 assert(!isRejectedTextureReturn(textureReturnQaFailureMetadata(new Error('network'))));

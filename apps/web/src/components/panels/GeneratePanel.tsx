@@ -2,6 +2,7 @@ import { sameGenerationRecovery } from '@/services/generationRecoveryComparison'
 import {
   createTextureGenerationRecoveryOwnership,
   isRejectedTextureReturn,
+  isTextureReturnQaFailure,
   textureReturnQaFailureMetadata,
 } from '@/engine/generation/textureGenerationRecoveryOwnership';
 import { isServerWorkspace } from '@/services/isServerWorkspace';
@@ -155,7 +156,12 @@ type GptPairContext = {
   textureBatchId: string;
   scheduler: typeof import('@/engine/generation/gptMultiviewPairs');
 };
-type TextureViewBatchResult = { projected: number; layerIds: string[]; error?: string };
+type TextureViewBatchResult = {
+  projected: number;
+  layerIds: string[];
+  qaRejected: number;
+  error?: string;
+};
 type CameraViewOption = {
   value: ObjectViewPreset;
   labelKey:
@@ -3096,6 +3102,7 @@ export function GeneratePanel({
       }
     };
     let projectedCount = 0;
+    let qaRejectedCount = 0;
     try {
       await scheduler.runGptViewPairs(pairs, assertActive, async (pair, index) => {
         pairProgressScopeRef.current = { index, count: pairs.length };
@@ -3111,62 +3118,88 @@ export function GeneratePanel({
           { textureBatchId, scheduler },
         );
         assertActive();
-        if (!result || result.projected !== pair.length) {
+        if (!result) {
           throw new Error(
-            result?.error ?? '本组有视角未完成生成或回贴，已保留成功结果并停止后续视角。',
+            '本组没有返回可用的生成结果，已停止后续视角。',
           );
         }
-        updateTexturePipelineProgress(87, '准备多视图快照 · 等待本组回贴显示');
-        await scheduler.waitForGptPairPresentation(
-          () => {
-            const liveLayers = useLayerStore.getState().layers;
-            // A user-deleted/hidden result is not resurrected or awaited forever.
-            const required = result.layerIds.filter((id) =>
-              liveLayers.some((layer) => layer.id === id && layer.visible),
-            );
-            if (!required.length) return true;
-            const root = useSceneStore
-              .getState()
-              .importedModels.find((model) => model.objectId === objectId)?.group;
-            return scheduler.hasResidentGptLayers(root, required);
-          },
-          assertActive,
-          waitForBrowserPaint,
-          60_000,
-          () => {
-            updateTexturePipelineProgress(87, '结果已保存 · 等待视口渲染恢复');
-            setGenerateNotice({
-              tone: 'warning',
-              message: '本组生图结果已保存，正在等待回贴与合成渲染完成；完成后会自动继续下一组。',
-            });
-          },
+        const disposition = scheduler.gptPairCompletionDisposition(
+          pair.length,
+          result.projected,
+          result.qaRejected,
         );
+        const qaOnlyFailure = disposition === 'continue-after-qa';
+        if (disposition === 'stop') {
+          throw new Error(
+            result.error ?? '本组有视角未完成生成或回贴，已保留成功结果并停止后续视角。',
+          );
+        }
+        if (result.layerIds.length > 0) {
+          updateTexturePipelineProgress(87, '准备多视图快照 · 等待本组回贴显示');
+          await scheduler.waitForGptPairPresentation(
+            () => {
+              const liveLayers = useLayerStore.getState().layers;
+              // A user-deleted/hidden result is not resurrected or awaited forever.
+              const required = result.layerIds.filter((id) =>
+                liveLayers.some((layer) => layer.id === id && layer.visible),
+              );
+              if (!required.length) return true;
+              const root = useSceneStore
+                .getState()
+                .importedModels.find((model) => model.objectId === objectId)?.group;
+              return scheduler.hasResidentGptLayers(root, required);
+            },
+            assertActive,
+            waitForBrowserPaint,
+            60_000,
+            () => {
+              updateTexturePipelineProgress(87, '结果已保存 · 等待视口渲染恢复');
+              setGenerateNotice({
+                tone: 'warning',
+                message: '本组生图结果已保存，正在等待回贴与合成渲染完成；完成后会自动继续下一组。',
+              });
+            },
+          );
+        }
         projectedCount += result.projected;
+        qaRejectedCount += result.qaRejected;
+        if (qaOnlyFailure) {
+          setGenerateNotice({
+            tone: 'warning',
+            message: `本组 ${result.qaRejected} 个视角未通过回图 QA；已保留结果并继续后续视角。`,
+          });
+        }
         updateTexturePipelineProgress(90, '多视图回贴完成');
       });
     } finally {
       pairProgressScopeRef.current = undefined;
     }
     assertActive();
-    updateTexturePipelineProgress(92, '内容识别补缝');
-    try {
-      await requestContentAwareRepair({
-        source: 'multiview-texture',
-        projectId,
-        objectId,
-        batchId: textureBatchId,
-        silentForeground: true,
-      });
-      updateTexturePipelineProgress(100, '多视图完成');
-    } catch (error) {
-      updateTexturePipelineProgress(100, '纹理完成，补缝未完成');
-      console.warn('[Li3D] Paired multiview repair failed:', error);
+    if (projectedCount > 0) {
+      updateTexturePipelineProgress(92, '内容识别补缝');
+      try {
+        await requestContentAwareRepair({
+          source: 'multiview-texture',
+          projectId,
+          objectId,
+          batchId: textureBatchId,
+          silentForeground: true,
+        });
+        updateTexturePipelineProgress(100, '多视图完成');
+      } catch (error) {
+        updateTexturePipelineProgress(100, '纹理完成，补缝未完成');
+        console.warn('[Li3D] Paired multiview repair failed:', error);
+      }
+    } else {
+      updateTexturePipelineProgress(100, '多视图回图未通过 QA');
     }
     setGenerateNotice(undefined);
     pushToast({
-      tone: 'success',
-      title: t('textureMapGenerated'),
-      description: `已按 ${pairs.length} 组生成并投影 ${projectedCount} 个视角。`,
+      tone: qaRejectedCount > 0 ? 'warning' : 'success',
+      title: qaRejectedCount > 0 ? '多视图部分完成' : t('textureMapGenerated'),
+      description: `已按 ${pairs.length} 组生成并投影 ${projectedCount} 个视角${
+        qaRejectedCount > 0 ? `，${qaRejectedCount} 个视角未通过回图 QA` : ''
+      }。`,
     });
   }
 
@@ -3535,6 +3568,7 @@ export function GeneratePanel({
 
     const completedGenerations: Generation[] = [];
     const failureMessages: string[] = [];
+    let qaRejectedGenerationCount = 0;
     let projectedGenerationCount = 0;
     const submittedGenerations: Generation[] = [];
     results.forEach((result, index) => {
@@ -3602,12 +3636,14 @@ export function GeneratePanel({
       if (textureBatchWasCancelled() || isCancelledGeneration(pending.pendingGeneration)) return;
       const failureMessage =
         result.reason instanceof Error ? result.reason.message : `${pending.label} 视角提交失败。`;
+      if (isTextureReturnQaFailure(result.reason)) qaRejectedGenerationCount += 1;
       failureMessages.push(`${pending.label}视角提交失败：${getUserFacingGenerationError(failureMessage)}`);
       syncGeneration(
         createFailedGeneration(pending.pendingGeneration, failureMessage, {
           cameraView: pending.cameraView,
           cameraViewId: pending.viewId,
           cameraViewLabel: pending.label,
+          ...textureReturnQaFailureMetadata(result.reason),
         }),
       );
     });
@@ -3733,7 +3769,12 @@ export function GeneratePanel({
                 ? '多视角纹理贴图任务失败。'
                 : '当前单视图纹理贴图任务失败。';
           failureMessages.push(`${String(submitted.metadata.cameraViewLabel ?? '当前')}视角生成失败：${getUserFacingGenerationError(failureMessage)}`);
-          syncGeneration(createFailedGeneration(submitted, failureMessage));
+          if (isTextureReturnQaFailure(result.reason)) qaRejectedGenerationCount += 1;
+          syncGeneration(createFailedGeneration(
+            submitted,
+            failureMessage,
+            textureReturnQaFailureMetadata(result.reason),
+          ));
         }
       });
 
@@ -3789,6 +3830,7 @@ export function GeneratePanel({
       throwIfTexturePipelineCancelled(signal);
       return {
         projected: projectedGenerationCount,
+        qaRejected: qaRejectedGenerationCount,
         layerIds: useLayerStore
           .getState()
           .layers.filter(
