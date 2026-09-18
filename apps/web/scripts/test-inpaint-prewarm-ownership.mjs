@@ -42,6 +42,7 @@ function harness(overrides = {}) {
   const scope = {
     isInpaintMode: false, isLocalRepaintApplyMode: false, paintMaskHasContent: false,
     localRepaintGenerationPresentationActive: false, canUseSurfacePaint: true,
+    paintTool: 'brush',
     activePaintLayer: projection, layerRef,
     getEraserTargetPolicy: () => ({ kind: 'projected-mask' }),
     getTargetModel: () => model,
@@ -109,7 +110,8 @@ for (const phase of [
 }
 
 // Each protection must work independently, including before the inpaint owner
-// is allocated. Ordinary projected eraser prewarm must still work when safe.
+// is allocated. Background projected-mask prewarm must still work when safe,
+// while the active eraser owns preparation exclusively in the following effect.
 for (const flag of ['isInpaintMode', 'isLocalRepaintApplyMode', 'paintMaskHasContent',
   'localRepaintGenerationPresentationActive']) {
   assert(effect.arguments[1].getText(ast).includes(flag), `${flag} must invalidate the effect`);
@@ -117,6 +119,17 @@ for (const flag of ['isInpaintMode', 'isLocalRepaintApplyMode', 'paintMaskHasCon
   h.layerRef.current = undefined;
   h.run();
   assert.equal(h.calls.acquired, 0, flag);
+}
+assert(effect.arguments[1].getText(ast).includes('paintTool'), 'paintTool must invalidate the effect');
+{
+  const h = harness({ paintTool: 'eraser' });
+  h.layerRef.current = undefined;
+  h.run();
+  assert.equal(
+    h.calls.acquired,
+    0,
+    'The active eraser must not race the speculative neutral prewarm owner',
+  );
 }
 for (const outcome of ['ready', 'cleanup', 'new-owner', 'gpu-unavailable']) {
   const h = harness();
