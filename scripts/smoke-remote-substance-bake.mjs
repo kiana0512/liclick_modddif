@@ -265,15 +265,15 @@ try {
   for (const channel of completed.settings.channels) assert(completed.outputs?.[channel]);
   assert.equal(completed.ownerUserId, ownerUserId);
   assert.equal(service.getNormalBakeJob(created.id, otherUserId), undefined);
-  assert.equal(service.getNormalBakeOutputPath(created.id, otherUserId, 'normal'), undefined);
-  assert(service.getNormalBakeOutputPath(created.id, ownerUserId, 'normal'));
+  assert.equal(await service.getNormalBakeOutputPath(created.id, otherUserId, 'normal'), undefined);
+  assert(await service.getNormalBakeOutputPath(created.id, ownerUserId, 'normal'));
   assert.equal(await service.cancelNormalBakeJob(created.id, otherUserId), undefined);
   assert(await service.cancelNormalBakeJob(created.id, ownerUserId));
 
   const archiveService = await import('../apps/server/dist/services/bakeArchiveService.js');
-  assert(archiveService.getBakeArchive(created.id, ownerUserId, 'owner-export'));
+  assert(await archiveService.getBakeArchive(created.id, ownerUserId, 'owner-export'));
   assert.equal(
-    archiveService.getBakeArchive(created.id, otherUserId, 'forbidden-export'),
+    await archiveService.getBakeArchive(created.id, otherUserId, 'forbidden-export'),
     undefined,
   );
 

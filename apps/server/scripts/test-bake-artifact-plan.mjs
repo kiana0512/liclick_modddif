@@ -1,10 +1,90 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import {
   bakeArtifactChannel,
   selectBakeArtifactFileNames,
 } from '../dist/services/bakeArtifactPlan.js';
+import {
+  createSerializedAtomicFileWriter,
+  writeFileAtomically,
+} from '../dist/services/atomicFileService.js';
+
+const deferred = () => {
+  let resolve;
+  let reject;
+  const promise = new Promise((onResolve, onReject) => {
+    resolve = onResolve;
+    reject = onReject;
+  });
+  return { promise, resolve, reject };
+};
+
+// Same-job snapshots must preserve submission order. Different jobs must not
+// block each other, and one failed replacement must not poison later writes.
+{
+  const gates = [];
+  const starts = [];
+  const writer = createSerializedAtomicFileWriter(async (filePath, data) => {
+    const gate = deferred();
+    starts.push({ filePath, data });
+    gates.push(gate);
+    await gate.promise;
+  });
+  const first = writer.write('job-a', 'a.json', 'first');
+  const second = writer.write('job-a', 'a.json', 'second');
+  const unrelated = writer.write('job-b', 'b.json', 'other');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(starts, [
+    { filePath: 'a.json', data: 'first' },
+    { filePath: 'b.json', data: 'other' },
+  ]);
+  gates[0].resolve();
+  await first;
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(starts[2], { filePath: 'a.json', data: 'second' });
+  gates[1].resolve();
+  gates[2].resolve();
+  await Promise.all([second, unrelated, writer.flush('job-a')]);
+
+  const attempts = [];
+  const recoveringWriter = createSerializedAtomicFileWriter(async (_filePath, data) => {
+    attempts.push(data);
+    if (data === 'broken') throw new Error('injected replace failure');
+  });
+  await assert.rejects(
+    recoveringWriter.write('job-c', 'c.json', 'broken'),
+    /injected replace failure/,
+  );
+  await recoveringWriter.write('job-c', 'c.json', 'recovered');
+  assert.deepEqual(attempts, ['broken', 'recovered']);
+}
+
+{
+  const temporaryDirectory = await fs.mkdtemp(
+    path.join(os.tmpdir(), 'li3d-bake-atomic-write-'),
+  );
+  const destination = path.join(temporaryDirectory, 'job.json');
+  try {
+    await fs.writeFile(destination, 'last-valid-snapshot', 'utf8');
+    await assert.rejects(
+      writeFileAtomically(destination, 'partial-new-snapshot', {
+        async renameFile() {
+          const error = new Error('injected atomic replace failure');
+          error.code = 'EIO';
+          throw error;
+        },
+        retryDelaysMs: [],
+      }),
+      /injected atomic replace failure/,
+    );
+    assert.equal(await fs.readFile(destination, 'utf8'), 'last-valid-snapshot');
+    assert.deepEqual(await fs.readdir(temporaryDirectory), ['job.json']);
+  } finally {
+    await fs.rm(temporaryDirectory, { recursive: true, force: true });
+  }
+}
 
 const fullProfile = [
   'asset_base_color.png',
@@ -104,6 +184,19 @@ assert.doesNotMatch(
   service.slice(downloadStart, downloadEnd),
   /\b(?:existsSync|statSync|openSync|readSync)\b/,
   'Artifact download and verification must not block on synchronous filesystem calls.',
+);
+const persistenceStart = service.indexOf('function persist(job)');
+const persistenceEnd = service.indexOf('async function appendLog', persistenceStart);
+assert(persistenceStart >= 0 && persistenceEnd > persistenceStart);
+assert.doesNotMatch(
+  service.slice(persistenceStart, persistenceEnd),
+  /\b(?:mkdirSync|writeFileSync)\b/,
+  'Bake Job persistence must not block the Node event loop with synchronous writes.',
+);
+assert.match(
+  service.slice(persistenceStart, persistenceEnd),
+  /jobFileWriter\.write/,
+  'Bake Job snapshots must use the per-job serialized atomic writer.',
 );
 const stageStart = service.lastIndexOf(
   'if (job.settings.generateRoughnessFromBakedBaseColor)',

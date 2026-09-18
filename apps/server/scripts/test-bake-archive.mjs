@@ -7,19 +7,71 @@ import { createRequire } from 'node:module';
 import ts from 'typescript';
 
 const require = createRequire(import.meta.url);
-async function load(url) {
+async function load(url, substanceBakeService = {}) {
   const source = await fs.readFile(new URL(url, import.meta.url), 'utf8');
   const compiled = ts.transpileModule(source, {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true },
   }).outputText;
   const exports = {};
   const crc = new Function('require', 'exports', `${compiled}; return updateCrc32;`)(
-    (id) => id === './substanceBakeService.js' ? {} : require(id), exports,
+    (id) => id === './substanceBakeService.js' ? substanceBakeService : require(id), exports,
   );
   return { ...exports, crc };
 }
 const old = await load('./fixtures/bakeArchive.before-indexed-crc.ts');
 const current = await load('../src/services/bakeArchiveService.ts');
+
+{
+  const metadataCalls = [];
+  let activeMetadataReads = 0;
+  let maximumMetadataReads = 0;
+  const archiveService = await load('../src/services/bakeArchiveService.ts', {
+    async getNormalBakeJobAsync(id, userId) {
+      if (id !== 'job-a' || userId !== 'owner-a') return undefined;
+      await new Promise((resolve) => setImmediate(resolve));
+      return {
+        status: 'succeeded',
+        input: { high: 'high model.fbx' },
+        settings: { channels: ['baseColor', 'normal', 'roughness'] },
+      };
+    },
+    async getNormalBakeOutputMetadata(id, userId, channel) {
+      metadataCalls.push([id, userId, channel]);
+      activeMetadataReads += 1;
+      maximumMetadataReads = Math.max(maximumMetadataReads, activeMetadataReads);
+      await new Promise((resolve) => setImmediate(resolve));
+      activeMetadataReads -= 1;
+      if (channel === 'normal') return undefined;
+      return { path: `${channel}.png`, sizeBytes: channel === 'baseColor' ? 11 : 13 };
+    },
+  });
+  const archivePromise = archiveService.getBakeArchive('job-a', 'owner-a', 'Owner Export');
+  assert(archivePromise instanceof Promise, 'Archive metadata discovery must stay asynchronous');
+  const archive = await archivePromise;
+  assert.deepEqual(archive, {
+    fileName: 'Owner-Export_BakedMaps.zip',
+    entries: [
+      { path: 'baseColor.png', name: 'Owner-Export_BaseColor.png', size: 11 },
+      { path: 'roughness.png', name: 'Owner-Export_Roughness.png', size: 13 },
+    ],
+  });
+  assert.deepEqual(metadataCalls.map((call) => call[2]), ['baseColor', 'normal', 'roughness']);
+  assert.equal(maximumMetadataReads, 1, 'Archive metadata checks remain sequential and bounded');
+  assert.equal(await archiveService.getBakeArchive('job-a', 'other-owner', 'forbidden'), undefined);
+}
+
+const currentSource = await fs.readFile(
+  new URL('../src/services/bakeArchiveService.ts', import.meta.url),
+  'utf8',
+);
+const archiveStart = currentSource.indexOf('export async function getBakeArchive');
+const archiveEnd = currentSource.indexOf('type ZipEntry', archiveStart);
+assert(archiveStart >= 0 && archiveEnd > archiveStart);
+assert.doesNotMatch(
+  currentSource.slice(archiveStart, archiveEnd),
+  /\b(?:existsSync|statSync|readFileSync)\b/,
+  'Archive metadata discovery must not use synchronous filesystem APIs.',
+);
 class SlowResponse extends Writable {
   chunks = [];
   writes = 0;

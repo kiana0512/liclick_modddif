@@ -6,8 +6,8 @@
 
 - 扫描 843 个受 Git 跟踪的 TS/TSX/JS/MJS/CJS/CSS/GLSL/JSON/SQL 源文件，共 186,328 个非空行；另有 320 个 Markdown 文档。
 - Web 有 154 个独立 `test-*.mjs` 文件，Server 有 25 个；按当前静态口径，146 个测试读取实现文件，89 个使用 `new Function` 执行隔离实现片段。覆盖面强，但对重构形状敏感，不能把“测试多”直接解释为真实浏览器性能已通过。
-- 本轮没有证据支持大规模拆文件、替换投影/UV 内核或降低质量。最高风险集中在少数巨型编排文件、GPU/CPU/Worker/shader 多实现一致性、Server 历史目录同步 I/O、测试基础设施偶发失败和文档当前/历史状态混用。
-- 按“先稳定、后优化”原则，基础审计先修复四个确定性服务端风险并修正一个既有冒烟前提；随后针对用户真实放大截图，补充修复内容填补把已显示为深色斜线的小缺口误判为噪声的问题。后者会增加应有的稀疏 underlay 输出 texel，但不改变有效投影像素、分辨率、QA、投影 shader、导出合成、Project Command、Revision CAS、ownership、verified assets 或 Schema。
+- 本轮没有证据支持大规模拆文件、替换投影/UV 内核或降低质量。最高风险集中在少数巨型编排文件、GPU/CPU/Worker/shader 多实现一致性、共享卷生产观测缺口、测试基础设施偶发失败和文档当前/历史状态混用。
+- 按“先稳定、后优化”原则，基础审计先修复确定性的服务端风险并修正一个既有冒烟前提；随后针对用户真实放大截图，补充修复内容填补把已显示为深色斜线的小缺口误判为噪声的问题，并继续以独立补丁完成 Bake Job 异步原子持久化。各补丁均不降低分辨率或 QA，也不改变 Project Command、Revision CAS、ownership、verified assets 或 Schema。
 
 ## 2. 已验证门禁
 
@@ -18,7 +18,7 @@
 | 生产依赖审计 | 通过 | 268 个生产依赖，high 及以上为 0 |
 | Contracts | 通过 | 9 项 |
 | Web 回归 | 通过 | 147 contracts |
-| Server 回归 | 通过 | 25/25；新增 Asset 历史刷新协调器契约，并保留导入 UV、Bake、PostgreSQL、ownership 等既有回归 |
+| Server 回归 | 通过 | 25/25；新增 Asset 历史刷新协调器和 Bake Job 写序/故障恢复契约，并保留导入 UV、Bake、PostgreSQL、ownership 等既有回归 |
 | Cloud boundary | 通过但范围有限 | 只扫描 `apps/web/src`、`apps/server/src`、`packages/contracts/src`；不等于全仓没有历史 4618/安装器代码 |
 | Project repository boundary | 通过 | 业务层未扩散文件系统 Project Repository |
 | 生产构建与包体 | 通过 | 当前 release 候选 108 个 JS chunks，共 3,227,295 bytes；Cloud 产物 221 个文件、25.04 MiB；现有各分包预算均未提高，额外 256-byte reserve 检查通过；Editor route 尚余 4,249 bytes，仍需保持警惕 |
@@ -96,6 +96,23 @@
 - 保持不变：历史 limit/排序、可信远端 kind 恢复、终态判断、失败保留、产物过滤、PostgreSQL/本地持久化、Asset API/TLS 与 ownership。
 - 变更卡：[CHG-20260917-ASSET-HISTORY-REFRESH-CONCURRENCY](changes/CHG-20260917-ASSET-HISTORY-REFRESH-CONCURRENCY.md)。
 
+### 3.6 Bake Job 异步原子持久化
+
+- 主模块：`M10/M13`，协作 `M15`；契约 `BAKE-JOB-PERSISTENCE/1.0.0`。
+- 风险：远端轮询、最多 3 路产物下载进度、取消和终态原来都通过同步 `mkdirSync/writeFileSync` 原地重写 `job.json`。共享卷延迟会阻塞 Node 事件循环；直接替换成无序异步写又可能让旧快照覆盖新终态，原地失败还可能留下半写 JSON。
+- 修复：复用既有临时文件 + 原子 rename，并增加按 Job ID 的写入尾队列。同一 Job 按提交顺序串行，不同 Job 并行；单次失败只拒绝对应调用，后续写仍可继续。成功、失败、远端取消及下载完成路径显式等待持久化；同步恢复入口只排队一次有错误处理的写，后续监控仍按同一队列排序。
+- 故障与并发回归：受控异步 writer 验证同 Job 第二次写不会抢先、不同 Job 可同时开始；注入首次失败后第二次写成功；注入原子 replace 失败时旧 `job.json` 字节保持、临时文件清理。编译后源码门禁拒绝持久化函数重新出现 `mkdirSync/writeFileSync`。
+- 保持不变：Job JSON 字段、状态/日志内容、轮询间隔、产物、远端幂等键、重启恢复和 ownership 均不变；GPU/CPU/Worker/shader、Bake 像素/通道/分辨率/QA、Project Command/CAS/verified assets、Schema 与导出不涉及。
+- 变更卡：[CHG-20260917-BAKE-JOB-ATOMIC-PERSISTENCE](changes/CHG-20260917-BAKE-JOB-ATOMIC-PERSISTENCE.md)。
+
+### 3.7 Bake 下载与 ZIP 异步 metadata
+
+- 主模块：`M10/M13`，协作 `M15`；契约 `BAKE-DOWNLOAD-METADATA/1.0.0`。
+- 风险：单图下载与 ZIP 清单仍在 HTTP 热路径同步读取冷 Job、检查文件存在并取得大小；共享卷抖动会阻塞同进程其他用户请求。
+- 修复：单图委托既有异步输出 metadata；ZIP 异步加载 Job，并按原通道顺序逐项读取普通文件 metadata，单请求并发保持 1。owner、成功终态、通道、文件名、CRC/ZIP64、HEAD/GET 和流式背压不变。
+- 回归：注入异步服务验证顺序、缺失通道和跨 owner 拒绝；源码门禁禁止归档清单重新出现同步 metadata API；远端 Bake 冒烟等待异步入口。
+- 变更卡：[CHG-20260918-BAKE-DOWNLOAD-ASYNC-METADATA](changes/CHG-20260918-BAKE-DOWNLOAD-ASYNC-METADATA.md)。
+
 ## 4. 当前热点与处理优先级
 
 | 优先级 | 模块/热点 | 证据 | 当前处理原则 |
@@ -105,9 +122,9 @@
 | P1 | `M04/M12` `EditorPage.tsx` + `GeneratePanel.tsx` | 7,894 + 5,769 个非空行；页面仍承担跨任务编排 | 不在本轮拆层。优先减少可测的重复序列化、重复捕获或无关订阅，不移动算法常量到 React/Zustand |
 | P1 | `M07` UV 合成与回读 | 两个核心 Bake 文件各约 2.1K 行，且有 CPU/GPU/Worker/shader/export 对应实现 | 所有性能修改必须做完整字节/像素 parity、4K、取消和资源所有权检查；不得降分辨率或跳过 QA |
 | P1（本轮已修确定性缺口与结果驻留） | `M07` 内容识别填补 | 4K 分量门槛会丢弃已显示为深色斜线的小缺口；旧发布结果额外驻留约 32 MiB 诊断 mask；复杂 4K Worker 仍为秒级 | 已保留全部严格 core 斜线 texel、移除无效 seam 工作并停止生产回传未消费 mask；继续以真实工程记录总耗时、未达 texel、内存峰值和最大帧，不用降低分辨率掩盖热点 |
-| P1 | `M10/M13` Bake Job 文件持久化 | 历史并发请求已共享扫描，列表 metadata 与产物验收已异步化；但远端轮询状态通过 `persist()` 同步 `mkdirSync/writeFileSync` 重写 `job.json`，任务与共享卷增多时仍可阻塞同进程其他用户请求 | 下一补丁优先做同 Job 串行、可等待、崩溃一致的异步持久化；不得丢终态、重排状态或牺牲重启恢复，先加故障注入和写入顺序回归 |
+| P2（已修复，待生产观测） | `M10/M13` Bake Job 文件持久化 | `persist()` 已改为同 Job 串行、不同 Job 并行的异步原子替换；终态等待落盘，故障注入、写序及旧快照保留回归通过 | 生产记录每 Job 写入延迟、队列深度、失败率和共享卷 P95/P99；本轮不合并下载/ZIP metadata 热点，也不把本地故障注入解释为生产共享卷耐久性压测 |
 | P2（已修复，待生产观测） | `M13` UV/拓扑历史远端刷新 | 已使用全局 8、单用户 4、同 Job in-flight 合并和 2.75 秒响应等待预算；严格 TLS 多身份冒烟通过 | 生产记录队列深度、等待预算命中率、远端 P95/P99 和持久记录滞后；不因本地模拟通过而宣称生产容量完成 |
-| P1 | `M10/M13` Bake 下载与 ZIP | 历史输出 metadata 已异步，但单文件下载和 ZIP 归档仍通过 `getNormalBakeOutputPath` / `bakeArchiveService` 使用同步 exists/stat；多用户集中下载时共享卷延迟仍进入 HTTP 热路径 | 改为异步 metadata/打开文件并保留普通文件、owner、成功终态、通道及归档字节门禁；与 Job 持久化分开提交 |
+| P2（已修复，待生产观测） | `M10/M13` Bake 下载与 ZIP | 单文件和 ZIP 清单已改为异步 Job/普通文件 metadata，ZIP 单请求顺序检查以限制共享卷扇出；owner、成功终态、通道和归档字节门禁回归通过 | 生产记录下载/归档请求 P95/P99、共享卷等待与流错误；若并发下载仍挤压事件循环，再基于观测增加全局/用户级有界协调，不先扩大单请求并发 |
 | P1 | `M15` Cloud boundary 覆盖范围 | 门禁报告 0 legacy，但仓库仍跟踪 Photoshop UXP `127.0.0.1:4618` 和历史本地脚本 | 这些文件不得进入生产依赖图。后续应把“生产根通过”和“全仓仍有历史代码”分开报告，避免 0 legacy 被误读为全仓清零 |
 | P2 | `M15` 测试形状耦合 | 按当前静态口径，146 个测试读取实现文件、89 个使用 `new Function` | 保留现有快速门禁，同时逐步补真实模块/API/浏览器路径；大重构前先识别会因文本形状而误报的测试 |
 | P2 | 文档状态漂移 | 旧交接包仍写 `codex/modernization`，当前代码在 `master`；8K 和生成提供方描述混用历史状态 | 当前真值统一指向系统准则和本审计；日期快照加历史标记，不反写历史事实 |
@@ -130,11 +147,11 @@
 ## 6. 后续最小步路线
 
 1. 固定真实工程、浏览器、显卡和操作脚本，分别录制模型切换、投影显隐、画笔/橡皮、4K Merge、局部重绘回贴；输出 P95/P99/最大帧、LoAF、React commit、GPU 上传/编译阶段。
-2. 单独处理 Bake `job.json` 同步持久化：同 Job 顺序写入、终态可等待、异常不发布半写 JSON，并保持重启恢复；随后再独立异步化下载/ZIP 的 exists/stat。
+2. Bake `job.json` 顺序原子写与下载/ZIP 异步 metadata 已分两个独立契约完成；下一步只补生产队列、共享卷等待和请求 P95/P99 观测，不在没有证据时继续改结构。
 3. 为 Asset 与 Bake 历史接口补充任务数量、队列深度、等待预算命中率、共享扫描耗时、请求 P95/P99、事件循环延迟和共享卷队列观测；若 Bake 仍随历史总量线性失控，优先复用既有 PostgreSQL user/created_at 索引设计，不先引入新 Schema。
 4. 仅对 profile 命中的单个阶段提交补丁；每次保持一个主模块/算法 ID，并执行对应 CPU/GPU/Worker/shader/persistence/export 审计。
 5. 暂不拆 `ViewportCanvas`、`EditorPage`、`GeneratePanel`；等单点行为有稳定回归与性能样本后，再做不改变语义的 application/use-case 提取。
 
 ## 7. 迁移与回滚
 
-本轮没有数据库、Project、Layer、Generation、Capture、Bake Workspace 或对象资产迁移。服务端回滚只需恢复 Bake 历史逐请求同步扫描、产物同步 metadata 读取、Bake 产物同步验收和旧测试端口分配逻辑；内容填补回滚恢复旧分量门槛、seam-link 构建/传递和固定迭代轮数即可。历史任务、Revision、对象存储和用户工程均保留。若回滚，会重新引入共享卷抖动、多用户并发下的事件循环阻塞，以及放大视图短斜线缺口未补全。
+本轮没有数据库、Project、Layer、Generation、Capture、Bake Workspace 或对象资产迁移。服务端回滚只需恢复 Bake 历史逐请求同步扫描、产物同步 metadata 读取、Bake 产物同步验收、Bake Job 同步写入和旧测试端口分配逻辑；内容填补回滚恢复旧分量门槛、seam-link 构建/传递和固定迭代轮数即可。历史任务、Revision、对象存储和用户工程均保留。若回滚，会重新引入共享卷抖动、多用户并发下的事件循环阻塞，以及放大视图短斜线缺口未补全。

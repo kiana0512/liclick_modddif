@@ -3,8 +3,8 @@ import path from 'node:path';
 import { once } from 'node:events';
 import type { ServerResponse } from 'node:http';
 import {
-  getNormalBakeJob,
-  getNormalBakeOutputPath,
+  getNormalBakeJobAsync,
+  getNormalBakeOutputMetadata,
   type BakeChannelId,
 } from './substanceBakeService.js';
 
@@ -46,21 +46,20 @@ function safeArchiveBase(value: string) {
   return normalized || 'bake';
 }
 
-export function getBakeArchive(id: string, userId: string, requestedBase: string) {
-  const job = getNormalBakeJob(id, userId);
+export async function getBakeArchive(id: string, userId: string, requestedBase: string) {
+  const job = await getNormalBakeJobAsync(id, userId);
   if (!job || job.status !== 'succeeded') return undefined;
   const base = safeArchiveBase(requestedBase || job.input.high);
-  const entries = job.settings.channels.flatMap((channel) => {
-    const filePath = getNormalBakeOutputPath(id, userId, channel);
-    if (!filePath || !fs.existsSync(filePath)) return [];
-    return [
-      {
-        path: filePath,
-        name: `${base}_${archiveSuffix[channel]}.png`,
-        size: fs.statSync(filePath).size,
-      },
-    ];
-  });
+  const entries: ZipEntry[] = [];
+  for (const channel of job.settings.channels) {
+    const metadata = await getNormalBakeOutputMetadata(id, userId, channel);
+    if (!metadata) continue;
+    entries.push({
+      path: metadata.path,
+      name: `${base}_${archiveSuffix[channel]}.png`,
+      size: metadata.sizeBytes,
+    });
+  }
   if (entries.length === 0) return undefined;
   return { fileName: `${base}_BakedMaps.zip`, entries };
 }

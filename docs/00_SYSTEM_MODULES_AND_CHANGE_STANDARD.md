@@ -1,5 +1,7 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
+2026-09-18 M10/M13（协作 M15）：`BAKE-DOWNLOAD-METADATA/1.0.0` 将 Bake 单图下载与 ZIP 清单构造中的 Job 冷读取、输出存在性和文件大小检查从同步文件 API 改为异步 metadata。所有入口继续要求成功终态、持久化 owner、已请求通道和普通文件；ZIP 按通道顺序逐项检查，避免一次请求扩大共享卷 I/O 扇出，文件名、CRC/ZIP64、HEAD/GET 与流式背压不变。GPU/CPU/Worker/shader、Bake 像素/通道/分辨率/QA、远端幂等、Job JSON、Project Command/CAS/ownership/verified assets、Schema 和导出字节均不变，无迁移。验证与回滚见 [Bake 下载异步 metadata 变更卡](changes/CHG-20260918-BAKE-DOWNLOAD-ASYNC-METADATA.md)。
+
 2026-09-17 M04（协作 M12/UI-05）：`TEXTURE-GENERATION-RECOVERY-OWNERSHIP/1.0.0` / `GPT-SILHOUETTE-RETRY/1.0.1` 为前台单/多视图纹理流程建立项目级恢复写入所有权，后台单任务轮询、历史恢复在流程期间不接管 texture-map 校验/状态，跨越所有权变化的迟到成功或异常均丢弃；结束后恢复后台接管。QA 阈值、同一冻结视角重试一次、组内有序回贴与组间等待不改。被 QA 拒绝及已被重试替代的结果不反复恢复；单个历史任务异常不阻断其余任务。仅新增可选结果 metadata，无 Schema/数据迁移；GPU/CPU/Worker/shader、像素、分辨率、UV/export、Command/CAS/ownership/verified assets 保持不变。回滚移除恢复所有权门禁及可选拒绝标记消费者，历史资产保留。详见 [QA 与后台恢复所有权](changes/CHG-20260917-TEXTURE-QA-RECOVERY-OWNERSHIP.md)。本轮未推送或部署。
 
 2026-09-17 M08（UI-10，协作 M05/M12）：`MASK-CLEAR-SHORTCUT/1.0.0` 将清空蒙版默认快捷键从 Ctrl+Shift+D 改为 Ctrl+D（沿用 primary 修饰键的 Mac Cmd 兼容）。按用户确认移除复制图层的默认快捷键及菜单 Ctrl+D 标签，保留复制菜单与自定义快捷键能力；清空提示同步为 CTRL D。现有清空历史、输入框保护、任务锁、preventDefault 与撤销入口不变；GPU/CPU/Worker/shader、蒙版像素算法、持久化、导出、Schema/Command/CAS/ownership 无变更。仅默认配置调整，无数据迁移，显式用户 overrides 保留；回滚恢复两项旧默认和标签即可。功能回归覆盖 Ctrl/Cmd+D、旧组合不触发、无复制冲突、菜单保留及自定义覆盖。本轮未推送或部署。
@@ -15,6 +17,7 @@
 2026-09-17 模型导入 → M02（协作 M10/M13）：按用户要求恢复 `IMPORT-DECIMATE` v1.0.2。导入总三角面严格超过 150 万时确认，服务端 Blender 精简修改器 COLLAPSE 以约 20 万面为目标；保留 v1.0.1 共享顶点恢复和减面/回读表面积保护。减面后异常 UV 仍单独确认，沿用当前智能 UV 投射 v1.2.0，不恢复旧基于角度展开。此前简化步骤隐藏的服务器/目标面数确认文案继续隐藏。GPU/CPU/Worker/shader 读取最终资产，绘制/烘焙/保存/export、Schema/Command/CAS/ownership 不变，无存量迁移。详见 [恢复减面](changes/CHG-20260917-IMPORT-DECIMATE.md)。尚未推送或部署。
 
 2026-09-17 M08（协作 M04/M12/M13）：`MODELVIEW-WHITE-INPUT/1.0.0` 适配 `2026.09.17-li3d4500-defaultprompt-steps2-r1`。原局部重绘图一改为效果图内纯白选区，图二参考、图三原外扩蒙版保持；不再捕获多余白模。智能润色项目开关默认关闭，默认仅三图、无 prompt；显式开启才走既有润色覆盖。新增策略 fingerprint/幂等后缀，保留冻结相机、作者蒙版、回贴、图层及持久化安全边界；GPT/单视图、GPU/shader/UV/export、分辨率与 QA 不变。无资产迁移；可选设置兼容旧项目，回滚需前后端与远端工作流协调。见 [三图纯白输入变更](changes/CHG-20260917-MODELVIEW-WHITE-INPUT.md)。本轮未推送或部署。
+2026-09-17 M10/M13（协作 M15）：`BAKE-JOB-PERSISTENCE/1.0.0` 将 Substance Bake 的 `job.json` 从同步 `mkdirSync/writeFileSync` 改为按 Job ID 串行的异步临时文件 + 原子替换。同一 Job 的轮询、并发产物下载、失败、取消和成功终态按提交顺序写入；不同 Job 可并行，单次替换失败不会阻塞后续快照，终态路径等待落盘后返回。替换失败保留上一份完整 JSON 并清理临时文件。Job JSON 字段、状态机、远端幂等键、恢复语义、GPU/CPU/Worker/shader、Bake 像素/通道/分辨率/QA、Project Command/CAS/ownership/verified assets、Schema 与导出均不变，无迁移；本轮未推送或部署。验证和回滚见 [Bake Job 异步原子持久化](changes/CHG-20260917-BAKE-JOB-ATOMIC-PERSISTENCE.md)。
 
 2026-09-17 M07（协作 M05/M06/M08/M09）：`LOCAL-BOUNDARY-REPAIR/1.4.0` / `CONTENT-REPAIR-SEAM-FALLBACK/1.0.0` 为首轮同 region 修复后仍无 donor 的余量增加按需 fallback：只有统计确认残余才构建同 Mesh/同材质/法线兼容的物理 seam links，第二轮最多跨一条 seam 且只能写 residual mask；全局平均、跨材质和岛链传播仍禁止。Worker 原地回传已转移 source/mask 并在 Worker 内合并两轮稀疏 RGBA，避免 4K continuation 复制；fallback 为 lazy chunk，常规首屏与无余量任务不加载。GPU/shader、投影/UV/repaint/export、分辨率、QA、Schema/Command/CAS/ownership/verified assets 不变，无迁移；孤立无可靠 donor 的表面仍明确保留余量。回滚与验证见 [内容填补按需物理缝余量修复](changes/CHG-20260917-CONTENT-REPAIR-BOUNDED-SEAM-FALLBACK.md)。
 
@@ -175,7 +178,7 @@
 
 2026-09-15 M03：ALG-VIEW-INPUT-001/1.3.2 在鼠标接触前即让 R3F 悬停遵守 Alt 所有权；保留普通 hover 和已锁定拖动。旧实现拾取回归失败、新实现通过，用户实际首帧延迟需继续录制。无像素/持久化迁移，见 [Alt 悬停变更卡](changes/CHG-20260915-ALT-BRUSH-HOVER.md)。
 
-> 文档版本：`2.20.183`
+> 文档版本：`2.20.185`
 
 2026-09-16 UI-16 → M14（协作 M01/M12/M13/M15）：`ASSET-LIFECYCLE-GC` v0.4.0 / `STORAGE-INVENTORY-001/4` 将 Cloud 工程/Revision 引用页默认 8→32，并由单条 PostgreSQL CTE 完成分页、assetId 提取与引用 upsert，Node 不再回传引用数组后二次写库；每 256 条文档约 64→8 次数据库往返，保持 45 秒单查询上限与有界 Node 内存。当前 ready scan 引用索引保留到下一快照原子切换，旧 /3 快照自动重扫。Cloud 隔离区改按真实 quarantine 且排除重新可达对象统计；新增用户级幂等持久 purge job/item，以最多 4 并发签名 DeleteObject 后逐项事务删除 transfer、写 deleted_at，404/Pod 重启可安全重放。新增 `asset_storage_purge_jobs/items`，无 Project/Revision/Asset 内容迁移；Command/CAS/ownership/verified 及 GPU/CPU/Worker/shader、投影/UV/重绘/export、分辨率与 QA 不变。回滚前停 purge 并保留任务表，详见 [Cloud 存储盘点与物理清理变更卡](changes/CHG-20260916-CLOUD-STORAGE-INVENTORY-BOUNDED.md)。
 
@@ -1338,6 +1341,8 @@ M15 / CLOUD-DEPLOYMENT v1.0.0（2026-09-03）：正常合并 release 部署历�
 
 | 版本 | 日期 | 基线 | 变更 |
 | --- | --- | --- | --- |
+| `2.20.185` | 2026-09-18 | `Bake 下载异步 metadata` | M10/M13（协作 M15）：`BAKE-DOWNLOAD-METADATA/1.0.0` 移除单图/ZIP HTTP 热路径同步 exists/stat，保持 owner、成功终态、通道、普通文件和归档字节门禁；无迁移。 |
+| `2.20.184` | 2026-09-18 | `Bake Job 异步原子持久化` | M10/M13（协作 M15）：`BAKE-JOB-PERSISTENCE/1.0.0` 以同 Job 串行、不同 Job 并行的异步原子替换保存 `job.json`，终态显式等待；故障注入验证失败保留上一完整快照且队列可恢复。状态/JSON/资产/Schema 不变，无迁移，未推送部署。 |
 | `2.20.174` | 2026-09-17 | `GPT 轮廓漂移有界重试` | M04（协作 M03/M06/M08/M12/M13）：`GPT-RETURN-SILHOUETTE-QA/1.2.0` / `GPT-SILHOUETTE-RETRY/1.0.0` / `ALG-GEN-001/002` v1.3.1 保留轮廓门禁，仅对确认的远端构图漂移使用同冻结视角和确定性 ID 替代 1 次，再失败即停止；无数据迁移。 |
 | `2.20.173` | 2026-09-17 | `导入智能 UV 投射` | M02/M10/M13：IMPORT-UV-REPAIR v1.2.0，临时工作网格投射后仅回写 UV；无数据迁移。 |
 | `2.20.172` | 2026-09-17 | `多视图光照处理` | M04/M12/M13：REFERENCE-LIGHTING v1.0.0 一次去光照，REFERENCE-GROUP-BINDING v1.2.0 原位保留绑定；无数据迁移，未推送部署。 |

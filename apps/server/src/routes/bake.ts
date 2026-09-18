@@ -1,4 +1,3 @@
-import fs from 'node:fs';
 import path from 'node:path';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { requireAuth } from '../auth/authMiddleware.js';
@@ -151,7 +150,7 @@ export async function handleBakeRoute(
   const archiveMatch = /^\/api\/bake\/jobs\/([^/]+)\/archive$/.exec(url.pathname);
   if (archiveMatch && (request.method === 'GET' || request.method === 'HEAD')) {
     const jobId = decodeURIComponent(archiveMatch[1]);
-    const archive = getBakeArchive(jobId, user.id, url.searchParams.get('name') ?? '');
+    const archive = await getBakeArchive(jobId, user.id, url.searchParams.get('name') ?? '');
     if (!archive) {
       sendJson(response, 404, { error: 'Bake archive is not available.' });
       return true;
@@ -174,8 +173,8 @@ export async function handleBakeRoute(
   const jobId = decodeURIComponent(match[1]);
   const outputChannel = match[2] as BakeChannelId | undefined;
   if (outputChannel) {
-    const outputPath = getNormalBakeOutputPath(jobId, user.id, outputChannel);
-    if (!outputPath || !fs.existsSync(outputPath)) {
+    const outputPath = await getNormalBakeOutputPath(jobId, user.id, outputChannel);
+    if (!outputPath) {
       sendJson(response, 404, { error: `${outputChannel} output is not available.` });
       return true;
     }

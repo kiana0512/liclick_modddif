@@ -15,6 +15,8 @@ const defaultRetryDelaysMs = [25, 50, 100, 200, 400, 800] as const;
 
 type AtomicFileData = string | Uint8Array;
 
+type AtomicFileWriter = (filePath: string, data: AtomicFileData) => Promise<void>;
+
 type AtomicWriteOptions = {
   renameFile?: (source: string, destination: string) => Promise<void>;
   retryDelaysMs?: readonly number[];
@@ -68,4 +70,36 @@ export async function writeFileAtomically(
   } finally {
     await fs.rm(temporaryPath, { force: true }).catch(() => undefined);
   }
+}
+
+/**
+ * Serializes atomic replacements for the same logical key while allowing
+ * unrelated keys to write in parallel. A rejected write does not poison the
+ * queue, but the caller that submitted it still receives the rejection.
+ */
+export function createSerializedAtomicFileWriter(
+  writeFile: AtomicFileWriter = writeFileAtomically,
+) {
+  const pendingWrites = new Map<string, Promise<void>>();
+
+  const write = (key: string, filePath: string, data: AtomicFileData) => {
+    const previous = pendingWrites.get(key) ?? Promise.resolve();
+    const pending = previous
+      .catch(() => undefined)
+      .then(() => writeFile(filePath, data));
+    pendingWrites.set(key, pending);
+
+    const release = () => {
+      if (pendingWrites.get(key) === pending) pendingWrites.delete(key);
+    };
+    void pending.then(release, release);
+    return pending;
+  };
+
+  return {
+    write,
+    flush(key: string) {
+      return pendingWrites.get(key) ?? Promise.resolve();
+    },
+  };
 }
