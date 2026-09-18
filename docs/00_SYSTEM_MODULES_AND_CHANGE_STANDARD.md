@@ -1,5 +1,7 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
+2026-09-18 M08（协作 M03/M04/M06/UI-06/UI-10）：`INPAINT-TOOL-SESSION/1.0.1` 将“生图完成回贴后按钮 1 偶发不能画/错位”纳入真实生产视口回归。内置浏览器运行 `BottomToolDock + ViewportCanvas + sceneStore + layerStore`，普通状态 30 轮重复激活并穿插视角/缩放；再以真实单视图回贴与多视图 preview batch 完成路径交替 20 轮、累计 56 图层。全部生成作者蒙版且无 warning，完成态最大归一化落点漂移 X `0.00361`、Y `0.00091`。生产修复仍为非持久 activation revision 与视口输入会话 rearm；GPU/CPU/Worker/shader、蒙版像素、分辨率、QA、持久化/export 不变，无迁移。详见 [蒙版工具会话自愈](changes/CHG-20260917-INPAINT-TOOL-SESSION.md)。
+
 2026-09-18 M04（协作 M03/M06/M08/M12/M13）：`GPT-CONTENT-FRAMING/2.2.1` 修复 v2 将原生回图尺寸不同误判为比例错误：v1/v2 统一校验真实宽高比与既有 16px 网格容差，保留原生像素，不拉伸/裁切/降采样；真实比例偏差、轮廓、空 Alpha 和安全上限仍 fail-closed。`GPT-MULTIVIEW-PAIR-SEQUENCE/1.4.1` / `GPT-SILHOUETTE-RETRY/1.0.2` 仅在本组缺失完全由已识别 QA 拒绝解释时保留成功兄弟并继续后续组；网络、提交、保存、投影、resident、取消及未知错误仍停止。至少一张成功才执行批末补缝。仅复用可选 Generation metadata，无 Schema/资产迁移；Command/CAS/ownership/verified assets 不变。详见 [GPT 回图比例 QA 与多视图续跑](changes/CHG-20260918-GPT-RETURN-QA-CONTINUATION.md)。
 
 2026-09-18 M15：`CI-CONTAINER-DEPENDENCY-RETRY/1.0.0` 修复 master `4fb1d8ec` pipeline `633789` 仅 server 容器在 Corepack 下载中被远端断开而失败的问题。Docker deps 阶段对固定 pnpm 9.15.4 准备与 frozen-lockfile 安装分别最多尝试 3 次，等待 5/10 秒；连续失败仍阻断，不更换 registry、依赖、基础镜像，不跳过 verify/build/包体/Cloud 产物门禁。server/web 镜像目标、推送与部署规则不变；浏览器/服务端功能、GPU/CPU/Worker/shader、投影/UV/重绘/Bake 像素、分辨率、QA、Schema/Command/CAS/ownership/verified assets 和导出均不变，无迁移。验证、边界与回滚见 [容器依赖重试变更卡](changes/CHG-20260918-CI-CONTAINER-DEPENDENCY-RETRY.md)。
@@ -182,7 +184,7 @@
 
 2026-09-15 M03：ALG-VIEW-INPUT-001/1.3.2 在鼠标接触前即让 R3F 悬停遵守 Alt 所有权；保留普通 hover 和已锁定拖动。旧实现拾取回归失败、新实现通过，用户实际首帧延迟需继续录制。无像素/持久化迁移，见 [Alt 悬停变更卡](changes/CHG-20260915-ALT-BRUSH-HOVER.md)。
 
-> 文档版本：`2.20.187`
+> 文档版本：`2.20.188`
 
 2026-09-16 UI-16 → M14（协作 M01/M12/M13/M15）：`ASSET-LIFECYCLE-GC` v0.4.0 / `STORAGE-INVENTORY-001/4` 将 Cloud 工程/Revision 引用页默认 8→32，并由单条 PostgreSQL CTE 完成分页、assetId 提取与引用 upsert，Node 不再回传引用数组后二次写库；每 256 条文档约 64→8 次数据库往返，保持 45 秒单查询上限与有界 Node 内存。当前 ready scan 引用索引保留到下一快照原子切换，旧 /3 快照自动重扫。Cloud 隔离区改按真实 quarantine 且排除重新可达对象统计；新增用户级幂等持久 purge job/item，以最多 4 并发签名 DeleteObject 后逐项事务删除 transfer、写 deleted_at，404/Pod 重启可安全重放。新增 `asset_storage_purge_jobs/items`，无 Project/Revision/Asset 内容迁移；Command/CAS/ownership/verified 及 GPU/CPU/Worker/shader、投影/UV/重绘/export、分辨率与 QA 不变。回滚前停 purge 并保留任务表，详见 [Cloud 存储盘点与物理清理变更卡](changes/CHG-20260916-CLOUD-STORAGE-INVENTORY-BOUNDED.md)。
 
@@ -1345,6 +1347,7 @@ M15 / CLOUD-DEPLOYMENT v1.0.0（2026-09-03）：正常合并 release 部署历�
 
 | 版本 | 日期 | 基线 | 变更 |
 | --- | --- | --- | --- |
+| `2.20.188` | 2026-09-18 | `生图完成后蒙版按钮压力回归` | M08（协作 M03/M04/M06）：`INPAINT-TOOL-SESSION/1.0.1` 在内置浏览器完成普通 30 轮及单/多视图完成态 20 轮生产视口压力验证；累计 56 图层仍可逐轮落笔且坐标稳定，无迁移。 |
 | `2.20.187` | 2026-09-18 | `GPT 回图比例 QA 与续跑` | M04（协作 M03/M06/M08/M12/M13）：`GPT-CONTENT-FRAMING/2.2.1` 只按真实比例拒绝回图；`GPT-MULTIVIEW-PAIR-SEQUENCE/1.4.1` 仅对已识别 QA 缺失继续后续组，其他失败仍停止；不关闭轮廓 QA、不改原生像素，无迁移。 |
 | `2.20.186` | 2026-09-18 | `容器依赖引导重试` | M15：`CI-CONTAINER-DEPENDENCY-RETRY/1.0.0` 为 Docker 固定 pnpm 准备和冻结安装增加最多 3 次的有限重试；连续失败仍阻断，无运行时或数据迁移。 |
 | `2.20.185` | 2026-09-18 | `Bake 下载异步 metadata` | M10/M13（协作 M15）：`BAKE-DOWNLOAD-METADATA/1.0.0` 移除单图/ZIP HTTP 热路径同步 exists/stat，保持 owner、成功终态、通道、普通文件和归档字节门禁；无迁移。 |

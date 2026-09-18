@@ -2,15 +2,16 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createServer } from 'vite';
-const {chromium}=await import(process.env.PLAYWRIGHT_MODULE?pathToFileURL(process.env.PLAYWRIGHT_MODULE).href:'playwright');
 const root=fileURLToPath(new URL('..',import.meta.url));
 const artifacts=path.resolve(process.env.SELECTION_ARTIFACTS??path.join(root,'../../.codex-tmp/selection-editor'));
 fs.mkdirSync(artifacts,{recursive:true});
 const server=await createServer({root,configFile:false,appType:'custom',cacheDir:'node_modules/.vite-selection-editor',
   optimizeDeps:{entries:['scripts/projected-selection-editor-fixture.mjs'],include:['fflate']},resolve:{alias:{'@':`${root}/src`}},server:{host:'127.0.0.1',port:5197,strictPort:true}});
-server.middlewares.use('/__fixture',(_q,r)=>{r.setHeader('Content-Type','text/html');r.end('<!doctype html><title>Selection editor acceptance</title>');});
+server.middlewares.use('/__fixture',(_q,r)=>{r.setHeader('Content-Type','text/html');r.end('<!doctype html><title>Selection editor acceptance</title><script type="module">import {setup} from "/scripts/projected-selection-editor-fixture.mjs";setup(false).then(result=>{window.fixtureSetup=result;document.body.dataset.fixtureReady="true"}).catch(error=>{window.fixtureError=String(error?.stack??error);document.body.dataset.fixtureReady="error"})</script>');});
 if(process.env.SELECTION_CAR_FILE)server.middlewares.use('/__selection_car.fbx',(_q,r)=>{r.setHeader('Content-Type','application/octet-stream');fs.createReadStream(process.env.SELECTION_CAR_FILE).pipe(r);});
 await server.listen();console.log('PREVIEW_URL='+server.resolvedUrls.local[0]+'__fixture');
+if(process.argv.includes('--serve-only'))await new Promise(()=>{});
+const {chromium}=await import(process.env.PLAYWRIGHT_MODULE?pathToFileURL(process.env.PLAYWRIGHT_MODULE).href:'playwright');
 const browser=await chromium.launch({channel:'msedge',headless:true});
 let page;
 try{
@@ -28,6 +29,34 @@ try{
     await page.mouse.move(box.x+x1*box.width,box.y+y1*box.height,{steps});await page.mouse.up();
     await page.evaluate(()=>window.selectionFixture.settle());
   };
+  const buttonOne=page.getByRole('button',{name:'蒙版绘制：左键执行当前加选或减选工具'});
+  const resetStress=page.getByRole('button',{name:'重置压力轮次',exact:true});
+  const baselineStress=page.getByRole('button',{name:'记录落笔基线',exact:true});
+  const inspectStress=page.getByRole('button',{name:'检查压力结果',exact:true});
+  await buttonOne.waitFor();
+  const stress=[];
+  for(let round=0;round<30;round++){
+    await resetStress.click();
+    await page.waitForFunction(()=>JSON.parse(document.querySelector('#button-one-stress-report')?.textContent||'{}').phase==='ready');
+    const beforeActivation=await page.evaluate(()=>window.selectionFixture.state().activationRevision);
+    const clicks=1+(round%3);
+    for(let click=0;click<clicks;click++)await buttonOne.click();
+    const afterActivation=await page.evaluate(()=>window.selectionFixture.state().activationRevision);
+    if(afterActivation-beforeActivation<clicks)throw Error(`Button 1 activation token lost at round ${round+1}`);
+    await baselineStress.click();
+    await page.waitForFunction(()=>JSON.parse(document.querySelector('#button-one-stress-report')?.textContent||'{}').phase==='baseline');
+    const y=.42+(round%3)*.08;
+    await stroke(.43,y,.57,y,12);
+    await inspectStress.click();
+    await page.waitForFunction(()=>JSON.parse(document.querySelector('#button-one-stress-report')?.textContent||'{}').phase==='painted');
+    const result=JSON.parse(await page.locator('#button-one-stress-report').textContent());
+    if(!result.content||!result.hash)throw Error(`Button 1 did not paint at round ${round+1}`);
+    if(result.diff.count<20)throw Error(`Button 1 overlay missing at round ${round+1}: ${JSON.stringify(result.diff)}`);
+    const cx=result.diff.centerX/result.diff.width,cy=1-result.diff.centerY/result.diff.height;
+    if(Math.abs(cx-.5)>.16||Math.abs(cy-y)>.16)throw Error(`Button 1 overlay drift at round ${round+1}: ${JSON.stringify({cx,cy,y,diff:result.diff})}`);
+    stress.push({round:round+1,clicks,activationRevision:afterActivation,overlayPixels:result.diff.count,center:[cx,cy],maskHash:result.hash});
+  }
+  console.log('BUTTON_ONE_STRESS',JSON.stringify(stress));
   await page.evaluate(()=>window.selectionFixture.start());
   await stroke(.42,.42,.58,.42);
   const cold=await page.evaluate(()=>window.selectionFixture.stop());
