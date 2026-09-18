@@ -26,8 +26,10 @@ const budgets = [
   // viewport adapters measured ~701,300 bytes before integration. The merged
   // resident graph measures 702,997; allow 3,500 bytes including release metadata.
   // UV coexistence + upstream resident-material/warmup integration: measured
-  // 703,681 bytes. Allocate 500 bytes; keep all other per-chunk limits.
-  { label: 'high bake snapshot', prefix: 'bakeHighSnapshot-', maxBytes: 704_000 },
+  // 703,681 bytes. The exact projected-eraser live-mask path is shared with
+  // BakeWorkspace and measures 707,590 bytes in release mode. Bound only this
+  // chunk at 708,000 bytes; keep the total-JavaScript and every quality gate.
+  { label: 'high bake snapshot', prefix: 'bakeHighSnapshot-', maxBytes: 708_000 },
   {
     label: 'shared 3D pipeline',
     // Rollup chooses the facade name from the shared module graph. Adding the
