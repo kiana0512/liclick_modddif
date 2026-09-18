@@ -3672,6 +3672,7 @@ const ImportedModel = memo(function ImportedModel({
             }
           }
         }
+        if (nextBuild.cancelled || projectedTextureArrayBuildRef.current !== nextBuild) return;
         document.body.dataset.projectedEarlyArrayBuildStatus = 'ready';
         document.body.dataset.projectedEarlyArrayBuildReadyMs = performance.now().toFixed(1);
         document.body.dataset.projectedEarlyArrayPipelinePrewarmMs = (
