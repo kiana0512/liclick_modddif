@@ -30,9 +30,18 @@ export function isRejectedTextureReturn(metadata: Record<string, unknown> | unde
     typeof metadata?.silhouetteRetryGenerationId === 'string';
 }
 
+export function isTextureReturnQaFailure(error: unknown) {
+  return Boolean(
+    error &&
+      typeof error === 'object' &&
+      'code' in error &&
+      (error.code === 'GPT_RETURN_SILHOUETTE_MISMATCH' ||
+        error.code === 'GPT_RETURN_FRAME_RATIO_MISMATCH'),
+  );
+}
+
 export function textureReturnQaFailureMetadata(error: unknown): Record<string, unknown> {
-  return error && typeof error === 'object' && 'code' in error &&
-    error.code === 'GPT_RETURN_SILHOUETTE_MISMATCH'
-    ? { returnQaRejected: true, returnQaErrorCode: error.code }
+  return isTextureReturnQaFailure(error)
+    ? { returnQaRejected: true, returnQaErrorCode: (error as { code: string }).code }
     : {};
 }

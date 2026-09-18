@@ -1,7 +1,7 @@
 # 蒙版工具会话自愈
 
 - 主模块：M08；协作模块：M03，入口 UI-06/UI-10。
-- 算法/会话版本：`INPAINT-TOOL-SESSION/1.0.0`。
+- 算法/会话版本：`INPAINT-TOOL-SESSION/1.0.1`。
 - 问题边界：低概率出现“步骤 1”仍高亮但模型不接收或不显示新蒙版笔画，刷新页面后恢复。
 
 ## 原因与修复
@@ -27,6 +27,8 @@ Store 新增仅运行时 `paintToolActivationRevision`。进入或重复选择�
 
 - Store 回归验证首次与重复蒙版激活分别递增，退出工具不伪造激活。
 - 工具栏/视口契约回归验证高亮按钮仍会重发当前工具，视口先收口孤立输入再同步覆盖层，effect 依赖 activation revision。
+- 内置浏览器直接运行生产 `BottomToolDock + ViewportCanvas + sceneStore + layerStore`：普通状态 30 轮，每轮重复点击按钮 1 一至三次，并穿插 6 次视角切换、4 次缩放；30/30 均生成作者蒙版，激活 revision 增量逐次匹配，最大归一化落点漂移 X `0.00094`、Y `0.00095`，无 warning。
+- 针对实际触发时机执行完成态回归：单视图用真实 `addProjectedLayerFromGeneration` 回贴，多视图用 `beginProjectedPreviewBatch → 4 张回贴 → endProjectedPreviewBatch`；两类交替 20 轮、累计 56 个图层后，20/20 均可由按钮 1 重建画笔会话并落笔，批次深度均归零，最大归一化落点漂移 X `0.00361`、Y `0.00091`。
 - 类型检查、完整 Web 回归、生产构建和本机 4517 冒烟由发布前门禁记录。
 
 发布只需替换 Web 代码，无迁移。回滚时删除 activation revision、重复点击重发与视口 rearm 处理；已有蒙版和项目资产无需回写。若仍出现绘制失败，应保留浏览器控制台、模型/材质切换顺序和 pointer 类型用于定位，不允许用降低分辨率或关闭深度/QA规避。

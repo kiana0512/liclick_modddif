@@ -4,6 +4,7 @@ import { invalidate } from '@react-three/fiber';
 import * as THREE from 'three';
 import { FBXLoader } from 'three/examples/jsm/loaders/FBXLoader.js';
 import { ViewportCanvas } from '../src/engine/viewport/ViewportCanvas.tsx';
+import { BottomToolDock } from '../src/components/editor/BottomToolDock.tsx';
 import { useSceneStore } from '../src/stores/sceneStore.ts';
 import { useLayerStore } from '../src/stores/layerStore.ts';
 import { useProjectStore } from '../src/stores/projectStore.ts';
@@ -15,6 +16,19 @@ import { runPaintMaskHistoryAction } from '../src/engine/paint/paintMaskHistoryA
 
 const tick = () => new Promise(resolve => requestAnimationFrame(resolve));
 const until = async (test) => { const end=performance.now()+60000;while(!test()){if(performance.now()>end)throw Error('Viewport readiness timeout');await tick();} };
+const dockLabels={select:'选择',move:'移动',rotate:'旋转',scale:'缩放',layers:'图层',localRepaint:'局部重绘',inpaintSelect:'加选',inpaintUnselect:'减选',undo:'撤销',redo:'重做',eraser:'擦除',brushSize:'画笔大小',brushFeather:'羽化',resetInpaintRegion:'清空蒙版',invertInpaintRegion:'反选蒙版',selectHelp:'',moveHelp:'',rotateHelp:'',scaleHelp:'',layersHelp:'',eraserToolHelp:'',localRepaintHelp:'',inpaintSelectHelp:'',inpaintUnselectHelp:'',viewportOrbit:'旋转视图',viewportOrbitHelp:''};
+function FixtureDock(){
+  const paintTool=useSceneStore(state=>state.paintTool);
+  const transformMode=useSceneStore(state=>state.transformMode);
+  const canUndo=useEditorHistoryStore(state=>state.past.length>0);
+  const canRedo=useEditorHistoryStore(state=>state.future.length>0);
+  return React.createElement(BottomToolDock,{mode:'texture',transformMode,paintTool,
+    onTransformModeChange:mode=>useSceneStore.getState().setTransformMode(mode),
+    onPaintToolChange:tool=>useSceneStore.getState().setPaintTool(tool),
+    onLocalImageGeneration(){},onLocalRepaint(){},onOpenLocalRepaintPanel(){},
+    localImageGenerationRunning:false,localImageGenerationSuccessKey:0,canLocalRepaint:true,
+    canUndo,canRedo,onUndo:()=>useEditorHistoryStore.getState().undo(),onRedo:()=>useEditorHistoryStore.getState().redo(),labels:dockLabels});
+}
 export async function setup(car = false) {
   const group = new THREE.Group();
   if (car) {
@@ -45,6 +59,8 @@ export async function setup(car = false) {
   header.textContent='正式编辑器视口 · 投影选区显示 · 本地验收';document.body.append(header);
   const host=document.createElement('div');host.style.cssText='position:absolute;left:0;right:0;top:52px;bottom:0';document.body.append(host);
   createRoot(host).render(React.createElement(ViewportCanvas,{hasImportedModel:true,showCaptureFrame:false,showViewCube:false,onImportModels(){},onImportReferenceImages(){},onOpenImport(){}}));
+  const dock=document.createElement('div');dock.id='production-repaint-dock';dock.style.cssText='position:fixed;left:50%;bottom:16px;z-index:30;transform:translateX(-50%);padding:8px;background:#161722;border:1px solid #555;border-radius:10px';document.body.append(dock);
+  createRoot(dock).render(React.createElement(FixtureDock));
   await until(()=>useSceneStore.getState().viewport);
   host.firstElementChild.style.cssText='position:absolute;inset:0';
   const runtime=useSceneStore.getState().viewport;
@@ -74,15 +90,24 @@ export async function setup(car = false) {
     const hash=[...new Uint8Array(await crypto.subtle.digest('SHA-256',pixels))].map(v=>v.toString(16).padStart(2,'0')).join('');
     return `${canvas.width}x${canvas.height}:${hash}`;
   };
-  const state=()=>({content:useSceneStore.getState().paintMaskHasContent,past:useEditorHistoryStore.getState().past.length,future:useEditorHistoryStore.getState().future.length,overlays:overlays().map(m=>({visible:m.visible,count:m.material.uniforms.count?.value,live:m.material.uniforms.liveReady?.value,inverted:m.material.uniforms.inverted?.value})),warnings:useToastStore.getState().toasts.filter(t=>t.tone==='error'||t.tone==='warning').map(t=>t.description)});
-  const actions={add:()=>useSceneStore.getState().setPaintTool('inpaint-add'),erase:()=>useSceneStore.getState().setPaintTool('inpaint-subtract'),undo:()=>useEditorHistoryStore.getState().undo(),redo:()=>useEditorHistoryStore.getState().redo(),clear:()=>runPaintMaskHistoryAction('clear'),invert:()=>runPaintMaskHistoryAction('invert'),home:()=>view(home)};
+  const state=()=>({content:useSceneStore.getState().paintMaskHasContent,paintTool:useSceneStore.getState().paintTool,activationRevision:useSceneStore.getState().paintToolActivationRevision,past:useEditorHistoryStore.getState().past.length,future:useEditorHistoryStore.getState().future.length,overlays:overlays().map(m=>({visible:m.visible,count:m.material.uniforms.count?.value,live:m.material.uniforms.liveReady?.value,inverted:m.material.uniforms.inverted?.value})),warnings:useToastStore.getState().toasts.filter(t=>t.tone==='error'||t.tone==='warning').map(t=>t.description)});
+  const actions={add:()=>useSceneStore.getState().setPaintTool('inpaint-add'),deactivate:()=>useSceneStore.getState().setPaintTool('none'),erase:()=>useSceneStore.getState().setPaintTool('inpaint-subtract'),undo:()=>useEditorHistoryStore.getState().undo(),redo:()=>useEditorHistoryStore.getState().redo(),clear:()=>runPaintMaskHistoryAction('clear'),invert:()=>runPaintMaskHistoryAction('invert'),home:()=>view(home)};
   for(const [key,label]of Object.entries({add:'绘制',erase:'擦除',undo:'撤销',redo:'重做',clear:'清空',invert:'反选',home:'原视角'})){const b=document.createElement('button');b.textContent=label;b.onclick=actions[key];b.style.cssText='color:white;background:#343448;border:1px solid #56576c;border-radius:5px;padding:5px 10px';header.append(b);}
   const extension=runtime.gl.getContext().getExtension('WEBGL_debug_renderer_info');
+  const screenSnapshots=new Map();
+  const screenPixels=()=>{runtime.gl.render(runtime.scene,runtime.camera);const c=runtime.gl.domElement,g=runtime.gl.getContext(),p=new Uint8Array(c.width*c.height*4);g.readPixels(0,0,c.width,c.height,g.RGBA,g.UNSIGNED_BYTE,p);return {width:c.width,height:c.height,pixels:p};};
   window.selectionFixture={...actions,view,settle,state,capture,
     renderer:extension?runtime.gl.getContext().getParameter(extension.UNMASKED_RENDERER_WEBGL):'unknown',
     start(){for(const k in samples)samples[k]=[];measuring=true;previous=0;},
     stop(){measuring=false;return structuredClone(samples);},
-    pixels(){runtime.gl.render(runtime.scene,runtime.camera);const c=runtime.gl.domElement,g=runtime.gl.getContext(),p=new Uint8Array(c.width*c.height*4);g.readPixels(0,0,c.width,c.height,g.RGBA,g.UNSIGNED_BYTE,p);return Array.from(p);},
+    pixels(){return Array.from(screenPixels().pixels);},
+    screenSnapshot(key='default'){screenSnapshots.set(key,screenPixels());},
+    screenDiff(key='default'){
+      const before=screenSnapshots.get(key),after=screenPixels();if(!before||before.width!==after.width||before.height!==after.height)throw Error('Missing compatible screen snapshot');
+      let count=0,sumX=0,sumY=0,minX=after.width,minY=after.height,maxX=-1,maxY=-1;
+      for(let i=0;i<after.pixels.length;i+=4){const delta=Math.abs(after.pixels[i]-before.pixels[i])+Math.abs(after.pixels[i+1]-before.pixels[i+1])+Math.abs(after.pixels[i+2]-before.pixels[i+2]);if(delta<48)continue;const n=i/4,x=n%after.width,y=Math.floor(n/after.width);count++;sumX+=x;sumY+=y;minX=Math.min(minX,x);minY=Math.min(minY,y);maxX=Math.max(maxX,x);maxY=Math.max(maxY,y);}
+      return {count,width:after.width,height:after.height,centerX:count?sumX/count:-1,centerY:count?sumY/count:-1,minX,minY,maxX,maxY};
+    },
     async uvIndependent(){
       await settle();const saved=[];group.traverse(m=>{if(m.isMesh&&!m.userData.liclickPaintOverlay&&m.geometry.attributes.uv){const a=m.geometry.attributes.uv;saved.push([a,a.array.slice()]);}});
       const r=runtime.gl,target=new THREE.WebGLRenderTarget(r.domElement.width,r.domElement.height);
@@ -91,6 +116,22 @@ export async function setup(car = false) {
     },
     async selectView(index){view(car?[2.4+.14*index,2.25,2.775-.1*index]:[.03*index,0,4]);await settle();},
   };
+  const stressReport=document.createElement('output');stressReport.id='button-one-stress-report';stressReport.setAttribute('aria-live','polite');stressReport.style.cssText='max-width:440px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#9ff';header.append(stressReport);
+  const resetStress=document.createElement('button');resetStress.textContent='重置压力轮次';resetStress.onclick=async()=>{actions.clear();actions.deactivate();await settle();window.selectionFixture.screenSnapshot('button-one');stressReport.textContent=JSON.stringify({phase:'ready',...state()});};header.append(resetStress);
+  const baselineStress=document.createElement('button');baselineStress.textContent='记录落笔基线';baselineStress.onclick=async()=>{await settle();window.selectionFixture.screenSnapshot('button-one');stressReport.textContent=JSON.stringify({phase:'baseline',...state()});};header.append(baselineStress);
+  const inspectStress=document.createElement('button');inspectStress.textContent='检查压力结果';inspectStress.onclick=async()=>{await settle();stressReport.textContent=JSON.stringify({phase:'painted',...state(),diff:window.selectionFixture.screenDiff('button-one'),hash:await capture()});};header.append(inspectStress);
+  let stressViewIndex=0;
+  const switchViewStress=document.createElement('button');switchViewStress.textContent='压力切换视角';switchViewStress.onclick=async()=>{stressViewIndex++;await window.selectionFixture.selectView(stressViewIndex);stressReport.textContent=JSON.stringify({phase:'view-changed',view:stressViewIndex,...state()});};header.append(switchViewStress);
+  let stressZoomed=false;
+  const zoomStress=document.createElement('button');zoomStress.textContent='压力切换缩放';zoomStress.onclick=async()=>{runtime.camera.position.multiplyScalar(stressZoomed?0.8:1.25);stressZoomed=!stressZoomed;runtime.controls.update();invalidate();await settle();stressReport.textContent=JSON.stringify({phase:'zoom-changed',zoomed:stressZoomed,...state()});};header.append(zoomStress);
+  let generationSequence=0;
+  const textureImage=(hue)=>{const canvas=document.createElement('canvas');canvas.width=64;canvas.height=64;const context=canvas.getContext('2d');context.fillStyle=`hsl(${hue} 65% 56%)`;context.fillRect(0,0,64,64);context.fillStyle='rgba(255,255,255,.22)';context.fillRect(8,8,48,48);return canvas.toDataURL('image/png');};
+  const serializedCamera=()=>({type:'perspective',projection:'perspective',position:runtime.camera.position.toArray(),quaternion:runtime.camera.quaternion.toArray(),target:runtime.controls.target.toArray(),near:runtime.camera.near,far:runtime.camera.far,fov:runtime.camera.fov,zoom:runtime.camera.zoom,projectionMatrix:runtime.camera.projectionMatrix.toArray(),matrixWorld:runtime.camera.matrixWorld.toArray(),viewMatrix:runtime.camera.matrixWorldInverse.toArray(),aspect:runtime.camera.aspect});
+  const landGeneratedView=(mode,index)=>{const id=`${mode}-generation-${++generationSequence}`;const imageUrl=textureImage((generationSequence*47)%360);const capture={id:`capture-${id}`,objectId:model.objectId,camera:serializedCamera(),width:64,height:64,colorUrl:imageUrl,maskUrl:imageUrl,createdAt:new Date().toISOString(),warnings:[]};const generation={id,mode,prompt:`${mode} completion ${index+1}`,referenceIds:[],captureId:capture.id,resultUrl:imageUrl,status:'succeeded',metadata:{workflow:'texture-map',cameraViewId:`${mode}-${index+1}`,cameraViewLabel:`${mode}-${index+1}`,objectMatrixWorld:group.matrixWorld.toArray(),completedAt:new Date().toISOString()}};return useLayerStore.getState().addProjectedLayerFromGeneration(generation,capture,model.objectId);};
+  const simulateCompletion=async(mode)=>{actions.deactivate();const layers=[];if(mode==='multiview')useLayerStore.getState().beginProjectedPreviewBatch();try{const count=mode==='multiview'?4:1;for(let index=0;index<count;index++){layers.push(landGeneratedView(mode,index));await settle();}}finally{if(mode==='multiview')useLayerStore.getState().endProjectedPreviewBatch();}for(let frame=0;frame<8;frame++)await settle();stressReport.textContent=JSON.stringify({phase:`${mode}-complete`,landed:layers.map(layer=>layer.id),layerCount:useLayerStore.getState().layers.length,previewBatchDepth:useLayerStore.getState().projectedPreviewBatchDepth,...state()});};
+  const singleCompletion=document.createElement('button');singleCompletion.textContent='模拟单视图完成回贴';singleCompletion.onclick=()=>simulateCompletion('single');header.append(singleCompletion);
+  const multiviewCompletion=document.createElement('button');multiviewCompletion.textContent='模拟多视图完成回贴';multiviewCompletion.onclick=()=>simulateCompletion('multiview');header.append(multiviewCompletion);
+  const publish=()=>{const current=state();document.body.dataset.maskContent=String(current.content);document.body.dataset.paintTool=current.paintTool;document.body.dataset.paintToolActivationRevision=String(current.activationRevision);requestAnimationFrame(publish);};publish();
   await settle();
   return {triangles:group.children.reduce((n,c)=>{c.traverse(m=>{if(m.isMesh&&!m.userData.liclickPaintOverlay)n+=(m.geometry.index?.count??m.geometry.attributes.position.count)/3;});return n;},0),renderer:window.selectionFixture.renderer};
 }

@@ -4,6 +4,10 @@
 
 2026-09-18 M08（协作 M04/M06/M07/M12）：`ALG-LR-013` v1.2.0 将原局部重绘模型轮廓内缩改为 3px@2048，半径按最长边等比取整且至少 1px，外轮廓退缩和内部孔洞扩大同时生效。新结果 metadata.modelSilhouetteClipVersion=2，保留版本 1/2 源 alpha 识别，历史结果不重算；GPT 原始 RGBA 路径、作者蒙版、内向渐变、输入外扩、RGB/画布/相机和分辨率不变。GPU/CPU/Worker/合并/export 继续透传同一裁后 alpha，无 Schema 或资产迁移；回滚与兼容边界见 [3px 内缩变更卡](changes/CHG-20260918-REPAINT-INSET-3PX.md)。未推送或部署。
 
+2026-09-18 M08（协作 M03/M04/M06/UI-06/UI-10）：`INPAINT-TOOL-SESSION/1.0.1` 将“生图完成回贴后按钮 1 偶发不能画/错位”纳入真实生产视口回归。内置浏览器运行 `BottomToolDock + ViewportCanvas + sceneStore + layerStore`，普通状态 30 轮重复激活并穿插视角/缩放；再以真实单视图回贴与多视图 preview batch 完成路径交替 20 轮、累计 56 图层。全部生成作者蒙版且无 warning，完成态最大归一化落点漂移 X `0.00361`、Y `0.00091`。生产修复仍为非持久 activation revision 与视口输入会话 rearm；GPU/CPU/Worker/shader、蒙版像素、分辨率、QA、持久化/export 不变，无迁移。详见 [蒙版工具会话自愈](changes/CHG-20260917-INPAINT-TOOL-SESSION.md)。
+
+2026-09-18 M04（协作 M03/M06/M08/M12/M13）：`GPT-CONTENT-FRAMING/2.2.1` 修复 v2 将原生回图尺寸不同误判为比例错误：v1/v2 统一校验真实宽高比与既有 16px 网格容差，保留原生像素，不拉伸/裁切/降采样；真实比例偏差、轮廓、空 Alpha 和安全上限仍 fail-closed。`GPT-MULTIVIEW-PAIR-SEQUENCE/1.4.1` / `GPT-SILHOUETTE-RETRY/1.0.2` 仅在本组缺失完全由已识别 QA 拒绝解释时保留成功兄弟并继续后续组；网络、提交、保存、投影、resident、取消及未知错误仍停止。至少一张成功才执行批末补缝。仅复用可选 Generation metadata，无 Schema/资产迁移；Command/CAS/ownership/verified assets 不变。详见 [GPT 回图比例 QA 与多视图续跑](changes/CHG-20260918-GPT-RETURN-QA-CONTINUATION.md)。
+
 2026-09-18 M15：`CI-CONTAINER-DEPENDENCY-RETRY/1.0.0` 修复 master `4fb1d8ec` pipeline `633789` 仅 server 容器在 Corepack 下载中被远端断开而失败的问题。Docker deps 阶段对固定 pnpm 9.15.4 准备与 frozen-lockfile 安装分别最多尝试 3 次，等待 5/10 秒；连续失败仍阻断，不更换 registry、依赖、基础镜像，不跳过 verify/build/包体/Cloud 产物门禁。server/web 镜像目标、推送与部署规则不变；浏览器/服务端功能、GPU/CPU/Worker/shader、投影/UV/重绘/Bake 像素、分辨率、QA、Schema/Command/CAS/ownership/verified assets 和导出均不变，无迁移。验证、边界与回滚见 [容器依赖重试变更卡](changes/CHG-20260918-CI-CONTAINER-DEPENDENCY-RETRY.md)。
 
 2026-09-18 M10/M13（协作 M15）：`BAKE-DOWNLOAD-METADATA/1.0.0` 将 Bake 单图下载与 ZIP 清单构造中的 Job 冷读取、输出存在性和文件大小检查从同步文件 API 改为异步 metadata。所有入口继续要求成功终态、持久化 owner、已请求通道和普通文件；ZIP 按通道顺序逐项检查，避免一次请求扩大共享卷 I/O 扇出，文件名、CRC/ZIP64、HEAD/GET 与流式背压不变。GPU/CPU/Worker/shader、Bake 像素/通道/分辨率/QA、远端幂等、Job JSON、Project Command/CAS/ownership/verified assets、Schema 和导出字节均不变，无迁移。验证与回滚见 [Bake 下载异步 metadata 变更卡](changes/CHG-20260918-BAKE-DOWNLOAD-ASYNC-METADATA.md)。
@@ -1349,6 +1353,8 @@ M15 / CLOUD-DEPLOYMENT v1.0.0（2026-09-03）：正常合并 release 部署历�
 | --- | --- | --- | --- |
 | `2.20.190` | 2026-09-18 | `手动上传单文件 100MB 上限` | USER-FILE-UPLOAD/1.0.0：浏览器入口在读取与上传前拦截超限文件，内部资产/自动保存不改，无迁移。 |
 | `2.20.189` | 2026-09-18 | `原局部重绘轮廓内缩 3px` | M08：ALG-LR-013 v1.2.0，3px@2K，保留历史 v1 与新 v2 alpha；GPT 不变，无迁移。 |
+| `2.20.188` | 2026-09-18 | `生图完成后蒙版按钮压力回归` | M08（协作 M03/M04/M06）：`INPAINT-TOOL-SESSION/1.0.1` 在内置浏览器完成普通 30 轮及单/多视图完成态 20 轮生产视口压力验证；累计 56 图层仍可逐轮落笔且坐标稳定，无迁移。 |
+| `2.20.187` | 2026-09-18 | `GPT 回图比例 QA 与续跑` | M04（协作 M03/M06/M08/M12/M13）：`GPT-CONTENT-FRAMING/2.2.1` 只按真实比例拒绝回图；`GPT-MULTIVIEW-PAIR-SEQUENCE/1.4.1` 仅对已识别 QA 缺失继续后续组，其他失败仍停止；不关闭轮廓 QA、不改原生像素，无迁移。 |
 | `2.20.186` | 2026-09-18 | `容器依赖引导重试` | M15：`CI-CONTAINER-DEPENDENCY-RETRY/1.0.0` 为 Docker 固定 pnpm 准备和冻结安装增加最多 3 次的有限重试；连续失败仍阻断，无运行时或数据迁移。 |
 | `2.20.185` | 2026-09-18 | `Bake 下载异步 metadata` | M10/M13（协作 M15）：`BAKE-DOWNLOAD-METADATA/1.0.0` 移除单图/ZIP HTTP 热路径同步 exists/stat，保持 owner、成功终态、通道、普通文件和归档字节门禁；无迁移。 |
 | `2.20.184` | 2026-09-18 | `Bake Job 异步原子持久化` | M10/M13（协作 M15）：`BAKE-JOB-PERSISTENCE/1.0.0` 以同 Job 串行、不同 Job 并行的异步原子替换保存 `job.json`，终态显式等待；故障注入验证失败保留上一完整快照且队列可恢复。状态/JSON/资产/Schema 不变，无迁移，未推送部署。 |

@@ -93,6 +93,7 @@ function frameFromBounds({ width, height }: CoverageImage, [x0, y0, x1, y1]: rea
 }
 
 /** Retain the provider's detail; restore only transparent canvas padding, never shrink to the old screenshot. */
+// GPT-CONTENT-FRAMING/2.2.1: validate geometry ratio, not provider-native pixel dimensions.
 export function restoredFrameLayout(frame: GenerationFraming, width: number, height: number) {
   validateGenerationFraming(frame);
   // Both dimensions must admit the SAME scale before independent grid rounding.
@@ -106,13 +107,14 @@ export function restoredFrameLayout(frame: GenerationFraming, width: number, hei
     !Number.isSafeInteger(width) ||
     !Number.isSafeInteger(height) ||
     !(width > 0 && height > 0) ||
-    (frame.version === 2
-      ? width !== frame.outputWidth || height !== frame.outputHeight
-      : ratioMismatch && !gridRounded)
-  )
-    throw new Error(
+    (ratioMismatch && !gridRounded)
+  ) {
+    const mismatch = new Error(
       `远端回图比例异常（提交 ${frame.width}×${frame.height} → 返回 ${width}×${height}），已保留结果并停止回贴。`,
-    );
+    ) as Error & { code: string };
+    mismatch.code = 'GPT_RETURN_FRAME_RATIO_MISMATCH';
+    throw mismatch;
+  }
   const scale = Math.max(width / frame.width, height / frame.height);
   const fullWidth = Math.ceil(frame.sourceWidth * scale),
     fullHeight = Math.ceil(frame.sourceHeight * scale);

@@ -1,6 +1,6 @@
 import type { Generation } from '@/types/generation';
 
-// GPT-RETURN-SILHOUETTE-QA/1.2.0 and GPT-SILHOUETTE-RETRY/1.0.1.
+// GPT-RETURN-SILHOUETTE-QA/1.2.0 and GPT-SILHOUETTE-RETRY/1.0.2.
 export const GPT_SILHOUETTE_RETRY_LIMIT = 1;
 export const SILHOUETTE_RETRY_FAILURE_MESSAGE = '远端回图构图漂移，已保留结果并自动重试当前视角一次。';
 
@@ -32,7 +32,11 @@ export function isGptReturnSilhouetteMismatch(error: unknown) {
 }
 
 export function terminalSilhouetteRetryError() {
-  return new Error('远端回图连续两次与模型轮廓不对齐，已保留两次结果并停止回贴。');
+  const error = new Error(
+    '远端回图连续两次与模型轮廓不对齐，已保留两次结果并停止回贴。',
+  ) as Error & { code: string };
+  error.code = 'GPT_RETURN_SILHOUETTE_MISMATCH';
+  return error;
 }
 
 export function createTextureMapSilhouetteRetry(failed: Generation) {
