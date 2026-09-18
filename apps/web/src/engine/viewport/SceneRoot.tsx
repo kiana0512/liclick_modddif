@@ -1453,6 +1453,11 @@ const ImportedModel = memo(function ImportedModel({
     [importedModel.objectId, layerRenderSignature, uvVisibilityRenderRevision],
   );
   const liveSurfacePaintPreview = useLiveSurfacePaintPreview();
+  const projectedEraserArmed = Boolean(
+    liveSurfacePaintPreview?.displayArmed &&
+      liveSurfacePaintPreview.target === 'projected-mask' &&
+      liveSurfacePaintPreview.objectId === importedModel.objectId,
+  );
   const visibleMergedUvBoundaryOrder = useMemo(
     () => getVisibleMergedUvBoundaryOrder(layers, importedModel.objectId),
     [importedModel.objectId, layers],
@@ -1784,10 +1789,9 @@ const ImportedModel = memo(function ImportedModel({
   const lastProjectedSamplerWarningRef = useRef('');
   const activatedLocalRepaintPreviewKeyRef = useRef('');
   const projectedPreviewCompositorRef = useRef<ProjectedLayerPreviewCompositor>();
-  // UV-DISPLAY-BUFFER/1.4.0: authored projections are calculation inputs only.
-  // Every supported renderer presents the last verified UV buffer while its
-  // replacement is generated; WebGL capability only selects the bake backend,
-  // never a projected-material display fallback.
+  // UV-DISPLAY-BUFFER/1.4.1: authored projections are calculation inputs during
+  // normal display. The bounded projected-eraser exception is selected below;
+  // every idle frame still presents the last verified UV buffer.
   const residentUvDisplayEnabled = true;
   const [progressiveProjectedPreview, setProgressiveProjectedPreview] =
     useState<ProjectedPreviewComposite>();
@@ -2565,11 +2569,21 @@ const ImportedModel = memo(function ImportedModel({
       !isProjectedUniformBudgetSafe(previewProjectionInputs.length, gl.capabilities.maxFragmentUniforms)),
   );
   const canUseDirectVisibleStackAfterArrayFailure = false;
-  const canUseExactProjectedEraserStack = false;
-  // Projected eraser revisions also generate a derived UV buffer. Keeping the
-  // previous verified front buffer prevents an unverified partial projection
-  // from reaching the viewport while the latest revision is in flight.
-  const canUseProgressiveUvFallback = residentUvDisplayEnabled;
+  const directProjectedStackSafe = Boolean(
+    directProjectedSamplerBudget.withinBudget &&
+      isProjectedUniformBudgetSafe(
+        previewProjectionInputs.length,
+        gl.capabilities.maxFragmentUniforms,
+      ),
+  );
+  const canUseExactProjectedEraserStack = Boolean(
+    projectedEraserArmed && directProjectedStackSafe,
+  );
+  // UV-DISPLAY-BUFFER/1.4.1: idle display remains verified UV-only. While the
+  // projected eraser owns presentation, the exact authored stack samples the
+  // full-resolution live keep-mask directly; unsafe budgets stay on Resident UV.
+  const canUseProgressiveUvFallback =
+    residentUvDisplayEnabled && !canUseExactProjectedEraserStack;
   const projectedPreviewNeedsComposition = Boolean(
     previewProjectionInputs.length > 0 || !projectedSamplerBudget.withinBudget ||
     (textureArrayCompositionFallbackRequired && !canUseDirectVisibleStackAfterArrayFailure),
@@ -3949,10 +3963,11 @@ const ImportedModel = memo(function ImportedModel({
       model.group.updateMatrixWorld(true);
       const useProjectedTextureArrayMaterial =
         useProjectedTextureArrays && !textureArrayCompositionFallbackRequired;
-      // Projection inputs are consumed exclusively by ResidentProjectedUvDisplay.
-      // Until that exact signature is ready, retain the last verified UV/base
-      // material instead of publishing direct or texture-array projection.
-      const materialProjectionInputs = [] as typeof previewProjectionInputs;
+      // Normal frames remain UV-only. The eraser temporarily presents the exact
+      // authored stack so GPU keep-mask stamps are visible before pointer-up.
+      const materialProjectionInputs = canUseExactProjectedEraserStack
+        ? previewProjectionInputs
+        : [];
       const showGeometryOnlyDisplay = displayMode === 'normal' || displayMode === 'wire';
       const hasResidentProjectionInputs = Boolean(
         canPreviewProjectedLayers && materialProjectionInputs.length > 0,

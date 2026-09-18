@@ -3965,6 +3965,7 @@ type UvPaintLayer = {
   liveResultUrl: string;
   liveEraserPreviewActive: boolean;
   liveEraserPreviewInitialized: boolean;
+  liveEraserDisplayArmed: boolean;
   eraserGpu?: UvRepaint;
   eraserGpuReady?: Promise<void>;
   eraserGpuBacklog?: Array<Parameters<UvRepaint['stamp']>[0]>;
@@ -6737,7 +6738,11 @@ function ensurePaintBackingCanvasInitialized(layer: UvPaintLayer) {
   layer.paintBackingInitialized = true;
 }
 
-function beginLiveEraserPreview(layer: UvPaintLayer, root?: THREE.Object3D) {
+function beginLiveEraserPreview(
+  layer: UvPaintLayer,
+  root?: THREE.Object3D,
+  displayArmed = true,
+) {
   // A local-repaint result is stored as a UV image. Its source image may still
   // be decoding (or its registered live canvas may temporarily be the 1x1
   // bootstrap surface). Publishing that canvas as a full UV replacement makes
@@ -6772,6 +6777,7 @@ function beginLiveEraserPreview(layer: UvPaintLayer, root?: THREE.Object3D) {
     layer.liveEraserPreviewInitialized = true;
   }
   layer.liveEraserPreviewActive = true;
+  layer.liveEraserDisplayArmed ||= displayArmed;
   markLiveProjectedCanvasTextureUpdated(layer.liveResultUrl);
   publishLiveSurfacePaintPreview({
     objectId: layer.objectId,
@@ -6782,6 +6788,7 @@ function beginLiveEraserPreview(layer: UvPaintLayer, root?: THREE.Object3D) {
       ? { residentMaskUrl: layer.assetUrl }
       : {}),
     composition: layer.target === 'projected-mask' ? 'multiply-original-mask' : 'replace',
+    displayArmed: layer.liveEraserDisplayArmed,
   });
   // React subscribers intentionally run outside the high-frequency input
   // path. Patch the already-resident shader now so switching a layer and
@@ -6875,6 +6882,7 @@ function endLiveEraserPreview(layer: UvPaintLayer) {
     return;
   }
   clearLiveSurfacePaintPreview(layer.layerId, layer.liveResultUrl);
+  layer.liveEraserDisplayArmed = false;
   layer.projectedEraserResidentHandoffs?.delete(layer);
   layer.resolveProjectedEraserResidentHandoff?.();
   layer.projectedEraserResidentHandoffPromise = undefined;
@@ -8263,6 +8271,7 @@ function SurfacePaintOverlay() {
         liveResultUrl,
         liveEraserPreviewActive: false,
         liveEraserPreviewInitialized: false,
+        liveEraserDisplayArmed: false,
         projectedEraserResidentHandoffs: projectedEraserResidentHandoffsRef.current,
         paintOverlayTargets: new Set(),
         paintPreviewOverlays: [],
@@ -8355,7 +8364,8 @@ function SurfacePaintOverlay() {
           layer.eraserGpu = engine;
           layer.liveResultTexture = engine.texture;
           layer.liveEraserPreviewInitialized = true;
-          if (layer.liveEraserPreviewActive) beginLiveEraserPreview(layer, model.group);
+          if (layer.liveEraserPreviewActive)
+            beginLiveEraserPreview(layer, model.group, layer.liveEraserDisplayArmed);
           invalidate();
         } catch (error) {
           engine.dispose();
@@ -8390,7 +8400,7 @@ function SurfacePaintOverlay() {
     const layer = getUvPaintLayer(model, true);
     void prepareProjectedEraserGpuPreview(layer, model).then(() => {
       if (cancelled || layerRef.current !== layer || !layer.eraserGpu) return;
-      beginLiveEraserPreview(layer, model.group);
+      beginLiveEraserPreview(layer, model.group, false);
       invalidate();
     });
     return () => { cancelled = true; };

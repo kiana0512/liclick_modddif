@@ -171,8 +171,13 @@ try {
   );
   assert.match(
     viewportSource,
-    /getUvPaintLayer\(model, true\)[\s\S]*?prepareProjectedEraserGpuPreview\(layer, model\)\.then\([\s\S]*?beginLiveEraserPreview\(layer, model\.group\)/,
-    'The active projected layer must keep its neutral GPU mask and exact display stack warm before eraser activation.',
+    /getUvPaintLayer\(model, true\)[\s\S]*?prepareProjectedEraserGpuPreview\(layer, model\)\.then\([\s\S]*?beginLiveEraserPreview\(layer, model\.group, false\)/,
+    'The active projected layer must keep its neutral GPU mask warm without replacing the verified idle UV display.',
+  );
+  assert.match(
+    viewportSource,
+    /if \(paintTool === 'eraser'\)[\s\S]*?beginLiveEraserPreview\(layer, model\.group\)[\s\S]*?prepareProjectedEraserGpuPreview\(layer, model\)/,
+    'Selecting the eraser must arm the exact live display before accepting the first stroke.',
   );
   assert.match(
     viewportSource,

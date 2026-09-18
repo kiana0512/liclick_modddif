@@ -516,15 +516,20 @@ assert.match(
   /const activeUvMaskLayerId = useLayerStore[\s\S]*?activeLayer\.maskSpace === 'uv'/,
   'renderer subscriptions must retain the active UV-mask correctness gate',
 );
-assert.doesNotMatch(
+assert.match(
   sceneRootSource,
-  /activeLayerUsesProjectedEraser|projectedEraserArmed/,
-  'arming the projected eraser must not switch the viewport back to projected material display',
+  /const residentUvDisplayEnabled = true;[\s\S]*?const useProjectedTextureArrays = false;[\s\S]*?const canUseExactProjectedEraserStack = Boolean\([\s\S]*?projectedEraserArmed && directProjectedStackSafe[\s\S]*?residentUvDisplayEnabled && !canUseExactProjectedEraserStack[\s\S]*?const materialProjectionInputs = canUseExactProjectedEraserStack[\s\S]*?\? previewProjectionInputs[\s\S]*?: \[\]/,
+  'Idle frames must remain UV-only while a budget-safe projected eraser temporarily restores the exact stack.',
 );
 assert.match(
   sceneRootSource,
-  /const residentUvDisplayEnabled = true;[\s\S]*?const useProjectedTextureArrays = false;[\s\S]*?const materialProjectionInputs = \[\] as typeof previewProjectionInputs;/,
-  'projected layers must be UV-generation inputs only; viewport material inputs stay UV-only',
+  /liveSurfacePaintPreview\?\.displayArmed[\s\S]*?target === 'projected-mask'[\s\S]*?objectId === importedModel\.objectId/,
+  'A retained commit handoff may keep the exact eraser stack armed only for its owning model.',
+);
+assert.match(
+  viewportCanvasInteractionSource,
+  /beginLiveEraserPreview\(layer, model\.group, false\)[\s\S]*?if \(paintTool === 'eraser'\)[\s\S]*?beginLiveEraserPreview\(layer, model\.group\)/,
+  'Neutral GPU prewarm must stay UV-only until the eraser tool explicitly owns presentation.',
 );
 assert.match(
   sceneRootSource,

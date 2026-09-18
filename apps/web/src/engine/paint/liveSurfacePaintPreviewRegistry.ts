@@ -13,6 +13,8 @@ export type LiveSurfacePaintPreview = {
    */
   residentMaskUrl?: string;
   composition: 'replace' | 'multiply-original-mask';
+  /** True only after the eraser tool owns presentation, not during neutral GPU prewarm. */
+  displayArmed: boolean;
 };
 
 let currentPreview: LiveSurfacePaintPreview | undefined;
@@ -34,7 +36,8 @@ export function publishLiveSurfacePaintPreview(preview: LiveSurfacePaintPreview)
     currentPreview.target === preview.target &&
     currentPreview.assetUrl === preview.assetUrl &&
     currentPreview.residentMaskUrl === preview.residentMaskUrl &&
-    currentPreview.composition === preview.composition
+    currentPreview.composition === preview.composition &&
+    currentPreview.displayArmed === preview.displayArmed
   )
     return;
   currentPreview = preview;

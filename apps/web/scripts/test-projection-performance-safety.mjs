@@ -145,13 +145,15 @@ const { isProjectedUniformBudgetSafe } = budgetExports;
 assert.match(sceneRootSource, /const residentUvDisplayEnabled = true;/,
   'every supported viewport must consume a verified UV display buffer');
 assert.match(sceneRootSource, /const useProjectedTextureArrays = false;/,
-  'authored projections must not enter a texture-array display material');
+  'the temporary eraser path must not retain the heavier texture-array renderer');
 assert.match(sceneRootSource, /const canUseDirectVisibleStackAfterArrayFailure = false;/,
   'array failure must retain the verified UV front buffer instead of publishing a direct projection');
-assert.match(sceneRootSource, /const canUseExactProjectedEraserStack = false;/,
-  'the projected eraser must also publish through its derived UV path');
-assert.match(sceneRootSource, /const materialProjectionInputs = \[\] as typeof previewProjectionInputs;/,
-  'the material publisher must never receive authored projection inputs');
+assert.match(sceneRootSource,
+  /const canUseExactProjectedEraserStack = Boolean\([\s\S]*?projectedEraserArmed[\s\S]*?directProjectedStackSafe/,
+  'the projected eraser may use only an exact stack that passes the shared device budget');
+assert.match(sceneRootSource,
+  /const materialProjectionInputs = canUseExactProjectedEraserStack[\s\S]*?\? previewProjectionInputs[\s\S]*?: \[\]/,
+  'the material publisher must stay UV-only outside the bounded exact eraser session');
 assert.equal(isProjectedUniformBudgetSafe(34, 1024), false, 'reported 34-layer shader must not reach the driver');
 assert.equal(isProjectedUniformBudgetSafe(14, 1024), true);
 assert.equal(isProjectedUniformBudgetSafe(14, 256), false, 'limits follow the actual device');

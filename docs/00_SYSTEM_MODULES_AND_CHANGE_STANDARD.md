@@ -1,5 +1,7 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
+2026-09-18 M08（协作 M06/M07/UI-06/UI-10）：`ALG-ERASE-001` 调度修订 v1.5.3 / `UV-DISPLAY-BUFFER` v1.4.1 修复 `352cd3e8` UV-only 改造切断 `251700e9` 全分辨率 GPU 橡皮实时显示的问题。空闲仍只显示 verified Resident UV；仅活动模型的普通 projected-mask 橡皮或其提交交接临时启用预算安全的 exact direct/texture-array 栈，拖动帧直接采样 live keep-mask。中性预热新增 renderer-only `displayArmed=false`，不会提前切换显示；sampler/uniform/数组失败继续 fail-closed。覆盖/深度/顺序、CPU/Worker 正式细化、完整分辨率、QA、持久化/export、Schema/Command/CAS/ownership/verified assets 不变，无迁移。详见 [投影橡皮实时快速显示恢复](changes/CHG-20260918-PROJECTED-ERASER-FAST-DISPLAY.md)。
+
 2026-09-18 M08（协作 M03/M04/M06/UI-06/UI-10）：`INPAINT-TOOL-SESSION/1.0.1` 将“生图完成回贴后按钮 1 偶发不能画/错位”纳入真实生产视口回归。内置浏览器运行 `BottomToolDock + ViewportCanvas + sceneStore + layerStore`，普通状态 30 轮重复激活并穿插视角/缩放；再以真实单视图回贴与多视图 preview batch 完成路径交替 20 轮、累计 56 图层。全部生成作者蒙版且无 warning，完成态最大归一化落点漂移 X `0.00361`、Y `0.00091`。生产修复仍为非持久 activation revision 与视口输入会话 rearm；GPU/CPU/Worker/shader、蒙版像素、分辨率、QA、持久化/export 不变，无迁移。详见 [蒙版工具会话自愈](changes/CHG-20260917-INPAINT-TOOL-SESSION.md)。
 
 2026-09-18 M04（协作 M03/M06/M08/M12/M13）：`GPT-CONTENT-FRAMING/2.2.1` 修复 v2 将原生回图尺寸不同误判为比例错误：v1/v2 统一校验真实宽高比与既有 16px 网格容差，保留原生像素，不拉伸/裁切/降采样；真实比例偏差、轮廓、空 Alpha 和安全上限仍 fail-closed。`GPT-MULTIVIEW-PAIR-SEQUENCE/1.4.1` / `GPT-SILHOUETTE-RETRY/1.0.2` 仅在本组缺失完全由已识别 QA 拒绝解释时保留成功兄弟并继续后续组；网络、提交、保存、投影、resident、取消及未知错误仍停止。至少一张成功才执行批末补缝。仅复用可选 Generation metadata，无 Schema/资产迁移；Command/CAS/ownership/verified assets 不变。详见 [GPT 回图比例 QA 与多视图续跑](changes/CHG-20260918-GPT-RETURN-QA-CONTINUATION.md)。
@@ -184,7 +186,7 @@
 
 2026-09-15 M03：ALG-VIEW-INPUT-001/1.3.2 在鼠标接触前即让 R3F 悬停遵守 Alt 所有权；保留普通 hover 和已锁定拖动。旧实现拾取回归失败、新实现通过，用户实际首帧延迟需继续录制。无像素/持久化迁移，见 [Alt 悬停变更卡](changes/CHG-20260915-ALT-BRUSH-HOVER.md)。
 
-> 文档版本：`2.20.188`
+> 文档版本：`2.20.189`
 
 2026-09-16 UI-16 → M14（协作 M01/M12/M13/M15）：`ASSET-LIFECYCLE-GC` v0.4.0 / `STORAGE-INVENTORY-001/4` 将 Cloud 工程/Revision 引用页默认 8→32，并由单条 PostgreSQL CTE 完成分页、assetId 提取与引用 upsert，Node 不再回传引用数组后二次写库；每 256 条文档约 64→8 次数据库往返，保持 45 秒单查询上限与有界 Node 内存。当前 ready scan 引用索引保留到下一快照原子切换，旧 /3 快照自动重扫。Cloud 隔离区改按真实 quarantine 且排除重新可达对象统计；新增用户级幂等持久 purge job/item，以最多 4 并发签名 DeleteObject 后逐项事务删除 transfer、写 deleted_at，404/Pod 重启可安全重放。新增 `asset_storage_purge_jobs/items`，无 Project/Revision/Asset 内容迁移；Command/CAS/ownership/verified 及 GPU/CPU/Worker/shader、投影/UV/重绘/export、分辨率与 QA 不变。回滚前停 purge 并保留任务表，详见 [Cloud 存储盘点与物理清理变更卡](changes/CHG-20260916-CLOUD-STORAGE-INVENTORY-BOUNDED.md)。
 
@@ -889,11 +891,13 @@ Layer 的 `type`、`role`、`blendMode`、`visibility policy` 是四个独立维
 
 删除最后一个活动对象图层后，store 自动创建空 UV 保底层。剪刀发布时会隐藏所有实际被消费的源层；若指定空 UV 目标则原位填充，否则在源层位置创建 merged-uv。
 
-### 5.1 当前图层橡皮 `ALG-ERASE-001` v1.5.1
+### 5.1 当前图层橡皮 `ALG-ERASE-001` v1.5.3
 
 v1.5.1 常驻预热与首笔交接：普通 projected 图层成为当前可编辑层后即建立中性白 GPU keep-mask，发布 live binding 使 exact direct/texture-array 材质程序在用户落笔前完成准备。工具切换只改变输入权限，不销毁同一图层、模型和分辨率的 GPU 会话。若输入早于异步准备完成，fallback Canvas 仍立即记录可见笔触，同时把每个归一化屏幕段、viewport、像素半径和羽化加入有界于当前准备窗口的 backlog；GPU 注册前依序补放 backlog。若指针仍按下，GPU stroke 保持打开并继续接收后续帧；若已抬笔，则补放后立即结束无 readback 的显示 stroke。图层、模型、分辨率或会话销毁会释放旧 render target，禁止晚到准备覆盖新选择。正式提交、历史与延迟全分辨率细化不变。详见 `CHG-20260912-ERASER-RESIDENT-PREWARM`。
 
 v1.5.0 普通 projected 橡皮交互（UI-06/UI-10 → M08，协作 M06/M07）：工具激活时在当前 WebGL renderer 预热与项目 UV 相同分辨率的 R/G/B/A keep-mask render target，并把它注册为当前层 live mask。拖动期间按 `requestAnimationFrame` 合并输入，只对命中 UV 脏瓦片执行 GPU stamp；`captureHistory=false` 保证交互阶段不做 readback，Resident UV 全图合成、Worker 质量传播、CPU 后处理和整图纹理上传均不进入逐帧路径。屏幕仍由安全的 direct/texture-array 正式投影栈精确混合 source、作者 mask、live keep-mask、深度和图层顺序；若层数、采样器或 uniform 预算不允许该精确栈，则保持原 Resident 精确路径，不显示近似或错误结果。mask-only shader 将 UV 的 V 轴转换到 Canvas/project 约定，瓦片 scissor 同步翻转，避免实际笔触与上下镜像位置互换。512 Canvas 仅记录不可见的延迟提交草稿，不是交互显示或输出；正式 keep-mask、历史、补缝、保存、UV bake 与 export 仍使用项目选择的完整分辨率。GPU 初始化失败回退到完整分辨率 Canvas，不静默降质。Schema 仍为 `ERASER_ALGORITHM_VERSION=1`，无需资产迁移；回滚只移除 GPU mask session 与 exact-stack 门禁，已有蒙版和工程继续兼容。详见 `CHG-20260912-ERASER-GPU-MASK`。
+
+v1.5.3 恢复 v1.5.0 的低延迟显示，但不撤回 v1.4.0 的常规 UV-only 契约：中性 GPU mask 预热保持 `displayArmed=false`，只有活动普通 projected-mask 橡皮和未完成交接临时发布 exact direct/texture-array 栈；抬笔并验证 Resident UV 后返回 UV-only。预算不安全继续 fail-closed。持久化版本仍为 1，无迁移。详见 `CHG-20260918-PROJECTED-ERASER-FAST-DISPLAY`。
 
 v1.3.7 普通投影蒙版 GPU 存储尺寸修复（M06/M12，协作 M03）：1×1 白色 bootstrap 在首次擦除提交时扩大为所选 UV 分辨率，仅设置 needsUpdate 无法扩容 WebGL2 immutable storage，真实测试报 GL_INVALID_VALUE 并保留旧蒙版。live canvas 注册表记录已配置宽高，在发布、换 backing 或读取发现尺寸改变时只释放旧 GPU 存储，保留共享 Texture/Source、URL 和 canvas 像素，下次上传重建正确尺寸。等尺寸笔触不重建。局部重绘擦除逻辑不变；shader/CPU/Worker/UV/export 像素公式、分辨率、PNG 保存、Schema/CAS/ownership/verified assets 不变，无数据迁移。详见 `CHG-20260909-PROJECTED-ERASER-STORAGE`。
 
@@ -1347,6 +1351,7 @@ M15 / CLOUD-DEPLOYMENT v1.0.0（2026-09-03）：正常合并 release 部署历�
 
 | 版本 | 日期 | 基线 | 变更 |
 | --- | --- | --- | --- |
+| `2.20.189` | 2026-09-18 | `投影橡皮实时快速显示恢复` | M08（协作 M06/M07/UI-06/UI-10）：空闲保持 verified UV-only；活动普通投影橡皮或提交交接临时恢复预算安全的 exact direct/texture-array 栈，实时采样完整分辨率 GPU keep-mask。预热不夺取显示，预算失败保持 Resident UV；无 Schema/资产迁移。 |
 | `2.20.188` | 2026-09-18 | `生图完成后蒙版按钮压力回归` | M08（协作 M03/M04/M06）：`INPAINT-TOOL-SESSION/1.0.1` 在内置浏览器完成普通 30 轮及单/多视图完成态 20 轮生产视口压力验证；累计 56 图层仍可逐轮落笔且坐标稳定，无迁移。 |
 | `2.20.187` | 2026-09-18 | `GPT 回图比例 QA 与续跑` | M04（协作 M03/M06/M08/M12/M13）：`GPT-CONTENT-FRAMING/2.2.1` 只按真实比例拒绝回图；`GPT-MULTIVIEW-PAIR-SEQUENCE/1.4.1` 仅对已识别 QA 缺失继续后续组，其他失败仍停止；不关闭轮廓 QA、不改原生像素，无迁移。 |
 | `2.20.186` | 2026-09-18 | `容器依赖引导重试` | M15：`CI-CONTAINER-DEPENDENCY-RETRY/1.0.0` 为 Docker 固定 pnpm 准备和冻结安装增加最多 3 次的有限重试；连续失败仍阻断，无运行时或数据迁移。 |

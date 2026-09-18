@@ -2,8 +2,12 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createServer } from 'vite';
-const { chromium } = await import(process.env.PLAYWRIGHT_MODULE
-  ? pathToFileURL(process.env.PLAYWRIGHT_MODULE).href : 'playwright');
+const serveOnly = process.argv.includes('--serve-only');
+const chromium = serveOnly
+  ? undefined
+  : (await import(process.env.PLAYWRIGHT_MODULE
+      ? pathToFileURL(process.env.PLAYWRIGHT_MODULE).href
+      : 'playwright')).chromium;
 const root = fileURLToPath(new URL('..', import.meta.url)).replaceAll('\\', '/').replace(/\/$/, '');
 let fixture = await readFile(root + '/scripts/uv-repaint-viewport-fixture.mjs', 'utf8');
 const resolution = process.env.LICLICK_UV_TEST_RESOLUTION ?? '1K';
@@ -95,6 +99,16 @@ const server = await createServer({ root, configFile: false, logLevel: 'error',
 server.middlewares.use('/__eraser.mjs', (_, res) => { res.setHeader('Content-Type', 'application/javascript'); res.end(fixture); });
 server.middlewares.use('/__fixture', (_, res) => { res.setHeader('Content-Type', 'text/html'); res.end('<!doctype html><title>Eraser UV QA</title>'); });
 await server.listen();
+if (serveOnly) {
+  console.log(`ERASER_FIXTURE_URL=${server.resolvedUrls.local[0]}__fixture?layers=${layerCount}`);
+  const close = async () => {
+    await server.close();
+    process.exit(0);
+  };
+  process.once('SIGINT', close);
+  process.once('SIGTERM', close);
+  await new Promise(() => {});
+}
 const browser = await chromium.launch({ channel: 'msedge', headless: true });
 const page = await browser.newPage({ viewport: { width: 900, height: 700 } });
 const errors = [];
