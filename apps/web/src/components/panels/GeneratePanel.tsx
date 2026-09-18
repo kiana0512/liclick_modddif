@@ -60,7 +60,6 @@ import {
   type ReferenceGroupGenerationState,
 } from '@/components/panels/referenceGroup';
 import { devLogin } from '@/services/authApiClient';
-import { createModelviewApiClient } from '@/services/modelviewApiClient';
 import { isCloudBuild } from '@/platform/runtimeCapabilities';
 import { runFeishuLoginFlow } from '@/services/feishuLoginFlow';
 import { resolveLiclickAuthStrategy } from '@/services/liclickAuthStrategy';
@@ -2771,6 +2770,7 @@ export function GeneratePanel({
     const originalActiveViewId = activeCameraViewId;
     const textureBatchId = createId('remote-multiview-batch');
     const textureBatchWasCancelled = () => cancelledTextureBatchIdsRef.current.has(textureBatchId);
+    const { createModelviewApiClient } = await import('@/services/modelviewApiClient');
     const modelviewClient = createModelviewApiClient();
     let projectedGenerationCount = 0;
     let skippedViewCount = 0;
@@ -3398,6 +3398,7 @@ export function GeneratePanel({
           : '正在提交当前单视图纹理贴图任务。',
       });
 
+    const { createModelviewApiClient } = await import('@/services/modelviewApiClient');
     const modelviewClient = usesRemoteSingleView ? createModelviewApiClient() : undefined;
     const textureBatchId = pairContext?.textureBatchId ?? createId('texture-map-batch');
     const textureBatchWasCancelled = () => cancelledTextureBatchIdsRef.current.has(textureBatchId);
@@ -4334,6 +4335,7 @@ export function GeneratePanel({
         isGptLocalRepaint ? Promise.resolve('') : urlToDataUrl(capture.normalUrl!),
       ]);
       let depthPreviewPromise: ReturnType<typeof captureRepaintDepth> | undefined;
+      const { createModelviewApiClient } = await import('@/services/modelviewApiClient');
       const generationPromise = isGptLocalRepaint ? (async () => {
         // Persist camera + authored selection before paying for a recoverable cloud job.
         const authoredMaskUrl = await persistedAuthoredMaskUrlPromise;
