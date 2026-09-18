@@ -152,7 +152,7 @@ assert.doesNotMatch(flow, /prompt: texturePrompt/);
 
 // Execute the production serial loop, including top/bottom, resident barriers,
 // covered-view skipping and cancellation/error stopping the remaining views.
-const serialJs = ts.transpileModule(flow, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+const serialJs = ts.transpileModule(flow.replace("import('@/services/modelviewApiClient')", "Promise.resolve({ createModelviewApiClient: modelviewFactory })"), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
 for (const outcome of ['success', 'covered', 'cancel', 'failure']) {
   const views = ['front', 'top', 'bottom'].map((id, i) => ({ id, label: id,
     viewDirection: i === 0 ? [0, 0, 1] : [0, i === 1 ? 1 : -1, 0], viewUp: [0, 1, 0] }));
@@ -178,7 +178,7 @@ for (const outcome of ['success', 'covered', 'cancel', 'failure']) {
       requestCameraRestore: () => { restored++; } }) },
     serializeCamera: () => ({}), activeCameraViewId: 'front', createId: label => label,
     cancelledTextureBatchIdsRef: { current: new Set() },
-    createModelviewApiClient: () => ({ generateSingleView: input => remote('full', input),
+    modelviewFactory: () => ({ generateSingleView: input => remote('full', input),
       generateSingleViewInpaint: input => remote('inpaint', input) }),
     updateTexturePipelineProgress() {}, getTextureMapMultiviewCaptures: async () => captures,
     useProjectStore: { getState: () => ({ projects: [] }) },
