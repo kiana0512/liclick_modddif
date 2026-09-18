@@ -1,13 +1,13 @@
 import { blobToDataUrl, imageDataToBlob, urlToImageData } from './imageUtils';
 import { yieldToBrowserTask } from '@/utils/browserScheduling';
 
-/** ALG-LR-013 v1.0.0: frozen model coverage, never provider RGB or authored mask. */
-export const MODEL_SILHOUETTE_CLIP_VERSION = 1;
+/** ALG-LR-013 v1.2.0: 3px@2K frozen model coverage, never provider RGB or authored mask. */
+export const MODEL_SILHOUETTE_CLIP_VERSION = 2;
 export function clipRepaintToModelSilhouette(source: ImageData, depth: ImageData) {
   const { width, height } = source;
   if (width !== depth.width || height !== depth.height)
     throw new Error('返图与原模型轮廓尺寸不一致，无法安全裁切。');
-  const radius = Math.max(1, Math.round((2 * Math.max(width, height)) / 2048));
+  const radius = Math.max(1, Math.round((3 * Math.max(width, height)) / 2048));
   const coverage = new Uint8Array(width * height);
   let covered = 0;
   for (let i = 0; i < coverage.length; i++) {
