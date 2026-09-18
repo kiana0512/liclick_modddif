@@ -206,6 +206,6 @@ for (const enabled of [false, true]) for (const locked of [false, true]) {
 }
 assert.match(panel, /gptRepaintUseMaterialReference: false/);
 assert.match(panel, /isLocalRepaintTab && \(!isGptLocalRepaint \|\| gptRepaintUseMaterialReference\)/);
-assert.match(panel, /captureCurrentNormalGuide\(\{[\s\S]*?resolution: LOCAL_REPAINT_INPUT_RESOLUTION,[\s\S]*?cameraSnapshot: captureCameraSnapshot/);
-assert.match(panel, /capture = \{ \.\.\.capture, normalUrl: normal.normalUrl \};[\s\S]*?saveCriticalProjectState\(\{ captures: recoveryCaptures \}\)/);
+assert.match(panel, /captureLocalRepaintNormal\(capture, captureCameraSnapshot, requestAbortController!\.signal\)/);
+assert.match(panel, /capture = await captureLocalRepaintNormal\(capture,[\s\S]*?saveCriticalProjectState\(\{ captures: recoveryCaptures \}\)/);
 console.log('GPT normal repaint: optional switch, two/three actual serialized inputs, prompt roles, exact pixels, cancellation, camera and geometry material cleanup passed (no paid generation).');

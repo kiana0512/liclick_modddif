@@ -10,6 +10,7 @@ import {
   ModelviewInpaintError,
   type ModelviewInpaintInput,
   type ModelviewSingleViewInput,
+  type ModelviewSingleViewInpaintInput,
 } from '../services/modelviewInpaintService.js';
 import { getPathSegments, readJsonBody, sendJson } from './httpUtils.js';
 
@@ -91,7 +92,7 @@ export async function handleModelviewRoute(
   }
 
   if (request.method === 'POST' && segments[2] === 'single-view-inpaint') {
-    const input = await readJsonBody<ModelviewInpaintInput>(request);
+    const input = await readJsonBody<ModelviewSingleViewInpaintInput>(request);
     const controller = new AbortController();
     const abortRemoteRequest = () => controller.abort();
     request.once('aborted', abortRemoteRequest);

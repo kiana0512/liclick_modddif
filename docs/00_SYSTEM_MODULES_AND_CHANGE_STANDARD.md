@@ -1,5 +1,7 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
+2026-09-18 M08：`MODELVIEW-NORMAL-INPUT/1.0.0` 对接 `2026.09.18-refcontrol-normal-4step-r1`，局部重绘在纯白选区效果图、材质参考和外扩 mask 外增加同冻结相机、同画布原生 2K 几何法线。原始法线不滤波、不改色，控制面原字节转发并校验存在性、可解码性及尺寸；升级幂等后缀。单视图/GPT、回贴/Worker/UV/export、Project schema 和质量标准不变。旧结果无需迁移，回退需前后端与远端协调；未部署。详见 [原始法线四图输入](changes/CHG-20260918-MODELVIEW-NORMAL-INPUT.md)。
+
 2026-09-18 M06/M07/M09：`UV-PERSISTENT-MERGE-KEY` v1.1.0 / `UV-DISPLAY-DERIVED-CACHE` v1.2.0 缩短 Resident UV/投影转 UV 的确定性派生键准备，并修复工程恢复 A→B→C 合法状态在两条磁盘窗口中循环淘汰。模型 position/normal/uv/index 的真实字节 SHA-256 以最多 2 路队列和既有 3 路来源校验并行；派生缓存改为最多 4 条且压缩总字节硬限 256MiB，裁剪时固定当前显示与新写状态，旧无长度元数据条目保守淘汰。输出键、像素、完整分辨率、QA、GPU/shader、Project Command/CAS/ownership、作者资产与导出不变。4517 真实 4K 六层工程从连续重载约 2342–2348ms 全量重算降到连续三次 987.0/909.4/924.5ms 精确恢复，均为 `completeBakeMs=0`。详见 [Resident UV 派生键与恢复缓存稳定化](changes/CHG-20260918-RESIDENT-UV-PERSISTENT-KEY-OVERLAP.md)。
 
 2026-09-18 M08（协作 M06/M07/UI-06/UI-10）：`ALG-ERASE-001` 调度修订 v1.5.6 / `UV-DISPLAY-BUFFER` v1.5.4 消除多投影层橡皮逐层约 2–5 秒预热。WebGL2 多视图 texture-array 在工程完整恢复后一次性后台驻留，材质转移后保留 GPU-ready 签名；每个作者层预留唯一 keep-mask array slice，实时笔画先走完整分辨率 live multiplier，提交/切层再在 GPU 内原位乘入该 slice，不把中性 mask、正式 mask URL 或 Canvas revision 变成整组数组重建条件。未落笔的中性预览同步释放；撤销/重做使用正式 paint canvas 原位替换 slice。Resident UV 在橡皮交互中不启动，最终资产、历史与质量链不变。4517 真实六层完成 18 次切层、30 次落笔（含 12 次首点）及 4 次撤销+4 次重做；首点调用 18–217ms、短划 158–597ms（均含浏览器自动化开销），`active === prepared`、array=`ready`、材质 revision=2、Resident revision=1 全程成立。测试笔迹最后通过带 CAS 的 Project Command 恢复到测试前六层 mask；无分辨率、QA、Schema 或资产迁移。详见 [多层橡皮一次驻留快速切层](changes/CHG-20260918-ERASER-ARRAY-RESIDENCY.md)。

@@ -1,3 +1,4 @@
+import { captureLocalRepaintNormal } from '@/engine/localRepaint/captureLocalRepaintNormal';
 import { sameGenerationRecovery } from '@/services/generationRecoveryComparison';
 import {
   createTextureGenerationRecoveryOwnership,
@@ -20,7 +21,6 @@ import {
   captureCurrentDepthPreview,
   captureCurrentLocalRepaintView,
   captureCurrentNormalPreview,
-  captureCurrentNormalGuide,
   captureCurrentView,
   frameGenerationCapture,
   withStableClayTargetPresentation,
@@ -4129,6 +4129,11 @@ export function GeneratePanel({
         // local-repaint brush authorization mask.
         maskUrl: currentPaintMaskDataUrl,
       };
+      if (!isGptLocalRepaint) {
+        capture = await captureLocalRepaintNormal(
+          capture, captureCameraSnapshot, requestAbortController.signal,
+        );
+      }
       useProjectStore.getState().addCapture(capture);
       document.body.dataset.localRepaintButton2ViewCaptureMs = (
         performance.now() - viewCaptureStartedAt
@@ -4278,7 +4283,7 @@ export function GeneratePanel({
           provider: isGptLocalRepaint ? 'liclick-atlas' : 'modelview-int8',
           model: isGptLocalRepaint ? textureGptModel : undefined,
           workflow: 'local-repaint',
-          modelviewWorkflow: isGptLocalRepaint ? undefined : '2026.09.17-li3d4500-defaultprompt-steps2-r1',
+          modelviewWorkflow: isGptLocalRepaint ? undefined : '2026.09.18-refcontrol-normal-4step-r1',
           promptPolishEnabled: isGptLocalRepaint ? undefined : localRepaintSmartPolish,
           clientGenerationId: generationId,
           projectId: currentProject.id,
@@ -4316,18 +4321,17 @@ export function GeneratePanel({
         tone: 'info',
         message: isGptLocalRepaint
           ? `正在提交结合图、法线图${materialReference ? '、材质参考图' : ''}和提示词。`
-          : localRepaintSmartPolish
-            ? '正在提交纯白选区效果图、参考图、外扩蒙版和润色提示词。'
-            : '正在提交纯白选区效果图、参考图和外扩蒙版。',
+          : '正在提交效果图、参考图、蒙版和原始法线图。',
       });
       if (localRepaintPreparationAbortControllerRef.current === requestAbortController) {
         localRepaintPreparationAbortControllerRef.current = undefined;
       }
       generationAbortControllersRef.current.set(generationId, requestAbortController);
-      const [currentEffectDataUrl, materialReferenceDataUrl, maskDataUrl] = await Promise.all([
+      const [currentEffectDataUrl, materialReferenceDataUrl, maskDataUrl, normalDataUrl] = await Promise.all([
         urlToDataUrl(capture.colorUrl),
         materialReference ? urlToDataUrl(materialReference.url) : Promise.resolve(''),
         isGptLocalRepaint ? Promise.resolve('') : urlToDataUrl(preparedGenerationInput.submittedMaskUrl),
+        isGptLocalRepaint ? Promise.resolve('') : urlToDataUrl(capture.normalUrl!),
       ]);
       let depthPreviewPromise: ReturnType<typeof captureRepaintDepth> | undefined;
       const generationPromise = isGptLocalRepaint ? (async () => {
@@ -4338,13 +4342,7 @@ export function GeneratePanel({
         if (!depth) throw new Error('深度截图失败，未提交 GPT 任务，请重试。');
         capture = { ...capture, depthUrl: depth.depthUrl, depthEncoding: depth.depthEncoding };
         if (requestAbortController!.signal.aborted) throw new DOMException('已终止局部生图。', 'AbortError');
-        const normal = await captureCurrentNormalGuide({
-          objectId, resolution: LOCAL_REPAINT_INPUT_RESOLUTION, framing: 'current',
-          aspect: captureAspect, cameraSnapshot: captureCameraSnapshot,
-        });
-        if (normal.width !== capture.width || normal.height !== capture.height)
-          throw new Error('法线图与结合图尺寸不一致，未提交 GPT 任务。');
-        capture = { ...capture, normalUrl: normal.normalUrl };
+        capture = await captureLocalRepaintNormal(capture, captureCameraSnapshot, requestAbortController!.signal);
         const recoveryCaptures = [
           { ...capture, maskUrl: authoredMaskUrl },
           ...(useProjectStore.getState().projects.find((item) => item.id === currentProject.id)?.captures ?? [])
@@ -4357,7 +4355,7 @@ export function GeneratePanel({
         if (requestAbortController!.signal.aborted) throw new DOMException('已终止局部生图。', 'AbortError');
         const submitted = await createLiclickApiClient().generateTextureSingleView(buildGptLocalRepaintRequest({
           generationId, projectId: currentProject.id, prompt: effectivePrompt,
-          guideUrl: currentEffectDataUrl, normalUrl: await urlToDataUrl(normal.normalUrl),
+          guideUrl: currentEffectDataUrl, normalUrl: await urlToDataUrl(capture.normalUrl!),
           reference: materialReference ? { ...materialReference, url: materialReferenceDataUrl } : undefined,
           signal: requestAbortController!.signal,
           capture, object: objects.find((item) => item.id === objectId), model: textureGptModel,
@@ -4395,6 +4393,7 @@ export function GeneratePanel({
             dataUrl: materialReferenceDataUrl,
           },
           mask: { path: `${generationId}-mask.png`, dataUrl: maskDataUrl },
+          normalImage: { path: `${generationId}-normal.png`, dataUrl: normalDataUrl },
         },
         { signal: requestAbortController.signal },
       );

@@ -24,7 +24,7 @@ type ModelviewGenerationInput = {
   modelViewReferenceId?: string;
 };
 
-export type ModelviewInpaintInput = ModelviewGenerationInput & {
+export type ModelviewSingleViewInpaintInput = ModelviewGenerationInput & {
   promptPolishEnabled?: boolean;
   mask: {
     path: string;
@@ -33,7 +33,9 @@ export type ModelviewInpaintInput = ModelviewGenerationInput & {
 };
 
 export type ModelviewSingleViewInput = ModelviewGenerationInput;
-export type ModelviewSingleViewInpaintInput = ModelviewInpaintInput;
+export type ModelviewInpaintInput = ModelviewSingleViewInpaintInput & {
+  normalImage: { path: string; dataUrl: string };
+};
 
 type ModelviewResponse = {
   id: string;
@@ -176,7 +178,7 @@ export function createModelviewApiClient() {
         input,
         result,
         'modelview-int8',
-        '2026.09.17-li3d4500-defaultprompt-steps2-r1',
+        '2026.09.18-refcontrol-normal-4step-r1',
         'inpaint',
       );
     },

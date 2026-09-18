@@ -23,9 +23,13 @@ type ModelviewGenerationInput = {
   materialImage: ModelviewControlFile;
 };
 
-export type ModelviewInpaintInput = ModelviewGenerationInput & {
+export type ModelviewSingleViewInpaintInput = ModelviewGenerationInput & {
   promptPolishEnabled?: boolean;
   mask: ModelviewControlFile;
+};
+
+export type ModelviewInpaintInput = ModelviewSingleViewInpaintInput & {
+  normalImage: ModelviewControlFile;
 };
 
 export type ModelviewSingleViewInput = ModelviewGenerationInput;
@@ -104,10 +108,10 @@ function serviceDefinition(kind: ModelviewServiceKind): ModelviewServiceDefiniti
     apiKey: serverConfig.modelviewInpaintApiKey,
     timeoutMs: serverConfig.modelviewInpaintTimeoutMs,
     jobPrefix: 'modelview-inpaint',
-    idempotencySuffix: 'inpaint:li3d4500-defaultprompt-steps2-r1',
+    idempotencySuffix: 'inpaint:refcontrol-normal-4step-r1',
     filenameSuffix: 'modelview-int8',
     source: 'modelview-inpaint',
-    workflow: '2026.09.17-li3d4500-defaultprompt-steps2-r1',
+    workflow: '2026.09.18-refcontrol-normal-4step-r1',
     finalNode: 'SaveImage #29',
   };
 }
@@ -189,7 +193,7 @@ function createIdempotencyKey(jobId: string, service: ModelviewServiceDefinition
 function multipartBody(input: {
   boundary: string;
   files: Array<{
-    field: 'image' | 'material_image' | 'mask';
+    field: 'image' | 'material_image' | 'mask' | 'normal_image';
     filename: string;
     mime: string;
     image: Buffer;
@@ -224,12 +228,13 @@ function multipartBody(input: {
   return Buffer.concat(chunks);
 }
 
-async function validateInpaintImageAndMask(image: { buffer: Buffer }, mask: { buffer: Buffer }) {
+async function validateInpaintImageAndMask(image: { buffer: Buffer }, mask: { buffer: Buffer }, normal?: { buffer: Buffer }) {
   try {
-    const [imageMetadata, maskMetadata, maskStats] = await Promise.all([
+    const [imageMetadata, maskMetadata, maskStats, normalMetadata] = await Promise.all([
       sharp(image.buffer, { failOn: 'error' }).metadata(),
       sharp(mask.buffer, { failOn: 'error' }).metadata(),
       sharp(mask.buffer, { failOn: 'error' }).stats(),
+      normal ? sharp(normal.buffer, { failOn: 'error' }).metadata() : undefined,
     ]);
     if (
       !imageMetadata.width ||
@@ -248,6 +253,11 @@ async function validateInpaintImageAndMask(image: { buffer: Buffer }, mask: { bu
         422,
       );
     }
+    if (normalMetadata && (normalMetadata.width !== imageMetadata.width || normalMetadata.height !== imageMetadata.height)) {
+      throw new ModelviewInpaintError('法线图尺寸必须与当前效果图、蒙版完全一致。', 422);
+    }
+    // Decode to reject corrupt payloads without re-encoding submitted bytes.
+    if (normal) await sharp(normal.buffer, { failOn: 'error' }).stats();
     if ((maskStats.channels[0]?.max ?? 0) <= 0) {
       throw new ModelviewInpaintError('蒙版红色通道为全黑，请先绘制局部重绘区域。', 422);
     }
@@ -410,7 +420,7 @@ export function checkModelviewSingleViewInpaintServiceStatus() {
 }
 
 async function generateModelviewImage(
-  input: ModelviewInpaintInput | ModelviewSingleViewInput,
+  input: ModelviewInpaintInput | ModelviewSingleViewInput | ModelviewSingleViewInpaintInput,
   userId: string,
   kind: ModelviewServiceKind,
   options: { signal?: AbortSignal },
@@ -431,9 +441,13 @@ async function generateModelviewImage(
   if (!input.materialImage?.dataUrl) {
     throw new ModelviewInpaintError(`${operationLabel}多视图材质参考图不能为空。`, 422);
   }
-  const inpaintInput = kind === 'single-view' ? undefined : (input as ModelviewInpaintInput);
+  const inpaintInput = kind === 'single-view' ? undefined : (input as ModelviewSingleViewInpaintInput);
   if (inpaintInput && !inpaintInput.mask?.dataUrl) {
     throw new ModelviewInpaintError(`${operationLabel}蒙版不能为空。`, 422);
+  }
+  const normalInput = kind === 'inpaint' ? (input as ModelviewInpaintInput).normalImage : undefined;
+  if (kind === 'inpaint' && !normalInput?.dataUrl) {
+    throw new ModelviewInpaintError('局部重绘法线图不能为空。', 422);
   }
   // ModelView's new workflow owns the default prompt. Never let a stale client
   // or saved prompt override it unless the user explicitly enabled polishing.
@@ -456,7 +470,8 @@ async function generateModelviewImage(
   const mask = inpaintInput
     ? dataUrlToBuffer(inpaintInput.mask.dataUrl, `${operationLabel}蒙版`)
     : undefined;
-  if (mask) await validateInpaintImageAndMask(image, mask);
+  const normal = normalInput ? dataUrlToBuffer(normalInput.dataUrl, '局部重绘法线图') : undefined;
+  if (mask) await validateInpaintImageAndMask(image, mask, normal);
   const boundaryHash = createHash('sha256').update(idempotencyKey).digest('hex').slice(0, 32);
   const boundary = `----Li3DModelview${boundaryHash}`;
   const body = multipartBody({
@@ -487,6 +502,12 @@ async function generateModelviewImage(
             },
           ]
         : []),
+      ...(normal && normalInput ? [{
+        field: 'normal_image' as const,
+        filename: safeFilename(normalInput.path, 'normal.png'),
+        mime: normal.mime,
+        image: normal.buffer,
+      }] : []),
     ],
     prompt: prompt || undefined,
   });
@@ -584,7 +605,7 @@ export function generateModelviewSingleView(
 }
 
 export function generateModelviewSingleViewInpaint(
-  input: ModelviewInpaintInput,
+  input: ModelviewSingleViewInpaintInput,
   userId: string,
   options: { signal?: AbortSignal } = {},
 ) {

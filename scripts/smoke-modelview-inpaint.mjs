@@ -76,7 +76,7 @@ const [workspacePort, modelviewPort] = await Promise.all([reservePort(), reserve
 const workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), 'liclick-modelview-smoke-'));
 const workspaceBaseUrl = `http://127.0.0.1:${workspacePort}`;
 const { createModelviewIdempotencyKey } = await import('../apps/server/dist/services/modelviewIdempotency.js');
-const suffixes = ['single-view:li3d4500-4step-r1', 'single-view-inpaint:li3d4500-steps2-r1', 'inpaint:li3d4500-defaultprompt-steps2-r1'];
+const suffixes = ['single-view:li3d4500-4step-r1', 'single-view-inpaint:li3d4500-steps2-r1', 'inpaint:refcontrol-normal-4step-r1'];
 for (const suffix of suffixes) {
   for (const length of [1, 128 - suffix.length - 1, 128 - suffix.length, 104, 160, 500]) {
     const id = 'x'.repeat(length);
@@ -113,7 +113,7 @@ const modelviewMock = http.createServer(async (request, response) => {
         ? /:single-view:li3d4500-4step-r1$/
         : isSingleViewInpaint
           ? /:single-view-inpaint:li3d4500-steps2-r1$/
-          : /:inpaint:li3d4500-defaultprompt-steps2-r1$/,
+          : /:inpaint:refcontrol-normal-4step-r1$/,
     );
     if (String(request.headers['idempotency-key']).length > 128) {
       response.writeHead(422, { 'content-type': 'application/json' });
@@ -130,6 +130,13 @@ const modelviewMock = http.createServer(async (request, response) => {
     assert.match(bodyText, /name="material_image"; filename="multiview-material-reference\.png"/);
     if (isSingleView) assert.doesNotMatch(bodyText, /name="mask"/);
     else assert.match(bodyText, /name="mask"; filename="mask\.png"/);
+    if (isSingleView || isSingleViewInpaint) assert.doesNotMatch(bodyText, /name="normal_image"/);
+    else {
+      const normalHeader = 'Content-Disposition: form-data; name="normal_image"; filename="normal.png"\r\nContent-Type: image/png\r\n\r\n';
+      const start = body.indexOf(Buffer.from(normalHeader));
+      assert(start >= 0, 'normal_image must be forwarded as its own file');
+      assert.deepEqual(body.subarray(start + normalHeader.length, start + normalHeader.length + blackMaskPng.length), blackMaskPng, 'Normal bytes must remain unchanged');
+    }
     assert.doesNotMatch(bodyText, /name="viewport_reference"/);
     assert.doesNotMatch(bodyText, /name="seed"/);
     assert.doesNotMatch(bodyText, /name="noise_seed"/);
@@ -137,7 +144,7 @@ const modelviewMock = http.createServer(async (request, response) => {
     const usesPrompt = String(request.headers['idempotency-key']).startsWith('smoke-polished:');
     if (!usesPrompt) {
       assert.deepEqual([...bodyText.matchAll(/Content-Disposition: form-data; name="([^"]+)"/g)].map(match => match[1]),
-        isSingleView ? ['image', 'material_image'] : ['image', 'material_image', 'mask'], 'Default workflows receive only their image fields, no prompt or parameters');
+        isSingleView ? ['image', 'material_image'] : isSingleViewInpaint ? ['image', 'material_image', 'mask'] : ['image', 'material_image', 'mask', 'normal_image'], 'Default workflows receive only their image fields, no prompt or parameters');
       assert.equal(body.includes(Buffer.from('修复纸张边缘')), false, 'Stale prompt must not override workflow default');
     } else assert(
       body.includes(
@@ -233,6 +240,7 @@ try {
   assert(created.project?.id);
 
   const inpaintPayload = {
+    normalImage: { path: 'normal.png', dataUrl: `data:image/png;base64,${blackMaskPng.toString('base64')}` },
     clientGenerationId: 'smoke-generation-1',
     projectId: created.project.id,
     prompt: '修复纸张边缘',
@@ -249,6 +257,17 @@ try {
       dataUrl: `data:image/png;base64,${whiteMaskPng.toString('base64')}`,
     },
   };
+  for (const normalImage of [undefined,
+    { path: 'normal.png', dataUrl: `data:image/png;base64,${mismatchedMaskPng.toString('base64')}` },
+    { path: 'normal.png', dataUrl: 'data:image/png;base64,aW52YWxpZA==' },
+  ]) {
+    const invalid = await fetch(`${workspaceBaseUrl}/api/modelview/inpaint`, {
+      method: 'POST', headers: { 'content-type': 'application/json', Cookie: cookie, Origin: allowedOrigin },
+      body: JSON.stringify({ ...inpaintPayload, normalImage }),
+    });
+    assert.equal(invalid.status, 422, await invalid.text());
+    assert.equal(observedRequests.length, 0, 'Invalid normal must fail before remote submission');
+  }
   const missingMaterialReference = await fetch(`${workspaceBaseUrl}/api/modelview/inpaint`, {
     method: 'POST',
     headers: {
@@ -327,7 +346,7 @@ try {
     assert.equal(result.modelviewClientId, 'mock-li3d-client');
     assert.equal(result.output?.source, 'modelview-inpaint');
     assert.equal(result.output?.storage, 'project');
-    assert.equal(result.output?.workflow, '2026.09.17-li3d4500-defaultprompt-steps2-r1');
+    assert.equal(result.output?.workflow, '2026.09.18-refcontrol-normal-4step-r1');
     const saved = await fetch(result.resultUrl, {
       headers: { Cookie: cookie, Origin: allowedOrigin },
     });
@@ -368,6 +387,7 @@ try {
       },
       body: JSON.stringify({
         ...inpaintPayload,
+        normalImage: undefined,
         clientGenerationId: `texture-map-single-camera-view-${'a'.repeat(36)}-${'b'.repeat(36)}`,
         prompt: '只补全白模区域',
       }),
@@ -431,7 +451,7 @@ try {
   assert.equal(observedRequests[0].idempotencyKey, observedRequests[1].idempotencyKey);
   assert.equal(observedRequests[0].sha256, observedRequests[1].sha256);
   console.log(
-    'ModelView smoke passed: two/three-image workflows omit stale prompts, explicit local polishing overrides, stable retry bytes/keys, X-Job-ID and PNG persistence.',
+    'ModelView smoke passed: two/three/four-image workflows, raw normal bytes and validation, omit stale prompts, explicit local polishing overrides, stable retry bytes/keys, X-Job-ID and PNG persistence.',
   );
 } catch (error) {
   if (serverOutput.trim()) console.error(serverOutput.trim());
