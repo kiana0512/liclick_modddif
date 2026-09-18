@@ -1,3 +1,4 @@
+import { allowUserFileUpload } from '@/services/userFileUploadPolicy';
 import {
   useCallback,
   useEffect,
@@ -1340,6 +1341,7 @@ export function BakeWorkspacePage({
   }
 
   async function handleLowImport(files: File[]) {
+    if (!allowUserFileUpload(files)) return;
     // React state updates on the next render. A ref is the synchronous lock
     // that prevents a fast double click/drop from starting duplicate decoders.
     if (lowImportLockRef.current) return;
@@ -1403,6 +1405,7 @@ export function BakeWorkspacePage({
   }
 
   function handleColorImport(files: File[]) {
+    if (!allowUserFileUpload(files)) return;
     const imageFiles = files.filter(
       (file) => file.type.startsWith('image/') || /\.(png|jpe?g|webp|tga)$/i.test(file.name),
     );
@@ -1420,6 +1423,7 @@ export function BakeWorkspacePage({
   }
 
   function handleMaterialChannelImport(kind: 'roughness' | 'metallic' | 'normal', files: File[]) {
+    if (!allowUserFileUpload(files)) return;
     const imageFiles = files.filter(
       (file) => file.type.startsWith('image/') || /\.(png|jpe?g|webp|tga)$/i.test(file.name),
     );
@@ -1444,6 +1448,7 @@ export function BakeWorkspacePage({
   }
 
   function handleMaterialImport(files: File[]) {
+    if (!allowUserFileUpload(files)) return;
     const imageFiles = files.filter(
       (file) => file.type.startsWith('image/') || /\.(png|jpe?g|webp|tga)$/i.test(file.name),
     );
@@ -1468,6 +1473,7 @@ export function BakeWorkspacePage({
   }
 
   async function handleHighImport(files: File[]) {
+    if (!allowUserFileUpload(files)) return;
     const modelFile = files.find((file) => /\.(fbx|obj|glb|gltf)$/i.test(file.name));
     if (!modelFile) {
       setBakeError('请选择 FBX、OBJ、GLB 或 GLTF 高模文件。');
@@ -2838,6 +2844,7 @@ export function BakeWorkspacePage({
         accept=".fbx,.obj,.glb,.gltf"
         onChange={(event) => {
           const files = Array.from(event.target.files ?? []);
+          if (!allowUserFileUpload(files)) { event.target.value = ''; return; }
           const assigned = assignFilesToObjects(files, highObjects, fileTargetIdRef.current, {});
           setCageFiles((current) => ({ ...current, ...assigned }));
           void persistImportedFiles('cage', assigned);

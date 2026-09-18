@@ -80,7 +80,7 @@ for (const { value: model } of GPT_TEXTURE_MODELS) for (const resolution of ['1K
 
 const clipCalls = [];
 const alphaPolicy = load('../src/engine/localRepaint/resultAlphaPolicy.ts', {
-  './modelSilhouetteClip': { MODEL_SILHOUETTE_CLIP_VERSION: 1,
+  './modelSilhouetteClip': { MODEL_SILHOUETTE_CLIP_VERSION: 2,
     prepareModelClippedRepaint: async (...args) => { clipCalls.push(args); return 'clipped-result'; } },
 });
 const { prepareCloudRepaintCompletion } = load('../src/engine/localRepaint/cloudCompletion.ts', {
@@ -94,10 +94,12 @@ assert.equal(preservesRepaintResultAlpha(gptResult.metadata), true);
 assert.equal(gptResult.metadata.modelSilhouetteClipVersion, undefined);
 const remoteResult = await prepareRepaintResult('remote-source', 'depth', false);
 assert.equal(remoteResult.resultUrl, 'clipped-result');
-assert.equal(remoteResult.metadata.modelSilhouetteClipVersion, 1);
+assert.equal(remoteResult.metadata.modelSilhouetteClipVersion, 2);
+assert.equal(remoteResult.metadata.repaintResultPolicy, 'model-silhouette-inset-v2');
 assert.deepEqual(clipCalls[0].slice(0, 2), ['remote-source', 'depth']);
 assert.equal(preservesRepaintResultAlpha({}), false, 'Unversioned legacy jobs keep their old behavior');
 assert.equal(preservesRepaintResultAlpha({ modelSilhouetteClipVersion: 1 }), true);
+assert.equal(preservesRepaintResultAlpha({ modelSilhouetteClipVersion: 2 }), true);
 const abort = new globalThis.AbortController();
 abort.abort();
 await assert.rejects(() => prepareRepaintResult('raw', 'depth', true, abort.signal), /abort/i);
@@ -119,6 +121,8 @@ assert.equal(await prepareCloudRepaintCompletion(restored, []), restored);
 assert.equal(clipCalls.length, 0, 'GPT restoration is idempotent and must never clip');
 const oldClipped = { ...generation, metadata: { ...generation.metadata, modelSilhouetteClipVersion: 1 } };
 assert.equal(await prepareCloudRepaintCompletion(oldClipped, []), oldClipped, 'Do not rewrite completed old jobs');
+const newClipped = { ...generation, metadata: { ...generation.metadata, modelSilhouetteClipVersion: 2 } };
+assert.equal(await prepareCloudRepaintCompletion(newClipped, []), newClipped, 'Do not reprocess completed 3px clipped jobs');
 
 const panel = readFileSync(new URL('../src/components/panels/GeneratePanel.tsx', import.meta.url), 'utf8');
 assert.match(panel, /getGptTextureRequestParameters\(resolution, textureGptQuality, textureGptModel\)/);

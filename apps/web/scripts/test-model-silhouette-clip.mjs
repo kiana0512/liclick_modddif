@@ -9,6 +9,7 @@ class Pixels { constructor(data, width, height) { this.data=data;this.width=widt
 const exports = {};
 new Function('exports','ImageData',js)(exports,Pixels);
 const clip = exports.clipRepaintToModelSilhouette;
+assert.equal(exports.MODEL_SILHOUETTE_CLIP_VERSION, 2);
 const w=2048,h=16;
 const color=new Pixels(new Uint8ClampedArray(w*h*4),w,h);
 const depth=new Pixels(new Uint8ClampedArray(w*h*4).fill(255),w,h);
@@ -19,11 +20,11 @@ for(let y=2;y<14;y++)for(let x=10;x<50;x++){
 for(let y=6;y<=8;y++)for(let x=27;x<=29;x++)depth.data[(y*w+x)*4]=255;
 const original=new Uint8ClampedArray(color.data),originalDepth=new Uint8ClampedArray(depth.data);
 const result=clip(color,depth),alpha=(x,y)=>result.data[(y*w+x)*4+3];
-assert.equal(alpha(11,5),0);assert.equal(alpha(12,5),255);
-assert.equal(alpha(47,5),255);assert.equal(alpha(48,5),0);
-assert.equal(alpha(25,7),0);assert.equal(alpha(24,7),255);
-assert.equal(alpha(31,7),0);assert.equal(alpha(32,7),255);
-assert.equal(alpha(28,4),0);assert.equal(alpha(22,4),255);
+assert.equal(alpha(12,5),0);assert.equal(alpha(13,5),255);
+assert.equal(alpha(46,5),255);assert.equal(alpha(47,5),0);
+assert.equal(alpha(24,7),0);assert.equal(alpha(23,7),255);
+assert.equal(alpha(32,7),0);assert.equal(alpha(33,7),255);
+assert.equal(alpha(28,3),0);assert.equal(alpha(22,5),255);
 assert.equal(result.width,w);assert.equal(result.height,h);
 assert.deepEqual(color.data,original);assert.deepEqual(depth.data,originalDepth);
 for(let p=0;p<result.data.length;p+=4)assert.deepEqual(result.data.slice(p,p+3),original.slice(p,p+3));
@@ -32,6 +33,18 @@ assert.throws(()=>clip(color,new Pixels(new Uint8ClampedArray(w*h*4).fill(255),w
 // Border and very thin geometry are eroded, not artificially rescued/expanded.
 depth.data.fill(255);for(let y=0;y<h;y++)depth.data[(y*w+100)*4]=0;
 assert.equal(clip(color,depth).data.some((v,i)=>i%4===3&&v),false);
+// Radius scales with the actual longest image edge; coordinates and RGB do not.
+for (const [width, radius] of [[512,1], [1024,2], [2048,3], [4096,6]]) {
+ const height=32;
+ const pixels=new Pixels(new Uint8ClampedArray(width*height*4).fill(77),width,height);
+ const geometry=new Pixels(new Uint8ClampedArray(width*height*4).fill(255),width,height);
+ for(let y=0;y<height;y++)for(let x=16;x<64;x++)geometry.data[(y*width+x)*4]=100;
+ const output=clip(pixels,geometry),at=x=>output.data[(16*width+x)*4+3];
+ assert.equal(at(16+radius-1),0,`${width}px: inner border must retreat ${radius}px`);
+ assert.equal(at(16+radius),255,`${width}px: core must remain`);
+ assert.equal(at(63-radius),255);
+ assert.equal(at(64-radius),0);
+}
 const panel=read('components/panels/GeneratePanel.tsx');
 assert.match(panel,/prepareRepaintResult\(\s*generation.resultUrl, capture.depthUrl, isGptLocalRepaint, requestAbortController.signal/);
 const policy=read('engine/localRepaint/resultAlphaPolicy.ts');
@@ -62,4 +75,4 @@ for (const ignoreSourceAlpha of [false, true, undefined]) {
   await scope.createProjectionMaskedImage('source', 'mask', { ignoreSourceAlpha });
   assert.deepEqual(modes, [ignoreSourceAlpha === false ? 'mask-only' : 'projection-alpha-only']);
 }
-console.log('Model silhouette clip: 2px outside/hole boundaries, RGB preservation, frame alignment, thin geometry, failure and projection/save/restore contracts passed.');
+console.log('Model silhouette clip: 3px@2K outside/hole boundaries, resolution scaling, RGB preservation, frame alignment, thin geometry, failure and projection/save/restore contracts passed.');

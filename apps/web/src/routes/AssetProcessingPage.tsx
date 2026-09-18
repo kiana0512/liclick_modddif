@@ -1,3 +1,4 @@
+import { allowUserFileUpload } from '@/services/userFileUploadPolicy';
 import {
   ArrowLeft,
   Box,
@@ -640,6 +641,7 @@ function FileDropCard({
       : 'border-emerald-300/24 bg-emerald-400/[0.055] text-emerald-100 hover:border-emerald-300/42';
 
   function acceptFile(nextFile: File) {
+    if (!allowUserFileUpload([nextFile])) return;
     const extension = `.${nextFile.name.split('.').pop()?.toLowerCase() ?? ''}`;
     const accepted = accept
       .split(',')
@@ -798,6 +800,7 @@ function MultiFbxDropCard({
   const [fileError, setFileError] = useState<string>();
 
   function addFiles(input: FileList | File[]) {
+    if (!allowUserFileUpload(Array.from(input))) return;
     const incoming = Array.from(input);
     const invalid = incoming.find((file) => !/\.fbx$/i.test(file.name));
     if (invalid) {
@@ -1044,6 +1047,7 @@ export function ReferenceImages({
   const inputRef = useRef<HTMLInputElement>(null);
 
   function appendFiles(list: FileList | File[]) {
+    if (!allowUserFileUpload(Array.from(list))) return;
     if (disabled) return;
     const images = Array.from(list).filter((file) => file.type.startsWith('image/'));
     const unique = [...files];
