@@ -57,7 +57,7 @@ for (let fixture = 0; fixture < 120; fixture++) {
   }
 }
 // Checkpoints include empty rows, abort before publishing a crop, and preserve
-// genuine provider size/transparent-silhouette errors instead of loosening QA.
+// genuine provider ratio/transparent-silhouette errors instead of loosening QA.
 let time = 0, checkpoints = 0;
 const timed = load({ now: () => time += 3 });
 const empty = { width: 1024, height: 1024, data: new Uint8ClampedArray(1024 * 1024 * 4) };
@@ -67,7 +67,8 @@ await assert.rejects(() => timed.findContentFramingCooperatively(empty, false, '
 }), error => error === cancelled);
 assert.equal(checkpoints, 2);
 const frame = current.findContentFraming({ width: 1, height: 1, data: new Uint8ClampedArray([255, 255, 255, 255]) });
-assert.throws(() => current.restoredFrameLayout(frame, frame.outputWidth - 1, frame.outputHeight), /远端回图比例异常/);
+assert.doesNotThrow(() => current.restoredFrameLayout(frame, frame.outputWidth / 2, frame.outputHeight / 2));
+assert.throws(() => current.restoredFrameLayout(frame, frame.outputWidth + 64, frame.outputHeight), /远端回图比例异常/);
 await assert.rejects(() => validateFramedSilhouette(frame, { width: frame.outputWidth, height: frame.outputHeight,
   data: new Uint8ClampedArray(frame.outputWidth * frame.outputHeight * 4) }), /透明轮廓不对齐/);
 await assert.rejects(() => validateFramedSilhouette(frame, { width: frame.outputWidth, height: frame.outputHeight,
@@ -102,4 +103,4 @@ assert.equal(yields, 1);
 failDecode = true;
 assert.ok(await exports.load('drawable-image'));
 assert.equal(decodeCalls, 3); assert.equal(yields, 2);
-console.log('Content bounds passed: 240 exhaustive mask/normal references, identical cooperative framing, empty-row cancellation, strict size/silhouette errors and async decode cancellation/compatibility.');
+console.log('Content bounds passed: 240 exhaustive mask/normal references, identical cooperative framing, empty-row cancellation, native-size/strict-ratio/silhouette QA and async decode cancellation/compatibility.');
