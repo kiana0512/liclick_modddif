@@ -30,7 +30,7 @@ try{
  const menus=page.getByRole('button',{name:'图片功能',exact:true});await menus.first().waitFor();
  await menus.first().click({force:true});await page.getByRole('menuitem',{name:'生成多视图',exact:true}).click();
  await menus.nth(1).click({force:true});assert.equal(await page.getByRole('menuitem',{name:'生成多视图',exact:true}).count(),0);
- await page.getByRole('menuitem',{name:'光照处理',exact:true}).click();
+ await page.getByRole('menuitem',{name:'去光影处理',exact:true}).click();
  assert.deepEqual(await page.evaluate(()=>window.calls),['single','multi']);
  assert.deepEqual(await page.evaluate(()=>window.refs.getState().selectedReferenceIds),['multi']);
  await page.evaluate(()=>window.renderPicker(true));await page.waitForFunction(()=>[...document.querySelectorAll('[aria-label="图片功能"]')].every(b=>b.disabled));
