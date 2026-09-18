@@ -1,5 +1,7 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
+2026-09-18 M06/M07/M09：`UV-PERSISTENT-MERGE-KEY` v1.1.0 / `UV-DISPLAY-DERIVED-CACHE` v1.2.0 缩短 Resident UV/投影转 UV 的确定性派生键准备，并修复工程恢复 A→B→C 合法状态在两条磁盘窗口中循环淘汰。模型 position/normal/uv/index 的真实字节 SHA-256 以最多 2 路队列和既有 3 路来源校验并行；派生缓存改为最多 4 条且压缩总字节硬限 256MiB，裁剪时固定当前显示与新写状态，旧无长度元数据条目保守淘汰。输出键、像素、完整分辨率、QA、GPU/shader、Project Command/CAS/ownership、作者资产与导出不变。4517 真实 4K 六层工程从连续重载约 2342–2348ms 全量重算降到连续三次 987.0/909.4/924.5ms 精确恢复，均为 `completeBakeMs=0`。详见 [Resident UV 派生键与恢复缓存稳定化](changes/CHG-20260918-RESIDENT-UV-PERSISTENT-KEY-OVERLAP.md)。
+
 2026-09-18 M08（协作 M06/M07/UI-06/UI-10）：`ALG-ERASE-001` 调度修订 v1.5.6 / `UV-DISPLAY-BUFFER` v1.5.4 消除多投影层橡皮逐层约 2–5 秒预热。WebGL2 多视图 texture-array 在工程完整恢复后一次性后台驻留，材质转移后保留 GPU-ready 签名；每个作者层预留唯一 keep-mask array slice，实时笔画先走完整分辨率 live multiplier，提交/切层再在 GPU 内原位乘入该 slice，不把中性 mask、正式 mask URL 或 Canvas revision 变成整组数组重建条件。未落笔的中性预览同步释放；撤销/重做使用正式 paint canvas 原位替换 slice。Resident UV 在橡皮交互中不启动，最终资产、历史与质量链不变。4517 真实六层完成 18 次切层、30 次落笔（含 12 次首点）及 4 次撤销+4 次重做；首点调用 18–217ms、短划 158–597ms（均含浏览器自动化开销），`active === prepared`、array=`ready`、材质 revision=2、Resident revision=1 全程成立。测试笔迹最后通过带 CAS 的 Project Command 恢复到测试前六层 mask；无分辨率、QA、Schema 或资产迁移。详见 [多层橡皮一次驻留快速切层](changes/CHG-20260918-ERASER-ARRAY-RESIDENCY.md)。
 
 2026-09-18 M08（协作 M06/M07/UI-06/UI-10）：`ALG-ERASE-001` 调度修订 v1.5.5 / `UV-DISPLAY-BUFFER` v1.5.3 将 projected-mask 橡皮的快速路径所有权提前到工具激活，而非首次 pointer-down。多视图投影栈超过 direct sampler 预算时使用已有精确 texture-array 材质，live keep-mask 继续作为独立全分辨率采样器叠乘；橡皮激活期间 Resident UV 不启动 draft/final bake，在途最终收敛立即取消。WebGL2/预算不安全设备保留最后 verified front，不用 Resident UV 模拟交互。正式 mask 提交、历史、撤销/重做、Top-K/gutter 最终收敛、持久化/export、分辨率和 QA 不变；无 Schema/资产迁移。六投影层 4517 实测工具激活为 `useTextureArrays=true`，连续笔画期间 Resident draw/revision 与材质 build revision 均不增加。详见 [多视图橡皮 texture-array 快速路径](changes/CHG-20260918-ERASER-MULTIVIEW-TEXTURE-ARRAY.md)。
@@ -196,7 +198,7 @@
 
 2026-09-15 M03：ALG-VIEW-INPUT-001/1.3.2 在鼠标接触前即让 R3F 悬停遵守 Alt 所有权；保留普通 hover 和已锁定拖动。旧实现拾取回归失败、新实现通过，用户实际首帧延迟需继续录制。无像素/持久化迁移，见 [Alt 悬停变更卡](changes/CHG-20260915-ALT-BRUSH-HOVER.md)。
 
-> 文档版本：`2.20.194`
+> 文档版本：`2.20.196`
 
 2026-09-16 UI-16 → M14（协作 M01/M12/M13/M15）：`ASSET-LIFECYCLE-GC` v0.4.0 / `STORAGE-INVENTORY-001/4` 将 Cloud 工程/Revision 引用页默认 8→32，并由单条 PostgreSQL CTE 完成分页、assetId 提取与引用 upsert，Node 不再回传引用数组后二次写库；每 256 条文档约 64→8 次数据库往返，保持 45 秒单查询上限与有界 Node 内存。当前 ready scan 引用索引保留到下一快照原子切换，旧 /3 快照自动重扫。Cloud 隔离区改按真实 quarantine 且排除重新可达对象统计；新增用户级幂等持久 purge job/item，以最多 4 并发签名 DeleteObject 后逐项事务删除 transfer、写 deleted_at，404/Pod 重启可安全重放。新增 `asset_storage_purge_jobs/items`，无 Project/Revision/Asset 内容迁移；Command/CAS/ownership/verified 及 GPU/CPU/Worker/shader、投影/UV/重绘/export、分辨率与 QA 不变。回滚前停 purge 并保留任务表，详见 [Cloud 存储盘点与物理清理变更卡](changes/CHG-20260916-CLOUD-STORAGE-INVENTORY-BOUNDED.md)。
 
@@ -1361,6 +1363,8 @@ M15 / CLOUD-DEPLOYMENT v1.0.0（2026-09-03）：正常合并 release 部署历�
 
 | 版本 | 日期 | 基线 | 变更 |
 | --- | --- | --- | --- |
+| `2.20.196` | 2026-09-18 | `Resident UV 恢复缓存稳定化` | M06/M07/M09：`UV-DISPLAY-DERIVED-CACHE` v1.2.0 将派生磁盘窗口从固定两条改为最多四条并增加 256MiB 压缩总预算，固定当前显示/新写状态，消除 A/B/C 工程恢复循环 miss；缓存键、像素、QA、作者资产与 export 不变。 |
+| `2.20.195` | 2026-09-18 | `Resident UV 派生键并行准备` | M06/M07/M09：`UV-PERSISTENT-MERGE-KEY` v1.1.0 将实际几何字节 SHA 改为 2 路有界队列，并与既有 3 路来源资产校验重叠；键值、像素、质量、持久化/export 与失败回退不变，无迁移。 |
 | `2.20.194` | 2026-09-18 | `多层橡皮一次驻留快速切层` | M08（协作 M06/M07/UI-06/UI-10）：`ALG-ERASE-001` v1.5.6 / `UV-DISPLAY-BUFFER` v1.5.4 将 WebGL2 多视图作者 texture-array 在完整恢复后一次性后台驻留，并为每层预留 keep-mask slice；实时 multiplier 在 GPU 内原位乘入/替换 slice，中性状态、mask URL 与 live Canvas revision 均不再重打包整组作者数组。六层 18 次切层、30 次落笔、4 次撤销+4 次重做通过，Resident revision 不变；无 Schema/资产迁移。 |
 | `2.20.193` | 2026-09-18 | `多视图橡皮 texture-array 快速路径` | M08（协作 M06/M07/UI-06/UI-10）：`ALG-ERASE-001` v1.5.5 / `UV-DISPLAY-BUFFER` v1.5.3 提前武装完整分辨率 live keep-mask，并在预算安全时复用 texture-array 作者栈；交互禁止 Resident UV。无 Schema/资产迁移。 |
 | `2.20.192` | 2026-09-18 | `橡皮交互禁用 Resident UV` | M08（协作 M06/M07/UI-06/UI-10）：projected-mask 橡皮拖动仅更新 GPU live keep-mask；Resident UV draft 不再逐输入 revision 重算，新笔迹会取消尚未发布的最终收敛。多图层不改变快速路径；无 Schema/资产迁移。 |

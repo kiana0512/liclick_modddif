@@ -491,14 +491,15 @@ try {
   await activeWorker.onmessage({ data: { id: 5, type: 'restore', key: 'a', persistentKey } });
   assert.deepEqual(cacheReply.keys, ['a'], 'F5-restored compressed bytes remain reusable');
   await activeWorker.onmessage({ data: { id: 6, type: 'activate', key: 'a' } });
-  for (const [index, key] of ['b', 'c', 'd'].entries()) {
+  for (const [index, key] of ['b', 'c', 'd', 'e'].entries()) {
     await activeWorker.onmessage({ data: { id: 10 + index, type: 'store', key, persistentKey: key.repeat(64),
       resolution: 1024, color: new Uint8Array(rgba.length).fill(index).buffer, mask: new ArrayBuffer(0) } });
     await activeWorker.onmessage({ data: { id: 20 + index, type: 'activate', key } });
     await activeWorker.onmessage({ data: { id: 30 + index, type: 'activate', key: 'a' } });
     assert(disk.has('https://li3d.test/__li3d_internal/resident-uv/' + persistentKey), 'Returning to displayed A must keep its disk snapshot');
-    assert.equal(disk.size, 2, 'Pinning the visible state must not increase disk capacity');
+    assert(disk.size <= 4, 'Hydration cache stays inside its bounded four-state window');
   }
+  assert.equal(disk.size, 4, 'A/B/C hydration states survive without cyclic two-entry thrash');
   await freshWorker().onmessage({ data: { id: 40, type: 'restore', key: 'F5-after-toggles', persistentKey } });
   assert.deepEqual(new Uint8Array(cacheReply.output, 0, rgba.length), rgba, 'F5 after A/B/A/C/A recovers exact A without rebaking');
   const key = [...disk.keys()][0], old = disk.get(key);

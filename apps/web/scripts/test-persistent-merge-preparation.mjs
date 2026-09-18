@@ -12,8 +12,14 @@ const cache={match:async req=>stored.get(req.url)?.clone(),put:async(req,res)=>s
 class Pixels {constructor(data,width,height){this.data=data;this.width=width;this.height=height;}}
 let user='user-a';
 let activeFetches=0,peakFetches=0;
+let activeDigests=0,peakDigests=0;
 const fetched=[];
-const scope={exports:{},crypto:globalThis.crypto,window:{caches:{}},caches:{open:async()=>cache},
+const crypto={subtle:{digest:async(...args)=>{
+  activeDigests++;peakDigests=Math.max(peakDigests,activeDigests);
+  await new Promise(resolve=>setTimeout(resolve,2));
+  try{return await globalThis.crypto.subtle.digest(...args);}finally{activeDigests--;}
+}}};
+const scope={exports:{},crypto,window:{caches:{}},caches:{open:async()=>cache},
   yieldToBrowserTask:async()=>{copiedSlices++;await new Promise(resolve=>setTimeout(resolve,0));},
   location:{origin:'https://test.invalid'},Request,Response,TextEncoder,TextDecoder:globalThis.TextDecoder,ImageData:Pixels,
   document:{createElement:()=>({})},useAuthStore:{getState:()=>({user:{id:user}})},
@@ -38,10 +44,13 @@ const input={projectId:'project',objectId:'object',resolution:512,group:a.group,
 const key=await api.persistentMergeKey(input);
 assert.ok(key);
 fetched.length=0;peakFetches=0;
+peakDigests=0;
 const manyLayers=Array.from({length:9},(_,i)=>({id:`layer-${i}`,order:i,imageUrl:`blob:source-${i%7}`}));
 assert.ok(await api.persistentMergeKey({...input,layers:manyLayers}));
 assert.equal(fetched.length,7,'shared source assets are verified only once per key');
 assert.equal(peakFetches,3,'source verification overlaps network waits within a fixed memory bound');
+assert(peakDigests>=4,'bounded geometry and source SHA queues overlap instead of serializing');
+assert(peakDigests<=5,'two geometry and three source SHA jobs are the global concurrency bound');
 assert.equal(await api.persistentMergeKey({...input,group:b.group,layers:[{...input.layers[0],imageUrl:'blob:new'}]}),key,
   'reload UUIDs and blob URLs do not invalidate identical geometry/source bytes');
 b.attributes.uv.array[0]=0.5;

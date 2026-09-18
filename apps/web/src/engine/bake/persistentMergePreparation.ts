@@ -9,7 +9,16 @@ const CACHE='li3d-verified-merge-preparation-v1';
 const hash=async(bytes:Uint8Array<ArrayBuffer>)=>Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',bytes)),b=>b.toString(16).padStart(2,'0')).join('');
 const textBytes=(value:unknown)=>new TextEncoder().encode(JSON.stringify(value));
 
-/** Hash actual geometry and source bytes: runtime UUIDs and blob URLs are not identity. */
+async function runBounded(jobs:Array<()=>Promise<void>>,limit:number) {
+  let next=0;
+  await Promise.all(Array.from({length:Math.min(limit,jobs.length)},async()=>{
+    while(next<jobs.length) await jobs[next++]();
+  }));
+}
+
+/** UV-PERSISTENT-MERGE-KEY/1.1.0. Hash actual geometry and source bytes:
+ * runtime UUIDs and blob URLs are not identity. Independent geometry and asset
+ * verification queues overlap, but remain bounded and preserve the same key. */
 export async function persistentMergeKey(input:{projectId:string;objectId:string;resolution:UvBakeResolution;group:THREE.Group;layers:Layer[];purpose?:string}) {
   const userId=useAuthStore.getState().user?.id;
   if(!userId || !globalThis.crypto?.subtle || !('caches' in window)) return undefined;
@@ -17,7 +26,8 @@ export async function persistentMergeKey(input:{projectId:string;objectId:string
     input.group.updateMatrixWorld(true);
     const nodes:THREE.Object3D[]=[];input.group.traverse(node=>nodes.push(node));
     const geometry=[];
-    const geometryDigests=new WeakMap<ArrayBufferLike,Map<string,string>>();
+    const geometryDigests=new WeakMap<ArrayBufferLike,Map<string,{records:unknown[][]}>>();
+    const geometryJobs:Array<()=>Promise<void>>=[];
     for(const node of nodes) {
       const mesh=node as THREE.Mesh;
       if(node.userData.liclickPaintOverlay || node.userData.liclickWireframeOverlay || node.userData.liclickLocalRepaintGpuOverlay) continue;
@@ -33,11 +43,15 @@ export async function persistentMergeKey(input:{projectId:string;objectId:string
           const span=`${array.byteOffset}:${array.byteLength}`;
           let digest=spans.get(span);
           if(!digest) {
-            digest=await hash(new Uint8Array(array.buffer,array.byteOffset,array.byteLength).slice());
-            spans.set(span,digest);
+            digest={records:[]};spans.set(span,digest);
+            geometryJobs.push(async()=>{
+              const value=await hash(new Uint8Array(array.buffer,array.byteOffset,array.byteLength).slice());
+              for(const target of digest!.records) target[target.length-1]=value;
+            });
           }
-          record.push([name,attribute.itemSize,attribute.normalized,attribute.count,
-            'data' in attribute ? [attribute.offset,attribute.data.stride] : null,digest]);
+          const attributeRecord:unknown[]=[name,attribute.itemSize,attribute.normalized,attribute.count,
+            'data' in attribute ? [attribute.offset,attribute.data.stride] : null,''];
+          digest.records.push(attributeRecord);record.push(attributeRecord);
         }
         record.push(mesh.geometry.drawRange,mesh.geometry.groups);
       }
@@ -52,10 +66,11 @@ export async function persistentMergeKey(input:{projectId:string;objectId:string
         assets.set(url,'');
       }
     }
-    // Verify source bytes concurrently, but bound decoded response memory. This
-    // preserves the exact cache key while avoiding one network round trip per layer.
+    // Verify source bytes concurrently, but bound decoded response memory. Run
+    // this independently from the bounded geometry queue so network/crypto wait
+    // overlaps without creating unbounded copies of large model attributes.
     const urls=[...assets.keys()];let next=0;
-    await Promise.all(Array.from({length:Math.min(3,urls.length)},async()=>{
+    const assetVerification=Promise.all(Array.from({length:Math.min(3,urls.length)},async()=>{
       while(next<urls.length) {
         const url=urls[next++];
         const response=await fetch(url);
@@ -63,6 +78,7 @@ export async function persistentMergeKey(input:{projectId:string;objectId:string
         assets.set(url,await hash(new Uint8Array(await response.arrayBuffer())));
       }
     }));
+    await Promise.all([runBounded(geometryJobs,2),assetVerification]);
     for(const layer of layers) {
       for(const key of ['imageUrl','maskUrl','depthUrl','normalUrl'] as const) {
         const url=layer[key];if(url) layer[key]=assets.get(url)!;

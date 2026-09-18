@@ -5,6 +5,7 @@ const entries = new Map<string, Entry>();
 let activeKey: string | undefined;
 let diskWrites = Promise.resolve<string | undefined>(undefined);
 const budget = 256 * 1024 * 1024;
+const diskEntryLimit = 4;
 let retained = 0;
 const diskCache = 'li3d-resident-uv-display-v1';
 const diskRequest = (key: string) => `${self.location.origin}/__li3d_internal/resident-uv/${key}`;
@@ -41,15 +42,37 @@ async function writeDisk(key: string, entry: Entry) {
     await cache.put(diskRequest(key), new Response(entry.bytes, { headers: {
       'content-type': 'application/octet-stream', 'x-sha256': await digest(entry.bytes),
       'x-resolution': String(entry.resolution), 'x-mask-length': String(entry.maskLength),
+      'x-compressed-length': String(entry.bytes.byteLength),
     } }));
-    // Two full-resolution snapshots bound disk storage independently of the memory LRU.
+    // UV-DISPLAY-DERIVED-CACHE/1.2: project hydration can legitimately visit
+    // A/B/C resident combinations before settling. A two-entry FIFO makes the
+    // next reload miss A, then evict B, then evict C forever. Keep a tiny LRU
+    // window, bounded by both entry count and compressed bytes, and pin the
+    // actually presented state while trimming legacy entries conservatively.
     const keys = await cache.keys();
-    // UV-DISPLAY-DERIVED-CACHE/1.1: pin the actually presented snapshot. A late
-    // background write must not evict the state to which the user just returned.
     const pinned = entries.get(activeKey ?? '')?.persistentKey;
-    const removable = keys.filter(old => old.url !== diskRequest(key) && old.url !== diskRequest(pinned ?? ''));
-    for (const old of removable.slice(0, Math.max(0, keys.length - 2))) await cache.delete(old);
-    return `saved:${keys.length}`;
+    const protectedUrls = new Set([diskRequest(key), diskRequest(pinned ?? '')]);
+    const records = await Promise.all(keys.map(async request => {
+      const response = await cache.match(request);
+      const declared = Number(response?.headers.get('x-compressed-length'));
+      return {
+        request,
+        // Missing legacy metadata is charged at the full budget so migration
+        // cannot silently retain an unbounded old cache.
+        bytes: Number.isFinite(declared) && declared > 0 ? declared : budget,
+      };
+    }));
+    let diskBytes = records.reduce((total, record) => total + record.bytes, 0);
+    let diskEntries = records.length;
+    for (const record of records) {
+      if (diskEntries <= diskEntryLimit && diskBytes <= budget) break;
+      if (protectedUrls.has(record.request.url)) continue;
+      if (await cache.delete(record.request)) {
+        diskEntries--;
+        diskBytes -= record.bytes;
+      }
+    }
+    return `saved:${diskEntries}`;
   } catch (error) { return error instanceof Error ? error.name : 'storage-unavailable'; }
 }
 function persist(entry: Entry, presentedKey?: string) {
