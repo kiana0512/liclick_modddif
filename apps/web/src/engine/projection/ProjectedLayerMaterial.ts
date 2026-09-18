@@ -217,6 +217,7 @@ type ProjectedLayerUniformBinding = {
   layerId: string;
   imageUrl: string;
   maskUrl?: string;
+  maskArrayPromotionRevision?: number;
   maskMapUniform?: string;
   projectedMapUniform: string;
   opacityUniform: string;
@@ -294,8 +295,10 @@ export function getProjectedLayerSamplerBudget(
     projected === 1
       ? 0
       : normalizedFeatures.useTextureArrays
-        ? maskLayers.filter((layer) => isLiveProjectedCanvasUrl(layer.maskUrl)).length +
-          Number(maskLayers.some((layer) => !isLiveProjectedCanvasUrl(layer.maskUrl)))
+        // Every array layer owns a reserved neutral keep-mask slice. First use
+        // of the projected eraser can therefore promote pixels into that slice
+        // without adding a sampler or rebuilding the complete author stack.
+        ? 1
         : maskLayers.length;
   const depths =
     projected === 1
@@ -1096,7 +1099,7 @@ function buildStackFragmentShader(
   const layerUsesProjectedArray = (index: number) =>
     features.useTextureArrays && !isLiveProjectedCanvasUrl(layers[index].imageUrl);
   const layerUsesMaskArray = (index: number) =>
-    features.useTextureArrays && !isLiveProjectedCanvasUrl(layers[index].maskUrl);
+    features.useTextureArrays && layers[index].maskArraySlice !== undefined;
   const layerUsesDepthArray = (index: number) =>
     features.useTextureArrays && !isLiveProjectedCanvasUrl(layers[index].depthUrl);
   const layerUsesNormalArray = (index: number) =>
@@ -2559,12 +2562,20 @@ function getProjectionLayerStructureSignature(
         [
           layer.layerId,
           layer.imageUrl,
-          layer.maskUrl ?? '',
+          normalizedFeatures.useTextureArrays
+            ? `reserved-uv-mask:${layer.layerId}`
+            : (layer.maskUrl ?? ''),
           layer.depthUrl ?? '',
           layer.depthIsLinearView ? 1 : 0,
           layer.normalUrl ?? '',
-          layer.useMask ? 1 : 0,
-          layer.maskSpace ?? 'projection',
+          normalizedFeatures.useTextureArrays
+            ? 1
+            : layer.useMask
+              ? 1
+              : 0,
+          normalizedFeatures.useTextureArrays
+            ? 'uv'
+            : (layer.maskSpace ?? 'projection'),
           layer.useDepthCheck ? 1 : 0,
           layer.useNormalCheck ? 1 : 0,
           layer.ignoreSourceAlpha ? 1 : 0,
@@ -2918,9 +2929,17 @@ export function syncProjectedLayerResidentMaskTextureInObject(
   layerId: string,
   maskUrl: string,
   texture: THREE.Texture,
+  arrayPromotion?: {
+    renderer: THREE.WebGLRenderer;
+    liveMultiplierTexture: THREE.Texture;
+    mode?: 'multiply' | 'replace';
+    revision: number;
+  },
 ) {
   prepareLiveEraserMaskTexture(texture);
+  if (arrayPromotion) prepareLiveEraserMaskTexture(arrayPromotion.liveMultiplierTexture);
   const visited = new Set<THREE.Material>();
+  const promotedArrays = new Set<THREE.DataArrayTexture>();
   let materialCount = 0;
   let boundMaterialCount = 0;
   let updated = false;
@@ -2937,7 +2956,163 @@ export function syncProjectedLayerResidentMaskTextureInObject(
         | undefined;
       if (!state) continue;
       materialCount += 1;
-      const binding = state.bindings.find((item) => item.layerId === layerId);
+      const layerIndex = state.bindings.findIndex((item) => item.layerId === layerId);
+      const binding = layerIndex >= 0 ? state.bindings[layerIndex] : undefined;
+      const stateLayer = (layerIndex >= 0 ? state.layers?.[layerIndex] : undefined) as
+        | (ProjectionLayerStackInput['layers'][number] & { maskArraySlice?: number })
+        | undefined;
+      const maskArray = material.uniforms.maskMaps?.value;
+      const maskArraySlice = stateLayer?.maskArraySlice;
+      if (
+        binding &&
+        state.usesTextureArrays &&
+        maskArray instanceof THREE.DataArrayTexture &&
+        maskArraySlice !== undefined &&
+        arrayPromotion
+      ) {
+        if (
+          binding.maskUrl === maskUrl &&
+          binding.maskArrayPromotionRevision === arrayPromotion.revision
+        ) {
+          boundMaterialCount += 1;
+          continue;
+        }
+        if (typeof document !== 'undefined') {
+          document.body.dataset.projectedMaskArrayPromotion = `start:${layerId}:${maskArraySlice}`;
+        }
+        if (!promotedArrays.has(maskArray)) {
+          const image = maskArray.image as {
+            width?: number;
+            height?: number;
+          };
+          const width = Math.max(1, Number(image.width ?? 1));
+          const height = Math.max(1, Number(image.height ?? 1));
+          const uvScale = material.uniforms[`maskMapUvScale${layerIndex}`]?.value;
+          const target = new THREE.WebGLRenderTarget(width, height, {
+            depthBuffer: false,
+            stencilBuffer: false,
+            generateMipmaps: false,
+            minFilter: THREE.LinearFilter,
+            magFilter: THREE.LinearFilter,
+            format: THREE.RGBAFormat,
+            type: THREE.UnsignedByteType,
+          });
+          target.texture.colorSpace = THREE.NoColorSpace;
+          const mergeMaterial = new THREE.RawShaderMaterial({
+            glslVersion: THREE.GLSL3,
+            depthTest: false,
+            depthWrite: false,
+            toneMapped: false,
+            uniforms: {
+              sourceMasks: { value: maskArray },
+              liveMultiplier: { value: arrayPromotion.liveMultiplierTexture },
+              replaceSource: { value: arrayPromotion.mode === 'replace' ? 1 : 0 },
+              sourceSlice: { value: maskArraySlice },
+              sourceUvScale: {
+                value:
+                  uvScale instanceof THREE.Vector2 ? uvScale : new THREE.Vector2(1, 1),
+              },
+            },
+            vertexShader: `
+              in vec3 position;
+              in vec2 uv;
+              out vec2 vUv;
+              void main() {
+                vUv = uv;
+                gl_Position = vec4(position.xy, 0.0, 1.0);
+              }
+            `,
+            fragmentShader: `
+              precision highp float;
+              precision highp sampler2DArray;
+              uniform sampler2DArray sourceMasks;
+              uniform sampler2D liveMultiplier;
+              uniform float replaceSource;
+              uniform float sourceSlice;
+              uniform vec2 sourceUvScale;
+              in vec2 vUv;
+              out vec4 outputColor;
+              void main() {
+                vec4 baseTexel = texture(sourceMasks, vec3(vUv * sourceUvScale, sourceSlice));
+                vec4 liveTexel = texture(liveMultiplier, vUv);
+                float baseKeep = dot(baseTexel.rgb, vec3(0.299, 0.587, 0.114)) * baseTexel.a;
+                float liveKeep = dot(liveTexel.rgb, vec3(0.299, 0.587, 0.114)) * liveTexel.a;
+                float keep = mix(baseKeep * liveKeep, liveKeep, replaceSource);
+                outputColor = vec4(vec3(keep), 1.0);
+              }
+            `,
+          });
+          const mergeScene = new THREE.Scene();
+          const mergeGeometry = new THREE.PlaneGeometry(2, 2);
+          const mergeMesh = new THREE.Mesh(mergeGeometry, mergeMaterial);
+          mergeMesh.frustumCulled = false;
+          mergeScene.add(mergeMesh);
+          const mergeCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+          const renderer = arrayPromotion.renderer;
+          const context = renderer.getContext() as WebGL2RenderingContext;
+          const previousTarget = renderer.getRenderTarget();
+          const previousFace = renderer.getActiveCubeFace();
+          const previousMip = renderer.getActiveMipmapLevel();
+          const previousActiveTexture = context.getParameter(context.ACTIVE_TEXTURE) as number;
+          const previousArrayBinding = context.getParameter(
+            context.TEXTURE_BINDING_2D_ARRAY,
+          ) as WebGLTexture | null;
+          try {
+            renderer.setRenderTarget(target);
+            renderer.render(mergeScene, mergeCamera);
+            const properties = renderer.properties.get(maskArray) as {
+              __webglTexture?: WebGLTexture;
+            };
+            if (!properties.__webglTexture) return {
+              updated,
+              bound: false,
+            };
+            clearWebGlErrors(context);
+            context.bindTexture(context.TEXTURE_2D_ARRAY, properties.__webglTexture);
+            context.copyTexSubImage3D(
+              context.TEXTURE_2D_ARRAY,
+              0,
+              0,
+              0,
+              maskArraySlice,
+              0,
+              0,
+              width,
+              height,
+            );
+            assertNoProjectedArrayWebGlError(context, 'upload');
+            promotedArrays.add(maskArray);
+            binding.maskUrl = maskUrl;
+            binding.maskArrayPromotionRevision = arrayPromotion.revision;
+            if (stateLayer) {
+              stateLayer.maskUrl = maskUrl;
+              stateLayer.maskSpace = 'uv';
+              stateLayer.useMask = true;
+            }
+            if (material.uniforms.compactMaskUsesUv?.value?.[layerIndex] !== undefined) {
+              material.uniforms.compactMaskUsesUv.value[layerIndex] = 1;
+            }
+            if (material.uniforms.compactUseMasks?.value?.[layerIndex] !== undefined) {
+              material.uniforms.compactUseMasks.value[layerIndex] = 1;
+            }
+            updated = true;
+            if (typeof document !== 'undefined') {
+              document.body.dataset.projectedMaskArrayPromotion = `ready:${layerId}:${maskArraySlice}`;
+            }
+          } finally {
+            context.activeTexture(previousActiveTexture);
+            context.bindTexture(context.TEXTURE_2D_ARRAY, previousArrayBinding);
+            renderer.resetState();
+            renderer.setRenderTarget(previousTarget, previousFace, previousMip);
+            mergeMesh.removeFromParent();
+            mergeGeometry.dispose();
+            mergeMaterial.dispose();
+            target.dispose();
+          }
+        }
+        boundMaterialCount += 1;
+        continue;
+      }
       if (
         !binding ||
         binding.maskUrl !== maskUrl ||
@@ -3182,6 +3357,11 @@ export function updateProjectedLayerStackMaterial(
   )
     return false;
   if (layers.some((layer, index) => state.bindings[index]?.layerId !== layer.layerId))
+    return false;
+  if (
+    state.usesTextureArrays &&
+    layers.some((layer, index) => state.bindings[index]?.maskUrl !== layer.maskUrl)
+  )
     return false;
   updateSharedPreviewUniforms(material, input);
   for (let index = 0; index < layers.length; index += 1) {
@@ -4423,6 +4603,7 @@ export async function createProjectedLayerStackMaterial(
 
   const loadedLayers: Array<
     (typeof layers)[number] & {
+      sourceMaskUrl?: string;
       projectedArraySlice?: number;
       maskArraySlice?: number;
       depthArraySlice?: number;
@@ -4497,7 +4678,12 @@ export async function createProjectedLayerStackMaterial(
     // upload; a transient mask lookup miss must not reveal its full source image.
     if ((requestedMask && !maskTexture) || (requestedNormal && !normalTexture)) continue;
     const index = loadedLayers.length;
-    const shouldUseMask = requestedMask && Boolean(maskTexture);
+    const ownsReservedUvMask = useTextureArrays;
+    const effectiveMaskTexture = ownsReservedUvMask ? (maskTexture ?? neutralTexture) : maskTexture;
+    const effectiveMaskUrl = ownsReservedUvMask
+      ? (layer.maskUrl ?? `reserved-uv-mask:${layer.layerId}`)
+      : layer.maskUrl;
+    const shouldUseMask = ownsReservedUvMask || (requestedMask && Boolean(maskTexture));
     const shouldUseDepth = requestedDepth && Boolean(depthTexture);
     const shouldUseNormal = requestedNormal && Boolean(normalTexture);
     if (shouldUseMask) {
@@ -4523,7 +4709,7 @@ export async function createProjectedLayerStackMaterial(
     const objectNormalDelta = new THREE.Matrix3().getNormalMatrix(objectMatrixDelta);
 
     const usesProjectedArray = useTextureArrays && !isLiveProjectedCanvasUrl(layer.imageUrl);
-    const usesMaskArray = useTextureArrays && !isLiveProjectedCanvasUrl(layer.maskUrl);
+    const usesMaskArray = useTextureArrays && shouldUseMask;
     const usesDepthArray = useTextureArrays && !isLiveProjectedCanvasUrl(layer.depthUrl);
     const usesNormalArray = useTextureArrays && !isLiveProjectedCanvasUrl(layer.normalUrl);
     const projectedArraySlice = usesProjectedArray
@@ -4531,7 +4717,12 @@ export async function createProjectedLayerStackMaterial(
       : -1;
     const maskArraySlice =
       shouldUseMask && usesMaskArray
-        ? resolveArraySlice(layer.maskUrl, maskTexture, maskTextures, maskArraySliceByUrl)
+        ? resolveArraySlice(
+            `reserved-uv-mask:${layer.layerId}`,
+            effectiveMaskTexture,
+            maskTextures,
+            maskArraySliceByUrl,
+          )
         : -1;
     const depthArraySlice =
       shouldUseDepth && usesDepthArray
@@ -4544,7 +4735,8 @@ export async function createProjectedLayerStackMaterial(
     if (!usesProjectedArray) {
       uniforms[`projectedMap${index}`] = { value: texture };
     }
-    if (shouldUseMask && !usesMaskArray) uniforms[`maskMap${index}`] = { value: maskTexture };
+    if (shouldUseMask && !usesMaskArray)
+      uniforms[`maskMap${index}`] = { value: effectiveMaskTexture };
     if (shouldUseDepth && !usesDepthArray) uniforms[`depthMap${index}`] = { value: depthTexture };
     if (shouldUseNormal && !usesNormalArray)
       uniforms[`normalMap${index}`] = { value: normalTexture };
@@ -4586,6 +4778,9 @@ export async function createProjectedLayerStackMaterial(
     normalArraySlices.push(normalArraySlice);
     loadedLayers.push({
       ...layer,
+      sourceMaskUrl: layer.maskUrl,
+      ...(effectiveMaskUrl ? { maskUrl: effectiveMaskUrl } : {}),
+      ...(ownsReservedUvMask && !layer.maskUrl ? { maskSpace: 'uv' as const } : {}),
       useMask: shouldUseMask,
       useDepthCheck: shouldUseDepth,
       useNormalCheck: shouldUseNormal,
@@ -4961,7 +5156,7 @@ export async function createProjectedLayerStackMaterial(
     bindings: loadedLayers.map((layer, index) => ({
       layerId: layer.layerId,
       imageUrl: layer.imageUrl,
-      maskUrl: layer.maskUrl,
+      maskUrl: layer.sourceMaskUrl,
       ...(layer.useMask && layer.maskUrl && (layer.maskArraySlice ?? -1) < 0
         ? { maskMapUniform: `maskMap${index}` }
         : {}),
@@ -5037,21 +5232,31 @@ export function createProjectedLayerStackProgramWarmupMaterial(
   // has an array slice. Slice numbers themselves are uniforms in that path.
   // Assigning placeholders therefore produces byte-for-byte identical GLSL
   // without decoding or uploading a single image.
-  const programLayers = layers.map((layer) => ({
-    ...layer,
-    ...(!useTextureArrays || isLiveProjectedCanvasUrl(layer.imageUrl)
-      ? {}
-      : { projectedArraySlice: 0 }),
-    ...(!useTextureArrays || !layer.useMask || isLiveProjectedCanvasUrl(layer.maskUrl)
-      ? {}
-      : { maskArraySlice: 0 }),
-    ...(!useTextureArrays || !layer.useDepthCheck || isLiveProjectedCanvasUrl(layer.depthUrl)
-      ? {}
-      : { depthArraySlice: 0 }),
-    ...(!useTextureArrays || !layer.useNormalCheck || isLiveProjectedCanvasUrl(layer.normalUrl)
-      ? {}
-      : { normalArraySlice: 0 }),
-  }));
+  const programLayers = layers.map((layer) => {
+    const ownsReservedUvMask = useTextureArrays;
+    return {
+      ...layer,
+      ...(ownsReservedUvMask
+        ? {
+            maskUrl: `reserved-uv-mask:${layer.layerId}`,
+            maskSpace: 'uv' as const,
+            useMask: true,
+          }
+        : {}),
+      ...(!useTextureArrays || isLiveProjectedCanvasUrl(layer.imageUrl)
+        ? {}
+        : { projectedArraySlice: 0 }),
+      ...(!useTextureArrays || (!layer.useMask && !ownsReservedUvMask)
+        ? {}
+        : { maskArraySlice: 0 }),
+      ...(!useTextureArrays || !layer.useDepthCheck || isLiveProjectedCanvasUrl(layer.depthUrl)
+        ? {}
+        : { depthArraySlice: 0 }),
+      ...(!useTextureArrays || !layer.useNormalCheck || isLiveProjectedCanvasUrl(layer.normalUrl)
+        ? {}
+        : { normalArraySlice: 0 }),
+    };
+  });
   const material = new THREE.ShaderMaterial({
     name: `LiclickProjectedLayerStackWarmup:${layers.length}`,
     vertexShader,

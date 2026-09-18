@@ -8,8 +8,9 @@ export type LiveSurfacePaintPreview = {
   /**
    * Stable full-resolution mask binding prepared before the first projected
    * eraser stroke. The transient assetUrl remains the low-latency multiplier;
-   * this URL only keeps the resident projected material structure stable when
-   * pointer-up publishes the same mask into LayerStore.
+   * this URL identifies the durable mask used by the exact pointer-up handoff.
+   * Neutral activation never inserts it into the authored texture-array
+   * structure; only LayerStore publication after a real stroke does that.
    */
   residentMaskUrl?: string;
   composition: 'replace' | 'multiply-original-mask';

@@ -325,7 +325,7 @@ assert.match(
   'The live multiplier may be cleared only after every resident material samples the committed mask texture.',
 );
 const endLiveEraserPreviewSource = viewportCanvasInteractionSource.match(
-  /function endLiveEraserPreview\(layer: UvPaintLayer\)[\s\S]*?\n}\n\nfunction getPaintHistoryTileBounds/,
+  /function endLiveEraserPreview\(layer: UvPaintLayer, renderer\?: THREE\.WebGLRenderer\)[\s\S]*?\n}\n\nfunction getPaintHistoryTileBounds/,
 )?.[0];
 assert.ok(endLiveEraserPreviewSource, 'The projected-layer eraser preview teardown must exist.');
 assert.match(
@@ -335,7 +335,7 @@ assert.match(
 );
 assert.match(
   viewportCanvasInteractionSource,
-  /updateLayer\(layer\.layerId,[\s\S]*?promoteProjectedEraserMaskToResidentMaterial\(layer, projectedEraserCommit\.model\.group\)[\s\S]*?\.finally\(\(\) => \{[\s\S]*?pendingPaintCommits === 0 && !layer\.liveEraserPreviewActive[\s\S]*?endLiveEraserPreview\(layer\)/,
+  /updateLayer\(layer\.layerId,[\s\S]*?promoteProjectedEraserMaskToResidentMaterial\([\s\S]*?layer,[\s\S]*?projectedEraserCommit\.model\.group[\s\S]*?\.finally\(\(\) => \{[\s\S]*?pendingPaintCommits === 0 && !layer\.liveEraserPreviewActive[\s\S]*?endLiveEraserPreview\(layer, gl\)/,
   'Pointer-up must promote the full-resolution canvas and finish a deferred teardown after the last queued commit.',
 );
 assert.match(
@@ -369,13 +369,42 @@ assert.match(
 );
 assert.match(
   sceneRootSource,
-  /function applyLiveProjectedMaskBinding[\s\S]*?preview\.composition === 'replace' \? preview\.assetUrl : preview\.residentMaskUrl[\s\S]*?maskSpace: 'uv'/,
-  'The projected stack must use the prewarmed resident mask URL during the live eraser handoff.',
+  /function applyLiveProjectedMaskBinding[\s\S]*?if \(preview\.composition === 'multiply-original-mask'\) return layer;[\s\S]*?const maskUrl = preview\.assetUrl/,
+  'The transient projected eraser multiplier must remain outside the authored texture-array structure.',
+);
+const projectedTextureArraySignatureSource = sceneRootSource.slice(
+  sceneRootSource.indexOf('const projectedTextureArrayStructureSignature'),
+  sceneRootSource.indexOf('const projectedSamplerBudget'),
+);
+assert.doesNotMatch(
+  projectedTextureArraySignatureSource,
+  /liveProjectedMaskRevisionSignature/,
+  'A direct live mask sampler pixel revision must not repack the authored texture arrays.',
 );
 assert.match(
   sceneRootSource,
-  /function liveProjectedMaskRevisionSignature[\s\S]*?getLiveProjectedCanvasState\(maskUrl\)\?\.revision[\s\S]*?const projectedTextureArrayStructureSignature[\s\S]*?useProjectedTextureArrays[\s\S]*?liveProjectedMaskRevisionSignature\(layer\.maskUrl\)/,
-  'A packed projected mask must invalidate the texture array when its stable live canvas pixels change.',
+  /const useProjectedProgramWarmupTextureArrays = Boolean\([\s\S]*?gl\.capabilities\.isWebGL2[\s\S]*?projectedProgramWarmupInputs\.length > 1/,
+  'A multi-view WebGL2 stack must prepare its texture arrays before eraser activation.',
+);
+assert.match(
+  sceneRootSource,
+  /const projectedTextureArrayReadySignatureRef = useRef\(''\)[\s\S]*?projectedTextureArrayReadySignatureRef\.current === textureArrayBuildSignature[\s\S]*?projectedTextureArrayReadySignatureRef\.current = textureArrayBuildSignature/,
+  'A multi-view WebGL2 stack must prewarm once and preserve its GPU-ready signature after material transfer.',
+);
+assert.match(
+  viewportCanvasInteractionSource,
+  /liveEraserPreviewDirty: boolean[\s\S]*?!layer\.liveEraserPreviewDirty[\s\S]*?clearLiveSurfacePaintPreview\(layer\.layerId, layer\.liveResultUrl\)[\s\S]*?layer\.liveEraserPreviewDirty = true/,
+  'Neutral tool activation must switch layers synchronously while real strokes retain the persistence handoff.',
+);
+assert.match(
+  projectedLayerMaterialSource,
+  /Every array layer owns a reserved neutral keep-mask slice[\s\S]*?\? 1[\s\S]*?reserved-uv-mask:\$\{layer\.layerId\}[\s\S]*?copyTexSubImage3D/,
+  'Every projected array layer must reserve a mask slot and promote a completed stroke with an in-place GPU slice copy.',
+);
+assert.match(
+  projectedLayerMaterialSource,
+  /replaceSource[\s\S]*?mix\(baseKeep \* liveKeep, liveKeep, replaceSource\)/,
+  'Normal handoff must multiply the live keep-mask while undo/redo can atomically replace the reserved slice.',
 );
 assert.match(
   sceneRootSource,
@@ -1276,7 +1305,12 @@ try {
   assert.ok(hybrid);
   assert.match(hybrid.fragmentShader, /COMPACT_LAYER_CAPACITY = 9/,
     'One live repaint must not expand nine layers of depth visibility math.');
-  assert.match(hybrid.fragmentShader, /if\(i==8\)t=texture2D\(maskMap8,uv\)/);
+  assert.doesNotMatch(
+    hybrid.fragmentShader,
+    /texture2D\(maskMap8,uv\)/,
+    'A live durable eraser mask must use its reserved array slice, not add a direct sampler.',
+  );
+  assert.match(hybrid.fragmentShader, /compactMaskArraySlices\[i\]/);
   assert.match(hybrid.fragmentShader, /compactDepthArraySlices\[i\]/);
   assert.equal((hybrid.fragmentShader.match(/float computeCompactVisibility\(/g) ?? []).length, 1);
   const simpleHybrid = warmHybrid(hybridLayers.map((layer) => ({ ...layer, useDepthCheck: false })));

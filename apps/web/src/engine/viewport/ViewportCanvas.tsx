@@ -3965,6 +3965,10 @@ type UvPaintLayer = {
   liveResultUrl: string;
   liveEraserPreviewActive: boolean;
   liveEraserPreviewInitialized: boolean;
+  /** True only after this session accepted a real pointer sample. */
+  liveEraserPreviewDirty: boolean;
+  /** Monotonic identity for exact array-slice promotion and undo/redo replacement. */
+  liveEraserArrayRevision: number;
   liveEraserDisplayArmed: boolean;
   eraserGpu?: UvRepaint;
   eraserGpuReady?: Promise<void>;
@@ -6803,6 +6807,8 @@ function beginLiveEraserPreview(
 function promoteProjectedEraserMaskToResidentMaterial(
   layer: UvPaintLayer,
   root = layer.liveEraserPreviewRoot,
+  renderer?: THREE.WebGLRenderer,
+  arrayMode: 'multiply' | 'replace' = 'multiply',
 ) {
   if (
     layer.target !== 'projected-mask' ||
@@ -6812,11 +6818,24 @@ function promoteProjectedEraserMaskToResidentMaterial(
   )
     return false;
   if (isResidentUvManaged(root)) return isResidentUvMaskPresented(root, layer.layerId, layer.assetUrl);
+  // Undo/redo replaces the slice from the authoritative full-resolution
+  // persistence canvas. Its tile edits happen immediately before this call;
+  // force Three to upload that new canvas generation before the blit renders.
+  if (arrayMode === 'replace') layer.paintTexture.needsUpdate = true;
   const result = syncProjectedLayerResidentMaskTextureInObject(
     root,
     layer.layerId,
     layer.assetUrl,
     layer.paintTexture,
+    renderer
+      ? {
+          renderer,
+          liveMultiplierTexture:
+            arrayMode === 'replace' ? layer.paintTexture : layer.liveResultTexture,
+          mode: arrayMode,
+          revision: layer.liveEraserArrayRevision,
+        }
+      : undefined,
   );
   if (result.bound && !layer.liveEraserPreviewActive) {
     // The full-resolution keep-mask is now the texture sampled by every
@@ -6828,10 +6847,29 @@ function promoteProjectedEraserMaskToResidentMaterial(
   return result.bound;
 }
 
-function endLiveEraserPreview(layer: UvPaintLayer) {
+function endLiveEraserPreview(layer: UvPaintLayer, renderer?: THREE.WebGLRenderer) {
   layer.liveEraserPreviewActive = false;
   if (layer.pendingPaintCommits === 0 && !getEraserUvDraft(layer)?.drawing) clearEraserUvDraft(layer);
   const root = layer.liveEraserPreviewRoot;
+  if (
+    layer.target === 'projected-mask' &&
+    !layer.liveEraserPreviewDirty &&
+    layer.pendingPaintCommits === 0
+  ) {
+    // Tool activation owns an all-white multiplier before pointer-down. It has
+    // no persistence handoff to wait for. Treating this neutral preview like an
+    // edited mask left the old layer bound while row switching waited for a
+    // material-resident event that could never occur (the structure is equal).
+    clearLiveSurfacePaintPreview(layer.layerId, layer.liveResultUrl);
+    if (root) syncProjectedLayerLiveEraserPreviewInObject(root, undefined, undefined);
+    layer.liveEraserDisplayArmed = false;
+    layer.projectedEraserResidentHandoffs?.delete(layer);
+    layer.resolveProjectedEraserResidentHandoff?.();
+    layer.projectedEraserResidentHandoffPromise = undefined;
+    layer.resolveProjectedEraserResidentHandoff = undefined;
+    layer.liveEraserPreviewRoot = undefined;
+    return;
+  }
   if (
     shouldRetainProjectedEraserPreview({
       target: layer.target,
@@ -6847,7 +6885,7 @@ function endLiveEraserPreview(layer: UvPaintLayer) {
   }
   let residentMaskBound = false;
   if (root && layer.pendingPaintCommits === 0) {
-    residentMaskBound = promoteProjectedEraserMaskToResidentMaterial(layer, root);
+    residentMaskBound = promoteProjectedEraserMaskToResidentMaterial(layer, root, renderer);
   }
   const storedLayer = useLayerStore.getState().layers.find((item) => item.id === layer.layerId);
   const storedLayerOwnsEditedMask = Boolean(
@@ -7169,6 +7207,7 @@ function SurfacePaintOverlay() {
   useEffect(() => {
     const previousLayerId = previousActivePaintLayerIdRef.current;
     if (previousLayerId === activePaintLayerId) return;
+    document.body.dataset.eraserActiveLayerId = activePaintLayerId ?? 'none';
     activePaintLayerChangedAtRef.current = performance.now();
     previousActivePaintLayerIdRef.current = activePaintLayerId;
     markEraserPerformanceEvent('active-layer-change', {
@@ -8192,10 +8231,12 @@ function SurfacePaintOverlay() {
       const paintContext = paint.context;
       if (!paintContext) throw new Error('Could not restore UV paint canvas.');
       if (target === 'projected-mask' && !existingAssetUrl) {
-        // A one-pixel white mask is a neutral full-coverage placeholder. Bind
-        // its stable live URL during eraser activation, then resize the same
-        // CanvasTexture to the selected project resolution at first commit.
-        // Pointer-up therefore changes pixels, not projected material structure.
+        // A one-pixel white mask is the neutral durable handoff placeholder.
+        // It is deliberately not inserted into the authored texture array on
+        // activation; the dedicated live sampler owns interactive display.
+        // First commit resizes this same CanvasTexture to project resolution,
+        // publishes it through LayerStore and rebuilds persistence in the
+        // background without taking the visible stroke away from the sampler.
         paintContext.fillStyle = '#ffffff';
         paintContext.fillRect(0, 0, paint.canvas.width, paint.canvas.height);
       }
@@ -8271,6 +8312,8 @@ function SurfacePaintOverlay() {
         liveResultUrl,
         liveEraserPreviewActive: false,
         liveEraserPreviewInitialized: false,
+        liveEraserPreviewDirty: false,
+        liveEraserArrayRevision: 0,
         liveEraserDisplayArmed: false,
         projectedEraserResidentHandoffs: projectedEraserResidentHandoffsRef.current,
         paintOverlayTargets: new Set(),
@@ -8390,6 +8433,12 @@ function SurfacePaintOverlay() {
       paintMaskHasContent ||
       localRepaintGenerationPresentationActive ||
       layerRef.current?.target === 'inpaint-mask' ||
+      // The active eraser path below prepares and arms the selected layer in
+      // one synchronous ownership handoff. Letting this neutral speculative
+      // prewarm publish displayArmed=false first briefly disabled the resident
+      // array, so every row switch restarted the complete array pipeline and
+      // kept the previous layer bound until that upload finished.
+      paintTool === 'eraser' ||
       !canUseSurfacePaint ||
       getEraserTargetPolicy(activePaintLayer).kind !== 'projected-mask'
     )
@@ -8406,7 +8455,7 @@ function SurfacePaintOverlay() {
     return () => { cancelled = true; };
   }, [activePaintLayer, canUseSurfacePaint, getTargetModel, getUvPaintLayer, invalidate,
     isInpaintMode, isLocalRepaintApplyMode, paintMaskHasContent,
-    localRepaintGenerationPresentationActive, prepareProjectedEraserGpuPreview]);
+    localRepaintGenerationPresentationActive, paintTool, prepareProjectedEraserGpuPreview]);
 
   useLayoutEffect(() => {
     if (
@@ -8421,6 +8470,10 @@ function SurfacePaintOverlay() {
       const model = getTargetModel();
       if (!model) return;
       const previousLayer = layerRef.current;
+      document.body.dataset.eraserPrepareRequestedLayerId = activePaintLayerId ?? 'none';
+      document.body.dataset.eraserPreparePreviousState = previousLayer
+        ? `${previousLayer.layerId}:${previousLayer.liveEraserPreviewDirty ? 'dirty' : 'neutral'}:${previousLayer.pendingPaintCommits}`
+        : 'none';
       if (
         previousLayer &&
         (previousLayer.objectId !== model.objectId ||
@@ -8445,7 +8498,7 @@ function SurfacePaintOverlay() {
             paintCommitHandoffLayerIdRef.current = undefined;
           }
         }
-        endLiveEraserPreview(previousLayer);
+        endLiveEraserPreview(previousLayer, gl);
         if (previousLayer.projectedEraserResidentHandoffPromise) {
           await previousLayer.projectedEraserResidentHandoffPromise;
         }
@@ -8454,6 +8507,7 @@ function SurfacePaintOverlay() {
       if (cancelled) return;
       const prewarmStartedAt = performance.now();
       const layer = getUvPaintLayer(model);
+      document.body.dataset.eraserPreparedLayerId = layer.layerId;
       if (paintTool === 'eraser') {
         // Attach the neutral GPU multiplier as soon as the tool is selected.
         // Waiting for pointer-down made SceneRoot add the sampler and rebuild the
@@ -8486,7 +8540,7 @@ function SurfacePaintOverlay() {
           ready: layer.isReady,
         });
       } else if (layer.liveEraserPreviewActive) {
-        endLiveEraserPreview(layer);
+        endLiveEraserPreview(layer, gl);
       }
     };
     void prepareActivePaintLayer();
@@ -8832,7 +8886,7 @@ function SurfacePaintOverlay() {
       for (const layer of [...projectedEraserResidentHandoffsRef.current]) {
         if (objectId && layer.objectId !== objectId) continue;
         if (layer.pendingPaintCommits > 0 || layer.liveEraserPreviewActive) continue;
-        endLiveEraserPreview(layer);
+        endLiveEraserPreview(layer, gl);
       }
       syncLocalRepaintGpuOverlayActivity();
     };
@@ -12320,6 +12374,8 @@ function SurfacePaintOverlay() {
       if (target === 'paint') {
         if (!layer) return;
         if (strokePaintTool === 'eraser') {
+          layer.liveEraserPreviewDirty = true;
+          layer.liveEraserArrayRevision += 1;
           beginLiveEraserPreview(layer, result.model.group);
           if (layer.eraserGpu) layer.eraserGpu.begin(false);
           if (layer.isReady && layer.target === 'projected-mask' && !layer.eraserGpu) {
@@ -12328,7 +12384,7 @@ function SurfacePaintOverlay() {
           }
           invalidate();
         }
-        if (strokePaintTool !== 'eraser') endLiveEraserPreview(layer);
+        if (strokePaintTool !== 'eraser') endLiveEraserPreview(layer, gl);
         const previewRevision = paintPreviewRevisionRef.current + 1;
         paintPreviewRevisionRef.current = previewRevision;
         layer.paintPreviewContext.clearRect(
@@ -13405,7 +13461,7 @@ function SurfacePaintOverlay() {
         if (layer.pendingPaintCommits === 0) clearEraserUvDraft(layer);
       }
       if (layer && !(draft?.paintOperation === 'eraser' && layer.target === 'projected-mask'))
-        endLiveEraserPreview(layer);
+        endLiveEraserPreview(layer, gl);
       return;
     }
 
@@ -13482,7 +13538,7 @@ function SurfacePaintOverlay() {
           // Both the committed mask and this multiplier run on the GPU, and
           // multiplying an already-erased pixel by zero remains idempotent.
           if (!(draft.paintOperation === 'eraser' && layer.target === 'projected-mask')) {
-            endLiveEraserPreview(layer);
+            endLiveEraserPreview(layer, gl);
           }
           layer.projectionContext.clearRect(
             0,
@@ -13675,7 +13731,13 @@ function SurfacePaintOverlay() {
           });
           useProjectStore.getState().setProjectLayers(useLayerStore.getState().layers);
           if (projectedEraserCommit) {
-            promoteProjectedEraserMaskToResidentMaterial(layer, projectedEraserCommit.model.group);
+            layer.liveEraserArrayRevision += 1;
+            promoteProjectedEraserMaskToResidentMaterial(
+              layer,
+              projectedEraserCommit.model.group,
+              gl,
+              'replace',
+            );
           }
           if (!historyStroke.refined && !remaining.includes(historyStroke))
             remaining.push(historyStroke);
@@ -13695,7 +13757,11 @@ function SurfacePaintOverlay() {
         });
         useProjectStore.getState().setProjectLayers(useLayerStore.getState().layers);
         if (projectedEraserCommit) {
-          promoteProjectedEraserMaskToResidentMaterial(layer, projectedEraserCommit.model.group);
+          promoteProjectedEraserMaskToResidentMaterial(
+            layer,
+            projectedEraserCommit.model.group,
+            gl,
+          );
         }
         if (projectedEraserCommit || projectedEraserBatchesRef.current.has(layer.layerId)) {
           scheduleProjectedEraserRefinement(layer, historyStroke);
@@ -13789,7 +13855,7 @@ function SurfacePaintOverlay() {
           layer.pendingPaintCommits = Math.max(0, layer.pendingPaintCommits - 1);
           if (layer.pendingPaintCommits === 0 && !getEraserUvDraft(layer)?.drawing) clearEraserUvDraft(layer);
           if (layer.pendingPaintCommits === 0 && !layer.liveEraserPreviewActive) {
-            endLiveEraserPreview(layer);
+            endLiveEraserPreview(layer, gl);
           }
         });
       paintHistoryBoundary.track(layer.paintCommitChain);

@@ -241,8 +241,15 @@ function applyLiveProjectedMaskBinding(
     preview.layerId !== layer.id
   )
     return layer;
-  const maskUrl =
-    preview.composition === 'replace' ? preview.assetUrl : preview.residentMaskUrl;
+  // ALG-ERASE-001 v1.5.6: projected erasing already owns a dedicated live
+  // multiplier sampler. Binding its neutral/persistent keep-mask as a layer
+  // source here changes the texture-array structure merely by selecting a
+  // different row, forcing every colour/mask/depth slice to repack before the
+  // first pointer sample can be shown. Keep multiply previews out of the
+  // authored stack; a real committed mask still arrives through LayerStore and
+  // is rebuilt in the background while the live multiplier preserves pixels.
+  if (preview.composition === 'multiply-original-mask') return layer;
+  const maskUrl = preview.assetUrl;
   return maskUrl ? { ...layer, maskUrl, maskSpace: 'uv' as const } : layer;
 }
 
@@ -1566,6 +1573,11 @@ const ImportedModel = memo(function ImportedModel({
     promise: Promise<THREE.ShaderMaterial | undefined>;
     precompilePromise?: Promise<void>;
   }>();
+  // The build ref is a transfer slot: applyMaterials clears it after moving the
+  // material into the model/retained cache. Keep readiness separately so a
+  // uniform-only live-mask or layer-selection update cannot mistake that
+  // transfer for eviction and repack the identical array again.
+  const projectedTextureArrayReadySignatureRef = useRef('');
   const committedProjectedMaterialStructureRef = useRef('');
   // The authoritative projected material stays fully resident while geometry-only
   // or empty-layer views temporarily present the canonical white membrane. This
@@ -2531,15 +2543,23 @@ const ImportedModel = memo(function ImportedModel({
       }),
     [gl.capabilities.maxTextures, hasResidentUvOverlaySampler, previewProjectionInputs],
   );
-  // ALG-ERASE-001 v1.5.5: selecting the projected eraser transfers display
+  // ALG-ERASE-001 v1.5.6: selecting the projected eraser transfers display
   // ownership away from Resident UV before pointer-down. Multi-view stacks
   // commonly exceed the direct sampler budget, so keep their exact authored
-  // sources resident in texture arrays while the tool is active; the live
-  // keep-mask remains a separate full-resolution sampler.
+  // sources resident in texture arrays before the tool becomes active; the
+  // live keep-mask remains a separate full-resolution sampler and changing its
+  // target is a uniform-only operation.
   const useProjectedTextureArrays = Boolean(
     projectedEraserArmed && gl.capabilities.isWebGL2 && previewProjectionInputs.length > 1,
   );
-  const useProjectedProgramWarmupTextureArrays = false;
+  const useProjectedProgramWarmupTextureArrays = Boolean(
+    gl.capabilities.isWebGL2 &&
+      projectedProgramWarmupInputs.length > 1 &&
+      isProjectedUniformBudgetSafe(
+        projectedProgramWarmupInputs.length,
+        gl.capabilities.maxFragmentUniforms,
+      ),
+  );
   const projectedTextureArrayStructureSignature = useMemo(
     () =>
       previewProjectionInputs
@@ -2547,14 +2567,19 @@ const ImportedModel = memo(function ImportedModel({
           [
             layer.layerId,
             layer.imageUrl,
-            layer.maskUrl ?? '',
             useProjectedTextureArrays
-              ? liveProjectedMaskRevisionSignature(layer.maskUrl)
-              : '',
+              ? `reserved-uv-mask:${layer.layerId}`
+              : (layer.maskUrl ?? ''),
             layer.depthUrl ?? '',
             layer.normalUrl ?? '',
-            layer.maskSpace ?? 'projection',
-            layer.useMask ? 1 : 0,
+            useProjectedTextureArrays
+              ? 'uv'
+              : (layer.maskSpace ?? 'projection'),
+            useProjectedTextureArrays
+              ? 1
+              : layer.useMask
+                ? 1
+                : 0,
             layer.useDepthCheck ? 1 : 0,
             layer.useNormalCheck ? 1 : 0,
             layer.compositeRole ?? 'normal',
@@ -2589,7 +2614,7 @@ const ImportedModel = memo(function ImportedModel({
   const canUseExactProjectedEraserStack = Boolean(
     projectedEraserArmed && exactProjectedEraserStackSafe,
   );
-  // UV-DISPLAY-BUFFER/1.5.3: idle display remains verified UV-only. Selecting
+  // UV-DISPLAY-BUFFER/1.5.4: idle display remains verified UV-only. Selecting
   // the projected eraser suspends Resident UV and transfers presentation to the
   // exact direct/array stack before the first stroke. Unsafe hardware keeps the
   // last verified front buffer, but must not schedule an interactive UV bake.
@@ -3308,13 +3333,16 @@ const ImportedModel = memo(function ImportedModel({
           [
             layer.layerId,
             layer.imageUrl,
-            layer.maskUrl ?? '',
             useProjectedProgramWarmupTextureArrays
-              ? liveProjectedMaskRevisionSignature(layer.maskUrl)
-              : '',
+              ? `reserved-uv-mask:${layer.layerId}`
+              : (layer.maskUrl ?? ''),
             layer.depthUrl ?? '',
             layer.normalUrl ?? '',
-            layer.useMask ? 1 : 0,
+            useProjectedProgramWarmupTextureArrays
+              ? 1
+              : layer.useMask
+                ? 1
+                : 0,
             layer.useDepthCheck ? 1 : 0,
             layer.useNormalCheck ? 1 : 0,
             layer.projectionVisibilityPolicy ?? 'standard',
@@ -3329,8 +3357,14 @@ const ImportedModel = memo(function ImportedModel({
       projectedProgramWarmupInputs
         .map((layer) =>
           [
-            layer.maskSpace ?? 'projection',
-            layer.useMask ? 1 : 0,
+            useProjectedProgramWarmupTextureArrays
+              ? 'uv'
+              : (layer.maskSpace ?? 'projection'),
+            useProjectedProgramWarmupTextureArrays
+              ? 1
+              : layer.useMask
+                ? 1
+                : 0,
             layer.useDepthCheck ? 1 : 0,
             layer.useNormalCheck ? 1 : 0,
             layer.projectionVisibilityPolicy ?? 'standard',
@@ -3338,7 +3372,7 @@ const ImportedModel = memo(function ImportedModel({
           ].join('~'),
         )
         .join('|'),
-    [projectedProgramWarmupInputs],
+    [projectedProgramWarmupInputs, useProjectedProgramWarmupTextureArrays],
   );
   const projectedProgramWarmupTextureArrayStructureSignature = useMemo(
     () =>
@@ -3347,11 +3381,19 @@ const ImportedModel = memo(function ImportedModel({
           [
             layer.layerId,
             layer.imageUrl,
-            layer.maskUrl ?? '',
+            useProjectedProgramWarmupTextureArrays
+              ? `reserved-uv-mask:${layer.layerId}`
+              : (layer.maskUrl ?? ''),
             layer.depthUrl ?? '',
             layer.normalUrl ?? '',
-            layer.maskSpace ?? 'projection',
-            layer.useMask ? 1 : 0,
+            useProjectedProgramWarmupTextureArrays
+              ? 'uv'
+              : (layer.maskSpace ?? 'projection'),
+            useProjectedProgramWarmupTextureArrays
+              ? 1
+              : layer.useMask
+                ? 1
+                : 0,
             layer.useDepthCheck ? 1 : 0,
             layer.useNormalCheck ? 1 : 0,
             layer.compositeRole ?? 'normal',
@@ -3361,7 +3403,7 @@ const ImportedModel = memo(function ImportedModel({
           ].join('~'),
         )
         .join('|'),
-    [projectedProgramWarmupInputs],
+    [projectedProgramWarmupInputs, useProjectedProgramWarmupTextureArrays],
   );
   const projectedProgramWarmupSignature = [
     projectedProgramWarmupSourceSignature,
@@ -3509,7 +3551,7 @@ const ImportedModel = memo(function ImportedModel({
     if (
       !workspaceVisible ||
       !selected ||
-      importedModel.restoreStage !== 'outline' ||
+      (importedModel.restoreStage !== undefined && importedModel.restoreStage !== 'full') ||
       !useProjectedProgramWarmupTextureArrays ||
       projectedProgramWarmupInputs.length <= 1 ||
       !projectedProgramWarmupTextureArrayStructureSignature ||
@@ -3522,6 +3564,7 @@ const ImportedModel = memo(function ImportedModel({
       projectedProgramWarmupTextureArrayStructureSignature,
       liveTopUvTexture?.uuid ?? '',
     ].join('|');
+    if (projectedTextureArrayReadySignatureRef.current === textureArrayBuildSignature) return;
     if (projectedTextureArrayBuildRef.current?.signature === textureArrayBuildSignature) return;
     if (projectedTextureArrayBuildRef.current) {
       projectedTextureArrayBuildRef.current.cancelled = true;
@@ -3551,6 +3594,7 @@ const ImportedModel = memo(function ImportedModel({
       ...topUvProjectedOverlayInput,
     };
     document.body.dataset.projectedEarlyArrayBuildStatus = 'building';
+    document.body.dataset.projectedArrayBuildOrigin = 'early-prewarm';
     document.body.dataset.projectedEarlyArrayBuildStartedMs = performance.now().toFixed(1);
     nextBuild.promise = createProjectedLayerStackMaterial(earlyMaterialInput, {
       maxTextureImageUnits: gl.capabilities.maxTextures,
@@ -3633,6 +3677,7 @@ const ImportedModel = memo(function ImportedModel({
         document.body.dataset.projectedEarlyArrayPipelinePrewarmMs = (
           performance.now() - startedAt
         ).toFixed(1);
+        projectedTextureArrayReadySignatureRef.current = textureArrayBuildSignature;
       } finally {
         warmMesh.removeFromParent();
         warmGeometry.dispose();
@@ -4546,6 +4591,12 @@ const ImportedModel = memo(function ImportedModel({
                   );
                 }
                 markProjectedMaterialBuild();
+                document.body.dataset.projectedArrayBuildOrigin = 'active-material';
+                document.body.dataset.projectedArrayBuildReservedMaskCount = String(
+                  projectedMaterialInput.layers.filter(
+                    (layer) => !layer.maskUrl || isLiveProjectedCanvasUrl(layer.maskUrl),
+                  ).length,
+                );
                 nextBuild.promise = createProjectedLayerStackMaterial(projectedMaterialInput, {
                   maxTextureImageUnits: gl.capabilities.maxTextures,
                   renderer: gl,
@@ -4795,6 +4846,7 @@ const ImportedModel = memo(function ImportedModel({
           usingSharedTextureArrayBuild &&
           projectedTextureArrayBuildRef.current?.signature === sharedTextureArrayBuildSignature
         ) {
+          projectedTextureArrayReadySignatureRef.current = sharedTextureArrayBuildSignature;
           projectedTextureArrayBuildRef.current = undefined;
         }
         if (
