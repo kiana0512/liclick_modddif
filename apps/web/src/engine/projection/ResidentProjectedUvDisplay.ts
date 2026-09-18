@@ -22,6 +22,7 @@ import { ResidentUvCompressedCache } from './ResidentUvCompressedCache';
 import { isLiveProjectedCanvasUrl, registerLiveProjectedCanvasTexture, releaseLiveProjectedCanvasTexture, getLiveProjectedCanvasState } from './liveProjectedCanvasTextureRegistry';
 import type { ResidentUvMaskBinding } from './residentUvPresentation';
 import { getEraserUvDraft } from '@/engine/paint/eraserUvDraft';
+import { getLiveSurfacePaintPreview } from '@/engine/paint/liveSurfacePaintPreviewRegistry';
 import { getRegisteredObjectUrlBlob, revokeRegisteredObjectUrl } from '@/utils/blobUrlRegistry';
 
 export type ProjectedPreviewComposite = {
@@ -60,7 +61,7 @@ export function preloadProjectedUvBakeKernel() {
   return projectedUvBakeKernelPromise;
 }
 
-/** UV-DISPLAY-BUFFER/1.5.1. The display owns derived UV buffers, never layers/assets.
+/** UV-DISPLAY-BUFFER/1.5.2. The display owns derived UV buffers, never layers/assets.
  * Use resident Top-K and gutter; seam repair is disabled by default for display.
  * Keep the front buffer until its replacement has uploaded and been bound.
  */
@@ -143,8 +144,13 @@ export class ResidentProjectedUvDisplay {
       candidate.owner.objectId === original.sourceModel.objectId &&
       original.sourceLayers.some(layer => layer.id === candidate.owner.layerId && layer.visible && layer.opacity > 0)
       ? candidate : undefined;
-    draft?.flush();
     const interactive = Boolean(draft && draft.revision > 0);
+    const fastPreview = getLiveSurfacePaintPreview();
+    if (interactive && fastPreview?.displayArmed &&
+      fastPreview.target === 'projected-mask' &&
+      fastPreview.objectId === original.sourceModel.objectId &&
+      fastPreview.layerId === draft!.owner.layerId) return;
+    draft?.flush();
     if (interactiveOnly && !interactive) return;
     const key = interactive ? `${original.signature}:eraser:${draft!.id}:${draft!.revision}` : original.signature;
     const cached = this.cache.get(key);
@@ -166,8 +172,16 @@ export class ResidentProjectedUvDisplay {
     if (interactive) markResidentUvPending(original.sourceModel.group, original.sourceModel.objectId);
     this.active = true;
     const revision = this.revision;
-    const cancelled = () => this.disposed || revision !== this.revision ||
-      (interactive && getEraserUvDraft() !== draft);
+    const cancelled = () => {
+      const latestDraft = getEraserUvDraft();
+      const latestPreview = getLiveSurfacePaintPreview();
+      return this.disposed || revision !== this.revision ||
+        (interactive ? latestDraft !== draft : Boolean(
+          latestDraft?.revision && latestPreview?.displayArmed &&
+          latestPreview.target === 'projected-mask' &&
+          latestPreview.objectId === original.sourceModel.objectId &&
+          latestPreview.layerId === latestDraft.owner.layerId));
+    };
     const guard = () => {
       if (cancelled()) throw new DOMException('UV display superseded.', 'AbortError');
     };

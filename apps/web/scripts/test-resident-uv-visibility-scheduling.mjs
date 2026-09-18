@@ -57,6 +57,8 @@ assert.equal(paints, 1, 'busy camera cannot hold an obsolete upload until releas
 for (const busy of [false, true]) {
   const events = [], jobs = [], ready = [], datasets = {}, composites = [];
   let acknowledge = true;
+  let eraserDraft;
+  let livePaintPreview;
   const model = { group: new THREE.Group(), objectId: 'o' };
   const renderer = { domElement: { addEventListener() {}, removeEventListener() {} },
     getContext: () => ({ isContextLost: () => false }) };
@@ -84,7 +86,8 @@ for (const busy of [false, true]) {
     './residentUvPresentation': { markResidentUvPending() {}, finishResidentUvPresentation() {}, releaseResidentUvManagement() {} },
     './ResidentUvCompressedCache': { ResidentUvCompressedCache: Cache },
     './liveProjectedCanvasTextureRegistry': { getLiveProjectedCanvasState() {} },
-    '@/engine/paint/eraserUvDraft': { getEraserUvDraft() {} }, '@/utils/blobUrlRegistry': { revokeRegisteredObjectUrl() {} },
+    '@/engine/paint/eraserUvDraft': { getEraserUvDraft: () => eraserDraft }, '@/utils/blobUrlRegistry': { revokeRegisteredObjectUrl() {} },
+    '@/engine/paint/liveSurfacePaintPreviewRegistry': { getLiveSurfacePaintPreview: () => livePaintPreview },
     '@/engine/bake/bakeProjectedLayerToTexture': {
       bakeVisibleProjectedLayersToTexture: async input => {
         events.push('bake');
@@ -112,8 +115,22 @@ for (const busy of [false, true]) {
     onReady(result) { events.push('ready'); ready.push(result); if (acknowledge) display.acknowledgePresentation(result.colorTexture); },
     onError(error) { throw error; },
   });
+  let draftFlushes = 0;
+  eraserDraft = { revision: 1, owner: { target: 'projected-mask', objectId: 'o', layerId: 'fast' },
+    flush() { draftFlushes++; } };
+  livePaintPreview = { displayArmed: true, target: 'projected-mask', objectId: 'o', layerId: 'fast' };
+  display.request(request('fast')); display.step(); await flush();
+  assert.equal(jobs.length, 0, 'armed GPU mask must prevent Resident UV work');
+  assert.equal(draftFlushes, 0, 'armed GPU mask must return before a full-resolution draft flush');
+  eraserDraft = undefined; livePaintPreview = undefined;
+  display.cancelPending();
   display.request(request('old')); display.step(); await flush();
   assert.equal(jobs.length, 1);
+  eraserDraft = { revision: 2, owner: { target: 'projected-mask', objectId: 'o', layerId: 'old' } };
+  livePaintPreview = { displayArmed: true, target: 'projected-mask', objectId: 'o', layerId: 'old' };
+  assert.throws(() => jobs[0].input.checkCancelled(), { name: 'AbortError' },
+    'a new GPU-mask stroke cancels an in-flight final Resident UV convergence');
+  eraserDraft = undefined; livePaintPreview = undefined;
   display.request(request('intermediate')); display.request(request('latest'));
   display.step(busy);
   jobs[0].reject(new DOMException('superseded', 'AbortError')); await flush();

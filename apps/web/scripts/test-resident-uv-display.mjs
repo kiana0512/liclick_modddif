@@ -623,6 +623,16 @@ await presentation.waitForResidentUvPresentation(scene, 'other-object');
   assert.doesNotMatch(displaySource, /new Uint8ClampedArray\(mask\.length \* 4\)/);
   assert.match(displaySource, /result\.renderedColorMask\?\.length/);
   assert.match(displaySource, /THREE\.RedFormat/);
+  assert.match(
+    displaySource,
+    /const fastPreview = getLiveSurfacePaintPreview\(\);[\s\S]*?if \(interactive && fastPreview\?\.displayArmed[\s\S]*?fastPreview\.target === 'projected-mask'[\s\S]*?fastPreview\.objectId === original\.sourceModel\.objectId[\s\S]*?fastPreview\.layerId === draft!\.owner\.layerId\) return;[\s\S]*?draft\?\.flush\(\)/,
+    'An armed projected eraser must bypass Resident UV draft work before any full-resolution flush.',
+  );
+  assert.match(
+    displaySource,
+    /interactive \? latestDraft !== draft : Boolean\([\s\S]*?latestDraft\?\.revision && latestPreview\?\.displayArmed[\s\S]*?latestPreview\.layerId === latestDraft\.owner\.layerId/,
+    'A final Resident UV convergence must cancel if a new GPU-mask stroke starts.',
+  );
 
   const bakeSource = fs.readFileSync(
     new URL('../src/engine/bake/bakeProjectedLayerToTexture.ts', import.meta.url),
