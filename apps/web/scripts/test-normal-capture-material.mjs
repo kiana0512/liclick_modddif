@@ -19,7 +19,7 @@ let fail = false, delayed = false;
 const captureNormal = new Function('THREE', 'renderSceneToPngUrl', code + '\nreturn captureNormal;')(THREE,
   async (request, options) => {
     const target = request.scene.children[0];
-    seen.push({ material: target.material, camera: request.camera, options });
+    seen.push({ material: target.material, camera: request.camera, options, request });
     assert.equal(request.scene.children[1].visible, false);
     if (fail) throw new Error('render failure');
     options.onRenderSubmitted();
@@ -72,6 +72,17 @@ fail = false;
 await captureNormal(request);
 assert.equal(seen.at(-1).material, view, 'A failed draw does not poison the next capture');
 assert.equal(seen.at(-1).options.dataTexture, undefined, 'Default capture options remain unchanged');
+for (const geometryGuide of [false, true]) for (const background of ['black', 'blue']) {
+  await captureNormal(request, { geometryGuide, background });
+  const entry = seen.at(-1);
+  assert.equal(entry.material, view, 'Background does not change the normal shader');
+  assert.equal(entry.options.ignoreSceneBackground, true);
+  assert.equal(entry.request.clearAlpha, 1);
+  const color = entry.request.clearColor.clone();
+  if (!geometryGuide) color.convertLinearToSRGB();
+  assert.deepEqual(color.toArray().map(c => Math.round(c * 255)), background === 'black' ? [0, 0, 0] : [128, 128, 255]);
+  assert.equal(request.clearColor, undefined, 'Only the normal-pass copy is modified');
+}
 await captureNormal({ ...request, gl: {} });
 assert.notEqual(seen.at(-1).material, view, 'A replacement renderer has an independent material owner');
 

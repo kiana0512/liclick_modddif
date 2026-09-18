@@ -643,6 +643,7 @@ export function GeneratePanel({
   const [textureViewMode, setTextureViewMode] = useState<TextureViewMode>('multi');
   // TEXTURE-PROVIDER-SWITCH/1.0.0: share selection across single/multiview tabs.
   const [singleViewProvider, setSingleViewProvider] = useState<SingleViewProvider>('gpt');
+  const [normalBlackBackground, setNormalBlackBackground] = useState(false);
   const [texturePreviewMode, setTexturePreviewMode] = useState<TexturePreviewMode>('multi');
   useEffect(() => {
     if (!openLocalRepaintPanelRequestKey) return;
@@ -790,6 +791,7 @@ export function GeneratePanel({
   const isGptLocalRepaint = generationSettings.localRepaintProvider === 'gpt';
   const gptRepaintUseMaterialReference = generationSettings.gptRepaintUseMaterialReference === true;
   const localRepaintSmartPolish = generationSettings.localRepaintSmartPolish === true;
+  const normalBackground = normalBlackBackground ? 'black' : 'blue';
   const imageModel = isTextureMapTab || (isLocalRepaintTab && isGptLocalRepaint)
     ? textureGptModel
     : (generationSettings.model as LiclickImageModel);
@@ -1558,6 +1560,7 @@ export function GeneratePanel({
         resolution: options.resolution ?? resolutionToSize[resolution],
         framing: 'fit-object',
         colorMode: 'clay-target',
+        normalBackground: singleViewProvider === 'remote' ? normalBackground : undefined,
         cameraSnapshot: options.cameraSnapshot,
         // Leave a stable edge-safe frame for GPT/control-image upload. The
         // capture camera still keeps the preview direction and roll.
@@ -1568,7 +1571,7 @@ export function GeneratePanel({
       if (options.setAsLastCapture !== false) setLastCapture(capture);
       return capture;
     },
-    [captureObjectId, resolution, setLastCapture, t],
+    [captureObjectId, resolution, setLastCapture, t, singleViewProvider, normalBackground],
   );
 
   useEffect(() => {
@@ -4160,6 +4163,7 @@ export function GeneratePanel({
       if (!isGptLocalRepaint) {
         capture = await captureLocalRepaintNormal(
           capture, captureCameraSnapshot, requestAbortController.signal,
+          normalBackground,
         );
       }
       useProjectStore.getState().addCapture(capture);
@@ -4204,6 +4208,7 @@ export function GeneratePanel({
         prompt: requestPrompt,
         modelviewPromptPolicy: 'white-selection-default-v1',
         smartPolish: isGptLocalRepaint ? undefined : localRepaintSmartPolish,
+        normalBackground,
         promptTemplatePolicy: LOCAL_REPAINT_PROMPT_TEMPLATE_POLICY,
         promptSource: rawUserPrompt ? 'user-request' : 'default-seam',
         projectId: currentProject.id,
@@ -4313,6 +4318,7 @@ export function GeneratePanel({
           workflow: 'local-repaint',
           modelviewWorkflow: isGptLocalRepaint ? undefined : '2026.09.18-refcontrol-normal-4step-r1',
           promptPolishEnabled: isGptLocalRepaint ? undefined : localRepaintSmartPolish,
+          normalBackground,
           clientGenerationId: generationId,
           projectId: currentProject.id,
           objectId,
@@ -4371,7 +4377,7 @@ export function GeneratePanel({
         if (!depth) throw new Error('深度截图失败，未提交 GPT 任务，请重试。');
         capture = { ...capture, depthUrl: depth.depthUrl, depthEncoding: depth.depthEncoding };
         if (requestAbortController!.signal.aborted) throw new DOMException('已终止局部生图。', 'AbortError');
-        capture = await captureLocalRepaintNormal(capture, captureCameraSnapshot, requestAbortController!.signal);
+        capture = await captureLocalRepaintNormal(capture, captureCameraSnapshot, requestAbortController!.signal, normalBackground);
         const recoveryCaptures = [
           { ...capture, maskUrl: authoredMaskUrl },
           ...(useProjectStore.getState().projects.find((item) => item.id === currentProject.id)?.captures ?? [])
@@ -5770,6 +5776,26 @@ export function GeneratePanel({
                 onChange={(localRepaintProvider) => updateGenerationSettings({ localRepaintProvider })}
                 className="mb-2"
               />
+            )}
+            {(isLocalRepaintTab || (isTextureMapTab && singleViewProvider === 'remote')) && (
+              <div className="mb-2 flex items-center justify-between gap-2 text-xs text-white/75">
+                <span>法线黑色背景</span>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-label="法线黑色背景"
+                  aria-checked={normalBlackBackground}
+                  disabled={workflowConfigurationLocked || workflowSubmissionLocked}
+                  title="开：黑底；关：蓝底"
+                  onClick={() => {
+                    if (workflowConfigurationLocked || workflowSubmissionLocked) return;
+                    setNormalBlackBackground(!normalBlackBackground);
+                  }}
+                  className={`relative h-5 w-9 shrink-0 rounded-full transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-fuchsia-400 disabled:opacity-40 ${normalBlackBackground ? 'bg-fuchsia-500' : 'bg-white/20'}`}
+                >
+                  <span className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-transform ${normalBlackBackground ? 'left-0.5 translate-x-4' : 'left-0.5'}`} />
+                </button>
+              </div>
             )}
             {isLocalRepaintTab && isGptLocalRepaint && (
               <div className="mb-2 flex items-center justify-between gap-2 text-xs text-white/75">

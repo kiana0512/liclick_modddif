@@ -7,6 +7,7 @@ export async function captureLocalRepaintNormal(
   capture: Capture,
   cameraSnapshot: SerializedCameraInput,
   signal: AbortSignal,
+  normalBackground?: 'black' | 'blue',
 ): Promise<Capture> {
   signal.throwIfAborted();
   const normal = await captureCurrentNormalGuide({
@@ -16,6 +17,7 @@ export async function captureLocalRepaintNormal(
     aspect: capture.width / capture.height,
     cameraSnapshot,
     signal,
+    normalBackground,
   });
   signal.throwIfAborted();
   if (normal.width !== capture.width || normal.height !== capture.height)

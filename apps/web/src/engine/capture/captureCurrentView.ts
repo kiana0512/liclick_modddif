@@ -705,7 +705,7 @@ export async function captureCurrentView(request: CaptureCurrentViewRequest): Pr
   await waitForViewportFrame();
   const mask = await captureMask(passRequest);
   await waitForViewportFrame();
-  const normal = await captureNormal(passRequest);
+  const normal = await captureNormal(passRequest, { background: request.normalBackground });
   await waitForViewportFrame();
   const depth = await captureDepth(passRequest);
 
@@ -765,7 +765,9 @@ async function captureNormalView(request: CaptureCurrentViewRequest, size: numbe
     height,
     ...(geometryGuide ? { clearAlpha: 0 } : {}),
   };
-  const normal = await captureNormal(passRequest, { space: geometryGuide ? 'view' : 'world', geometryGuide });
+  const normal = await captureNormal(passRequest, {
+    space: geometryGuide ? 'view' : 'world', geometryGuide, background: request.normalBackground,
+  });
   return {
     id: createId('normal-preview'),
     objectId: request.objectId,

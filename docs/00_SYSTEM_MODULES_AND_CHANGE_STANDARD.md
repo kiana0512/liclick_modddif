@@ -1,5 +1,7 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
+2026-09-18 M12（UI-05 接线）：`NORMAL-GUIDE-BACKGROUND/1.0.0` 新增“法线黑色背景”会话开关，默认关闭蓝底，开启黑底；覆盖 ModelView 单/多视图、ModelView/GPT 局部重绘法线输入。只对原法线 pass 设置不透明背景和忽略 scene.background，不按 RGB 匹配替换蓝色，不增渲染 pass/CPU 遍历/Worker 重编码；模型法线编码、相机、尺寸、材质/蒙版/外扩、回贴及 QA 不变。生成配置/提交双重锁定；逐视角仍重新捕获，局部重绘 fingerprint/诊断记录底色。Project Schema、Command/CAS/ownership/verified assets、GPU/CPU/Worker/shader 合成及 UV/export 不变，无历史迁移；开关不写工程，刷新默认关闭。回滚恢复原捕获背景和 UI 即可，历史资产不重写。详见 [法线背景开关](changes/CHG-20260918-NORMAL-GUIDE-BACKGROUND.md)。未推送或部署。
+
 2026-09-18 M04（协作 M12/M13）：`MODELVIEW-SINGLE-NORMAL/1.0.0` 为 ModelView 单视图生成及单视图补全增加必填 `normal_image`；分别提交主图/参考图/法线三图和主图/参考图/原外扩蒙版/法线四图。逐视角串行复用同一 Capture 的完整法线，不重新捕获、不填白、不转换通道；前端阻止缺失法线，代理校验同尺寸及有效图片并原字节透传。工作流与幂等后缀使用 2026-09-18 refcontrol-normal 版本。保留最新 master 的普通局部重绘四图输入、原始法线编码与按需加载；GPT、蒙版外扩、润色、串行回贴、QA、GPU/CPU/Worker/shader、UV/export 和 Schema/Command/CAS/ownership 不变。无历史迁移；回滚需前后端与远端双/三图旧契约成套协调。专项回归覆盖两入口正常/缺失/错尺寸/无效法线、原字节透传、串行顺序、取消和原 GPT/局部重绘流程。
 
 2026-09-18 M08：`MODELVIEW-NORMAL-INPUT/1.0.0` 对接 `2026.09.18-refcontrol-normal-4step-r1`，局部重绘在纯白选区效果图、材质参考和外扩 mask 外增加同冻结相机、同画布原生 2K 几何法线。原始法线不滤波、不改色，控制面原字节转发并校验存在性、可解码性及尺寸；升级幂等后缀。单视图/GPT、回贴/Worker/UV/export、Project schema 和质量标准不变。旧结果无需迁移，回退需前后端与远端协调；未部署。详见 [原始法线四图输入](changes/CHG-20260918-MODELVIEW-NORMAL-INPUT.md)。
@@ -202,7 +204,7 @@
 
 2026-09-15 M03：ALG-VIEW-INPUT-001/1.3.2 在鼠标接触前即让 R3F 悬停遵守 Alt 所有权；保留普通 hover 和已锁定拖动。旧实现拾取回归失败、新实现通过，用户实际首帧延迟需继续录制。无像素/持久化迁移，见 [Alt 悬停变更卡](changes/CHG-20260915-ALT-BRUSH-HOVER.md)。
 
-> 文档版本：`2.20.197`
+> 文档版本：`2.20.198`
 
 2026-09-16 UI-16 → M14（协作 M01/M12/M13/M15）：`ASSET-LIFECYCLE-GC` v0.4.0 / `STORAGE-INVENTORY-001/4` 将 Cloud 工程/Revision 引用页默认 8→32，并由单条 PostgreSQL CTE 完成分页、assetId 提取与引用 upsert，Node 不再回传引用数组后二次写库；每 256 条文档约 64→8 次数据库往返，保持 45 秒单查询上限与有界 Node 内存。当前 ready scan 引用索引保留到下一快照原子切换，旧 /3 快照自动重扫。Cloud 隔离区改按真实 quarantine 且排除重新可达对象统计；新增用户级幂等持久 purge job/item，以最多 4 并发签名 DeleteObject 后逐项事务删除 transfer、写 deleted_at，404/Pod 重启可安全重放。新增 `asset_storage_purge_jobs/items`，无 Project/Revision/Asset 内容迁移；Command/CAS/ownership/verified 及 GPU/CPU/Worker/shader、投影/UV/重绘/export、分辨率与 QA 不变。回滚前停 purge 并保留任务表，详见 [Cloud 存储盘点与物理清理变更卡](changes/CHG-20260916-CLOUD-STORAGE-INVENTORY-BOUNDED.md)。
 
