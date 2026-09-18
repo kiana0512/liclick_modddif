@@ -264,7 +264,7 @@ async function validateInpaintImageAndMask(image: { buffer: Buffer }, mask: { bu
     if (error instanceof ModelviewInpaintError) throw error;
     throw new ModelviewInpaintError(
       error instanceof Error
-        ? `无法校验当前效果图与蒙版：${error.message}`
+        ? `无法校验当前效果图、蒙版${normal ? '与法线图' : ''}：${error.message}`
         : '无法校验当前效果图与蒙版。',
       422,
     );
