@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type DragEvent } from 'react';
 import { createPortal } from 'react-dom';
+import { allowUserFileUpload } from '@/services/userFileUploadPolicy';
 import { Check, Copy, Download, Eye, ImagePlus, MoreVertical, Pencil, Plus, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
 import { useT } from '@/stores/i18nStore';
@@ -120,6 +121,7 @@ export function ReferenceImagePicker({
   }, []);
 
   async function importFiles(files: FileList | File[]) {
+    if (!allowUserFileUpload(Array.from(files))) return;
     if (blockMutation('导入参考图')) return;
     const imageFiles = Array.isArray(files) ? files.filter((file) => file.type.startsWith('image/')) : getImageFiles(files);
     if (imageFiles.length === 0) return;

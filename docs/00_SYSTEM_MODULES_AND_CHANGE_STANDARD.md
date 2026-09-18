@@ -1,5 +1,9 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
+2026-09-18 UI-04/UI-05（协作 M01/M02/M04/M10）：`USER-FILE-UPLOAD/1.0.0` 为浏览器手动文件入口统一单文件 100×1024×1024 字节上限，超过时先提示“文件大小超过 100MB 限制”并整批返回，不读取、解析、更新项目或发起上传。覆盖编辑器模型/配套资源/参考图/工程/图层替换、参考图面板选择/拖入/粘贴、Bake 模型/材质/Cage、资产处理文件选择；恰好上限允许，多文件不合计。仅前端用户选择门禁，不修改内部生成/恢复/自动保存的资产限制，也不是服务端全局请求体限制；GPU/CPU/Worker/shader、算法像素、Schema/Command/CAS/ownership 不变。无迁移，回滚移除入口门禁；详见 [手动上传上限](changes/CHG-20260918-USER-FILE-UPLOAD-LIMIT.md)。未推送或部署。
+
+2026-09-18 M08（协作 M04/M06/M07/M12）：`ALG-LR-013` v1.2.0 将原局部重绘模型轮廓内缩改为 3px@2048，半径按最长边等比取整且至少 1px，外轮廓退缩和内部孔洞扩大同时生效。新结果 metadata.modelSilhouetteClipVersion=2，保留版本 1/2 源 alpha 识别，历史结果不重算；GPT 原始 RGBA 路径、作者蒙版、内向渐变、输入外扩、RGB/画布/相机和分辨率不变。GPU/CPU/Worker/合并/export 继续透传同一裁后 alpha，无 Schema 或资产迁移；回滚与兼容边界见 [3px 内缩变更卡](changes/CHG-20260918-REPAINT-INSET-3PX.md)。未推送或部署。
+
 2026-09-18 M15：`CI-CONTAINER-DEPENDENCY-RETRY/1.0.0` 修复 master `4fb1d8ec` pipeline `633789` 仅 server 容器在 Corepack 下载中被远端断开而失败的问题。Docker deps 阶段对固定 pnpm 9.15.4 准备与 frozen-lockfile 安装分别最多尝试 3 次，等待 5/10 秒；连续失败仍阻断，不更换 registry、依赖、基础镜像，不跳过 verify/build/包体/Cloud 产物门禁。server/web 镜像目标、推送与部署规则不变；浏览器/服务端功能、GPU/CPU/Worker/shader、投影/UV/重绘/Bake 像素、分辨率、QA、Schema/Command/CAS/ownership/verified assets 和导出均不变，无迁移。验证、边界与回滚见 [容器依赖重试变更卡](changes/CHG-20260918-CI-CONTAINER-DEPENDENCY-RETRY.md)。
 
 2026-09-18 M10/M13（协作 M15）：`BAKE-DOWNLOAD-METADATA/1.0.0` 将 Bake 单图下载与 ZIP 清单构造中的 Job 冷读取、输出存在性和文件大小检查从同步文件 API 改为异步 metadata。所有入口继续要求成功终态、持久化 owner、已请求通道和普通文件；ZIP 按通道顺序逐项检查，避免一次请求扩大共享卷 I/O 扇出，文件名、CRC/ZIP64、HEAD/GET 与流式背压不变。GPU/CPU/Worker/shader、Bake 像素/通道/分辨率/QA、远端幂等、Job JSON、Project Command/CAS/ownership/verified assets、Schema 和导出字节均不变，无迁移。验证与回滚见 [Bake 下载异步 metadata 变更卡](changes/CHG-20260918-BAKE-DOWNLOAD-ASYNC-METADATA.md)。
@@ -180,7 +184,7 @@
 
 2026-09-15 M03：ALG-VIEW-INPUT-001/1.3.2 在鼠标接触前即让 R3F 悬停遵守 Alt 所有权；保留普通 hover 和已锁定拖动。旧实现拾取回归失败、新实现通过，用户实际首帧延迟需继续录制。无像素/持久化迁移，见 [Alt 悬停变更卡](changes/CHG-20260915-ALT-BRUSH-HOVER.md)。
 
-> 文档版本：`2.20.186`
+> 文档版本：`2.20.190`
 
 2026-09-16 UI-16 → M14（协作 M01/M12/M13/M15）：`ASSET-LIFECYCLE-GC` v0.4.0 / `STORAGE-INVENTORY-001/4` 将 Cloud 工程/Revision 引用页默认 8→32，并由单条 PostgreSQL CTE 完成分页、assetId 提取与引用 upsert，Node 不再回传引用数组后二次写库；每 256 条文档约 64→8 次数据库往返，保持 45 秒单查询上限与有界 Node 内存。当前 ready scan 引用索引保留到下一快照原子切换，旧 /3 快照自动重扫。Cloud 隔离区改按真实 quarantine 且排除重新可达对象统计；新增用户级幂等持久 purge job/item，以最多 4 并发签名 DeleteObject 后逐项事务删除 transfer、写 deleted_at，404/Pod 重启可安全重放。新增 `asset_storage_purge_jobs/items`，无 Project/Revision/Asset 内容迁移；Command/CAS/ownership/verified 及 GPU/CPU/Worker/shader、投影/UV/重绘/export、分辨率与 QA 不变。回滚前停 purge 并保留任务表，详见 [Cloud 存储盘点与物理清理变更卡](changes/CHG-20260916-CLOUD-STORAGE-INVENTORY-BOUNDED.md)。
 
@@ -1343,6 +1347,8 @@ M15 / CLOUD-DEPLOYMENT v1.0.0（2026-09-03）：正常合并 release 部署历�
 
 | 版本 | 日期 | 基线 | 变更 |
 | --- | --- | --- | --- |
+| `2.20.190` | 2026-09-18 | `手动上传单文件 100MB 上限` | USER-FILE-UPLOAD/1.0.0：浏览器入口在读取与上传前拦截超限文件，内部资产/自动保存不改，无迁移。 |
+| `2.20.189` | 2026-09-18 | `原局部重绘轮廓内缩 3px` | M08：ALG-LR-013 v1.2.0，3px@2K，保留历史 v1 与新 v2 alpha；GPT 不变，无迁移。 |
 | `2.20.186` | 2026-09-18 | `容器依赖引导重试` | M15：`CI-CONTAINER-DEPENDENCY-RETRY/1.0.0` 为 Docker 固定 pnpm 准备和冻结安装增加最多 3 次的有限重试；连续失败仍阻断，无运行时或数据迁移。 |
 | `2.20.185` | 2026-09-18 | `Bake 下载异步 metadata` | M10/M13（协作 M15）：`BAKE-DOWNLOAD-METADATA/1.0.0` 移除单图/ZIP HTTP 热路径同步 exists/stat，保持 owner、成功终态、通道、普通文件和归档字节门禁；无迁移。 |
 | `2.20.184` | 2026-09-18 | `Bake Job 异步原子持久化` | M10/M13（协作 M15）：`BAKE-JOB-PERSISTENCE/1.0.0` 以同 Job 串行、不同 Job 并行的异步原子替换保存 `job.json`，终态显式等待；故障注入验证失败保留上一完整快照且队列可恢复。状态/JSON/资产/Schema 不变，无迁移，未推送部署。 |

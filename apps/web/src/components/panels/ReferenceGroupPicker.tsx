@@ -1,4 +1,5 @@
 import { createPortal } from 'react-dom';
+import { allowUserFileUpload } from '@/services/userFileUploadPolicy';
 import {
   useCallback,
   useEffect,
@@ -334,6 +335,7 @@ export function ReferenceGroupPicker({
   }, []);
 
   const queueReferenceFiles = useCallback(async (files: File[]) => {
+    if (!allowUserFileUpload(files)) return;
     const imageFiles = files.filter(isImageFile);
     if (!imageFiles.length) {
       setUploadError('请选择图片文件。');

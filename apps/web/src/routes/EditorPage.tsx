@@ -273,6 +273,7 @@ import {
 import { useSettingsStore } from '@/stores/settingsStore';
 import { shortcutMatches, type ShortcutActionId } from '@/stores/shortcutStore';
 import { useToastStore } from '@/stores/toastStore';
+import { allowUserFileUpload } from '@/services/userFileUploadPolicy';
 import { runPaintMaskHistoryAction } from '@/engine/paint/paintMaskHistoryActions';
 import { getEraserTargetPolicy } from '@/engine/paint/eraserTargetPolicy';
 import type { BakeProgress, UvBakeResolution } from '@/engine/bake/uvBakeTypes';
@@ -3639,6 +3640,7 @@ export function EditorPage({
   }
 
   async function handleImportModels(files: File[]) {
+    if (!allowUserFileUpload(files)) return;
     if (modelMutationLocked) {
       notifyEditorTaskRunning();
       return;
@@ -3725,6 +3727,7 @@ export function EditorPage({
   }
 
   async function handleImportReferenceImages(files: File[], sourceUrls: string[] = []) {
+    if (!allowUserFileUpload(files)) return;
     if (editorTaskRunning) {
       notifyEditorTaskRunning();
       return;
@@ -3849,6 +3852,7 @@ export function EditorPage({
   }
 
   async function handleLoadProject(file: File) {
+    if (!allowUserFileUpload([file])) return;
     try {
       const importedProject = await importProjectJson(file);
       loadedProjectIdRef.current = importedProject.id;
@@ -4002,6 +4006,7 @@ export function EditorPage({
   }
 
   async function replaceLayerImage(layer: Layer, file: File) {
+    if (!allowUserFileUpload([file])) return;
     if (layer.type !== 'projected' && layer.type !== 'uv') return;
     try {
       captureHistory(`替换图层图片：${layer.name}`);
