@@ -48,7 +48,7 @@ assert.match(
   /materialImage: \{[\s\S]*path: `\$\{generationId\}-\$\{materialReference!\.id\}-material-reference\.png`/,
 );
 assert.match(panel, /mask: \{ path: `\$\{generationId\}-mask\.png`, dataUrl: maskDataUrl \}/);
-assert.match(panel, /const \[currentEffectDataUrl, materialReferenceDataUrl, maskDataUrl\]/);
+assert.match(panel, /const \[currentEffectDataUrl, materialReferenceDataUrl, maskDataUrl, normalDataUrl\]/);
 assert.match(panel, /prompt: effectivePrompt/);
 assert.match(panel, /prepareLocalRepaintGenerationInput\(\{/);
 assert.match(panel, /currentEffectUrl: flatCurrentEffectUrl/);
@@ -70,7 +70,7 @@ assert.doesNotMatch(panel, /viewportReference: \{/);
 assert.doesNotMatch(serverInpaint, /input\.viewportReference/);
 assert.doesNotMatch(serverInpaint, /field: 'viewport_reference'/);
 assert.match(serverInpaint, /field: 'image' \| 'material_image' \| 'mask'/);
-assert.match(serverInpaint, /inpaint:li3d4500-defaultprompt-steps2-r1/);
+assert.match(serverInpaint, /inpaint:refcontrol-normal-4step-r1/);
 assert.match(panel, /resultComposition: 'direct-v1'/);
 assert.match(panel, /cancelledTextureBatchIdsRef/);
 assert.match(panel, /generationBelongsToObject/);
