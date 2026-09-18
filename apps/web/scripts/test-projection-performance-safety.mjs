@@ -144,13 +144,14 @@ new Function('exports', uniformBudgetJs)(budgetExports);
 const { isProjectedUniformBudgetSafe } = budgetExports;
 assert.match(sceneRootSource, /const residentUvDisplayEnabled = true;/,
   'every supported viewport must consume a verified UV display buffer');
-assert.match(sceneRootSource, /const useProjectedTextureArrays = false;/,
-  'the temporary eraser path must not retain the heavier texture-array renderer');
+assert.match(sceneRootSource,
+  /const useProjectedTextureArrays = Boolean\([\s\S]*?projectedEraserArmed[\s\S]*?gl\.capabilities\.isWebGL2[\s\S]*?previewProjectionInputs\.length > 1/,
+  'the heavier texture-array renderer must be scoped to an armed WebGL2 multi-view eraser');
 assert.match(sceneRootSource, /const canUseDirectVisibleStackAfterArrayFailure = false;/,
   'array failure must retain the verified UV front buffer instead of publishing a direct projection');
 assert.match(sceneRootSource,
-  /const canUseExactProjectedEraserStack = Boolean\([\s\S]*?projectedEraserArmed[\s\S]*?directProjectedStackSafe/,
-  'the projected eraser may use only an exact stack that passes the shared device budget');
+  /const exactProjectedEraserStackSafe = Boolean\([\s\S]*?useProjectedTextureArrays[\s\S]*?projectedTextureArraySamplerBudget[\s\S]*?directProjectedSamplerBudget[\s\S]*?isProjectedUniformBudgetSafe[\s\S]*?const canUseExactProjectedEraserStack = Boolean\([\s\S]*?projectedEraserArmed && exactProjectedEraserStackSafe/,
+  'the projected eraser may use direct or array presentation only after the selected exact stack passes device budgets');
 assert.match(sceneRootSource,
   /const materialProjectionInputs = canUseExactProjectedEraserStack[\s\S]*?\? previewProjectionInputs[\s\S]*?: \[\]/,
   'the material publisher must stay UV-only outside the bounded exact eraser session');

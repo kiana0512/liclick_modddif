@@ -61,7 +61,7 @@ export function preloadProjectedUvBakeKernel() {
   return projectedUvBakeKernelPromise;
 }
 
-/** UV-DISPLAY-BUFFER/1.5.2. The display owns derived UV buffers, never layers/assets.
+/** UV-DISPLAY-BUFFER/1.5.3. The display owns derived UV buffers, never layers/assets.
  * Use resident Top-K and gutter; seam repair is disabled by default for display.
  * Keep the front buffer until its replacement has uploaded and been bound.
  */
@@ -139,17 +139,16 @@ export class ResidentProjectedUvDisplay {
       performance.now() < this.retryAt
     )
       return;
+    const fastPreview = getLiveSurfacePaintPreview();
+    if (fastPreview?.displayArmed && fastPreview.target === 'projected-mask' &&
+      fastPreview.objectId === original.sourceModel.objectId &&
+      original.sourceLayers.some(layer => layer.id === fastPreview.layerId && layer.visible && layer.opacity > 0)) return;
     const candidate = getEraserUvDraft();
     const draft = candidate?.owner.target === 'projected-mask' &&
       candidate.owner.objectId === original.sourceModel.objectId &&
       original.sourceLayers.some(layer => layer.id === candidate.owner.layerId && layer.visible && layer.opacity > 0)
       ? candidate : undefined;
     const interactive = Boolean(draft && draft.revision > 0);
-    const fastPreview = getLiveSurfacePaintPreview();
-    if (interactive && fastPreview?.displayArmed &&
-      fastPreview.target === 'projected-mask' &&
-      fastPreview.objectId === original.sourceModel.objectId &&
-      fastPreview.layerId === draft!.owner.layerId) return;
     draft?.flush();
     if (interactiveOnly && !interactive) return;
     const key = interactive ? `${original.signature}:eraser:${draft!.id}:${draft!.revision}` : original.signature;
@@ -177,10 +176,10 @@ export class ResidentProjectedUvDisplay {
       const latestPreview = getLiveSurfacePaintPreview();
       return this.disposed || revision !== this.revision ||
         (interactive ? latestDraft !== draft : Boolean(
-          latestDraft?.revision && latestPreview?.displayArmed &&
+          latestPreview?.displayArmed &&
           latestPreview.target === 'projected-mask' &&
           latestPreview.objectId === original.sourceModel.objectId &&
-          latestPreview.layerId === latestDraft.owner.layerId));
+          original.sourceLayers.some(layer => layer.id === latestPreview.layerId && layer.visible && layer.opacity > 0)));
     };
     const guard = () => {
       if (cancelled()) throw new DOMException('UV display superseded.', 'AbortError');

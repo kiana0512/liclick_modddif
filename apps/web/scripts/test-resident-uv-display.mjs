@@ -625,13 +625,13 @@ await presentation.waitForResidentUvPresentation(scene, 'other-object');
   assert.match(displaySource, /THREE\.RedFormat/);
   assert.match(
     displaySource,
-    /const fastPreview = getLiveSurfacePaintPreview\(\);[\s\S]*?if \(interactive && fastPreview\?\.displayArmed[\s\S]*?fastPreview\.target === 'projected-mask'[\s\S]*?fastPreview\.objectId === original\.sourceModel\.objectId[\s\S]*?fastPreview\.layerId === draft!\.owner\.layerId\) return;[\s\S]*?draft\?\.flush\(\)/,
-    'An armed projected eraser must bypass Resident UV draft work before any full-resolution flush.',
+    /const fastPreview = getLiveSurfacePaintPreview\(\);[\s\S]*?if \(fastPreview\?\.displayArmed[\s\S]*?fastPreview\.target === 'projected-mask'[\s\S]*?fastPreview\.objectId === original\.sourceModel\.objectId[\s\S]*?original\.sourceLayers\.some[\s\S]*?\) return;[\s\S]*?draft\?\.flush\(\)/,
+    'Selecting an armed projected eraser must bypass Resident UV before any draft or full-resolution flush exists.',
   );
   assert.match(
     displaySource,
-    /interactive \? latestDraft !== draft : Boolean\([\s\S]*?latestDraft\?\.revision && latestPreview\?\.displayArmed[\s\S]*?latestPreview\.layerId === latestDraft\.owner\.layerId/,
-    'A final Resident UV convergence must cancel if a new GPU-mask stroke starts.',
+    /interactive \? latestDraft !== draft : Boolean\([\s\S]*?latestPreview\?\.displayArmed[\s\S]*?original\.sourceLayers\.some/,
+    'A final Resident UV convergence must cancel as soon as the GPU-mask tool takes display ownership.',
   );
 
   const bakeSource = fs.readFileSync(

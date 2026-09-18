@@ -116,20 +116,18 @@ for (const busy of [false, true]) {
     onError(error) { throw error; },
   });
   let draftFlushes = 0;
-  eraserDraft = { revision: 1, owner: { target: 'projected-mask', objectId: 'o', layerId: 'fast' },
-    flush() { draftFlushes++; } };
+  eraserDraft = undefined;
   livePaintPreview = { displayArmed: true, target: 'projected-mask', objectId: 'o', layerId: 'fast' };
   display.request(request('fast')); display.step(); await flush();
-  assert.equal(jobs.length, 0, 'armed GPU mask must prevent Resident UV work');
-  assert.equal(draftFlushes, 0, 'armed GPU mask must return before a full-resolution draft flush');
+  assert.equal(jobs.length, 0, 'armed GPU mask must prevent Resident UV work before pointer-down');
+  assert.equal(draftFlushes, 0, 'tool activation must not create or flush a full-resolution draft');
   eraserDraft = undefined; livePaintPreview = undefined;
   display.cancelPending();
   display.request(request('old')); display.step(); await flush();
   assert.equal(jobs.length, 1);
-  eraserDraft = { revision: 2, owner: { target: 'projected-mask', objectId: 'o', layerId: 'old' } };
   livePaintPreview = { displayArmed: true, target: 'projected-mask', objectId: 'o', layerId: 'old' };
   assert.throws(() => jobs[0].input.checkCancelled(), { name: 'AbortError' },
-    'a new GPU-mask stroke cancels an in-flight final Resident UV convergence');
+    'selecting the GPU-mask tool cancels an in-flight final Resident UV convergence');
   eraserDraft = undefined; livePaintPreview = undefined;
   display.request(request('intermediate')); display.request(request('latest'));
   display.step(busy);

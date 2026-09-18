@@ -518,8 +518,8 @@ assert.match(
 );
 assert.match(
   sceneRootSource,
-  /const residentUvDisplayEnabled = true;[\s\S]*?const useProjectedTextureArrays = false;[\s\S]*?const canUseExactProjectedEraserStack = Boolean\([\s\S]*?projectedEraserArmed && directProjectedStackSafe[\s\S]*?residentUvDisplayEnabled && !canUseExactProjectedEraserStack[\s\S]*?const materialProjectionInputs = canUseExactProjectedEraserStack[\s\S]*?\? previewProjectionInputs[\s\S]*?: \[\]/,
-  'Idle frames must remain UV-only while a budget-safe projected eraser temporarily restores the exact stack.',
+  /const residentUvDisplayEnabled = true;[\s\S]*?const useProjectedTextureArrays = Boolean\([\s\S]*?projectedEraserArmed[\s\S]*?gl\.capabilities\.isWebGL2[\s\S]*?const exactProjectedEraserStackSafe = Boolean\([\s\S]*?projectedTextureArraySamplerBudget[\s\S]*?const canUseExactProjectedEraserStack = Boolean\([\s\S]*?projectedEraserArmed && exactProjectedEraserStackSafe[\s\S]*?residentUvDisplayEnabled && !canUseExactProjectedEraserStack[\s\S]*?const materialProjectionInputs = canUseExactProjectedEraserStack[\s\S]*?\? previewProjectionInputs[\s\S]*?: \[\]/,
+  'Idle frames must remain UV-only while an armed multi-view eraser restores the exact texture-array stack without Resident UV.',
 );
 assert.match(
   sceneRootSource,

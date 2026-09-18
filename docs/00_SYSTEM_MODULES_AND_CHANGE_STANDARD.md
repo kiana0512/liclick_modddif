@@ -1,5 +1,7 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
+2026-09-18 M08（协作 M06/M07/UI-06/UI-10）：`ALG-ERASE-001` 调度修订 v1.5.5 / `UV-DISPLAY-BUFFER` v1.5.3 将 projected-mask 橡皮的快速路径所有权提前到工具激活，而非首次 pointer-down。多视图投影栈超过 direct sampler 预算时使用已有精确 texture-array 材质，live keep-mask 继续作为独立全分辨率采样器叠乘；橡皮激活期间 Resident UV 不启动 draft/final bake，在途最终收敛立即取消。WebGL2/预算不安全设备保留最后 verified front，不用 Resident UV 模拟交互。正式 mask 提交、历史、撤销/重做、Top-K/gutter 最终收敛、持久化/export、分辨率和 QA 不变；无 Schema/资产迁移。六投影层 4517 实测工具激活为 `useTextureArrays=true`，连续笔画期间 Resident draw/revision 与材质 build revision 均不增加。详见 [多视图橡皮 texture-array 快速路径](changes/CHG-20260918-ERASER-MULTIVIEW-TEXTURE-ARRAY.md)。
+
 2026-09-18 M08（协作 M06/M07/UI-06/UI-10）：`ALG-ERASE-001` 调度修订 v1.5.4 / `UV-DISPLAY-BUFFER` v1.5.2 强制 projected-mask 橡皮交互只走已武装的完整分辨率 GPU live keep-mask：Resident UV compositor 在同对象、同层 draft 活动时不 flush、不 snapshot、不 bake、不 readback、不上传；已有最终 UV 收敛若遇到新笔迹即取消，待抬笔提交且交互空闲后只重算最终签名。多个可见 UV/投影层不再让每个 pointer revision 争用 Resident UV。正式 mask、历史、撤销/重做、质量合成、接缝/gutter、持久化/export、完整分辨率和 QA 不变；无 Schema/资产迁移。详见 [橡皮交互禁用 Resident UV](changes/CHG-20260918-ERASER-RESIDENT-DEFER.md)。
 
 2026-09-18 M08（协作 M06/M07/UI-06/UI-10）：`ALG-ERASE-001` 调度修订 v1.5.3 / `UV-DISPLAY-BUFFER` v1.4.1 修复 `352cd3e8` UV-only 改造切断 `251700e9` 全分辨率 GPU 橡皮实时显示的问题。空闲仍只显示 verified Resident UV；仅活动模型的普通 projected-mask 橡皮或其提交交接临时启用预算安全的 exact direct 栈，拖动帧直接采样 live keep-mask。中性预热新增 renderer-only `displayArmed=false`，不会提前切换显示；sampler/uniform 预算失败继续 fail-closed。覆盖/深度/顺序、CPU/Worker 正式细化、完整分辨率、QA、持久化/export、Schema/Command/CAS/ownership/verified assets 不变，无迁移。详见 [投影橡皮实时快速显示恢复](changes/CHG-20260918-PROJECTED-ERASER-FAST-DISPLAY.md)。
@@ -192,7 +194,7 @@
 
 2026-09-15 M03：ALG-VIEW-INPUT-001/1.3.2 在鼠标接触前即让 R3F 悬停遵守 Alt 所有权；保留普通 hover 和已锁定拖动。旧实现拾取回归失败、新实现通过，用户实际首帧延迟需继续录制。无像素/持久化迁移，见 [Alt 悬停变更卡](changes/CHG-20260915-ALT-BRUSH-HOVER.md)。
 
-> 文档版本：`2.20.192`
+> 文档版本：`2.20.193`
 
 2026-09-16 UI-16 → M14（协作 M01/M12/M13/M15）：`ASSET-LIFECYCLE-GC` v0.4.0 / `STORAGE-INVENTORY-001/4` 将 Cloud 工程/Revision 引用页默认 8→32，并由单条 PostgreSQL CTE 完成分页、assetId 提取与引用 upsert，Node 不再回传引用数组后二次写库；每 256 条文档约 64→8 次数据库往返，保持 45 秒单查询上限与有界 Node 内存。当前 ready scan 引用索引保留到下一快照原子切换，旧 /3 快照自动重扫。Cloud 隔离区改按真实 quarantine 且排除重新可达对象统计；新增用户级幂等持久 purge job/item，以最多 4 并发签名 DeleteObject 后逐项事务删除 transfer、写 deleted_at，404/Pod 重启可安全重放。新增 `asset_storage_purge_jobs/items`，无 Project/Revision/Asset 内容迁移；Command/CAS/ownership/verified 及 GPU/CPU/Worker/shader、投影/UV/重绘/export、分辨率与 QA 不变。回滚前停 purge 并保留任务表，详见 [Cloud 存储盘点与物理清理变更卡](changes/CHG-20260916-CLOUD-STORAGE-INVENTORY-BOUNDED.md)。
 

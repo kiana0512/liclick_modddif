@@ -2531,7 +2531,14 @@ const ImportedModel = memo(function ImportedModel({
       }),
     [gl.capabilities.maxTextures, hasResidentUvOverlaySampler, previewProjectionInputs],
   );
-  const useProjectedTextureArrays = false;
+  // ALG-ERASE-001 v1.5.5: selecting the projected eraser transfers display
+  // ownership away from Resident UV before pointer-down. Multi-view stacks
+  // commonly exceed the direct sampler budget, so keep their exact authored
+  // sources resident in texture arrays while the tool is active; the live
+  // keep-mask remains a separate full-resolution sampler.
+  const useProjectedTextureArrays = Boolean(
+    projectedEraserArmed && gl.capabilities.isWebGL2 && previewProjectionInputs.length > 1,
+  );
   const useProjectedProgramWarmupTextureArrays = false;
   const projectedTextureArrayStructureSignature = useMemo(
     () =>
@@ -2569,19 +2576,23 @@ const ImportedModel = memo(function ImportedModel({
       !isProjectedUniformBudgetSafe(previewProjectionInputs.length, gl.capabilities.maxFragmentUniforms)),
   );
   const canUseDirectVisibleStackAfterArrayFailure = false;
-  const directProjectedStackSafe = Boolean(
-    directProjectedSamplerBudget.withinBudget &&
+  const exactProjectedEraserStackSafe = Boolean(
+    (useProjectedTextureArrays
+      ? projectedTextureArraySamplerBudget
+      : directProjectedSamplerBudget
+    ).withinBudget &&
       isProjectedUniformBudgetSafe(
         previewProjectionInputs.length,
         gl.capabilities.maxFragmentUniforms,
       ),
   );
   const canUseExactProjectedEraserStack = Boolean(
-    projectedEraserArmed && directProjectedStackSafe,
+    projectedEraserArmed && exactProjectedEraserStackSafe,
   );
-  // UV-DISPLAY-BUFFER/1.4.1: idle display remains verified UV-only. While the
-  // projected eraser owns presentation, the exact authored stack samples the
-  // full-resolution live keep-mask directly; unsafe budgets stay on Resident UV.
+  // UV-DISPLAY-BUFFER/1.5.3: idle display remains verified UV-only. Selecting
+  // the projected eraser suspends Resident UV and transfers presentation to the
+  // exact direct/array stack before the first stroke. Unsafe hardware keeps the
+  // last verified front buffer, but must not schedule an interactive UV bake.
   const canUseProgressiveUvFallback =
     residentUvDisplayEnabled && !canUseExactProjectedEraserStack;
   const projectedPreviewNeedsComposition = Boolean(
