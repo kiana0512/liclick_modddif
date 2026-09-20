@@ -19,7 +19,7 @@ const compiled = ts.transpileModule(source, {
 }).outputText;
 const module = { exports: {} };
 new Function('exports', 'module', compiled)(module.exports, module);
-const { createLocalRepaintInwardCrossfadePixels, createBoundedRepaintFalloffPixels } = module.exports;
+const { createLocalRepaintInwardCrossfadePixels, createBoundedRepaintFalloffPixels, createManualRepaintFalloffPixels } = module.exports;
 
 const width = 25;
 const height = 25;
@@ -65,6 +65,17 @@ assert.equal(bounded[(12 * width + 12) * 4 + 3], 0, 'hole remains unpaintable');
 assert.ok(createBoundedRepaintFalloffPixels({ data: new Uint8ClampedArray(width * height * 4), width, height })
   .every((value, i) => i % 4 !== 3 || value === 0), 'empty author mask fails closed');
 
+const manual = createManualRepaintFalloffPixels({ data: boundedMask, width, height });
+assert.ok(manual.every(value => value === 255), 'generation selection must not feather or clip manual strokes');
+const movedSelection = new Uint8ClampedArray(boundedMask.length);
+movedSelection.set([255, 255, 255, 255], 0);
+assert.deepEqual(createManualRepaintFalloffPixels({ data: movedSelection, width, height }), manual,
+  'moving the generation mask must not move the manual blend boundary');
+assert.equal(manual[(12 * width + 12) * 4 + 3], 255, 'manual strokes can fill an old selection hole');
+assert.ok(createManualRepaintFalloffPixels({ data: new Uint8ClampedArray(width * height * 4), width, height })
+  .every(value => value === 0), 'empty input must not authorize manual projection');
+assert.deepEqual(sourcePixels, sourceSnapshot);
+
 for (let x = 2; x <= 10; x += 1) {
   const localRepaintWeight = weightAt(x, 12);
   const lowerProjectionWeight = 255 - localRepaintWeight;
@@ -84,6 +95,8 @@ const editorPageSource = fs.readFileSync(
   'utf8',
 );
 assert.match(viewportSource, /maskUrl:\s*composite\.blendMaskUrl/);
+assert.match(viewportSource, /updateLocalRepaintInwardCrossfadeCanvas\(\{\s*sourceContext: composite\.maskContext/,
+  'legacy inward blending must derive from accumulated painted strokes, not the generation mask');
 assert.match(viewportSource, /localRepaintMaskUrl:\s*composite\.maskUrl/);
 assert.match(
   viewportSource,

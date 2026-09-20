@@ -138,9 +138,22 @@ export function updateLocalRepaintInwardCrossfadeCanvas(input: {
   return outputRect;
 }
 
-/** ALG-LR-008 bounded falloff v3.0.0: authorization never extends past the author mask.
- * White RGB + coverage alpha also works with Canvas destination-in (legacy path).
+/** ALG-LR-008 v3.1.0: generation selection is not a manual brush boundary.
+ * Feather the actual strokes, not this source-space permission texture.
+ * Source alpha, capture depth and the actual brush still bound all writes.
  */
+export function createManualRepaintFalloffPixels(mask: ImageData) {
+  const output = new Uint8ClampedArray(mask.data.length);
+  for (let i = 0; i < mask.data.length; i += 4) {
+    if (Math.max(mask.data[i], mask.data[i + 1], mask.data[i + 2]) * mask.data[i + 3] / 65025 > 0.03) {
+      output.fill(255);
+      break;
+    }
+  }
+  return output;
+}
+
+/** Automatic application remains inside the original author selection. */
 export function createBoundedRepaintFalloffPixels(mask: ImageData) {
   const output = createLocalRepaintInwardCrossfadePixels({
     source: mask.data, width: mask.width, height: mask.height,

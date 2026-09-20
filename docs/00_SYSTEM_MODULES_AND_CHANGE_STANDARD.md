@@ -1,5 +1,7 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
+2026-09-20 M08（审计 M06/M07/M11）：`ALG-LR-008` manual scope v3.1.0 纠正手动局部重绘以生成蒙版限制绘制范围的问题。用户确认融合内缩针对实际笔迹而非生成选区；手动源权限使用中性白色，不再按原选区裁切或径向衰减，空选区仍拒绝。原生 UV 继续按实际笔刷边缘向内羽化，兼容 Canvas 路径继续从累计笔迹生成 inward blend。源 alpha、深度、遮挡、透明边界预乘采样、自动生成范围、3px 模型轮廓保护及图层选择规则不变。CPU/Worker 共用手动核、缓存版本更新，无持久化 Schema/资产迁移，旧像素不重写。详见 [手动绘制范围与融合边界](changes/CHG-20260920-REPAINT-MANUAL-OUTSIDE-SELECTION.md)。本地验证，未推送或部署。
+
 2026-09-20 M06（协作 M07/M08）：`UV-REPAINT-PREVIEW-BINDING` v1.0.1 统一手动 UV 重绘层在 React、显隐订阅及异步材质发布中的顶层/下层划分；运行时纹理不再进入静态图片预热，含 live 输入的组合不复用静态显示缓存。普通 PNG 图层显隐也刷新组合所有者，全可见预热只在请求键匹配且结果 ready 后登记缓存，防止旧贴图写入新组合。GPU/CPU/Worker/shader 合成公式、源像素、分辨率、QA、保存/合并/导出协议均不变；无需迁移，回滚仅恢复显示绑定。详见 [多层 UV 重绘显隐修复](changes/CHG-20260920-MANUAL-UV-PREVIEW-VISIBILITY.md)。
 
 2026-09-20 M08（审计 M06/M07/M09/M11）：`ALG-LR-008` bounded falloff v3.0.0 / `ALG-LR-UV-PAINT` v1.3.0 修复局部重绘范围外暗带。CPU/Worker 共用作者选区内向羽化，区域外/孔洞为零；原生 UV 取色以原生源 alpha/蒙版约束支持范围，透明边界按预乘颜色插值，不扩大3px内缩，不改相机、深度、分辨率和 QA。GPU/CPU/Worker/历史/PNG/合并/export 审计与回滚见 [范围外暗带修复](changes/CHG-20260920-REPAINT-BOUNDED-PROJECTION.md)。旧像素不自动改写，无 Schema/资产迁移。本地验证完成；发布以对应提交的 master 流水线和 A100 发布记录为准。

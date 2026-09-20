@@ -146,7 +146,7 @@ import {
 } from '@/services/nativePerformanceClient';
 import { registerPreviewTextureRenderer } from './previewTextureCache';
 import { createLocalRepaintFalloffInWorker } from '@/engine/localRepaint/falloffWorker';
-import { createBoundedRepaintFalloffPixels, updateLocalRepaintInwardCrossfadeCanvas } from '@/engine/localRepaint/inwardCrossfadeMask';
+import { createManualRepaintFalloffPixels, updateLocalRepaintInwardCrossfadeCanvas } from '@/engine/localRepaint/inwardCrossfadeMask';
 import { getLocalRepaintSeamMode } from '@/engine/localRepaint/seamHarmonizationMode';
 import {
   beginLocalRepaintSession,
@@ -4730,7 +4730,7 @@ function createLocalRepaintFalloffCanvas(
 
   context.drawImage(allowedMaskImage, 0, 0, width, height);
   const mask = context.getImageData(0, 0, width, height);
-  const output = new ImageData(createBoundedRepaintFalloffPixels(mask), width, height);
+  const output = new ImageData(createManualRepaintFalloffPixels(mask), width, height);
   context.putImageData(output, 0, 0);
   reportDuration();
   return canvas;
@@ -4780,7 +4780,7 @@ function createLocalRepaintFalloffCanvasAsync(
   width: number,
   height: number,
 ) {
-  const sizeKey = `${width}x${height}:brush-mask-inward-v2`;
+  const sizeKey = `${width}x${height}:manual-brush-scope-v3`;
   let maskCache = localRepaintFalloffCanvasCache.get(allowedMaskImage);
   if (!maskCache) {
     maskCache = new Map();

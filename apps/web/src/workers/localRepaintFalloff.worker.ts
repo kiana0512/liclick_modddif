@@ -1,4 +1,4 @@
-import { createBoundedRepaintFalloffPixels } from '../engine/localRepaint/inwardCrossfadeMask';
+import { createManualRepaintFalloffPixels } from '../engine/localRepaint/inwardCrossfadeMask';
 
 type FalloffRequest = {
   id: number;
@@ -21,7 +21,7 @@ self.onmessage = (event: MessageEvent<FalloffRequest>) => {
     context.clearRect(0, 0, width, height);
     context.drawImage(mask, 0, 0, width, height);
     const maskPixels = context.getImageData(0, 0, width, height);
-    context.putImageData(new ImageData(createBoundedRepaintFalloffPixels(maskPixels), width, height), 0, 0);
+    context.putImageData(new ImageData(createManualRepaintFalloffPixels(maskPixels), width, height), 0, 0);
 
     const bitmap = canvas.transferToImageBitmap();
     const response: FalloffResponse = {

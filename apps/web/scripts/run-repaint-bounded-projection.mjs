@@ -5,10 +5,17 @@ const { chromium } = await import(process.env.PLAYWRIGHT_MODULE
   ? pathToFileURL(process.env.PLAYWRIGHT_MODULE).href : 'playwright');
 const root = fileURLToPath(new URL('..', import.meta.url));
 const server = await createServer({ root, configFile: false,
+  plugins: [{ name: 'repaint-test-page', configureServer(server) {
+    server.middlewares.use('/__fixture', (_req, res) => {
+      res.setHeader('Content-Type', 'text/html');
+      res.end('<!doctype html><link rel="icon" href="data:,"><title>Repaint bounds</title>');
+    });
+  } }],
+  cacheDir: 'node_modules/.vite-repaint-bounds-fixture',
+  optimizeDeps: { noDiscovery: true, include: ['three', 'zustand', 'zustand/middleware', 'react', 'react/jsx-runtime', 'react/jsx-dev-runtime'] },
   resolve: { alias: { '@': `${root}/src` } },
   server: { host: '127.0.0.1', port: 0, watch: { ignored: () => true } },
 });
-server.middlewares.use('/__fixture', (_req, res) => res.end('<!doctype html><link rel="icon" href="data:,"><title>Repaint bounds</title>'));
 let browser;
 try {
   await server.listen();
