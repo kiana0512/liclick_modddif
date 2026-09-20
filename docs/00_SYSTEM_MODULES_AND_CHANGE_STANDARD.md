@@ -1,5 +1,7 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
+2026-09-20 M06（协作 M07/M08）：`UV-REPAINT-PREVIEW-BINDING` v1.0.1 统一手动 UV 重绘层在 React、显隐订阅及异步材质发布中的顶层/下层划分；运行时纹理不再进入静态图片预热，含 live 输入的组合不复用静态显示缓存。普通 PNG 图层显隐也刷新组合所有者，全可见预热只在请求键匹配且结果 ready 后登记缓存，防止旧贴图写入新组合。GPU/CPU/Worker/shader 合成公式、源像素、分辨率、QA、保存/合并/导出协议均不变；无需迁移，回滚仅恢复显示绑定。详见 [多层 UV 重绘显隐修复](changes/CHG-20260920-MANUAL-UV-PREVIEW-VISIBILITY.md)。
+
 2026-09-20 UI-05 → M04：`SINGLE-VIEW-COMPLETION/1.0.0` 在 GPT/ModelView 单视图自动回贴事务成功保存图层与回执后，复用同一已确认的 Generation，不再改写回贴完成时间并串行保存第二次。仅本次保存 Promise 成功且单张结果/实际图层完整、无失败时跳过收尾重复 checkpoint；已有内存标记、保存失败、图层删除和多视图仍走原收尾保存。等待必要保存时明确显示“回贴完成，正在保存”，不提前假报完成。GPU/CPU/Worker/shader、分辨率、QA、投影/UV/export 像素与 Schema/Command/CAS/ownership/verified assets 不变，无历史迁移。详见 [单视图完成保存去重](changes/CHG-20260920-SINGLE-VIEW-COMPLETION.md)。本地修改，未推送或部署。
 
 2026-09-20 M04（协作 M03/M06/M07）：`MODELVIEW-PRESENTATION-BARRIER/1.0.0` 将 ModelView 多视图的单次 resident 事件等待改为目标对象实际显示材质与本次新图层 ID 检查，复用 GPT 的严格 presentation 屏障。Resident UV 材质原位更新或检查开始前已完成均可确认；旧 atlas、缺失对象、warmup 材质和未完成 mesh 不放行，经过两次浏览器绘制调度再复核，取消仍中止串行。60 秒只提示等待，不超时跳过、不重复生图。GPU/CPU/Worker/shader、完整分辨率、QA、回贴/导出像素与 Command/CAS/ownership 不变，无 Schema/历史资产迁移。详见 [ModelView 回贴完成屏障](changes/CHG-20260920-MODELVIEW-PRESENTATION-BARRIER.md)。本地修复，未推送或部署。
