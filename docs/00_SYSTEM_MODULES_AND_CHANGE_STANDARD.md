@@ -1,5 +1,9 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
+2026-09-20 M06（协作 M07/M08）：`UV-REPAINT-PREVIEW-BINDING` v1.0.1 统一手动 UV 重绘层在 React、显隐订阅及异步材质发布中的顶层/下层划分；运行时纹理不再进入静态图片预热，含 live 输入的组合不复用静态显示缓存。普通 PNG 图层显隐也刷新组合所有者，全可见预热只在请求键匹配且结果 ready 后登记缓存，防止旧贴图写入新组合。GPU/CPU/Worker/shader 合成公式、源像素、分辨率、QA、保存/合并/导出协议均不变；无需迁移，回滚仅恢复显示绑定。详见 [多层 UV 重绘显隐修复](changes/CHG-20260920-MANUAL-UV-PREVIEW-VISIBILITY.md)。
+
+2026-09-20 M04（协作 M03/M08/M12）：`GPT-REPAINT-GEOMETRY-FRAMING/1.0.0` / `GPT-CONTENT-BOUNDS/1.1.0` 修复 GPT 局部重绘把不透明蓝/黑法线背景误当主体的问题。提交前复用同冻结相机的 linear-view packed depth 提取模型边界，保存到既有 framing；保留长边 1:1 配对裁切、原生返图和严格轮廓阈值。作者选区、GPU/Worker/shader/UV/export、Schema/Command/CAS/ownership 不变；旧失败任务需重新生成，无资产迁移。真实 WebGL 蓝/黑背景与透明返图坐标/像素回归通过。详见 [局部重绘轮廓来源修复](changes/CHG-20260920-GPT-REPAINT-GEOMETRY-FRAMING.md)。本地修改，未推送或部署。
+
 2026-09-20 M04（协作 M03/M08/M15）：`GENERATION-RESULT-PARSE/1.0.0`、`LOCAL-REPAINT-DATAURL/1.0.0` 修复后台生图完成与模型交互重叠时的主线程卡顿。真实 4517 长帧定位到 `Response.json.then 1009.4ms` 及两次 `FileReader.onload 864.8/858.7ms`；大于等于 256KiB 的服务 JSON 改为 Worker 解码/解析，大 Blob 的 Data URL 转换改为 Worker `FileReaderSync`，两者先返回小型 ready 并在视口静默后才发布完整对象/字符串；小响应和小 Blob 保留原生快路径。局部重绘返图直接通过短生命周期 Blob URL 解码，移除一次无效 base64 往返。响应字段、图片字节、完整分辨率、QA、GPU/shader、Project Command/CAS/ownership/verified assets、持久化/export 不变，无迁移。4517 生产构建 12MiB 等价响应最终复测：持续交互 350ms 内不发布，保护/全程最大帧 `16.8/16.8ms`、P95 `16.8ms`，结果精确一致；Web 全量回归 `151/151`，固定包体 `3,256,244/3,256,500` bytes 并保留 256-byte reserve。未重新发起付费生图，首次九模型恢复仍有独立长帧。详见 [生图结果发布的交互优先级](changes/CHG-20260920-GENERATION-RESULT-INTERACTION-SAFETY.md)。本地修改，未提交、推送或部署。
 
 2026-09-20 M07（协作 M06/M09/M15）：`UV-PREVIEW-DETACHED-UPLOAD/1.0.0`、`UV-PERSISTENT-MERGE-READ/1.1.0`、`UV-BAKE-FRAME-PACING/1.0.0` 处理 4K 投影转 UV 的交互掉帧。detached 精确上传由每 renderer 每任务 8 个 128K 条带收紧为 1 个；64 MiB 派生缓存的读取、SHA/尺寸/元数据验证移入 Worker 并转移原 buffer；透明清理、CPU postprocess 和派生缓存写入在有界批次间跨真实 paint，避免 `scheduler.yield` continuation 在一次呈现前聚集。完整 4K、RGBA/coverage、拓扑最终差异、QA、shader、作者资产、export、Schema/Command/CAS/ownership/verified assets 不变，无迁移。真实 4517 S4 修改前上传峰值 116.8ms/8% 掉帧；热复测 16.8ms 最大帧/0%，冷复测交互保护 16.9ms 且 RGBA/拓扑差异 0；后续冷样本暴露的 53–242ms 缓存读取/后处理峰值据此继续分帧。验证、回滚及仍未解决的首次恢复/生图并行热点见 [4K 投影转 UV 交互帧调度](changes/CHG-20260920-UV-MERGE-INTERACTION-FRAME-PACING.md)。本地修改，未提交、推送或部署。
@@ -228,7 +232,7 @@
 
 2026-09-15 M03：ALG-VIEW-INPUT-001/1.3.2 在鼠标接触前即让 R3F 悬停遵守 Alt 所有权；保留普通 hover 和已锁定拖动。旧实现拾取回归失败、新实现通过，用户实际首帧延迟需继续录制。无像素/持久化迁移，见 [Alt 悬停变更卡](changes/CHG-20260915-ALT-BRUSH-HOVER.md)。
 
-> 文档版本：`2.20.208`
+> 文档版本：`2.20.210`
 
 2026-09-16 UI-16 → M14（协作 M01/M12/M13/M15）：`ASSET-LIFECYCLE-GC` v0.4.0 / `STORAGE-INVENTORY-001/4` 将 Cloud 工程/Revision 引用页默认 8→32，并由单条 PostgreSQL CTE 完成分页、assetId 提取与引用 upsert，Node 不再回传引用数组后二次写库；每 256 条文档约 64→8 次数据库往返，保持 45 秒单查询上限与有界 Node 内存。当前 ready scan 引用索引保留到下一快照原子切换，旧 /3 快照自动重扫。Cloud 隔离区改按真实 quarantine 且排除重新可达对象统计；新增用户级幂等持久 purge job/item，以最多 4 并发签名 DeleteObject 后逐项事务删除 transfer、写 deleted_at，404/Pod 重启可安全重放。新增 `asset_storage_purge_jobs/items`，无 Project/Revision/Asset 内容迁移；Command/CAS/ownership/verified 及 GPU/CPU/Worker/shader、投影/UV/重绘/export、分辨率与 QA 不变。回滚前停 purge 并保留任务表，详见 [Cloud 存储盘点与物理清理变更卡](changes/CHG-20260916-CLOUD-STORAGE-INVENTORY-BOUNDED.md)。
 
@@ -1393,6 +1397,10 @@ M15 / CLOUD-DEPLOYMENT v1.0.0（2026-09-03）：正常合并 release 部署历�
 
 | 版本 | 日期 | 基线 | 变更 |
 | --- | --- | --- | --- |
+| `2.20.210` | 2026-09-20 | `c41882dc + 多层 UV 重绘显隐修复` | M06/M07/M08：UV-REPAINT-PREVIEW-BINDING v1.0.1 统一顶层/下层划分、显隐刷新和异步发布归属；像素、分辨率、QA 与保存/导出协议不变，无迁移。 |
+| `2.20.209` | 2026-09-20 | `c0aa7595 + GPT 局部重绘轮廓来源修复` | M04/M03/M08/M12：取景改用冻结深度模型轮廓，避免不透明法线背景误判；严格返图 QA 保留，无历史迁移。 |
+| `2.20.208` | 2026-09-20 | `后台生图结果交互安全发布` | M04/M03/M08/M15：大 JSON 和 Blob 编码移入 Worker，并在视口静默后发布；结果字节、完整分辨率、QA 与持久化不变，无迁移。 |
+| `2.20.207` | 2026-09-20 | `4K 投影转 UV 交互帧调度` | M07/M06/M09/M15：收紧 detached 上传并将派生缓存验证移入 Worker，后处理及缓存写入跨真实 paint；精确 RGBA、拓扑、QA 与持久化不变，无迁移。 |
 | `2.20.206` | 2026-09-20 | `Resident UV underlay 归属更新移出主线程` | M07/M06/M09/M15：UV-UNDERLAY-ATTRIBUTION/1.0.0 复用既有 WebGPU/CPU Worker 更新 R8 attribution，移除主线程双遍历和 4K alpha 临时数组；逐字节输出、完整分辨率、QA 与持久化不变，无迁移，未部署。 |
 | `2.20.205` | 2026-09-20 | `实时 UV 主线程位图失败清理` | M07：UV-COMPOSITE-BITMAP-LIFETIME/1.0.2，失败收敛与迟到位图释放；成功并行、全尺寸像素和所有权保持，无数据迁移，未部署。 |
 | `2.20.204` | 2026-09-20 | `后台监控与 UV 异常路径修复` | M10/M13、M07：四个独立故障边界修复及回归；像素/尺寸/QA/持久格式不变，无数据迁移，未部署。 |

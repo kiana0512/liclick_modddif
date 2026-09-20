@@ -496,7 +496,7 @@ assert.match(
 );
 assert.match(
   sceneRootSource,
-  /authoritativeExactUvTexture \?\? loadedUvTexture \?\? authoritativeProxyUvTexture/,
+  /authoritativeExactUvTexture \?\?\s*\(authoritativeOrdinaryUvKey === visibleResidentUvKey \? loadedUvTexture : undefined\) \?\?\s*authoritativeProxyUvTexture/,
   'the 512px-to-exact UV handoff must keep a valid sampler until 4K is resident',
 );
 assert.match(

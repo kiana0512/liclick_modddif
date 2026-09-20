@@ -639,19 +639,21 @@ assert.doesNotMatch(
 );
 assert.match(
   sceneRootSource,
-  /const authoritativeResidentUvTexture =\s*hasLowerRepaintUv\s*\? loadedUvTexture\s*:\s*authoritativeOrdinaryUvLayers\.length > 0\s*\?[\s\S]*?authoritativeExactUvTexture \?\? loadedUvTexture \?\? authoritativeProxyUvTexture[\s\S]*?: undefined/,
+  /const authoritativeResidentUvTexture =\s*authoritativeOrdinaryUvLayers\.length > 0\s*\?[\s\S]*?authoritativeExactUvTexture \?\?[\s\S]*?authoritativeOrdinaryUvKey === visibleResidentUvKey \? loadedUvTexture : undefined[\s\S]*?authoritativeProxyUvTexture[\s\S]*?: undefined/,
   'A late material publication must preserve lower repaint UVs without resurrecting hidden ordinary UVs.',
 );
 assert.match(
   sceneRootSource,
-  /const hasLowerRepaintUv = authoritativeLocalRepaintUvLayers\.some\([\s\S]*?layer\.id !== liveTopUvLayer\?\.id/,
-  'Only visible repaint rows outside the dedicated top sampler can keep the lower UV sampler enabled.',
+  /const authoritativeOrdinaryUvLayers = authoritativeUvStack\.filter\([\s\S]*?layer\.id !== authoritativeTopUvLayer\?\.id/,
+  'Every visible UV row outside the actual top sampler, including manual repaint, belongs to the lower stack.',
 );
 assert.match(
   sceneRootSource,
   /if \(isLiveProjectedCanvasUrl\(imageUrl\)\) return undefined/,
   'Borrowed UV render targets must bypass the ordinary image decode/upload/cache lifecycle.',
 );
+assert.match(sceneRootSource, /residentAllVisibleUvState\.ready\s*\? residentAllVisibleUvState\.texture/, 'Prewarm must not cache a previous composition under the next visibility key.');
+assert.match(sceneRootSource, /layer\.imageUrl && !isLiveProjectedCanvasUrl\(layer\.imageUrl\)/, 'Toggle prewarm must not decode runtime URLs as images.');
 assert.match(
   sceneRootSource,
   /visible=\{initialMaterialPresentationVisibleForGroup\}/,
@@ -1080,6 +1082,18 @@ try {
     };
   }
   const projection = await server.ssrLoadModule('/src/engine/projection/ProjectedLayerMaterial.ts');
+  const { getTopUvPreviewLayer } = await server.ssrLoadModule('/src/engine/projection/uvPreviewStack.ts');
+  const manual = { id: 'uuid-manual', type: 'uv', order: 0, visible: true, imageUrl: 'liclick-live-projected-canvas:uuid-manual:rgba' };
+  const lower = { ...manual, id: 'uuid-lower', order: 1 };
+  assert.equal(getTopUvPreviewLayer([manual, lower], [{ order: 2 }]), manual);
+  assert.equal(getTopUvPreviewLayer([lower], [{ order: 2 }]), lower);
+  assert.equal(getTopUvPreviewLayer([], [{ order: 2 }]), undefined);
+  assert.equal(getTopUvPreviewLayer([lower], [{ order: 0 }]), undefined);
+  assert.equal(getTopUvPreviewLayer([lower], [{ order: 0, visible: false }]), lower);
+  assert.equal(getTopUvPreviewLayer([lower], [{ order: 0 }], 'active-preview'), lower);
+  assert.equal(getTopUvPreviewLayer([{ ...manual, imageUrl: '/saved.png' }], []), undefined);
+  const legacy = { ...manual, imageUrl: '/saved.png', role: 'local-repaint-overlay' };
+  assert.equal(getTopUvPreviewLayer([legacy], []), legacy);
   const { compileForRenderTarget } = await server.ssrLoadModule(
     '/src/engine/projection/compileForRenderTarget.ts',
   );

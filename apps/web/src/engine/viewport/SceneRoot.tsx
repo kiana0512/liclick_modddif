@@ -103,6 +103,7 @@ import type {
 import type { Layer } from '@/types/layer';
 import type { Capture } from '@/types/capture';
 import { usesUnlitRenderedColor } from './renderedLayerColor';
+import { getTopUvPreviewLayer, isRenderedLocalRepaintLayer } from '../projection/uvPreviewStack';
 import { getPreviewLighting } from './previewLighting';
 import { isPerformanceLabEnabled } from '@/dev/performanceLabPolicy';
 import { waitForBrowserPaint } from '@/utils/browserScheduling';
@@ -286,17 +287,14 @@ function layerPreviewSignature(layer: Layer, relativeOrder = layer.order) {
   ].join(':');
 }
 
-function isRenderedLocalRepaintLayer(layer: Layer) {
-  // Repaint layers keep their dedicated resident/overlay presentation and
-  // authored display colour; only a final merged UV receives PBR lighting.
-  return Boolean(
-    layer.id.startsWith('local-repaint-') ||
-    layer.role === 'local-repaint-overlay' ||
-    layer.role === 'local-repaint-draft' ||
-    (layer.imageUrl ?? '').includes('surface-edit:local-repaint') ||
-    layer.localRepaintSourceUrl ||
-    layer.localRepaintMaskUrl,
-  );
+function getReadyUvPreviewTexture(imageUrl: string, gl: THREE.WebGLRenderer) {
+  return getLiveProjectedTexture(imageUrl, THREE.SRGBColorSpace, { flipY: true }) ??
+    getReadyResidentPreviewTexture(imageUrl, gl);
+}
+
+function getVisiblePreviewUvStack(layers: Layer[], objectId: string) {
+  return getVisibleUvLayerStack(layers, objectId, 'top-to-bottom')
+    .filter((layer) => layer.role !== 'content-aware-underlay');
 }
 
 function reportProjectedPreviewProgress(
@@ -1003,10 +1001,6 @@ function useCompositedUvTextureState(
     requestedKey: layerKey,
     ready: Boolean(textureState?.texture && textureState.key === layerKey),
   };
-}
-
-function useCompositedUvTexture(layers: Layer[], options?: { maxSize?: number }) {
-  return useCompositedUvTextureState(layers, options).texture;
 }
 
 const selectionBoundsCache = new WeakMap<
@@ -2084,6 +2078,7 @@ const ImportedModel = memo(function ImportedModel({
         )
         .map((layer) => ({
           ...toProjectionLayerDisplayInput(layer),
+          order: layer.order,
           // Only the currently edited repaint is presented by the renderer-owned
           // low-latency overlay. Historical repaint rows remain authoritative in
           // the resident stack and must recover their stored visibility/opacity.
@@ -2145,13 +2140,9 @@ const ImportedModel = memo(function ImportedModel({
           layer.visible &&
           (layer.role === 'local-repaint-overlay' || layer.role === 'local-repaint-draft'),
       );
-      const visibleUvStack = getVisibleUvLayerStack(
-        objectUvLayers,
-        importedModel.objectId,
-        'top-to-bottom',
-      ).filter((layer) => layer.role !== 'content-aware-underlay');
-      const topLocalRepaintUvLayer = visibleUvStack.find(
-        (layer) => layer.role === 'local-repaint-overlay' || layer.role === 'local-repaint-draft',
+      const visibleUvStack = getVisiblePreviewUvStack(objectUvLayers, importedModel.objectId);
+      const topLocalRepaintUvLayer = getTopUvPreviewLayer(
+        visibleUvStack, displayLayers, currentPreviewLayer?.id,
       );
       const visibleLowerUvLayers = topLocalRepaintUvLayer
         ? visibleUvStack.filter((layer) => layer.id !== topLocalRepaintUvLayer.id)
@@ -2183,7 +2174,7 @@ const ImportedModel = memo(function ImportedModel({
       };
       const residentSingleUvTexture =
         visibleLowerUvLayers.length === 1
-          ? getReadyResidentPreviewTexture(visibleLowerUvLayers[0].imageUrl, gl)
+          ? getReadyUvPreviewTexture(visibleLowerUvLayers[0].imageUrl, gl)
           : undefined;
       const visibleUvKey = residentUvVisibilityKey(visibleLowerUvLayers);
       const residentCompositeUvTexture =
@@ -2193,7 +2184,9 @@ const ImportedModel = memo(function ImportedModel({
       const residentUvTexture = residentSingleUvTexture ?? residentCompositeUvTexture;
       // With multiple repaint rows, the lower rows occupy the ordinary UV
       // sampler too. Their exact composite is owned by the React presentation.
-      const hasLowerRepaintUv = visibleLocalRepaintUvLayers.length > 1;
+      const hasLowerRepaintUv = visibleLowerUvLayers.some((layer) =>
+        isRenderedLocalRepaintLayer(layer) || isLiveProjectedCanvasUrl(layer.imageUrl),
+      );
       let requiresMaterialReconciliation = false;
       if (
         visibleLowerUvLayers.length > 0 &&
@@ -2253,10 +2246,10 @@ const ImportedModel = memo(function ImportedModel({
         (layer) => layer.visible || previousLayerVisibilityById.get(layer.layerId),
       );
       if (
-        // Repaint routing and mixed lower composites need an exact rebind on
-        // either eye direction; a uniform cannot remove one composite member.
+        // The composite owner must observe every UV eye transition, including
+        // saved manual rows without a repaint role. Otherwise an older async
+        // composition can overwrite the synchronous cached-texture binding.
         objectUvLayers.some((layer) =>
-          (hasLowerRepaintUv || isRenderedLocalRepaintLayer(layer)) &&
           previousLayerVisibilityById.get(layer.id) !== layer.visible,
         ) ||
         // Merged UV visibility changes which projected layers belong to the
@@ -2476,7 +2469,10 @@ const ImportedModel = memo(function ImportedModel({
       const visibleLayers = stableResidentUvToggleLayers.filter((layer) => layer.visible);
       const hiddenLayers = stableResidentUvToggleLayers.filter((layer) => !layer.visible);
       const uploadLayers = async (targetLayers: Layer[]) => {
-        const imageUrls = targetLayers.flatMap((layer) => (layer.imageUrl ? [layer.imageUrl] : []));
+        // Live textures belong to their GPU/Canvas owner, not the static LRU.
+        const imageUrls = targetLayers.flatMap((layer) =>
+          layer.imageUrl && !isLiveProjectedCanvasUrl(layer.imageUrl) ? [layer.imageUrl] : [],
+        );
         if (imageUrls.length === 0) return !cancelled;
         // Pin every decoded worker bitmap until the complete group has uploaded.
         // Promise.all decode without transaction pinning let a sibling model's
@@ -2899,34 +2895,9 @@ const ImportedModel = memo(function ImportedModel({
     maxSize: proxyTextureMaxSize,
   });
   const liveTopUvLayer = useMemo(() => {
-    const topLayer = stableVisibleUvLayers[0];
-    if (
-      !topLayer ||
-      (!getLiveProjectedCanvasState(topLayer.imageUrl) && !isRenderedLocalRepaintLayer(topLayer))
-    )
-      return undefined;
-    const hasLiveLocalRepaintStroke = Boolean(localRepaintPreviewLayerId);
-    // Keep the accumulated local-repaint UV canvas resident while the next
-    // projected stroke is being drawn. Moving it back into the ordinary UV
-    // compositor clears the old GPU texture while an asynchronous composite is
-    // prepared, which makes all previous strokes temporarily disappear.
-    // Keep a live or rendered-color top layer separate from the albedo UV stack.
-    // Besides avoiding full-resolution recomposites during painting, this lets a
-    // baked local-repaint patch retain the same exposure semantics as its live
-    // projected preview instead of receiving viewport lighting a second time.
-    // A smaller order is a higher row in the layer panel. Only composite the UV
-    // patch last when it is actually above every projected layer.
-    const topProjectedOrder = stableVisibleProjectedLayers.reduce(
-      (topOrder, layer) => Math.min(topOrder, layer.order),
-      Number.POSITIVE_INFINITY,
+    return getTopUvPreviewLayer(
+      stableVisibleUvLayers, stableVisibleProjectedLayers, localRepaintPreviewLayerId,
     );
-    // A baked local-repaint layer is a literal rendered-color replacement and
-    // must stay above the older projected stack. Sending it back into the base
-    // UV compositor places it underneath every projection, so the layer preview
-    // contains the patch while the model appears unchanged.
-    if (isRenderedLocalRepaintLayer(topLayer)) return topLayer;
-    if (!hasLiveLocalRepaintStroke && topLayer.order >= topProjectedOrder) return undefined;
-    return topLayer;
   }, [localRepaintPreviewLayerId, stableVisibleProjectedLayers, stableVisibleUvLayers]);
   const nonLiveUvLayers = useMemo(
     () =>
@@ -2939,8 +2910,8 @@ const ImportedModel = memo(function ImportedModel({
   // and adjust it with shader uniforms instead of rebuilding a full-resolution canvas.
   // A resident ordinary base alone cannot represent additional lower repaint rows.
   const directUvLayer =
-    (nonLiveUvLayers.some(isRenderedLocalRepaintLayer) ? undefined : residentDirectUvLayer) ??
-    (nonLiveUvLayers.length === 1 ? nonLiveUvLayers[0] : undefined);
+    nonLiveUvLayers.length === 1 ? nonLiveUvLayers[0] :
+      nonLiveUvLayers.length === 0 && !liveTopUvLayer ? residentDirectUvLayer : undefined;
   const compositedUvLayers = directUvLayer
     ? nonLiveUvLayers.filter((layer) => layer.id !== directUvLayer.id)
     : nonLiveUvLayers;
@@ -2959,10 +2930,11 @@ const ImportedModel = memo(function ImportedModel({
   });
   const residentAllVisibleUvLayers = useMemo(
     () =>
-      residentUvTogglePrewarmReady && stableResidentUvToggleLayers.length > 1
+      residentUvTogglePrewarmReady && stableResidentUvToggleLayers.length > 1 &&
+      !stableResidentUvToggleLayers.some((layer) => isLiveProjectedCanvasUrl(layer.imageUrl))
         ? stableResidentUvToggleLayers.map((layer) =>
             layer.visible ? layer : { ...layer, visible: true },
-          )
+          ).filter((layer) => layer.role !== 'content-aware-underlay')
         : [],
     [residentUvTogglePrewarmReady, stableResidentUvToggleLayers],
   );
@@ -2970,9 +2942,11 @@ const ImportedModel = memo(function ImportedModel({
     () => residentUvVisibilityKey(residentAllVisibleUvLayers),
     [residentAllVisibleUvLayers],
   );
-  const residentAllVisibleUvTexture = useCompositedUvTexture(residentAllVisibleUvLayers, {
+  const residentAllVisibleUvState = useCompositedUvTextureState(residentAllVisibleUvLayers, {
     maxSize: proxyTextureMaxSize,
   });
+  const residentAllVisibleUvTexture = residentAllVisibleUvState.ready
+    ? residentAllVisibleUvState.texture : undefined;
   const directUvTextureState = useLoadedPreviewTextureState(directUvLayer?.imageUrl, {
     preserveWhenEmpty: true,
     maxSize: proxyTextureMaxSize,
@@ -2989,7 +2963,8 @@ const ImportedModel = memo(function ImportedModel({
     () => residentUvVisibilityKey(nonLiveUvLayers),
     [nonLiveUvLayers],
   );
-  const cachedExactUvTexture = directUvLayer
+  const lowerUvHasLiveSource = nonLiveUvLayers.some((layer) => isLiveProjectedCanvasUrl(layer.imageUrl));
+  const cachedExactUvTexture = directUvLayer || lowerUvHasLiveSource
     ? undefined
     : residentUvPresentationCacheRef.current.get(visibleResidentUvKey);
   const exactUvTexture = directUvLayer
@@ -3059,6 +3034,10 @@ const ImportedModel = memo(function ImportedModel({
     // loadedUvTexture may intentionally be empty or may retain the same-key
     // presentation; it must never be registered under a different state key.
     if (!exactUvTexture || !visibleResidentUvKey) return;
+    if (pendingUvVisibilityRenderKeyRef.current === visibleResidentUvKey) {
+      pendingUvVisibilityRenderKeyRef.current = '';
+    }
+    if (lowerUvHasLiveSource) return;
     const cache = residentUvPresentationCacheRef.current;
     cache.delete(visibleResidentUvKey);
     cache.set(visibleResidentUvKey, exactUvTexture);
@@ -3067,10 +3046,7 @@ const ImportedModel = memo(function ImportedModel({
       if (!oldestKey) break;
       cache.delete(oldestKey);
     }
-    if (pendingUvVisibilityRenderKeyRef.current === visibleResidentUvKey) {
-      pendingUvVisibilityRenderKeyRef.current = '';
-    }
-  }, [exactUvTexture, visibleResidentUvKey]);
+  }, [exactUvTexture, visibleResidentUvKey, lowerUvHasLiveSource]);
   const loadedStaticTopUvTexture = useLoadedPreviewTexture(
     liveTopUvLayer && !getLiveProjectedCanvasState(liveTopUvLayer.imageUrl)
       ? liveTopUvLayer.imageUrl
@@ -4681,6 +4657,7 @@ const ImportedModel = memo(function ImportedModel({
                   )
                   .map((layer) => ({
                     ...toProjectionLayerDisplayInput(layer),
+                    order: layer.order,
                     visible:
                       layer.visible &&
                       layer.id !== latestPreviewLayerId &&
@@ -4699,17 +4676,15 @@ const ImportedModel = memo(function ImportedModel({
                     Boolean(layer.imageUrl) &&
                     (!layer.objectId || layer.objectId === importedModel.objectId),
                 );
-                const latestOrdinaryUvLayers = latestObjectUvLayers.filter(
-                  (layer) =>
-                    layer.visible &&
-                    layer.role !== 'content-aware-underlay' &&
-                    layer.role !== 'local-repaint-overlay' &&
-                    layer.role !== 'local-repaint-draft',
+                const latestUvStack = getVisiblePreviewUvStack(latestObjectUvLayers, importedModel.objectId);
+                const latestTopUvLayer = getTopUvPreviewLayer(latestUvStack, latestDisplayLayers, latestPreviewLayerId);
+                const latestOrdinaryUvLayers = latestUvStack.filter(
+                  (layer) => layer.id !== latestTopUvLayer?.id,
                 );
                 const latestOrdinaryUvKey = residentUvVisibilityKey(latestOrdinaryUvLayers);
                 const latestResidentUvTexture =
                   latestOrdinaryUvLayers.length === 1
-                    ? getReadyResidentPreviewTexture(latestOrdinaryUvLayers[0].imageUrl, gl)
+                    ? getReadyUvPreviewTexture(latestOrdinaryUvLayers[0].imageUrl, gl)
                     : latestOrdinaryUvLayers.length > 1
                       ? residentUvPresentationCacheRef.current.get(latestOrdinaryUvKey)
                       : undefined;
@@ -4721,14 +4696,16 @@ const ImportedModel = memo(function ImportedModel({
                   latestContentAwareLayers.length === 1
                     ? getReadyResidentPreviewTexture(latestContentAwareLayers[0].imageUrl, gl)
                     : undefined;
+                const latestExactLowerTexture = latestResidentUvTexture ??
+                  (latestOrdinaryUvKey === visibleResidentUvKey ? loadedUvTexture : undefined);
                 if (sharedProjectedMaterial.uniforms.uvOverlayOpacity) {
-                  if (latestResidentUvTexture && sharedProjectedMaterial.uniforms.uvOverlayMap) {
-                    sharedProjectedMaterial.uniforms.uvOverlayMap.value = latestResidentUvTexture;
+                  if (latestExactLowerTexture && sharedProjectedMaterial.uniforms.uvOverlayMap) {
+                    sharedProjectedMaterial.uniforms.uvOverlayMap.value = latestExactLowerTexture;
                   }
                   sharedProjectedMaterial.uniforms.uvOverlayOpacity.value =
-                    latestResidentUvTexture && latestOrdinaryUvLayers.length === 1
+                    latestExactLowerTexture && latestOrdinaryUvLayers.length === 1
                       ? latestOrdinaryUvLayers[0].opacity
-                      : latestResidentUvTexture && latestOrdinaryUvLayers.length > 1
+                      : latestExactLowerTexture && latestOrdinaryUvLayers.length > 1
                         ? 1
                         : 0;
                 }
@@ -4927,6 +4904,7 @@ const ImportedModel = memo(function ImportedModel({
         )
         .map((layer) => ({
           ...toProjectionLayerDisplayInput(layer),
+          order: layer.order,
           visible:
             layer.visible &&
             layer.id !== authoritativeMutedPreviewLayerId &&
@@ -4957,28 +4935,21 @@ const ImportedModel = memo(function ImportedModel({
           Boolean(layer.imageUrl) &&
           (!layer.objectId || layer.objectId === importedModel.objectId),
       );
-      const authoritativeOrdinaryUvLayers = authoritativeUvLayers.filter(
-        (layer) =>
-          layer.visible &&
-          layer.role !== 'content-aware-underlay' &&
-          layer.role !== 'local-repaint-overlay' &&
-          layer.role !== 'local-repaint-draft',
+      const authoritativeUvStack = getVisiblePreviewUvStack(authoritativeUvLayers, importedModel.objectId);
+      const authoritativeTopUvLayer = getTopUvPreviewLayer(
+        authoritativeUvStack, authoritativeDisplayLayers,
+        useSceneStore.getState().localRepaintPreviewLayer?.id,
+      );
+      const authoritativeOrdinaryUvLayers = authoritativeUvStack.filter(
+        (layer) => layer.id !== authoritativeTopUvLayer?.id,
       );
       const authoritativeContentAwareUvLayers = authoritativeUvLayers.filter(
         (layer) => layer.visible && layer.role === 'content-aware-underlay',
       );
-      const authoritativeLocalRepaintUvLayers = authoritativeUvLayers.filter(
-        (layer) =>
-          layer.visible &&
-          (layer.role === 'local-repaint-overlay' || layer.role === 'local-repaint-draft'),
-      );
-      const hasLowerRepaintUv = authoritativeLocalRepaintUvLayers.some(
-        (layer) => layer.id !== liveTopUvLayer?.id,
-      );
       const authoritativeOrdinaryUvKey = residentUvVisibilityKey(authoritativeOrdinaryUvLayers);
       const authoritativeExactUvTexture =
         authoritativeOrdinaryUvLayers.length === 1
-          ? getReadyResidentPreviewTexture(authoritativeOrdinaryUvLayers[0].imageUrl, gl)
+          ? getReadyUvPreviewTexture(authoritativeOrdinaryUvLayers[0].imageUrl, gl)
           : authoritativeOrdinaryUvLayers.length > 1
             ? residentUvPresentationCacheRef.current.get(authoritativeOrdinaryUvKey)
             : undefined;
@@ -4997,11 +4968,11 @@ const ImportedModel = memo(function ImportedModel({
       // UV row is authoritatively hidden. The old fallback resurrected the
       // merged UV at opacity 1 when an async projected material published late.
       const authoritativeResidentUvTexture =
-        hasLowerRepaintUv
-          ? loadedUvTexture
-          : authoritativeOrdinaryUvLayers.length > 0
-            ? (authoritativeExactUvTexture ?? loadedUvTexture ?? authoritativeProxyUvTexture)
-            : undefined;
+        authoritativeOrdinaryUvLayers.length > 0
+          ? (authoritativeExactUvTexture ??
+            (authoritativeOrdinaryUvKey === visibleResidentUvKey ? loadedUvTexture : undefined) ??
+            authoritativeProxyUvTexture)
+          : undefined;
       const authoritativeUvTextureSource = authoritativeExactUvTexture
         ? 'exact'
         : loadedUvTexture
@@ -5031,18 +5002,14 @@ const ImportedModel = memo(function ImportedModel({
         ...(authoritativeResidentUvTexture
           ? { uvOverlayTexture: authoritativeResidentUvTexture }
           : {}),
-        uvOverlayRenderedColor: hasLowerRepaintUv
-          ? directUvRenderedColor
-          : authoritativeOrdinaryUvLayers.some(usesUnlitRenderedColor),
+        uvOverlayRenderedColor: authoritativeOrdinaryUvLayers.some(usesUnlitRenderedColor),
         ...(authoritativeContentAwareTexture
           ? { baseTexture: authoritativeContentAwareTexture }
           : {}),
         ...(authoritativeResidentUvTexture
           ? {
               uvOverlayOpacity:
-                hasLowerRepaintUv
-                  ? uvOverlayOpacity
-                  : authoritativeOrdinaryUvLayers.length === 1
+                authoritativeOrdinaryUvLayers.length === 1
                     ? authoritativeOrdinaryUvLayers[0].opacity
                     : 1,
             }
@@ -5050,7 +5017,7 @@ const ImportedModel = memo(function ImportedModel({
             ? { uvOverlayOpacity: 0 }
             : {}),
         uvOverlayBelowProjected: Number.isFinite(authoritativeMergedUvBoundaryOrder),
-        topUvOverlayOpacity: authoritativeLocalRepaintUvLayers[0]?.opacity ?? 0,
+        topUvOverlayOpacity: authoritativeTopUvLayer?.opacity ?? 0,
         baseTextureOpacity: authoritativeContentAwareOpacity,
       });
       if (isPerformanceLabEnabled(window.location.search)) {
@@ -5286,6 +5253,7 @@ const ImportedModel = memo(function ImportedModel({
     stablePreviewProjectedLayers,
     topUvProjectedOverlayInput,
     uvOverlayOpacity,
+    visibleResidentUvKey,
     visibleMergedUvBoundaryOrder,
     visibleStackHasBakedPreview,
     workspaceVisible,

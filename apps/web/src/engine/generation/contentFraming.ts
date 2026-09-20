@@ -5,24 +5,29 @@ import {
 } from '@liclick/contracts';
 
 type CoverageImage = Pick<ImageData, 'width' | 'height' | 'data'>;
+type CoverageChannel = boolean | 'linear-depth';
 
-/** GPT-CONTENT-BOUNDS/1.0.0. Bounds depend only on each row's first/last
+/** GPT-CONTENT-BOUNDS/1.1.0. Bounds depend only on each row's first/last
  * covered pixel. Interior holes/colours never change the exact outer bounds.
  * Yield every 16 rows, including empty rows, for cancellable cooperative scans.
  */
-function* contentBounds({ width, height, data }: CoverageImage, normal: boolean, alpha: number) {
+function* contentBounds({ width, height, data }: CoverageImage, normal: CoverageChannel, alpha: number) {
   let left = width, top = height, right = -1, bottom = -1;
   for (let y = 0; y < height; y++) {
     const row = y * width * 4;
     let first = 0, last = width - 1;
     for (; first < width; first++) {
       const i = row + first * 4;
-      if (data[i + 3] >= alpha && (normal || data[i] > 0)) break;
+      if (data[i + 3] >= alpha && (normal === 'linear-depth'
+        ? data[i] < 254 || data[i + 1] < 254 || data[i + 2] < 254
+        : normal || data[i] > 0)) break;
     }
     if (first < width) {
       for (; last > first; last--) {
         const i = row + last * 4;
-        if (data[i + 3] >= alpha && (normal || data[i] > 0)) break;
+        if (data[i + 3] >= alpha && (normal === 'linear-depth'
+          ? data[i] < 254 || data[i + 1] < 254 || data[i + 2] < 254
+          : normal || data[i] > 0)) break;
       }
       left = Math.min(left, first); right = Math.max(right, last);
       top = Math.min(top, y); bottom = y;
@@ -32,7 +37,7 @@ function* contentBounds({ width, height, data }: CoverageImage, normal: boolean,
   return [left, top, right, bottom] as const;
 }
 
-export async function cooperativeBounds(image: CoverageImage, normal: boolean, alpha: number, checkpoint?: () => Promise<void>) {
+export async function cooperativeBounds(image: CoverageImage, normal: CoverageChannel, alpha: number, checkpoint?: () => Promise<void>) {
   await checkpoint?.();
   const scan = contentBounds(image, normal, alpha);
   let step = scan.next(), started = performance.now();
@@ -45,10 +50,11 @@ export async function cooperativeBounds(image: CoverageImage, normal: boolean, a
   return step.value;
 }
 
-/** Full geometry coverage: mask white channel or geometry-normal alpha, not material RGB. */
+/** Full geometry coverage: mask white, transparent-normal alpha, or packed depth
+ * against its white clear value. Never infer source coverage from material RGB. */
 export function findContentFraming(
   image: Pick<ImageData, 'width' | 'height' | 'data'>,
-  normal = false,
+  normal: CoverageChannel = false,
   imageSize = '2K',
 ): GenerationFraming {
   const scan = contentBounds(image, normal, 1);
@@ -57,7 +63,7 @@ export function findContentFraming(
   return frameFromBounds(image, step.value, imageSize);
 }
 
-export async function findContentFramingCooperatively(image: CoverageImage, normal: boolean, imageSize: string, checkpoint: () => Promise<void>) {
+export async function findContentFramingCooperatively(image: CoverageImage, normal: CoverageChannel, imageSize: string, checkpoint: () => Promise<void>) {
   return frameFromBounds(image, await cooperativeBounds(image, normal, 1, checkpoint), imageSize);
 }
 
