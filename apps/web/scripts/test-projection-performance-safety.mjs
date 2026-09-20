@@ -48,6 +48,10 @@ const visibilityReuseSource = await readFile(
   new URL('../src/engine/bake/projectionVisibilityReuse.ts', import.meta.url),
   'utf8',
 );
+const projectedArrayUploadSchedulingSource = await readFile(
+  new URL('../src/engine/projection/projectedArrayUploadScheduling.ts', import.meta.url),
+  'utf8',
+);
 
 const visibilityReuseJs = ts.transpileModule(visibilityReuseSource, {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
@@ -55,6 +59,22 @@ const visibilityReuseJs = ts.transpileModule(visibilityReuseSource, {
 const visibilityReuseExports = {};
 new Function('exports', visibilityReuseJs)(visibilityReuseExports);
 const { canReuseAuthoredProjectionVisibility } = visibilityReuseExports;
+const projectedArrayUploadSchedulingJs = ts.transpileModule(projectedArrayUploadSchedulingSource, {
+  compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
+}).outputText;
+const projectedArrayUploadSchedulingExports = {};
+new Function('exports', projectedArrayUploadSchedulingJs)(projectedArrayUploadSchedulingExports);
+const { yieldProjectedArrayUploadTurn } = projectedArrayUploadSchedulingExports;
+for (const busy of [false, true]) {
+  const calls = [];
+  const mode = await yieldProjectedArrayUploadTurn({
+    isViewportInteractionBusy: () => busy,
+    waitForPaint: async () => calls.push('paint'),
+    yieldToTask: async () => calls.push('task'),
+  });
+  assert.equal(mode, busy ? 'paint' : 'task');
+  assert.deepEqual(calls, [busy ? 'paint' : 'task']);
+}
 const authoredVisibility = {
   depthUrl: 'depth.png',
   depthEncoding: 'linear-view',
@@ -359,6 +379,31 @@ assert.match(
   materialSource,
   /uploadProjectedTextureArrayInStripes\([\s\S]*?UNPACK_ROW_LENGTH[\s\S]*?renderer\.resetState\(\)/,
   'projected arrays must normalize per-stripe unpack state and reset Three renderer state before presentation',
+);
+assert.match(
+  materialSource,
+  /yieldProjectedArrayUploadWork\(input\.isViewportInteractionBusy\)[\s\S]*?yieldMode === 'paint'[\s\S]*?uploadTaskYieldCount/,
+  'idle array stripes must use task yields while active interaction keeps paint-aligned yields',
+);
+assert.doesNotMatch(
+  materialSource,
+  /yieldProjectedArrayUploadWork\(input\.isViewportInteractionBusy\);\s*await waitForProjectedArrayUploadWindow/,
+  'one bounded upload stripe must not pay both a task/frame yield and a second frame wait',
+);
+assert.match(
+  viewportSource,
+  /const reusableEraserGpu =[\s\S]*?currentLayer\.objectId === model\.objectId[\s\S]*?currentLayer\.paintDefaultResolution === paintResolution[\s\S]*?!isPaintingRef\.current[\s\S]*?currentLayer\.pendingPaintCommits === 0[\s\S]*?!currentLayer\.projectedEraserResidentHandoffPromise/,
+  'a settled projected layer must transfer its compiled model/resolution eraser GPU to the next row',
+);
+assert.match(
+  viewportSource,
+  /unregisterLiveUvRenderTarget\(currentLayer\.liveResultUrl, reusableEraserGpu\.texture\)[\s\S]*?currentLayer\.eraserGpu = undefined[\s\S]*?disposeUvPaintLayer\(currentLayer\)/,
+  'GPU transfer must detach ownership before disposing the previous layer session',
+);
+assert.match(
+  viewportSource,
+  /reusableEraserGpu\.resetWhite\(\)[\s\S]*?registerLiveUvRenderTarget\([\s\S]*?paintLayer\.eraserGpu = reusableEraserGpu[\s\S]*?paintLayer\.eraserGpuReady = Promise\.resolve\(\)/,
+  'the transferred eraser must be neutralized and synchronously rebound before the next stroke',
 );
 assert.match(
   materialSource,

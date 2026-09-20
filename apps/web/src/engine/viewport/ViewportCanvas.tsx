@@ -8211,7 +8211,30 @@ function SurfacePaintOverlay() {
         return currentLayer;
       }
       deactivateLiveInpaintScreenPreview();
-      disposeUvPaintLayer(layerRef.current);
+      // ALG-ERASE-001 v1.5.7: the GPU UV rasterizer is model/resolution owned,
+      // not projected-layer owned. Once the previous layer has completed its
+      // persistence/resident handoff, move that already-compiled 4K engine to
+      // the next row instead of reallocating two full-resolution targets,
+      // cloning the mesh and compiling the same shaders for every layer.
+      const reusableEraserGpu =
+        target === 'projected-mask' &&
+        currentLayer?.target === 'projected-mask' &&
+        currentLayer.objectId === model.objectId &&
+        currentLayer.paintDefaultResolution === paintResolution &&
+        currentLayer.eraserGpu &&
+        !isPaintingRef.current &&
+        !currentLayer.liveEraserPreviewActive &&
+        currentLayer.pendingPaintCommits === 0 &&
+        !currentLayer.projectedEraserResidentHandoffPromise &&
+        !currentLayer.eraserGpuBacklog?.length
+          ? currentLayer.eraserGpu
+          : undefined;
+      if (reusableEraserGpu && currentLayer) {
+        unregisterLiveUvRenderTarget(currentLayer.liveResultUrl, reusableEraserGpu.texture);
+        currentLayer.eraserGpu = undefined;
+        currentLayer.eraserGpuReady = undefined;
+      }
+      disposeUvPaintLayer(currentLayer);
 
       const existingAssetUrl =
         target === 'uv-image'
@@ -8349,6 +8372,25 @@ function SurfacePaintOverlay() {
         overlayMeshes: [],
         overlayTargets: new Set(),
       };
+      if (reusableEraserGpu) {
+        reusableEraserGpu.resetWhite();
+        const reboundUrl = registerLiveUvRenderTarget(
+          `surface-edit-preview:${target}:${layerId}`,
+          reusableEraserGpu.canvas,
+          reusableEraserGpu.texture,
+        );
+        if (reboundUrl !== paintLayer.liveResultUrl) {
+          reusableEraserGpu.dispose();
+          throw new Error('GPU 橡皮擦快速路径重绑定失败。');
+        }
+        paintLayer.eraserGpu = reusableEraserGpu;
+        paintLayer.eraserGpuReady = Promise.resolve();
+        paintLayer.liveResultTexture = reusableEraserGpu.texture;
+        paintLayer.liveEraserPreviewInitialized = true;
+        const reuseCount = Number(document.body.dataset.eraserGpuReuseCount ?? '0');
+        document.body.dataset.eraserGpuReuseCount = String(reuseCount + 1);
+        document.body.dataset.eraserGpuReuseLayerId = layerId;
+      }
       if (existingAssetUrl && !existingLiveCanvas) {
         paintLayer.ready = loadImageElement(existingAssetUrl)
           .then((image) => {
@@ -8373,6 +8415,9 @@ function SurfacePaintOverlay() {
       if (layer.target !== 'projected-mask' || layer.eraserGpu || layer.eraserGpuReady)
         return layer.eraserGpuReady ?? Promise.resolve();
       const work = (async () => {
+        const prepareCount = Number(document.body.dataset.eraserGpuPrepareCount ?? '0');
+        document.body.dataset.eraserGpuPrepareCount = String(prepareCount + 1);
+        document.body.dataset.eraserGpuPrepareLayerId = layer.layerId;
         const { UvRepaint: GpuUvMask } = await import('@/engine/localRepaint/uvRepaint');
         if (layerRef.current !== layer) return;
         const engine = new GpuUvMask(

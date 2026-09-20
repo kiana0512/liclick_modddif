@@ -20,8 +20,9 @@ import {
   CLAY_MODEL_ROUGHNESS,
   createClayModelMaterial,
 } from '@/engine/materials/clayModelMaterial';
-import { waitForBrowserPaint } from '@/utils/browserScheduling';
+import { waitForBrowserPaint, yieldToBrowserTask } from '@/utils/browserScheduling';
 import { PROJECTED_RASTER_DEPTH_GLSL } from './projectionRasterDepth';
+import { yieldProjectedArrayUploadTurn } from './projectedArrayUploadScheduling';
 
 const DEFAULT_PREVIEW_COLOR = CLAY_MODEL_COLOR;
 const DEFAULT_WIRE_COLOR = '#e9ebe8';
@@ -3601,6 +3602,8 @@ type ProjectedTextureArrayBundle = {
   texture: THREE.DataArrayTexture;
   uvScales: THREE.Vector2[];
   uploadYieldCount: number;
+  uploadPaintYieldCount: number;
+  uploadTaskYieldCount: number;
   allocationDurationMs: number;
   uploadDurationMs: number;
   maximumStripeDurationMs: number;
@@ -3647,8 +3650,14 @@ function getTexturePixelSize(texture: THREE.Texture) {
   return { width, height };
 }
 
-function yieldProjectedArrayUploadFrame() {
-  return waitForBrowserPaint();
+function yieldProjectedArrayUploadWork(
+  isViewportInteractionBusy?: () => boolean,
+) {
+  return yieldProjectedArrayUploadTurn({
+    isViewportInteractionBusy,
+    waitForPaint: waitForBrowserPaint,
+    yieldToTask: yieldToBrowserTask,
+  });
 }
 
 async function waitForProjectedArrayGpuFence(
@@ -3671,7 +3680,7 @@ async function waitForProjectedArrayGpuFence(
         throw new Error('Projected texture array GPU fence wait failed.');
       }
       polls += 1;
-      await yieldProjectedArrayUploadFrame();
+      await waitForBrowserPaint();
     }
   } finally {
     context.deleteSync(sync);
@@ -3690,7 +3699,7 @@ async function waitForProjectedArrayUploadWindow(
 ) {
   // Never spin or wait for the complete gesture: loading speed is user-facing
   // too. Yield presentation once, then let the caller submit one bounded unit.
-  if (isViewportInteractionBusy?.()) await yieldProjectedArrayUploadFrame();
+  if (isViewportInteractionBusy?.()) await waitForBrowserPaint();
   if (isCancelled?.()) throw new Error('Projected texture array upload was cancelled.');
 }
 
@@ -3820,7 +3829,7 @@ async function packProjectedTextureArrayOnMainThread(
       index < sources.length - 1
     ) {
       uploadedPixelsThisFrame = 0;
-      await yieldProjectedArrayUploadFrame();
+      await yieldProjectedArrayUploadWork(isViewportInteractionBusy);
       if (isCancelled?.()) throw new Error('Projected texture array upload was cancelled.');
     }
   }
@@ -3879,6 +3888,8 @@ async function uploadProjectedTextureArrayInStripes(input: {
   isViewportInteractionBusy?: () => boolean;
 }) {
   let uploadYieldCount = 0;
+  let uploadPaintYieldCount = 0;
+  let uploadTaskYieldCount = 0;
   let uploadDurationMs = 0;
   let maximumStripeDurationMs = 0;
   const rowsPerStripe = Math.max(
@@ -3894,8 +3905,12 @@ async function uploadProjectedTextureArrayInStripes(input: {
       if (input.isCancelled?.()) {
         throw new Error('Projected texture array upload was cancelled.');
       }
-      await yieldProjectedArrayUploadFrame();
-      await waitForProjectedArrayUploadWindow(input.isViewportInteractionBusy, input.isCancelled);
+      const yieldMode = await yieldProjectedArrayUploadWork(input.isViewportInteractionBusy);
+      if (yieldMode === 'paint') uploadPaintYieldCount += 1;
+      else uploadTaskYieldCount += 1;
+      if (input.isCancelled?.()) {
+        throw new Error('Projected texture array upload was cancelled.');
+      }
 
       const rowCount = Math.min(rowsPerStripe, input.height - firstRow);
       const firstByte = (layerIndex * input.width * input.height + firstRow * input.width) * 4;
@@ -3979,7 +3994,13 @@ async function uploadProjectedTextureArrayInStripes(input: {
       uploadYieldCount += 1;
     }
   }
-  return { uploadYieldCount, uploadDurationMs, maximumStripeDurationMs };
+  return {
+    uploadYieldCount,
+    uploadPaintYieldCount,
+    uploadTaskYieldCount,
+    uploadDurationMs,
+    maximumStripeDurationMs,
+  };
 }
 
 async function createProjectedTextureArray(
@@ -4062,8 +4083,8 @@ async function createProjectedTextureArray(
   return withProjectedArrayUploadLock(async () => {
     // CPU preparation for other profiles continues in parallel. Keep WebGL
     // uploads serialized and yield between slices so input always gets a frame.
-    await yieldProjectedArrayUploadFrame();
-    await waitForProjectedArrayUploadWindow(isViewportInteractionBusy, isCancelled);
+    await yieldProjectedArrayUploadWork(isViewportInteractionBusy);
+    if (isCancelled?.()) throw new Error('Projected texture array upload was cancelled.');
 
     const texture = new THREE.DataArrayTexture(textureData, width, height, sources.length);
     texture.name = `LiclickProjected${profile[0].toUpperCase()}${profile.slice(1)}Array`;
@@ -4080,6 +4101,8 @@ async function createProjectedTextureArray(
     texture.source.dataReady = false;
     texture.needsUpdate = true;
     let uploadYieldCount = 0;
+    let uploadPaintYieldCount = 0;
+    let uploadTaskYieldCount = 0;
     let allocationDurationMs = 0;
     let uploadDurationMs = 0;
     let maximumStripeDurationMs = 0;
@@ -4116,6 +4139,8 @@ async function createProjectedTextureArray(
         renderer.resetState();
       }
       uploadYieldCount = uploadStats.uploadYieldCount;
+      uploadPaintYieldCount = uploadStats.uploadPaintYieldCount;
+      uploadTaskYieldCount = uploadStats.uploadTaskYieldCount;
       uploadDurationMs = uploadStats.uploadDurationMs;
       maximumStripeDurationMs = uploadStats.maximumStripeDurationMs;
       markPerformanceEvent('projection', 'projected-array-gpu-transfer', {
@@ -4127,6 +4152,8 @@ async function createProjectedTextureArray(
         uploadDurationMs,
         maximumStripeDurationMs,
         uploadYieldCount,
+        uploadPaintYieldCount,
+        uploadTaskYieldCount,
       });
       // Keep Three's allocated version authoritative. Setting dataReady without
       // incrementing texture.version prevents a second monolithic re-upload.
@@ -4143,6 +4170,8 @@ async function createProjectedTextureArray(
         (size) => new THREE.Vector2((size?.width ?? 1) / width, (size?.height ?? 1) / height),
       ),
       uploadYieldCount,
+      uploadPaintYieldCount,
+      uploadTaskYieldCount,
       allocationDurationMs,
       uploadDurationMs,
       maximumStripeDurationMs,
@@ -4916,6 +4945,18 @@ export async function createProjectedLayerStackMaterial(
         document.body.dataset.projectedArrayUploadYieldCount = String(
           [projectedArray, maskArray, depthArray, normalArray].reduce(
             (total, bundle) => total + (bundle?.uploadYieldCount ?? 0),
+            0,
+          ),
+        );
+        document.body.dataset.projectedArrayUploadPaintYieldCount = String(
+          [projectedArray, maskArray, depthArray, normalArray].reduce(
+            (total, bundle) => total + (bundle?.uploadPaintYieldCount ?? 0),
+            0,
+          ),
+        );
+        document.body.dataset.projectedArrayUploadTaskYieldCount = String(
+          [projectedArray, maskArray, depthArray, normalArray].reduce(
+            (total, bundle) => total + (bundle?.uploadTaskYieldCount ?? 0),
             0,
           ),
         );

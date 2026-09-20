@@ -1,5 +1,7 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
+2026-09-20 M08（协作 M06/M07/UI-06/UI-10）：`ALG-ERASE-001` 调度修订 v1.5.7 / `UV-DISPLAY-BUFFER` v1.5.5 / `ALG-PROJ-007` v2.1.14 消除多 UV 投影层橡皮擦的逐层 GPU 预热和 texture-array 假性等待。投影数组的有界条带上传仅在视口正在交互时等待下一呈现帧，空闲构建改为 browser-task 让步，避免 hidden/throttled rAF 的 120ms 保险超时被 117 个条带重复累加。已编译的全分辨率 `UvRepaint` 引擎改为同模型+同分辨率所有；上一层的笔画提交、Resident 验证交接及历史捕获完成且无活动指针后，白化 GPU keep-mask 并同步重绑到下一层，不再重建 4K render target、网格副本和 shader。正式 mask、历史/撤销/重做、完整分辨率、QA、CPU/Worker 细化、持久化与 export 不变；实时擦除仍不使用 Resident UV，笔画提交后可后台收敛最终 verified UV。4517 真实 4K/13 投影层：数组 pipeline `17569.6ms → 2074.8–2262.0ms`，26 次连续切层全部命中复用（0 超时、0 重建、Resident revision 不变），真实 4K 首笔提交 `5.8ms`，测试笔迹已撤销。Project Schema/Command/CAS/ownership/verified assets 不变，无数据迁移；回滚恢复逐条带 paint 等待与逐层 `UvRepaint.dispose()` 重建。详见 [橡皮擦 GPU 会话复用与数组调度](changes/CHG-20260920-ERASER-GPU-SESSION-REUSE.md)。
+
 2026-09-18 M12（UI-05 接线）：`NORMAL-GUIDE-BACKGROUND/1.0.0` 新增“法线黑色背景”会话开关，默认关闭蓝底，开启黑底；覆盖 ModelView 单/多视图、ModelView/GPT 局部重绘法线输入。只对原法线 pass 设置不透明背景和忽略 scene.background，不按 RGB 匹配替换蓝色，不增渲染 pass/CPU 遍历/Worker 重编码；模型法线编码、相机、尺寸、材质/蒙版/外扩、回贴及 QA 不变。生成配置/提交双重锁定；逐视角仍重新捕获，局部重绘 fingerprint/诊断记录底色。Project Schema、Command/CAS/ownership/verified assets、GPU/CPU/Worker/shader 合成及 UV/export 不变，无历史迁移；开关不写工程，刷新默认关闭。回滚恢复原捕获背景和 UI 即可，历史资产不重写。详见 [法线背景开关](changes/CHG-20260918-NORMAL-GUIDE-BACKGROUND.md)。未推送或部署。
 
 2026-09-18 M04（协作 M12/M13）：`MODELVIEW-SINGLE-NORMAL/1.0.0` 为 ModelView 单视图生成及单视图补全增加必填 `normal_image`；分别提交主图/参考图/法线三图和主图/参考图/原外扩蒙版/法线四图。逐视角串行复用同一 Capture 的完整法线，不重新捕获、不填白、不转换通道；前端阻止缺失法线，代理校验同尺寸及有效图片并原字节透传。工作流与幂等后缀使用 2026-09-18 refcontrol-normal 版本。保留最新 master 的普通局部重绘四图输入、原始法线编码与按需加载；GPT、蒙版外扩、润色、串行回贴、QA、GPU/CPU/Worker/shader、UV/export 和 Schema/Command/CAS/ownership 不变。无历史迁移；回滚需前后端与远端双/三图旧契约成套协调。专项回归覆盖两入口正常/缺失/错尺寸/无效法线、原字节透传、串行顺序、取消和原 GPT/局部重绘流程。
@@ -1369,6 +1371,7 @@ M15 / CLOUD-DEPLOYMENT v1.0.0（2026-09-03）：正常合并 release 部署历�
 
 | 版本 | 日期 | 基线 | 变更 |
 | --- | --- | --- | --- |
+| `2.20.197` | 2026-09-20 | `橡皮擦 GPU 会话复用与数组调度` | M08（协作 M06/M07/UI-06/UI-10）：`ALG-ERASE-001` v1.5.7 / `UV-DISPLAY-BUFFER` v1.5.5 / `ALG-PROJ-007` v2.1.14 将同模型+分辨率的已编译 `UvRepaint` 在安全交接后转移至下一投影层，并将空闲 texture-array 条带从 rAF 改为 task 让步。13 层数组构建约降 87%，26 次切层 0 重建，4K 首笔提交 5.8ms；分辨率、像素、QA、持久化/export 不变，无迁移。 |
 | `2.20.196` | 2026-09-18 | `Resident UV 恢复缓存稳定化` | M06/M07/M09：`UV-DISPLAY-DERIVED-CACHE` v1.2.0 将派生磁盘窗口从固定两条改为最多四条并增加 256MiB 压缩总预算，固定当前显示/新写状态，消除 A/B/C 工程恢复循环 miss；缓存键、像素、QA、作者资产与 export 不变。 |
 | `2.20.195` | 2026-09-18 | `Resident UV 派生键并行准备` | M06/M07/M09：`UV-PERSISTENT-MERGE-KEY` v1.1.0 将实际几何字节 SHA 改为 2 路有界队列，并与既有 3 路来源资产校验重叠；键值、像素、质量、持久化/export 与失败回退不变，无迁移。 |
 | `2.20.194` | 2026-09-18 | `多层橡皮一次驻留快速切层` | M08（协作 M06/M07/UI-06/UI-10）：`ALG-ERASE-001` v1.5.6 / `UV-DISPLAY-BUFFER` v1.5.4 将 WebGL2 多视图作者 texture-array 在完整恢复后一次性后台驻留，并为每层预留 keep-mask slice；实时 multiplier 在 GPU 内原位乘入/替换 slice，中性状态、mask URL 与 live Canvas revision 均不再重打包整组作者数组。六层 18 次切层、30 次落笔、4 次撤销+4 次重做通过，Resident revision 不变；无 Schema/资产迁移。 |
