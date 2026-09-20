@@ -19,7 +19,7 @@ const compiled = ts.transpileModule(source, {
 }).outputText;
 const module = { exports: {} };
 new Function('exports', 'module', compiled)(module.exports, module);
-const { createLocalRepaintInwardCrossfadePixels } = module.exports;
+const { createLocalRepaintInwardCrossfadePixels, createBoundedRepaintFalloffPixels } = module.exports;
 
 const width = 25;
 const height = 25;
@@ -49,6 +49,21 @@ assert.ok(
 );
 assert.equal(weightAt(10, 12), 255, 'the repaint core must remain fully opaque');
 assert.equal(weightAt(12, 12), 255, 'the narrow transition must not dim the whole layer');
+
+// Disconnected selections, holes and fractional authorization must never turn
+// into the old full-frame radial tail. Check the actual Canvas alpha contract.
+const boundedMask = sourcePixels.slice();
+boundedMask.set([255, 255, 255, 0], (12 * width + 12) * 4);
+boundedMask.set([255, 255, 255, 64], (8 * width + 8) * 4);
+const bounded = createBoundedRepaintFalloffPixels({ data: boundedMask, width, height });
+for (let i = 0; i < bounded.length; i += 4) {
+  const authorized = Math.max(...boundedMask.subarray(i, i + 3)) * boundedMask[i + 3] / 255;
+  assert.ok(bounded[i + 3] <= Math.ceil(authorized), 'falloff must not expand/increase authorization');
+  assert.deepEqual([...bounded.subarray(i, i + 3)], [255, 255, 255], 'Canvas destination-in uses alpha');
+}
+assert.equal(bounded[(12 * width + 12) * 4 + 3], 0, 'hole remains unpaintable');
+assert.ok(createBoundedRepaintFalloffPixels({ data: new Uint8ClampedArray(width * height * 4), width, height })
+  .every((value, i) => i % 4 !== 3 || value === 0), 'empty author mask fails closed');
 
 for (let x = 2; x <= 10; x += 1) {
   const localRepaintWeight = weightAt(x, 12);

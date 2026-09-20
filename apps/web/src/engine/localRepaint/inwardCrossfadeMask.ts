@@ -137,3 +137,19 @@ export function updateLocalRepaintInwardCrossfadeCanvas(input: {
   input.targetContext.putImageData(output, outputRect.x, outputRect.y);
   return outputRect;
 }
+
+/** ALG-LR-008 bounded falloff v3.0.0: authorization never extends past the author mask.
+ * White RGB + coverage alpha also works with Canvas destination-in (legacy path).
+ */
+export function createBoundedRepaintFalloffPixels(mask: ImageData) {
+  const output = createLocalRepaintInwardCrossfadePixels({
+    source: mask.data, width: mask.width, height: mask.height,
+  });
+  for (let i = 0; i < output.length; i += 4) {
+    const authored = Math.max(mask.data[i], mask.data[i + 1], mask.data[i + 2]) * mask.data[i + 3] / 255;
+    const alpha = Math.min(output[i], authored);
+    output[i] = output[i + 1] = output[i + 2] = 255;
+    output[i + 3] = alpha;
+  }
+  return output;
+}
