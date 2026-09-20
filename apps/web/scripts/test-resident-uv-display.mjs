@@ -33,6 +33,11 @@ const { resolvePixelCpu } = load('qualityBlendCpuPixel', {});
   assert.match(contributionSource, /for \(let level = 0; level < 2; level\+\+\)/,
     'Two reductions preserve the exact 64x64 contribution tile footprint');
   assert.match(contributionSource, /size = Math\.ceil\(size \/ 8\)/);
+  assert.match(contributionSource, /if \(level \+ 1 < 2\) \{\s*await yieldToBrowserTask\(\)/,
+    'Only the intermediate reduction schedules an explicit browser task');
+  assert.doesNotMatch(contributionSource,
+    /material\.uniforms\.first\.value = false;\s*await yieldToBrowserTask\(\)/,
+    'Final reduction proceeds directly to its asynchronous GPU readback');
   assert.match(contributionSource, /targets\[targets\.length - 1\]/,
     'Occupancy readback follows the final reduction level');
   const {uploadUvRgba}=load('uvContributionTiles',{three:THREE,

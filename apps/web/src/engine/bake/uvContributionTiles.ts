@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { yieldToBrowserTask } from '@/utils/browserScheduling';
 
-// UV-LAYER-CONTRIBUTION/1.0.3: lossless 64² tiles of quantized UV color + quality.
+// UV-LAYER-CONTRIBUTION/1.0.4: lossless 64² tiles of quantized UV color + quality.
 // Alpha 1..5 still contributes to coverage counts, so only alpha == 0 is absent.
 export type UvContributionTiles = { index: THREE.DataTexture; columns: number };
 
@@ -152,9 +152,15 @@ export async function compactUvContribution(
       draw(target);
       material.uniforms.source.value = target.texture;
       material.uniforms.first.value = false;
-      await yieldToBrowserTask();
-      checkCancelled?.();
+      // The final reduction is followed by an asynchronous GPU readback, which
+      // already yields while preserving command order. Only the intermediate
+      // level needs an explicit cooperative task boundary.
+      if (level + 1 < 2) {
+        await yieldToBrowserTask();
+        checkCancelled?.();
+      }
     }
+    checkCancelled?.();
     const occupancy = new Uint8Array(size * size * 4);
     await renderer.readRenderTargetPixelsAsync(targets[targets.length - 1], 0, 0, size, size, occupancy);
     checkCancelled?.();
