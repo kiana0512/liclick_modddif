@@ -570,16 +570,6 @@ function resolveRequestImageSize(imageSize: LiclickImageSize, aspectRatio: Licli
   return imageSize === 'auto' && aspectRatio !== 'auto' ? '1K' : imageSize;
 }
 
-function resolveRequestAspectRatio(
-  model: LiclickImageModel,
-  aspectRatio: LiclickAspectRatio,
-  requestImageSize: LiclickImageSize,
-) {
-  if ((model === 'gpt-image-2' || model.startsWith('gpt-image-2.5-')) && aspectRatio === 'auto' && requestImageSize !== 'auto')
-    return '1:1';
-  return aspectRatio;
-}
-
 function getImageSize(url: string) {
   return new Promise<{ width: number; height: number }>((resolve) => {
     const image = new window.Image();
@@ -795,7 +785,6 @@ export function GeneratePanel({
   const imageModel = isTextureMapTab || (isLocalRepaintTab && isGptLocalRepaint)
     ? textureGptModel
     : (generationSettings.model as LiclickImageModel);
-  const aspectRatio = generationSettings.aspectRatio as LiclickAspectRatio;
   const imageSize = generationSettings.imageSize as LiclickImageSize;
   const selectedReferenceIds = useReferenceStore((state) => state.selectedReferenceIds);
   const references = useReferenceStore((state) => state.references);

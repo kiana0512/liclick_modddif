@@ -3,7 +3,7 @@
 ## 范围
 
 - UI：UI-06 / UI-10 投影层橡皮擦。
-- 主模块：M08；协作 M06 / M07。
+- 主模块：M08；协作 M06 / M07 / M15。
 - 算法：`ALG-ERASE-001` v1.5.7、`UV-DISPLAY-BUFFER` v1.5.5、`ALG-PROJ-007` v2.1.14。
 - 状态：production，本地待提交/待 CI。
 
@@ -32,11 +32,14 @@
   - texture-array pipeline：17,569.6ms → 2,074.8–2,262.0ms（约 -87%）；实际 upload 约 148ms 不变。
   - 空闲上传 117 次 task yield / 0 次 paint yield。
   - 26 次连续切层：26 次 reuse、0 次 prepare、0 超时，页内重绑检测 0–1ms，Resident revision 不变。
-  - 真实首笔生成可撤销记录；4K 提交 5.8ms，历史 1 tile / 131,072 snapshot pixels；测试笔迹已撤销。
-  - 已提交/撤销的旧层再切换：复用计数 +1、prepare 不增。
+- 真实首笔生成可撤销记录；4K 提交 5.8ms，历史 1 tile / 131,072 snapshot pixels；测试笔迹已撤销。
+- 已提交/撤销的旧层再切换：复用计数 +1、prepare 不增。
+- Cloud 发布配置构建：`bakeHighSnapshot` 714,787 / 715,000 bytes，总 JavaScript 3,251,055 / 3,256,500 bytes；预算未放宽。
+- Web lint 0 error / 0 warning。删除未使用的比例解析函数与局部变量；数组上传继续记录逐 profile 的结构化 GPU transfer 事件及总 pipeline 耗时，不再把相同分项重复复制到 DOM dataset；复用/重建计数是本次浏览器压测的临时探针，不进入发布运行时。
 
 ## 迁移、回滚与风险
 
 - Project Schema、Project Command、Revision CAS、ownership 和 verified assets 无变更，无数据/资产迁移。
 - 回滚可恢复每个上传条带的 `waitForBrowserPaint()` 以及逐图层 dispose/recreate `UvRepaint`；不需要重写历史 mask。
 - 引擎不会跨模型或跨分辨率复用。当前安全门禁故意保守；若后续引入并行多 pointer 或多模型同时编辑，必须重新审核 GPU 所有权。
+- 删除的仅为重复诊断镜像，不影响纹理、mask、上传条带、调度、错误处理或 QA；需要回滚诊断展示时可恢复 DOM 聚合字段，无资产迁移。

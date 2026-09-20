@@ -8387,9 +8387,6 @@ function SurfacePaintOverlay() {
         paintLayer.eraserGpuReady = Promise.resolve();
         paintLayer.liveResultTexture = reusableEraserGpu.texture;
         paintLayer.liveEraserPreviewInitialized = true;
-        const reuseCount = Number(document.body.dataset.eraserGpuReuseCount ?? '0');
-        document.body.dataset.eraserGpuReuseCount = String(reuseCount + 1);
-        document.body.dataset.eraserGpuReuseLayerId = layerId;
       }
       if (existingAssetUrl && !existingLiveCanvas) {
         paintLayer.ready = loadImageElement(existingAssetUrl)
@@ -8415,9 +8412,6 @@ function SurfacePaintOverlay() {
       if (layer.target !== 'projected-mask' || layer.eraserGpu || layer.eraserGpuReady)
         return layer.eraserGpuReady ?? Promise.resolve();
       const work = (async () => {
-        const prepareCount = Number(document.body.dataset.eraserGpuPrepareCount ?? '0');
-        document.body.dataset.eraserGpuPrepareCount = String(prepareCount + 1);
-        document.body.dataset.eraserGpuPrepareLayerId = layer.layerId;
         const { UvRepaint: GpuUvMask } = await import('@/engine/localRepaint/uvRepaint');
         if (layerRef.current !== layer) return;
         const engine = new GpuUvMask(

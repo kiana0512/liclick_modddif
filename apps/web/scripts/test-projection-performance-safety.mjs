@@ -67,12 +67,11 @@ new Function('exports', projectedArrayUploadSchedulingJs)(projectedArrayUploadSc
 const { yieldProjectedArrayUploadTurn } = projectedArrayUploadSchedulingExports;
 for (const busy of [false, true]) {
   const calls = [];
-  const mode = await yieldProjectedArrayUploadTurn({
-    isViewportInteractionBusy: () => busy,
-    waitForPaint: async () => calls.push('paint'),
-    yieldToTask: async () => calls.push('task'),
-  });
-  assert.equal(mode, busy ? 'paint' : 'task');
+  await yieldProjectedArrayUploadTurn(
+    () => busy,
+    async () => calls.push('paint'),
+    async () => calls.push('task'),
+  );
   assert.deepEqual(calls, [busy ? 'paint' : 'task']);
 }
 const authoredVisibility = {
@@ -382,7 +381,7 @@ assert.match(
 );
 assert.match(
   materialSource,
-  /yieldProjectedArrayUploadWork\(input\.isViewportInteractionBusy\)[\s\S]*?yieldMode === 'paint'[\s\S]*?uploadTaskYieldCount/,
+  /await yieldProjectedArrayUploadWork\(input\.isViewportInteractionBusy\)/,
   'idle array stripes must use task yields while active interaction keeps paint-aligned yields',
 );
 assert.doesNotMatch(
