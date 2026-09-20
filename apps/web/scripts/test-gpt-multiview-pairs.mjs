@@ -102,6 +102,35 @@ material.userData.liclickProjectedLayerStackState.bindings.push({ layerId: 'new'
 assert.equal(hasResidentGptLayers(root, ['new']), true);
 material.name = 'LiclickProjectedLayerWarmup';
 assert.equal(hasResidentGptLayers(root, ['new']), false, 'warmup bindings cannot release the batch');
+material.name = 'LiclickUvOverlayPreview';
+material.userData.liclickResidentUvProjectionLayers = ['old'];
+assert.equal(hasResidentGptLayers(root, ['new']), false, 'old incremental atlas cannot release a new result');
+material.userData.liclickResidentUvProjectionLayers.push('new');
+assert.equal(hasResidentGptLayers(root, ['new']), true, 'in-place UV updates need no resident event');
+assert.equal(hasResidentGptLayers(undefined, ['new']), false);
+assert.equal(hasResidentGptLayers(new THREE.Group(), ['new']), false);
+root.visible = false;
+assert.equal(hasResidentGptLayers(root, ['new']), false);
+root.visible = true;
+const pendingMesh = new THREE.Mesh(new THREE.BoxGeometry(), new THREE.MeshBasicMaterial());
+root.add(pendingMesh);
+assert.equal(hasResidentGptLayers(root, ['new']), false, 'all visible mesh materials must be ready');
+root.remove(pendingMesh); pendingMesh.geometry.dispose(); pendingMesh.material.dispose();
+let checks = 0, paintChecks = 0;
+await waitForGptPairPresentation(
+  () => ++checks !== 2,
+  () => {},
+  async () => { paintChecks++; },
+);
+assert.equal(paintChecks, 4, 'readiness lost during paint must wait and recheck');
+let abortPending = false;
+const pendingCancellation = waitForGptPairPresentation(
+  () => false,
+  () => { if (abortPending) throw new Error('cancelled'); },
+  async () => {},
+);
+abortPending = true;
+await assert.rejects(pendingCancellation, /cancelled/);
 let frames = 0;
 await waitForGptPairPresentation(() => true, () => {}, async () => { frames++; });
 assert.equal(frames, 2);
