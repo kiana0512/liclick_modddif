@@ -986,8 +986,8 @@ assert(
 );
 assert.match(
   repaintSourceTransparency,
-  /brush-mask-inward-v2[\s\S]*?createLocalRepaintFalloffInWorker\(\{[\s\S]*?mask: allowedMaskImage[\s\S]*?width[\s\S]*?height/,
-  'Local repaint projection falloff must be derived only from the authored brush mask.',
+  /manual-brush-scope-v3[\s\S]*?createLocalRepaintFalloffInWorker\(\{[\s\S]*?mask: allowedMaskImage[\s\S]*?width[\s\S]*?height/,
+  'Manual source permission must use the new scope cache and validate the frozen source mask without clipping to it.',
 );
 assert.doesNotMatch(
   repaintSourceTransparency,
@@ -1040,7 +1040,7 @@ const repaintFalloffWorkerSource = readFileSync(
 );
 assert.match(
   repaintFalloffWorkerSource,
-  /createBoundedRepaintFalloffPixels\(maskPixels\)[\s\S]*?transferToImageBitmap/,
+  /createManualRepaintFalloffPixels\(maskPixels\)[\s\S]*?transferToImageBitmap/,
   'The worker must use bounded inward author coverage without an extra texture silhouette.',
 );
 assert.doesNotMatch(
