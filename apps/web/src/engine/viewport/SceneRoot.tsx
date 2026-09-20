@@ -53,8 +53,8 @@ import {
 import {
   canCompositeUvLayersInWorker,
   cancelUvLayerCompositions,
-  compositeUvLayerUrlsInWorker,
   compositeUvLayersInWorker,
+  prepareUvCompositeBitmaps,
 } from '@/engine/layers/uvLayerCompositeWorker';
 import {
   markPerformanceEvent,
@@ -857,16 +857,13 @@ function useCompositedUvTextureState(
             if (canCompositeUvLayersInWorker()) {
               document.body.dataset.uvCompositeBackend = 'worker';
               const staticSources = useWorkerUrlSources;
-              const bitmap = staticSources
-                ? await compositeUvLayerUrlsInWorker(
-                    sortedSources.map(({ layer }) => ({
+              const bitmap = await compositeUvLayersInWorker(
+                staticSources
+                  ? sortedSources.map(({ layer }) => ({
                       imageUrl: layer.imageUrl!,
                       opacity: layer.opacity,
-                    })),
-                    workerOwnerKey,
-                  )
-                : await compositeUvLayersInWorker(
-                    await Promise.all(
+                    }))
+                  : await prepareUvCompositeBitmaps(
                       sortedSources.map(async ({ layer, source }) => {
                         if (!source) throw new Error('UV composition source was not decoded.');
                         return {
@@ -875,8 +872,8 @@ function useCompositedUvTextureState(
                         };
                       }),
                     ),
-                    workerOwnerKey,
-                  );
+                workerOwnerKey,
+              );
               if (options?.maxSize && bitmap.width > options.maxSize) {
                 const resizedScale = options.maxSize / Math.max(bitmap.width, bitmap.height);
                 const resizedBitmap = await createImageBitmap(bitmap, {

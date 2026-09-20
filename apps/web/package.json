@@ -4,6 +4,8 @@
   "version": "0.1.3",
   "type": "module",
   "scripts": {
+    "test:uv-live-bitmap-lifecycle": "node scripts/test-uv-live-bitmap-lifecycle.mjs",
+    "test:uv-composite-worker-lifecycle": "node scripts/test-uv-composite-worker-lifecycle.mjs",
     "check:import-uv-browser": "node scripts/run-import-uv-repair-browser.mjs",
     "test:manual-repaint-layer": "node scripts/test-manual-repaint-layer.mjs",
     "test:projected-selection-display": "node scripts/test-projected-selection-display.mjs",
@@ -112,6 +114,7 @@
     "test:bake-base-color-selection": "node scripts/test-bake-base-color-selection.mjs",
     "test:content-aware-repair": "node --test src/engine/contentAware/__tests__/buildRepairMask.test.mjs src/engine/contentAware/__tests__/surfaceAwareRepair.test.mjs src/engine/contentAware/__tests__/localBoundaryBlend.test.mjs",
     "test:generation-polling": "node scripts/test-generation-polling.mjs",
+    "test:interaction-safe-service-results": "node scripts/test-interaction-safe-service-results.mjs",
     "test:generation-revision-conflict-recovery": "node scripts/test-generation-revision-conflict-recovery.mjs",
     "test:history-handoff-revision-retry": "node scripts/test-history-handoff-revision-retry.mjs",
     "test:editor-project-route-load": "node scripts/test-editor-project-route-load.mjs",

@@ -290,7 +290,7 @@ export class ResidentProjectedUvDisplay {
       if ('rawComposite' in result && result.rawComposite) this.rawComposite = result.rawComposite;
       // Empty is the canonical all-zero mask for ordinary BaseColor stacks.
       // Avoid both a 4K main-thread scan and a needless R8 upload in that case.
-      const mask = result.renderedColorMask?.length ? result.renderedColorMask : undefined;
+      let mask = result.renderedColorMask?.length ? result.renderedColorMask : undefined;
       let hasRenderedColor = false;
       if (mask) {
         let sliceStarted = performance.now();
@@ -316,25 +316,18 @@ export class ResidentProjectedUvDisplay {
         for (const layer of request.underlayLayers) {
           guard();
           const rgba = result.imageData.data;
-          // Preserve rendered-color attribution when albedo underneath adds coverage.
-          const alpha = mask && hasRenderedColor ? new Uint8Array(mask.length) : undefined;
-          if (alpha) for (let start = 0; start < alpha.length; start += 262144) {
-            for (let i = start; i < Math.min(start + 262144, alpha.length); i++) alpha[i] = rgba[i * 4 + 3];
-            await yieldToBrowserTask(); guard();
-          }
           const combined = await compositeRgbaUrlUnderWithWebGpu(rgba, layer.imageUrl,
             request.resolution, request.resolution, layer.opacity, abort.signal, false,
-            JSON.stringify([layer.id, layer.contentRevision ?? 0]));
+            JSON.stringify([layer.id, layer.contentRevision ?? 0]),
+            mask && hasRenderedColor ? mask : undefined);
           guard();
           result.imageData = new ImageData(combined.data, request.resolution, request.resolution);
-          if (alpha && mask) for (let start = 0; start < alpha.length; start += 262144) {
-            for (let i = start; i < Math.min(start + 262144, alpha.length); i++) {
-              const coverage = combined.data[i * 4 + 3];
-              mask[i] = coverage ? Math.round(mask[i] * alpha[i] / coverage) : 0;
-            }
-            await yieldToBrowserTask(); guard();
-          }
+          mask = combined.renderedColorMask ?? mask;
         }
+        // The Worker transfer detaches the previous mask buffer. Keep the bake
+        // result pointed at the returned owner so the compressed cache stores
+        // the same attribution bytes that are published to the GPU.
+        if (mask) result.renderedColorMask = mask;
       }
       stages.underlayCompositeMs = performance.now() - underlayStartedAt;
       const uploadStartedAt = performance.now();

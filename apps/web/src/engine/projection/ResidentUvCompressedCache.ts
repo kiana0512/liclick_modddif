@@ -96,7 +96,7 @@ export class ResidentUvCompressedCache {
       this.encoding = false;
       const queued = this.queued;
       this.queued = undefined;
-      if (queued) this.offer(queued.key, queued.image, queued.mask, queued.persistentKey);
+      if (queued) this.offer(queued.key, queued.image, queued.mask, queued.persistentKey, queued.scope);
     });
     try {
       worker.postMessage(

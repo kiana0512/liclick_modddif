@@ -140,6 +140,7 @@ import {
 } from '@/engine/performance/webGpuRgbaComposite';
 import {
   applyAlphaFromMask,
+  blobToImageData,
   blobToDataUrl,
   compositeUsingMask,
   contentAwareFillMaskedPixels,
@@ -4217,7 +4218,7 @@ export function EditorPage({
       if (!runtime.roiRect || !runtime.editMask || !runtime.protectMask) {
         throw new Error('局部重绘恢复上下文不完整，请重新生成。');
       }
-      const editedImage = await urlToImageData(await blobToDataUrl(outputImage));
+      const editedImage = await blobToImageData(outputImage, true);
       const source = runtime.workingImageData;
       const editedFrame =
         editedImage.width === source.width && editedImage.height === source.height

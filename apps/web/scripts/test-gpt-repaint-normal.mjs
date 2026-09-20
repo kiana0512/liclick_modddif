@@ -84,6 +84,9 @@ const { createLiclickApiClient } = load('../src/services/liclickApiClient.ts', {
     return result;
   } },
   '@/utils/mapWithConcurrency': load('../src/utils/mapWithConcurrency.ts'),
+  '@/engine/viewport/viewportInteractionState': {
+    interactionSafeJsonResponse: (response) => response.json().catch(() => undefined),
+  },
 });
 try {
   for (const enabled of [false, true, false]) {

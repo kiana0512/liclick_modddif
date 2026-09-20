@@ -975,7 +975,13 @@ async function monitorRemoteJob(job: InternalJob) {
     job.stage = 'finished';
     job.error = error instanceof Error ? error.message : '远端 Substance Baker 状态同步失败。';
     job.finishedAt = new Date().toISOString();
-    await appendLog(job, `[Remote] ${job.error}`);
+    try {
+      await appendLog(job, `[Remote] ${job.error}`);
+    } catch (persistenceError) {
+      // This monitor runs in the background. A failed terminal write must remain
+      // observable without becoming an unhandled rejection that stops the server.
+      console.error(`[BakeJob] Failed to persist failed remote job ${job.id}.`, persistenceError);
+    }
   } finally {
     monitors.delete(job.id);
   }

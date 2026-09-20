@@ -32,12 +32,12 @@ const previewTextureReadyRenderers = new WeakMap<THREE.Texture, WeakSet<THREE.We
 const activePreviewTextureUploads = new WeakMap<THREE.WebGLRenderer, number>();
 // Detached contexts stay at roughly 0.5MB per exact GL submission. Larger
 // submissions did not improve S9 wall time and increased long frames on
-// NVIDIA/Windows. The isolated context may, however, submit a bounded batch
-// before yielding: paying one macrotask per 128K stripe dominated cold 4K UV
-// generation while the individual submissions stayed far below the frame
-// budget. Interaction is still checked at every stripe boundary.
+// NVIDIA/Windows. Resume only one 128K stripe per browser task. Multiple
+// detached renderers share the physical GPU; larger per-renderer batches can
+// wake together after interaction and create 100ms+ compositor stalls even
+// when every individual texSubImage2D call is short.
 const DETACHED_PREVIEW_TEXTURE_UPLOAD_PIXELS_PER_FRAME = INITIAL_TEXTURE_UPLOAD_PIXELS;
-const DETACHED_PREVIEW_TEXTURE_UPLOAD_STRIPES_PER_YIELD = 8;
+const DETACHED_PREVIEW_TEXTURE_UPLOAD_STRIPES_PER_YIELD = 1;
 const DETACHED_PREVIEW_TEXTURE_UPLOAD_SYNCHRONOUS_BUDGET_MS = 4;
 // Flush visible uploads every four stripes without polling a WebGL fence:
 // timeout-zero clientWaitSync still blocked the UI thread for 134-150ms on

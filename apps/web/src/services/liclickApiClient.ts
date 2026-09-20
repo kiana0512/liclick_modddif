@@ -9,6 +9,7 @@ import {
   type ReferencePreprocessingResult,
 } from './referenceImagePreprocessor';
 import { mapWithConcurrency } from '@/utils/mapWithConcurrency';
+import { interactionSafeJsonResponse } from '@/engine/viewport/viewportInteractionState';
 
 export class LiclickApiError extends Error {
   readonly status: number;
@@ -184,7 +185,7 @@ async function requestJson<T>(
     window.clearTimeout(timeout);
     callerSignal?.removeEventListener('abort', abortFromCaller);
   }
-  const payload = await response.json().catch(() => undefined);
+  const payload = await interactionSafeJsonResponse<unknown>(response);
   if (!response.ok) {
     const errorCode =
       payload && typeof payload === 'object' && 'code' in payload && typeof payload.code === 'string'

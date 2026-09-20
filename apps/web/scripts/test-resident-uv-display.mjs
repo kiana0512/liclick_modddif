@@ -7,7 +7,7 @@ import * as fflate from 'fflate';
 
 const load = (file, dependencies) => {
   const source = fs.readFileSync(new URL(`../src/engine/bake/${file}.ts`, import.meta.url), 'utf8');
-  const js = ts.transpileModule(source, {
+  const js = ts.transpileModule(source.replaceAll('import.meta.url', "''"), {
     compilerOptions: {
       target: ts.ScriptTarget.ES2022,
       module: ts.ModuleKind.CommonJS,
@@ -430,13 +430,17 @@ new Function('Worker', 'document', 'exports', ts.transpileModule(clientSource.re
 const client = new clientExports.ResidentUvCompressedCache();
 const image = () => ({ width: 16, height: 16, data: new Uint8ClampedArray(16 * 16 * 4) });
 const a = image(), b = image(), c = image();
-client.offer('a', a); client.offer('b', b); client.offer('c', c);
+client.offer('a', a, undefined, 'verified-a', 'owner-a:project-a');
+client.offer('b', b, undefined, 'verified-b', 'owner-b:project-b');
+client.offer('c', c, undefined, 'verified-c', 'owner-c:project-c');
 assert.deepEqual(sent.map(message => message.key), ['a']);
 assert.equal(a.data.byteLength, 0);
 workers[0].onmessage({ data: { id: sent[0].id, keys: ['a'] } });
 assert.deepEqual(sent.map(message => message.key), ['a', 'c'], 'Only the newest pending completed UV is compressed');
 assert.equal(b.data.byteLength, 1024);
 assert.equal(c.data.byteLength, 0);
+assert.equal(sent[1].persistentKey, 'verified-c');
+assert.equal(sent[1].scope, 'owner-c:project-c', 'Queued entries keep their own active-pointer scope');
 client.offer('d', image()); client.dispose();
 assert.equal(sent.length, 2, 'Disposal clears queued work before resolving in-flight work');
 }
@@ -541,7 +545,8 @@ globalThis.window = { caches: {} };
 globalThis.fetch = async () => new Response(new Uint8Array([sourceByte]));
 try {
   const { persistentMergeKey } = load('persistentMergePreparation', {
-    '@/utils/browserScheduling': { yieldToBrowserTask: async () => {} },
+    '@/utils/browserScheduling': { yieldToBrowserTask: async () => {}, waitForBrowserPaint: async () => {} },
+    '@/engine/viewport/viewportInteractionState': { waitForViewportInteractionIdle: async () => {} },
     '@/stores/authStore': { useAuthStore: { getState: () => ({ user: userId ? { id: userId } : undefined }) } },
     './uvBakeDebugControls': { getDebugUvBakeStatus: () => ({}) },
     '@/engine/layers/mergeUvComposition': { getMergeUvPostprocessOptions: () => ({}) },
@@ -651,6 +656,11 @@ await presentation.waitForResidentUvPresentation(scene, 'other-object');
   assert.match(displaySource, /createWorkerBackedMaskPreviewTexture\(\s*mask,/);
   assert.doesNotMatch(displaySource, /new Uint8ClampedArray\(mask\.length \* 4\)/);
   assert.match(displaySource, /result\.renderedColorMask\?\.length/);
+  assert.match(
+    displaySource,
+    /mask = combined\.renderedColorMask \?\? mask;[\s\S]*?if \(mask\) result\.renderedColorMask = mask;[\s\S]*?this\.compressed\.offer\(request\.signature, result\.imageData!, result\.renderedColorMask/,
+    'The compressed cache must receive the Worker-returned mask owner, not the detached request buffer.',
+  );
   assert.match(displaySource, /THREE\.RedFormat/);
   assert.match(displaySource, /Promise\.all\(\[[\s\S]*?keyPromise,[\s\S]*?this\.compressed\.restore\(request\.signature, undefined, persistentScope, true\)/,
     'Verified source hashing and scoped disk decompression must overlap');

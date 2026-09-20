@@ -7,6 +7,7 @@ import { padUvIslandGuttersWithTopology as frozenGutter } from './fixtures/uv-gu
 import { ExactGpuUvGutter } from '../src/engine/bake/gpuUvGutter.ts';
 import { compositeRgbaUrlUnderWithWebGpu, terminateWebGpuRgbaCompositeWorker } from '../src/engine/performance/webGpuRgbaComposite.ts';
 import { compositeRgbaUnderInPlace } from '../src/engine/layers/mergeUvComposition.ts';
+import { yieldToBrowserTask } from '../src/utils/browserScheduling.ts';
 
 async function verifyUnderlayReuse() {
   const results=[];
@@ -18,16 +19,60 @@ async function verifyUnderlayReuse() {
       for(let i=0;i<pixels.length;i+=4){pixels.set([93,177,231,[0,128,255][(i/4)%3]],i);front.set([20,90,180,[255,0,99][(i/4)%3]],i);}
       context.putImageData(new ImageData(pixels,size,size),0,0);
       const expected=compositeRgbaUnderInPlace(front.slice(),context.getImageData(0,0,size,size).data,0.75);
+      const authored=Uint8Array.from({length:size*size},(_,i)=>(i*29+17)&255);
       const blob=await new Promise(resolve=>canvas.toBlob(resolve,'image/png')),url=URL.createObjectURL(blob);
       try {
         for(let repeat=0;repeat<3;repeat++) {
-          const input=front.slice(),start=performance.now();
-          const actual=await compositeRgbaUrlUnderWithWebGpu(input,url,size,size,0.75);
+          const input=front.slice(),mask=authored.slice(),start=performance.now();
+          const actual=await compositeRgbaUrlUnderWithWebGpu(input,url,size,size,0.75,
+            undefined,false,`fixture:${size}`,mask);
           const ms=performance.now()-start;
-          let differences=0;for(let i=0;i<expected.length;i++)if(expected[i]!==actual.data[i])differences++;
+          let differences=0,maskDifferences=0;
+          for(let i=0;i<expected.length;i++)if(expected[i]!==actual.data[i])differences++;
+          for(let i=0;i<authored.length;i++) {
+            const alpha=expected[i*4+3],value=alpha?Math.round(authored[i]*front[i*4+3]/alpha):0;
+            if(actual.renderedColorMask?.[i]!==value)maskDifferences++;
+          }
           if(differences)throw Error(`Underlay ${size}/${repeat}: ${differences} pixel differences`);
-          results.push({size,repeat,ms,differences,metrics:actual.metrics});
+          if(maskDifferences)throw Error(`Underlay mask ${size}/${repeat}: ${maskDifferences} differences`);
+          results.push({size,repeat,ms,differences,maskDifferences,metrics:actual.metrics});
         }
+
+        const timings={main:[],worker:[]};
+        for(let round=0;round<10;round++) for(const worker of round%2?[true,false]:[false,true]) {
+          const mask=authored.slice(),input=front.slice(),started=performance.now();
+          const frameGaps=[];let frameActive=true,lastFrame=started;
+          const observeFrame=now=>{frameGaps.push(now-lastFrame);lastFrame=now;if(frameActive)window.requestAnimationFrame(observeFrame);};
+          window.requestAnimationFrame(observeFrame);
+          if(worker) await compositeRgbaUrlUnderWithWebGpu(input,url,size,size,0.75,
+            undefined,false,`fixture:${size}`,mask);
+          else {
+            const alpha=new Uint8Array(mask.length);
+            for(let start=0;start<alpha.length;start+=262144) {
+              const end=Math.min(start+262144,alpha.length);
+              for(let i=start;i<end;i++)alpha[i]=input[i*4+3];
+              if(end<alpha.length)await yieldToBrowserTask();
+            }
+            const combined=await compositeRgbaUrlUnderWithWebGpu(input,url,size,size,0.75,
+              undefined,false,`fixture:${size}`);
+            for(let start=0;start<mask.length;start+=262144) {
+              const end=Math.min(start+262144,mask.length);
+              for(let i=start;i<end;i++) {
+                const coverage=combined.data[i*4+3];
+                mask[i]=coverage?Math.round(mask[i]*alpha[i]/coverage):0;
+              }
+              if(end<mask.length)await yieldToBrowserTask();
+            }
+          }
+          const elapsed=performance.now()-started;
+          frameActive=false;
+          await new Promise(window.requestAnimationFrame);
+          if(round>=2)timings[worker?'worker':'main'].push({
+            ms:elapsed,
+            maxFrameMs:Math.max(0,...frameGaps),
+          });
+        }
+        results.push({size,attribution:timings});
       } finally {URL.revokeObjectURL(url);canvas.width=canvas.height=1;}
     }
   } finally {terminateWebGpuRgbaCompositeWorker();}
