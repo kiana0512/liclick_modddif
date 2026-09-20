@@ -26,9 +26,7 @@ export function getTopUvPreviewLayer(
   if (!top) return undefined;
   if (isRenderedLocalRepaintLayer(top)) return top;
   if (!isLiveProjectedCanvasUrl(top.imageUrl)) return undefined;
-  const projectedOrder = projectedLayers.reduce(
-    (order, layer) => (layer.visible === false ? order : Math.min(order, layer.order)),
-    Number.POSITIVE_INFINITY,
-  );
-  return previewLayerId || top.order < projectedOrder ? top : undefined;
+  return previewLayerId || projectedLayers.every(
+    (layer) => layer.visible === false || top.order < layer.order,
+  ) ? top : undefined;
 }

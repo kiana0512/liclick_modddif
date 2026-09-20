@@ -287,6 +287,16 @@ function layerPreviewSignature(layer: Layer, relativeOrder = layer.order) {
   ].join(':');
 }
 
+function getReadyUvPreviewTexture(imageUrl: string, gl: THREE.WebGLRenderer) {
+  return getLiveProjectedTexture(imageUrl, THREE.SRGBColorSpace, { flipY: true }) ??
+    getReadyResidentPreviewTexture(imageUrl, gl);
+}
+
+function getVisiblePreviewUvStack(layers: Layer[], objectId: string) {
+  return getVisibleUvLayerStack(layers, objectId, 'top-to-bottom')
+    .filter((layer) => layer.role !== 'content-aware-underlay');
+}
+
 function reportProjectedPreviewProgress(
   progress: number,
   detail: string,
@@ -2133,11 +2143,7 @@ const ImportedModel = memo(function ImportedModel({
           layer.visible &&
           (layer.role === 'local-repaint-overlay' || layer.role === 'local-repaint-draft'),
       );
-      const visibleUvStack = getVisibleUvLayerStack(
-        objectUvLayers,
-        importedModel.objectId,
-        'top-to-bottom',
-      ).filter((layer) => layer.role !== 'content-aware-underlay');
+      const visibleUvStack = getVisiblePreviewUvStack(objectUvLayers, importedModel.objectId);
       const topLocalRepaintUvLayer = getTopUvPreviewLayer(
         visibleUvStack, displayLayers, currentPreviewLayer?.id,
       );
@@ -2171,8 +2177,7 @@ const ImportedModel = memo(function ImportedModel({
       };
       const residentSingleUvTexture =
         visibleLowerUvLayers.length === 1
-          ? (getLiveProjectedTexture(visibleLowerUvLayers[0].imageUrl, THREE.SRGBColorSpace, { flipY: true }) ??
-            getReadyResidentPreviewTexture(visibleLowerUvLayers[0].imageUrl, gl))
+          ? getReadyUvPreviewTexture(visibleLowerUvLayers[0].imageUrl, gl)
           : undefined;
       const visibleUvKey = residentUvVisibilityKey(visibleLowerUvLayers);
       const residentCompositeUvTexture =
@@ -4674,9 +4679,7 @@ const ImportedModel = memo(function ImportedModel({
                     Boolean(layer.imageUrl) &&
                     (!layer.objectId || layer.objectId === importedModel.objectId),
                 );
-                const latestUvStack = getVisibleUvLayerStack(
-                  latestObjectUvLayers, importedModel.objectId, 'top-to-bottom',
-                ).filter((layer) => layer.role !== 'content-aware-underlay');
+                const latestUvStack = getVisiblePreviewUvStack(latestObjectUvLayers, importedModel.objectId);
                 const latestTopUvLayer = getTopUvPreviewLayer(latestUvStack, latestDisplayLayers, latestPreviewLayerId);
                 const latestOrdinaryUvLayers = latestUvStack.filter(
                   (layer) => layer.id !== latestTopUvLayer?.id,
@@ -4684,8 +4687,7 @@ const ImportedModel = memo(function ImportedModel({
                 const latestOrdinaryUvKey = residentUvVisibilityKey(latestOrdinaryUvLayers);
                 const latestResidentUvTexture =
                   latestOrdinaryUvLayers.length === 1
-                    ? (getLiveProjectedTexture(latestOrdinaryUvLayers[0].imageUrl, THREE.SRGBColorSpace, { flipY: true }) ??
-                      getReadyResidentPreviewTexture(latestOrdinaryUvLayers[0].imageUrl, gl))
+                    ? getReadyUvPreviewTexture(latestOrdinaryUvLayers[0].imageUrl, gl)
                     : latestOrdinaryUvLayers.length > 1
                       ? residentUvPresentationCacheRef.current.get(latestOrdinaryUvKey)
                       : undefined;
@@ -4936,9 +4938,7 @@ const ImportedModel = memo(function ImportedModel({
           Boolean(layer.imageUrl) &&
           (!layer.objectId || layer.objectId === importedModel.objectId),
       );
-      const authoritativeUvStack = getVisibleUvLayerStack(
-        authoritativeUvLayers, importedModel.objectId, 'top-to-bottom',
-      ).filter((layer) => layer.role !== 'content-aware-underlay');
+      const authoritativeUvStack = getVisiblePreviewUvStack(authoritativeUvLayers, importedModel.objectId);
       const authoritativeTopUvLayer = getTopUvPreviewLayer(
         authoritativeUvStack, authoritativeDisplayLayers,
         useSceneStore.getState().localRepaintPreviewLayer?.id,
@@ -4952,8 +4952,7 @@ const ImportedModel = memo(function ImportedModel({
       const authoritativeOrdinaryUvKey = residentUvVisibilityKey(authoritativeOrdinaryUvLayers);
       const authoritativeExactUvTexture =
         authoritativeOrdinaryUvLayers.length === 1
-          ? (getLiveProjectedTexture(authoritativeOrdinaryUvLayers[0].imageUrl, THREE.SRGBColorSpace, { flipY: true }) ??
-            getReadyResidentPreviewTexture(authoritativeOrdinaryUvLayers[0].imageUrl, gl))
+          ? getReadyUvPreviewTexture(authoritativeOrdinaryUvLayers[0].imageUrl, gl)
           : authoritativeOrdinaryUvLayers.length > 1
             ? residentUvPresentationCacheRef.current.get(authoritativeOrdinaryUvKey)
             : undefined;
