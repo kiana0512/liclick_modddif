@@ -2,6 +2,16 @@ import assert from 'node:assert/strict';
 import {createServer,request} from 'node:http';
 import {readFile, writeFile} from 'node:fs/promises';
 import {handleImportUvRepair, validateRepairGlb} from '../dist/routes/importUvRepair.js';
+import {importDecimateScript} from '../dist/services/importDecimateScript.js';
+
+assert.match(importDecimateScript, /if total <= 1500000:/);
+assert.match(importDecimateScript, /merge_distance = 0\.0001/);
+const mergeIndex=importDecimateScript.indexOf('bpy.ops.mesh.remove_doubles(');
+assert.ok(mergeIndex>importDecimateScript.indexOf('if total <= 1500000:'));
+assert.ok(mergeIndex<importDecimateScript.indexOf('modifier = obj.modifiers.new('));
+assert.match(importDecimateScript.slice(mergeIndex), /counts = \[count\(obj\) for obj in meshes\]/);
+assert.match(importDecimateScript, /0\.99 <= area\/original_area <= 1\.01/);
+assert.match(importDecimateScript, /'version': '1\.1\.0'/);
 
 // Count-only QA misses the non-indexed FBX → GLB regression: scattered triangles
 // can hit 200k while removing most of the visible surface. Compare real geometry.

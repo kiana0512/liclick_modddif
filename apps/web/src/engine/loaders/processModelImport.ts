@@ -7,7 +7,7 @@ import { inspectModelUv, needsUvRepair } from './modelUvValidation';
 import { disposeImportCandidate, waitForImportTextures, type ModelImportProcessingInput } from './prepareModelUvImport';
 import { getWorkspaceApiBase } from '@/services/workspaceApiBase';
 
-// IMPORT-DECIMATE v1.0.2: consent → guarded decimation → UV inspection → separate UV consent.
+// IMPORT-DECIMATE v1.1.0: consent → merge by distance → decimate → separate UV consent.
 export async function processModelImport(input: ModelImportProcessingInput): Promise<{ file: File; loaded: LoadedModel } | undefined> {
   const controller = new AbortController();
   const staleTimer = window.setInterval(() => { if (!input.isCurrent()) controller.abort(); }, 100);
@@ -39,7 +39,7 @@ export async function processModelImport(input: ModelImportProcessingInput): Pro
       if (!(data instanceof ArrayBuffer)) throw new Error('无法准备模型处理');
       controller.signal.throwIfAborted();
       if (!input.isCurrent()) return;
-      input.progress(decimate ? '服务器正在减面至约 20 万三角面，请稍候' : '服务器正在展开 UV，请稍候');
+      input.progress(decimate ? '服务器正在合并顶点并减面至约 20 万三角面，请稍候' : '服务器正在展开 UV，请稍候');
       const timeout = window.setTimeout(() => controller.abort(), 210_000);
       let blob: Blob;
       try {
