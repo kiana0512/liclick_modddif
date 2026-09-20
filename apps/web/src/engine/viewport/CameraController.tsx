@@ -17,7 +17,7 @@ import {
   markViewportInteractionActivity,
   markViewportInteractionEnd,
   markViewportInteractionStart,
-} from './viewportInteractionState';
+} from './input';
 
 function getCombinedBoundingBox(objects: THREE.Object3D[]): ModelBoundingBox | undefined {
   const box = new THREE.Box3();

@@ -95,7 +95,7 @@ try {
     './liclickTransport': { resolveLiclickTransport: async () => ({ baseUrl: 'https://example.test', credentials: 'include' }) },
     './referenceImagePreprocessor': { prepareReferenceForAtlas: async value => value },
     '@/utils/mapWithConcurrency': { mapWithConcurrency: async (values, _, map) => Promise.all(values.map(map)) },
-    '@/engine/viewport/viewportInteractionState': { interactionSafeJsonResponse: response => response.json() },
+    '@/engine/viewport/input': { interactionSafeJsonResponse: response => response.json() },
   }, {
     window: { setTimeout, clearTimeout },
     fetch: async (_, options) => {

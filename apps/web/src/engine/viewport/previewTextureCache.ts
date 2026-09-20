@@ -9,7 +9,7 @@ import { waitForBrowserPaint, yieldToBrowserTask } from '@/utils/browserScheduli
 import {
   isViewportInteractionBusy,
   waitForViewportInteractionIdle as waitForSharedViewportInteractionIdle,
-} from './viewportInteractionState';
+} from './input';
 
 // Enough for a nine-model scene to retain one 512px proxy and one upgrading
 // exact texture per model, plus the selected object's bounded six-layer eye

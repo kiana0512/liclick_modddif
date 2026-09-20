@@ -13,17 +13,17 @@
 
 ## 修复
 
-`liclickApiClient` 的服务响应保留 256 KiB 以下原生 `Response.json()` 快路径。更大的响应先取得原始字节并转移到专用 Worker，在 Worker 内执行 UTF-8 解码和 JSON.parse。Worker 只先回传小型 ready 消息；主线程确认视口指针/滚轮已静默后，才允许 Worker structured-clone 完整结果对象。无 `Content-Length` 的响应按实际字节数判断，不会误走小响应路径。Worker 不可用、构造失败或消息失败时保留安全失败/原解析语义，不发布半个对象。
+`liclickApiClient` 的服务响应保留 256 KiB 以下原生 `Response.json()` 快路径。更大的响应先取得原始字节并转移到后台 payload Worker 的独立实例，在 Worker 内执行 UTF-8 解码和 JSON.parse。Worker 只先回传小型 ready 消息；主线程确认视口指针/滚轮已静默后，才允许 Worker structured-clone 完整结果对象。无 `Content-Length` 的响应按实际字节数判断，不会误走小响应路径。Worker 不可用、构造失败或消息失败时保留安全失败/原解析语义，不发布半个对象。
 
-`blobToDataUrl` 同样保留 256 KiB 以下原生快路径。更大的 Blob 在专用 Worker 里用 `FileReaderSync.readAsDataURL` 精确转换，完成后先发 ready，待视口静默才回传大字符串；Worker 不可用时等待交互空闲后执行原 FileReader 路径。局部重绘返图解码取消 Blob→Data URL→Image 的无效往返，直接用短生命周期 Blob URL 解码，完成或失败均 revoke。最终预览和持久化仍得到与原路径相同的完整 PNG/Data URL。
+`blobToDataUrl` 同样保留 256 KiB 以下原生快路径。更大的 Blob 在同一后台 Worker 制品的新实例里用 `FileReaderSync.readAsDataURL` 精确转换，完成后先发 ready，待视口静默才回传大字符串；Worker 不可用时等待交互空闲后执行原 FileReader 路径。局部重绘返图解码取消 Blob→Data URL→Image 的无效往返，直接用短生命周期 Blob URL 解码，完成或失败均 revoke。最终预览和持久化仍得到与原路径相同的完整 PNG/Data URL。
 
 ## 正确性与实测
 
 - 新回归执行生产调度模块，验证小 JSON 仍走原生快路径；大 JSON 的解析与完整对象发布各自经过交互门；未知长度与无效 JSON 保留原结果语义。
 - 同一回归验证 300 KiB Blob 的 Data URL 逐字符等于基准 base64，且完整字符串只在交互静默后发布。
 - Edge 152/4517 生产构建用 12 MiB 等价服务响应实测：持续交互 350ms 内 Promise 未发布；保护窗口最大帧 `16.7ms`，完整窗口最大帧 `16.8ms`、P95 `16.7ms`；松手后 `id`、尾字段及 12 MiB 字符长度全部精确一致，总完成 `428.5ms`。
-- 两个后台协议最终合并为一个按大任务创建的 Worker，生产复测为保护/全程最大帧 `16.8/16.8ms`、P95 `16.8ms`，精确结果不变，总完成 `430.2ms`。小响应不创建 Worker。
-- Web 全量回归 `151/151`、生产 build、typecheck、改动文件 lint 与 diff whitespace 检查通过。固定包体门禁未提高：111 个 JS chunk、`3,256,244/3,256,500` bytes，恰好保留 256-byte release reserve；Editor `498,762/499,024`、hot chunk `714,739/715,000`。
+- 两个后台协议共用一个按大任务创建独立实例的 payload Worker 制品，生产复测为保护/全程最大帧 `16.8/16.8ms`、P95 `16.8ms`，精确结果不变，总完成 `430.2ms`。小响应不创建 Worker。
+- Web 全量回归 `151/151`、生产 build、typecheck、改动文件 lint 与 diff whitespace 检查通过。合并最新 master 后将 Worker 内部 ready/release/result 握手压缩为等价定长消息；固定包体门禁未提高：110 个 JS chunk、`3,256,098/3,256,500` bytes，保留 402-byte 总量余量并通过 256-byte 发布余量门禁；Editor `498,724/499,024`、hot chunk `714,688/715,000`。
 - 没有为验证重新发起付费生图。此前真实任务的 `1009.4ms` JSON 与 `864.8/858.7ms` FileReader 是修改前基线；修改后真实服务完成态仍需下一次自然任务复测。
 
 ## GPU / CPU / Worker / shader / 持久化 / 导出审计
@@ -35,8 +35,8 @@
 
 ## 迁移、回滚与限制
 
-无 Project Schema、Command、数据库、缓存格式或历史资产迁移。旧工程和在途任务继续使用同一响应结构；两个 Worker 都是运行时执行位置变化。
+无 Project Schema、Command、数据库、缓存格式或历史资产迁移。旧工程和在途任务继续使用同一响应结构；Worker 变化只涉及运行时执行位置与制品复用。
 
-可独立回滚 `interactionSafeJsonResponse` 动态入口、两个 Worker 与 Blob URL 直接解码，恢复原 `Response.json` 和 FileReader。回滚无需改写资产，但会重新引入已复现的 0.86–1.01 秒后台完成长任务。
+可独立回滚 `interactionSafeJsonResponse` 动态入口、payload Worker 交互分支与 Blob URL 直接解码，恢复原 `Response.json` 和 FileReader。回滚无需改写资产，但会重新引入已复现的 0.86–1.01 秒后台完成长任务。
 
 本轮没有宣称首次九模型工程恢复已经无长帧。刷新仍会并行恢复 67 个图层、55 个投影层及多张 4K 纹理，初始窗口保留过秒峰值；恢复结束后本机回到 60 FPS、最近窗口 P95 约 17ms。该恢复链需继续按模型解析、纹理解码、GPU 上传和 React 发布分别优化，不能通过降低分辨率、关闭 QA 或删减作者层规避。

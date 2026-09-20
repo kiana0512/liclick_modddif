@@ -1,8 +1,8 @@
 import type { MaskBitmap, Rect } from '@/types/localRepaint';
 import { yieldToBrowserTask } from '@/utils/browserScheduling';
-import { waitForViewportInteractionIdle } from '@/engine/viewport/viewportInteractionState';
+import { waitForViewportInteractionIdle } from '@/engine/viewport/input';
 
-export { interactionSafeBlobDataUrl as blobToDataUrl } from '@/engine/viewport/viewportInteractionState';
+export { interactionSafeBlobDataUrl as blobToDataUrl } from '@/engine/viewport/input';
 
 export function dataUrlToBlob(dataUrl: string) {
   const [header, encoded] = dataUrl.split(',');

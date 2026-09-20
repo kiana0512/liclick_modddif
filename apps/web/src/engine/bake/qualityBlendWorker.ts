@@ -4,7 +4,7 @@ import type { ProjectedOverlayMode } from './projectedOverlayComposition';
 import {
   isViewportInteractionBusy,
   subscribeViewportInteraction,
-} from '@/engine/viewport/viewportInteractionState';
+} from '@/engine/viewport/input';
 
 export type QualityBlendWorkerLayer = {
   color: Uint8ClampedArray;

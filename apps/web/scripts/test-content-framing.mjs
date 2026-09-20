@@ -306,7 +306,7 @@ const clientModule = evaluate(
     },
     './generationErrorMessage': { getUserFacingGenerationError: (m) => m },
     './referenceImagePreprocessor': { prepareReferenceForAtlas: async (r) => r },
-    '@/engine/viewport/viewportInteractionState': {
+    '@/engine/viewport/input': {
       interactionSafeJsonResponse: (response) => response.json().catch(() => undefined),
     },
     '@/utils/mapWithConcurrency': {

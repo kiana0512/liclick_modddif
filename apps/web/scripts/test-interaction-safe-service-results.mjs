@@ -4,13 +4,13 @@ import ts from 'typescript';
 import { TextDecoder } from 'node:util';
 
 let source = fs.readFileSync(
-  new URL('../src/engine/viewport/viewportInteractionState.ts', import.meta.url),
+  new URL('../src/engine/viewport/input.ts', import.meta.url),
   'utf8',
 );
 source = source
   .replace(/^import[^;]+;\r?\n/gm, '')
   .replace(
-    /new URL\('\.\.\/\.\.\/workers\/interactionPayload\.worker\.ts', import\.meta\.url\)/g,
+    /new URL\('\.\.\/\.\.\/workers\/payload\.worker\.ts', import\.meta\.url\)/g,
     "'payload-worker'",
   );
 const code = ts.transpileModule(source, {
@@ -34,26 +34,26 @@ class PayloadWorker {
   onmessageerror;
   results = new Map();
   async postMessage(message) {
-    if (message.type === 'release') {
+    if (!message) {
       events.push('release');
-      const result = this.results.get(message.id);
-      this.results.delete(message.id);
-      this.onmessage?.({ data: { type: 'result', id: message.id, result } });
+      const result = this.results.get(0);
+      this.results.delete(0);
+      this.onmessage?.({ data: [result] });
       return;
     }
-    events.push(message.type);
+    events.push(message instanceof ArrayBuffer ? 'parse' : 'data-url');
     try {
       const result =
-        message.type === 'parse'
-          ? JSON.parse(new TextDecoder().decode(message.bytes))
-          : `data:${message.blob.type};base64,${Buffer.from(
-              await message.blob.arrayBuffer(),
+        message instanceof ArrayBuffer
+          ? JSON.parse(new TextDecoder().decode(message))
+          : `data:${message.type};base64,${Buffer.from(
+              await message.arrayBuffer(),
             ).toString('base64')}`;
-      this.results.set(message.id, result);
+      this.results.set(0, result);
       document.body.dataset.perfSimulatedViewportInteraction = '1';
-      this.onmessage?.({ data: { type: 'ready', id: message.id } });
+      this.onmessage?.({ data: 0 });
     } catch {
-      this.onmessage?.({ data: { type: 'error', id: message.id } });
+      this.onmessage?.({ data: null });
     }
   }
   terminate() {}

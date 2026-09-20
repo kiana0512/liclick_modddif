@@ -6,7 +6,7 @@ export function isRenderedLocalRepaintLayer(layer: Layer) {
     layer.id.startsWith('local-repaint-') ||
     layer.role === 'local-repaint-overlay' ||
     layer.role === 'local-repaint-draft' ||
-    (layer.imageUrl ?? '').includes('surface-edit:local-repaint') ||
+    layer.imageUrl?.includes('surface-edit:local-repaint') ||
     layer.localRepaintSourceUrl ||
     layer.localRepaintMaskUrl,
   );
@@ -23,10 +23,12 @@ export function getTopUvPreviewLayer(
   previewLayerId?: string,
 ) {
   const top = uvLayers[0];
-  if (!top) return undefined;
-  if (isRenderedLocalRepaintLayer(top)) return top;
-  if (!isLiveProjectedCanvasUrl(top.imageUrl)) return undefined;
-  return previewLayerId || projectedLayers.every(
-    (layer) => layer.visible === false || top.order < layer.order,
+  return top && (
+    isRenderedLocalRepaintLayer(top) ||
+    (isLiveProjectedCanvasUrl(top.imageUrl) && (
+      previewLayerId || projectedLayers.every(
+        (layer) => layer.visible === false || top.order < layer.order,
+      )
+    ))
   ) ? top : undefined;
 }

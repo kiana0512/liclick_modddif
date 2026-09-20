@@ -44,7 +44,7 @@
 
 主要文件：
 
-- `apps/web/src/engine/viewport/viewportInteractionState.ts`
+- `apps/web/src/engine/viewport/input.ts`
 - `apps/web/src/routes/EditorPage.tsx`
 
 ### 3.2 GPU UV 合成分块与异步化

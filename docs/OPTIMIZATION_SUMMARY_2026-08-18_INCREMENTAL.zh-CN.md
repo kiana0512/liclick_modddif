@@ -113,7 +113,7 @@
 - `apps/web/src/engine/viewport/SceneRoot.tsx`
 - `apps/web/src/engine/viewport/ViewportCanvas.tsx`
 - `apps/web/src/engine/viewport/previewTextureCache.ts`
-- `apps/web/src/engine/viewport/viewportInteractionState.ts`
+- `apps/web/src/engine/viewport/input.ts`
 - `apps/web/src/features/workflow/AssetModelViewport.tsx`
 - `apps/web/src/features/workflow/modelPreviewAssets.ts`
 - `apps/web/src/features/projects/projectDefaultName.ts`

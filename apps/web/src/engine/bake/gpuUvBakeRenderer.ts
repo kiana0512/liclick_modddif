@@ -16,7 +16,7 @@ import type { Layer } from '@/types/layer';
 import {
   isViewportInteractionBusy,
   waitForViewportInteractionIdle as waitForSharedViewportInteractionIdle,
-} from '@/engine/viewport/viewportInteractionState';
+} from '@/engine/viewport/input';
 import { waitForBrowserPaint } from '@/utils/browserScheduling';
 import {
   residentPreviewTextureCache,

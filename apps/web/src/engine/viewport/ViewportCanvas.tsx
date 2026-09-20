@@ -157,7 +157,7 @@ import {
 } from '@/engine/localRepaint/localRepaintInteractiveState';
 import { prepareLocalRepaintGenerationInput } from '@/engine/localRepaint/generationInputWorker';
 import { revokeRegisteredObjectUrl } from '@/utils/blobUrlRegistry';
-import { isViewportInteractionBusy, markViewportInteractionEnd } from './viewportInteractionState';
+import { isViewportInteractionBusy, markViewportInteractionEnd } from './input';
 import {
   markEraserPerformanceEvent,
   measureEraserNextFrame,

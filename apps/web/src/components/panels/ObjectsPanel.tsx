@@ -22,7 +22,7 @@ import { downloadBlob, getExportFilename } from '@/engine/export/exportUtils';
 import { createObjectDeletionTransaction } from '@/engine/history/objectDeletionTransaction';
 import { getBoundingBoxForObject } from '@/engine/scene/boundingBoxUtils';
 import { transformFromObject } from '@/engine/scene/transformActions';
-import { markViewportInteractionActivity } from '@/engine/viewport/viewportInteractionState';
+import { markViewportInteractionActivity } from '@/engine/viewport/input';
 import { useEditorHistoryStore } from '@/stores/editorHistoryStore';
 import { useT } from '@/stores/i18nStore';
 import {

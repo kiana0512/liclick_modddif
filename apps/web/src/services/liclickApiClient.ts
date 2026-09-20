@@ -9,7 +9,7 @@ import {
   type ReferencePreprocessingResult,
 } from './referenceImagePreprocessor';
 import { mapWithConcurrency } from '@/utils/mapWithConcurrency';
-import { interactionSafeJsonResponse } from '@/engine/viewport/viewportInteractionState';
+import { interactionSafeJsonResponse } from '@/engine/viewport/input';
 
 export class LiclickApiError extends Error {
   readonly status: number;

@@ -2,7 +2,7 @@ import { recordWebGpuProductionDispatch } from '@/engine/performance/gpuComputeB
 import {
   isViewportInteractionBusy,
   subscribeViewportInteraction,
-} from '@/engine/viewport/viewportInteractionState';
+} from '@/engine/viewport/input';
 
 // Smaller submissions keep the render queue available to the viewport during
 // 4K UV composition. This changes scheduling only; every RGBA byte is still

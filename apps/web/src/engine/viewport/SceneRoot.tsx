@@ -84,7 +84,7 @@ import { ObjectTransformControls } from './ObjectTransformControls';
 import {
   isViewportInteractionBusy as isSharedViewportInteractionBusy,
   markViewportInteractionActivity,
-} from './viewportInteractionState';
+} from './input';
 import { getTransientLocalRepaintLayerId } from './localRepaintResidentHandoff';
 import {
   createWorkerBackedPreviewTexture,

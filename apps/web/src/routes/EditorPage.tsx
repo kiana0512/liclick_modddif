@@ -201,7 +201,7 @@ import { ViewportCanvas } from '@/engine/viewport/ViewportCanvas';
 import {
   isViewportInteractionBusy,
   subscribeViewportInteraction,
-} from '@/engine/viewport/viewportInteractionState';
+} from '@/engine/viewport/input';
 import {
   markPerformanceEvent,
   startPerformanceSpan,

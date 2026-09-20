@@ -7,7 +7,7 @@ import {prepareMergeProjectionLayers} from './prepareMergeProjectionLayers';
 import {useSceneStore} from '@/stores/sceneStore';
 import {useLayerStore} from '@/stores/layerStore';
 import {useProjectStore} from '@/stores/projectStore';
-import {isViewportInteractionBusy} from '@/engine/viewport/viewportInteractionState';
+import {isViewportInteractionBusy} from '@/engine/viewport/input';
 import {cancelMergeFinalPreparation,prepareMergeFinal} from './mergeFinalPreparation';
 import {persistentMergeKey,readPersistentMerge,writePersistentMerge} from './persistentMergePreparation';
 import {isFlattenableUvMergeSource,compareUvMergeSources} from '@/engine/layers/mergeUvComposition';

@@ -395,7 +395,7 @@ compactCache.dispose();
   const {projectionAttributeRevision}=load('projectionBakeSignature',{
     './layerStackCache':{},'./uvBakeDebugControls':{},
     '@/utils/browserScheduling':{yieldToBrowserTask:async()=>{throw Error('Attribute revision must not schedule pixel copies');}},
-    '@/engine/viewport/viewportInteractionState':{waitForViewportInteractionIdle:async()=>{throw Error('Attribute revision must not wait for interaction');}},
+    '@/engine/viewport/input':{waitForViewportInteractionIdle:async()=>{throw Error('Attribute revision must not wait for interaction');}},
   });
   const uv=new THREE.Float32BufferAttribute([0,0,1,1],2);
   const first=projectionAttributeRevision(uv);
@@ -546,7 +546,7 @@ globalThis.fetch = async () => new Response(new Uint8Array([sourceByte]));
 try {
   const { persistentMergeKey } = load('persistentMergePreparation', {
     '@/utils/browserScheduling': { yieldToBrowserTask: async () => {}, waitForBrowserPaint: async () => {} },
-    '@/engine/viewport/viewportInteractionState': { waitForViewportInteractionIdle: async () => {} },
+    '@/engine/viewport/input': { waitForViewportInteractionIdle: async () => {} },
     '@/stores/authStore': { useAuthStore: { getState: () => ({ user: userId ? { id: userId } : undefined }) } },
     './uvBakeDebugControls': { getDebugUvBakeStatus: () => ({}) },
     '@/engine/layers/mergeUvComposition': { getMergeUvPostprocessOptions: () => ({}) },

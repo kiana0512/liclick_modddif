@@ -13,7 +13,7 @@ import {
   type PreviewTextureUploadTimings,
 } from '@/engine/viewport/previewTextureCache';
 import { waitForBrowserPaint, yieldToBrowserTask } from '@/utils/browserScheduling';
-import { isViewportInteractionBusy, waitForViewportInteractionIdle } from '@/engine/viewport/viewportInteractionState';
+import { isViewportInteractionBusy, waitForViewportInteractionIdle } from '@/engine/viewport/input';
 import { uploadUvRgba } from '@/engine/bake/uvContributionTiles';
 import { markSparseAlphaBaseTexture } from './ProjectedLayerMaterial';
 import { ProjectedUvRasterCache } from '@/engine/bake/ProjectedUvRasterCache';

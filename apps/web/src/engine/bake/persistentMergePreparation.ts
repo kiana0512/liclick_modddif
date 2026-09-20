@@ -5,7 +5,7 @@ import {useAuthStore} from '@/stores/authStore';
 import {getDebugUvBakeStatus} from './uvBakeDebugControls';
 import {getMergeUvPostprocessOptions} from '@/engine/layers/mergeUvComposition';
 import {waitForBrowserPaint,yieldToBrowserTask} from '@/utils/browserScheduling';
-import {waitForViewportInteractionIdle} from '@/engine/viewport/viewportInteractionState';
+import {waitForViewportInteractionIdle} from '@/engine/viewport/input';
 const CACHE='li3d-verified-merge-preparation-v1';
 const hash=async(bytes:Uint8Array<ArrayBuffer>)=>Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',bytes)),b=>b.toString(16).padStart(2,'0')).join('');
 const textBytes=(value:unknown)=>new TextEncoder().encode(JSON.stringify(value));
@@ -107,7 +107,7 @@ async function readPersistentMergeInWorker(key:string,resolution:number):Promise
   if(typeof Worker==='undefined') return undefined;
   let worker:Worker;
   try {
-    worker=new Worker(new URL('../../workers/persistentMergePreparation.worker.ts',import.meta.url),{type:'module'});
+    worker=new Worker(new URL('../../workers/payload.worker.ts',import.meta.url),{type:'module'});
   } catch {return undefined;}
   return new Promise(resolve=>{
     const finish=(result:PersistentReadWorkerResponse|undefined)=>{worker.terminate();resolve(result);};

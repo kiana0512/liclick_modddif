@@ -80,31 +80,26 @@ export async function waitForViewportInteractionIdle(quietWindowMs = 180, checkC
 }
 
 async function runInteractionPayload<T>(
-  request: Record<string, unknown>,
+  request: ArrayBuffer | Blob,
   transfer: Transferable[] = [],
 ) {
   await waitForViewportInteractionIdle();
   const worker = new Worker(
-    new URL('../../workers/interactionPayload.worker.ts', import.meta.url),
+    new URL('../../workers/payload.worker.ts', import.meta.url),
     { type: 'module' },
   );
-  return new Promise<T>((resolve, reject) => {
-    const fail = () => {
+  return new Promise<T | undefined>((resolve) => {
+    const finish = (result?: T) => {
       worker.terminate();
-      reject();
+      resolve(result);
     };
-    worker.onerror = worker.onmessageerror = fail;
-    worker.onmessage = ({ data }: MessageEvent<{ type: string; result?: unknown }>) => {
-      if (data.type === 'ready') {
-        void waitForViewportInteractionIdle().then(() => worker.postMessage({ type: 'release' }));
+    worker.onerror = worker.onmessageerror = () => finish();
+    worker.onmessage = ({ data }: MessageEvent<0 | null | [result: unknown]>) => {
+      if (data === 0) {
+        void waitForViewportInteractionIdle().then(() => worker.postMessage(null));
         return;
       }
-      if (data.type === 'result') {
-        worker.terminate();
-        resolve(data.result as T);
-      } else {
-        fail();
-      }
+      finish(data?.[0] as T | undefined);
     };
     worker.postMessage(request, transfer);
   });
@@ -116,16 +111,12 @@ export async function interactionSafeJsonResponse<T>(response: Response): Promis
     return response.json().catch(() => undefined) as Promise<T | undefined>;
   }
   const bytes = await response.arrayBuffer();
-  if (bytes.byteLength < PAYLOAD_WORKER_THRESHOLD || typeof Worker === 'undefined') {
-    try {
-      if (bytes.byteLength >= PAYLOAD_WORKER_THRESHOLD) await waitForViewportInteractionIdle();
-      return JSON.parse(new TextDecoder().decode(bytes)) as T;
-    } catch {
-      return undefined;
-    }
+  if (bytes.byteLength >= PAYLOAD_WORKER_THRESHOLD && typeof Worker !== 'undefined') {
+    return runInteractionPayload<T>(bytes, [bytes]);
   }
   try {
-    return await runInteractionPayload<T>({ type: 'parse', bytes }, [bytes]);
+    if (bytes.byteLength >= PAYLOAD_WORKER_THRESHOLD) await waitForViewportInteractionIdle();
+    return JSON.parse(new TextDecoder().decode(bytes)) as T;
   } catch {
     return undefined;
   }
@@ -135,8 +126,8 @@ export async function interactionSafeBlobDataUrl(blob: Blob) {
   const read = () =>
     new Promise<string>((resolve, reject) => {
       const reader = new FileReader();
-      reader.onload = () => resolve(String(reader.result));
-      reader.onerror = () => reject(reader.error || new Error());
+      reader.onload = () => resolve(reader.result as string);
+      reader.onerror = () => reject(reader.error);
       reader.readAsDataURL(blob);
     });
   if (blob.size < PAYLOAD_WORKER_THRESHOLD) return read();
@@ -144,12 +135,10 @@ export async function interactionSafeBlobDataUrl(blob: Blob) {
     await waitForViewportInteractionIdle();
     return read();
   }
-  try {
-    return await runInteractionPayload<string>({ type: 'data-url', blob });
-  } catch {
-    await waitForViewportInteractionIdle();
-    return read();
-  }
+  const result = await runInteractionPayload<string>(blob);
+  if (result !== undefined) return result;
+  await waitForViewportInteractionIdle();
+  return read();
 }
 
 export function subscribeViewportInteraction(listener: () => void) {

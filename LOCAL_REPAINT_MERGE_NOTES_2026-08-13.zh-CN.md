@@ -36,7 +36,7 @@
 
 - `apps/web/src/engine/viewport/BlenderOrbitControls.ts`
 - `apps/web/src/engine/viewport/ViewportCanvas.tsx`
-- `apps/web/src/engine/viewport/viewportInteractionState.ts`
+- `apps/web/src/engine/viewport/input.ts`
 
 目的：精密滚轮或触控板在一个显示周期内会连续产生多个 `wheel` 事件。旧逻辑每个原始事件都立即执行相机 `lookAt` 和矩阵更新；局部重绘材质启用后，这种事件风暴会明显放大 CPU 峰值。
 

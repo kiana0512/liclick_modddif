@@ -39,7 +39,7 @@ uv.dispose(); root.children[0].geometry.dispose();
 
 // Exercise the real idle function with a permanently busy camera. Cancellation
 // must drain after a paint, without waiting for pointer release.
-const interactionSource = read('engine/viewport/viewportInteractionState');
+const interactionSource = read('engine/viewport/input');
 const ast = ts.createSourceFile('interaction.ts', interactionSource, ts.ScriptTarget.Latest, true);
 const idleFunction = ast.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === 'waitForViewportInteractionIdle');
 let paints = 0;
@@ -80,7 +80,7 @@ for (const busy of [false, true]) {
       uploadPreviewTextureInStripes: async () => {}, releaseTransientPreviewUploadSource() {},
     },
     '@/utils/browserScheduling': { yieldToBrowserTask: async () => { events.push('yield'); } },
-    '@/engine/viewport/viewportInteractionState': { isViewportInteractionBusy: () => false },
+    '@/engine/viewport/input': { isViewportInteractionBusy: () => false },
     './ProjectedLayerMaterial': { markSparseAlphaBaseTexture() {} },
     '@/engine/bake/ProjectedUvRasterCache': { ProjectedUvRasterCache: class { dispose() {} } },
     './residentUvPresentation': { markResidentUvPending() {}, finishResidentUvPresentation() {}, releaseResidentUvManagement() {} },

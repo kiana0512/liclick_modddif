@@ -163,7 +163,7 @@
 - `engine/viewport/SceneRoot.tsx`
 - `engine/viewport/ViewportCanvas.tsx`
 - `engine/viewport/previewTextureCache.ts`
-- `engine/viewport/viewportInteractionState.ts`
+- `engine/viewport/input.ts`
 - `routes/EditorPage.tsx`
 - `workers/webGpuRgbaComposite.worker.ts`
 
