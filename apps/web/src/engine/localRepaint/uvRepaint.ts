@@ -1,11 +1,12 @@
 import * as THREE from 'three';
+import { boundRepaintProjectionSampling } from './boundedProjectionSampling';
 import {
   UV_REPAINT_TILE_SIZE,
   type UvRepaintRect as Rect,
   type UvRepaintPatch,
 } from './uvRepaintState';
 
-// ALG-LR-UV-PAINT v1.2.0. Shared UV pixels intentionally share color/alpha.
+// ALG-LR-UV-PAINT v1.3.0. Shared UV pixels intentionally share color/alpha.
 type Tile = { bounds: Rect; surfaces: Array<{ mesh: THREE.Mesh; box: THREE.Box3 }> };
 type Stroke = {
   before?: Map<number, Promise<Uint8Array<ArrayBuffer>>>;
@@ -142,7 +143,7 @@ export function createUvRepaintSourceMaterial(source: THREE.ShaderMaterial) {
       `
       void main() { capturedVertex(); gl_Position = vec4(uv * 2.0 - 1.0, 0.0, 1.0); }
     `,
-    fragmentShader: source.fragmentShader.replace(
+    fragmentShader: boundRepaintProjectionSampling(source.fragmentShader).replace(
       /#include <(?:tonemapping|colorspace)_fragment>/g,
       '',
     ),
