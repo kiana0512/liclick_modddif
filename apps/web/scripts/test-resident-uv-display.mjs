@@ -40,23 +40,26 @@ const { resolvePixelCpu } = load('qualityBlendCpuPixel', {});
     'Final reduction proceeds directly to its asynchronous GPU readback');
   assert.match(contributionSource, /targets\[targets\.length - 1\]/,
     'Occupancy readback follows the final reduction level');
-  const {uploadUvRgba}=load('uvContributionTiles',{three:THREE,
+  const {uploadUvRed,uploadUvRgba}=load('uvContributionTiles',{three:THREE,
     '@/utils/browserScheduling':{yieldToBrowserTask:async()=>{}}});
-  for(const [width,height] of [[1,1],[65,67],[300,301],[1024,1025]])for(const flipRows of [false,true]) {
-    const source=Uint8Array.from({length:width*height*4},(_,i)=>(i*37)&255),before=source.slice();
+  for(const [width,height] of [[1,1],[65,67],[300,301],[1024,1025]])for(const flipRows of [false,true]) for(const channels of [1,4]) {
+    const source=Uint8Array.from({length:width*height*channels},(_,i)=>(i*37)&255),before=source.slice();
     const output=new Uint8Array(source.length);let maximum=0;
     const renderer={initTexture(texture){assert.equal(texture.source.dataReady,false);},copyTextureToTexture(stripe,_target,_region,position){
-      maximum=Math.max(maximum,stripe.image.data.byteLength);output.set(stripe.image.data,position.y*width*4);
+      maximum=Math.max(maximum,stripe.image.data.byteLength);output.set(stripe.image.data,position.y*width*channels);
     }};
-    const texture=await uploadUvRgba(renderer,source,width,height,{flipRows});
-    for(let y=0;y<height;y++)assert.deepEqual(output.subarray(y*width*4,(y+1)*width*4),
-      source.subarray((flipRows?height-1-y:y)*width*4,(flipRows?height-y:y+1)*width*4));
+    const texture=await (channels===1?uploadUvRed:uploadUvRgba)(renderer,source,width,height,{flipRows});
+    assert.equal(texture.format,channels===1?THREE.RedFormat:THREE.RGBAFormat);
+    for(let y=0;y<height;y++)assert.deepEqual(output.subarray(y*width*channels,(y+1)*width*channels),
+      source.subarray((flipRows?height-1-y:y)*width*channels,(flipRows?height-y:y+1)*width*channels));
     assert.deepEqual(source,before);assert(maximum<=1048576);texture.dispose();
   }
-  let released=0,checks=0;
-  await assert.rejects(uploadUvRgba({initTexture(t){t.addEventListener('dispose',()=>released++);},copyTextureToTexture(){}},
-    new Uint8Array(300*301*4),300,301,{check(){if(++checks===3)throw Error('cancelled');}}),/cancelled/);
-  assert.equal(released,1,'Cancelled direct upload releases its unpublished destination');
+  for(const [upload,channels] of [[uploadUvRed,1],[uploadUvRgba,4]]) {
+    let released=0,checks=0;
+    await assert.rejects(upload({initTexture(t){t.addEventListener('dispose',()=>released++);},copyTextureToTexture(){}},
+      new Uint8Array(300*301*channels),300,301,{check(){if(++checks===3)throw Error('cancelled');}}),/cancelled/);
+    assert.equal(released,1,'Cancelled direct upload releases its unpublished destination');
+  }
 }
 let sentinels,
   packed,

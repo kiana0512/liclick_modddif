@@ -6,12 +6,16 @@ import { yieldToBrowserTask } from '@/utils/browserScheduling';
 export type UvContributionTiles = { index: THREE.DataTexture; columns: number };
 
 /** Exact RGBA rows, bounded transfers, no full-frame ImageBitmap/Worker roundtrip. */
-export async function uploadUvRgba(renderer: THREE.WebGLRenderer, pixels: Uint8Array<ArrayBuffer> | Uint8ClampedArray<ArrayBuffer>,
-  width: number, height: number, options: {flipRows?: boolean; beforeStripe?: () => Promise<void>;
-    check?: () => void; configure?: (texture: THREE.DataTexture) => void} = {}) {
-  const texture=new THREE.DataTexture(null,width,height);
+type UvUploadOptions = {flipRows?: boolean; beforeStripe?: () => Promise<void>;
+  check?: () => void; configure?: (texture: THREE.DataTexture) => void};
+
+async function uploadUvBytes(renderer: THREE.WebGLRenderer,
+  pixels: Uint8Array<ArrayBuffer> | Uint8ClampedArray<ArrayBuffer>, width: number, height: number,
+  bytesPerPixel: 1 | 4, format: THREE.PixelFormat, options: UvUploadOptions = {}) {
+  const texture=new THREE.DataTexture(null,width,height,format);
+  texture.unpackAlignment=1;
   options.configure?.(texture);texture.source.dataReady=false;texture.needsUpdate=true;
-  const rows=Math.max(1,Math.floor(1048576/(width*4))),rowBytes=width*4;
+  const rows=Math.max(1,Math.floor(1048576/(width*bytesPerPixel))),rowBytes=width*bytesPerPixel;
   try {
     await options.beforeStripe?.();options.check?.();
     const allocationStarted=performance.now();renderer.initTexture(texture);
@@ -29,7 +33,8 @@ export async function uploadUvRgba(renderer: THREE.WebGLRenderer, pixels: Uint8A
           data.set(pixels.subarray(offset,offset+rowBytes),row*rowBytes);
         }
       } else data=pixels.subarray(y*rowBytes,(y+count)*rowBytes);
-      const stripe=new THREE.DataTexture(data,width,count);
+      const stripe=new THREE.DataTexture(data,width,count,format);
+      stripe.unpackAlignment=1;
       const copyStarted=performance.now();
       try {renderer.copyTextureToTexture(stripe,texture,null,new THREE.Vector2(0,y));}
       finally {stripe.dispose();}
@@ -41,6 +46,19 @@ export async function uploadUvRgba(renderer: THREE.WebGLRenderer, pixels: Uint8A
     if(typeof document!=='undefined') document.body.dataset.residentUvUploadStages=JSON.stringify({allocationMs,copyMs,maximumStripeMs});
     return texture;
   } catch(error) {texture.dispose();throw error;}
+}
+
+/** Exact RGBA rows, bounded transfers, no full-frame ImageBitmap/Worker roundtrip. */
+export function uploadUvRgba(renderer: THREE.WebGLRenderer,
+  pixels: Uint8Array<ArrayBuffer> | Uint8ClampedArray<ArrayBuffer>, width: number, height: number,
+  options: UvUploadOptions = {}) {
+  return uploadUvBytes(renderer,pixels,width,height,4,THREE.RGBAFormat,options);
+}
+
+/** UV-CONTRIBUTION-ARCHIVE/1.1.0: quality remains its canonical one-byte R8 value. */
+export function uploadUvRed(renderer: THREE.WebGLRenderer, pixels: Uint8Array<ArrayBuffer>,
+  width: number, height: number, options: UvUploadOptions = {}) {
+  return uploadUvBytes(renderer,pixels,width,height,1,THREE.RedFormat,options);
 }
 const vertexShader = `precision highp float; in vec3 position;
 void main(){gl_Position=vec4(position,1.0);}`;
