@@ -2,6 +2,8 @@
 
 2026-09-20 M06（协作 M07/M08）：`UV-REPAINT-PREVIEW-BINDING` v1.0.1 统一手动 UV 重绘层在 React、显隐订阅及异步材质发布中的顶层/下层划分；运行时纹理不再进入静态图片预热，含 live 输入的组合不复用静态显示缓存。普通 PNG 图层显隐也刷新组合所有者，全可见预热只在请求键匹配且结果 ready 后登记缓存，防止旧贴图写入新组合。GPU/CPU/Worker/shader 合成公式、源像素、分辨率、QA、保存/合并/导出协议均不变；无需迁移，回滚仅恢复显示绑定。详见 [多层 UV 重绘显隐修复](changes/CHG-20260920-MANUAL-UV-PREVIEW-VISIBILITY.md)。
 
+2026-09-20 M04（协作 M03/M08/M12）：`GPT-REPAINT-GEOMETRY-FRAMING/1.0.0` / `GPT-CONTENT-BOUNDS/1.1.0` 修复 GPT 局部重绘把不透明蓝/黑法线背景误当主体的问题。提交前复用同冻结相机的 linear-view packed depth 提取模型边界，保存到既有 framing；保留长边 1:1 配对裁切、原生返图和严格轮廓阈值。作者选区、GPU/Worker/shader/UV/export、Schema/Command/CAS/ownership 不变；旧失败任务需重新生成，无资产迁移。真实 WebGL 蓝/黑背景与透明返图坐标/像素回归通过。详见 [局部重绘轮廓来源修复](changes/CHG-20260920-GPT-REPAINT-GEOMETRY-FRAMING.md)。本地修改，未推送或部署。
+
 2026-09-20 UI-05 → M04：`SINGLE-VIEW-COMPLETION/1.0.0` 在 GPT/ModelView 单视图自动回贴事务成功保存图层与回执后，复用同一已确认的 Generation，不再改写回贴完成时间并串行保存第二次。仅本次保存 Promise 成功且单张结果/实际图层完整、无失败时跳过收尾重复 checkpoint；已有内存标记、保存失败、图层删除和多视图仍走原收尾保存。等待必要保存时明确显示“回贴完成，正在保存”，不提前假报完成。GPU/CPU/Worker/shader、分辨率、QA、投影/UV/export 像素与 Schema/Command/CAS/ownership/verified assets 不变，无历史迁移。详见 [单视图完成保存去重](changes/CHG-20260920-SINGLE-VIEW-COMPLETION.md)。本地修改，未推送或部署。
 
 2026-09-20 M04（协作 M03/M06/M07）：`MODELVIEW-PRESENTATION-BARRIER/1.0.0` 将 ModelView 多视图的单次 resident 事件等待改为目标对象实际显示材质与本次新图层 ID 检查，复用 GPT 的严格 presentation 屏障。Resident UV 材质原位更新或检查开始前已完成均可确认；旧 atlas、缺失对象、warmup 材质和未完成 mesh 不放行，经过两次浏览器绘制调度再复核，取消仍中止串行。60 秒只提示等待，不超时跳过、不重复生图。GPU/CPU/Worker/shader、完整分辨率、QA、回贴/导出像素与 Command/CAS/ownership 不变，无 Schema/历史资产迁移。详见 [ModelView 回贴完成屏障](changes/CHG-20260920-MODELVIEW-PRESENTATION-BARRIER.md)。本地修复，未推送或部署。
@@ -220,7 +222,7 @@
 
 2026-09-15 M03：ALG-VIEW-INPUT-001/1.3.2 在鼠标接触前即让 R3F 悬停遵守 Alt 所有权；保留普通 hover 和已锁定拖动。旧实现拾取回归失败、新实现通过，用户实际首帧延迟需继续录制。无像素/持久化迁移，见 [Alt 悬停变更卡](changes/CHG-20260915-ALT-BRUSH-HOVER.md)。
 
-> 文档版本：`2.20.203`
+> 文档版本：`2.20.204`
 
 2026-09-16 UI-16 → M14（协作 M01/M12/M13/M15）：`ASSET-LIFECYCLE-GC` v0.4.0 / `STORAGE-INVENTORY-001/4` 将 Cloud 工程/Revision 引用页默认 8→32，并由单条 PostgreSQL CTE 完成分页、assetId 提取与引用 upsert，Node 不再回传引用数组后二次写库；每 256 条文档约 64→8 次数据库往返，保持 45 秒单查询上限与有界 Node 内存。当前 ready scan 引用索引保留到下一快照原子切换，旧 /3 快照自动重扫。Cloud 隔离区改按真实 quarantine 且排除重新可达对象统计；新增用户级幂等持久 purge job/item，以最多 4 并发签名 DeleteObject 后逐项事务删除 transfer、写 deleted_at，404/Pod 重启可安全重放。新增 `asset_storage_purge_jobs/items`，无 Project/Revision/Asset 内容迁移；Command/CAS/ownership/verified 及 GPU/CPU/Worker/shader、投影/UV/重绘/export、分辨率与 QA 不变。回滚前停 purge 并保留任务表，详见 [Cloud 存储盘点与物理清理变更卡](changes/CHG-20260916-CLOUD-STORAGE-INVENTORY-BOUNDED.md)。
 
@@ -1385,6 +1387,7 @@ M15 / CLOUD-DEPLOYMENT v1.0.0（2026-09-03）：正常合并 release 部署历�
 
 | 版本 | 日期 | 基线 | 变更 |
 | --- | --- | --- | --- |
+| `2.20.204` | 2026-09-20 | `5c155f73 + GPT 局部重绘轮廓来源修复` | M04/M03/M08/M12：取景改用冻结深度模型轮廓，避免不透明法线背景误判；严格返图 QA 保留，无历史迁移，未部署。 |
 | `2.20.203` | 2026-09-20 | `412dc066 + 单视图完成保存去重` | UI-05/M04：SINGLE-VIEW-COMPLETION v1.0.0，复用本次回贴保存确认，去掉单视图收尾重复保存与时间改写；失败/删除/多视图保留 checkpoint，无数据迁移，未部署。 |
 | `2.20.202` | 2026-09-20 | `3eb751af + Resident UV R8 archive` | M07（协作 M06/M09/M15）：`UV-CONTRIBUTION-ARCHIVE` v1.1.0 将会话逐层贡献的 quality 由冗余 RGBA 改为四值 GPU 打包、R8 恢复，原始 payload 由每像素 8→5 字节；兼容旧 RGBA 记录。65–4096 WebGL 显隐/重排/archive restore 逐字节一致；完整分辨率、Top-K、QA、Project/Revision/CAS/ownership/verified assets 与导出不变，无迁移。 |
 | `2.20.201` | 2026-09-20 | `7ab72ebf + ModelView 回贴屏障` | M04/M03/M06/M07：MODELVIEW-PRESENTATION-BARRIER v1.0.0，按对象与新图层实际材质绑定确认回贴，修复原位材质更新漏事件导致串行停滞；无像素/Schema 迁移，未部署。 |

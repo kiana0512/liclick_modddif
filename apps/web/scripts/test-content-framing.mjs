@@ -490,11 +490,15 @@ const restoreAdapter = evaluate(
 );
 try {
   fixtures.set('normal', coverage(220, 220, { x: 30, y: 70, w: 150, h: 60 }, true));
+  const depth = coverage(220, 220, { x: 0, y: 0, w: 220, h: 220 });
+  for (let y = 70; y < 130; y++) for (let x = 30; x < 180; x++)
+    depth.data.set([42, 80, 128, 255], (y * 220 + x) * 4);
+  fixtures.set('depth', depth);
   const combined = coverage(220, 220, { x: 0, y: 0, w: 220, h: 220 });
   // Nonconstant opaque background must survive across the full square crop.
   for (let i = 0; i < combined.data.length; i += 4) combined.data[i] = (i / 4) % 251;
   fixtures.set('combined', combined);
-  const capture = { width: 220, height: 220, normalUrl: 'normal', maskUrl: 'author-mask' };
+  const capture = { width: 220, height: 220, normalUrl: 'normal', maskUrl: 'author-mask', depthUrl: 'depth', depthEncoding: 'linear-view' };
   const references = [
     { id: 'combined', url: 'combined' },
     { id: 'normal', url: 'normal' },
@@ -510,6 +514,34 @@ try {
   assert.equal(preparedInput.references[2], references[2]);
   assert.equal(capture.maskUrl, 'author-mask');
   const f = preparedInput.framing;
+  // A renderer normal guide may have an opaque blue/black backdrop. Its alpha
+  // is not geometry coverage; neither is the much smaller authored selection.
+  for (const background of [[128, 128, 255, 255], [0, 0, 0, 255]]) {
+    const opaqueNormal = coverage(220, 220, { x: 30, y: 70, w: 150, h: 60 }, true);
+    for (let y = 0; y < 220; y++) for (let x = 0; x < 220; x++) {
+      if (x < 30 || x >= 180 || y < 70 || y >= 130)
+        opaqueNormal.data.set(background, (y * 220 + x) * 4);
+    }
+    fixtures.set('opaque-normal', opaqueNormal);
+    const result = await imageAdapter.prepareContentFraming({
+      workflow: 'local-repaint', imageSize: '1K',
+      capture: { ...capture, normalUrl: 'opaque-normal' },
+      referenceImages: [references[0], { ...references[1], url: 'opaque-normal' }],
+    });
+    assert.deepEqual(result.framing, f, 'Normal backdrop must not change frozen geometry framing');
+  }
+  for (const invalidCapture of [
+    { ...capture, depthUrl: undefined },
+    { ...capture, depthEncoding: undefined },
+    { ...capture, depthUrl: 'small-depth' },
+    { ...capture, depthUrl: 'empty-depth' },
+  ]) {
+    fixtures.set('small-depth', coverage(10, 10, { x: 0, y: 0, w: 10, h: 10 }));
+    fixtures.set('empty-depth', coverage(220, 220, { x: 0, y: 0, w: 220, h: 220 }));
+    await assert.rejects(() => imageAdapter.prepareContentFraming({
+      workflow: 'local-repaint', capture: invalidCapture, referenceImages: references,
+    }), /轮廓|深度/);
+  }
   for (let index = 0; index < 2; index++) {
     const actual = fixtures.get(preparedInput.references[index].url),
       sourcePixels = fixtures.get(references[index].url);
@@ -568,6 +600,14 @@ try {
     }),
   );
   const restoredUrl = await restoreAdapter.restoreContentFraming('remote-output', f);
+  for (const changed of [
+    { x: 100, y: 0, w: 200, h: 100 }, // shifted/shrunk
+    { x: 0, y: 0, w: f.outputWidth, h: f.outputHeight }, // opaque full background
+    { x: 0, y: 0, w: 0, h: 0 }, // empty
+  ]) {
+    fixtures.set('misaligned-output', coverage(f.outputWidth, f.outputHeight, changed));
+    await assert.rejects(() => restoreAdapter.restoreContentFraming('misaligned-output', f), /轮廓/);
+  }
   assert.equal(
     fixtures.get(restoredUrl).width,
     restoredFrameLayout(f, f.outputWidth, f.outputHeight).width,

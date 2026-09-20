@@ -43,7 +43,13 @@ export async function encode(canvas: HTMLCanvasElement) {
 export async function prepareContentFraming(input: LiclickGenerateTextureSingleViewInput) {
   const capture = input.capture!;
   const normal = input.workflow === 'local-repaint';
-  const coverageUrl = normal ? capture.normalUrl : capture.maskUrl;
+  // GPT-REPAINT-GEOMETRY-FRAMING/1.0.0. Normal guides now have an opaque
+  // blue/black backdrop; their alpha is no longer model coverage. Reuse the
+  // immutable depth pass already captured/saved before submission. maskUrl in
+  // repaint is the author's selection, not the full model silhouette.
+  if (normal && capture.depthEncoding !== 'linear-view')
+    throw new Error('缺少同视角模型深度轮廓，未提交生成任务。');
+  const coverageUrl = normal ? capture.depthUrl : capture.maskUrl;
   if (!coverageUrl) throw new Error('缺少模型轮廓，未提交生成任务。');
   const coverage = await urlToImageData(await urlToDataUrl(coverageUrl), undefined, undefined, {
     cooperative: true,
@@ -51,7 +57,7 @@ export async function prepareContentFraming(input: LiclickGenerateTextureSingleV
   });
   if (coverage.width !== capture.width || coverage.height !== capture.height)
     throw new Error('模型轮廓与截图尺寸不一致。');
-  const framing = await findContentFramingCooperatively(coverage, normal, input.imageSize ?? '2K', async () => {
+  const framing = await findContentFramingCooperatively(coverage, normal ? 'linear-depth' : false, input.imageSize ?? '2K', async () => {
     input.signal?.throwIfAborted();
     await yieldToBrowserTask();
     input.signal?.throwIfAborted();
