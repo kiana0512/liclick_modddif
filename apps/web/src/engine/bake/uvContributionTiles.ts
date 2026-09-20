@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { yieldToBrowserTask } from '@/utils/browserScheduling';
 
-// UV-LAYER-CONTRIBUTION/1.0.2: lossless 64² tiles of quantized UV color + quality.
+// UV-LAYER-CONTRIBUTION/1.0.3: lossless 64² tiles of quantized UV color + quality.
 // Alpha 1..5 still contributes to coverage counts, so only alpha == 0 is absent.
 export type UvContributionTiles = { index: THREE.DataTexture; columns: number };
 
@@ -51,9 +51,9 @@ uniform int columns; uniform int sourceColumns;`;
 const reduceShader = `${header}
 layout(location=0) out vec4 result;
 void main(){
-  ivec2 start=ivec2(gl_FragCoord.xy)*4, size=textureSize(source,0);
+  ivec2 start=ivec2(gl_FragCoord.xy)*8, size=textureSize(source,0);
   float occupied=0.0;
-  for(int y=0;y<4;y++)for(int x=0;x<4;x++){
+  for(int y=0;y<8;y++)for(int x=0;x<8;x++){
     ivec2 p=start+ivec2(x,y);
     if(any(greaterThanEqual(p,size)))continue;
     vec4 c=texelFetch(source,p,0);
@@ -142,8 +142,11 @@ export async function compactUvContribution(
   let atlas: THREE.WebGLRenderTarget | undefined;
   try {
     let size = resolution;
-    for (let level = 0; level < 3; level++) {
-      size = Math.ceil(size / 4);
+    // Two exact 8x8 reductions cover the same 64x64 source tile as the old
+    // three 4x4 reductions. This removes one render target/pass/yield without
+    // changing the boolean occupancy or the packed colour/quality bytes.
+    for (let level = 0; level < 2; level++) {
+      size = Math.ceil(size / 8);
       const target = makeTarget(size, size);
       targets.push(target);
       draw(target);
@@ -153,7 +156,7 @@ export async function compactUvContribution(
       checkCancelled?.();
     }
     const occupancy = new Uint8Array(size * size * 4);
-    await renderer.readRenderTargetPixelsAsync(targets[2], 0, 0, size, size, occupancy);
+    await renderer.readRenderTargetPixelsAsync(targets[targets.length - 1], 0, 0, size, size, occupancy);
     checkCancelled?.();
     const addresses = new Uint32Array(size * size),
       active: number[] = [];

@@ -22,6 +22,19 @@ const load = (file, dependencies) => {
 };
 const { resolvePixelCpu } = load('qualityBlendCpuPixel', {});
 {
+  const contributionSource = fs.readFileSync(
+    new URL('../src/engine/bake/uvContributionTiles.ts', import.meta.url),
+    'utf8',
+  );
+  assert.match(contributionSource, /ivec2 start=ivec2\(gl_FragCoord\.xy\)\*8/,
+    'Contribution occupancy reduces exact 8x8 blocks');
+  assert.match(contributionSource, /for\(int y=0;y<8;y\+\+\)for\(int x=0;x<8;x\+\+\)/,
+    'Every texel in the 8x8 occupancy block is examined');
+  assert.match(contributionSource, /for \(let level = 0; level < 2; level\+\+\)/,
+    'Two reductions preserve the exact 64x64 contribution tile footprint');
+  assert.match(contributionSource, /size = Math\.ceil\(size \/ 8\)/);
+  assert.match(contributionSource, /targets\[targets\.length - 1\]/,
+    'Occupancy readback follows the final reduction level');
   const {uploadUvRgba}=load('uvContributionTiles',{three:THREE,
     '@/utils/browserScheduling':{yieldToBrowserTask:async()=>{}}});
   for(const [width,height] of [[1,1],[65,67],[300,301],[1024,1025]])for(const flipRows of [false,true]) {
