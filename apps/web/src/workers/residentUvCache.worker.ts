@@ -1,6 +1,6 @@
 /// <reference lib="webworker" />
 
-type Entry = { bytes: Uint8Array<ArrayBuffer>; resolution: number; maskLength: number; persistentKey?: string };
+type Entry = { bytes: Uint8Array<ArrayBuffer>; resolution: number; maskLength: number; persistentKey?: string; scope?: string };
 const entries = new Map<string, Entry>();
 let activeKey: string | undefined;
 let diskWrites = Promise.resolve<string | undefined>(undefined);
@@ -8,6 +8,8 @@ const budget = 256 * 1024 * 1024;
 const diskEntryLimit = 4;
 let retained = 0;
 const diskCache = 'li3d-resident-uv-display-v1';
+const pointerCache = 'li3d-resident-uv-active-v1';
+const pointerRequest = () => `${self.location.origin}/__li3d_internal/resident-uv-active`;
 const diskRequest = (key: string) => `${self.location.origin}/__li3d_internal/resident-uv/${key}`;
 const digest = async (bytes: Uint8Array<ArrayBuffer>) =>
   Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)), b => b.toString(16).padStart(2, '0')).join('');
@@ -22,8 +24,18 @@ async function readDisk(key: string, miss: (reason: string) => void) {
     if (![1024, 2048, 4096, 8192].includes(resolution) ||
       (maskLength !== 0 && maskLength !== resolution ** 2) || bytes.length > budget ||
       await digest(bytes) !== response.headers.get('x-sha256')) { miss('invalid-bytes-or-metadata'); return; }
-    return { bytes, resolution, maskLength };
+    return { bytes, resolution, maskLength, persistentKey: key };
   } catch { miss('storage-unavailable'); }
+}
+async function readLatest(scope: unknown) {
+  if (typeof scope !== 'string') return;
+  try {
+    const response = await (await caches.open(pointerCache)).match(pointerRequest());
+    if (!response) return;
+    const pointer = JSON.parse(await response.text());
+    if (pointer.scope !== scope || !validDiskKey(pointer.key)) return;
+    return readDisk(pointer.key, () => undefined);
+  } catch { return undefined; }
 }
 function remember(key: string, entry: Entry) {
   const previous = entries.get(key);
@@ -72,6 +84,8 @@ async function writeDisk(key: string, entry: Entry) {
         diskBytes -= record.bytes;
       }
     }
+    if (entry.scope) await (await caches.open(pointerCache)).put(pointerRequest(),
+      new Response(JSON.stringify({ key, scope: entry.scope })));
     return `saved:${diskEntries}`;
   } catch (error) { return error instanceof Error ? error.name : 'storage-unavailable'; }
 }
@@ -108,7 +122,8 @@ self.onmessage = async ({ data }) => {
       );
       if (bytes.byteLength <= budget) {
         const entry = { bytes, resolution: data.resolution, maskLength: mask.length,
-          persistentKey: validDiskKey(data.persistentKey) ? data.persistentKey : undefined };
+          persistentKey: validDiskKey(data.persistentKey) ? data.persistentKey : undefined,
+          scope: typeof data.scope === 'string' ? data.scope : undefined };
         remember(key, entry);
         diskWrite = await persist(entry);
       }
@@ -116,12 +131,15 @@ self.onmessage = async ({ data }) => {
     } else {
       let miss = 'memory-miss';
       const existing = entries.get(key);
-      const entry: Entry | undefined = existing ?? (validDiskKey(data.persistentKey) ? await readDisk(data.persistentKey, reason => { miss = reason; }) : undefined);
+      const latest = type === 'restore-latest';
+      const entry: Entry | undefined = existing ?? (latest ? await readLatest(data.scope) :
+        validDiskKey(data.persistentKey) ? await readDisk(data.persistentKey, reason => { miss = reason; }) : undefined);
       if (!entry) {
         self.postMessage({ id, miss });
         return;
       }
       if (!existing && validDiskKey(data.persistentKey)) entry.persistentKey = data.persistentKey;
+      if (typeof data.scope === 'string') entry.scope = data.scope;
       const source = new ReadableStream<BufferSource>({
         start(controller) {
           controller.enqueue(entry.bytes);
@@ -133,8 +151,9 @@ self.onmessage = async ({ data }) => {
       ).arrayBuffer();
       if (output.byteLength !== entry.resolution ** 2 * 4 + entry.maskLength)
         throw new Error('Invalid cached UV length');
-      remember(key, entry);
-      self.postMessage({ id, output, resolution: entry.resolution, maskLength: entry.maskLength, keys: [...entries.keys()] }, [
+      if (!latest) remember(key, entry);
+      self.postMessage({ id, output, resolution: entry.resolution, maskLength: entry.maskLength,
+        persistentKey: entry.persistentKey, keys: [...entries.keys()] }, [
         output,
       ]);
     }

@@ -199,17 +199,30 @@ export class ResidentProjectedUvDisplay {
       let restored = interactive ? undefined : await this.compressed.restore(request.signature);
       // Preserve the original verification snapshot timing. Only the first
       // presentation waits for disk; optional cache publication waits for binding.
-      const keyPromise = !restored && request.projectId ? import('@/engine/bake/persistentMergePreparation')
-        .then(({ persistentMergeKey }) => persistentMergeKey({
+      const persistentLayers = [...request.sourceLayers, ...(request.underlayLayers ?? [])]
+        .filter(layer => layer.visible && layer.opacity > 0);
+      const persistence = !restored && request.projectId ? import('@/engine/bake/persistentMergePreparation')
+        .then(({ persistentMergeKey, persistentMergeScope }) => {
+          const input = {
           projectId: request.projectId!, objectId: request.sourceModel.objectId,
           resolution: request.resolution, group: request.sourceModel.group,
-          layers: [...request.sourceLayers, ...(request.underlayLayers ?? [])].filter(layer => layer.visible && layer.opacity > 0),
+          layers: persistentLayers,
           purpose: this.skipUvSeams ? 'resident-uv-display-4-no-seams' : 'resident-uv-display-4',
-        })).catch(() => undefined) : Promise.resolve(undefined);
+          };
+          return [persistentMergeKey(input), persistentMergeScope(input)] as const;
+        }).catch(() => [Promise.resolve(undefined), undefined] as const) :
+        Promise.resolve([Promise.resolve(undefined), undefined] as const);
+      let persistentScope: string | undefined;
       if (!interactive && !restored && !this.front) {
-        persistentKey = await keyPromise;
+        const [keyPromise, scope] = await persistence;
+        persistentScope = scope;
+        const [verifiedKey, candidate] = await Promise.all([
+          keyPromise, this.compressed.restore(request.signature, undefined, persistentScope, true),
+        ]);
+        persistentKey = verifiedKey;
         guard();
-        restored = await this.compressed.restore(request.signature, persistentKey);
+        restored = persistentKey && candidate?.persistentKey === persistentKey ? candidate :
+          await this.compressed.restore(request.signature, persistentKey, persistentScope);
       }
       guard();
       stages.cacheLookupMs = performance.now() - startedAt;
@@ -429,11 +442,12 @@ export class ResidentProjectedUvDisplay {
       );
       if (!interactive && !restored) {
         this.persistAfterPresentation = { texture: colorTexture, run: () => {
-          void yieldToBrowserTask().then(() => {
-            if (cancelled()) return undefined;
-            return persistentKey ?? keyPromise;
-          }).then(key => {
-            if (!cancelled()) this.compressed.offer(request.signature, result.imageData!, result.renderedColorMask, key);
+          void yieldToBrowserTask().then(async () => {
+            if (cancelled()) return;
+            const [key, scope] = await persistence;
+            return [persistentKey ?? await key, persistentScope ?? scope] as const;
+          }).then(value => {
+            if (value && !cancelled()) this.compressed.offer(request.signature, result.imageData!, result.renderedColorMask, ...value);
           }).catch(() => undefined);
         } };
       }

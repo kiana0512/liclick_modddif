@@ -459,13 +459,13 @@ await cacheWorker.onmessage({ data: { id: 3, type: 'restore', key: 'missing' } }
 assert.equal(cacheReply.output, undefined);
 // A fresh worker has no in-memory keys: F5 must recover exact RGBA and mask,
 // while another input/account digest and corrupt bytes must miss.
-const disk = new Map();
+const disk = new Map(), cacheStores = new Map([['li3d-resident-uv-display-v1', disk]]);
 const previousCaches = globalThis.caches;
-globalThis.caches = { async open() { return {
-  async put(key, response) { disk.set(typeof key === 'string' ? key : key.url, response.clone()); },
-  async match(key) { return disk.get(typeof key === 'string' ? key : key.url)?.clone(); },
-  async keys() { return [...disk.keys()].map(key => new Request(key)); },
-  async delete(key) { return disk.delete(typeof key === 'string' ? key : key.url); },
+globalThis.caches = { async open(name) { const store = cacheStores.get(name) ?? new Map(); cacheStores.set(name, store); return {
+  async put(key, response) { store.set(typeof key === 'string' ? key : key.url, response.clone()); },
+  async match(key) { return store.get(typeof key === 'string' ? key : key.url)?.clone(); },
+  async keys() { return [...store.keys()].map(key => new Request(key)); },
+  async delete(key) { return store.delete(typeof key === 'string' ? key : key.url); },
 }; } };
 const freshWorker = () => {
   const worker = { location: { origin: 'https://li3d.test' }, postMessage: cacheWorker.postMessage };
@@ -479,9 +479,16 @@ try {
   const mask = new Uint8Array(1024 ** 2).fill(3);
   rgba[3] = 0; rgba[0] = 219;
   const persistentKey = 'a'.repeat(64);
+  const scope = 'owner-a:project-a:object-a:1024';
   await freshWorker().onmessage({ data: { id: 1, type: 'store', key: 'runtime-a', persistentKey,
-    resolution: 1024, color: rgba.buffer, mask: mask.buffer } });
+    scope, resolution: 1024, color: rgba.buffer, mask: mask.buffer } });
   assert.equal(disk.size, 1);
+  await freshWorker().onmessage({ data: { id: 11, type: 'restore-latest', key: 'reload-runtime', scope } });
+  assert.equal(cacheReply.persistentKey, persistentKey);
+  assert.deepEqual(new Uint8Array(cacheReply.output, 0, rgba.length), rgba,
+    'Matching project state may decompress while its verified key is calculated');
+  await freshWorker().onmessage({ data: { id: 12, type: 'restore-latest', key: 'other-project', scope: 'other' } });
+  assert.equal(cacheReply.output, undefined, 'A different project state cannot speculatively restore the active UV');
   await freshWorker().onmessage({ data: { id: 2, type: 'restore', key: 'new-runtime-url', persistentKey } });
   assert.deepEqual(new Uint8Array(cacheReply.output, 0, rgba.length), rgba);
   assert.deepEqual(new Uint8Array(cacheReply.output, rgba.length), mask);
@@ -624,6 +631,10 @@ await presentation.waitForResidentUvPresentation(scene, 'other-object');
   assert.doesNotMatch(displaySource, /new Uint8ClampedArray\(mask\.length \* 4\)/);
   assert.match(displaySource, /result\.renderedColorMask\?\.length/);
   assert.match(displaySource, /THREE\.RedFormat/);
+  assert.match(displaySource, /Promise\.all\(\[[\s\S]*?keyPromise,[\s\S]*?this\.compressed\.restore\(request\.signature, undefined, persistentScope, true\)/,
+    'Verified source hashing and scoped disk decompression must overlap');
+  assert.match(displaySource, /persistentKey && candidate\?\.persistentKey === persistentKey \? candidate/,
+    'Speculative pixels cannot publish until the complete source digest matches');
   assert.match(
     displaySource,
     /const fastPreview = getLiveSurfacePaintPreview\(\);[\s\S]*?if \(fastPreview\?\.displayArmed[\s\S]*?fastPreview\.target === 'projected-mask'[\s\S]*?fastPreview\.objectId === original\.sourceModel\.objectId[\s\S]*?original\.sourceLayers\.some[\s\S]*?\) return;[\s\S]*?draft\?\.flush\(\)/,

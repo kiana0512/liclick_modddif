@@ -4,7 +4,7 @@ export class ResidentUvCompressedCache {
   private disabled = false;
   private encoding = false;
   private activeKey?: string;
-  private queued?: { key: string; image: ImageData; mask?: Uint8Array; persistentKey?: string };
+  private queued?: { key: string; image: ImageData; mask?: Uint8Array; persistentKey?: string; scope?: string };
   private nextId = 0;
   private known = new Set<string>();
   private pending = new Map<
@@ -14,6 +14,7 @@ export class ResidentUvCompressedCache {
       resolution?: number;
       maskLength?: number;
       keys?: string[];
+      persistentKey?: string;
     }) => void
   >();
   private getWorker() {
@@ -40,8 +41,8 @@ export class ResidentUvCompressedCache {
     }
     return this.worker;
   }
-  async restore(key: string, persistentKey?: string) {
-    if (!this.known.has(key) && !persistentKey) return undefined;
+  async restore(key: string, persistentKey?: string, scope?: string, latest = false) {
+    if (!latest && !this.known.has(key) && !persistentKey) return undefined;
     const worker = this.getWorker();
     if (!worker) return undefined;
     const id = ++this.nextId;
@@ -49,10 +50,11 @@ export class ResidentUvCompressedCache {
       output?: ArrayBuffer;
       resolution?: number;
       maskLength?: number;
+      persistentKey?: string;
     }>((resolve) => {
       this.pending.set(id, resolve);
       try {
-        worker.postMessage({ id, type: 'restore', key, persistentKey });
+        worker.postMessage({ id, type: latest ? 'restore-latest' : 'restore', key, persistentKey, scope });
       } catch {
         this.pending.delete(id);
         resolve({});
@@ -70,10 +72,11 @@ export class ResidentUvCompressedCache {
         result.resolution,
       ),
       renderedColorMask: new Uint8Array(result.output, size, result.maskLength),
+      persistentKey: result.persistentKey,
     };
   }
   /** Ownership of the completed CPU arrays transfers only after texture upload. */
-  offer(key: string, image: ImageData, mask?: Uint8Array, persistentKey?: string) {
+  offer(key: string, image: ImageData, mask?: Uint8Array, persistentKey?: string, scope?: string) {
     if (this.known.has(key)) return;
     const worker = this.getWorker();
     if (!worker) return;
@@ -84,7 +87,7 @@ export class ResidentUvCompressedCache {
       (mask && (mask.byteOffset || mask.byteLength !== mask.buffer.byteLength))
     )
       return;
-    if (this.encoding) { this.queued = { key, image, mask, persistentKey }; return; }
+    if (this.encoding) { this.queued = { key, image, mask, persistentKey, scope }; return; }
     const id = ++this.nextId;
     const color = image.data.buffer,
       maskBuffer = mask?.buffer ?? new ArrayBuffer(0);
@@ -97,7 +100,7 @@ export class ResidentUvCompressedCache {
     });
     try {
       worker.postMessage(
-        { id, type: 'store', key, color, mask: maskBuffer, resolution: image.width, persistentKey },
+        { id, type: 'store', key, color, mask: maskBuffer, resolution: image.width, persistentKey, scope },
         [color, maskBuffer],
       );
     } catch {

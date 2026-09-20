@@ -96,7 +96,7 @@ for (const busy of [false, true]) {
     },
     '@/engine/bake/prepareMergeProjectionLayers': { prepareMergeProjectionLayers: async layers => layers },
     './createMaskedProjectedImage': {},
-    '@/engine/bake/persistentMergePreparation': { persistentMergeKey: async () => {
+    '@/engine/bake/persistentMergePreparation': { persistentMergeScope: () => 'scope', persistentMergeKey: async () => {
       events.push('hash'); return 'verified-key';
     } },
     '@/engine/performance/webGpuRgbaComposite': { compositeRgbaUrlUnderWithWebGpu: (pixels, url, width, height, opacity, signal) => {

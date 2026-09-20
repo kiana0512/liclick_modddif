@@ -8,6 +8,11 @@ import {yieldToBrowserTask} from '@/utils/browserScheduling';
 const CACHE='li3d-verified-merge-preparation-v1';
 const hash=async(bytes:Uint8Array<ArrayBuffer>)=>Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',bytes)),b=>b.toString(16).padStart(2,'0')).join('');
 const textBytes=(value:unknown)=>new TextEncoder().encode(JSON.stringify(value));
+type PersistentMergeInput={projectId:string;objectId:string;resolution:UvBakeResolution;group:THREE.Group;layers:Layer[];purpose?:string};
+export const persistentMergeScope=(input:PersistentMergeInput)=>JSON.stringify([
+  input.projectId,input.objectId,input.resolution,input.purpose,
+  input.layers.map(({id,contentRevision,opacity,order})=>[id,contentRevision??0,opacity,order]),
+]);
 
 async function runBounded(jobs:Array<()=>Promise<void>>,limit:number) {
   let next=0;
@@ -19,7 +24,7 @@ async function runBounded(jobs:Array<()=>Promise<void>>,limit:number) {
 /** UV-PERSISTENT-MERGE-KEY/1.1.0. Hash actual geometry and source bytes:
  * runtime UUIDs and blob URLs are not identity. Independent geometry and asset
  * verification queues overlap, but remain bounded and preserve the same key. */
-export async function persistentMergeKey(input:{projectId:string;objectId:string;resolution:UvBakeResolution;group:THREE.Group;layers:Layer[];purpose?:string}) {
+export async function persistentMergeKey(input:PersistentMergeInput) {
   const userId=useAuthStore.getState().user?.id;
   if(!userId || !globalThis.crypto?.subtle || !('caches' in window)) return undefined;
   try {
