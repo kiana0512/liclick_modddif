@@ -3518,6 +3518,7 @@ export function GeneratePanel({
               }
               return modelviewClient.generateSingleViewInpaint(
                 {
+                  resultBlend: await modelviewClient.prepareResultBlend(currentSingleViewEffectUrl, capture, signal),
                   clientGenerationId: generationId,
                   projectId: currentProject?.id,
                   captureId: capture.id,

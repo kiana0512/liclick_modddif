@@ -5,6 +5,7 @@ import https from 'node:https';
 import tls from 'node:tls';
 import { createHash, randomUUID } from 'node:crypto';
 import sharp from 'sharp';
+import { prepareSingleViewResultBlend, blendSingleViewResult, SINGLE_VIEW_RESULT_BLEND, type BlendCamera } from './singleViewResultBlend.js';
 import { createModelviewIdempotencyKey } from './modelviewIdempotency.js';
 import { serverConfig } from '../config.js';
 import { gpuControlLanCa } from '../certs/gpuControlLanCa.js';
@@ -24,6 +25,7 @@ type ModelviewGenerationInput = {
 };
 
 export type ModelviewSingleViewInpaintInput = ModelviewGenerationInput & {
+  resultBlend?: { version: 1; currentImage: ModelviewControlFile; objectMask: ModelviewControlFile; camera: BlendCamera };
   promptPolishEnabled?: boolean;
   mask: ModelviewControlFile;
   normalImage: ModelviewControlFile;
@@ -500,6 +502,21 @@ async function generateModelviewImage(
   const normal = dataUrlToBuffer(normalInput.dataUrl, `${operationLabel}法线图`);
   if (mask) await validateInpaintImageAndMask(image, mask, normal);
   else await validateNormalImage(image, normal);
+  // These inputs stay on the LI3D control plane; never put them in multipart.
+  const blendInput = kind === 'single-view-inpaint' ? inpaintInput?.resultBlend : undefined;
+  let preparedBlend: Awaited<ReturnType<typeof prepareSingleViewResultBlend>> | undefined;
+  if (blendInput) {
+    try {
+      if (blendInput.version !== 1) throw new Error('不支持的渐变合成版本。');
+      preparedBlend = await prepareSingleViewResultBlend(
+        dataUrlToBuffer(blendInput.currentImage?.dataUrl, '冻结视角图').buffer,
+        dataUrlToBuffer(blendInput.objectMask?.dataUrl, '模型轮廓').buffer,
+        normal.buffer, blendInput.camera, options.signal,
+      );
+    } catch (error) {
+      throw new ModelviewInpaintError(error instanceof Error ? error.message : '渐变合成输入无效。', 422);
+    }
+  }
   const boundaryHash = createHash('sha256').update(idempotencyKey).digest('hex').slice(0, 32);
   const boundary = `----Li3DModelview${boundaryHash}`;
   const body = multipartBody({
@@ -563,21 +580,39 @@ async function generateModelviewImage(
     );
   }
 
-  const sha256 = createHash('sha256').update(response.body).digest('hex');
+  const saveResultAsset = async (buffer: Buffer, mime: string, suffix: string) =>
+    await saveBinaryAsset({ userId, projectId, category: 'generations', mime, buffer,
+      filename: `${jobId}-${suffix}.png` }) ?? await saveUserRecoveryAsset({ userId, mime, buffer,
+      filename: `${jobId}-${suffix}.png` });
+  let resultBody = response.body;
+  let resultMime = contentType;
+  let blendMetadata: Record<string, string> = {};
+  if (preparedBlend) {
+    const raw = await saveResultAsset(response.body, contentType, 'raw');
+    options.signal?.throwIfAborted();
+    resultBody = await blendSingleViewResult(response.body, preparedBlend, options.signal);
+    resultMime = 'image/png';
+    const blendMask = await saveResultAsset(preparedBlend.maskPng, 'image/png', 'blend-mask');
+    const current = dataUrlToBuffer(blendInput!.currentImage.dataUrl, '冻结视角图');
+    const base = await saveResultAsset(current.buffer, current.mime, 'blend-base');
+    blendMetadata = { resultComposition: SINGLE_VIEW_RESULT_BLEND, rawResultUrl: raw.url,
+      resultBlendMaskUrl: blendMask.url, resultBlendBaseUrl: base.url };
+  }
+  const sha256 = createHash('sha256').update(resultBody).digest('hex');
   const projectAsset = await saveBinaryAsset({
     userId,
     projectId,
     category: 'generations',
-    mime: contentType,
-    buffer: response.body,
+    mime: resultMime,
+    buffer: resultBody,
     filename: `${jobId}-${service.filenameSuffix}.png`,
   });
   const saved =
     projectAsset ??
     (await saveUserRecoveryAsset({
       userId,
-      mime: contentType,
-      buffer: response.body,
+      mime: resultMime,
+      buffer: resultBody,
       filename: `${jobId}-${service.filenameSuffix}.png`,
     }));
   if (!projectAsset) {
@@ -595,18 +630,19 @@ async function generateModelviewImage(
     jobId: remoteJobId ?? '(missing X-Job-ID)',
     clientId: remoteClientId,
     idempotencyKey,
-    bytes: response.body.byteLength,
+    bytes: resultBody.byteLength,
     sha256,
   });
   return {
     id: jobId,
     resultUrl: saved.url,
     resultUrls: [saved.url],
+    ...blendMetadata,
     modelviewJobId: remoteJobId,
     modelviewClientId: remoteClientId,
     output: {
-      contentType,
-      bytes: response.body.byteLength,
+      contentType: resultMime,
+      bytes: resultBody.byteLength,
       sha256,
       source: service.source,
       storage: projectAsset ? 'project' : 'user-recovery',
