@@ -32,7 +32,7 @@ export function useModelUvRepairConfirmation() {
       <div id="uv-repair-description" className="mt-4 space-y-2 text-sm leading-6">
         {pending.operation === 'decimate' ? <>
           <p>当前模型有 {pending.report.triangles.toLocaleString('zh-CN')} 个三角面，超过 150 万面的导入限制。</p>
-          <p>简化会改变网格，可能损失细节或影响已有纹理。若简化后的 UV 存在问题，会再次询问是否重新展开 UV；重新展开会改变 UV 布局，可能导致原纹理与模型不匹配。</p>
+          <p>同意后先按距离合并近距离顶点，再减面。合并和简化会改变网格，可能损失细节或影响已有纹理。若简化后的 UV 存在问题，会再次询问是否重新展开 UV；重新展开会改变 UV 布局，可能导致原纹理与模型不匹配。</p>
           <p>您也可以取消导入，先自行简化模型并检查纹理，再导入 Li3D。</p>
         </> : <><p>检测到：{[
           pending.report.outside && `${pending.report.outside} 个面 UV 超出 0–1`,

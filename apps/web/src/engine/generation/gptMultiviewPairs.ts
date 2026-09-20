@@ -122,7 +122,7 @@ export async function settleGptPairInOrder<T, R, C>(
 }
 
 // Inspect actual material bindings, not a generic resident event or stale row count.
-export function hasResidentGptLayers(root: Object3D | undefined, required: readonly string[]) {
+export function hasResidentProjectedLayers(root: Object3D | undefined, required: readonly string[]) {
   if (!root?.visible || !required.length) return false;
   let found = false;
   let complete = true;
@@ -143,7 +143,9 @@ export function hasResidentGptLayers(root: Object3D | undefined, required: reado
   return found && complete;
 }
 
-export async function waitForGptPairPresentation(
+// MODELVIEW-PRESENTATION-BARRIER v1.0.0: durable bindings also cover material reuse
+// and completion before the caller starts waiting. No event or timeout bypass.
+export async function waitForProjectedLayerPresentation(
   ready: () => boolean,
   assertActive: () => void,
   present: () => Promise<void>,
@@ -168,3 +170,7 @@ export async function waitForGptPairPresentation(
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
 }
+
+// Preserve the existing GPT contract while sharing the same strict barrier.
+export const hasResidentGptLayers = hasResidentProjectedLayers;
+export const waitForGptPairPresentation = waitForProjectedLayerPresentation;

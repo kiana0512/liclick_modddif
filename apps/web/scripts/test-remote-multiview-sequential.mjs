@@ -2,6 +2,14 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { setImmediate } from 'node:timers';
 import ts from 'typescript';
+import * as THREE from 'three';
+
+const compile = source => ts.transpileModule(source, { compilerOptions: {
+  module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022,
+} }).outputText;
+const presentation = {}, identity = {};
+new Function('exports', compile(await readFile(new URL('../src/engine/projection/projectedMaterialIdentity.ts', import.meta.url), 'utf8')))(identity);
+new Function('exports', 'require', compile(await readFile(new URL('../src/engine/generation/gptMultiviewPairs.ts', import.meta.url), 'utf8')))(presentation, () => identity);
 
 const [panel, transformActions, sequenceSource] = await Promise.all([
   readFile(new URL('../src/components/panels/GeneratePanel.tsx', import.meta.url), 'utf8'),
@@ -152,14 +160,21 @@ assert.doesNotMatch(flow, /prompt: texturePrompt/);
 
 // Execute the production serial loop, including top/bottom, resident barriers,
 // covered-view skipping and cancellation/error stopping the remaining views.
-const serialJs = ts.transpileModule(flow.replace("import('@/services/modelviewApiClient')", "Promise.resolve({ createModelviewApiClient: modelviewFactory })"), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
-for (const outcome of ['success', 'covered', 'cancel', 'failure']) {
+const serialJs = ts.transpileModule(flow
+  .replace("import('@/services/modelviewApiClient')", "Promise.resolve({ createModelviewApiClient: modelviewFactory })")
+  .replace("import('@/engine/generation/gptMultiviewPairs')", "Promise.resolve(presentationModule)"),
+  { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+for (const outcome of ['success', 'covered', 'cancel', 'failure', 'already-resident']) {
   const views = ['front', 'top', 'bottom'].map((id, i) => ({ id, label: id,
     viewDirection: i === 0 ? [0, 0, 1] : [0, i === 1 ? 1 : -1, 0], viewUp: [0, 1, 0] }));
   const captures = views.map(view => ({ viewId: view.id, cameraView: {}, cameraSnapshot: { view: view.id },
     capture: { id: view.id, colorUrl: 'clay-' + view.id, maskUrl: 'mask-' + view.id, normalUrl: 'normal-' + view.id, width: 2048, height: 2048 } }));
   const calls = [], projected = [], committed = [];
-  let requests = 0, residents = 0, restored = 0, cancelled = false, settleResident;
+  let requests = 0, residents = 0, restored = 0, cancelled = false;
+  const root = new THREE.Group();
+  const reusedMaterial = new THREE.ShaderMaterial({ name: 'LiclickUvOverlayPreview' });
+  reusedMaterial.userData.liclickResidentUvProjectionLayers = [];
+  root.add(new THREE.Mesh(new THREE.BoxGeometry(), reusedMaterial));
   const remote = async (kind, input) => {
     assert.equal(residents, requests, 'No next request before the previous projection is GPU-resident');
     requests++;
@@ -174,9 +189,11 @@ for (const outcome of ['success', 'covered', 'cancel', 'failure']) {
     return { id: input.clientGenerationId, status: 'succeeded', resultUrl: 'result', metadata: {} };
   };
   const scope = {
+    presentationModule: presentation,
     captureObjectId: 'object', currentProject: { id: 'project', captures: [] },
     getImportedModelMatrixWorld: () => [],
-    useSceneStore: { getState: () => ({ viewport: { controls: { target: { clone: () => ({}) } }, camera: {} },
+    useSceneStore: { getState: () => ({ importedModels: [{ objectId: 'object', group: root }],
+      viewport: { controls: { target: { clone: () => ({}) } }, camera: {} },
       requestCameraRestore: () => { restored++; } }) },
     serializeCamera: () => ({}), activeCameraViewId: 'front', createId: label => label,
     cancelledTextureBatchIdsRef: { current: new Set() },
@@ -201,24 +218,31 @@ for (const outcome of ['success', 'covered', 'cancel', 'failure']) {
     saveGenerationStateBestEffort: async () => {},
     mergeGenerationMetadataPreservingStartedAt: (a, b) => ({ ...a, ...b }),
     syncGeneration: value => { if (value.metadata?.projectionCommittedAt) committed.push(value.id); },
-    waitForProjectedMaterialResident: () => ({ promise: new Promise(resolve => { settleResident = resolve; }), cancel() {} }),
     addGenerationAsProjectedLayer: async generation => {
       projected.push(generation.id);
-      // Resolves later than addGenerationAsProjectedLayer itself, so skipping
-      // the resident await would start another request with a stale counter.
-      setImmediate(() => { residents++; if (outcome === 'cancel') cancelled = true; settleResident(true); });
+      // Reuse the same material, emitting NO event. Cover both completion
+      // before subscription and asynchronous in-place texture replacement.
+      const present = () => {
+        residents++;
+        reusedMaterial.userData.liclickResidentUvProjectionLayers.push('layer-' + generation.id);
+        if (outcome === 'cancel') cancelled = true;
+      };
+      if (outcome === 'already-resident') present();
+      else setImmediate(present);
       return { id: 'layer-' + generation.id };
     }, setGenerateNotice() {}, requestContentAwareRepair: async () => {}, pushToast() {},
     isGenerationCancellation: error => error.message === 'cancelled',
     createFailedGeneration: (generation, message) => ({ ...generation, status: 'failed', error: message }),
   };
   const run = new Function(...Object.keys(scope), `${serialJs};return handleRemoteSequentialMultiviewGenerate;`)(...Object.values(scope));
-  if (outcome === 'success' || outcome === 'covered') await run({ id: 'reference', url: 'material' }, views);
+  const succeeds = outcome === 'success' || outcome === 'already-resident';
+  if (succeeds || outcome === 'covered') await run({ id: 'reference', url: 'material' }, views);
   else await assert.rejects(run({ id: 'reference', url: 'material' }, views), new RegExp(outcome === 'cancel' ? 'cancelled' : 'remote failure'));
   assert.equal(restored, 1, 'Camera must restore after success, failure and cancellation');
-  assert.deepEqual(calls, outcome === 'cancel' ? [['full', 'front']] : outcome === 'success'
+  assert.deepEqual(calls, outcome === 'cancel' ? [['full', 'front']] : succeeds
     ? [['full', 'front'], ['inpaint', 'top'], ['inpaint', 'bottom']] : [['full', 'front'], ['inpaint', 'top']]);
-  assert.equal(projected.length, outcome === 'success' ? 3 : outcome === 'covered' ? 2 : 1);
+  assert.equal(projected.length, succeeds ? 3 : outcome === 'covered' ? 2 : 1);
+  root.children[0].geometry.dispose(); reusedMaterial.dispose();
   if (outcome === 'failure') assert.equal(committed.length, 1, 'A later failure must retain already committed results');
 }
 assert.match(
@@ -233,9 +257,10 @@ assert.match(
 );
 assert.match(
   flow,
-  /waitForProjectedMaterialResident\(objectId, signal,[\s\S]*?addGenerationAsProjectedLayer[\s\S]*?await residentWait\.promise[\s\S]*?projectedGenerationCount \+= 1/,
+  /addGenerationAsProjectedLayer[\s\S]*?await presentation\.waitForProjectedLayerPresentation[\s\S]*?model\.objectId === objectId[\s\S]*?\[projectedLayer\.id\][\s\S]*?projectedGenerationCount \+= 1/,
   'each returned image must be projected and GPU-resident before the next iteration',
 );
+assert.doesNotMatch(panel, /function waitForProjectedMaterialResident|await residentWait\.promise/);
 assert.doesNotMatch(
   flow,
   /beginProjectedPreviewBatch/,

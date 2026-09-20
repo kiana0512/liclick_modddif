@@ -2688,52 +2688,6 @@ export function GeneratePanel({
     }
   }
 
-  function waitForProjectedMaterialResident(
-    objectId: string,
-    signal?: AbortSignal,
-    onDelayed?: () => void,
-  ) {
-    let settled = false;
-    let timeoutId: number | undefined;
-    let settle: ((ready: boolean) => void) | undefined;
-    const cleanup = () => {
-      window.removeEventListener('liclick:projected-material-resident', handleResident);
-      signal?.removeEventListener('abort', handleAbort);
-      if (timeoutId !== undefined) window.clearTimeout(timeoutId);
-    };
-    const finishWait = (ready: boolean) => {
-      if (settled) return;
-      settled = true;
-      cleanup();
-      settle?.(ready);
-    };
-    const handleResident = (event: Event) => {
-      const residentObjectId = (event as CustomEvent<{ objectId?: string }>).detail?.objectId;
-      if (residentObjectId && residentObjectId !== objectId) return;
-      finishWait(true);
-    };
-    const handleAbort = () => finishWait(false);
-    const scheduleDelayedNotice = () => {
-      timeoutId = window.setTimeout(() => {
-        timeoutId = undefined;
-        if (settled) return;
-        // The remote result already exists. Keep the strict resident-material
-        // barrier and report a render delay without converting it to a failed
-        // image-generation record.
-        onDelayed?.();
-        scheduleDelayedNotice();
-      }, 60_000);
-    };
-    const promise = new Promise<boolean>((resolve) => {
-      settle = resolve;
-      window.addEventListener('liclick:projected-material-resident', handleResident);
-      signal?.addEventListener('abort', handleAbort, { once: true });
-      scheduleDelayedNotice();
-      if (signal?.aborted) finishWait(false);
-    });
-    return { promise, cancel: () => finishWait(false) };
-  }
-
   async function handleRemoteSequentialMultiviewGenerate(
     materialReference: ReferenceImage,
     requestedViews: CameraViewItem[],
@@ -2763,6 +2717,7 @@ export function GeneratePanel({
     const textureBatchId = createId('remote-multiview-batch');
     const textureBatchWasCancelled = () => cancelledTextureBatchIdsRef.current.has(textureBatchId);
     const { createModelviewApiClient } = await import('@/services/modelviewApiClient');
+    const presentation = await import('@/engine/generation/gptMultiviewPairs');
     const modelviewClient = createModelviewApiClient();
     let projectedGenerationCount = 0;
     let skippedViewCount = 0;
@@ -3001,29 +2956,32 @@ export function GeneratePanel({
             44 + (index / viewCount) * 50,
             `远端多视图 ${stepLabel} · 回贴${view.label}`,
           );
-          const residentWait = waitForProjectedMaterialResident(objectId, signal, () => {
-            updateTexturePipelineProgress(
-              44 + (index / viewCount) * 50,
-              `结果已保存 · 等待${view.label}回贴渲染`,
-            );
-            setGenerateNotice({
-              tone: 'warning',
-              message: `${view.label} 生图结果已保存，正在等待回贴与合成渲染完成；完成后自动继续。`,
-            });
+          const projectedLayer = await addGenerationAsProjectedLayer(completed, {
+            automatic: true,
+            capture: generationCapture,
           });
-          let projectedLayer: Layer | undefined;
-          try {
-            projectedLayer = await addGenerationAsProjectedLayer(completed, {
-              automatic: true,
-              capture: generationCapture,
-            });
-            if (!projectedLayer) throw new Error(remoteFailureMessage);
-            const resident = await residentWait.promise;
-            throwIfTexturePipelineCancelled(signal);
-            if (!resident) throw new Error(remoteFailureMessage);
-          } finally {
-            residentWait.cancel();
-          }
+          if (!projectedLayer) throw new Error(remoteFailureMessage);
+          // A reused UV material updates in place without another resident event.
+          // Check this result's actual bindings, including already-presented results.
+          await presentation.waitForProjectedLayerPresentation(
+            () => presentation.hasResidentProjectedLayers(
+              useSceneStore.getState().importedModels.find((model) => model.objectId === objectId)?.group,
+              [projectedLayer.id],
+            ),
+            () => throwIfTexturePipelineCancelled(signal),
+            waitForBrowserPaint,
+            60_000,
+            () => {
+              updateTexturePipelineProgress(
+                44 + (index / viewCount) * 50,
+                `结果已保存 · 等待${view.label}回贴渲染`,
+              );
+              setGenerateNotice({
+                tone: 'warning',
+                message: `${view.label} 生图结果已保存，正在等待回贴与合成渲染完成；完成后自动继续。`,
+              });
+            },
+          );
           syncGeneration({
             ...completed,
             metadata: {
