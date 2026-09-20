@@ -18,8 +18,8 @@ function legacyMaterial(projected) {
   const material = createUvRepaintSourceMaterial(projected);
   // Frozen old texture2D calls: only the capture sampling differs.
   material.fragmentShader = material.fragmentShader
-    .replace('repaintSource(projectedMap, uv)', 'texture2D(projectedMap, uv)')
-    .replace('repaintMask(maskMap, maskUv)', 'texture2D(maskMap, maskUv)');
+    .replace('rS(projectedMap, uv)', 'texture2D(projectedMap, uv)')
+    .replace('rM(maskMap, maskUv)', 'texture2D(maskMap, maskUv)');
   return material;
 }
 

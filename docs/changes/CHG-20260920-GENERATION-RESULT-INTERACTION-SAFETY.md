@@ -23,7 +23,7 @@
 - 同一回归验证 300 KiB Blob 的 Data URL 逐字符等于基准 base64，且完整字符串只在交互静默后发布。
 - Edge 152/4517 生产构建用 12 MiB 等价服务响应实测：持续交互 350ms 内 Promise 未发布；保护窗口最大帧 `16.7ms`，完整窗口最大帧 `16.8ms`、P95 `16.7ms`；松手后 `id`、尾字段及 12 MiB 字符长度全部精确一致，总完成 `428.5ms`。
 - 两个后台协议共用一个按大任务创建独立实例的 payload Worker 制品，生产复测为保护/全程最大帧 `16.8/16.8ms`、P95 `16.8ms`，精确结果不变，总完成 `430.2ms`。小响应不创建 Worker。
-- Web 全量回归 `151/151`、生产 build、typecheck、改动文件 lint 与 diff whitespace 检查通过。合并最新 master 后将 Worker 内部 ready/release/result 握手压缩为等价定长消息；固定包体门禁未提高：110 个 JS chunk、`3,256,098/3,256,500` bytes，保留 402-byte 总量余量并通过 256-byte 发布余量门禁；Editor `498,724/499,024`、hot chunk `714,688/715,000`。
+- Web 全量回归 `151/151`、生产 build、typecheck、改动文件 lint 与 diff whitespace 检查通过。合并最新 master 后将 Worker 内部 ready/release/result 握手压缩为等价定长消息，并只对无预处理指令、无注释、无插值的静态应用 GLSL 压缩空白，token/directive 回归保持语义；固定包体门禁未提高：110 个 JS chunk、`3,255,804/3,256,500` bytes，保留 696-byte 总量余量并通过 256-byte 发布余量门禁；Editor `498,712/499,024`、hot chunk `713,273/715,000`。
 - 没有为验证重新发起付费生图。此前真实任务的 `1009.4ms` JSON 与 `864.8/858.7ms` FileReader 是修改前基线；修改后真实服务完成态仍需下一次自然任务复测。
 
 ## GPU / CPU / Worker / shader / 持久化 / 导出审计

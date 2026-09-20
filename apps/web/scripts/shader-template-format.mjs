@@ -1,14 +1,17 @@
 import ts from 'typescript';
 
-function compactStaticGlsl(source, skipFirstLine = false) {
+function compactStaticGlsl(source, skipFirstLine = false, collapseLines = false) {
   if (/\/\/|\/\*|\\/.test(source)) return source;
-  return source.split(/(\r?\n)/).map((line, lineIndex) => (skipFirstLine && lineIndex === 0) || line.startsWith('#') ? line :
+  const compactLine = line =>
     line.replace(/[\t ]+/g, (gap, index, text) => {
       if (index === 0 || index + gap.length === text.length) return gap;
       const left = text[index - 1], right = text[index + gap.length];
       return /[\w.]/.test(left) && /[\w.]/.test(right) ||
         /[+\-*/<>=!&|^%]/.test(left) && /[+\-*/<>=!&|^%]/.test(right) ? ' ' : '';
-    })).join('');
+    });
+  const compacted = source.split(/(\r?\n)/).map((line, lineIndex) =>
+    (skipFirstLine && lineIndex === 0) || line.startsWith('#') ? line : compactLine(line)).join('');
+  return collapseLines ? compactLine(compacted.replace(/\r?\n/g, ' ')) : compacted;
 }
 
 // SHADER-TEMPLATE-FORMAT/1.4.1: the bundled Three registry identifies GLSL
@@ -83,12 +86,18 @@ export function compactShaderTemplateIndentation(source) {
       // preprocessor/comment context after an expression verbatim.
       let owner = node;
       while (owner.parent && !ts.isTemplateExpression(owner) && !ts.isNoSubstitutionTemplateLiteral(owner)) owner = owner.parent;
-      if (/\b(?:void\s+main|gl_Position|gl_FragColor|uniform\s+\w+)\b/.test(owner.getText(ast))) {
+      if (/\b(?:void\s+main|gl_Position|gl_FragColor|uniform\s+\w+|texture2D|texelFetch)\b/.test(owner.getText(ast))) {
         const head = node.kind === ts.SyntaxKind.TemplateHead;
         const middle = node.kind === ts.SyntaxKind.TemplateMiddle;
         const suffixLength = head || middle ? 2 : 1;
         const body = after.slice(1, -suffixLength);
-        after = after.slice(0, 1) + compactStaticGlsl(body, !head && node.kind !== ts.SyntaxKind.NoSubstitutionTemplateLiteral) + after.slice(-suffixLength);
+        const collapseLines = node.kind === ts.SyntaxKind.NoSubstitutionTemplateLiteral &&
+          !/[#]|\/\/|\/\*|\\/.test(before);
+        after = after.slice(0, 1) + compactStaticGlsl(
+          body,
+          !head && node.kind !== ts.SyntaxKind.NoSubstitutionTemplateLiteral,
+          collapseLines,
+        ) + after.slice(-suffixLength);
       }
       if (before !== after) edits.push({ start, end, after });
     }
@@ -112,7 +121,7 @@ export function shaderTemplateFormatPlugin() {
         return { code: compactThreeShaderChunks(code), map: null };
       }
       // Application templates remain explicitly scoped; UI text is untouched.
-      if (!/\/engine\/(?:projection\/(?:ProjectedLayerMaterial|createRuntimeProjectionDepth)|bake\/(?:gpuUvBakeRenderer|residentQualityComposite)|capture\/(?:captureDepth|captureNormal)|localRepaint\/(?:uvRepaint|consumeSelectionMask)|export\/comfyControlInputExporter)\.ts$|\/engine\/viewport\/ViewportCanvas\.tsx$/.test(id.replaceAll('\\', '/'))) return;
+      if (!/\/engine\/(?:projection\/(?:ProjectedLayerMaterial|createRuntimeProjectionDepth)|bake\/(?:gpuUvBakeRenderer|residentQualityComposite)|capture\/(?:captureDepth|captureNormal)|localRepaint\/(?:uvRepaint|consumeSelectionMask|boundedProjectionSampling)|export\/comfyControlInputExporter)\.ts$|\/engine\/viewport\/ViewportCanvas\.tsx$/.test(id.replaceAll('\\', '/'))) return;
       return { code: compactShaderTemplateIndentation(code), map: null };
     },
   };

@@ -58,7 +58,10 @@ function tokens(code, scriptKind = ts.ScriptKind.TS) {
             !raw.includes('/*') && !raw.includes('\\')) {
           expected = expected.replace(/(\r?\n)\/\/[^\r\n]*/g, '$1');
         }
-        const normalized = JSON.stringify({ tokens: glslTokens(expected), directives: directiveLines(expected), lines: expected.split('\n').length });
+        const normalized = JSON.stringify({
+          tokens: glslTokens(expected),
+          directives: directiveLines(expected),
+        });
         text = text.slice(0, text.length - raw.length) + normalized;
       }
       out.push([node.kind, text]);
@@ -98,6 +101,7 @@ const additionalShaderFiles = [
   '../src/engine/capture/captureNormal.ts',
   '../src/engine/localRepaint/uvRepaint.ts',
   '../src/engine/localRepaint/consumeSelectionMask.ts',
+  '../src/engine/localRepaint/boundedProjectionSampling.ts',
   '../src/engine/export/comfyControlInputExporter.ts',
   '../src/engine/viewport/ViewportCanvas.tsx',
 ];
@@ -122,7 +126,7 @@ for (const relativeFile of additionalShaderFiles) {
         parent = parent.parent;
       }
       assert.ok(
-        /(?:void main|#include|uniform|varying|precision|gl_)/.test(node.getText(ast)) ||
+        /(?:void main|#include|uniform|varying|precision|gl_|texture2D|texelFetch)/.test(node.getText(ast)) ||
           /(?:Shader|shader|material|vertexAssignment|fragmentBlend)/.test(owners.join(' ')),
         `Only GLSL templates may be compacted: ${owners.join(' ')}`,
       );

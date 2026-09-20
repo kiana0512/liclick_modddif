@@ -2,35 +2,30 @@
 // Keep mip filtering in the opaque interior; resolve partially transparent
 // footprints at native resolution in premultiplied space, then return straight RGB.
 const sampling = `
-vec4 repaintCore(sampler2D map, vec2 uv) {
-  ivec2 size = textureSize(map, 0);
-  ivec2 p = ivec2(floor(uv * vec2(size)));
-  if (any(lessThan(p, ivec2(0))) || any(greaterThanEqual(p, size))) return vec4(0.0);
-  return texelFetch(map, p, 0);
+vec4 rC(sampler2D m, vec2 u) {
+  ivec2 s = textureSize(m, 0), p = ivec2(floor(u * vec2(s)));
+  if (any(lessThan(p, ivec2(0))) || any(greaterThanEqual(p, s))) return vec4(0.0);
+  return texelFetch(m, p, 0);
 }
-vec4 repaintPremultiplied(sampler2D map, ivec2 p, ivec2 size) {
-  vec4 c = texelFetch(map, clamp(p, ivec2(0), size - 1), 0);
+vec4 rP(sampler2D m, ivec2 p, ivec2 s) {
+  vec4 c = texelFetch(m, clamp(p, ivec2(0), s - 1), 0);
   return vec4(c.rgb * c.a, c.a);
 }
-vec4 repaintSource(sampler2D map, vec2 uv) {
-  vec4 filtered = texture2D(map, uv);
-  vec4 core = repaintCore(map, uv);
-  if (core.a <= 0.0039) return vec4(0.0);
-  if (filtered.a >= 0.999) return vec4(filtered.rgb, min(core.a, filtered.a));
-  ivec2 size = textureSize(map, 0);
-  vec2 p = uv * vec2(size) - 0.5;
-  ivec2 base = ivec2(floor(p));
-  vec2 f = fract(p);
-  vec4 c = mix(
-    mix(repaintPremultiplied(map, base, size), repaintPremultiplied(map, base + ivec2(1, 0), size), f.x),
-    mix(repaintPremultiplied(map, base + ivec2(0, 1), size), repaintPremultiplied(map, base + ivec2(1, 1), size), f.x), f.y);
-  return vec4(c.rgb / max(c.a, 0.000001), min(core.a, c.a));
+vec4 rS(sampler2D m, vec2 u) {
+  vec4 f = texture2D(m, u), c = rC(m, u);
+  if (c.a <= 0.0039) return vec4(0.0);
+  if (f.a >= 0.999) return vec4(f.rgb, min(c.a, f.a));
+  ivec2 s = textureSize(m, 0);
+  vec2 p = u * vec2(s) - 0.5, q = fract(p);
+  ivec2 b = ivec2(floor(p));
+  vec4 x = mix(mix(rP(m, b, s), rP(m, b + ivec2(1, 0), s), q.x),
+    mix(rP(m, b + ivec2(0, 1), s), rP(m, b + ivec2(1, 1), s), q.x), q.y);
+  return vec4(x.rgb / max(x.a, 0.000001), min(c.a, x.a));
 }
-vec4 repaintMask(sampler2D map, vec2 uv) {
-  vec4 filtered = texture2D(map, uv);
-  vec4 core = repaintCore(map, uv);
-  vec3 luma = vec3(0.299, 0.587, 0.114);
-  return vec4(vec3(1.0), min(dot(core.rgb, luma) * core.a, dot(filtered.rgb, luma) * filtered.a));
+vec4 rM(sampler2D m, vec2 u) {
+  vec4 f = texture2D(m, u), c = rC(m, u);
+  return vec4(vec3(1.0), min(dot(c.rgb, vec3(0.299, 0.587, 0.114)) * c.a,
+    dot(f.rgb, vec3(0.299, 0.587, 0.114)) * f.a));
 }
 `;
 
@@ -43,6 +38,6 @@ export function boundRepaintProjectionSampling(fragment: string) {
     throw new Error('局部重绘取色边界未能绑定，已停止回贴。');
   // Insert after uniforms/functions so the shader's precision preamble stays first.
   return fragment.replace('void main()', `${sampling}\nvoid main()`)
-    .replace(color, 'repaintSource(projectedMap, uv)')
-    .replace(mask, 'repaintMask(maskMap, maskUv)');
+    .replace(color, 'rS(projectedMap, uv)')
+    .replace(mask, 'rM(maskMap, maskUv)');
 }
