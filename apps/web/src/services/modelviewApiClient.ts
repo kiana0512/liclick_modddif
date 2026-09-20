@@ -1,4 +1,6 @@
 import type { Generation } from '@/types/generation';
+import type { Capture } from '@/types/capture';
+import { urlToDataUrl } from './workspaceApiClient';
 import { getWorkspaceApiBase } from './workspaceApiBase';
 
 const workspaceApiBase = getWorkspaceApiBase(import.meta.env.VITE_LICLICK_WORKSPACE_API);
@@ -25,6 +27,9 @@ type ModelviewGenerationInput = {
 };
 
 export type ModelviewSingleViewInpaintInput = ModelviewGenerationInput & {
+  resultBlend?: { version: 1; currentImage: { path: string; dataUrl: string };
+    objectMask: { path: string; dataUrl: string };
+    camera: { projection: 'perspective' | 'orthographic'; projectionMatrix: number[] } };
   promptPolishEnabled?: boolean;
   normalImage: { path: string; dataUrl: string };
   mask: {
@@ -38,6 +43,10 @@ export type ModelviewSingleViewInput = ModelviewGenerationInput & ModelviewNorma
 export type ModelviewInpaintInput = ModelviewSingleViewInpaintInput;
 
 type ModelviewResponse = {
+  resultComposition?: string;
+  rawResultUrl?: string;
+  resultBlendMaskUrl?: string;
+  resultBlendBaseUrl?: string;
   id: string;
   resultUrl?: string;
   resultUrls?: string[];
@@ -116,6 +125,9 @@ function toGeneration(
       modelviewClientId: result.modelviewClientId,
       resultUrls: result.resultUrls,
       output: result.output,
+      ...(result.resultComposition ? { resultComposition: result.resultComposition,
+        rawResultUrl: result.rawResultUrl, resultBlendMaskUrl: result.resultBlendMaskUrl,
+        resultBlendBaseUrl: result.resultBlendBaseUrl } : {}),
       objectId: input.objectId,
       materialReferenceId: input.materialReferenceId,
       materialReferenceGroupId: input.materialReferenceGroupId,
@@ -132,6 +144,17 @@ function toGeneration(
 
 export function createModelviewApiClient() {
   return {
+    async prepareResultBlend(currentEffectUrl: string | undefined, capture: Capture, signal?: AbortSignal): Promise<NonNullable<ModelviewSingleViewInpaintInput['resultBlend']>> {
+      if (!currentEffectUrl) throw new Error('生成前的当前视角图不可用，请重新捕获。');
+      signal?.throwIfAborted();
+      const [current, objectMask] = await Promise.all([urlToDataUrl(currentEffectUrl), urlToDataUrl(capture.maskUrl)]);
+      signal?.throwIfAborted();
+      return { version: 1,
+        currentImage: { path: `${capture.id}-blend-base.png`, dataUrl: current },
+        objectMask: { path: `${capture.id}-object-mask.png`, dataUrl: objectMask },
+        camera: { projection: capture.camera.projection, projectionMatrix: [...capture.camera.projectionMatrix] },
+      };
+    },
     async generateSingleView(
       input: ModelviewSingleViewInput,
       options?: { signal?: AbortSignal },

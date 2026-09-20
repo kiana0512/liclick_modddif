@@ -81,14 +81,21 @@ for (const inpaint of [false, true]) for (const normalUrl of ['same-camera-norma
   const signal = new AbortController().signal;
   const scope = {
     signal, throwIfTexturePipelineCancelled() {}, usesRemoteSingleView: true,
+    currentSingleViewEffectUrl: 'frozen-current-effect-with-coverage',
     usesRemoteSingleViewInpaint: inpaint, currentProject: { id: 'project' }, object: { id: 'object' },
     materialReference: { id: 'reference', url: 'reference-bytes' }, referenceGroupId: () => 'group',
     singleViewCompletion: { completionMaskUrl: 'unchanged-expanded-mask' }, urlToDataUrl: async url => url,
-    modelviewClient: Object.fromEntries(['generateSingleView', 'generateSingleViewInpaint'].map(name =>
+    modelviewClient: { ...Object.fromEntries(['generateSingleView', 'generateSingleViewInpaint'].map(name =>
       [name, async (input, options) => { calls.push({ name, input, options }); return 'result'; }])),
+      prepareResultBlend: async (current, capture, blendSignal) => {
+        assert.equal(blendSignal, signal);
+        return { version: 1, currentImage: { dataUrl: current }, objectMask: { dataUrl: capture.maskUrl }, camera: capture.camera };
+      },
+    },
   };
   const submit = new Function(...Object.keys(scope), `${remoteSubmitJs}; return submit;`)(...Object.values(scope));
-  const input = { capture: { id: 'capture', colorUrl: 'unchanged-whitefill', normalUrl },
+  const camera = { projection: 'orthographic', projectionMatrix: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, -1, 0, 0, 0, 0, 1] };
+  const input = { capture: { id: 'capture', colorUrl: 'unchanged-whitefill', normalUrl, maskUrl: 'frozen-object-mask', camera },
     generationId: 'generation', modelViewReference: { id: 'view' } };
   if (!normalUrl) {
     await assert.rejects(submit(input), /法线图不可用/);
@@ -101,6 +108,12 @@ for (const inpaint of [false, true]) for (const normalUrl of ['same-camera-norma
   assert.deepEqual(calls[0].input.normalImage, { path: 'capture-normal.png', dataUrl: normalUrl });
   assert.equal(calls[0].input.image.dataUrl, 'unchanged-whitefill');
   assert.equal(calls[0].input.mask?.dataUrl, inpaint ? 'unchanged-expanded-mask' : undefined);
+  if (inpaint) {
+    assert.equal(calls[0].input.resultBlend.currentImage.dataUrl, 'frozen-current-effect-with-coverage');
+    assert.equal(calls[0].input.resultBlend.objectMask.dataUrl, 'frozen-object-mask');
+    assert.deepEqual(calls[0].input.resultBlend.camera, camera);
+    assert.equal(calls[0].input.resultBlend.version, 1);
+  } else assert.equal(calls[0].input.resultBlend, undefined);
   assert.equal(calls[0].input.prompt, undefined);
   assert.equal(calls[0].options.signal, signal);
 }

@@ -54,6 +54,7 @@ globalThis.fetch = async (url, options) => {
 try {
   const { createModelviewApiClient } = load('../src/services/modelviewApiClient.ts', {
     './workspaceApiBase': { getWorkspaceApiBase: () => '' },
+    './workspaceApiClient': { urlToDataUrl: async url => `data:${url}` },
   });
   const input = { clientGenerationId: 'job', projectId: 'project',
     image: { path: 'image.png', dataUrl: 'raw-effect' },
@@ -65,6 +66,26 @@ try {
   assert.equal(submitted.url, '/api/modelview/inpaint');
   assert.deepEqual(submitted.body, input);
   assert.equal(generation.metadata.modelviewWorkflow, '2026.09.18-refcontrol-normal-4step-r1');
+  const blendCamera = { projection: 'orthographic', projectionMatrix: Array(16).fill(1) };
+  const frozen = { ...capture, camera: blendCamera };
+  const client = createModelviewApiClient();
+  const blend = await client.prepareResultBlend('original-colour-with-alpha', frozen);
+  assert.equal(blend.currentImage.dataUrl, 'data:original-colour-with-alpha');
+  assert.equal(blend.objectMask.dataUrl, 'data:authored-mask');
+  assert.notEqual(blend.camera.projectionMatrix, blendCamera.projectionMatrix);
+  await assert.rejects(client.prepareResultBlend(undefined, frozen), /当前视角图/);
+  await assert.rejects(client.prepareResultBlend('base', frozen, controller.signal), { name: 'AbortError' });
+  globalThis.fetch = async (_url, options) => {
+    assert.deepEqual(JSON.parse(options.body).resultBlend, blend);
+    return { ok: true, json: async () => ({ id: 'job', resultUrl: 'final', resultComposition: 'single-view-ndv-v1',
+      rawResultUrl: 'raw', resultBlendMaskUrl: 'weight', resultBlendBaseUrl: 'base' }) };
+  };
+  const blended = await client.generateSingleViewInpaint({ ...input, resultBlend: blend });
+  assert.equal(blended.resultUrl, 'final');
+  assert.equal(blended.metadata.rawResultUrl, 'raw');
+  assert.equal(blended.metadata.resultBlendMaskUrl, 'weight');
+  assert.equal(blended.metadata.resultBlendBaseUrl, 'base');
+  assert.equal(blended.metadata.resultComposition, 'single-view-ndv-v1');
 } finally {
   globalThis.fetch = originalFetch;
   delete globalThis.window;

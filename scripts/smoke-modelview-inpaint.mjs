@@ -1,4 +1,4 @@
-/* global Buffer, console, fetch, process, setTimeout */
+/* global Buffer, console, fetch, process, setTimeout, URL */
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
@@ -7,6 +7,8 @@ import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
+import { createRequire } from 'node:module';
+const sharp = createRequire(new URL('../apps/server/package.json', import.meta.url))('sharp');
 
 const repoRoot = path.resolve(import.meta.dirname, '..');
 const serverEntry = path.join(repoRoot, 'apps', 'server', 'dist', 'index.js');
@@ -103,6 +105,8 @@ const modelviewMock = http.createServer(async (request, response) => {
     const chunks = [];
     for await (const chunk of request) chunks.push(Buffer.from(chunk));
     const body = Buffer.concat(chunks);
+    assert(!body.includes(Buffer.from('blend-base')) && !body.includes(Buffer.from('object-mask')),
+      'Local result compositing inputs must never reach ModelView');
     const contentType = request.headers['content-type'] ?? '';
     const boundary = /boundary=([^;]+)/.exec(contentType)?.[1];
     assert(boundary, 'The proxy must send multipart/form-data with a boundary.');
@@ -427,6 +431,39 @@ try {
   assert.equal(singleViewInpaintSaved.status, 200);
   assert.deepEqual(Buffer.from(await singleViewInpaintSaved.arrayBuffer()), resultPng);
 
+  const resultBlend = { version: 1,
+    currentImage: { path: 'blend-base.png', dataUrl: `data:image/png;base64,${whiteMaskPng.toString('base64')}` },
+    objectMask: { path: 'object-mask.png', dataUrl: `data:image/png;base64,${whiteMaskPng.toString('base64')}` },
+    camera: { projection: 'orthographic', projectionMatrix: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, -1, 0, 0, 0, 0, 1] },
+  };
+  const postBlend = (blend) => fetch(`${workspaceBaseUrl}/api/modelview/single-view-inpaint`, {
+    method: 'POST', headers: { 'content-type': 'application/json', Cookie: cookie, Origin: allowedOrigin },
+    body: JSON.stringify({ ...inpaintPayload, clientGenerationId: 'smoke-gradient-composition', normalImage, resultBlend: blend }),
+  });
+  const countBeforeInvalidBlend = observedRequests.length;
+  for (const invalid of [{ ...resultBlend, version: 99 }, { ...resultBlend, camera: {} }, {
+    ...resultBlend, currentImage: { path: 'wrong.png', dataUrl: `data:image/png;base64,${mismatchedMaskPng.toString('base64')}` },
+  }]) assert.equal((await postBlend(invalid)).status, 422);
+  assert.equal(observedRequests.length, countBeforeInvalidBlend);
+  const blendedResponse = await postBlend(resultBlend);
+  assert.equal(blendedResponse.status, 200);
+  const blended = await blendedResponse.json();
+  assert.equal(blended.resultComposition, 'single-view-ndv-v1');
+  const readSaved = async (url) => {
+    const response = await fetch(url, { headers: { Cookie: cookie, Origin: allowedOrigin } });
+    assert.equal(response.status, 200);
+    return Buffer.from(await response.arrayBuffer());
+  };
+  assert.deepEqual(await readSaved(blended.rawResultUrl), resultPng);
+  assert.deepEqual(await readSaved(blended.resultBlendBaseUrl), whiteMaskPng);
+  const weights = await sharp(await readSaved(blended.resultBlendMaskUrl)).raw().toBuffer();
+  const mixedPng = await readSaved(blended.resultUrl);
+  const mixed = await sharp(mixedPng).ensureAlpha().raw().toBuffer();
+  const rawPixels = await sharp(resultPng).ensureAlpha().raw().toBuffer();
+  for (let c = 0; c < 3; c++) assert.equal(mixed[c], Math.round(rawPixels[c] * weights[0] / 255 + 255 - weights[0]));
+  assert.equal(blended.output.sha256, createHash('sha256').update(mixedPng).digest('hex'));
+  assert.equal(blended.output.bytes, mixedPng.length);
+
   const singleView = await fetch(`${workspaceBaseUrl}/api/modelview/single-view`, {
     method: 'POST',
     headers: {
@@ -465,7 +502,7 @@ try {
     });
     assert.equal(polished.status, prompt ? 200 : 422);
   }
-  assert.equal(observedRequests.length, 6);
+  assert.equal(observedRequests.length, 7);
   assert.equal(observedRequests[0].idempotencyKey, observedRequests[1].idempotencyKey);
   assert.equal(observedRequests[0].sha256, observedRequests[1].sha256);
   console.log(

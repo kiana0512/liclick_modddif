@@ -1,5 +1,7 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
+2026-09-20 UI-05 → M04（协作 M03/M13/M14）：`SINGLE-VIEW-RESULT-BLEND/1.0.0` 对新单视图远端补全请求冻结当前纹理图、模型轮廓、原法线与相机；模型缺纹理处权重1、已有纹理处clamp(N·V,0,1)、背景0，控制面按字节混合返图与旧图，保存最终PNG和raw/base/gradient资产。远端原四图及黑白mask外扩/羽化字节保持，渐变不外发；不改GPT、手绘局部重绘、无纹理生成或多视图。尺寸不符拒绝合成，取消保留已有资产；GPU/Worker/shader/UV/export仍消费原捕获几何与已保存最终图，分辨率、QA、Command/CAS/ownership不变。旧请求无该参数继续直出，无历史迁移。范围、回滚与验证见 [单视图返图渐变合成](changes/CHG-20260920-SINGLE-VIEW-RESULT-BLEND.md)。本地实现，未部署。
+
 2026-09-18 M12（UI-05 接线）：`NORMAL-GUIDE-BACKGROUND/1.0.0` 新增“法线黑色背景”会话开关，默认关闭蓝底，开启黑底；覆盖 ModelView 单/多视图、ModelView/GPT 局部重绘法线输入。只对原法线 pass 设置不透明背景和忽略 scene.background，不按 RGB 匹配替换蓝色，不增渲染 pass/CPU 遍历/Worker 重编码；模型法线编码、相机、尺寸、材质/蒙版/外扩、回贴及 QA 不变。生成配置/提交双重锁定；逐视角仍重新捕获，局部重绘 fingerprint/诊断记录底色。Project Schema、Command/CAS/ownership/verified assets、GPU/CPU/Worker/shader 合成及 UV/export 不变，无历史迁移；开关不写工程，刷新默认关闭。回滚恢复原捕获背景和 UI 即可，历史资产不重写。详见 [法线背景开关](changes/CHG-20260918-NORMAL-GUIDE-BACKGROUND.md)。未推送或部署。
 
 2026-09-18 M04（协作 M12/M13）：`MODELVIEW-SINGLE-NORMAL/1.0.0` 为 ModelView 单视图生成及单视图补全增加必填 `normal_image`；分别提交主图/参考图/法线三图和主图/参考图/原外扩蒙版/法线四图。逐视角串行复用同一 Capture 的完整法线，不重新捕获、不填白、不转换通道；前端阻止缺失法线，代理校验同尺寸及有效图片并原字节透传。工作流与幂等后缀使用 2026-09-18 refcontrol-normal 版本。保留最新 master 的普通局部重绘四图输入、原始法线编码与按需加载；GPT、蒙版外扩、润色、串行回贴、QA、GPU/CPU/Worker/shader、UV/export 和 Schema/Command/CAS/ownership 不变。无历史迁移；回滚需前后端与远端双/三图旧契约成套协调。专项回归覆盖两入口正常/缺失/错尺寸/无效法线、原字节透传、串行顺序、取消和原 GPT/局部重绘流程。
@@ -204,7 +206,7 @@
 
 2026-09-15 M03：ALG-VIEW-INPUT-001/1.3.2 在鼠标接触前即让 R3F 悬停遵守 Alt 所有权；保留普通 hover 和已锁定拖动。旧实现拾取回归失败、新实现通过，用户实际首帧延迟需继续录制。无像素/持久化迁移，见 [Alt 悬停变更卡](changes/CHG-20260915-ALT-BRUSH-HOVER.md)。
 
-> 文档版本：`2.20.198`
+> 文档版本：`2.20.199`
 
 2026-09-16 UI-16 → M14（协作 M01/M12/M13/M15）：`ASSET-LIFECYCLE-GC` v0.4.0 / `STORAGE-INVENTORY-001/4` 将 Cloud 工程/Revision 引用页默认 8→32，并由单条 PostgreSQL CTE 完成分页、assetId 提取与引用 upsert，Node 不再回传引用数组后二次写库；每 256 条文档约 64→8 次数据库往返，保持 45 秒单查询上限与有界 Node 内存。当前 ready scan 引用索引保留到下一快照原子切换，旧 /3 快照自动重扫。Cloud 隔离区改按真实 quarantine 且排除重新可达对象统计；新增用户级幂等持久 purge job/item，以最多 4 并发签名 DeleteObject 后逐项事务删除 transfer、写 deleted_at，404/Pod 重启可安全重放。新增 `asset_storage_purge_jobs/items`，无 Project/Revision/Asset 内容迁移；Command/CAS/ownership/verified 及 GPU/CPU/Worker/shader、投影/UV/重绘/export、分辨率与 QA 不变。回滚前停 purge 并保留任务表，详见 [Cloud 存储盘点与物理清理变更卡](changes/CHG-20260916-CLOUD-STORAGE-INVENTORY-BOUNDED.md)。
 
@@ -1369,6 +1371,7 @@ M15 / CLOUD-DEPLOYMENT v1.0.0（2026-09-03）：正常合并 release 部署历�
 
 | 版本 | 日期 | 基线 | 变更 |
 | --- | --- | --- | --- |
+| `2.20.199` | 2026-09-20 | `46df32c6 + 单视图返图混合` | M04/M13：SINGLE-VIEW-RESULT-BLEND v1.0.0，原远端蒙版不变，冻结视角的 N·V 渐变仅在返图后混合；保存最终/原图/底图/权重，旧请求兼容，无历史迁移，未部署。 |
 | `2.20.196` | 2026-09-18 | `Resident UV 恢复缓存稳定化` | M06/M07/M09：`UV-DISPLAY-DERIVED-CACHE` v1.2.0 将派生磁盘窗口从固定两条改为最多四条并增加 256MiB 压缩总预算，固定当前显示/新写状态，消除 A/B/C 工程恢复循环 miss；缓存键、像素、QA、作者资产与 export 不变。 |
 | `2.20.195` | 2026-09-18 | `Resident UV 派生键并行准备` | M06/M07/M09：`UV-PERSISTENT-MERGE-KEY` v1.1.0 将实际几何字节 SHA 改为 2 路有界队列，并与既有 3 路来源资产校验重叠；键值、像素、质量、持久化/export 与失败回退不变，无迁移。 |
 | `2.20.194` | 2026-09-18 | `多层橡皮一次驻留快速切层` | M08（协作 M06/M07/UI-06/UI-10）：`ALG-ERASE-001` v1.5.6 / `UV-DISPLAY-BUFFER` v1.5.4 将 WebGL2 多视图作者 texture-array 在完整恢复后一次性后台驻留，并为每层预留 keep-mask slice；实时 multiplier 在 GPU 内原位乘入/替换 slice，中性状态、mask URL 与 live Canvas revision 均不再重打包整组作者数组。六层 18 次切层、30 次落笔、4 次撤销+4 次重做通过，Resident revision 不变；无 Schema/资产迁移。 |
