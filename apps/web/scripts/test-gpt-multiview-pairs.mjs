@@ -10,6 +10,8 @@ const compile = (source) => ts.transpileModule(source, { compilerOptions: {
   target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS,
 } }).outputText;
 const scheduler = {};
+const completionPolicy = {};
+new Function('exports', compile(await read('engine/generation/singleViewAutoProjection.ts')))(completionPolicy);
 const materialIdentity = {};
 new Function('exports', compile(await read('engine/projection/projectedMaterialIdentity.ts')))(materialIdentity);
 new Function('exports', 'require', compile(await read('engine/generation/gptMultiviewPairs.ts')))(scheduler, () => materialIdentity);
@@ -239,6 +241,7 @@ async function fixture(failedView, fullyCovered = false, mode = 'stable', preset
     },
   };
   const scope = {
+    ...completionPolicy,
     ...ownershipPolicy,
     require: (name) => name.endsWith('gptMultiviewPairs')
       ? scheduler

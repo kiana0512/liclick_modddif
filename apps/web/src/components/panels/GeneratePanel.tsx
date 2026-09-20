@@ -29,7 +29,10 @@ import { requestContentAwareRepair } from '@/engine/contentAware';
 import {
   hasProjectionCommit,
   needsSingleViewAutoProjection,
+  needsTextureCompletionCheckpoint,
+  persistProjectionCommit,
   withProjectionCommit,
+  type ProjectionSaveObserver,
 } from '@/engine/generation/singleViewAutoProjection';
 import {
   insertCameraViewByPreviewOrder,
@@ -3546,6 +3549,7 @@ export function GeneratePanel({
     if (!textureBatchWasCancelled()) updateTexturePipelineProgress(46, '生成纹理贴图');
 
     const completedGenerations: Generation[] = [];
+    let singleViewProjectionSaved = false;
     const failureMessages: string[] = [];
     let qaRejectedGenerationCount = 0;
     let projectedGenerationCount = 0;
@@ -3682,23 +3686,30 @@ export function GeneratePanel({
               pending.generationId === completed.id || pending.capture.id === completed.captureId,
           )?.capture;
           try {
+            let savedProjection: Generation | undefined;
             const projectedLayer = await addGenerationAsProjectedLayer(completed, {
               automatic: true,
               capture: exactCapture,
+              saveObserver: isMultiviewRequest ? undefined : {
+                onSaving: () => {
+                  if (textureBatchWasCancelled()) return;
+                  const message = '回贴完成，正在保存';
+                  updateTexturePipelineProgress(86, message);
+                  setGenerateNotice({ tone: 'info', message });
+                },
+                onSaved: (committed) => {
+                  savedProjection = committed;
+                  singleViewProjectionSaved = true;
+                },
+              },
             });
             if (!projectedLayer) {
               return { generation: completed, projected: false };
             }
-            const completedWithProjection: Generation = {
-              ...completed,
-              metadata: {
-                ...completed.metadata,
-                autoProjectExpected: true,
-                projectedLayerId: projectedLayer.id,
-                projectionCommittedAt: new Date().toISOString(),
-                projectionError: undefined,
-              },
-            };
+            // The transaction saved both the layer and its receipt. Do not
+            // rewrite completedAt/projectionCommittedAt and save them again.
+            if (savedProjection) return { generation: savedProjection, projected: true };
+            const completedWithProjection = withProjectionCommit(completed, projectedLayer.id);
             syncGeneration(completedWithProjection);
             return { generation: completedWithProjection, projected: true };
           } catch (error) {
@@ -3778,16 +3789,7 @@ export function GeneratePanel({
             capture: exactCapture,
           });
           if (!recoveredLayer) continue;
-          const recoveredGeneration: Generation = {
-            ...generation,
-            metadata: {
-              ...generation.metadata,
-              autoProjectExpected: true,
-              projectedLayerId: recoveredLayer.id,
-              projectionCommittedAt: new Date().toISOString(),
-              projectionError: undefined,
-            },
-          };
+          const recoveredGeneration = withProjectionCommit(generation, recoveredLayer.id);
           completedGenerations[index] = recoveredGeneration;
           syncGeneration(recoveredGeneration);
         } catch (error) {
@@ -3803,7 +3805,10 @@ export function GeneratePanel({
       .layers.filter(
         (layer) => layer.generationId && completedGenerationIds.has(layer.generationId),
       ).length;
-    await saveGenerationStateBestEffort();
+    if (needsTextureCompletionCheckpoint(
+      isMultiviewRequest, singleViewProjectionSaved, completedGenerations.length,
+      projectedGenerationCount, failureMessages.length,
+    )) await saveGenerationStateBestEffort();
 
     if (pairContext) {
       throwIfTexturePipelineCancelled(signal);
@@ -5284,7 +5289,7 @@ export function GeneratePanel({
       targetProjectId?: string;
       shouldPersist: true;
     },
-    options: { automatic?: boolean; capture?: Capture } = {},
+    options: { automatic?: boolean; capture?: Capture; saveObserver?: ProjectionSaveObserver } = {},
   ) {
     const {
       generation,
@@ -5365,8 +5370,8 @@ export function GeneratePanel({
     if (currentExisting && options.automatic) {
       // Another mounted panel may have committed while these assets uploaded.
       // Keep its image, eraser mask and visibility exactly as the user left them.
-      syncGeneration(withProjectionCommit(generation, currentExisting.id));
-      await saveCriticalProjectState({});
+      await persistProjectionCommit(generation, currentExisting.id, syncGeneration,
+        () => saveCriticalProjectState({}), options.saveObserver);
       return currentExisting;
     }
     let layer: Layer;
@@ -5418,9 +5423,9 @@ export function GeneratePanel({
     setProjectLayers(nextLayers);
     // Commit the receipt in the same save as the layer. Late polling and a
     // user deleting this layer must not turn a completed operation into a retry.
-    syncGeneration(withProjectionCommit(generation, layer.id));
     try {
-      await saveCriticalProjectState({});
+      await persistProjectionCommit(generation, layer.id, syncGeneration,
+        () => saveCriticalProjectState({}), options.saveObserver);
     } catch (error) {
       console.error('[Liclick 3D Texture] Could not persist projected layer:', error);
       if (!options.automatic) {
@@ -5445,7 +5450,7 @@ export function GeneratePanel({
 
   async function addGenerationAsProjectedLayer(
     generation: Generation,
-    options: { automatic?: boolean; capture?: Capture } = {},
+    options: { automatic?: boolean; capture?: Capture; saveObserver?: ProjectionSaveObserver } = {},
   ) {
     // Remote multi-view jobs may finish together. Keep staging and persistence
     // in one transaction: if the next view enters the layer store while the
@@ -5468,8 +5473,8 @@ export function GeneratePanel({
         if (!prepared) return undefined;
         if (!prepared.shouldPersist) {
           if (!hasProjectionCommit(latest ?? generation)) {
-            syncGeneration(withProjectionCommit(latest ?? generation, prepared.layer.id));
-            await saveCriticalProjectState({});
+            await persistProjectionCommit(latest ?? generation, prepared.layer.id, syncGeneration,
+              () => saveCriticalProjectState({}), options.saveObserver);
           }
           return prepared.layer;
         }

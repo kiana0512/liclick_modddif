@@ -1,5 +1,7 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
+2026-09-20 UI-05 → M04：`SINGLE-VIEW-COMPLETION/1.0.0` 在 GPT/ModelView 单视图自动回贴事务成功保存图层与回执后，复用同一已确认的 Generation，不再改写回贴完成时间并串行保存第二次。仅本次保存 Promise 成功且单张结果/实际图层完整、无失败时跳过收尾重复 checkpoint；已有内存标记、保存失败、图层删除和多视图仍走原收尾保存。等待必要保存时明确显示“回贴完成，正在保存”，不提前假报完成。GPU/CPU/Worker/shader、分辨率、QA、投影/UV/export 像素与 Schema/Command/CAS/ownership/verified assets 不变，无历史迁移。详见 [单视图完成保存去重](changes/CHG-20260920-SINGLE-VIEW-COMPLETION.md)。本地修改，未推送或部署。
+
 2026-09-20 M04（协作 M03/M06/M07）：`MODELVIEW-PRESENTATION-BARRIER/1.0.0` 将 ModelView 多视图的单次 resident 事件等待改为目标对象实际显示材质与本次新图层 ID 检查，复用 GPT 的严格 presentation 屏障。Resident UV 材质原位更新或检查开始前已完成均可确认；旧 atlas、缺失对象、warmup 材质和未完成 mesh 不放行，经过两次浏览器绘制调度再复核，取消仍中止串行。60 秒只提示等待，不超时跳过、不重复生图。GPU/CPU/Worker/shader、完整分辨率、QA、回贴/导出像素与 Command/CAS/ownership 不变，无 Schema/历史资产迁移。详见 [ModelView 回贴完成屏障](changes/CHG-20260920-MODELVIEW-PRESENTATION-BARRIER.md)。本地修复，未推送或部署。
 
 2026-09-20 M02（协作 M10/M13）：`IMPORT-DECIMATE` v1.1.0 在导入严格超过 150 万三角面并获用户确认后，先逐对象按距离合并顶点（对象本地坐标 threshold=0.0001，与导入展 UV 一致），再执行原约 20 万面 COLLAPSE 减面。合并后重新统计预算与比例；每对象合并面积比例须在 [0.99,1.01]，保留有限坐标、非空表面、减面/GLB 回读 QA。确认框说明几何变化，后续异常 UV 仍独立确认。不跨对象，不修改存量资产或原文件，GPU/CPU/Worker/shader/持久化/export 继续消费最终验证 GLB；Schema/Command/CAS/ownership 不变，无历史迁移。真实 1,999,546 面模型经完整 HTTP/Blender 流程得到 199,998 面，面积变化约 +0.034%；浏览器取消/失败/阈值/两阶段导入回归通过。详见 [高模导入减面前合并顶点](changes/CHG-20260920-IMPORT-DECIMATE-MERGE-DISTANCE.md)。本轮未推送或部署。
@@ -216,7 +218,7 @@
 
 2026-09-15 M03：ALG-VIEW-INPUT-001/1.3.2 在鼠标接触前即让 R3F 悬停遵守 Alt 所有权；保留普通 hover 和已锁定拖动。旧实现拾取回归失败、新实现通过，用户实际首帧延迟需继续录制。无像素/持久化迁移，见 [Alt 悬停变更卡](changes/CHG-20260915-ALT-BRUSH-HOVER.md)。
 
-> 文档版本：`2.20.201`
+> 文档版本：`2.20.202`
 
 2026-09-16 UI-16 → M14（协作 M01/M12/M13/M15）：`ASSET-LIFECYCLE-GC` v0.4.0 / `STORAGE-INVENTORY-001/4` 将 Cloud 工程/Revision 引用页默认 8→32，并由单条 PostgreSQL CTE 完成分页、assetId 提取与引用 upsert，Node 不再回传引用数组后二次写库；每 256 条文档约 64→8 次数据库往返，保持 45 秒单查询上限与有界 Node 内存。当前 ready scan 引用索引保留到下一快照原子切换，旧 /3 快照自动重扫。Cloud 隔离区改按真实 quarantine 且排除重新可达对象统计；新增用户级幂等持久 purge job/item，以最多 4 并发签名 DeleteObject 后逐项事务删除 transfer、写 deleted_at，404/Pod 重启可安全重放。新增 `asset_storage_purge_jobs/items`，无 Project/Revision/Asset 内容迁移；Command/CAS/ownership/verified 及 GPU/CPU/Worker/shader、投影/UV/重绘/export、分辨率与 QA 不变。回滚前停 purge 并保留任务表，详见 [Cloud 存储盘点与物理清理变更卡](changes/CHG-20260916-CLOUD-STORAGE-INVENTORY-BOUNDED.md)。
 
@@ -1381,6 +1383,7 @@ M15 / CLOUD-DEPLOYMENT v1.0.0（2026-09-03）：正常合并 release 部署历�
 
 | 版本 | 日期 | 基线 | 变更 |
 | --- | --- | --- | --- |
+| `2.20.202` | 2026-09-20 | `7081a76a + 单视图完成保存去重` | UI-05/M04：SINGLE-VIEW-COMPLETION v1.0.0，复用本次回贴保存确认，去掉单视图收尾重复保存与时间改写；失败/删除/多视图保留 checkpoint，无数据迁移，未部署。 |
 | `2.20.201` | 2026-09-20 | `7ab72ebf + ModelView 回贴屏障` | M04/M03/M06/M07：MODELVIEW-PRESENTATION-BARRIER v1.0.0，按对象与新图层实际材质绑定确认回贴，修复原位材质更新漏事件导致串行停滞；无像素/Schema 迁移，未部署。 |
 | `2.20.200` | 2026-09-20 | `90eb9ab8 + 高模导入合并顶点` | M02/M10/M13：IMPORT-DECIMATE v1.1.0，超过 150 万面导入经确认后先逐对象按距离合并，再按合并后面数执行原减面；保留面积与回读 QA，无历史迁移，未部署。 |
 | `2.20.199` | 2026-09-20 | `46df32c6 + 单视图返图混合` | M04/M13：SINGLE-VIEW-RESULT-BLEND v1.0.0，原远端蒙版不变，冻结视角的 N·V 渐变仅在返图后混合；保存最终/原图/底图/权重，旧请求兼容，无历史迁移，未部署。 |
