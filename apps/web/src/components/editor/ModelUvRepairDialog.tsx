@@ -32,8 +32,8 @@ export function useModelUvRepairConfirmation() {
       <div id="uv-repair-description" className="mt-4 space-y-2 text-sm leading-6">
         {pending.operation === 'decimate' ? <>
           <p>当前模型有 {pending.report.triangles.toLocaleString('zh-CN')} 个三角面，超过 150 万面的导入限制。</p>
-          <p>同意后先按距离合并近距离顶点，再减面。合并和简化会改变网格，可能损失细节或影响已有纹理。若简化后的 UV 存在问题，会再次询问是否重新展开 UV；重新展开会改变 UV 布局，可能导致原纹理与模型不匹配。</p>
-          <p>您也可以取消导入，先自行简化模型并检查纹理，再导入 Li3D。</p>
+          <p>减面可能导致模型细节丢失、轮廓变化，以及已有贴图拉伸或错位。</p>
+          <p>如果不希望出现这些影响，请取消导入，自行手动减面至 150 万个三角面以内，确认模型和贴图效果后重新上传。</p>
         </> : <><p>检测到：{[
           pending.report.outside && `${pending.report.outside} 个面 UV 超出 0–1`,
           pending.report.degenerate && `${pending.report.degenerate} 个面 UV 压成线或点`,
@@ -42,7 +42,7 @@ export function useModelUvRepairConfirmation() {
         ].filter(Boolean).join('；')}。</p>
         <p>同意后将上传模型，先按距离合并近距离顶点，再重新展开、排布 UV，并按需内缩。网格连接和原 UV 布局会改变，已有贴图可能错位。</p>
         </>}
-        <p>原文件不会被覆盖。取消或修复失败，本次模型不会导入。</p>
+        <p>{pending.operation === 'decimate' ? '原文件不会被覆盖。取消或处理失败，本次模型不会导入。' : '原文件不会被覆盖。取消或修复失败，本次模型不会导入。'}</p>
       </div>
       <div className="mt-6 flex justify-end gap-3">
         <button autoFocus className="rounded-lg border border-white/25 px-4 py-2 text-sm" onClick={() => finish(false)}>取消导入</button>

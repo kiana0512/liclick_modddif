@@ -89,7 +89,11 @@ try {
  responseMode='valid';const uvRequests=requests;
  await large(1500000);out=await outcome();assert.equal(out.sameFile,true);assert.equal(decimateRequests,0);
  await large();await page.getByRole('dialog',{name:'模型面数较高，需要减面'}).waitFor();assert.equal(decimateRequests,0);
- assert.match(await page.getByRole('dialog').innerText(),/先按距离合并近距离顶点，再减面/);
+ const decimateText=await page.getByRole('dialog').innerText();
+ assert.ok(decimateText.includes('减面可能导致模型细节丢失、轮廓变化，以及已有贴图拉伸或错位。'));
+ assert.ok(decimateText.includes('如果不希望出现这些影响，请取消导入，自行手动减面至 150 万个三角面以内，确认模型和贴图效果后重新上传。'));
+ assert.ok(decimateText.includes('原文件不会被覆盖。取消或处理失败，本次模型不会导入。'));
+ assert.doesNotMatch(decimateText,/按距离合并|重新展开|UV 布局/);
  await page.getByRole('button',{name:'取消导入',exact:true}).click();assert.equal((await outcome()).cancelled,true);assert.equal(decimateRequests,0);
  await large();await page.getByRole('dialog').waitFor();await page.keyboard.press('Escape');assert.equal((await outcome()).cancelled,true);assert.equal(decimateRequests,0);
  await large();await page.getByRole('dialog').waitFor();await page.evaluate(()=>fixture.current=false);assert.equal((await outcome()).cancelled,true);assert.equal(decimateRequests,0);
