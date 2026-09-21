@@ -1,0 +1,20 @@
+{
+  "id": "088556c1c6d9434ac6c2f4d3b6527870f41dbc7a574dd38584643f738112eb5c",
+  "status": "succeeded",
+  "workflow": "autodl-li3d-8-768-2step-20260921-v1",
+  "timings": {
+    "bodyReadMs": 12.58356124162674,
+    "validateAndStoreMs": 151.461411267519,
+    "acceptMs": 164.04815390706062,
+    "serviceQueueMs": 3.7345215678215027,
+    "comfyInputUploadMs": 17.905548214912415,
+    "comfySubmitMs": 23.439541459083557,
+    "executionMs": 2711,
+    "comfySubmitAndQueueMs": 23.71044921875,
+    "completionDetectionMs": 537.35693359375,
+    "comfyResultReadMs": 2.307325601577759,
+    "resultValidateAndStoreMs": 40.14061018824577,
+    "workerTotalMs": 3332.7726274728775
+  },
+  "materialCacheId": "169312860221a60c97ca27ff376b4414b4454dedd52d8087cecd57779505bc9b"
+}

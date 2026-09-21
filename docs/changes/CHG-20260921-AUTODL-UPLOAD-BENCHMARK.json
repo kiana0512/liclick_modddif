@@ -1,0 +1,75 @@
+{
+  "jobId": "549f5848abf8c442db7436554abf6fba44e9eab213b688a0f427af9d0df5980a",
+  "rows": [
+    {
+      "kind": "gzip",
+      "bytes": 3383816,
+      "prepareMs": 105.38499999999999,
+      "uploadAndAcceptMs": 5583.7443,
+      "totalMs": 5689.1293000000005
+    },
+    {
+      "kind": "plain",
+      "bytes": 4747371,
+      "prepareMs": 7.925699999999779,
+      "uploadAndAcceptMs": 1704.3064000000004,
+      "totalMs": 1712.2321000000002
+    },
+    {
+      "kind": "gzip",
+      "bytes": 3383816,
+      "prepareMs": 90.28710000000046,
+      "uploadAndAcceptMs": 2693.8647999999994,
+      "totalMs": 2784.1519
+    },
+    {
+      "kind": "gzip-cached",
+      "bytes": 2260916,
+      "prepareMs": 72.30479999999989,
+      "uploadAndAcceptMs": 1014.171699999999,
+      "totalMs": 1086.4764999999989
+    },
+    {
+      "kind": "gzip-cached",
+      "bytes": 2260916,
+      "prepareMs": 60.54040000000168,
+      "uploadAndAcceptMs": 708.2374,
+      "totalMs": 768.7778000000017
+    },
+    {
+      "kind": "plain",
+      "bytes": 4747371,
+      "prepareMs": 8.264599999998609,
+      "uploadAndAcceptMs": 1794.4375,
+      "totalMs": 1802.7020999999986
+    },
+    {
+      "kind": "gzip",
+      "bytes": 3383816,
+      "prepareMs": 89.86409999999887,
+      "uploadAndAcceptMs": 1355.6410000000014,
+      "totalMs": 1445.5051000000003
+    },
+    {
+      "kind": "gzip",
+      "bytes": 3383816,
+      "prepareMs": 96.90929999999935,
+      "uploadAndAcceptMs": 1343.1804999999986,
+      "totalMs": 1440.089799999998
+    },
+    {
+      "kind": "gzip-cached",
+      "bytes": 2260916,
+      "prepareMs": 68.25979999999981,
+      "uploadAndAcceptMs": 770.090400000001,
+      "totalMs": 838.3502000000008
+    },
+    {
+      "kind": "plain",
+      "bytes": 4747371,
+      "prepareMs": 8.217599999999948,
+      "uploadAndAcceptMs": 1091.4553000000014,
+      "totalMs": 1099.6729000000014
+    }
+  ]
+}

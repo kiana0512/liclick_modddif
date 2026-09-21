@@ -1,4 +1,5 @@
 import { captureLocalRepaintNormal } from '@/engine/localRepaint/captureLocalRepaintNormal';
+import { personalRepaintEnabled } from '@/services/personalRepaintMode';
 import { sameGenerationRecovery } from '@/services/generationRecoveryComparison';
 import {
   createTextureGenerationRecoveryOwnership,
@@ -419,7 +420,9 @@ function GenerationProgressStatus({ generation }: { generation: Generation }) {
       aria-live="polite"
       data-generation-progress="true"
     >
-      {submitted ? '后台正在处理，完成后会自动返回' : '正在检查参考图并提交任务'}
+      {typeof generation.metadata.personalRepaintStage === 'string'
+        ? generation.metadata.personalRepaintStage
+        : submitted ? '后台正在处理，完成后会自动返回' : '正在检查参考图并提交任务'}
       <span className="ml-2 tabular-nums text-white/62">
         {minutes}:{seconds}
       </span>
@@ -770,7 +773,7 @@ export function GeneratePanel({
   const textureGptQuality = resolveGptTextureQuality(generationSettings.textureGptQuality, textureGptModel);
   const isGptLocalRepaint = generationSettings.localRepaintProvider === 'gpt';
   const gptRepaintUseMaterialReference = generationSettings.gptRepaintUseMaterialReference === true;
-  const localRepaintSmartPolish = generationSettings.localRepaintSmartPolish === true;
+  const localRepaintSmartPolish = !personalRepaintEnabled && generationSettings.localRepaintSmartPolish === true;
   const normalBackground = normalBlackBackground ? 'black' : 'blue';
   const imageModel = isTextureMapTab || (isLocalRepaintTab && isGptLocalRepaint)
     ? textureGptModel
@@ -3952,6 +3955,12 @@ export function GeneratePanel({
       localRepaintPreparationAbortControllerRef.current = requestAbortController;
       submitLocksRef.current.add('repaint');
       setSubmissionActive(true);
+      if (personalRepaintEnabled && !isGptLocalRepaint) {
+        if (!materialReference || !isMultiviewReference(materialReference)) {
+          throw new Error('个人云端直连需要先选择已有的多视图材质参考图。');
+        }
+        await (await import('@/services/personalRepaintClient')).connectPersonalRepaint(requestAbortController.signal);
+      }
       setLocalRepaintPreparation((current) => ({
         startedAt: current?.startedAt ?? Date.now(),
         detail: '正在调整生成取景',
@@ -4291,6 +4300,7 @@ export function GeneratePanel({
         localRepaintPreparationAbortControllerRef.current = undefined;
       }
       generationAbortControllersRef.current.set(generationId, requestAbortController);
+      const personalRequestStartedAt = personalRepaintEnabled ? performance.now() : 0;
       const [currentEffectDataUrl, materialReferenceDataUrl, maskDataUrl, normalDataUrl] = await Promise.all([
         urlToDataUrl(capture.colorUrl),
         materialReference ? urlToDataUrl(materialReference.url) : Promise.resolve(''),
@@ -4299,6 +4309,7 @@ export function GeneratePanel({
       ]);
       let depthPreviewPromise: ReturnType<typeof captureRepaintDepth> | undefined;
       const { createModelviewApiClient } = await import('@/services/modelviewApiClient');
+      const personalRequestPreparationMs = personalRepaintEnabled ? performance.now() - personalRequestStartedAt : 0;
       const generationPromise = isGptLocalRepaint ? (async () => {
         // Persist camera + authored selection before paying for a recoverable cloud job.
         const authoredMaskUrl = await persistedAuthoredMaskUrlPromise;
@@ -4360,7 +4371,14 @@ export function GeneratePanel({
           mask: { path: `${generationId}-mask.png`, dataUrl: maskDataUrl },
           normalImage: { path: `${generationId}-normal.png`, dataUrl: normalDataUrl },
         },
-        { signal: requestAbortController.signal },
+        { signal: requestAbortController.signal, onStatus: personalRepaintEnabled ? (status) => {
+          if (!pendingGeneration || requestAbortController!.signal.aborted) return;
+          const labels: Record<string, string> = { uploading: '正在上传', queued: '排队中', running: '生成中', downloading: '正在接收结果' };
+          pendingGeneration = { ...pendingGeneration, metadata: {
+            ...pendingGeneration.metadata, personalRepaintStage: labels[status],
+          } };
+          syncGeneration(pendingGeneration);
+        } : undefined },
       );
       // Keep the original provider submission ahead of the local-only depth
       // capture. GPT waits for this same promise before persisting/submitting.
@@ -4401,9 +4419,14 @@ export function GeneratePanel({
       }
       if (isCancelledGeneration(pendingGeneration)) return false;
       if (!generation.resultUrl) throw new Error('局部重绘没有返回图片。');
+      const personalResultStartedAt = personalRepaintEnabled ? performance.now() : 0;
       const preparedResult = await prepareRepaintResult(
         generation.resultUrl, capture.depthUrl, isGptLocalRepaint, requestAbortController.signal,
       );
+      if (personalRepaintEnabled && generation.metadata.provider === 'autodl-personal') {
+        generation.metadata.personalRequestPreparationMs = personalRequestPreparationMs;
+        generation.metadata.personalResultPreparationMs = performance.now() - personalResultStartedAt;
+      }
       if (isCancelledGeneration(pendingGeneration)) return false;
       const completedGeneration: Generation = {
         ...generation,
@@ -5606,7 +5629,8 @@ export function GeneratePanel({
           {textureActionProgress
             ? `${compactTextureProgressButtonLabel(textureActionProgress.label)} · ${Math.round(textureActionProgress.progress)}%`
             : generateActionRunning
-              ? t('generating')
+              ? (personalRepaintEnabled && isLocalRepaintTab && typeof displayedPreviewGeneration?.metadata.personalRepaintStage === 'string'
+                ? displayedPreviewGeneration.metadata.personalRepaintStage : t('generating'))
               : tab === 'multiview'
                 ? t('generateTextureMap')
                 : tab === 'repaint'
@@ -5700,7 +5724,7 @@ export function GeneratePanel({
               <SegmentedControl<'modelview' | 'gpt'>
                 value={generationSettings.localRepaintProvider}
                 options={[
-                  { value: 'modelview', label: '原局部重绘', disabled: workflowConfigurationLocked || workflowSubmissionLocked },
+                  { value: 'modelview', label: personalRepaintEnabled ? '个人云端重绘' : '原局部重绘', disabled: workflowConfigurationLocked || workflowSubmissionLocked },
                   { value: 'gpt', label: 'GPT 局部重绘', disabled: workflowConfigurationLocked || workflowSubmissionLocked },
                 ]}
                 onChange={(localRepaintProvider) => updateGenerationSettings({ localRepaintProvider })}
@@ -5744,7 +5768,7 @@ export function GeneratePanel({
                 </button>
               </div>
             )}
-            {isLocalRepaintTab && !isGptLocalRepaint && (
+            {isLocalRepaintTab && !isGptLocalRepaint && !personalRepaintEnabled && (
               <div className="mb-2 flex items-center justify-between gap-2 text-xs text-white/75">
                 <span>智能润色</span>
                 <button

@@ -2,6 +2,7 @@ import type { Generation } from '@/types/generation';
 import type { Capture } from '@/types/capture';
 import { urlToDataUrl } from './workspaceApiClient';
 import { getWorkspaceApiBase } from './workspaceApiBase';
+import { personalRepaintEnabled } from './personalRepaintMode';
 
 const workspaceApiBase = getWorkspaceApiBase(import.meta.env.VITE_LICLICK_WORKSPACE_API);
 
@@ -189,8 +190,15 @@ export function createModelviewApiClient() {
     },
     async generateInpaint(
       input: ModelviewInpaintInput,
-      options?: { signal?: AbortSignal },
+      options?: { signal?: AbortSignal; onStatus?: (status: string) => void },
     ): Promise<Generation> {
+      if (personalRepaintEnabled) {
+        const { generatePersonalRepaint } = await import('./personalRepaintClient');
+        const result = await generatePersonalRepaint(input, options?.signal, options?.onStatus);
+        const generation = toGeneration(input, result, 'autodl-personal', result.workflow, 'inpaint');
+        generation.metadata.personalRepaintTimings = result.timings;
+        return generation;
+      }
       const result = await requestJson<ModelviewResponse>('/api/modelview/inpaint', {
         method: 'POST',
         timeoutMs: 2_760_000,

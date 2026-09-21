@@ -1,0 +1,182 @@
+[
+  {
+    "label": "same-inputs-step-detail",
+    "promptId": "f976e668-03dd-4a89-bd83-749b322efc7a",
+    "sourceJob": "ac5f02a90352f2a9ac6b7a59ba6157a0806c141a70310bef3069870541563f45",
+    "seed": 770030,
+    "executionMs": 15077.299,
+    "submitToStartMs": 26.813,
+    "beforeFirstNodeMs": 22.535,
+    "cachedNodes": [
+      "16",
+      "3",
+      "1"
+    ],
+    "nodes": [
+      {
+        "id": "73",
+        "type": "LoadImage",
+        "ms": 69.041
+      },
+      {
+        "id": "22",
+        "type": "CherryInferenceSizeBucket",
+        "ms": 3.814
+      },
+      {
+        "id": "44",
+        "type": "LoadImage",
+        "ms": 52.533
+      },
+      {
+        "id": "52",
+        "type": "ImageResize+",
+        "ms": 4.36
+      },
+      {
+        "id": "45",
+        "type": "ImageToMask",
+        "ms": 0.903
+      },
+      {
+        "id": "23",
+        "type": "ImageResize+",
+        "ms": 4.215
+      },
+      {
+        "id": "7",
+        "type": "VAEEncode",
+        "ms": 103.117
+      },
+      {
+        "id": "43",
+        "type": "SetLatentNoiseMask",
+        "ms": 0.88
+      },
+      {
+        "id": "21",
+        "type": "LoraLoaderModelOnly",
+        "ms": 23.156
+      },
+      {
+        "id": "78",
+        "type": "LoraLoaderModelOnly",
+        "ms": 20.51
+      },
+      {
+        "id": "15",
+        "type": "BasicScheduler",
+        "ms": 3.856
+      },
+      {
+        "id": "79",
+        "type": "LoadImage",
+        "ms": 75.63
+      },
+      {
+        "id": "77",
+        "type": "VAEEncode",
+        "ms": 455.37
+      },
+      {
+        "id": "5",
+        "type": "LoadImage",
+        "ms": 58.406
+      },
+      {
+        "id": "24",
+        "type": "ImageResize+",
+        "ms": 3.909
+      },
+      {
+        "id": "8",
+        "type": "VAEEncode",
+        "ms": 98.928
+      },
+      {
+        "id": "60",
+        "type": "ttN text",
+        "ms": 0.608
+      },
+      {
+        "id": "2",
+        "type": "CLIPLoader",
+        "ms": 222.487
+      },
+      {
+        "id": "9",
+        "type": "CLIPTextEncode",
+        "ms": 2380.496
+      },
+      {
+        "id": "10",
+        "type": "ReferenceLatent",
+        "ms": 1.112
+      },
+      {
+        "id": "11",
+        "type": "ReferenceLatent",
+        "ms": 3.004
+      },
+      {
+        "id": "74",
+        "type": "ReferenceLatent",
+        "ms": 0.95
+      },
+      {
+        "id": "12",
+        "type": "BasicGuider",
+        "ms": 0.92
+      },
+      {
+        "id": "14",
+        "type": "RandomNoise",
+        "ms": 0.822
+      },
+      {
+        "id": "17",
+        "type": "SamplerCustomAdvanced",
+        "ms": 10362.987
+      },
+      {
+        "id": "18",
+        "type": "VAEDecode",
+        "ms": 139.732
+      },
+      {
+        "id": "62",
+        "type": "PreviewImage",
+        "ms": 65.348
+      },
+      {
+        "id": "25",
+        "type": "ImageScale",
+        "ms": 114.94
+      },
+      {
+        "id": "33",
+        "type": "CherryAlignReference",
+        "ms": 619.873
+      },
+      {
+        "id": "29",
+        "type": "PreviewImage",
+        "ms": 162.858
+      }
+    ],
+    "progress": [
+      {
+        "value": 1,
+        "max": 2,
+        "node": "17",
+        "atMs": 10763.145
+      },
+      {
+        "value": 2,
+        "max": 2,
+        "node": "17",
+        "atMs": 13936.773
+      }
+    ]
+  }
+]

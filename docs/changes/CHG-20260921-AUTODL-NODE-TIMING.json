@@ -1,0 +1,395 @@
+[
+  {
+    "label": "fresh-inputs-A",
+    "promptId": "0f93463d-672d-494f-8dba-db33f7e8eb2e",
+    "sourceJob": "ac5f02a90352f2a9ac6b7a59ba6157a0806c141a70310bef3069870541563f45",
+    "seed": 770021,
+    "executionMs": 13323.961,
+    "submitToStartMs": 277.467,
+    "beforeFirstNodeMs": 22.618,
+    "cachedNodes": [],
+    "nodes": [
+      {
+        "id": "3",
+        "type": "VAELoader",
+        "ms": 123.389
+      },
+      {
+        "id": "73",
+        "type": "LoadImage",
+        "ms": 49.196
+      },
+      {
+        "id": "22",
+        "type": "CherryInferenceSizeBucket",
+        "ms": 4.026
+      },
+      {
+        "id": "44",
+        "type": "LoadImage",
+        "ms": 52.834
+      },
+      {
+        "id": "52",
+        "type": "ImageResize+",
+        "ms": 4.02
+      },
+      {
+        "id": "45",
+        "type": "ImageToMask",
+        "ms": 0.84
+      },
+      {
+        "id": "23",
+        "type": "ImageResize+",
+        "ms": 2.561
+      },
+      {
+        "id": "7",
+        "type": "VAEEncode",
+        "ms": 598.581
+      },
+      {
+        "id": "43",
+        "type": "SetLatentNoiseMask",
+        "ms": 2.471
+      },
+      {
+        "id": "1",
+        "type": "UnetLoaderGGUF",
+        "ms": 32.391
+      },
+      {
+        "id": "21",
+        "type": "LoraLoaderModelOnly",
+        "ms": 23.227
+      },
+      {
+        "id": "78",
+        "type": "LoraLoaderModelOnly",
+        "ms": 20.958
+      },
+      {
+        "id": "15",
+        "type": "BasicScheduler",
+        "ms": 0.978
+      },
+      {
+        "id": "16",
+        "type": "KSamplerSelect",
+        "ms": 3.956
+      },
+      {
+        "id": "79",
+        "type": "LoadImage",
+        "ms": 78.18
+      },
+      {
+        "id": "77",
+        "type": "VAEEncode",
+        "ms": 457.775
+      },
+      {
+        "id": "5",
+        "type": "LoadImage",
+        "ms": 68.602
+      },
+      {
+        "id": "24",
+        "type": "ImageResize+",
+        "ms": 3.612
+      },
+      {
+        "id": "8",
+        "type": "VAEEncode",
+        "ms": 99.273
+      },
+      {
+        "id": "60",
+        "type": "ttN text",
+        "ms": 1.311
+      },
+      {
+        "id": "2",
+        "type": "CLIPLoader",
+        "ms": 220.438
+      },
+      {
+        "id": "9",
+        "type": "CLIPTextEncode",
+        "ms": 2569.993
+      },
+      {
+        "id": "10",
+        "type": "ReferenceLatent",
+        "ms": 0.758
+      },
+      {
+        "id": "11",
+        "type": "ReferenceLatent",
+        "ms": 0.846
+      },
+      {
+        "id": "74",
+        "type": "ReferenceLatent",
+        "ms": 0.946
+      },
+      {
+        "id": "12",
+        "type": "BasicGuider",
+        "ms": 1.282
+      },
+      {
+        "id": "14",
+        "type": "RandomNoise",
+        "ms": 1.367
+      },
+      {
+        "id": "17",
+        "type": "SamplerCustomAdvanced",
+        "ms": 7470.258
+      },
+      {
+        "id": "18",
+        "type": "VAEDecode",
+        "ms": 362.802
+      },
+      {
+        "id": "62",
+        "type": "PreviewImage",
+        "ms": 69.935
+      },
+      {
+        "id": "25",
+        "type": "ImageScale",
+        "ms": 125.357
+      },
+      {
+        "id": "33",
+        "type": "CherryAlignReference",
+        "ms": 664.62
+      },
+      {
+        "id": "29",
+        "type": "PreviewImage",
+        "ms": 184.56
+      }
+    ]
+  },
+  {
+    "label": "same-inputs-new-seed",
+    "promptId": "606a4c1a-3058-4f0d-8347-f1ff4a547a76",
+    "sourceJob": "ac5f02a90352f2a9ac6b7a59ba6157a0806c141a70310bef3069870541563f45",
+    "seed": 770022,
+    "executionMs": 7189.901,
+    "submitToStartMs": 23.293,
+    "beforeFirstNodeMs": 24.475,
+    "cachedNodes": [
+      "10",
+      "15",
+      "16",
+      "3",
+      "2",
+      "1",
+      "21",
+      "24",
+      "8",
+      "12",
+      "11",
+      "7",
+      "22",
+      "23",
+      "5",
+      "9",
+      "43",
+      "44",
+      "45",
+      "52",
+      "60",
+      "73",
+      "74",
+      "77",
+      "78",
+      "79"
+    ],
+    "nodes": [
+      {
+        "id": "14",
+        "type": "RandomNoise",
+        "ms": 17.725
+      },
+      {
+        "id": "17",
+        "type": "SamplerCustomAdvanced",
+        "ms": 6030.221
+      },
+      {
+        "id": "18",
+        "type": "VAEDecode",
+        "ms": 142.728
+      },
+      {
+        "id": "62",
+        "type": "PreviewImage",
+        "ms": 64.076
+      },
+      {
+        "id": "25",
+        "type": "ImageScale",
+        "ms": 116.007
+      },
+      {
+        "id": "33",
+        "type": "CherryAlignReference",
+        "ms": 635.898
+      },
+      {
+        "id": "29",
+        "type": "PreviewImage",
+        "ms": 158.771
+      }
+    ]
+  },
+  {
+    "label": "fresh-inputs-B",
+    "promptId": "b87a14b6-43ce-44c5-8c1f-432153a6f456",
+    "sourceJob": "ac5f02a90352f2a9ac6b7a59ba6157a0806c141a70310bef3069870541563f45",
+    "seed": 770023,
+    "executionMs": 8100.517,
+    "submitToStartMs": 24.474,
+    "beforeFirstNodeMs": 21.287,
+    "cachedNodes": [
+      "15",
+      "16",
+      "3",
+      "2",
+      "1",
+      "21",
+      "9",
+      "60",
+      "78"
+    ],
+    "nodes": [
+      {
+        "id": "73",
+        "type": "LoadImage",
+        "ms": 71.663
+      },
+      {
+        "id": "22",
+        "type": "CherryInferenceSizeBucket",
+        "ms": 5.965
+      },
+      {
+        "id": "44",
+        "type": "LoadImage",
+        "ms": 66.448
+      },
+      {
+        "id": "52",
+        "type": "ImageResize+",
+        "ms": 4.943
+      },
+      {
+        "id": "45",
+        "type": "ImageToMask",
+        "ms": 0.992
+      },
+      {
+        "id": "23",
+        "type": "ImageResize+",
+        "ms": 4.497
+      },
+      {
+        "id": "7",
+        "type": "VAEEncode",
+        "ms": 103.843
+      },
+      {
+        "id": "43",
+        "type": "SetLatentNoiseMask",
+        "ms": 4.019
+      },
+      {
+        "id": "79",
+        "type": "LoadImage",
+        "ms": 80.224
+      },
+      {
+        "id": "77",
+        "type": "VAEEncode",
+        "ms": 456.278
+      },
+      {
+        "id": "5",
+        "type": "LoadImage",
+        "ms": 58.094
+      },
+      {
+        "id": "24",
+        "type": "ImageResize+",
+        "ms": 3.318
+      },
+      {
+        "id": "8",
+        "type": "VAEEncode",
+        "ms": 96.541
+      },
+      {
+        "id": "10",
+        "type": "ReferenceLatent",
+        "ms": 1.116
+      },
+      {
+        "id": "11",
+        "type": "ReferenceLatent",
+        "ms": 0.816
+      },
+      {
+        "id": "74",
+        "type": "ReferenceLatent",
+        "ms": 0.896
+      },
+      {
+        "id": "12",
+        "type": "BasicGuider",
+        "ms": 0.858
+      },
+      {
+        "id": "14",
+        "type": "RandomNoise",
+        "ms": 0.862
+      },
+      {
+        "id": "17",
+        "type": "SamplerCustomAdvanced",
+        "ms": 5994.146
+      },
+      {
+        "id": "18",
+        "type": "VAEDecode",
+        "ms": 141.936
+      },
+      {
+        "id": "62",
+        "type": "PreviewImage",
+        "ms": 67.488
+      },
+      {
+        "id": "25",
+        "type": "ImageScale",
+        "ms": 123.074
+      },
+      {
+        "id": "33",
+        "type": "CherryAlignReference",
+        "ms": 639.155
+      },
+      {
+        "id": "29",
+        "type": "PreviewImage",
+        "ms": 152.058
+      }
+    ]
+  }
+]
