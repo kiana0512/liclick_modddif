@@ -52,7 +52,7 @@ const extraCamera = { id: 'user-camera', value: 'bottom' };
 assert.deepEqual(ids(planGptViewPairs([...make(preset3), extraCamera], 'custom')),
   [planned3[0], planned3[1], ['back-left', 'front-right'], ['user-camera'], ['bottom']],
   'custom singleton cameras remain isolated');
-const raised3 = make(preset3).map(view => ({...view, id:`preset-3-${view.id}`, viewDirection:[0, .258819, .965926]}));
+const raised3 = make(preset3).map(view => ({...view, id:`preset-3-${view.id}`, viewDirection:[0, .5, Math.sqrt(3)/2]}));
 for (const preset of ['preset-3', 'custom']) {
   const groups = planGptViewPairs(raised3, preset);
   assert.deepEqual(ids(groups), planned3.map(group=>group.map(id=>`preset-3-${id}`)));
@@ -64,13 +64,13 @@ const directions = {};
 new Function('exports', 'THREE', compile(directionFunction))(directions, THREE);
 for (const name of preset3.slice(0, -1)) {
   const flat = directions.getObjectViewPresetDirection(name);
-  const raised = directions.getObjectViewPresetDirection(name, 15);
+  const raised = directions.getObjectViewPresetDirection(name, 30);
   assert(Math.abs(raised.length()-1)<1e-12);
-  assert(Math.abs(raised.y-Math.sin(Math.PI/12))<1e-12);
+  assert(Math.abs(raised.y-Math.sin(Math.PI/6))<1e-12);
   assert(Math.abs(Math.atan2(flat.x,flat.z)-Math.atan2(raised.x,raised.z))<1e-12);
   assert.equal(flat.y,0,'existing presets remain horizontal');
 }
-assert.deepEqual(directions.getObjectViewPresetDirection('bottom',15).toArray(),[0,-1,0]);
+assert.deepEqual(directions.getObjectViewPresetDirection('bottom',30).toArray(),[0,-1,0]);
 assert.deepEqual(planGptViewPairs([], 'custom', 'fast'), []);
 assert.deepEqual(ids(planGptViewPairs(make(['front', 'top', 'front']), 'preset-1', 'fast')), [['front'], ['top']]);
 assert.equal(gptPairCompletionDisposition(2, 2, 0), 'complete');

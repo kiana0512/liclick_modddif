@@ -303,7 +303,7 @@ assert.doesNotMatch(panel, /title: '预设 3'|label: '预设 3/);
 assert.match(panel, /useState<CameraViewPresetSelection>\('preset-3'\)/);
 assert.match(panel, /createCameraViewsForPreset\('preset-3', t\)/);
 assert.match(panel, /getCameraViewPresetDefinition\(option.id\).views.length/);
-assert.match(panel, /presetId === 'preset-3' \? 15 : 0/);
+assert.match(panel, /presetId === 'preset-3' \? 30 : 0/);
 assert.match(panel, /id: orbitElevation \? `preset-3-\$\{option.value\}` : option.value/,
   'raised previews must not share horizontal camera cache IDs');
 assert.match(

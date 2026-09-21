@@ -247,7 +247,7 @@ const cameraViewPresets: CameraViewPresetDefinition[] = [
   {
     id: 'preset-3',
     label: '预设 1 · 9 视角（默认）',
-    description: '8 个俯视 15° 环绕视角 + 底视角',
+    description: '8 个俯视 30° 环绕视角 + 底视角',
     views: ['front', 'front-left', 'left', 'back-left', 'back', 'back-right', 'right', 'front-right', 'bottom'],
   },
   {
@@ -298,7 +298,7 @@ function createCameraViewsForPreset(
   const preset = getCameraViewPresetDefinition(presetId);
   return preset.views.map((value) => {
     const option = cameraViewOptions[value];
-    return createPresetCameraViewItem(option, translate(option.labelKey), presetId === 'preset-3' ? 15 : 0);
+    return createPresetCameraViewItem(option, translate(option.labelKey), presetId === 'preset-3' ? 30 : 0);
   });
 }
 
