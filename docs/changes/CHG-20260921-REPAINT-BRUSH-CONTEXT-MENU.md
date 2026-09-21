@@ -13,3 +13,4 @@
 - 生产监听 effect 的执行回归：打开、重复右键、控件点击、左键关闭与 click 尾部拦截、下一笔、工具隔离及清理。
 - 实际 Edge 挂载 BottomToolDock 并使用提取的生产视口右键 guard：参数面板显示、大小输入、关闭不触发模拟画笔/选择、下一笔、Escape、Alt 右键通过。是隔离交互夹具，不是用户模型端到端绘制。
 - projected-layer visibility、viewport-wheel/navigation、repaint-panel-navigation 回归通过；Web typecheck 与修改文件 lint 检查。本次不推送或部署，线上仍为上一版。
+- 发布预检首次发现 editor 分包超预算 207 bytes，合并原菜单与右键菜单的重复监听、复用清理入口，不提高预算；真实浏览器与生产监听回归再次通过。最终发布以精简后提交的完整 prepush 和 A100 校验为准。

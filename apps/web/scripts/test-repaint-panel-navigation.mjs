@@ -30,9 +30,9 @@ assert.doesNotMatch(handler, /setLocalImageGenerationRequestKey|setPaintTool/);
 console.log('Repaint panel navigation: three buttons, repeated requests, panel expansion and generation isolation passed.');
 
 // Execute the actual listener effect, including dismissal before canvas input.
-const menuEffect = dock.match(/useEffect\(\(\) => \{\s*if \(mode !== 'texture' \|\| paintTool !== 'inpaint-apply'\) return;([\s\S]*?)\}, \[mode, paintTool\]\);/);
+const menuEffect = dock.match(/useEffect\(\(\) => \{\s*(let dismissClick = false;[\s\S]*?)\}, \[mode, paintTool\]\);/);
 assert(menuEffect);
-const body = ts.transpileModule(`if (mode !== 'texture' || paintTool !== 'inpaint-apply') return;${menuEffect[1]}`,
+const body = ts.transpileModule(menuEffect[1],
   { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
 const install = new Function('window', 'mode', 'paintTool', 'repaintContextMenuRef', 'dockRef', 'setActiveMenu', body);
 const listeners = new Map();
@@ -57,7 +57,10 @@ const click = event(); listeners.get('click')(click); assert(click.stopped, 'dis
 const next = event(); listeners.get('pointerdown')(next); assert(!next.stopped, 'next stroke remains enabled');
 open(); cleanup(); assert(!context.current && menus.at(-1) === undefined && listeners.size === 0);
 for (const [mode, tool] of [['uv', 'inpaint-apply'], ['texture', 'eraser'], ['texture', 'inpaint-add']]) {
-  assert.equal(install(win, mode, tool, context, ref, v => menus.push(v)), undefined);
+  const dispose = install(win, mode, tool, context, ref, v => menus.push(v));
+  const before = menus.length;
+  open(); assert.equal(menus.length, before); assert(!context.current);
+  dispose();
   assert.equal(listeners.size, 0);
 }
 const viewport = read('engine/viewport/ViewportCanvas.tsx');

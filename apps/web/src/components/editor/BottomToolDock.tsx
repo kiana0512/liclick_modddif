@@ -244,21 +244,26 @@ export function BottomToolDock({
   }
 
   useEffect(() => {
-    if (mode !== 'texture' || paintTool !== 'inpaint-apply') return;
     let dismissClick = false;
+    const closeMenu = () => {
+      repaintContextMenuRef.current = false;
+      setActiveMenu(undefined);
+    };
     const openBrushMenu = () => {
+      if (mode !== 'texture' || paintTool !== 'inpaint-apply') return;
       repaintContextMenuRef.current = true;
       setActiveMenu('inpaint-apply');
     };
     const dismissBrushMenu = (event: PointerEvent) => {
       dismissClick = false;
-      if (!repaintContextMenuRef.current || event.button !== 0 ||
-          dockRef.current?.contains(event.target as Node)) return;
-      repaintContextMenuRef.current = false;
-      dismissClick = true;
-      setActiveMenu(undefined);
-      event.preventDefault();
-      event.stopImmediatePropagation();
+      if (dockRef.current?.contains(event.target as Node)) return;
+      if (repaintContextMenuRef.current) {
+        if (event.button !== 0) return;
+        dismissClick = true;
+        event.preventDefault();
+        event.stopImmediatePropagation();
+      }
+      closeMenu();
     };
     // Consume the click tail too: closing must not select a model or paint.
     const consumeDismissClick = (event: MouseEvent) => {
@@ -267,39 +272,23 @@ export function BottomToolDock({
       event.preventDefault();
       event.stopImmediatePropagation();
     };
-    window.addEventListener('liclick:repaint-brush-menu', openBrushMenu);
-    window.addEventListener('pointerdown', dismissBrushMenu, true);
-    window.addEventListener('click', consumeDismissClick, true);
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') closeMenu();
+    };
+    const listeners = { 'liclick:repaint-brush-menu': openBrushMenu,
+      pointerdown: dismissBrushMenu, click: consumeDismissClick, keydown: closeOnEscape };
+    const bind = (method: 'addEventListener' | 'removeEventListener') => {
+      Object.entries(listeners).forEach(([name, listener]) => window[method](name, listener as EventListener, true));
+    };
+    bind('addEventListener');
     return () => {
-      window.removeEventListener('liclick:repaint-brush-menu', openBrushMenu);
-      window.removeEventListener('pointerdown', dismissBrushMenu, true);
-      window.removeEventListener('click', consumeDismissClick, true);
-      if (repaintContextMenuRef.current) setActiveMenu(undefined);
-      repaintContextMenuRef.current = false;
+      bind('removeEventListener');
+      if (repaintContextMenuRef.current) closeMenu();
     };
   }, [mode, paintTool]);
 
   useEffect(() => {
     if (activeMenu !== 'inpaint-apply') repaintContextMenuRef.current = false;
-    if (!activeMenu) return undefined;
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        repaintContextMenuRef.current = false;
-        setActiveMenu(undefined);
-      }
-    };
-    const closeOnOutsidePointer = (event: PointerEvent) => {
-      if (repaintContextMenuRef.current) return;
-      if (!dockRef.current?.contains(event.target as Node)) {
-        setActiveMenu(undefined);
-      }
-    };
-    window.addEventListener('keydown', closeOnEscape);
-    window.addEventListener('pointerdown', closeOnOutsidePointer, true);
-    return () => {
-      window.removeEventListener('keydown', closeOnEscape);
-      window.removeEventListener('pointerdown', closeOnOutsidePointer, true);
-    };
   }, [activeMenu]);
 
   useEffect(() => {
