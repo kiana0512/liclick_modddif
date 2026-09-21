@@ -152,7 +152,7 @@ function isTextureSnapshotProgressLabel(label: string) {
   // 兼容历史“多视角”与当前界面“多视图”两种进度文案。
   return /^(?:准备)?多视(?:图|角)快照(?:\s|$)/.test(label);
 }
-type CameraViewPresetId = 'preset-1' | 'preset-2';
+type CameraViewPresetId = 'preset-1' | 'preset-2' | 'preset-3';
 type CameraViewPresetSelection = CameraViewPresetId | 'custom';
 type GptPairContext = {
   textureBatchId: string;
@@ -283,6 +283,12 @@ const cameraViewPresets: CameraViewPresetDefinition[] = [
       'bottom',
     ],
   },
+  {
+    id: 'preset-3',
+    label: '预设 3 · 9 视角',
+    description: '8 个俯视 15° 环绕视角 + 底视角',
+    views: ['front', 'front-left', 'left', 'back-left', 'back', 'back-right', 'right', 'front-right', 'bottom'],
+  },
 ];
 
 const customCameraViewPreset = {
@@ -297,6 +303,7 @@ const cameraViewPresetOptions: Array<{
 }> = [
   { id: 'preset-1', title: '预设 1', detail: '10 视角 · 默认' },
   { id: 'preset-2', title: '预设 2', detail: '14 视角' },
+  { id: 'preset-3', title: '预设 3', detail: '9 视角' },
   { id: 'custom', title: '自定义预设', detail: '6 个基础视角' },
 ];
 
@@ -311,7 +318,7 @@ function createCameraViewsForPreset(
   const preset = getCameraViewPresetDefinition(presetId);
   return preset.views.map((value) => {
     const option = cameraViewOptions[value];
-    return createPresetCameraViewItem(option, translate(option.labelKey));
+    return createPresetCameraViewItem(option, translate(option.labelKey), presetId === 'preset-3' ? 15 : 0);
   });
 }
 
@@ -325,14 +332,14 @@ function createCameraViewsFromValues(
   });
 }
 
-function createPresetCameraViewItem(option: CameraViewOption, label: string): CameraViewItem {
-  const viewDirection = getObjectViewPresetDirection(option.value).toArray() as [
+function createPresetCameraViewItem(option: CameraViewOption, label: string, orbitElevation = 0): CameraViewItem {
+  const viewDirection = getObjectViewPresetDirection(option.value, orbitElevation).toArray() as [
     number,
     number,
     number,
   ];
   return {
-    id: option.value,
+    id: orbitElevation ? `preset-3-${option.value}` : option.value,
     value: option.value,
     label,
     viewDirection,
@@ -5879,20 +5886,18 @@ export function GeneratePanel({
               <section className="generate-multiview-adaptive order-1 grid shrink-0 content-start gap-2">
                 <div
                   data-texture-onboarding="multiview-retry"
-                  className="grid grid-cols-3 gap-2"
+                  className="grid grid-cols-2 gap-2"
                   role="tablist"
                   aria-label="多视图预设"
                 >
                   {cameraViewPresetOptions.map((option) => {
                     const selected = selectedCameraViewPreset === option.id;
                     const viewCount =
-                      option.id === 'preset-1'
-                        ? 10
-                        : option.id === 'preset-2'
-                          ? 14
-                          : selectedCameraViewPreset === 'custom'
-                            ? cameraViews.length
-                            : customCameraViewPreset.views.length;
+                      option.id !== 'custom'
+                        ? getCameraViewPresetDefinition(option.id).views.length
+                        : selectedCameraViewPreset === 'custom'
+                          ? cameraViews.length
+                          : customCameraViewPreset.views.length;
                     return (
                       <button
                         key={option.id}

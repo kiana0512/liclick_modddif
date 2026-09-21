@@ -128,7 +128,12 @@ export function focusCameraOrbitOnObjectId(objectId?: string) {
   return model.name;
 }
 
-export function getObjectViewPresetDirection(preset: ObjectViewPreset) {
+export function getObjectViewPresetDirection(preset: ObjectViewPreset, orbitElevation = 0): THREE.Vector3 {
+  if (orbitElevation && preset !== 'top' && preset !== 'bottom') {
+    const direction = getObjectViewPresetDirection(preset);
+    direction.y = Math.hypot(direction.x, direction.z) * Math.tan(THREE.MathUtils.degToRad(orbitElevation));
+    return direction.normalize();
+  }
   if (preset === 'back') return new THREE.Vector3(0, 0, -1);
   if (preset === 'back-top') return new THREE.Vector3(0, 1, -1).normalize();
   if (preset === 'back-bottom') return new THREE.Vector3(0, -1, -1).normalize();

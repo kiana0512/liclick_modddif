@@ -1,7 +1,7 @@
 import type { Object3D, Mesh, Material } from 'three';
 import { isResidentProjectedMaterial } from '../projection/projectedMaterialIdentity';
 
-// GPT-MULTIVIEW-PAIR-SEQUENCE v1.4.1. QA-only rejection may advance; transport/projection failures stop.
+// GPT-MULTIVIEW-PAIR-SEQUENCE v1.5.0. QA-only rejection may advance; transport/projection failures stop.
 const presetPairs = {
   'preset-1': [
     ['front', 'back'],
@@ -25,12 +25,12 @@ const presetPairs = {
 
 export function planGptViewPairs<T extends { id: string; value?: string }>(
   views: readonly T[],
-  preset: keyof typeof presetPairs,
+  preset: keyof typeof presetPairs | 'preset-3',
 ): T[][] {
   const remaining = new Map(views.map((view) => [view.id, view]));
   const take = (names: readonly string[]) =>
     names.flatMap((name) => {
-      const view = [...remaining.values()].find((item) => item.value === name && item.id === name);
+      const view = [...remaining.values()].find((item) => item.value === name && (item.id === name || item.id === `preset-3-${name}`));
       if (!view) return [];
       remaining.delete(view.id);
       return [view];
@@ -38,7 +38,7 @@ export function planGptViewPairs<T extends { id: string; value?: string }>(
   // Adding a camera switches the UI selection to "custom" without replacing
   // its inherited preset cameras. Keep those original fixed pairs as well.
   const inheritedPreset =
-    preset === 'custom'
+    preset === 'preset-3' ? 'preset-1' : preset === 'custom'
       ? views.some((view) => view.value?.endsWith('-top') || view.value?.endsWith('-bottom'))
         ? 'preset-2'
         : 'preset-1'

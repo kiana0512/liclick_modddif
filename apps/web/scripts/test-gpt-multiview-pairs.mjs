@@ -42,6 +42,31 @@ for (const [preset, expected] of [['preset-1', expected1], ['preset-2', expected
 assert.deepEqual(ids(planGptViewPairs(make(['front', 'left', 'back', 'right', 'top', 'bottom']), 'custom')), [['front', 'back'], ['left', 'right', 'top', 'bottom']]);
 assert.deepEqual(ids(planGptViewPairs(make(['front', 'top', 'front']), 'preset-1')), [['front'], ['top']]);
 assert.deepEqual(planGptViewPairs([], 'custom'), []);
+const preset3 = ['front', 'front-left', 'left', 'back-left', 'back', 'back-right', 'right', 'front-right', 'bottom'];
+const planned3 = ids(planGptViewPairs(make(preset3), 'preset-3'));
+assert.deepEqual(planned3, [['front', 'back'], ['front-left', 'back-right', 'left', 'right'], ['back-left', 'front-right'], ['bottom']]);
+assert.equal(new Set(planned3.flat()).size, 9);
+assert(!planned3.flat().includes('top'));
+assert.deepEqual(ids(planGptViewPairs(make(preset3), 'custom')), planned3, 'editing preset 3 preserves inherited pairs and bottom');
+const raised3 = make(preset3).map(view => ({...view, id:`preset-3-${view.id}`, viewDirection:[0, .258819, .965926]}));
+for (const preset of ['preset-3', 'custom']) {
+  const groups = planGptViewPairs(raised3, preset);
+  assert.deepEqual(ids(groups), planned3.map(group=>group.map(id=>`preset-3-${id}`)));
+  assert(groups.flat().every(view=>raised3.includes(view)), 'raised cameras must never be reconstructed as horizontal cameras');
+}
+const transform = await read('engine/scene/transformActions.ts');
+const directionFunction = transform.slice(transform.indexOf('export function getObjectViewPresetDirection('), transform.indexOf('export function setCameraToObjectView('));
+const directions = {};
+new Function('exports', 'THREE', compile(directionFunction))(directions, THREE);
+for (const name of preset3.slice(0, -1)) {
+  const flat = directions.getObjectViewPresetDirection(name);
+  const raised = directions.getObjectViewPresetDirection(name, 15);
+  assert(Math.abs(raised.length()-1)<1e-12);
+  assert(Math.abs(raised.y-Math.sin(Math.PI/12))<1e-12);
+  assert(Math.abs(Math.atan2(flat.x,flat.z)-Math.atan2(raised.x,raised.z))<1e-12);
+  assert.equal(flat.y,0,'existing presets remain horizontal');
+}
+assert.deepEqual(directions.getObjectViewPresetDirection('bottom',15).toArray(),[0,-1,0]);
 assert.deepEqual(planGptViewPairs([], 'custom', 'fast'), []);
 assert.deepEqual(ids(planGptViewPairs(make(['front', 'top', 'front']), 'preset-1', 'fast')), [['front'], ['top']]);
 assert.equal(gptPairCompletionDisposition(2, 2, 0), 'complete');

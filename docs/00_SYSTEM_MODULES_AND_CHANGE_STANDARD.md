@@ -1,5 +1,7 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
+2026-09-21 UI-05 / M04（协作 M03）：`MULTIVIEW-PRESETS` v1.1.0 新增预设 3（9 视角），前→左前→左→左后→后→右后→右→右前→底。用户补充八向应略俯视；截图无精确角度，明确按 15° 实现：保留方位角，方向 y=水平长度×tan(15°) 后归一化；底保持 (0,-1,0)，不含顶。抬高预设使用独立 ID，避免复用水平缩略图。四个预设入口采用两列，计数读取定义。`GPT-MULTIVIEW-PAIR-SEQUENCE` v1.5.0 复用预设 1 环绕配对并保留实际相机，底单独收尾；ModelView 保持显示顺序逐张准备、请求和回贴。默认预设 1、预设 2、自定义基础方向、QA、GPU/CPU/Worker/shader 投影公式、UV/export、分辨率、Schema/Command/CAS/ownership/资产不变，无迁移。回滚删除预设 3、可选俯角参数和调度别名，已有结果保留。八向归一化/方位角/15°/正底、GPT 配对和自定义继承、ModelView 顺序、Web typecheck/lint 回归通过；未付费生成或部署。
+
 2026-09-21 UI-06/UI-10 → M08：`REPAINT-BRUSH-CONTEXT-MENU` v1.0.0 将局部重绘画笔的鼠标右键从擦除改为打开已有大小/羽化面板；在射线拾取、历史和擦除派发前返回。右键打开后，面板外左键只关闭并消费 pointerdown/click，面板内调参保留；下一笔正常绘制。独立橡皮、笔尾擦除、其他工具右键和 Alt/MMB 导航不变。算法像素、GPU/CPU/Worker/shader、UV/export、Schema/Command/CAS/ownership/资产不变，无迁移。验证与回退见 [右键画笔面板](changes/CHG-20260921-REPAINT-BRUSH-CONTEXT-MENU.md)。本地修改，未推送或部署。
 
 2026-09-21 M08（审计 M06/M07/M11）：`ALG-LR-UV-PAINT` v3.0.0 将原生 UV 局部重绘彩色笔迹改为实心中心加线性外圈羽化；保留羽化比例与 3px@2K 退让，过渡宽度上限为有效半径的 90%，保证至少 10% 实心半径。橡皮/选区仍走原 smoothstep，未修改旧资产或生成蒙版。GPU 输出 RGBA 直接用于显示、历史、PNG、CPU/Worker 合成及导出，无二次羽化或 Schema 迁移。批准、公式、验证与回退见 [线性外圈羽化](changes/CHG-20260921-REPAINT-LINEAR-FEATHER.md)。本地修改，未推送或部署。
@@ -246,7 +248,7 @@
 
 2026-09-15 M03：ALG-VIEW-INPUT-001/1.3.2 在鼠标接触前即让 R3F 悬停遵守 Alt 所有权；保留普通 hover 和已锁定拖动。旧实现拾取回归失败、新实现通过，用户实际首帧延迟需继续录制。无像素/持久化迁移，见 [Alt 悬停变更卡](changes/CHG-20260915-ALT-BRUSH-HOVER.md)。
 
-> 文档版本：`2.21.1`
+> 文档版本：`2.21.2`
 
 2026-09-16 UI-16 → M14（协作 M01/M12/M13/M15）：`ASSET-LIFECYCLE-GC` v0.4.0 / `STORAGE-INVENTORY-001/4` 将 Cloud 工程/Revision 引用页默认 8→32，并由单条 PostgreSQL CTE 完成分页、assetId 提取与引用 upsert，Node 不再回传引用数组后二次写库；每 256 条文档约 64→8 次数据库往返，保持 45 秒单查询上限与有界 Node 内存。当前 ready scan 引用索引保留到下一快照原子切换，旧 /3 快照自动重扫。Cloud 隔离区改按真实 quarantine 且排除重新可达对象统计；新增用户级幂等持久 purge job/item，以最多 4 并发签名 DeleteObject 后逐项事务删除 transfer、写 deleted_at，404/Pod 重启可安全重放。新增 `asset_storage_purge_jobs/items`，无 Project/Revision/Asset 内容迁移；Command/CAS/ownership/verified 及 GPU/CPU/Worker/shader、投影/UV/重绘/export、分辨率与 QA 不变。回滚前停 purge 并保留任务表，详见 [Cloud 存储盘点与物理清理变更卡](changes/CHG-20260916-CLOUD-STORAGE-INVENTORY-BOUNDED.md)。
 

@@ -294,6 +294,15 @@ assert.match(
   /'front',[\s\S]*?'left',[\s\S]*?'back',[\s\S]*?'right',[\s\S]*?'right-top',[\s\S]*?'front-top',[\s\S]*?'left-top',[\s\S]*?'back-top',[\s\S]*?'back-bottom',[\s\S]*?'left-bottom',[\s\S]*?'front-bottom',[\s\S]*?'right-bottom',[\s\S]*?'top',[\s\S]*?'bottom'/,
   'preset 2 must use the approved preview and execution order',
 );
+const thirdPreset = panel.match(/id: 'preset-3',\s*label:[\s\S]*?views: (\[[^\]]+\])/);
+assert(thirdPreset);
+assert.deepEqual(new Function(`return ${thirdPreset[1]}`)(),
+  ['front', 'front-left', 'left', 'back-left', 'back', 'back-right', 'right', 'front-right', 'bottom']);
+assert.match(panel, /id: 'preset-3', title: '预设 3', detail: '9 视角'/);
+assert.match(panel, /getCameraViewPresetDefinition\(option.id\).views.length/);
+assert.match(panel, /presetId === 'preset-3' \? 15 : 0/);
+assert.match(panel, /id: orbitElevation \? `preset-3-\$\{option.value\}` : option.value/,
+  'raised previews must not share horizontal camera cache IDs');
 assert.match(
   flow,
   /addGenerationAsProjectedLayer[\s\S]*?await presentation\.waitForProjectedLayerPresentation[\s\S]*?model\.objectId === objectId[\s\S]*?\[projectedLayer\.id\][\s\S]*?projectedGenerationCount \+= 1/,
