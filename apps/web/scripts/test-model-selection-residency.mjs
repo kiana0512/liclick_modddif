@@ -377,7 +377,7 @@ const cameraScope = {
   workspaceModeRef: { current: 'scene' }, workspaceMode: 'scene',
   getWorkspaceCameraTransition: () => 'none', isStrictModelAppend: () => false,
   importSettings: { autoFitCamera: true }, camera: { uuid: 'camera' },
-  orbitTargetKeyRef: { current: `camera:scene:${models.map((model) => model.objectId).join('|')}` },
+  orbitTargetKeyRef: { current: `scene:${models.map((model) => model.objectId).join('|')}` },
   getCombinedBoundingBox: () => { boundReads++; return {}; },
   fitCameraToBoundingBox: () => { fits++; }, gl: {}, scene: {},
 };
