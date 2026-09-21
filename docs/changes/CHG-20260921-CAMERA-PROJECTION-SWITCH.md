@@ -27,3 +27,7 @@ CPU 相机矩阵在单独 viewport 算法模块换算。GPU 继续消费当前�
 - 模型放置/相机聚焦、选择驻留、ViewCube、滚轮/导航、多模型恢复、模型导入、FBX 修复、捕获隔离和法线捕获回归通过；Web typecheck、改动文件 lint、构建和 diff 检查通过。
 - 普通本地构建的既有包体与 256-byte 余量检查通过：总 JS 3,256,212 / 3,256,500 bytes，余量 288 bytes，未提高预算。该构建不是带完整 CI 身份的发布构建，推送前仍须针对最终提交运行 `verify:prepush`。
 - 未连接或修改真实用户工程，未部署；不以隔离测试宣称用户原模型已完成线上验收。
+
+## 发布集成
+
+用户已明确授权推送 master 和部署 A100。首次正式 `verify:prepush` 的全部回归、类型和 lint 通过，但完整发布元数据使总包超出 244 bytes，未推送。仅在 M03 相机控制器中合并重复的输入监听注册/清理和 runtime 适配，直接累积等价 Box3 bounds，移除 Drei 已负责的重复 frustum resize effect。保留原事件类型、目标、passive 设置、结束清理与初始/resize 行为；新增变换层级/空对象 bounds 等价测试，并重跑真实 StrictMode 相机切换/resize。最终发布须由新提交完整 prepush 通过后执行。
