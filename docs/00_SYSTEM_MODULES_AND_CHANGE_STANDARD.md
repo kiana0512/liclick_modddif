@@ -4,6 +4,8 @@
 
 2026-09-21 UI-05 / M04：`MULTIVIEW-PRESETS` v1.1.1 将俯视 15° 八向加底的 9 视角方案显示为预设 1，排在首位并作为初始化默认；旧水平 10 视角方案显示为预设 3，预设 2 不变。保留内部 preset-3 / preset-1 稳定身份和缩略图 ID，以免改变既有调度及缓存语义。GPT 配对、ModelView 顺序、像素处理、存储结构和已有资产不变，无迁移；回滚只恢复按钮名称、顺序和初始化选择。回归覆盖名称顺序、默认选择、9 视角方向与串行流程。
 
+2026-09-21 UI-07 → M03：`ALG-VIEW-PROJECTION-001` v1.0.0 保持透视/正交切换的轨道中心、方向、up 及中心平面屏幕比例。以透视有效 FOV/距离和正交 frustum/zoom 换算，不再因相机 UUID 变化自动 fit；恢复请求匹配类型后只消费一次。冻结 Capture/projector、GPU/CPU/Worker/shader 纹理投影、UV/export、分辨率、QA、Schema/Command/CAS/ownership/资产不变，无迁移。真实 Edge 旧控制器首次切换复现 target jumped，新版通过连续切换/缩放/resize/恢复测试；本地修改，未推送部署。详见 [投影切换取景连续性](changes/CHG-20260921-CAMERA-PROJECTION-SWITCH.md)。
+
 2026-09-21 预设 3 发布检查：移除预设按钮配置从未读取的 `detail` 重复文案，显示计数仍从视角定义计算，交互及算法不变；不调整包体预算。用户已确认实际模型九宫格预览并要求发布。
 
 2026-09-21 UI-05 / M04（协作 M03）：`MULTIVIEW-PRESETS` v1.1.0 新增预设 3（9 视角），前→左前→左→左后→后→右后→右→右前→底。用户补充八向应略俯视；截图无精确角度，明确按 15° 实现：保留方位角，方向 y=水平长度×tan(15°) 后归一化；底保持 (0,-1,0)，不含顶。抬高预设使用独立 ID，避免复用水平缩略图。四个预设入口采用两列，计数读取定义。`GPT-MULTIVIEW-PAIR-SEQUENCE` v1.5.0 复用预设 1 环绕配对并保留实际相机，底单独收尾；ModelView 保持显示顺序逐张准备、请求和回贴。默认预设 1、预设 2、自定义基础方向、QA、GPU/CPU/Worker/shader 投影公式、UV/export、分辨率、Schema/Command/CAS/ownership/资产不变，无迁移。回滚删除预设 3、可选俯角参数和调度别名，已有结果保留。八向归一化/方位角/15°/正底、GPT 配对和自定义继承、ModelView 顺序、Web typecheck/lint 回归通过；未付费生成或部署。
@@ -1203,6 +1205,7 @@ Bake 设置包含 resolution、frontal/rear distance、distance/cage、cage infl
 | `ALG-VIEW-INPUT-001` 视口输入路由 v1.4.1 | Alt＋左键旋转；中键直接平移（Alt 兼容）；Alt＋右键左/上缩小、右/下放大；滚轮按帧缩放；导航与画笔/选择保持独占归属 |
 | `ALG-VIEW-SELECT-001` 多模型选择资源驻留 v1.0.4 | 选择框复用且每帧核对当前对象，不依赖旧 React 选择；捕获恢复恰好一次；仅真实取景计算 bounds；预热复制跳过应用元数据，保留 Three 子类/几何/材质状态；按 renderer 串行选择预热，跳过过期排队任务，保留模型/工具所有权与交互门控及全部 GPU 阶段 |
 | `ALG-CAP-001` 相机序列化 | position/quaternion/target/near/far/fov/zoom/P/V/world/aspect 完整保存 |
+| `ALG-VIEW-PROJECTION-001` 投影切换取景连续性 v1.0.0 | 以轨道中心平面可见高度换算透视距离与正交 zoom；保留中心/方向/up，不重新 fit，不重放已消费恢复请求 |
 | `ALG-CAP-002` Color 捕获 | 线性 RT + 输出变换；viewport/clay/target-only/flat 明确区分 |
 | `ALG-CAP-003` Mask 捕获 | 目标白色 BasicMaterial、黑背景；灰度×alpha 作为连续 mask |
 | `ALG-CAP-004` Depth 捕获 | `(-viewZ-near)/(far-near)` linear-view，RGB packing，alpha=1 |
