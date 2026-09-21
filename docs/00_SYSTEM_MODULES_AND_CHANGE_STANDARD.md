@@ -1,5 +1,7 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
+2026-09-21 预设 3 发布检查：移除预设按钮配置从未读取的 `detail` 重复文案，显示计数仍从视角定义计算，交互及算法不变；不调整包体预算。用户已确认实际模型九宫格预览并要求发布。
+
 2026-09-21 UI-05 / M04（协作 M03）：`MULTIVIEW-PRESETS` v1.1.0 新增预设 3（9 视角），前→左前→左→左后→后→右后→右→右前→底。用户补充八向应略俯视；截图无精确角度，明确按 15° 实现：保留方位角，方向 y=水平长度×tan(15°) 后归一化；底保持 (0,-1,0)，不含顶。抬高预设使用独立 ID，避免复用水平缩略图。四个预设入口采用两列，计数读取定义。`GPT-MULTIVIEW-PAIR-SEQUENCE` v1.5.0 复用预设 1 环绕配对并保留实际相机，底单独收尾；ModelView 保持显示顺序逐张准备、请求和回贴。默认预设 1、预设 2、自定义基础方向、QA、GPU/CPU/Worker/shader 投影公式、UV/export、分辨率、Schema/Command/CAS/ownership/资产不变，无迁移。回滚删除预设 3、可选俯角参数和调度别名，已有结果保留。八向归一化/方位角/15°/正底、GPT 配对和自定义继承、ModelView 顺序、Web typecheck/lint 回归通过；未付费生成或部署。
 
 2026-09-21 UI-06/UI-10 → M08：`REPAINT-BRUSH-CONTEXT-MENU` v1.0.0 将局部重绘画笔的鼠标右键从擦除改为打开已有大小/羽化面板；在射线拾取、历史和擦除派发前返回。右键打开后，面板外左键只关闭并消费 pointerdown/click，面板内调参保留；下一笔正常绘制。独立橡皮、笔尾擦除、其他工具右键和 Alt/MMB 导航不变。算法像素、GPU/CPU/Worker/shader、UV/export、Schema/Command/CAS/ownership/资产不变，无迁移。验证与回退见 [右键画笔面板](changes/CHG-20260921-REPAINT-BRUSH-CONTEXT-MENU.md)。本地修改，未推送或部署。

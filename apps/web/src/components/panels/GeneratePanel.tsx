@@ -299,12 +299,11 @@ const customCameraViewPreset = {
 const cameraViewPresetOptions: Array<{
   id: CameraViewPresetSelection;
   title: string;
-  detail: string;
 }> = [
-  { id: 'preset-1', title: '预设 1', detail: '10 视角 · 默认' },
-  { id: 'preset-2', title: '预设 2', detail: '14 视角' },
-  { id: 'preset-3', title: '预设 3', detail: '9 视角' },
-  { id: 'custom', title: '自定义预设', detail: '6 个基础视角' },
+  { id: 'preset-1', title: '预设 1' },
+  { id: 'preset-2', title: '预设 2' },
+  { id: 'preset-3', title: '预设 3' },
+  { id: 'custom', title: '自定义预设' },
 ];
 
 function getCameraViewPresetDefinition(presetId: CameraViewPresetId) {

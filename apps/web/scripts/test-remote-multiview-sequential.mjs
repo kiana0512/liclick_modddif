@@ -298,7 +298,7 @@ const thirdPreset = panel.match(/id: 'preset-3',\s*label:[\s\S]*?views: (\[[^\]]
 assert(thirdPreset);
 assert.deepEqual(new Function(`return ${thirdPreset[1]}`)(),
   ['front', 'front-left', 'left', 'back-left', 'back', 'back-right', 'right', 'front-right', 'bottom']);
-assert.match(panel, /id: 'preset-3', title: '预设 3', detail: '9 视角'/);
+assert.match(panel, /id: 'preset-3', title: '预设 3'/);
 assert.match(panel, /getCameraViewPresetDefinition\(option.id\).views.length/);
 assert.match(panel, /presetId === 'preset-3' \? 15 : 0/);
 assert.match(panel, /id: orbitElevation \? `preset-3-\$\{option.value\}` : option.value/,
