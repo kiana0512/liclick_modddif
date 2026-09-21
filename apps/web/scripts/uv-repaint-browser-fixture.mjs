@@ -223,6 +223,11 @@ export async function run() {
   renderer.clear();
   renderer.setRenderTarget(null);
   const selectionStroke = createUvRepaintSelectionCanvas(actualPatches, 1024);
+  // Feathered color coverage must fully consume selection, not leave 90% red.
+  const selectionContext = selectionStroke.getContext('2d');
+  selectionContext.globalCompositeOperation = 'destination-in';
+  selectionContext.fillStyle = 'rgba(255,255,255,0.1)';
+  selectionContext.fillRect(0, 0, 1024, 1024);
   consumeSelectionMask({
     renderer,
     camera,

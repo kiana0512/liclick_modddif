@@ -23,7 +23,8 @@ export function createUvRepaintSelectionCanvas(patches: UvRepaintPatch[], resolu
     for (let y = 0; y < bounds.height; y++)
       for (let x = 0; x < bounds.width; x++) {
         const i = (y * bounds.width + x) * 4;
-        if (after[i + 3] <= before[i + 3]) continue;
+        if (after[i + 3] <= before[i + 3] &&
+          after[i] === before[i] && after[i + 1] === before[i + 1] && after[i + 2] === before[i + 2]) continue;
         const j = ((bounds.height - 1 - y) * bounds.width + x) * 4;
         image.data.set([255, 255, 255, after[i + 3]], j);
       }
