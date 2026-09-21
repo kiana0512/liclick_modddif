@@ -152,7 +152,7 @@ function isTextureSnapshotProgressLabel(label: string) {
   // 兼容历史“多视角”与当前界面“多视图”两种进度文案。
   return /^(?:准备)?多视(?:图|角)快照(?:\s|$)/.test(label);
 }
-type CameraViewPresetId = 'preset-1' | 'preset-2' | 'preset-3';
+type CameraViewPresetId = 'preset-2' | 'preset-3';
 type CameraViewPresetSelection = CameraViewPresetId | 'custom';
 type GptPairContext = {
   textureBatchId: string;
@@ -245,21 +245,10 @@ const cameraViewOptions: Record<ObjectViewPreset, CameraViewOption> = {
 
 const cameraViewPresets: CameraViewPresetDefinition[] = [
   {
-    id: 'preset-1',
-    label: '预设 3 · 10 视角',
-    description: '10 个视角：前、后、左、右、上、下、左前、右前、左后、右后',
-    views: [
-      'front',
-      'front-left',
-      'left',
-      'back-left',
-      'back',
-      'back-right',
-      'right',
-      'front-right',
-      'top',
-      'bottom',
-    ],
+    id: 'preset-3',
+    label: '预设 1 · 9 视角（默认）',
+    description: '8 个俯视 15° 环绕视角 + 底视角',
+    views: ['front', 'front-left', 'left', 'back-left', 'back', 'back-right', 'right', 'front-right', 'bottom'],
   },
   {
     id: 'preset-2',
@@ -283,12 +272,6 @@ const cameraViewPresets: CameraViewPresetDefinition[] = [
       'bottom',
     ],
   },
-  {
-    id: 'preset-3',
-    label: '预设 1 · 9 视角（默认）',
-    description: '8 个俯视 15° 环绕视角 + 底视角',
-    views: ['front', 'front-left', 'left', 'back-left', 'back', 'back-right', 'right', 'front-right', 'bottom'],
-  },
 ];
 
 const customCameraViewPreset = {
@@ -301,7 +284,6 @@ const cameraViewPresetOptions: Array<{
 }> = [
   { id: 'preset-3', title: '预设 1' },
   { id: 'preset-2', title: '预设 2' },
-  { id: 'preset-1', title: '预设 3' },
   { id: 'custom', title: '自定义预设' },
 ];
 
@@ -5884,7 +5866,7 @@ export function GeneratePanel({
               <section className="generate-multiview-adaptive order-1 grid shrink-0 content-start gap-2">
                 <div
                   data-texture-onboarding="multiview-retry"
-                  className="grid grid-cols-2 gap-2"
+                  className="grid grid-cols-3 gap-2"
                   role="tablist"
                   aria-label="多视图预设"
                 >

@@ -298,7 +298,8 @@ const thirdPreset = panel.match(/id: 'preset-3',\s*label:[\s\S]*?views: (\[[^\]]
 assert(thirdPreset);
 assert.deepEqual(new Function(`return ${thirdPreset[1]}`)(),
   ['front', 'front-left', 'left', 'back-left', 'back', 'back-right', 'right', 'front-right', 'bottom']);
-assert.match(panel, /id: 'preset-3', title: '预设 1'[\s\S]*id: 'preset-2', title: '预设 2'[\s\S]*id: 'preset-1', title: '预设 3'/);
+assert.match(panel, /id: 'preset-3', title: '预设 1'[\s\S]*id: 'preset-2', title: '预设 2'[\s\S]*id: 'custom', title: '自定义预设'/);
+assert.doesNotMatch(panel, /title: '预设 3'|label: '预设 3/);
 assert.match(panel, /useState<CameraViewPresetSelection>\('preset-3'\)/);
 assert.match(panel, /createCameraViewsForPreset\('preset-3', t\)/);
 assert.match(panel, /getCameraViewPresetDefinition\(option.id\).views.length/);
