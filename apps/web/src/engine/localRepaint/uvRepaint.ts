@@ -7,7 +7,7 @@ import {
   type UvRepaintPatch,
 } from './uvRepaintState';
 
-// ALG-LR-UV-PAINT v2.0.0. Shared UV pixels intentionally share color/alpha.
+// ALG-LR-UV-PAINT v3.0.0. Shared UV pixels intentionally share color/alpha.
 type Tile = { bounds: Rect; surfaces: Array<{ mesh: THREE.Mesh; box: THREE.Box3 }> };
 type Stroke = {
   before?: Map<number, Promise<Uint8Array<ArrayBuffer>>>;
@@ -39,6 +39,7 @@ uniform sampler2D visibleFaces;
 uniform vec2 visibilitySize;
 uniform vec2 viewportSize,brushFrom,brushTo;
 uniform float brushRadius,erase;
+uniform float linearBrushBlend;
 uniform vec2 brushBlendEdges;
 float frontLimit(vec2 pixel,vec4 anchor,vec2 centre){
 vec4 front=texture2D(visibleFaces,(pixel+0.5)/visibilitySize);
@@ -65,6 +66,7 @@ vec2 ab=brushTo-brushFrom;
 float t=clamp(dot(p-brushFrom,ab)/max(dot(ab,ab),0.0001),0.0,1.0);
 float distanceToStroke=length(p-(brushFrom+ab*t))/max(brushRadius,0.001);
 if(distanceToStroke>=1.0)discard;
+if(linearBrushBlend>0.5)return clamp((brushBlendEdges.y-distanceToStroke)/max(brushBlendEdges.y-brushBlendEdges.x,0.0001),0.0,1.0);
 return 1.0-smoothstep(brushBlendEdges.x,brushBlendEdges.y,distanceToStroke);
 }
 `;
@@ -223,6 +225,7 @@ export class UvRepaint {
         brushTo: { value: new THREE.Vector2() },
         brushRadius: { value: 1 },
         brushBlendEdges: { value: new THREE.Vector2(0.9999, 1) },
+        linearBrushBlend: { value: 0 },
         erase: { value: 0 },
       },
       side: THREE.DoubleSide,
@@ -724,6 +727,7 @@ export class UvRepaint {
         ? getLocalRepaintStrokeBlend(Math.max(input.radius, 0.001), feather, Math.max(size.x, size.y))
         : [1 - feather, 1];
       uniforms.brushBlendEdges.value.set(edges[0], edges[1]);
+      uniforms.linearBrushBlend.value = Number(this.paintsSource && !input.erase);
       uniforms.erase.value = Number(input.erase);
       const composite = this.composite.material as THREE.ShaderMaterial;
       composite.blendEquation = THREE.AddEquation;

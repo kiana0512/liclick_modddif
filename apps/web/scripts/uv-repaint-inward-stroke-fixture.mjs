@@ -35,8 +35,10 @@ export async function run(resolution = 2048, feather = 0) {
     const sx = (x + .5) * 2048 / resolution, sy = (y + .5) * 2048 / resolution;
     const distance = Math.hypot(sx - Math.max(.4 * 2048, Math.min(.6 * 2048, sx)), sy - 1024);
     const a = pixels[(y * resolution + x) * 4 + 3];
-    // Independent oracle: retreat 3px from actual capsule, then fade inward.
-    const expected = Math.round(255 * smooth((61 - distance) / Math.max(16, 64 * feather)));
+    // Independent oracle: solid core, linear outer ring, then 3px retreat.
+    const blendWidth = Math.min(61 * .9, Math.max(16, 64 * feather));
+    const expected = Math.round(255 * Math.max(0, Math.min(1, (61 - distance) / blendWidth)));
+    if (Math.abs(Math.round(255 * smooth((61 - distance) / blendWidth)) - expected) > 1) oldWouldFail++;
     maxError = Math.max(maxError, Math.abs(a - expected));
     if (distance >= 61 && distance < 64) {
       check(a === 0, 'actual painted outline must retreat, even at feather=0'); removed++;
@@ -59,8 +61,12 @@ export async function run(resolution = 2048, feather = 0) {
   const reopened = copy.getContext('2d').getImageData(0, 0, resolution, resolution).data;
   check(reopened.every((v, i) => v === pixels[i]), 'PNG/reopen changed persisted blend');
   const erase = await stamp(true, 12);
-  check(read()[(Math.floor(resolution / 2) * resolution + Math.floor(resolution / 2)) * 4 + 3] === 0,
-    'eraser must still clear the centre');
+  const centreIndex = (Math.floor(resolution / 2) * resolution + Math.floor(resolution / 2)) * 4 + 3;
+  const eraseExpected = Math.round(pixels[centreIndex] * (1 - smooth(
+    (12 - 1024 / resolution) / (12 * Math.max(.0001, feather)),
+  )));
+  check(Math.abs(read()[centreIndex] - eraseExpected) <= 1,
+    'eraser must retain its original smooth feather, including at 100%');
   engine.publish(erase, 'before', true);
   check(read().every((v, i) => v === pixels[i]), 'erase undo must restore inward blend exactly');
   // Very small brushes retain a usable centre rather than vanishing entirely.

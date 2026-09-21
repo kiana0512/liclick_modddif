@@ -1,5 +1,7 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
+2026-09-21 M08（审计 M06/M07/M11）：`ALG-LR-UV-PAINT` v3.0.0 将原生 UV 局部重绘彩色笔迹改为实心中心加线性外圈羽化；保留羽化比例与 3px@2K 退让，过渡宽度上限为有效半径的 90%，保证至少 10% 实心半径。橡皮/选区仍走原 smoothstep，未修改旧资产或生成蒙版。GPU 输出 RGBA 直接用于显示、历史、PNG、CPU/Worker 合成及导出，无二次羽化或 Schema 迁移。批准、公式、验证与回退见 [线性外圈羽化](changes/CHG-20260921-REPAINT-LINEAR-FEATHER.md)。本地修改，未推送或部署。
+
 2026-09-21 M08（审计 M06/M07/M11）：`ALG-LR-UV-PAINT` v2.0.0 补齐原生 UV 手动彩色笔迹内缩：按实际屏幕笔段解析距离，2K 视口参考退让 3px、向内至少 16px 过渡并保留较大用户羽化，小笔刷限制宽度；既有 max-alpha 累计，不做全局 UV 岛腐蚀，不以生成蒙版限制手动绘制。橡皮/mask-only 不变，GPU 实时与历史/PNG/合并/export 共用已处理 RGBA，不新增 GPU pass、RT 或逐笔全图读回。无 Schema/资产迁移，旧笔迹不重写；ADR、批准、矩阵与回退见 [实际笔迹内缩](changes/CHG-20260921-UV-REPAINT-STROKE-INWARD.md)。本地验证，未推送或部署，真实座垫黑边仍需发布后复核。
 
 2026-09-21 UI-04 / M02：高面数导入减面确认框仅说明细节丢失、轮廓变化和贴图拉伸/错位风险，并提示用户可取消、自行手动减至 150 万三角面以内确认效果后重传；不再描述实现步骤。纯文案 Patch，IMPORT-DECIMATE 算法、阈值、独立 UV 确认、取消/失败和原文件保护行为均不变，无 Schema 或资产迁移；回滚仅恢复文案。浏览器回归同步新提示断言。
@@ -240,7 +242,7 @@
 
 2026-09-15 M03：ALG-VIEW-INPUT-001/1.3.2 在鼠标接触前即让 R3F 悬停遵守 Alt 所有权；保留普通 hover 和已锁定拖动。旧实现拾取回归失败、新实现通过，用户实际首帧延迟需继续录制。无像素/持久化迁移，见 [Alt 悬停变更卡](changes/CHG-20260915-ALT-BRUSH-HOVER.md)。
 
-> 文档版本：`2.20.210`
+> 文档版本：`2.21.0`
 
 2026-09-16 UI-16 → M14（协作 M01/M12/M13/M15）：`ASSET-LIFECYCLE-GC` v0.4.0 / `STORAGE-INVENTORY-001/4` 将 Cloud 工程/Revision 引用页默认 8→32，并由单条 PostgreSQL CTE 完成分页、assetId 提取与引用 upsert，Node 不再回传引用数组后二次写库；每 256 条文档约 64→8 次数据库往返，保持 45 秒单查询上限与有界 Node 内存。当前 ready scan 引用索引保留到下一快照原子切换，旧 /3 快照自动重扫。Cloud 隔离区改按真实 quarantine 且排除重新可达对象统计；新增用户级幂等持久 purge job/item，以最多 4 并发签名 DeleteObject 后逐项事务删除 transfer、写 deleted_at，404/Pod 重启可安全重放。新增 `asset_storage_purge_jobs/items`，无 Project/Revision/Asset 内容迁移；Command/CAS/ownership/verified 及 GPU/CPU/Worker/shader、投影/UV/重绘/export、分辨率与 QA 不变。回滚前停 purge 并保留任务表，详见 [Cloud 存储盘点与物理清理变更卡](changes/CHG-20260916-CLOUD-STORAGE-INVENTORY-BOUNDED.md)。
 

@@ -35,7 +35,7 @@ try {
     const { run: inward } = await import('/scripts/uv-repaint-inward-stroke-fixture.mjs');
     return [await topology(), await run(0), await run(0.7),
       await islands(64), await islands(512), await islands(2048, 0.4), await islands(4096, 0.4),
-      await inward(2048), await inward(2048, .45), await inward(4096)];
+      await inward(2048), await inward(2048, .45), await inward(2048, 1), await inward(4096)];
   });
   assert.deepEqual(errors, []);
   console.log(JSON.stringify(result));
