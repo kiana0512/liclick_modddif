@@ -775,7 +775,7 @@ const viewportCanvasSource = readFileSync(
 assert.match(
   viewportCanvasSource,
   /const rightModelEraseContact =\s*event\.pointerType === 'mouse' && event\.button === 2 && Boolean\(result\);[\s\S]*?const localRepaintEraseContact =\s*isLocalRepaintApplyMode &&[\s\S]*?rightModelEraseContact[\s\S]*?isEditingPersistedLocalRepaint && event\.button === 0/,
-  'RMB model hits, pen erasers and the selected primary eraser gesture must subtract local repaint.',
+  'After repaint RMB has exited to its settings menu, pen and primary eraser routing remains intact.',
 );
 assert.match(
   viewportCanvasSource,

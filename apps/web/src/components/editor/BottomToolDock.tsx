@@ -116,6 +116,7 @@ export function BottomToolDock({
   labels,
 }: BottomToolDockProps) {
   const dockRef = useRef<HTMLDivElement>(null);
+  const repaintContextMenuRef = useRef(false);
   const [activeMenu, setActiveMenu] = useState<
     'eraser' | 'inpaint-add' | 'inpaint-subtract' | 'inpaint-apply' | undefined
   >();
@@ -243,11 +244,52 @@ export function BottomToolDock({
   }
 
   useEffect(() => {
+    if (mode !== 'texture' || paintTool !== 'inpaint-apply') return;
+    let dismissClick = false;
+    const openBrushMenu = () => {
+      repaintContextMenuRef.current = true;
+      setActiveMenu('inpaint-apply');
+    };
+    const dismissBrushMenu = (event: PointerEvent) => {
+      dismissClick = false;
+      if (!repaintContextMenuRef.current || event.button !== 0 ||
+          dockRef.current?.contains(event.target as Node)) return;
+      repaintContextMenuRef.current = false;
+      dismissClick = true;
+      setActiveMenu(undefined);
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    };
+    // Consume the click tail too: closing must not select a model or paint.
+    const consumeDismissClick = (event: MouseEvent) => {
+      if (!dismissClick) return;
+      dismissClick = false;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    };
+    window.addEventListener('liclick:repaint-brush-menu', openBrushMenu);
+    window.addEventListener('pointerdown', dismissBrushMenu, true);
+    window.addEventListener('click', consumeDismissClick, true);
+    return () => {
+      window.removeEventListener('liclick:repaint-brush-menu', openBrushMenu);
+      window.removeEventListener('pointerdown', dismissBrushMenu, true);
+      window.removeEventListener('click', consumeDismissClick, true);
+      if (repaintContextMenuRef.current) setActiveMenu(undefined);
+      repaintContextMenuRef.current = false;
+    };
+  }, [mode, paintTool]);
+
+  useEffect(() => {
+    if (activeMenu !== 'inpaint-apply') repaintContextMenuRef.current = false;
     if (!activeMenu) return undefined;
     const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setActiveMenu(undefined);
+      if (event.key === 'Escape') {
+        repaintContextMenuRef.current = false;
+        setActiveMenu(undefined);
+      }
     };
     const closeOnOutsidePointer = (event: PointerEvent) => {
+      if (repaintContextMenuRef.current) return;
       if (!dockRef.current?.contains(event.target as Node)) {
         setActiveMenu(undefined);
       }

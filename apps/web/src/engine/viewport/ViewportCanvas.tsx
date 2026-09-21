@@ -15295,9 +15295,15 @@ function SurfacePaintOverlay() {
         event.pointerType === 'pen' &&
         (event.button === 2 || event.button === 5) &&
         event.pressure > 0;
+      if (paintTool === 'inpaint-apply' && event.pointerType === 'mouse' && event.button === 2) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        window.dispatchEvent(new Event('liclick:repaint-brush-menu'));
+        return;
+      }
       const strokeCanvasRect = canvas.getBoundingClientRect();
       const result = raycastModel(event, strokeCanvasRect);
-      // Unmodified RMB on paintable geometry remains the erase gesture;
+      // Other paint tools retain RMB erasing; repaint RMB opens settings above.
       // Alt contacts have already been reserved for camera navigation above.
       const rightModelEraseContact =
         event.pointerType === 'mouse' && event.button === 2 && Boolean(result);
@@ -15520,7 +15526,7 @@ function SurfacePaintOverlay() {
       if (!isPaintingRef.current) gl.domElement.style.cursor = '';
     };
     const handleContextMenu = (event: MouseEvent) => {
-      // Both RMB erase and Alt+RMB dolly suppress the browser context menu.
+      // Settings, other tools' RMB erase and Alt+RMB dolly suppress browser menus.
       event.preventDefault();
     };
     canvas.addEventListener('pointermove', handlePointerMove, true);
