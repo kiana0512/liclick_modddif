@@ -164,12 +164,13 @@ const serialJs = ts.transpileModule(flow
   .replace("import('@/services/modelviewApiClient')", "Promise.resolve({ createModelviewApiClient: modelviewFactory })")
   .replace("import('@/engine/generation/gptMultiviewPairs')", "Promise.resolve(presentationModule)"),
   { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
-for (const outcome of ['success', 'covered', 'cancel', 'failure', 'already-resident']) {
+for (const outcome of ['success', 'textured', 'covered', 'cancel', 'failure', 'already-resident', 'capture-failure', 'capture-cancel', 'save-failure']) {
   const views = ['front', 'top', 'bottom'].map((id, i) => ({ id, label: id,
     viewDirection: i === 0 ? [0, 0, 1] : [0, i === 1 ? 1 : -1, 0], viewUp: [0, 1, 0] }));
   const captures = views.map(view => ({ viewId: view.id, cameraView: {}, cameraSnapshot: { view: view.id },
     capture: { id: view.id, colorUrl: 'clay-' + view.id, maskUrl: 'mask-' + view.id, normalUrl: 'normal-' + view.id, width: 2048, height: 2048 } }));
-  const calls = [], projected = [], committed = [];
+  const calls = [], projected = [], committed = [], prepared = [], progress = [];
+  let persisted = [{ id: 'unrelated-capture' }], savedCaptureId, frozenCamera, clayOverride = false;
   let requests = 0, residents = 0, restored = 0, cancelled = false;
   const root = new THREE.Group();
   const reusedMaterial = new THREE.ShaderMaterial({ name: 'LiclickUvOverlayPreview' });
@@ -178,6 +179,8 @@ for (const outcome of ['success', 'covered', 'cancel', 'failure', 'already-resid
   const remote = async (kind, input) => {
     assert.equal(residents, requests, 'No next request before the previous projection is GPU-resident');
     requests++;
+    assert.equal(prepared.length, requests, 'First request must not wait for later captures');
+    assert.equal(savedCaptureId, input.captureId, 'Capture must be saved before submitting generation');
     assert.equal(input.prompt, undefined);
     assert.equal(input.image.dataUrl, 'white-' + input.captureId);
     assert.equal(input.normalImage.dataUrl, 'normal-' + input.captureId, 'Every angle must submit its own unchanged captured normal');
@@ -199,20 +202,50 @@ for (const outcome of ['success', 'covered', 'cancel', 'failure', 'already-resid
     cancelledTextureBatchIdsRef: { current: new Set() },
     modelviewFactory: () => ({ generateSingleView: input => remote('full', input),
       generateSingleViewInpaint: input => remote('inpaint', input) }),
-    updateTexturePipelineProgress() {}, getTextureMapMultiviewCaptures: async () => captures,
-    useProjectStore: { getState: () => ({ projects: [] }) },
-    persistCaptureAssets: async value => value, updateProjectById() {}, saveCriticalProjectState: async () => {},
+    updateTexturePipelineProgress: value => progress.push(value),
+    frameGenerationCapture: async (_object, aspect, direction) => {
+      assert.equal(aspect, 1);
+      frozenCamera = { view: views.find(view => view.viewDirection === direction).id };
+      return frozenCamera;
+    },
+    getTextureMapMultiviewCaptures: async (nextViews, _signal, options) => {
+      assert.equal(nextViews.length, 1, 'Capture only the current view');
+      assert.equal(residents, requests, 'Next capture must wait for previous GPU presentation');
+      const id = nextViews[0].id;
+      assert.equal(options.cameraSnapshot.view, id);
+      assert.equal(options.cameraSnapshot, frozenCamera);
+      assert.equal(options.reportProgress, false, 'Per-view capture must not reset batch progress');
+      prepared.push(id);
+      clayOverride = true;
+      if (outcome === 'capture-failure' && prepared.length === 2) throw new Error('capture failure');
+      if (outcome === 'capture-cancel') cancelled = true;
+      return [captures.find(item => item.viewId === id)];
+    },
+    useProjectStore: { getState: () => ({ projects: [{ id: 'project', captures: persisted }] }) },
+    persistCaptureAssets: async value => value,
+    updateProjectById: (_id, update) => { persisted = update.captures; },
+    saveCriticalProjectState: async update => {
+      if (outcome === 'save-failure' && prepared.length === 2) throw new Error('save failure');
+      savedCaptureId = update.captures[0].id;
+      assert.ok(update.captures.some(capture => capture.id === 'unrelated-capture'));
+      assert.equal(update.captures[0].normalUrl, 'normal-' + savedCaptureId);
+      // Simulate a concurrent editor capture between serial views.
+      if (!persisted.some(capture => capture.id === 'editor-capture')) persisted.push({ id: 'editor-capture' });
+      else assert.ok(update.captures.some(capture => capture.id === 'editor-capture'));
+    },
     throwIfTexturePipelineCancelled: () => { if (cancelled) throw new Error('cancelled'); },
     urlToDataUrl: async value => value, setActiveCameraViewId() {}, setCameraToObjectDirection() {},
-    waitForBrowserPaint: async () => {}, hasVisibleTextureLayerCandidate: () => residents > 0,
+    waitForBrowserPaint: async () => {}, hasVisibleTextureLayerCandidate: () => residents > 0 || outcome === 'textured',
     captureCurrentColorPreview: async input => {
+      assert.equal(clayOverride, false, 'Current texture must be captured before clay replaces its material');
       assert.equal(input.cameraSnapshot.view, views[requests].id);
+      assert.equal(input.cameraSnapshot, frozenCamera);
       return { colorUrl: 'effect' };
     }, resolution: '2K', resolutionToSize: { '2K': 2048 },
     prepareSingleViewTextureCompletion: async input => {
       assert.equal(input.whiteFill, true);
-      assert.equal(input.fullObject, requests === 0);
-      return { hasVisibleTexture: requests > 0, uncoveredPixelCount: outcome === 'covered' && requests >= 2 ? 0 : 100,
+      assert.equal(input.fullObject, requests === 0 && outcome !== 'textured');
+      return { hasVisibleTexture: requests > 0 || outcome === 'textured', uncoveredPixelCount: outcome === 'covered' && requests >= 2 ? 0 : 100,
         imageUrl: 'white-' + views[requests].id, completionMaskUrl: 'expanded-mask' };
     }, referenceGroupId: () => 'reference-group', start() {}, addProjectGeneration() {},
     saveGenerationStateBestEffort: async () => {},
@@ -223,6 +256,7 @@ for (const outcome of ['success', 'covered', 'cancel', 'failure', 'already-resid
       // Reuse the same material, emitting NO event. Cover both completion
       // before subscription and asynchronous in-place texture replacement.
       const present = () => {
+        clayOverride = false;
         residents++;
         reusedMaterial.userData.liclickResidentUvProjectionLayers.push('layer-' + generation.id);
         if (outcome === 'cancel') cancelled = true;
@@ -235,13 +269,18 @@ for (const outcome of ['success', 'covered', 'cancel', 'failure', 'already-resid
     createFailedGeneration: (generation, message) => ({ ...generation, status: 'failed', error: message }),
   };
   const run = new Function(...Object.keys(scope), `${serialJs};return handleRemoteSequentialMultiviewGenerate;`)(...Object.values(scope));
-  const succeeds = outcome === 'success' || outcome === 'already-resident';
+  const succeeds = ['success', 'textured', 'already-resident'].includes(outcome);
   if (succeeds || outcome === 'covered') await run({ id: 'reference', url: 'material' }, views);
-  else await assert.rejects(run({ id: 'reference', url: 'material' }, views), new RegExp(outcome === 'cancel' ? 'cancelled' : 'remote failure'));
+  else await assert.rejects(run({ id: 'reference', url: 'material' }, views), new RegExp(
+    outcome.includes('cancel') ? 'cancelled' : outcome === 'capture-failure' ? 'capture failure'
+      : outcome === 'save-failure' ? 'save failure' : 'remote failure'));
   assert.equal(restored, 1, 'Camera must restore after success, failure and cancellation');
-  assert.deepEqual(calls, outcome === 'cancel' ? [['full', 'front']] : succeeds
-    ? [['full', 'front'], ['inpaint', 'top'], ['inpaint', 'bottom']] : [['full', 'front'], ['inpaint', 'top']]);
-  assert.equal(projected.length, succeeds ? 3 : outcome === 'covered' ? 2 : 1);
+  assert.deepEqual(calls, outcome === 'capture-cancel' ? []
+    : ['cancel', 'capture-failure', 'save-failure'].includes(outcome) ? [['full', 'front']] : succeeds
+    ? [[outcome === 'textured' ? 'inpaint' : 'full', 'front'], ['inpaint', 'top'], ['inpaint', 'bottom']] : [['full', 'front'], ['inpaint', 'top']]);
+  assert.equal(projected.length, succeeds ? 3 : outcome === 'covered' ? 2 : outcome === 'capture-cancel' ? 0 : 1);
+  assert.deepEqual(prepared, outcome.includes('cancel') ? ['front'] : succeeds || outcome === 'covered' ? ['front', 'top', 'bottom'] : ['front', 'top']);
+  assert.ok(progress.every((value, index) => index === 0 || value >= progress[index - 1]), 'Progress must not go backwards between captures');
   root.children[0].geometry.dispose(); reusedMaterial.dispose();
   if (outcome === 'failure') assert.equal(committed.length, 1, 'A later failure must retain already committed results');
 }
