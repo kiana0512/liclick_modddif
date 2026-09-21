@@ -246,7 +246,7 @@ const cameraViewOptions: Record<ObjectViewPreset, CameraViewOption> = {
 const cameraViewPresets: CameraViewPresetDefinition[] = [
   {
     id: 'preset-1',
-    label: '预设 1 · 10 视角（默认）',
+    label: '预设 3 · 10 视角',
     description: '10 个视角：前、后、左、右、上、下、左前、右前、左后、右后',
     views: [
       'front',
@@ -285,7 +285,7 @@ const cameraViewPresets: CameraViewPresetDefinition[] = [
   },
   {
     id: 'preset-3',
-    label: '预设 3 · 9 视角',
+    label: '预设 1 · 9 视角（默认）',
     description: '8 个俯视 15° 环绕视角 + 底视角',
     views: ['front', 'front-left', 'left', 'back-left', 'back', 'back-right', 'right', 'front-right', 'bottom'],
   },
@@ -300,9 +300,9 @@ const cameraViewPresetOptions: Array<{
   id: CameraViewPresetSelection;
   title: string;
 }> = [
-  { id: 'preset-1', title: '预设 1' },
+  { id: 'preset-3', title: '预设 1' },
   { id: 'preset-2', title: '预设 2' },
-  { id: 'preset-3', title: '预设 3' },
+  { id: 'preset-1', title: '预设 3' },
   { id: 'custom', title: '自定义预设' },
 ];
 
@@ -664,9 +664,9 @@ export function GeneratePanel({
     previewUrl: string;
   }>();
   const [selectedCameraViewPreset, setSelectedCameraViewPreset] =
-    useState<CameraViewPresetSelection>('preset-1');
+    useState<CameraViewPresetSelection>('preset-3');
   const [cameraViews, setCameraViews] = useState<CameraViewItem[]>(() =>
-    createCameraViewsForPreset('preset-1', t),
+    createCameraViewsForPreset('preset-3', t),
   );
   const [activeCameraViewId, setActiveCameraViewId] = useState('front');
   const [referenceGroupGenerationState, setReferenceGroupGenerationState] =
