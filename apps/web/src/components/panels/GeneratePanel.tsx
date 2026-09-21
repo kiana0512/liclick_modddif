@@ -292,7 +292,6 @@ const cameraViewPresets: CameraViewPresetDefinition[] = [
 ];
 
 const customCameraViewPreset = {
-  label: '自定义预设 · 6 视角',
   views: ['front', 'left', 'back', 'right', 'top', 'bottom'] as ObjectViewPreset[],
 };
 
