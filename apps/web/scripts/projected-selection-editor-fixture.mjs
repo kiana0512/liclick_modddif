@@ -13,6 +13,7 @@ import { useEditorHistoryStore } from '../src/stores/editorHistoryStore.ts';
 import { useToastStore } from '../src/stores/toastStore.ts';
 import { useWorkspaceLayoutStore } from '../src/components/workspace/workspaceLayoutStore.ts';
 import { runPaintMaskHistoryAction } from '../src/engine/paint/paintMaskHistoryActions.ts';
+import { renderSceneToPngUrl, renderScenePassesToPngUrl } from '../src/engine/capture/renderTargetUtils.ts';
 
 const tick = () => new Promise(resolve => requestAnimationFrame(resolve));
 const until = async (test) => { const end=performance.now()+60000;while(!test()){if(performance.now()>end)throw Error('Viewport readiness timeout');await tick();} };
@@ -95,8 +96,24 @@ export async function setup(car = false) {
   for(const [key,label]of Object.entries({add:'绘制',erase:'擦除',undo:'撤销',redo:'重做',clear:'清空',invert:'反选',home:'原视角'})){const b=document.createElement('button');b.textContent=label;b.onclick=actions[key];b.style.cssText='color:white;background:#343448;border:1px solid #56576c;border-radius:5px;padding:5px 10px';header.append(b);}
   const extension=runtime.gl.getContext().getExtension('WEBGL_debug_renderer_info');
   const screenSnapshots=new Map();
+  let captureResizeJob, releaseCaptureResize, captureResizePhase;
   const screenPixels=()=>{runtime.gl.render(runtime.scene,runtime.camera);const c=runtime.gl.domElement,g=runtime.gl.getContext(),p=new Uint8Array(c.width*c.height*4);g.readPixels(0,0,c.width,c.height,g.RGBA,g.UNSIGNED_BYTE,p);return {width:c.width,height:c.height,pixels:p};};
   window.selectionFixture={...actions,view,settle,state,capture,
+    beginCaptureResize(kind){
+      const gl=runtime.gl, originalRead=gl.readRenderTargetPixelsAsync;
+      const gate=new Promise(resolve=>{releaseCaptureResize=resolve;});
+      captureResizePhase='capturing';
+      const pause=async()=>{captureResizePhase='waiting';await gate;};
+      if(kind==='readback')gl.readRenderTargetPixelsAsync=async(...args)=>{await originalRead.apply(gl,args);await pause();};
+      const request={...runtime,objectId:model.objectId,width:256,height:256};
+      const options=kind==='readback'?{}:{waitForViewportIdle:pause};
+      captureResizeJob=(kind==='passes'
+        ?renderScenePassesToPngUrl(request,[{prepare:()=>()=>{}},{prepare:()=>()=>{}}],options)
+        :renderSceneToPngUrl(request,{...options,tileSize:kind==='tiles'?128:256}))
+        .finally(()=>{gl.readRenderTargetPixelsAsync=originalRead;captureResizePhase='complete';});
+    },
+    captureResizeState(){return {phase:captureResizePhase,size:runtime.gl.getSize(new THREE.Vector2()).toArray(),viewport:runtime.gl.getViewport(new THREE.Vector4()).toArray(),rect:runtime.gl.domElement.getBoundingClientRect().toJSON(),aspect:runtime.camera.aspect};},
+    async finishCaptureResize(){releaseCaptureResize();const url=await captureResizeJob;URL.revokeObjectURL(url);await settle();return this.captureResizeState();},
     renderer:extension?runtime.gl.getContext().getParameter(extension.UNMASKED_RENDERER_WEBGL):'unknown',
     start(){for(const k in samples)samples[k]=[];measuring=true;previous=0;},
     stop(){measuring=false;return structuredClone(samples);},

@@ -1,6 +1,7 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
 2026-09-21 M08：`ERASER-FEATHER` v2 将橡皮擦同步为实心中心与线性外圈，实心半径为 1-min(0.9,feather)，最大羽化仍保留 10% 中心。擦除保持完整光标半径，不套用彩色局部重绘的 3px 内缩或最小 16px 过渡。UvRepaint 原生彩色图层及普通 UV/投影蒙版 GPU 擦除共用线性公式；Canvas 笔刷缓存区分线性橡皮与原选区曲线，预热/实时/历史提交沿用同一擦除像素。画蒙版、普通画笔、颜色重绘、远端输入、CPU/Worker 合成和导出公式不变，不重写已有资产，无迁移。回滚恢复橡皮 smoothstep 与 Canvas 旧渐变。浏览器测试覆盖 2K/4K、最大羽化中心、线性外圈、撤销及保存。
+2026-09-21 UI-05/UI-06 → M03/M08：`ALG-CAP-006` v1.0.1 将共享 renderer/背景快照限制在每次同步 GPU 提交段，逐 tile/pass 重新取得当前状态，恢复幂等，避免异步完成覆盖 resize。`INPAINT-PROJECTION-TEXTURE-SIZE` v1.0.0 在蒙版 canvas 改变尺寸或历史恢复时释放旧 WebGL2 不可变纹理分配，沿用原上传重新分配，修复落点偏移/上传失败。像素公式、相机、完整分辨率、QA、CPU/Worker/shader、UV/export 与 Schema/资产不变，无迁移。真实 Edge 旧实现约 82px/51px 偏移，修复后三路径小于 1px；回归及回滚见 [截图与蒙版对齐](changes/CHG-20260921-CAPTURE-RESIZE-MASK-ALIGNMENT.md)。
 
 2026-09-21 UI-05 / M04（M03）：`MULTIVIEW-PRESETS` v1.2.1 按用户确认将默认预设 1 八向俯角由 15° 改为 30°，方向 y=水平长度×tan(30°) 后归一化。方位角、底方向 (0,-1,0)、九视角顺序、GPT 2+4+3 分批、ModelView 串行和预设 2/自定义不变；既有结果/相机数据不重写、无迁移，刷新加载新预设。回滚恢复默认俯角及描述为 15°。回归覆盖 30° 单位方向、方位不变、正底和分组。
 
@@ -1223,7 +1224,7 @@ Bake 设置包含 resolution、frontal/rear distance、distance/cage、cage infl
 | `ALG-CAP-007` 生成取景 | v1.2.0；GPT 固定方图、98% 长边占比；ModelView 保持原拟合；捕获与回贴共用相机，保守回退不裁模型 |
 | `GPT-ALPHA-PREVIEW-CROP` | v1.0.0；仅透明结果预览副本，轮廓外扩 8px，原图/下载/回贴不变 |
 | `LOCAL-REPAINT-BRUSH-DEFAULT` | v1.1.0；视口和独立画布初始大小 30，用户后续调整不覆盖 |
-| `ALG-CAP-006` 捕获状态隔离 v1.0.0 | 首次及逐 tile/pass 的 await 前归还共享 renderer/背景；每个同步 draw 重绑捕获 target/clear，保留像素与分辨率 |
+| `ALG-CAP-006` 捕获状态隔离 v1.0.1 | 每个同步提交段取得当前 renderer/背景并幂等归还，跨 await 不重放旧 viewport/scissor；保留像素与分辨率 |
 | `CAPTURE-MATERIAL-ISOLATION` v1.0.0 | flat 材质/uniforms 仅在每个同步 tile draw 内借用，逐 tile 恢复；材质身份变化拒绝混合截图，已有纹理在 clay 展示前冻结 |
 | `ALG-GEN-001` 单视图生成 | `1.3.0`；当前相机 Capture + 材质参考 → Generation；GPT 初始白模与已有贴图补全共用图一几何锁定/图二材质参考的局部弱光影模板；GPT 局部重绘现独立使用 `GPT-REPAINT-NORMAL` v1.0.0。结果按既有 Alpha 策略与独立 capture mask/depth 创建投影图层 |
 | `ALG-GEN-002` 多视图批次 | `1.3.0`；N 个捕获共享 batch；GPT 与单视图共用局部弱光影材质补全模板；完成层串行 commit，整批结束一次发布新投影栈 |

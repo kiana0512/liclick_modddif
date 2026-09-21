@@ -101,6 +101,20 @@ function restoreSharedRendererState(gl: THREE.WebGLRenderer, state: SharedRender
   gl.xr.enabled = state.xrEnabled;
 }
 
+// ALG-CAP-006 v1.0.1: own state only during synchronous GPU submission.
+// Resize/zoom and other viewport work may publish newer state at every await.
+function preserveCaptureState(request: CapturePassRequest) {
+  const rendererState = captureSharedRendererState(request.gl);
+  const background = request.scene.background;
+  let restored = false;
+  return () => {
+    if (restored) return;
+    restored = true;
+    request.scene.background = background;
+    restoreSharedRendererState(request.gl, rendererState);
+  };
+}
+
 async function waitForSubmittedGpuWork(renderer: THREE.WebGLRenderer) {
   const context = renderer.getContext();
   if (!(context instanceof WebGL2RenderingContext)) {
@@ -156,8 +170,7 @@ export async function renderSceneToPngUrl(
       })
     : undefined;
   const readTarget = outputTarget ?? sceneTarget;
-  const previousRendererState = captureSharedRendererState(request.gl);
-  const previousBackground = request.scene.background;
+  let restoreState = preserveCaptureState(request);
   let pixels: Uint8Array<ArrayBuffer>;
   const bindCaptureTarget = () => {
     request.gl.setRenderTarget(sceneTarget);
@@ -179,12 +192,12 @@ export async function renderSceneToPngUrl(
     if (tiled) {
       // ALG-CAP-006 v1.0.0: the first idle wait yields to R3F too.
       // Never leave the capture framebuffer or background installed there.
-      restoreSharedRendererState(request.gl, previousRendererState);
-      request.scene.background = previousBackground;
+      restoreState();
       let presentationBudgetStartedAt = performance.now();
       for (let y = 0; y < request.height; y += tileSize) {
         for (let x = 0; x < request.width; x += tileSize) {
           await options.waitForViewportIdle?.();
+          restoreState = preserveCaptureState(request);
           markCapturePerformancePhase(options.performancePhasePrefix, 'render-tile');
           bindCaptureTarget();
           request.gl.setScissorTest(true);
@@ -200,7 +213,6 @@ export async function renderSceneToPngUrl(
             request.gl.render(request.scene, request.camera);
           } finally {
             restorePreparedScene?.();
-            request.scene.background = previousBackground;
           }
           // Do not let a detached depth/normal capture queue outrun the physical
           // GPU. A flush only submits work; it does not prevent several 256px
@@ -211,7 +223,7 @@ export async function renderSceneToPngUrl(
           // The capture target retains every completed tile. Restore the live
           // renderer before yielding so React Three Fiber cannot inherit our
           // target/scissor state.
-          restoreSharedRendererState(request.gl, previousRendererState);
+          restoreState();
           markCapturePerformancePhase(options.performancePhasePrefix, 'gpu-wait');
           await tileCompletion;
           if (
@@ -229,6 +241,7 @@ export async function renderSceneToPngUrl(
           }
         }
       }
+      restoreState = preserveCaptureState(request);
       request.gl.setRenderTarget(sceneTarget);
       request.gl.setScissorTest(false);
     } else {
@@ -253,14 +266,12 @@ export async function renderSceneToPngUrl(
     );
     // The async PBO read owns the submitted frame. Restore the shared renderer
     // before waiting so React Three Fiber can keep drawing the viewport.
-    request.scene.background = previousBackground;
-    restoreSharedRendererState(request.gl, previousRendererState);
+    restoreState();
     options.onRenderSubmitted?.();
     markCapturePerformancePhase(options.performancePhasePrefix, 'readback-wait');
     pixels = await readbackPromise;
   } finally {
-    request.scene.background = previousBackground;
-    restoreSharedRendererState(request.gl, previousRendererState);
+    restoreState();
     sceneTarget.dispose();
     outputTarget?.dispose();
   }
@@ -310,8 +321,7 @@ export async function renderScenePassesToPngUrl(
     samples: 0,
     colorSpace: options.dataTexture ? THREE.NoColorSpace : THREE.SRGBColorSpace,
   });
-  const previousRendererState = captureSharedRendererState(request.gl);
-  const previousBackground = request.scene.background;
+  let restoreState = preserveCaptureState(request);
   let pixels: Uint8Array<ArrayBuffer>;
   try {
     if (options.ignoreSceneBackground) request.scene.background = null;
@@ -319,10 +329,10 @@ export async function renderScenePassesToPngUrl(
     request.gl.setRenderTarget(target);
     request.gl.setClearColor(request.clearColor ?? '#000000', request.clearAlpha ?? 1);
     request.gl.clear(true, true, true);
-    restoreSharedRendererState(request.gl, previousRendererState);
-    request.scene.background = previousBackground;
+    restoreState();
     for (let index = 0; index < passes.length; index += 1) {
       await options.waitForViewportIdle?.();
+      restoreState = preserveCaptureState(request);
       request.gl.setRenderTarget(target);
       request.gl.setClearColor(request.clearColor ?? '#000000', request.clearAlpha ?? 1);
       request.gl.setScissorTest(false);
@@ -333,7 +343,6 @@ export async function renderScenePassesToPngUrl(
         request.gl.render(request.scene, request.camera);
       } finally {
         restore();
-        request.scene.background = previousBackground;
       }
       // A repaint mask may contain many archived projector strokes. Submitting
       // every pass in one uninterrupted loop made button 2 monopolise the GPU
@@ -341,20 +350,22 @@ export async function renderScenePassesToPngUrl(
       // several seconds. Drain one projector at a time, restore the shared
       // renderer and let the visible R3F frame present before continuing.
       const passCompletion = waitForSubmittedGpuWork(request.gl);
-      restoreSharedRendererState(request.gl, previousRendererState);
+      restoreState();
       await passCompletion;
       // Every pass uses the same viewer camera but a different projector. Keep
       // accumulated colour while allowing the next projection to rasterize the
       // same front-most surface again.
       if (index + 1 < passes.length) {
         await waitForBrowserPaint();
+        restoreState = preserveCaptureState(request);
         request.gl.setRenderTarget(target);
         request.gl.setScissorTest(false);
         request.gl.autoClear = false;
         request.gl.clearDepth();
-        restoreSharedRendererState(request.gl, previousRendererState);
+        restoreState();
       }
     }
+    restoreState = preserveCaptureState(request);
     request.gl.setRenderTarget(target);
     request.gl.setScissorTest(false);
     request.gl.autoClear = false;
@@ -364,13 +375,11 @@ export async function renderScenePassesToPngUrl(
       request.width,
       request.height,
     );
-    request.scene.background = previousBackground;
-    restoreSharedRendererState(request.gl, previousRendererState);
+    restoreState();
     options.onRenderSubmitted?.();
     pixels = await readbackPromise;
   } finally {
-    request.scene.background = previousBackground;
-    restoreSharedRendererState(request.gl, previousRendererState);
+    restoreState();
     target.dispose();
   }
 
