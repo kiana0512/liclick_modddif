@@ -6,6 +6,8 @@
 
 2026-09-20 M08（审计 M06/M07/M11）：`ALG-LR-008` manual scope v3.1.0 纠正手动局部重绘以生成蒙版限制绘制范围的问题。用户确认融合内缩针对实际笔迹而非生成选区；手动源权限使用中性白色，不再按原选区裁切或径向衰减，空选区仍拒绝。原生 UV 继续按实际笔刷边缘向内羽化，兼容 Canvas 路径继续从累计笔迹生成 inward blend。源 alpha、深度、遮挡、透明边界预乘采样、自动生成范围、3px 模型轮廓保护及图层选择规则不变。CPU/Worker 共用手动核、缓存版本更新，无持久化 Schema/资产迁移，旧像素不重写。详见 [手动绘制范围与融合边界](changes/CHG-20260920-REPAINT-MANUAL-OUTSIDE-SELECTION.md)。本地验证，未推送或部署。
 
+2026-09-21 M04（协作 M03/M05/M06/M09）：`ALG-GEN-006` v1.2.0 将 ModelView 多视图改为按需捕获：每个视角先冻结当前贴图和相机，再准备该视角完整白模/法线/mask/depth，持久化后立即提交；上一张回贴驻留后才准备下一张。保留预览顺序、完整覆盖跳过、取消和一次末尾补缝；按整批视角更新进度。GPU/CPU/Worker/shader、分辨率、QA、UV/export 和 Schema/Command/CAS/ownership 不变，无迁移。详见 [逐视角快照](changes/CHG-20260921-MODELVIEW-ON-DEMAND-CAPTURE.md)。本地修改，未推送或部署。
+
 2026-09-20 M06（协作 M07/M08）：`UV-REPAINT-PREVIEW-BINDING` v1.0.1 统一手动 UV 重绘层在 React、显隐订阅及异步材质发布中的顶层/下层划分；运行时纹理不再进入静态图片预热，含 live 输入的组合不复用静态显示缓存。普通 PNG 图层显隐也刷新组合所有者，全可见预热只在请求键匹配且结果 ready 后登记缓存，防止旧贴图写入新组合。GPU/CPU/Worker/shader 合成公式、源像素、分辨率、QA、保存/合并/导出协议均不变；无需迁移，回滚仅恢复显示绑定。详见 [多层 UV 重绘显隐修复](changes/CHG-20260920-MANUAL-UV-PREVIEW-VISIBILITY.md)。
 
 2026-09-20 M08（审计 M06/M07/M09/M11）：`ALG-LR-008` bounded falloff v3.0.0 / `ALG-LR-UV-PAINT` v1.3.0 修复局部重绘范围外暗带。CPU/Worker 共用作者选区内向羽化，区域外/孔洞为零；原生 UV 取色以原生源 alpha/蒙版约束支持范围，透明边界按预乘颜色插值，不扩大3px内缩，不改相机、深度、分辨率和 QA。GPU/CPU/Worker/历史/PNG/合并/export 审计与回滚见 [范围外暗带修复](changes/CHG-20260920-REPAINT-BOUNDED-PROJECTION.md)。旧像素不自动改写，无 Schema/资产迁移。本地验证完成；发布以对应提交的 master 流水线和 A100 发布记录为准。
@@ -1203,7 +1205,7 @@ Bake 设置包含 resolution、frontal/rear distance、distance/cage、cage infl
 | `ALG-GEN-003` 任务身份归一 | clientGenerationId/serverJobId/taskId 合并，避免恢复时重复 running 行 |
 | `ALG-GEN-004` ModelView 远端单视图 | `1.1.0`；当前视角白模 + 多视图材质参考 + 可选提示词 → `modelview-single-view` → Generation；结果使用 `ALG-PROJ-005` v3 捕获适配并进入统一质量合成 |
 | `ALG-GEN-005` 提示词智能润色 | `1.10.0`；UI-05 经同源 `/api/liclick/prompt-polish` 分流。普通单/多视图保持莉刻 `data-analysis` A2A；局部重绘空输入由 `qwen3-vl-plus` 在一次请求中输出诊断和英文正文，诊断与正文分别校验；显式输入跳过诊断，保持统一 Qwen → Klein 转换模板。服务端用未外扩原始 mask 定位，并从干净 Image 1 自动裁出带上下文的第四图供 Qwen 看清选中部件；完整参考图仍只提供有证据的结构/材质，第四图不改变编辑范围或 ModelView 输入。模板先用 Image 2、第四图和 mask 外邻域共同确定真实结构与材质；仅当三者证明选区为未完成的白灰占位时，要求 Klein 用明确目标材质完整替换 clay/primer/flat placeholder/untextured surface，真实浅色材质不受此规则影响。模板以 100–180 词、2–3 段英文为生成目标；段数、词数、语言和 Markdown 偏差只记脱敏告警，不阻断也不触发格式修正。若首段缺少明确 mask 范围，服务端确定性追加固定保护句。仅最终正文写入 Generation，诊断不持久化、不回填文本框；显式输入与空输入均一次 Qwen，保持 65 秒 deadline。模板策略进入所有局部重绘指纹，升级后首次重新解析、后续继续复用 |
-| `ALG-GEN-006` 混合远端多视图串行生成 | `1.1.0`；预览数组即执行顺序，普通视角 ModelView、极向顶/底视角 GPT2；静态 Capture 预捕获，当前材质逐视角即时捕获；完全覆盖跳过、部分覆盖用现有外扩补全蒙版；每张返图投影驻留后才继续，末尾一次内容填补 |
+| `ALG-GEN-006` ModelView 多视图串行生成 | `1.2.0`；预览数组即执行顺序，ModelView 所有角度逐张处理；当前贴图先冻结，再捕获本视角完整 Capture，保存后提交，上一张回贴驻留后才准备下一张；完全覆盖跳过、部分覆盖用现有外扩补全蒙版，末尾一次内容填补 |
 | `ALG-OUT-001` 纹理/模型导出 | BaseColor 与 GLB/GLTF/FBX/OBJ/STL/ZIP；验证 UV 方向和颜色空间 |
 | `ALG-OUT-002` 快照/转台 | 当前视口设置生成静态图或视频，不改变 Layer 作者数据 |
 
@@ -1218,7 +1220,7 @@ Bake 设置包含 resolution、frontal/rear distance、distance/cage、cage infl
 - 工作流：`modelview-single-view`，生产版本 `2026.08.26-c0e6218-single-view-4step-r1`，与局部重绘 `modelview-inpaint` 分开排队和审计。
 - 失败与回退：远端失败只标记本次 Generation 失败并显示真实错误，不自动改走 GPT2；用户可显式切回 GPT2 重新生成。远端为非默认、非持久化界面选择，旧工程无需迁移。
 - 回滚：移除单视图远端 UI 分支和同源路由即可；已有远端 Generation/Layer 继续按普通单视图质量层读取，不需要删除资产或改写 Project Revision。
-- 远端多视图：不使用 batch 并发，按 `ALG-GEN-006` 逐视角提交；普通视角使用 ModelView 单视图/补全端点，极向顶/底视角使用 GPT2 单视图端点，上一结果投影驻留是下一请求的前置条件。
+- 远端多视图：不使用 batch 并发，按 `ALG-GEN-006` 逐视角准备并提交，所有角度使用 ModelView 单视图/补全端点；上一结果投影驻留是下一视角快照与请求的前置条件。GPT 成组生成走独立入口。
 - 测试：`test:single-view-priority` 必须覆盖双提供方分流与投影语义；`smoke:modelview-inpaint` 同时验证两条 ModelView URL、multipart 字段、幂等键、X-Job-ID 和 PNG 持久化。
 
 ### 11.1.1 同源开发工作区资产兼容

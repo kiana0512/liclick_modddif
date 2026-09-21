@@ -2414,7 +2414,7 @@ export function GeneratePanel({
   async function getTextureMapMultiviewCaptures(
     views: CameraViewItem[],
     signal?: AbortSignal,
-    options: { cameraSnapshot?: SerializedCameraInput; viewSnapshots?: Map<string, SerializedCameraInput> } = {},
+    options: { cameraSnapshot?: SerializedCameraInput; viewSnapshots?: Map<string, SerializedCameraInput>; reportProgress?: boolean } = {},
   ) {
     if (!captureObjectId) throw new Error(t('importModelFirst'));
     const viewSnapshots = options.viewSnapshots ?? new Map<string, SerializedCameraInput>();
@@ -2439,7 +2439,7 @@ export function GeneratePanel({
           });
           throwIfTexturePipelineCancelled(signal);
           captures[view.id] = capture;
-          updateTexturePipelineProgress(
+          if (options.reportProgress !== false) updateTexturePipelineProgress(
             20 + ((index + 1) / Math.max(1, views.length)) * 18,
             `多视角快照 ${index + 1}/${views.length}`,
           );
@@ -2699,7 +2699,6 @@ export function GeneratePanel({
     if (!captureObjectId) throw new Error(t('importModelFirst'));
     if (!currentProject) throw new Error('当前工程尚未加载完成。');
     const objectId = captureObjectId;
-    const objectMatrixWorld = getImportedModelMatrixWorld(objectId);
     // The preview array is the execution contract. Do not reorder it from the
     // active tile, otherwise the visible thumbnail order and progress diverge.
     const orderedViews = [...requestedViews];
@@ -2726,69 +2725,56 @@ export function GeneratePanel({
     let skippedViewCount = 0;
 
     try {
-      updateTexturePipelineProgress(20, '准备多视图');
-      const baseCapturedViews = await getTextureMapMultiviewCaptures(orderedViews, signal);
-      if (baseCapturedViews.length !== viewCount) throw new Error(remoteFailureMessage);
-      const currentCaptures =
-        useProjectStore.getState().projects.find((project) => project.id === currentProject.id)
-          ?.captures ?? currentProject.captures;
-      const capturedIds = new Set(baseCapturedViews.map(({ capture }) => capture.id));
-      let persistedCaptures = await persistCaptureAssets(
-        [
-          ...baseCapturedViews.map(({ capture }) => capture),
-          ...currentCaptures.filter((capture) => !capturedIds.has(capture.id)),
-        ],
-        currentProject.id,
-      );
-      updateProjectById(currentProject.id, { captures: persistedCaptures });
-      await saveCriticalProjectState({ captures: persistedCaptures });
-      throwIfTexturePipelineCancelled(signal);
-
-      const persistedById = new Map(persistedCaptures.map((capture) => [capture.id, capture]));
-      const capturedByViewId = new Map(
-        baseCapturedViews.map((view) => [
-          view.viewId,
-          { ...view, capture: persistedById.get(view.capture.id) ?? view.capture },
-        ]),
-      );
+      // ALG-GEN-006 v1.2.0: prepare only the next view after the previous
+      // result is presented. Persist its complete capture before remote submission.
       const materialDataUrl = await urlToDataUrl(materialReference.url);
 
       for (let index = 0; index < viewCount; index += 1) {
         throwIfTexturePipelineCancelled(signal);
         if (textureBatchWasCancelled()) throw new Error('用户已终止纹理贴图生成任务。');
         const view = orderedViews[index];
-        const capturedView = view ? capturedByViewId.get(view.id) : undefined;
-        if (!view || !capturedView) throw new Error(remoteFailureMessage);
+        if (!view) throw new Error(remoteFailureMessage);
         const stepLabel = `${index + 1}/${viewCount}`;
 
         setActiveCameraViewId(view.id);
         setCameraToObjectDirection(objectId, view.viewDirection, view.viewUp);
         updateTexturePipelineProgress(
-          40 + (index / viewCount) * 50,
-          `远端多视图 ${stepLabel} · 切换${view.label}`,
+          20 + (index / viewCount) * 70,
+          `准备多视图快照 · ${stepLabel} ${view.label}`,
         );
         await waitForBrowserPaint();
         await waitForBrowserPaint();
         throwIfTexturePipelineCancelled(signal);
 
+        const cameraSnapshot = await frameGenerationCapture(
+          objectId, 1, view.viewDirection, view.viewUp, signal, false, 0.92,
+        );
+        const objectMatrixWorld = getImportedModelMatrixWorld(objectId);
+        // Freeze authored colour before the clay capture temporarily replaces
+        // resident materials; clearing the override does not restore them synchronously.
+        const hasExistingTexture = hasVisibleTextureLayerCandidate(objectId);
+        const currentEffect = hasExistingTexture ? await captureCurrentColorPreview({
+          objectId,
+          resolution: resolutionToSize[resolution],
+          framing: 'fit-object',
+          colorMode: 'flat-target-coverage',
+          fillRatio: 0.88,
+          cameraSnapshot,
+          viewDirection: view.viewDirection,
+          viewUp: view.viewUp,
+        }) : undefined;
+        throwIfTexturePipelineCancelled(signal);
+        const [capturedView] = await getTextureMapMultiviewCaptures([view], signal, {
+          cameraSnapshot, reportProgress: false,
+        });
+        if (!capturedView) throw new Error(remoteFailureMessage);
+        throwIfTexturePipelineCancelled(signal);
         let generationCapture = capturedView.capture;
         let completion: PreparedSingleViewTextureCompletion | undefined;
         let usesInpaint = false;
         {
-          const hasExistingTexture = hasVisibleTextureLayerCandidate(objectId);
-          const currentEffect = hasExistingTexture ? await captureCurrentColorPreview({
-            objectId,
-            resolution: resolutionToSize[resolution],
-            framing: 'fit-object',
-            colorMode: 'flat-target-coverage',
-            fillRatio: 0.88,
-            cameraSnapshot: capturedView.cameraSnapshot,
-            viewDirection: view.viewDirection,
-            viewUp: view.viewUp,
-          }) : { colorUrl: capturedView.capture.colorUrl };
-          throwIfTexturePipelineCancelled(signal);
           completion = await prepareSingleViewTextureCompletion({
-            currentEffectUrl: currentEffect.colorUrl,
+            currentEffectUrl: currentEffect?.colorUrl ?? capturedView.capture.colorUrl,
             clayPreviewUrl: capturedView.capture.colorUrl,
             objectMaskUrl: capturedView.capture.maskUrl,
             whiteFill: true,
@@ -2797,7 +2783,7 @@ export function GeneratePanel({
           if (completion.hasVisibleTexture && completion.uncoveredPixelCount === 0) {
             skippedViewCount += 1;
             updateTexturePipelineProgress(
-              40 + ((index + 1) / viewCount) * 50,
+              20 + ((index + 1) / viewCount) * 70,
               `远端多视图 ${stepLabel} · 已跳过`,
             );
             continue;
@@ -2808,18 +2794,22 @@ export function GeneratePanel({
             }
             usesInpaint = completion.hasVisibleTexture;
             generationCapture = { ...capturedView.capture, colorUrl: completion.imageUrl };
-            persistedCaptures = await persistCaptureAssets(
+            const currentCaptures = useProjectStore.getState().projects
+              .find((project) => project.id === currentProject.id)?.captures ?? currentProject.captures;
+            const persistedCaptures = await persistCaptureAssets(
               [
                 generationCapture,
-                ...persistedCaptures.filter((capture) => capture.id !== generationCapture.id),
+                ...currentCaptures.filter((capture) => capture.id !== generationCapture.id),
               ],
               currentProject.id,
             );
+            throwIfTexturePipelineCancelled(signal);
             updateProjectById(currentProject.id, { captures: persistedCaptures });
             generationCapture =
               persistedCaptures.find((capture) => capture.id === generationCapture.id) ??
               generationCapture;
             await saveCriticalProjectState({ captures: persistedCaptures });
+            throwIfTexturePipelineCancelled(signal);
           }
         }
 
@@ -2862,7 +2852,7 @@ export function GeneratePanel({
         addProjectGeneration(pendingGeneration);
         await saveGenerationStateBestEffort();
         updateTexturePipelineProgress(
-          42 + (index / viewCount) * 50,
+          20 + ((index + 0.3) / viewCount) * 70,
           `远端多视图 ${stepLabel} · 生成${view.label}`,
         );
 
@@ -2956,7 +2946,7 @@ export function GeneratePanel({
           };
           syncGeneration(completed);
           updateTexturePipelineProgress(
-            44 + (index / viewCount) * 50,
+            20 + ((index + 0.8) / viewCount) * 70,
             `远端多视图 ${stepLabel} · 回贴${view.label}`,
           );
           const projectedLayer = await addGenerationAsProjectedLayer(completed, {
@@ -2976,7 +2966,7 @@ export function GeneratePanel({
             60_000,
             () => {
               updateTexturePipelineProgress(
-                44 + (index / viewCount) * 50,
+                20 + ((index + 0.8) / viewCount) * 70,
                 `结果已保存 · 等待${view.label}回贴渲染`,
               );
               setGenerateNotice({
@@ -2996,7 +2986,7 @@ export function GeneratePanel({
           projectedGenerationCount += 1;
           await saveGenerationStateBestEffort();
           updateTexturePipelineProgress(
-            40 + ((index + 1) / viewCount) * 50,
+            20 + ((index + 1) / viewCount) * 70,
             `远端多视图 ${stepLabel} · 完成`,
           );
         } catch (error) {
