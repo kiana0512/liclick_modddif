@@ -4,6 +4,19 @@ export const LOCAL_REPAINT_INWARD_CROSSFADE_MIN_WIDTH = 6;
 export const LOCAL_REPAINT_INWARD_CROSSFADE_MAX_WIDTH = 24;
 export const LOCAL_REPAINT_INWARD_CROSSFADE_MASK_THRESHOLD = 0.08;
 
+/** ALG-LR-UV-PAINT v2.0.0: analytic inward blend of the actual brush capsule.
+ * Distances are CSS pixels, normalized to a 2K viewport (not UV-island edges or
+ * the generation selection). Small brushes retain an opaque centre. */
+export function getLocalRepaintStrokeBlend(radius: number, feather: number, viewportSpan: number) {
+  const scale = viewportSpan / LOCAL_REPAINT_INWARD_CROSSFADE_REFERENCE_SIZE;
+  const outer = radius - Math.min(3 * scale, radius * 0.25);
+  const width = Math.min(outer, Math.max(
+    LOCAL_REPAINT_INWARD_CROSSFADE_REFERENCE_WIDTH * scale,
+    radius * Math.max(0, Math.min(1, feather)),
+  ));
+  return [(outer - width) / radius, outer / radius] as const;
+}
+
 export type LocalRepaintMaskRect = { x: number; y: number; width: number; height: number };
 
 function clamp(value: number, minimum: number, maximum: number) {

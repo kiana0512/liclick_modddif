@@ -1,12 +1,13 @@
 import * as THREE from 'three';
 import { boundRepaintProjectionSampling } from './boundedProjectionSampling';
+import { getLocalRepaintStrokeBlend } from './inwardCrossfadeMask';
 import {
   UV_REPAINT_TILE_SIZE,
   type UvRepaintRect as Rect,
   type UvRepaintPatch,
 } from './uvRepaintState';
 
-// ALG-LR-UV-PAINT v1.3.0. Shared UV pixels intentionally share color/alpha.
+// ALG-LR-UV-PAINT v2.0.0. Shared UV pixels intentionally share color/alpha.
 type Tile = { bounds: Rect; surfaces: Array<{ mesh: THREE.Mesh; box: THREE.Box3 }> };
 type Stroke = {
   before?: Map<number, Promise<Uint8Array<ArrayBuffer>>>;
@@ -37,7 +38,8 @@ varying vec4 currentClip;
 uniform sampler2D visibleFaces;
 uniform vec2 visibilitySize;
 uniform vec2 viewportSize,brushFrom,brushTo;
-uniform float brushRadius,feather,erase;
+uniform float brushRadius,erase;
+uniform vec2 brushBlendEdges;
 float frontLimit(vec2 pixel,vec4 anchor,vec2 centre){
 vec4 front=texture2D(visibleFaces,(pixel+0.5)/visibilitySize);
 float bend=dot(abs(front.zw-anchor.zw),vec2(1.0));
@@ -63,7 +65,7 @@ vec2 ab=brushTo-brushFrom;
 float t=clamp(dot(p-brushFrom,ab)/max(dot(ab,ab),0.0001),0.0,1.0);
 float distanceToStroke=length(p-(brushFrom+ab*t))/max(brushRadius,0.001);
 if(distanceToStroke>=1.0)discard;
-return 1.0-smoothstep(max(0.0,1.0-feather),1.0,distanceToStroke);
+return 1.0-smoothstep(brushBlendEdges.x,brushBlendEdges.y,distanceToStroke);
 }
 `;
 
@@ -184,6 +186,7 @@ export class UvRepaint {
   private projectedBoundsPoint = new THREE.Vector4();
   private disposed = false;
   private outputAlive = true;
+  private paintsSource = false;
   private pending = new Set<Promise<unknown>>();
 
   constructor(renderer: THREE.WebGLRenderer, meshes: THREE.Mesh[], resolution: number) {
@@ -219,7 +222,7 @@ export class UvRepaint {
         brushFrom: { value: new THREE.Vector2() },
         brushTo: { value: new THREE.Vector2() },
         brushRadius: { value: 1 },
-        feather: { value: 0 },
+        brushBlendEdges: { value: new THREE.Vector2(0.9999, 1) },
         erase: { value: 0 },
       },
       side: THREE.DoubleSide,
@@ -438,6 +441,7 @@ export class UvRepaint {
     initial?: CanvasImageSource,
   ) {
     this.updateMatrices(camera);
+    this.paintsSource = Boolean(material);
     // Retain immutable capture uniforms/textures, not a pre-flattened UV source:
     // overlapping faces may sample different colors in the frozen source image.
     if (material) {
@@ -713,7 +717,13 @@ export class UvRepaint {
       uniforms.brushTo.value.copy(to);
       uniforms.visibilitySize.value.set(width, height);
       uniforms.brushRadius.value = input.radius;
-      uniforms.feather.value = Math.max(0.0001, Math.min(1, input.feather));
+      const feather = Math.max(0.0001, Math.min(1, input.feather));
+      // Colour strokes persist exactly the alpha shown live. Erasers and
+      // mask-only sessions keep their original coverage/feather semantics.
+      const edges = this.paintsSource && !input.erase
+        ? getLocalRepaintStrokeBlend(Math.max(input.radius, 0.001), feather, Math.max(size.x, size.y))
+        : [1 - feather, 1];
+      uniforms.brushBlendEdges.value.set(edges[0], edges[1]);
       uniforms.erase.value = Number(input.erase);
       const composite = this.composite.material as THREE.ShaderMaterial;
       composite.blendEquation = THREE.AddEquation;
