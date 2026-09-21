@@ -146,7 +146,7 @@ import {
 } from '@/services/nativePerformanceClient';
 import { registerPreviewTextureRenderer } from './previewTextureCache';
 import { createLocalRepaintFalloffInWorker } from '@/engine/localRepaint/falloffWorker';
-import { createManualRepaintFalloffPixels, updateLocalRepaintInwardCrossfadeCanvas } from '@/engine/localRepaint/inwardCrossfadeMask';
+import { createManualRepaintFalloffPixels, updateLocalRepaintInwardCrossfadeCanvas, getEraserSolidCore } from '@/engine/localRepaint/inwardCrossfadeMask';
 import { getLocalRepaintSeamMode } from '@/engine/localRepaint/seamHarmonizationMode';
 import {
   beginLocalRepaintSession,
@@ -361,9 +361,10 @@ const paintBrushStampCache = new Map<string, HTMLCanvasElement>();
 let surfacePaintPerfFrame: number | undefined;
 let surfacePaintPerfLastPublishAt = 0;
 
-function getFeatheredBrushStamp(featherPercent: number) {
-  const key = Math.round(THREE.MathUtils.clamp(featherPercent, 0, 100));
-  if (key <= 0) return undefined;
+function getFeatheredBrushStamp(featherPercent: number, linear = false) {
+  const feather = Math.round(THREE.MathUtils.clamp(featherPercent, 0, 100));
+  if (feather <= 0) return undefined;
+  const key = feather + (linear ? 101 : 0);
   const cached = featheredBrushStampCache.get(key);
   if (cached) return cached;
   const canvas = document.createElement('canvas');
@@ -373,14 +374,14 @@ function getFeatheredBrushStamp(featherPercent: number) {
   if (!context) return undefined;
   const center = canvas.width / 2;
   const gradient = context.createRadialGradient(center, center, 0, center, center, center);
-  const hardStop = 1 - key / 100;
+  const hardStop = linear ? getEraserSolidCore(feather / 100) : 1 - feather / 100;
   const featherStop = (ratio: number) => hardStop + (1 - hardStop) * ratio;
   const white = (alpha: number) => `rgba(255, 255, 255, ${alpha})`;
   gradient.addColorStop(0, white(1));
   if (hardStop > 0.001) gradient.addColorStop(hardStop, white(1));
-  gradient.addColorStop(featherStop(0.25), white(0.84));
+  gradient.addColorStop(featherStop(0.25), white(linear ? 0.75 : 0.84));
   gradient.addColorStop(featherStop(0.5), white(0.5));
-  gradient.addColorStop(featherStop(0.75), white(0.16));
+  gradient.addColorStop(featherStop(0.75), white(linear ? 0.25 : 0.16));
   gradient.addColorStop(1, white(0));
   context.fillStyle = gradient;
   context.fillRect(0, 0, canvas.width, canvas.height);
@@ -7181,7 +7182,7 @@ function SurfacePaintOverlay() {
     if (paintTool !== 'eraser') return;
     // Keep the selected eraser falloff raster resident so the first dot does
     // not allocate and paint a gradient canvas on the pointer-down frame.
-    getFeatheredBrushStamp(paintToolSettings.eraserFeather ?? 50);
+    getFeatheredBrushStamp(paintToolSettings.eraserFeather ?? 50, true);
   }, [paintTool, paintToolSettings.eraserFeather]);
 
   useEffect(() => {
@@ -10666,7 +10667,7 @@ function SurfacePaintOverlay() {
       const segmentCount =
         distance <= 0.01 ? 0 : Math.min(64, Math.max(1, Math.ceil(distance / stampSpacing)));
       const featheredStamp =
-        featherPercent === undefined ? undefined : getFeatheredBrushStamp(featherPercent);
+        featherPercent === undefined ? undefined : getFeatheredBrushStamp(featherPercent, paintTool === 'eraser');
       const paintStamp =
         featheredStamp || paintHardness === undefined
           ? undefined
@@ -10693,7 +10694,7 @@ function SurfacePaintOverlay() {
       if (texture) scheduleTextureUpdate(texture);
       return createDirtyRect(fromX, fromY, toX, toY, Math.max(extentX, extentY), width, height);
     },
-    [scheduleTextureUpdate],
+    [scheduleTextureUpdate, paintTool],
   );
 
   const getStrokeSourceUv = useCallback((result: UvPaintHit) => {

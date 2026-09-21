@@ -4,6 +4,11 @@ export const LOCAL_REPAINT_INWARD_CROSSFADE_MIN_WIDTH = 6;
 export const LOCAL_REPAINT_INWARD_CROSSFADE_MAX_WIDTH = 24;
 export const LOCAL_REPAINT_INWARD_CROSSFADE_MASK_THRESHOLD = 0.08;
 
+/** ERASER-FEATHER v2: full-radius linear falloff with at least 10% solid core. */
+export function getEraserSolidCore(feather: number) {
+  return 1 - Math.max(0, Math.min(0.9, feather));
+}
+
 /** ALG-LR-UV-PAINT v3.0.0: solid core + linear outer blend of the brush capsule.
  * Distances are CSS pixels, normalized to a 2K viewport (not UV-island edges or
  * the generation selection). Small brushes retain an opaque centre. */

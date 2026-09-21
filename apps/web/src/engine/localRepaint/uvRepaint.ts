@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { boundRepaintProjectionSampling } from './boundedProjectionSampling';
-import { getLocalRepaintStrokeBlend } from './inwardCrossfadeMask';
+import { getLocalRepaintStrokeBlend, getEraserSolidCore } from './inwardCrossfadeMask';
 import {
   UV_REPAINT_TILE_SIZE,
   type UvRepaintRect as Rect,
@@ -721,13 +721,12 @@ export class UvRepaint {
       uniforms.visibilitySize.value.set(width, height);
       uniforms.brushRadius.value = input.radius;
       const feather = Math.max(0.0001, Math.min(1, input.feather));
-      // Colour strokes persist exactly the alpha shown live. Erasers and
-      // mask-only sessions keep their original coverage/feather semantics.
+      // Erasers use linear feather without colour-only outline retreat.
       const edges = this.paintsSource && !input.erase
         ? getLocalRepaintStrokeBlend(Math.max(input.radius, 0.001), feather, Math.max(size.x, size.y))
-        : [1 - feather, 1];
+        : [input.erase ? getEraserSolidCore(feather) : 1 - feather, 1];
       uniforms.brushBlendEdges.value.set(edges[0], edges[1]);
-      uniforms.linearBrushBlend.value = Number(this.paintsSource && !input.erase);
+      uniforms.linearBrushBlend.value = Number(this.paintsSource || input.erase);
       uniforms.erase.value = Number(input.erase);
       const composite = this.composite.material as THREE.ShaderMaterial;
       composite.blendEquation = THREE.AddEquation;

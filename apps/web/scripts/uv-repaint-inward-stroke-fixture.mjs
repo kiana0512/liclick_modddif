@@ -62,11 +62,18 @@ export async function run(resolution = 2048, feather = 0) {
   check(reopened.every((v, i) => v === pixels[i]), 'PNG/reopen changed persisted blend');
   const erase = await stamp(true, 12);
   const centreIndex = (Math.floor(resolution / 2) * resolution + Math.floor(resolution / 2)) * 4 + 3;
-  const eraseExpected = Math.round(pixels[centreIndex] * (1 - smooth(
-    (12 - 1024 / resolution) / (12 * Math.max(.0001, feather)),
-  )));
+  const eraseWeight = distance => Math.max(0, Math.min(1,
+    (12 - distance) / (12 * Math.max(.0001, Math.min(.9, feather)))));
+  const eraseExpected = Math.round(pixels[centreIndex] * (1 - eraseWeight(1024 / resolution)));
   check(Math.abs(read()[centreIndex] - eraseExpected) <= 1,
-    'eraser must retain its original smooth feather, including at 100%');
+    'eraser retains a solid centre even at 100% feather');
+  const erased = read();
+  for (let y = 0; y < resolution; y++) {
+    const index = (y * resolution + Math.floor(resolution / 2)) * 4 + 3;
+    const distance = Math.abs((y + .5) * 2048 / resolution - 1024);
+    check(Math.abs(erased[index] - Math.round(pixels[index] * (1 - eraseWeight(distance)))) <= 1,
+      'eraser outer feather must be linear');
+  }
   engine.publish(erase, 'before', true);
   check(read().every((v, i) => v === pixels[i]), 'erase undo must restore inward blend exactly');
   // Very small brushes retain a usable centre rather than vanishing entirely.
