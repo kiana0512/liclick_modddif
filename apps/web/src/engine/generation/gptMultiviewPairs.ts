@@ -1,7 +1,7 @@
 import type { Object3D, Mesh, Material } from 'three';
 import { isResidentProjectedMaterial } from '../projection/projectedMaterialIdentity';
 
-// GPT-MULTIVIEW-PAIR-SEQUENCE v1.5.0. QA-only rejection may advance; transport/projection failures stop.
+// GPT-MULTIVIEW-PAIR-SEQUENCE v1.5.1. QA-only rejection may advance; transport/projection failures stop.
 const presetPairs = {
   'preset-1': [
     ['front', 'back'],
@@ -52,8 +52,10 @@ export function planGptViewPairs<T extends { id: string; value?: string }>(
   for (const pair of pairs) {
     const previous = groups.at(-1);
     // Keep the initial pair and added/unpaired cameras isolated. Combine only
-    // consecutive complete preset pairs, preserving deterministic commit order.
-    if (groups.length > 1 && previous?.length === 2 && pair.length === 2) {
+    // consecutive complete preset pairs, or the trailing bottom-only pole in
+    // the orbit preset, preserving deterministic commit order (2 + 4 + 3).
+    if (groups.length > 1 && previous?.length === 2 && (pair.length === 2 ||
+      (pair === poles && inheritedPreset === 'preset-1' && pair[0]?.value === 'bottom'))) {
       previous.push(...pair);
     } else {
       groups.push([...pair]);

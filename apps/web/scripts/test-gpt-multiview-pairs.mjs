@@ -44,10 +44,14 @@ assert.deepEqual(ids(planGptViewPairs(make(['front', 'top', 'front']), 'preset-1
 assert.deepEqual(planGptViewPairs([], 'custom'), []);
 const preset3 = ['front', 'front-left', 'left', 'back-left', 'back', 'back-right', 'right', 'front-right', 'bottom'];
 const planned3 = ids(planGptViewPairs(make(preset3), 'preset-3'));
-assert.deepEqual(planned3, [['front', 'back'], ['front-left', 'back-right', 'left', 'right'], ['back-left', 'front-right'], ['bottom']]);
+assert.deepEqual(planned3, [['front', 'back'], ['front-left', 'back-right', 'left', 'right'], ['back-left', 'front-right', 'bottom']]);
 assert.equal(new Set(planned3.flat()).size, 9);
 assert(!planned3.flat().includes('top'));
 assert.deepEqual(ids(planGptViewPairs(make(preset3), 'custom')), planned3, 'editing preset 3 preserves inherited pairs and bottom');
+const extraCamera = { id: 'user-camera', value: 'bottom' };
+assert.deepEqual(ids(planGptViewPairs([...make(preset3), extraCamera], 'custom')),
+  [planned3[0], planned3[1], ['back-left', 'front-right'], ['user-camera'], ['bottom']],
+  'custom singleton cameras remain isolated');
 const raised3 = make(preset3).map(view => ({...view, id:`preset-3-${view.id}`, viewDirection:[0, .258819, .965926]}));
 for (const preset of ['preset-3', 'custom']) {
   const groups = planGptViewPairs(raised3, preset);
