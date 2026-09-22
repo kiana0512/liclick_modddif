@@ -498,6 +498,9 @@ async function testEntryFailure(error, cancel = false) {
     currentProjectId: 'project', textureRecoveryOwnershipRef: { current: ownership },
     workflowSubmissionLocked: false, previewIsGenerating: false,
     selectedSingleReference: undefined, selectedMultiviewReference: { id: 'reference' },
+    useReferenceStore: { getState: () => ({ references: [{ id: 'reference' }], selectedReferenceIds: ['reference'] }) },
+    resolveLocalRepaintMaterialReference: ({ references }) => references[0],
+    prepareReferenceLighting: async (_projectId, reference) => reference,
     submitLocksRef: { current: locks }, texturePipelineAbortControllerRef: {},
     setSubmissionActive() {}, setTexturePipelineCancelling() {}, setCancelTextureSnapshotConfirmOpen() {},
     setTexturePipelineProgress: value => { progress = typeof value === 'function' ? value(progress) : value; },
@@ -512,7 +515,8 @@ async function testEntryFailure(error, cancel = false) {
       throw error;
     },
   };
-  const entry = new Function(...Object.keys(scope), `${compile(textureEntryDeclaration)}; return handleTextureMapGenerate;`)(...Object.values(scope));
+  const entrySource = textureEntryDeclaration.replace("(await import('@/services/referenceLighting')).prepareReferenceLighting", 'prepareReferenceLighting');
+  const entry = new Function(...Object.keys(scope), `${compile(entrySource)}; return handleTextureMapGenerate;`)(...Object.values(scope));
   await entry();
   assert.equal(ownership.backgroundTicket('project', 'texture-map')(), true, 'error/cancel releases foreground ownership');
   assert.equal(locks.size, 0); assert.equal(finished, 1); assert.equal(progress, undefined);
