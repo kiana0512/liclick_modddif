@@ -250,6 +250,7 @@ function resolveProjectedSample({
   objectMatrixDelta,
   objectNormalDelta,
   cameraPosition,
+  orthographicDirection,
   projectorMatrix,
   scratch,
 }: {
@@ -265,6 +266,7 @@ function resolveProjectedSample({
   objectMatrixDelta: THREE.Matrix4;
   objectNormalDelta: THREE.Matrix3;
   cameraPosition: THREE.Vector3;
+  orthographicDirection: THREE.Vector3 | undefined;
   projectorMatrix: THREE.Matrix4;
   scratch: SampleScratch;
 }): SampleResult {
@@ -283,14 +285,14 @@ function resolveProjectedSample({
     .applyMatrix3(objectNormalDelta)
     .normalize();
 
+  const cameraToPoint = orthographicDirection
+    ? scratch.cameraToPoint.copy(orthographicDirection)
+    : scratch.cameraToPoint.copy(cameraPosition).sub(captureWorldPosition).normalize();
   if (input.bakeInput.enableBackfaceCulling) {
-    const cameraToPoint = scratch.cameraToPoint.copy(cameraPosition).sub(captureWorldPosition).normalize();
     const ndv = worldNormal.dot(cameraToPoint);
     if (ndv < NDV_HARD_REJECT) {
       return { inFrustum: false, maskRejected: false, depthRejected: false, backfaceRejected: true };
     }
-  } else {
-    scratch.cameraToPoint.copy(cameraPosition).sub(captureWorldPosition).normalize();
   }
   const ndv = worldNormal.dot(scratch.cameraToPoint);
   if (ndv < NDV_HARD_REJECT) {
@@ -444,7 +446,11 @@ export async function rasterizeProjectedLayerToUv(input: RasterizeInput): Promis
   const imageData = createBaseImageData(resolution, resolution);
   const coverage = new Uint8Array(resolution * resolution);
   const quality = new Float32Array(resolution * resolution);
-  const projectorMatrix = buildProjectionMatrixBundle(input.layer.camera).projectorMatrix;
+  const { projectorMatrix, viewMatrix } = buildProjectionMatrixBundle(input.layer.camera);
+  const e = projectorMatrix.elements;
+  const v = viewMatrix.elements;
+  const orthographicDirection = Math.hypot(e[3], e[7], e[11]) < 0.000001
+    ? new THREE.Vector3(v[2], v[6], v[10]).normalize() : undefined;
   const cameraPosition = new THREE.Vector3().fromArray(input.layer.camera.position);
   const objectMatrixDelta = createObjectMatrixDelta(input.group, input.layer);
   debugObjectMatrixDelta(input.group, input.layer, objectMatrixDelta);
@@ -568,6 +574,7 @@ export async function rasterizeProjectedLayerToUv(input: RasterizeInput): Promis
               objectMatrixDelta,
               objectNormalDelta,
               cameraPosition,
+              orthographicDirection,
               projectorMatrix,
               scratch: sampleScratch,
             });

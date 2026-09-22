@@ -687,7 +687,7 @@ const fragmentShader = `
     float inside = inX * inY * inZ * hasW;
 
     vec3 normal = captureWorldNormal;
-    vec3 projectorViewDir = normalize(projectorPosition - captureWorldPosition.xyz);
+    vec3 projectorViewDir = captureWorldDirection(captureWorldPosition.xyz, projectorPosition, projectorMatrix, projectorViewMatrix);
     float ndv = dot(normal, projectorViewDir);
     float frontFacing = step(${NDV_HARD_REJECT.toFixed(2)}, ndv);
     float backfaceAlpha = mix(mix(1.0, frontFacing, enableBackfaceCulling), 1.0, useDepthCheck);
@@ -739,7 +739,7 @@ const fragmentShader = `
 
     float faceOnFactor = abs(captureViewVertexNormal.z);
     float projectionFacingFactor = abs(
-      dot(captureViewVertexNormal, normalize(-captureViewPosition))
+      dot(captureViewVertexNormal, captureViewDirection(captureViewPosition, projectorMatrix))
     );
     float useProjectionFacingGuard = step(0.001, minimumProjectionFacing);
     float projectionFacingCoverage = mix(
@@ -892,7 +892,7 @@ const fragmentShader = `
     angleCoverage = mix(angleCoverage, lockedFacingCoverage, surfaceLockedVisibility);
     float coverageEdge = computeImageEdgeFade(uv, ${IMAGE_COVERAGE_EDGE_FADE.toFixed(3)});
     float continuousCoverage = clamp(layerOpacity * sourceAlpha * reliableProjectionSupport(angleCoverage * visibilityCoverage * projectionFacingCoverage * mix(0.35, 1.0, coverageEdge)), 0.0, 1.0);
-    float lockedSurfaceFacing = abs(dot(captureViewVertexNormal, normalize(-captureViewPosition)));
+    float lockedSurfaceFacing = abs(dot(captureViewVertexNormal, captureViewDirection(captureViewPosition, projectorMatrix)));
 
 
 
@@ -1094,7 +1094,7 @@ function buildStackFragmentShader(
   const projectionFacingCoverage = (index: number) => {
     const minimum = THREE.MathUtils.clamp(layers[index].minimumProjectionFacing ?? 0, 0, 0.99);
     return minimum > 0
-      ? `smoothstep(${minimum.toFixed(3)}, ${Math.min(0.999, minimum + PROJECTION_FACING_FEATHER).toFixed(3)}, abs(dot(captureViewVertexNormal, normalize(-captureViewPosition))))`
+      ? `smoothstep(${minimum.toFixed(3)}, ${Math.min(0.999, minimum + PROJECTION_FACING_FEATHER).toFixed(3)}, abs(dot(captureViewVertexNormal, captureViewDirection(captureViewPosition, projectorMatrix${index}))))`
       : '1.0';
   };
   const layerUsesProjectedArray = (index: number) =>
@@ -1410,9 +1410,7 @@ function buildStackFragmentShader(
           float hasW = step(0.0001, projected.w);
           float inside = inX * inY * inZ * hasW;
 
-          vec3 projectorViewDir = normalize(
-            compactProjectorPositions[layerIndex] - captureWorldPosition.xyz
-          );
+          vec3 projectorViewDir = captureWorldDirection(captureWorldPosition.xyz, compactProjectorPositions[layerIndex], compactProjectorMatrices[layerIndex], compactProjectorViewMatrices[layerIndex]);
           float ndv = dot(captureWorldNormal, projectorViewDir);
           float frontFacing = step(${NDV_HARD_REJECT.toFixed(2)}, ndv);
           float backfaceAlpha = mix(
@@ -1486,7 +1484,7 @@ function buildStackFragmentShader(
             smoothstep(
               minimumFacing,
               min(0.999, minimumFacing + ${PROJECTION_FACING_FEATHER.toFixed(3)}),
-              abs(dot(captureViewVertexNormal, normalize(-captureViewPosition)))
+              abs(dot(captureViewVertexNormal, captureViewDirection(captureViewPosition, compactProjectorMatrices[layerIndex])))
             ),
             step(0.0001, minimumFacing)
           );
@@ -1601,7 +1599,7 @@ function buildStackFragmentShader(
           float surfaceAngleCoverage = smoothstep(
             ${SURFACE_LOCKED_FACING_START.toFixed(3)},
             ${SURFACE_LOCKED_FACING_END.toFixed(3)},
-            abs(dot(captureViewVertexNormal, normalize(-captureViewPosition)))
+            abs(dot(captureViewVertexNormal, captureViewDirection(captureViewPosition, compactProjectorMatrices[layerIndex])))
           );
           float angleCoverage = mix(
             normalAngleCoverage,
@@ -1630,7 +1628,7 @@ function buildStackFragmentShader(
             smoothstep(
               ${(SURFACE_LOCKED_MIN_SAFE_FACING - 0.08).toFixed(2)},
               ${(SURFACE_LOCKED_MIN_SAFE_FACING + 0.08).toFixed(2)},
-              abs(dot(captureViewVertexNormal, normalize(-captureViewPosition)))
+              abs(dot(captureViewVertexNormal, captureViewDirection(captureViewPosition, compactProjectorMatrices[layerIndex])))
             ),
             1.0,
             compactUseDepths[layerIndex]
@@ -1732,7 +1730,7 @@ function buildStackFragmentShader(
       float inside = inX * inY * inZ * hasW;
 
       vec3 normal = captureWorldNormal;
-      vec3 projectorViewDir = normalize(projectorPosition${index} - captureWorldPosition.xyz);
+      vec3 projectorViewDir = captureWorldDirection(captureWorldPosition.xyz, projectorPosition${index}, projectorMatrix${index}, projectorViewMatrix${index});
       float ndv = dot(normal, projectorViewDir);
       float frontFacing = step(${NDV_HARD_REJECT.toFixed(2)}, ndv);
       float backfaceAlpha = ${layerUsesDepth(index) ? '1.0' : 'mix(1.0, frontFacing, enableBackfaceCulling)'};
@@ -1771,7 +1769,7 @@ function buildStackFragmentShader(
       float alphaCoverage = step(0.01, sourceAlpha);
       float angleCoverage = ${
         layerUsesSurfaceLock(index)
-          ? `smoothstep(${SURFACE_LOCKED_FACING_START.toFixed(3)}, ${SURFACE_LOCKED_FACING_END.toFixed(3)}, abs(dot(captureViewVertexNormal, normalize(-captureViewPosition))))`
+          ? `smoothstep(${SURFACE_LOCKED_FACING_START.toFixed(3)}, ${SURFACE_LOCKED_FACING_END.toFixed(3)}, abs(dot(captureViewVertexNormal, captureViewDirection(captureViewPosition, projectorMatrix${index}))))`
           : layerUsesDepth(index)
             ? `smoothstep(${DEPTH_BACKED_ANGLE_COVERAGE_START.toFixed(2)}, ${DEPTH_BACKED_ANGLE_COVERAGE_END.toFixed(2)}, abs(ndv))`
             : `smoothstep(${NDV_COVERAGE_START.toFixed(2)}, ${NDV_COVERAGE_END.toFixed(2)}, ndv)`
@@ -1779,7 +1777,7 @@ function buildStackFragmentShader(
       float coverageEdge = computeImageEdgeFade(uv, ${IMAGE_COVERAGE_EDGE_FADE.toFixed(3)});
       float coverage = ${
         layerUsesSurfaceLock(index)
-          ? `layerOpacity${index} * sourceAlpha * projectionFacingCoverage * ${layerUsesDepth(index) ? '1.0' : `smoothstep(${(SURFACE_LOCKED_MIN_SAFE_FACING - 0.08).toFixed(2)}, ${(SURFACE_LOCKED_MIN_SAFE_FACING + 0.08).toFixed(2)}, abs(dot(captureViewVertexNormal, normalize(-captureViewPosition))))`} * visibilityCoverage`
+          ? `layerOpacity${index} * sourceAlpha * projectionFacingCoverage * ${layerUsesDepth(index) ? '1.0' : `smoothstep(${(SURFACE_LOCKED_MIN_SAFE_FACING - 0.08).toFixed(2)}, ${(SURFACE_LOCKED_MIN_SAFE_FACING + 0.08).toFixed(2)}, abs(dot(captureViewVertexNormal, captureViewDirection(captureViewPosition, projectorMatrix${index}))))`} * visibilityCoverage`
           : `clamp(layerOpacity${index} * sourceAlpha * reliableProjectionSupport(angleCoverage * visibilityCoverage * projectionFacingCoverage * mix(0.35, 1.0, coverageEdge)), 0.0, 1.0)`
       };
       float angleWeight = computeAngleWeight(${layerUsesDepth(index) ? 'abs(ndv)' : 'ndv'}, layerStrength${index});
@@ -1832,7 +1830,7 @@ function buildStackFragmentShader(
       float inside = inX * inY * inZ * hasW;
 
       vec3 normal = captureWorldNormal;
-      vec3 projectorViewDir = normalize(projectorPosition${index} - captureWorldPosition.xyz);
+      vec3 projectorViewDir = captureWorldDirection(captureWorldPosition.xyz, projectorPosition${index}, projectorMatrix${index}, projectorViewMatrix${index});
       float ndv = dot(normal, projectorViewDir);
       float frontFacing = step(${NDV_HARD_REJECT.toFixed(2)}, ndv);
       float backfaceAlpha = ${layerUsesDepth(index) ? '1.0' : 'mix(1.0, frontFacing, enableBackfaceCulling)'};
@@ -1871,7 +1869,7 @@ function buildStackFragmentShader(
       float alphaCoverage = step(0.01, sourceAlpha);
       float angleCoverage = ${
         layerUsesSurfaceLock(index)
-          ? `smoothstep(${SURFACE_LOCKED_FACING_START.toFixed(3)}, ${SURFACE_LOCKED_FACING_END.toFixed(3)}, abs(dot(captureViewVertexNormal, normalize(-captureViewPosition))))`
+          ? `smoothstep(${SURFACE_LOCKED_FACING_START.toFixed(3)}, ${SURFACE_LOCKED_FACING_END.toFixed(3)}, abs(dot(captureViewVertexNormal, captureViewDirection(captureViewPosition, projectorMatrix${index}))))`
           : layerUsesDepth(index)
             ? `smoothstep(${DEPTH_BACKED_ANGLE_COVERAGE_START.toFixed(2)}, ${DEPTH_BACKED_ANGLE_COVERAGE_END.toFixed(2)}, abs(ndv))`
             : `smoothstep(${NDV_COVERAGE_START.toFixed(2)}, ${NDV_COVERAGE_END.toFixed(2)}, ndv)`
@@ -1879,7 +1877,7 @@ function buildStackFragmentShader(
       float coverageEdge = computeImageEdgeFade(uv, ${IMAGE_COVERAGE_EDGE_FADE.toFixed(3)});
       float coverage = ${
         layerUsesSurfaceLock(index)
-          ? `layerOpacity${index} * sourceAlpha * projectionFacingCoverage * ${layerUsesDepth(index) ? '1.0' : `smoothstep(${(SURFACE_LOCKED_MIN_SAFE_FACING - 0.08).toFixed(2)}, ${(SURFACE_LOCKED_MIN_SAFE_FACING + 0.08).toFixed(2)}, abs(dot(captureViewVertexNormal, normalize(-captureViewPosition))))`} * visibilityCoverage`
+          ? `layerOpacity${index} * sourceAlpha * projectionFacingCoverage * ${layerUsesDepth(index) ? '1.0' : `smoothstep(${(SURFACE_LOCKED_MIN_SAFE_FACING - 0.08).toFixed(2)}, ${(SURFACE_LOCKED_MIN_SAFE_FACING + 0.08).toFixed(2)}, abs(dot(captureViewVertexNormal, captureViewDirection(captureViewPosition, projectorMatrix${index}))))`} * visibilityCoverage`
           : `clamp(layerOpacity${index} * sourceAlpha * reliableProjectionSupport(angleCoverage * visibilityCoverage * projectionFacingCoverage * mix(0.35, 1.0, coverageEdge)), 0.0, 1.0)`
       };
       float angleWeight = computeAngleWeight(${layerUsesDepth(index) ? 'abs(ndv)' : 'ndv'}, layerStrength${index});
