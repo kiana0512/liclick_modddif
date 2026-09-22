@@ -2,7 +2,14 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import ts from 'typescript';
+import { createHash } from 'node:crypto';
+import vm from 'node:vm';
 const source = fs.readFileSync(new URL('../src/services/referenceLighting.ts', import.meta.url), 'utf8');
+const hashSource = fs.readFileSync(new URL('../src/utils/sha256.ts', import.meta.url), 'utf8');
+const hashExports = {};
+vm.runInNewContext(ts.transpileModule(hashSource, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText,
+  { exports: hashExports, crypto: {}, Blob, Uint8Array, ArrayBuffer, DataView, Uint32Array });
+assert.equal(await hashExports.sha256Hex(new Blob(['identical bytes'])), createHash('sha256').update('identical bytes').digest('hex'));
 class ApiError extends Error { constructor(status) { super(String(status)); this.status = status; } }
 const jobs = new Map();
 let submissions = 0;
@@ -26,9 +33,9 @@ function load() {
   const text = source.replace(/^import .*;\r?\n/gm, '');
   const compiled = ts.transpileModule(text, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
   const exports = {};
-  new Function('exports', 'createLiclickApiClient', 'LiclickApiError', 'useAuthStore', 'urlToBlob', 'localStorage', 'setTimeout', 'window', compiled)(
+  new Function('exports', 'createLiclickApiClient', 'LiclickApiError', 'useAuthStore', 'urlToBlob', 'localStorage', 'setTimeout', 'window', 'sha256Hex', 'crypto', compiled)(
     exports, () => api, ApiError, { getState: () => ({ user: { id: user } }) }, async () => new Blob(['identical bytes']),
-    { getItem: key => storage.get(key), setItem: (key, value) => storage.set(key, value) }, fn => setTimeout(fn, 1), { addEventListener() {} });
+    { getItem: key => storage.get(key), setItem: (key, value) => storage.set(key, value) }, fn => setTimeout(fn, 1), { addEventListener() {} }, hashExports.sha256Hex, {});
   return exports;
 }
 const reference = { id: 'ref', url: '/original.png', referenceRole: 'single-view' };

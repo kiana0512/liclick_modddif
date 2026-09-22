@@ -2,16 +2,16 @@ import { createLiclickApiClient, LiclickApiError } from './liclickApiClient';
 import { urlToBlob } from './workspaceApiClient';
 import { useAuthStore } from '@/stores/authStore';
 import type { ReferenceImage } from '@/types/project';
+import { sha256Hex } from '@/utils/sha256';
 
 // REFERENCE-LIGHTING/2: stable server job is the private source/result binding.
 // No component abort signal owns the shared processing request.
 const pending = new Map<string, Promise<string>>();
 const digests = new Map<string, Promise<string>>();
-const hex = (hash: ArrayBuffer) => Array.from(new Uint8Array(hash), byte => byte.toString(16).padStart(2, '0')).join('');
 function contentDigest(url: string) {
   let task = digests.get(url);
   if (!task) {
-    task = urlToBlob(url).then(blob => blob.arrayBuffer()).then(bytes => crypto.subtle.digest('SHA-256', bytes)).then(hex);
+    task = urlToBlob(url).then(sha256Hex);
     digests.set(url, task);
     void task.catch(() => digests.delete(url));
   }
@@ -42,8 +42,7 @@ const pause = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, m
 
 async function identity(projectId: string, reference: ReferenceImage) {
   const bytes = new TextEncoder().encode(JSON.stringify(['lighting-v2', useAuthStore.getState().user?.id, projectId, reference.id, await contentDigest(reference.url)]));
-  const hash = await crypto.subtle.digest('SHA-256', bytes);
-  const key = `reference-lighting-${hex(hash)}`;
+  const key = `reference-lighting-${await sha256Hex(bytes)}`;
   return `${key}-g${Number(localStorage.getItem(key) ?? 0)}`;
 }
 
