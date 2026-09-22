@@ -6,6 +6,7 @@ import { defineConfig, type Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
 import { shaderTemplateFormatPlugin } from './scripts/shader-template-format.mjs';
 import { shaderChunkPackPlugin } from './scripts/shader-chunk-pack.mjs';
+import { stringPoolPlugin } from './scripts/string-pool.mjs';
 
 const rootDir = fileURLToPath(new URL('.', import.meta.url));
 
@@ -119,7 +120,7 @@ function eraserPerformanceDiagnosticsPlugin(base: string): Plugin {
 
 const publicBase = normalizeBase(process.env.VITE_PUBLIC_PATH ?? process.env.VITE_BASE_PATH);
 export default defineConfig({
-  plugins: [shaderTemplateFormatPlugin(), shaderChunkPackPlugin(), cloudPublicAssetsPlugin(), eraserPerformanceDiagnosticsPlugin(publicBase), react()],
+  plugins: [shaderTemplateFormatPlugin(), shaderChunkPackPlugin(), stringPoolPlugin(), cloudPublicAssetsPlugin(), eraserPerformanceDiagnosticsPlugin(publicBase), react()],
   publicDir: false,
   base: publicBase,
   // THIRD_PARTY_NOTICES.txt is shipped with every cloud artifact. Avoid
