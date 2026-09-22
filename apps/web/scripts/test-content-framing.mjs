@@ -417,6 +417,10 @@ globalThis.document = {
             clip = [x, y, w, h];
           },
           clip() {},
+          putImageData(pixels, dx, dy) {
+            fixtures.set('cleaned-canvas-input', pixels);
+            this.drawImage({ src: 'cleaned-canvas-input' }, dx, dy);
+          },
           drawImage(image, dx, dy, dw, dh) {
             const source = fixtures.get(image.src);
             if (dw !== undefined) {
@@ -482,6 +486,7 @@ const restoreAdapter = evaluate(
     'utf8',
   ),
   {
+    './returnBackgroundCleanup': evaluate(readFileSync(new URL('../src/engine/generation/returnBackgroundCleanup.ts', import.meta.url), 'utf8'), { './contentFraming': module.exports }),
     '@/engine/localRepaint/imageUtils': {
       urlToImageData: async (url) => fixtures.get(url),
     },
@@ -603,6 +608,12 @@ try {
     }),
   );
   const restoredUrl = await restoreAdapter.restoreContentFraming('remote-output', f);
+  const dirty = fixtures.get('remote-output');
+  // Detached opaque corner junk must be removed from the actual restored pixels.
+  for (let y = 0; y < 20; y++) for (let x = 0; x < 20; x++)
+    dirty.data.set([0, 0, 0, 255], (y * dirty.width + x) * 4);
+  const cleanedUrl = await restoreAdapter.restoreContentFraming('remote-output', f);
+  assert.deepEqual(fixtures.get(cleanedUrl), fixtures.get(restoredUrl));
   for (const changed of [
     { x: 100, y: 0, w: 200, h: 100 }, // shifted/shrunk
     { x: 0, y: 0, w: f.outputWidth, h: f.outputHeight }, // opaque full background

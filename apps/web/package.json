@@ -16,6 +16,7 @@
     "test:inpaint-selection-display": "node scripts/test-inpaint-selection-display.mjs",
     "test:generation-preview-status": "node scripts/test-generation-preview-status.mjs",
     "test:content-framing-bounds": "node scripts/test-content-framing-bounds.mjs",
+    "test:return-background-cleanup": "node scripts/test-return-background-cleanup.mjs",
     "test:uv-raster-layer-keys": "node scripts/test-uv-raster-layer-keys.mjs",
     "test:generation-server-persistence": "node scripts/test-generation-server-persistence.mjs",
     "test:workspace-asset-upload-queue": "node scripts/test-workspace-asset-upload-queue.mjs",

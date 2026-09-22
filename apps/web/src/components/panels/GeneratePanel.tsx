@@ -1,5 +1,4 @@
 import { captureLocalRepaintNormal } from '@/engine/localRepaint/captureLocalRepaintNormal';
-import { GenerationServerStatus } from './GenerationServerStatus';
 import { personalRepaintEnabled } from '@/services/personalRepaintMode';
 import { sameGenerationRecovery } from '@/services/generationRecoveryComparison';
 import {
@@ -427,7 +426,6 @@ function GenerationProgressStatus({ generation }: { generation: Generation }) {
       <span className="ml-2 tabular-nums text-white/62">
         {minutes}:{seconds}
       </span>
-      <GenerationServerStatus generation={generation} />
     </div>
   );
 }
