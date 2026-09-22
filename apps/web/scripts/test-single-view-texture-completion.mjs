@@ -107,7 +107,7 @@ for (const inpaint of [false, true]) for (const normalUrl of ['same-camera-norma
   assert.equal(calls[0].name, inpaint ? 'generateSingleViewInpaint' : 'generateSingleView');
   assert.deepEqual(calls[0].input.normalImage, { path: 'capture-normal.png', dataUrl: normalUrl });
   assert.equal(calls[0].input.image.dataUrl, 'unchanged-whitefill');
-  assert.equal(calls[0].input.mask?.dataUrl, inpaint ? 'unchanged-expanded-mask' : undefined);
+  assert.equal(calls[0].input.mask?.dataUrl, inpaint ? 'unchanged-expanded-mask' : 'frozen-object-mask');
   if (inpaint) {
     assert.equal(calls[0].input.resultBlend.currentImage.dataUrl, 'frozen-current-effect-with-coverage');
     assert.equal(calls[0].input.resultBlend.objectMask.dataUrl, 'frozen-object-mask');

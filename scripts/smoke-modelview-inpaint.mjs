@@ -117,7 +117,7 @@ const modelviewMock = http.createServer(async (request, response) => {
         ? /:single-view:refcontrol-normal-4step-r1$/
         : isSingleViewInpaint
           ? /:single-view-inpaint:refcontrol-normal-2step-r1$/
-          : /:inpaint:refcontrol-normal-4step-r1$/,
+          : /:inpaint:(single|multi):v2$/,
     );
     if (String(request.headers['idempotency-key']).length > 128) {
       response.writeHead(422, { 'content-type': 'application/json' });
@@ -140,6 +140,7 @@ const modelviewMock = http.createServer(async (request, response) => {
       assert(start >= 0, 'normal_image must be forwarded as its own file');
       assert.deepEqual(body.subarray(start + normalHeader.length, start + normalHeader.length + blackMaskPng.length), blackMaskPng, 'Normal bytes must remain unchanged');
     }
+    if (!isSingleView && !isSingleViewInpaint) assert.match(bodyText, /name="reference_view_count"\r\n\r\n[16]\r\n/);
     assert.doesNotMatch(bodyText, /name="viewport_reference"/);
     assert.doesNotMatch(bodyText, /name="seed"/);
     assert.doesNotMatch(bodyText, /name="noise_seed"/);
@@ -148,7 +149,7 @@ const modelviewMock = http.createServer(async (request, response) => {
     if (!usesPrompt) {
       assert.deepEqual([...bodyText.matchAll(/Content-Disposition: form-data; name="([^"]+)"/g)].map(match => match[1]),
         isSingleView ? ['image', 'material_image', 'normal_image']
-          : ['image', 'material_image', 'mask', 'normal_image'], 'Default workflows receive only their image fields, no prompt or parameters');
+          : isSingleViewInpaint ? ['image', 'material_image', 'mask', 'normal_image'] : ['image', 'material_image', 'mask', 'normal_image', 'reference_view_count'], 'Default workflows receive only their image fields, no prompt or parameters');
       assert.equal(body.includes(Buffer.from('修复纸张边缘')), false, 'Stale prompt must not override workflow default');
     } else assert(
       body.includes(
@@ -246,6 +247,7 @@ try {
   const inpaintPayload = {
     normalImage: { path: 'normal.png', dataUrl: `data:image/png;base64,${blackMaskPng.toString('base64')}` },
     clientGenerationId: 'smoke-generation-1',
+    referenceViewCount: 6,
     projectId: created.project.id,
     prompt: '修复纸张边缘',
     image: {
@@ -350,7 +352,7 @@ try {
     assert.equal(result.modelviewClientId, 'mock-li3d-client');
     assert.equal(result.output?.source, 'modelview-inpaint');
     assert.equal(result.output?.storage, 'project');
-    assert.equal(result.output?.workflow, '2026.09.18-refcontrol-normal-4step-r1');
+    assert.equal(result.output?.workflow, 'modelview-inpaint');
     const saved = await fetch(result.resultUrl, {
       headers: { Cookie: cookie, Origin: allowedOrigin },
     });
@@ -503,6 +505,14 @@ try {
     assert.equal(polished.status, prompt ? 200 : 422);
   }
   assert.equal(observedRequests.length, 7);
+  for (const count of [undefined, 0, -1, 7, 1.5, 1, 6]) {
+    const response = await fetch(`${workspaceBaseUrl}/api/modelview/inpaint`, {
+      method: 'POST', headers: { 'content-type': 'application/json', Cookie: cookie, Origin: allowedOrigin },
+      body: JSON.stringify({ ...inpaintPayload, referenceViewCount: count, clientGenerationId: `count-${count}` }),
+    });
+    assert.equal(response.status, count === 1 || count === 6 ? 200 : 422);
+    if (response.ok) assert.equal((await response.json()).output.workflow, count === 1 ? 'modelview-single-view-inpaint' : 'modelview-inpaint');
+  }
   assert.equal(observedRequests[0].idempotencyKey, observedRequests[1].idempotencyKey);
   assert.equal(observedRequests[0].sha256, observedRequests[1].sha256);
   console.log(

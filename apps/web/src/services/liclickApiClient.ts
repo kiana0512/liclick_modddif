@@ -67,6 +67,7 @@ export type LiclickGenerateTextureSingleViewInput = GenerateTextureInput & {
   pixelExactReferenceIds?: string[];
   signal?: AbortSignal;
   referencePipeline?: 'six-view-delight-v1' | 'delight-only-v1';
+  backgroundReference?: boolean;
   clientGenerationId?: string;
   projectId?: string;
   prompt: string;
@@ -276,6 +277,7 @@ export function createLiclickApiClient(config: LiclickApiConfig = {}): LiclickAp
           imageSize: input.imageSize,
           quality: input.quality,
           referencePipeline: input.referencePipeline,
+          backgroundReference: input.backgroundReference,
           count: input.count,
           references: preparedReferences.map(({ id, name, url }) => ({ id, name, url })),
         }),

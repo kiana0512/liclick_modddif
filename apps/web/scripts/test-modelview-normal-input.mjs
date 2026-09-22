@@ -51,7 +51,7 @@ const serverClient = load('../src/services/modelviewApiClient.ts', {
   './workspaceApiClient': {},
 });
 globalThis.window = { setTimeout, clearTimeout };
-for (const [provider, path] of [['modelview-int8', 'status'], ['modelview-single-view', 'single-view/status'], ['modelview-single-view-inpaint', 'single-view-inpaint/status']]) {
+for (const [provider, path] of [['modelview-int8', 'status'], ['modelview-single-view', 'status'], ['modelview-single-view-inpaint', 'status']]) {
   globalThis.fetch = async url => {
     assert.equal(url, `/api/modelview/${path}`);
     return new Response(JSON.stringify({serviceUrl:'https://user:secret@compute.example:8443/run?token=private'}));
@@ -74,7 +74,7 @@ try {
     './personalRepaintMode': load('../src/services/personalRepaintMode.ts', {}),
     './workspaceApiClient': { urlToDataUrl: async url => `data:${url}` },
   });
-  const input = { clientGenerationId: 'job', projectId: 'project',
+  const input = { clientGenerationId: 'job', projectId: 'project', referenceViewCount: 6,
     image: { path: 'image.png', dataUrl: 'raw-effect' },
     materialImage: { path: 'material.png', dataUrl: 'raw-material' },
     mask: { path: 'mask.png', dataUrl: 'raw-mask' },
@@ -83,7 +83,16 @@ try {
   const generation = await createModelviewApiClient().generateInpaint(input);
   assert.equal(submitted.url, '/api/modelview/inpaint');
   assert.deepEqual(submitted.body, input);
-  assert.equal(generation.metadata.modelviewWorkflow, '2026.09.18-refcontrol-normal-4step-r1');
+  assert.equal(generation.metadata.modelviewWorkflow, 'modelview-inpaint');
+  for (const referenceRole of ['single-view', 'multi-view']) {
+    for (const method of ['generateSingleView', 'generateSingleViewInpaint']) {
+      await createModelviewApiClient()[method]({ ...input, materialReferenceRole: referenceRole });
+      assert.equal(submitted.url, '/api/modelview/inpaint');
+      assert.equal(submitted.body.referenceViewCount, referenceRole === 'single-view' ? 1 : 6);
+      assert.deepEqual(submitted.body.mask, input.mask);
+      assert.deepEqual(submitted.body.normalImage, input.normalImage);
+    }
+  }
   const blendCamera = { projection: 'orthographic', projectionMatrix: Array(16).fill(1) };
   const frozen = { ...capture, camera: blendCamera };
   const client = createModelviewApiClient();

@@ -186,7 +186,8 @@ for (const outcome of ['success', 'textured', 'covered', 'cancel', 'failure', 'a
     assert.equal(input.normalImage.dataUrl, 'normal-' + input.captureId, 'Every angle must submit its own unchanged captured normal');
     assert.equal(input.normalImage.path, input.captureId + '-normal.png');
     assert.equal(input.materialImage.dataUrl, 'material');
-    assert.equal(Boolean(input.mask), kind === 'inpaint');
+    assert.equal(Boolean(input.mask), true, 'Both full-model and completion requests require a mask');
+    if (kind === 'full') assert.equal(input.mask.dataUrl, 'mask-' + input.captureId);
     calls.push([kind, input.captureId]);
     if (outcome === 'failure' && requests === 2) throw new Error('remote failure');
     return { id: input.clientGenerationId, status: 'succeeded', resultUrl: 'result', metadata: {} };

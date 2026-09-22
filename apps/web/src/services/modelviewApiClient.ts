@@ -40,8 +40,8 @@ export type ModelviewSingleViewInpaintInput = ModelviewGenerationInput & {
 };
 
 type ModelviewNormalInput = { normalImage: { path: string; dataUrl: string } };
-export type ModelviewSingleViewInput = ModelviewGenerationInput & ModelviewNormalInput;
-export type ModelviewInpaintInput = ModelviewSingleViewInpaintInput;
+export type ModelviewSingleViewInput = ModelviewGenerationInput & ModelviewNormalInput & { mask: { path: string; dataUrl: string } };
+export type ModelviewInpaintInput = ModelviewSingleViewInpaintInput & { referenceViewCount: number };
 
 type ModelviewResponse = {
   resultComposition?: string;
@@ -99,8 +99,8 @@ export async function getGenerationServerLabel(provider: unknown, signal?: Abort
   if (provider === 'autodl-personal') return 'AutoDL · pro-78993043bdb0';
   const routes: Record<string, string> = {
     'modelview-int8': 'status',
-    'modelview-single-view': 'single-view/status',
-    'modelview-single-view-inpaint': 'single-view-inpaint/status',
+    'modelview-single-view': 'status',
+    'modelview-single-view-inpaint': 'status',
   };
   const route = typeof provider === 'string' ? routes[provider] : undefined;
   if (!route) return provider === 'liclick-atlas' ? '莉刻服务 · 算力服务器未公开' : '服务器信息暂不可用';
@@ -177,32 +177,32 @@ export function createModelviewApiClient() {
       input: ModelviewSingleViewInput,
       options?: { signal?: AbortSignal },
     ): Promise<Generation> {
-      const result = await requestJson<ModelviewResponse>('/api/modelview/single-view', {
+      const result = await requestJson<ModelviewResponse>('/api/modelview/inpaint', {
         method: 'POST',
         signal: options?.signal,
-        body: JSON.stringify(input),
+        body: JSON.stringify({ ...input, referenceViewCount: input.materialReferenceRole === 'multi-view' ? 6 : 1 }),
       });
       return toGeneration(
         input,
         result,
         'modelview-single-view',
-        '2026.09.18-refcontrol-normal-single-view-4step-r1',
+        input.materialReferenceRole === 'multi-view' ? 'modelview-inpaint' : 'modelview-single-view-inpaint',
       );
     },
     async generateSingleViewInpaint(
       input: ModelviewSingleViewInpaintInput,
       options?: { signal?: AbortSignal },
     ): Promise<Generation> {
-      const result = await requestJson<ModelviewResponse>('/api/modelview/single-view-inpaint', {
+      const result = await requestJson<ModelviewResponse>('/api/modelview/inpaint', {
         method: 'POST',
         signal: options?.signal,
-        body: JSON.stringify(input),
+        body: JSON.stringify({ ...input, referenceViewCount: input.materialReferenceRole === 'multi-view' ? 6 : 1 }),
       });
       return toGeneration(
         input,
         result,
         'modelview-single-view-inpaint',
-        '2026.09.18-refcontrol-normal-single-view-inpaint-2step-r1',
+        input.materialReferenceRole === 'multi-view' ? 'modelview-inpaint' : 'modelview-single-view-inpaint',
       );
     },
     async generateInpaint(
@@ -226,7 +226,7 @@ export function createModelviewApiClient() {
         input,
         result,
         'modelview-int8',
-        '2026.09.18-refcontrol-normal-4step-r1',
+        input.referenceViewCount === 1 ? 'modelview-single-view-inpaint' : 'modelview-inpaint',
         'inpaint',
       );
     },

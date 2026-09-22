@@ -2179,6 +2179,8 @@ export function GeneratePanel({
   }
 
   function confirmCancelTextureSnapshot() {
+    if (currentProjectId) void import('@/services/referenceLighting').then(module => module.interruptReferenceLighting(currentProjectId))
+      .catch(error => console.warn('Could not interrupt reference processing', error));
     const controller = texturePipelineAbortControllerRef.current;
     setCancelTextureSnapshotConfirmOpen(false);
     if (!controller || controller.signal.aborted) return;
@@ -2191,6 +2193,8 @@ export function GeneratePanel({
   }
 
   function confirmCancelLocalRepaintPreparation() {
+    if (currentProjectId) void import('@/services/referenceLighting').then(module => module.interruptReferenceLighting(currentProjectId))
+      .catch(error => console.warn('Could not interrupt reference processing', error));
     const controller = localRepaintPreparationAbortControllerRef.current;
     setCancelLocalRepaintPreparationConfirmOpen(false);
     if (!controller || controller.signal.aborted) return;
@@ -2894,6 +2898,7 @@ export function GeneratePanel({
                 )
               : await modelviewClient.generateSingleView(
                   {
+                    mask: { path: `${generationCapture.id}-mask.png`, dataUrl: await urlToDataUrl(generationCapture.maskUrl) },
                     clientGenerationId: generationId,
                     projectId: currentProject.id,
                     captureId: generationCapture.id,
@@ -3491,6 +3496,7 @@ export function GeneratePanel({
             }
             return modelviewClient.generateSingleView(
               {
+                mask: { path: `${capture.id}-mask.png`, dataUrl: await urlToDataUrl(capture.maskUrl) },
                 clientGenerationId: generationId,
                 projectId: currentProject?.id,
                 captureId: capture.id,
@@ -3970,20 +3976,10 @@ export function GeneratePanel({
       // next request prepares detached browser snapshots.
       useSceneStore.getState().setLocalRepaintGenerationPresentationActive(true);
       if (authStatus !== 'authenticated' && !(await requireFeishuLogin())) return false;
-      if (!isGptLocalRepaint && materialReference && !isMultiviewReference(materialReference)) {
-        setLocalRepaintPreparation((current) => ({
-          startedAt: current?.startedAt ?? Date.now(),
-          detail: '正在准备多视图材质参考',
-        }));
-        setGenerateNotice({
-          tone: 'info',
-          message: '第 1/2 步：已选择单视图，正在自动生成多视图参考。',
-        });
-        materialReference = await generatePairedMultiviewReference(materialReference);
-        setGenerateNotice({
-          tone: 'info',
-          message: '第 2/2 步：多视图参考已就绪，正在准备局部生图。',
-        });
+      if (materialReference && !personalRepaintEnabled) {
+        setLocalRepaintPreparation((current) => ({ startedAt: current?.startedAt ?? Date.now(), detail: '正在进行图片处理' }));
+        const { prepareReferenceLighting } = await import('@/services/referenceLighting');
+        materialReference = await prepareReferenceLighting(currentProject.id, materialReference, requestAbortController.signal);
       }
       setLocalRepaintPreparation((current) => ({
         startedAt: current?.startedAt ?? Date.now(),
@@ -4368,6 +4364,7 @@ export function GeneratePanel({
           projectId: currentProject.id,
           captureId: capture.id,
           objectId,
+          referenceViewCount: isMultiviewReference(materialReference!) ? 6 : 1,
           materialReferenceId: materialReference!.id,
           materialReferenceGroupId: referenceGroupId(materialReference!),
           materialReferenceName: materialReference!.name,
@@ -4624,6 +4621,7 @@ export function GeneratePanel({
       isPrimary: false,
       referenceSource: 'generated',
       generationId: generation.id,
+      lightingProcessed: 'reference-delight-v1',
     };
     const referenceStore = useReferenceStore.getState();
     const latestReferences = referenceStore.references;
@@ -4849,7 +4847,7 @@ export function GeneratePanel({
         pushToast({
           tone: 'warning',
           title: t('textureMap'),
-          description: '单视图和多视图任选其一；只有单视图时系统会自动补全多视图。',
+          description: '单视图和多视图任选其一；将按选择的参考图类型生成。',
           dedupeKey: 'texture-map-reference-required',
         });
         return;
@@ -4862,26 +4860,15 @@ export function GeneratePanel({
       texturePipelineAbortControllerRef.current = pipelineAbortController;
       setTexturePipelineCancelling(false);
       setTexturePipelineProgress({ active: true, progress: 3, label: '检查参考图' });
-      let materialReference = selectedMultiviewReference;
-      if (!materialReference) {
-        if (!selectedSingleReference) throw new Error('当前参考图没有可用的单视图或多视图。');
-        setGenerateNotice({
-          tone: 'info',
-          message: '第 1/2 步：当前参考图缺少多视图，正在自动生成并写回。',
-        });
-        updateTexturePipelineProgress(6, '生成多视图参考');
-        materialReference = await generatePairedMultiviewReference(selectedSingleReference);
-        updateTexturePipelineProgress(18, '多视图参考已就绪');
-      } else {
-        updateTexturePipelineProgress(18, '多视图参考已就绪');
-      }
-      setGenerateNotice({
-        tone: 'info',
-        message:
-          requestedViewMode === 'multi'
-            ? '第 2/2 步：多视图已就绪，正在生成纹理贴图。'
-            : '多视图已就绪，正在生成当前单视角纹理贴图。',
+      let materialReference = resolveLocalRepaintMaterialReference({
+        references: useReferenceStore.getState().references,
+        selectedReferenceIds: useReferenceStore.getState().selectedReferenceIds,
       });
+      if (!materialReference) throw new Error('请先选择参考图。');
+      if (currentProjectId) {
+        updateTexturePipelineProgress(18, '正在进行图片处理');
+        materialReference = await (await import('@/services/referenceLighting')).prepareReferenceLighting(currentProjectId, materialReference, pipelineAbortController.signal);
+      }
       const resolvedViews =
         requestedViews ??
         (requestedViewMode === 'single' ? [getCurrentTextureCameraView()] : cameraViews);
@@ -6108,7 +6095,7 @@ export function GeneratePanel({
               <div className="mb-3 flex items-start justify-between gap-3">
                 <div>
                   <div className="text-sm font-semibold text-liclick-pink">终止莉刻生图</div>
-                  <div className="mt-1 text-lg font-bold">丢弃本次等待结果？</div>
+                  <div className="mt-1 text-lg font-bold">图片正在处理中，是否要中断</div>
                 </div>
                 <button
                   type="button"

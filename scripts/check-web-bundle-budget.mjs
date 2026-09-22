@@ -116,7 +116,9 @@ const budgets = [
 // 2026-09-22 integrated master e04c3f38 + LOCAL-REPAINT-VISIBLE-GAPS/1:
 // exact release build 3,260,798 bytes, including new repaint/resize modules.
 // Bounded 5,500-byte allowance; other chunk, pixel and QA gates unchanged.
-const maxTotalJavaScriptBytes = 3_262_000;
+// M04 REFERENCE-LIGHTING/2 + unified ModelView: measured 3,267,407 bytes.
+// Allow 6,500 bytes for the lazy processing/recovery service and release reserve.
+const maxTotalJavaScriptBytes = 3_268_500;
 // Local release checks require headroom without relaxing the CI hard limit.
 const reserveArg = process.argv.slice(2);
 if (reserveArg.length > 1 || (reserveArg.length && !/^--reserve-bytes=\d+$/.test(reserveArg[0]))) {

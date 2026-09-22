@@ -1349,6 +1349,12 @@ export function EditorPage({
 
   const pushToast = useToastStore((state) => state.pushToast);
   const authStatus = useAuthStore((state) => state.status);
+  useEffect(() => {
+    if (authStatus !== 'authenticated') return;
+    void import('@/services/referenceLighting').then(({ warmReferenceLighting }) => {
+      warmReferenceLighting(projectId, references);
+    });
+  }, [authStatus, projectId, references]);
   const authenticatedUserId = useAuthStore((state) => state.user?.id);
   const t = useT();
   const workspacePanels = useWorkspaceLayoutStore((state) => state.panels);
@@ -3297,10 +3303,20 @@ export function EditorPage({
     }
   }
 
-  function handleBackToProjects() {
+  async function handleBackToProjects() {
     if (generationConflictLocked) {
       showGenerationConflict('返回项目列表');
       return;
+    }
+
+    const lighting = await import('@/services/referenceLighting');
+    if (lighting.hasReferenceLightingWork(projectId)) {
+      if (!window.confirm('图片正在处理中，是否要中断')) return;
+      try { await lighting.interruptReferenceLighting(projectId); }
+      catch (error) {
+        pushToast({ tone: 'error', title: '中断图片处理失败', description: error instanceof Error ? error.message : '请重试。' });
+        return;
+      }
     }
     if (backNavigationPendingRef.current) return;
     const currentProject = useProjectStore.getState().getCurrentProject();

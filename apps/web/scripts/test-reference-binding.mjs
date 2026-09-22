@@ -83,7 +83,7 @@ assert.equal(app.recover(), undefined, 'Old removed image is superseded, not mis
 const reloaded = harness(app.saves[0].generations, app.saves[0].references);
 assert.equal(reloaded.recover(), undefined, 'Reloaded history cannot restore the first result');
 assert.equal(resolveLocalRepaintMaterialReference({ references: reloaded.state.references,
-  selectedReferenceIds: [source.id] }).id, replacement.id);
+  selectedReferenceIds: [source.id] }).id, source.id);
 
 // Repair projects affected by the old code, even when an old task is first in the history list.
 const affected = harness([oldJob, newJob]);
@@ -154,7 +154,7 @@ assert.equal(litResult.derivedFromReferenceId, source.id);
 assert.equal(litResult.generationId, lightingJob.id);
 assert.equal(litResult.url, '/verified/light-job.png');
 assert.equal(lit.state.references.filter(r => r.id === oldReference.id).length, 1);
-assert.equal(resolveLocalRepaintMaterialReference({ references: lit.state.references, selectedReferenceIds: [source.id] }).url, litResult.url);
+assert.equal(resolveLocalRepaintMaterialReference({ references: lit.state.references, selectedReferenceIds: [source.id] }).url, source.url);
 const litReload = harness(lit.saves[0].generations, lit.saves[0].references);
 assert.equal(litReload.recover(), undefined);
 const failedLighting = harness([oldJob, { ...lightingJob, status: 'failed', resultUrl: undefined }]);

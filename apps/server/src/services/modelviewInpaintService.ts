@@ -31,7 +31,7 @@ export type ModelviewSingleViewInpaintInput = ModelviewGenerationInput & {
   normalImage: ModelviewControlFile;
 };
 
-export type ModelviewInpaintInput = ModelviewSingleViewInpaintInput;
+export type ModelviewInpaintInput = ModelviewSingleViewInpaintInput & { referenceViewCount: number };
 type ModelviewNormalInput = { normalImage: ModelviewControlFile };
 export type ModelviewSingleViewInput = ModelviewGenerationInput & ModelviewNormalInput;
 
@@ -200,6 +200,7 @@ function multipartBody(input: {
     image: Buffer;
   }>;
   prompt?: string;
+  referenceViewCount?: number;
 }) {
   const chunks: Buffer[] = [];
   input.files.forEach((file) => {
@@ -214,6 +215,9 @@ function multipartBody(input: {
       Buffer.from('\r\n', 'utf8'),
     );
   });
+  if (input.referenceViewCount !== undefined) {
+    chunks.push(Buffer.from(`--${input.boundary}\r\nContent-Disposition: form-data; name="reference_view_count"\r\n\r\n${input.referenceViewCount}\r\n`));
+  }
   if (input.prompt) {
     chunks.push(
       Buffer.from(
@@ -455,6 +459,14 @@ async function generateModelviewImage(
   options: { signal?: AbortSignal },
 ) {
   const service = serviceDefinition(kind);
+  const referenceViewCount = kind === 'inpaint' ? (input as ModelviewInpaintInput).referenceViewCount : undefined;
+  if (kind === 'inpaint') {
+    if (!Number.isInteger(referenceViewCount) || referenceViewCount! < 1 || referenceViewCount! > 6) {
+      throw new ModelviewInpaintError('reference_view_count 必须显式指定为 1～6 的整数。', 422);
+    }
+    service.idempotencySuffix = `inpaint:${referenceViewCount === 1 ? 'single' : 'multi'}:v2`;
+    service.workflow = referenceViewCount === 1 ? 'modelview-single-view-inpaint' : 'modelview-inpaint';
+  }
   const operationLabel =
     kind === 'inpaint'
       ? '局部重绘'
@@ -503,7 +515,7 @@ async function generateModelviewImage(
   if (mask) await validateInpaintImageAndMask(image, mask, normal);
   else await validateNormalImage(image, normal);
   // These inputs stay on the LI3D control plane; never put them in multipart.
-  const blendInput = kind === 'single-view-inpaint' ? inpaintInput?.resultBlend : undefined;
+  const blendInput = inpaintInput?.resultBlend;
   let preparedBlend: Awaited<ReturnType<typeof prepareSingleViewResultBlend>> | undefined;
   if (blendInput) {
     try {
@@ -554,9 +566,20 @@ async function generateModelviewImage(
         image: normal.buffer,
       }] : []),
     ],
+    referenceViewCount,
     prompt: prompt || undefined,
   });
-  const response = await requestModelview(body, boundary, idempotencyKey, service, options.signal);
+  let response: RemoteResponse;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      response = await requestModelview(body, boundary, idempotencyKey, service, options.signal);
+      if (kind === 'inpaint' && response.statusCode === 504 && attempt < 2) continue;
+      break;
+    } catch (error) {
+      if (kind !== 'inpaint' || options.signal?.aborted || attempt >= 2) throw error;
+      // Reuse the exact frozen body/key after an uncertain transport failure.
+    }
+  }
   const remoteJobId =
     typeof response.headers['x-job-id'] === 'string' ? response.headers['x-job-id'] : undefined;
   const remoteClientId =
@@ -630,6 +653,8 @@ async function generateModelviewImage(
     jobId: remoteJobId ?? '(missing X-Job-ID)',
     clientId: remoteClientId,
     idempotencyKey,
+    projectId, referenceViewCount, completedAt: new Date().toISOString(),
+    artifactSha256: response.headers['x-artifact-sha256'],
     bytes: resultBody.byteLength,
     sha256,
   });

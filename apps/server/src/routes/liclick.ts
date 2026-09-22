@@ -1,3 +1,4 @@
+import { bindReferenceLightingResult, readReferenceLightingBinding } from '../services/referenceLightingBinding.js';
 import { advanceReferenceDelight, prepareReferencePipelineInput, referenceStageMessage } from '../services/referenceDelightPipeline.js';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import fs from 'node:fs';
@@ -365,6 +366,7 @@ function findActiveProjectJob(
       job.userId === user.id &&
       job.projectId === projectId &&
       job.workflow === workflow &&
+      !job.input.backgroundReference &&
       isActiveJob(job),
   );
 }
@@ -384,9 +386,11 @@ async function applySubmission(job: GenerationJob, submission: LiclickImageSubmi
   job.updatedAt = new Date().toISOString();
   if (await advanceReferenceDelight(job, submission, saveGenerationJobs)) return;
   if (submission.resultUrl) {
-    job.status = 'succeeded';
     job.resultUrl = submission.resultUrl;
     job.resultUrls = submission.resultUrls;
+    if (job.input.backgroundReference) await bindReferenceLightingResult(job);
+    if (job.status === 'failed') return;
+    job.status = 'succeeded';
   } else {
     job.status = 'running';
   }
@@ -426,9 +430,11 @@ async function pollAndUpdateJob(job: GenerationJob) {
         if (await advanceReferenceDelight(job, result, saveGenerationJobs)) return job;
         job.updatedAt = new Date().toISOString();
         job.raw = result.raw;
-        job.status = 'succeeded';
         job.resultUrl = result.resultUrl;
         job.resultUrls = result.resultUrls;
+        if (job.input.backgroundReference) await bindReferenceLightingResult(job);
+        if ((job as GenerationJob).status === 'failed') return job;
+        job.status = 'succeeded';
         job.recoveryPollIntervalMs = undefined;
         job.terminalWithoutResultAt = undefined;
         await saveGenerationJobs();
@@ -1011,7 +1017,7 @@ export async function handleLiclickRoute(
       return true;
     }
     const jobs = [...generationJobs.values()]
-      .filter((job) => job.userId === user.id && job.projectId === projectId)
+      .filter((job) => job.userId === user.id && job.projectId === projectId && !job.input.backgroundReference)
       .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
     for (const job of jobs) {
       if (isActiveJob(job)) startGenerationJob(job);
@@ -1027,7 +1033,7 @@ export async function handleLiclickRoute(
     segments[3]
   ) {
     if (!requirePersonalLiclickAccount(response, user)) return true;
-    const job = findJob(segments[3]);
+    const job = await readReferenceLightingBinding(user.id, segments[3]) ?? findJob(segments[3]);
     if (!job || job.userId !== user.id) {
       sendJson(response, 404, { error: 'Generation job not found.' });
       return true;
@@ -1169,11 +1175,14 @@ export async function handleLiclickRoute(
       try { buildExtraParams(input, []); }
       catch (error) { sendJson(response, 400, { error: error instanceof Error ? error.message : 'Invalid generation framing.' }); return true; }
     }
+    if (input.backgroundReference && input.referencePipeline !== 'delight-only-v1') {
+      sendJson(response, 400, { error: 'Invalid background reference pipeline.' }); return true;
+    }
     if (input.referencePipeline && (!['six-view-delight-v1', 'delight-only-v1'].includes(input.referencePipeline) || input.workflow !== 'liclick')) {
       sendJson(response, 400, { error: 'Invalid multiview reference pipeline.' }); return true;
     }
     if (input.referencePipeline === 'delight-only-v1' && (input.references?.length !== 1 || !input.references[0]?.url)) {
-      sendJson(response, 400, { error: '光照处理需要一张多视图参考图。' }); return true;
+      sendJson(response, 400, { error: '光照处理需要一张参考图。' }); return true;
     }
     const projectId = input.projectId ?? 'default';
     const workflow = input.workflow === 'local-repaint' ? 'local-repaint' : input.workflow === 'texture-map' ? 'texture-map' : 'liclick';
@@ -1181,7 +1190,7 @@ export async function handleLiclickRoute(
     // tracked job per camera. The frontend submission lock still prevents duplicate
     // clicks, while Comfy/LiClick can queue these jobs without collapsing their IDs.
     const activeJob =
-      workflow === 'texture-map' ? undefined : findActiveProjectJob(user, projectId, workflow);
+      workflow === 'texture-map' || input.backgroundReference ? undefined : findActiveProjectJob(user, projectId, workflow);
     if (activeJob) {
       if (workflow === 'local-repaint' && activeJob.id !== input.clientGenerationId) {
         sendJson(response, 409, { error: '已有局部重绘任务正在运行，请等待完成；未提交新任务。' });

@@ -33,6 +33,8 @@ export type ReferenceImage = {
   referenceRole?: 'single-view' | 'multi-view';
   derivedFromReferenceId?: string;
   referenceSource?: 'uploaded' | 'generated';
+  /** Result of the shared color-preserving reference pipeline; avoid processing twice. */
+  lightingProcessed?: 'reference-delight-v1';
   generationId?: string;
 };
 
