@@ -26,7 +26,7 @@ test('Bundle gate keeps its hard limit and local release headroom', () => {
     const run = (...args) => spawnSync(process.execPath,
       [path.join(root,'scripts/check-web-bundle-budget.mjs'),...args], {cwd:temporary,encoding:'utf8'});
     for(const remaining of [-8,-4,0,255,256,430]) {
-      fs.writeFileSync(path.join(assets,'other.js'),Buffer.alloc(3262000-fixed-remaining));
+      fs.writeFileSync(path.join(assets,'other.js'),Buffer.alloc(3268500-fixed-remaining));
       assert.equal(run().status,remaining>=0 ? 0 : 1);
       assert.equal(run('--reserve-bytes=256').status,remaining>=256 ? 0 : 1);
     }
