@@ -116,3 +116,52 @@ assert.match(panel, /\[normalBlackBackground, setNormalBlackBackground\] = useSt
 assert.match(panel, /normalBackground: singleViewProvider === 'remote' \? normalBackground : undefined/);
 assert.match(panel, /\[captureObjectId, resolution, setLastCapture, t, singleViewProvider, normalBackground\]/);
 console.log('Normal background toggle: default off, blue/black forwarding and both runtime locks passed.');
+
+// Both branches start before either resolves; failure/cancellation drains owners.
+for (const mode of ['success', 'input-failure', 'normal-failure', 'abort', 'pre-abort']) {
+  const pending = {};
+  const started = [];
+  const revoked = [];
+  const deferred = name => new Promise((resolve, reject) => {
+    started.push(name); pending[name] = { resolve, reject };
+  });
+  const { prepareRepaintInputs } = load('../src/engine/localRepaint/prepareRepaintInputs.ts', {
+    './generationInputWorker': { prepareLocalRepaintGenerationInput: value => {
+      assert.equal(value, capture); return deferred('input');
+    } },
+    '@/utils/blobUrlRegistry': { revokeRegisteredObjectUrl: url => { if (url) revoked.push(url); } },
+  });
+  const abort = new globalThis.AbortController();
+  if (mode === 'pre-abort') abort.abort();
+  let settled = false;
+  const task = prepareRepaintInputs(capture, () => deferred('normal'), abort.signal);
+  void task.then(() => { settled = true; }, () => { settled = true; });
+  if (mode === 'pre-abort') {
+    await assert.rejects(task, { name: 'AbortError' });
+    assert.deepEqual(started, []);
+    continue;
+  }
+  await Promise.resolve();
+  assert.deepEqual(started, ['input', 'normal']);
+  const inputResult = { compositeUrl: 'composite', submittedMaskUrl: 'submitted', selectionMaskUrl: 'selection' };
+  if (mode === 'input-failure') pending.input.reject(new Error(mode));
+  else pending.input.resolve(inputResult);
+  await Promise.resolve(); await Promise.resolve();
+  assert.equal(settled, false, 'Must drain the normal capture before releasing the workflow lock');
+  if (mode === 'abort') abort.abort();
+  if (mode === 'normal-failure') pending.normal.reject(new Error(mode));
+  else pending.normal.resolve(result);
+  if (mode === 'success') {
+    const value = await task;
+    assert.equal(value.prepared, inputResult);
+    assert.equal(value.capture, result);
+    assert.deepEqual(revoked, []);
+  } else {
+    await assert.rejects(task, mode === 'abort' ? { name: 'AbortError' } : new RegExp(mode));
+    assert.deepEqual(revoked, mode === 'input-failure' ? ['blob:raw-normal'] :
+      mode === 'normal-failure' ? ['composite', 'submitted', 'selection'] :
+      ['composite', 'submitted', 'selection', 'blob:raw-normal']);
+  }
+}
+assert.match(panel, /await prepareRepaintInputs\(preparationInput/);
+console.log('Repaint preparation overlap: exact results, parallel start, failure draining, cancellation and URL cleanup passed.');

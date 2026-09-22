@@ -621,7 +621,7 @@ self.onmessage = async (event: MessageEvent<GenerationInputWorkerRequest>) => {
     }
     finishPhase('build-core-mask');
     // MODELVIEW-WHITE-INPUT/1.0.0: exact white marking, no grey/clay edge.
-    // The independent sampling mask retains its existing expansion/feathering.
+    // Only single-view completion retains the independent sampling margin.
     const compositeEdgeRadius = 0;
     const compositeAlpha = boxBlur(
       compositeCore,
@@ -642,14 +642,16 @@ self.onmessage = async (event: MessageEvent<GenerationInputWorkerRequest>) => {
     const maxX = coreBounds.maxX;
     const maxY = coreBounds.maxY;
     const minimumDimension = Math.min(maxX - minX + 1, maxY - minY + 1);
-    const dilationRadius = Math.max(
+    // LOCAL-REPAINT-SAMPLING-MASK/2: local requests never expand beyond the selection.
+    // Single/multiview completion retains its existing sampling margin.
+    const dilationRadius = isSingleViewCompletion ? Math.max(
       Math.round(24 * scale),
       Math.min(Math.round(64 * scale), Math.round(minimumDimension * 0.25)),
-    );
-    const featherRadius = Math.max(
+    ) : 0;
+    const featherRadius = isSingleViewCompletion ? Math.max(
       Math.round(4 * scale),
       Math.min(Math.round(10 * scale), Math.round(dilationRadius * 0.2)),
-    );
+    ) : 0;
 
     const compositePixels = new Uint8ClampedArray(currentPixels.data);
     // MODELVIEW-SINGLE-WHITE/1.0.0: remote guides are opaque black outside the

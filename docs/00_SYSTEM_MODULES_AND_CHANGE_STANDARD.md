@@ -1,5 +1,9 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
+2026-09-22 M08/M04：`LOCAL-REPAINT-SAMPLING-MASK` v2 取消原局部重绘提交蒙版的额外外扩及向外模糊，dilationRadius/featherRadius 均为 0，元数据同步；有效选区并集、白色填充、可见面裁切及历史兼容的核心选区处理不变。仅 local Worker 分支改变，单/多视图补全保留原半径公式，GPT 原本不额外外扩，画笔/橡皮羽化、回贴 GPU/CPU/Worker、保存导出不变。无资产迁移，旧请求不重写；回滚恢复 local 半径公式。测试检查 local 半径为零及选区外提交像素为零。本地修改，未部署。
+
+2026-09-22 M08（协作 M03/M04）：`REPAINT-INPUT-PREPARE` v1.0.0 在原局部重绘提交前，将已冻结输入的 CPU Worker 融合/PNG 编码与唯一 GPU 法线捕获并行；效果图/深度捕获仍顺序，GPT 原流程不变。两分支全部结算后才返回，失败/取消清理成功分支生成的临时 URL，不提前释放提交锁。保留 2K、冻结相机、黑/蓝背景、蒙版并集/外扩/羽化/纯白填充、GPU/CPU/Worker 像素算法及保存导出协议；新增 Worker 各阶段耗时诊断。无资产/Schema 迁移，回滚恢复融合后采法线。测试验证并行启动、原结果身份、失败等待及取消清理；未宣称真实项目端到端提速幅度。本地修改，未部署。
+
 2026-09-22 M15（审计 M06/M08）：`SHADER-TEMPLATE-FORMAT` v1.4.2 将既有构建期 GLSL 空白压缩白名单扩展至 ProjectedLayerPreviewCompositor、projectedSelectionDisplay、projectedSelectionPreview。逐模块比较 JS 叶节点及 GLSL token/预处理指令，保留插值分隔、注释和换行保护规则，不修改公式、分辨率、QA、UI、CPU/Worker、持久化或导出协议；不提高包体预算。无数据迁移，回滚移除三个白名单入口及对应测试即可。
 
 2026-09-22 M06（协作 M07/M09）：`PROJECTION-RELIABLE-FOOTPRINT` v1.1.0 按用户确认将综合几何覆盖门槛从 0.98 放宽至 0.90，保留 minimumProjectionFacing、深度遮挡、背面保护及 surface-locked 重绘分支。单层/多层/compact array/预览合成/GPU UV 与 CPU loose fallback 共用阈值，作者 alpha/蒙版不变，Worker 沿用栅格结果。UV bake 协议 10、UV merge 13、内容修补投影缓存 v3 排除旧派生结果；既有合并 PNG 不重写，无 Project/Layer Schema 或资产迁移。回滚恢复阈值及缓存版本；刷新后普通投影重新计算，已合并贴图需从原投影图层重新合并才能体现新范围。本地修改，未推送或部署。

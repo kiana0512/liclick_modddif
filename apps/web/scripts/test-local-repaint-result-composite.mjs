@@ -131,7 +131,7 @@ assert.match(
 );
 assert.match(
   generatePanelSource,
-  /prepareLocalRepaintGenerationInput\(\{[\s\S]*currentEffectUrl: flatCurrentEffectUrl,[\s\S]*clayPreviewUrl,[\s\S]*authoredMaskUrl: currentPaintMaskDataUrl/,
+  /const preparationInput = \{[\s\S]*currentEffectUrl: flatCurrentEffectUrl,[\s\S]*clayPreviewUrl,[\s\S]*authoredMaskUrl: currentPaintMaskDataUrl/,
   'the input worker must receive the unchanged authored mask alongside aligned current and clay captures',
 );
 assert.match(
