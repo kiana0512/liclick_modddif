@@ -400,6 +400,18 @@ const previewProgressOverlayClassName =
   'gen-preview-progress';
 
 function GenerationProgressStatus({ generation }: { generation: Generation }) {
+  const [server, setServer] = useState<{ id: string; provider: unknown; label: string }>();
+  const provider = generation.metadata.provider;
+  useEffect(() => {
+    const controller = new AbortController();
+    void import('@/services/modelviewApiClient').then(async ({ getGenerationServerLabel }) => {
+      const label = await getGenerationServerLabel(provider, controller.signal);
+      if (!controller.signal.aborted) setServer({ id: generation.id, provider, label });
+    }).catch(() => {
+      if (!controller.signal.aborted) setServer({ id: generation.id, provider, label: '服务器信息暂不可用' });
+    });
+    return () => controller.abort();
+  }, [generation.id, provider]);
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
@@ -425,6 +437,9 @@ function GenerationProgressStatus({ generation }: { generation: Generation }) {
         : submitted ? '后台正在处理，完成后会自动返回' : '正在检查参考图并提交任务'}
       <span className="ml-2 tabular-nums text-white/62">
         {minutes}:{seconds}
+      </span>
+      <span className="block break-all text-xs font-normal text-white/62">
+        服务器：{server?.id === generation.id && server.provider === provider ? server.label : '正在确认'}
       </span>
     </div>
   );

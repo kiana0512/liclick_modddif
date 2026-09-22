@@ -45,6 +45,23 @@ await assert.rejects(captureLocalRepaintNormal(capture, camera, controller.signa
 assert.equal(calls, 4);
 
 const originalFetch = globalThis.fetch;
+const serverClient = load('../src/services/modelviewApiClient.ts', {
+  './workspaceApiBase': { getWorkspaceApiBase: () => '' },
+  './personalRepaintMode': { personalRepaintEnabled: false },
+  './workspaceApiClient': {},
+});
+globalThis.window = { setTimeout, clearTimeout };
+for (const [provider, path] of [['modelview-int8', 'status'], ['modelview-single-view', 'single-view/status'], ['modelview-single-view-inpaint', 'single-view-inpaint/status']]) {
+  globalThis.fetch = async url => {
+    assert.equal(url, `/api/modelview/${path}`);
+    return new Response(JSON.stringify({serviceUrl:'https://user:secret@compute.example:8443/run?token=private'}));
+  };
+  assert.equal(await serverClient.getGenerationServerLabel(provider), 'LI3D 后端 · compute.example:8443');
+}
+globalThis.fetch = async () => { throw new Error('offline'); };
+assert.equal(await serverClient.getGenerationServerLabel('modelview-int8'), 'LI3D 后端 · 服务器信息暂不可用');
+assert.equal(await serverClient.getGenerationServerLabel('liclick-atlas'), '莉刻服务 · 算力服务器未公开');
+assert.equal(await serverClient.getGenerationServerLabel(undefined), '服务器信息暂不可用');
 globalThis.window = { setTimeout, clearTimeout };
 let submitted;
 globalThis.fetch = async (url, options) => {
