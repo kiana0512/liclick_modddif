@@ -6690,20 +6690,25 @@ function beginLiveEraserPreview(
   root?: THREE.Object3D,
   displayArmed = true,
 ) {
-  // A local-repaint result is stored as a UV image. Its source image may still
-  // be decoding (or its registered live canvas may temporarily be the 1x1
-  // bootstrap surface). Publishing that canvas as a full UV replacement makes
-  // the whole model flash white while the pointer is down. UV edits are still
-  // committed at stroke end; only the unsafe transient replacement is skipped.
+  // ALG-ERASE-001 UV-ERASER-LIVE/1.0.0: wait for the full source before
+  // publishing a UV replacement; never display the 1x1 bootstrap canvas.
   if (layer.target === 'uv-image') {
-    endLiveEraserPreview(layer);
-    return false;
+    if (!layer.isReady) return false;
+    ensurePaintBackingCanvasInitialized(layer);
+    if (layer.paintCanvas.width < 2 || layer.paintCanvas.height < 2) return false;
+    if (!layer.liveEraserPreviewInitialized) {
+      layer.liveResultCanvas.width = layer.paintCanvas.width;
+      layer.liveResultCanvas.height = layer.paintCanvas.height;
+      layer.liveResultContext.drawImage(layer.paintCanvas, 0, 0);
+      layer.liveEraserPreviewInitialized = true;
+    }
   }
   // Projected layers use a separate all-white keep-mask that is multiplied
   // over the original projection mask in the shader.
   const width = layer.paintDefaultResolution;
   const height = width;
   if (
+    layer.target === 'projected-mask' &&
     !layer.eraserGpu &&
     (layer.liveResultCanvas.width !== width || layer.liveResultCanvas.height !== height)
   ) {
@@ -6863,6 +6868,7 @@ function endLiveEraserPreview(layer: UvPaintLayer, renderer?: THREE.WebGLRendere
     return;
   }
   clearLiveSurfacePaintPreview(layer.layerId, layer.liveResultUrl);
+  if (layer.target === 'uv-image') layer.liveEraserPreviewInitialized = false;
   layer.liveEraserDisplayArmed = false;
   layer.projectedEraserResidentHandoffs?.delete(layer);
   layer.resolveProjectedEraserResidentHandoff?.();
@@ -11890,7 +11896,7 @@ function SurfacePaintOverlay() {
         if (layer.eraserGpu && layer.liveEraserPreviewActive) {
           layer.eraserGpu.stamp(gpuStamp);
         } else if (layer.liveEraserPreviewActive) {
-          (layer.eraserGpuBacklog ??= []).push(gpuStamp);
+          if (layer.target === 'projected-mask') (layer.eraserGpuBacklog ??= []).push(gpuStamp);
           drawSurfaceBrushSegment(
             layer.liveResultContext,
             layer.liveResultTexture as THREE.CanvasTexture,
@@ -13680,13 +13686,17 @@ function SurfacePaintOverlay() {
                 preview.liveResultCanvas.width,
                 preview.liveResultCanvas.height,
               );
-              preview.liveResultContext.fillStyle = '#ffffff';
-              preview.liveResultContext.fillRect(
-                0,
-                0,
-                preview.liveResultCanvas.width,
-                preview.liveResultCanvas.height,
-              );
+              if (preview.target === 'uv-image') {
+                preview.liveResultContext.drawImage(layer.paintCanvas, 0, 0);
+              } else {
+                preview.liveResultContext.fillStyle = '#ffffff';
+                preview.liveResultContext.fillRect(
+                  0,
+                  0,
+                  preview.liveResultCanvas.width,
+                  preview.liveResultCanvas.height,
+                );
+              }
               markLiveProjectedCanvasTextureUpdated(preview.liveResultUrl);
               scheduleTextureUpdate(preview.liveResultTexture as THREE.CanvasTexture);
             }
