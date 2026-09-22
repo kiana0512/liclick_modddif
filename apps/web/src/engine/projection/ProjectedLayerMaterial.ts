@@ -5475,134 +5475,134 @@ const uvOverlayFragmentShader = `
     );
   }
 
-  uniform float showEmptyProjectionHatch;
-  uniform sampler2D uvBaseUnderlayMap;
-  uniform float uvBaseUnderlayOpacity;
-  uniform float uvOverlayBelowBase;
-  uniform float normalPreviewEnabled;
-  uniform float wirePreviewEnabled;
-  ${UV_OVERLAY_SAMPLE_GLSL}
-  vec3 computeUvEmptyPreviewColor() {
-    float stripe = step(0.5, fract((gl_FragCoord.x - gl_FragCoord.y) * 0.095));
-    vec3 hatchColor = mix(vec3(0.012), vec3(0.09), stripe * 0.62);
-    float displayHatch = step(0.5, showEmptyProjectionHatch) * (1.0 - step(1.5, showEmptyProjectionHatch));
-    return mix(baseColor, hatchColor, displayHatch);
-  }
+uniform float showEmptyProjectionHatch;
+uniform sampler2D uvBaseUnderlayMap;
+uniform float uvBaseUnderlayOpacity;
+uniform float uvOverlayBelowBase;
+uniform float normalPreviewEnabled;
+uniform float wirePreviewEnabled;
+${UV_OVERLAY_SAMPLE_GLSL}
+vec3 computeUvEmptyPreviewColor() {
+  float stripe = step(0.5, fract((gl_FragCoord.x - gl_FragCoord.y) * 0.095));
+  vec3 hatchColor = mix(vec3(0.012), vec3(0.09), stripe * 0.62);
+  float displayHatch = step(0.5, showEmptyProjectionHatch) * (1.0 - step(1.5, showEmptyProjectionHatch));
+  return mix(baseColor, hatchColor, displayHatch);
+}
 
-  void main() {
-    vec3 normal = normalize(vWorldNormal);
-    float hasAnyColor = max(
-      useBaseMap * step(0.0001, baseTextureOpacity),
-      max(
-        useUvOverlayMap * step(0.0001, uvOverlayOpacity),
-        useLiveUvOverlayMap * step(0.0001, liveUvOverlayOpacity)
-      )
-    );
-    if (normalPreviewEnabled > 0.5) {
-      gl_FragDepthEXT = gl_FragCoord.z;
-      gl_FragColor = vec4(normalize(mat3(viewMatrix) * normal) * 0.5 + 0.5, 1.0);
-      return;
-    }
-    if (wirePreviewEnabled > 0.5) {
-      gl_FragDepthEXT = gl_FragCoord.z;
-      gl_FragColor = vec4(clamp(baseColor * computeWhiteMembraneLight(normal), 0.0, 1.0), 1.0);
-      #include <tonemapping_fragment>
-      #include <colorspace_fragment>
-      return;
-    }
-    float lambert = mix(computeWhiteMembraneLight(normal), computePreviewLight(normal), hasAnyColor);
-    vec4 baseTexel = texture2D(baseMap, vUv);
-    float baseRenderedColor = texture2D(baseRenderedColorMaskMap, vUv).r * useBaseRenderedColorMaskMap;
-    vec4 overlayTexel = sampleUvOverlay(uvOverlayMap, vUv);
-    float overlayRenderedColor = max(
-      uvOverlayRenderedColor,
-      texture2D(uvOverlayRenderedColorMaskMap, vUv).r * useUvOverlayRenderedColorMaskMap
-    );
-    vec4 liveOverlayTexel = sampleUvOverlay(liveUvOverlayMap, vUv);
-    overlayTexel.rgb = applyHsvAdjustments(
-      overlayTexel.rgb,
-      uvOverlayHueShift,
-      uvOverlaySaturationShift,
-      uvOverlayLightnessShift
-    );
-    liveOverlayTexel.rgb = applyHsvAdjustments(
-      liveOverlayTexel.rgb,
-      liveUvOverlayHueShift,
-      liveUvOverlaySaturationShift,
-      liveUvOverlayLightnessShift
-    );
-
-
-    if (uvOverlayBelowBase > 0.5) {
-      float belowAlpha = overlayTexel.a * useUvOverlayMap * uvOverlayOpacity;
-      float a = baseTexel.a + belowAlpha * (1.0 - baseTexel.a);
-      baseTexel.rgb = (baseTexel.rgb * baseTexel.a + overlayTexel.rgb * belowAlpha *
-        (1.0 - baseTexel.a)) / max(a, 0.000001);
-      baseRenderedColor = (baseRenderedColor * baseTexel.a + overlayRenderedColor * belowAlpha *
-        (1.0 - baseTexel.a)) / max(a, 0.000001);
-      baseTexel.a = a;
-      overlayTexel.a = 0.0;
-    }
-    if (uvBaseUnderlayOpacity > 0.0) {
-      vec4 underlay = texture2D(uvBaseUnderlayMap, vUv);
-      float belowAlpha = underlay.a * uvBaseUnderlayOpacity;
-      float a = baseTexel.a + belowAlpha * (1.0 - baseTexel.a);
-      baseTexel.rgb = (baseTexel.rgb * baseTexel.a + underlay.rgb * belowAlpha *
-        (1.0 - baseTexel.a)) / max(a, 0.000001);
-      baseRenderedColor *= baseTexel.a / max(a, 0.000001);
-      baseTexel.a = a;
-    }
-    vec4 surfaceMaskTexel = texture2D(surfaceMaskMap, vec2(vUv.x, 1.0 - vUv.y));
-    float baseTextureAlpha = useBaseMap * baseTexel.a * baseTextureOpacity;
-    vec3 baseSurface = mix(baseColor, baseTexel.rgb, baseTextureAlpha);
-    float surfaceMask = mix(1.0, max(surfaceMaskTexel.r, max(surfaceMaskTexel.g, surfaceMaskTexel.b)), useSurfaceMaskMap);
-    baseSurface = mix(baseColor, baseSurface, surfaceMask);
-    vec3 uvPreviewBase = computeUvEmptyPreviewColor();
-    float overlayAlpha = overlayTexel.a * useUvOverlayMap * uvOverlayOpacity;
-    float liveOverlayAlpha = liveOverlayTexel.a * useLiveUvOverlayMap * liveUvOverlayOpacity;
-    float hasUvOverlay = max(
+void main() {
+  vec3 normal = normalize(vWorldNormal);
+  float hasAnyColor = max(
+    useBaseMap * step(0.0001, baseTextureOpacity),
+    max(
       useUvOverlayMap * step(0.0001, uvOverlayOpacity),
       useLiveUvOverlayMap * step(0.0001, liveUvOverlayOpacity)
-    );
-    vec3 surfaceColor = mix(baseSurface, uvPreviewBase, hasUvOverlay * showEmptyUvChecker);
-    float remainingTransparency = (1.0 - overlayAlpha) * (1.0 - liveOverlayAlpha);
-    float lighting = mix(lambert, 1.0, hasUvOverlay * showEmptyUvChecker * remainingTransparency * 0.45);
-    vec3 liveOverlayDisplayColor = liveOverlayTexel.rgb * mix(
-      lighting,
-      1.0 / max(previewExposure, 0.0001),
-      liveUvOverlayRenderedColor
-    );
-    float renderedColorExposureCompensation = 1.0 / max(previewExposure, 0.0001);
-    vec3 overlayPrelightColor = overlayTexel.rgb * mix(
-      1.0,
-      renderedColorExposureCompensation / max(lighting, 0.0001),
-      overlayRenderedColor
-    );
-    vec3 litBaseSurface = mix(
-      baseColor * lighting,
-      baseTexel.rgb * mix(lighting, renderedColorExposureCompensation, baseRenderedColor),
-      baseTextureAlpha
-    );
-    litBaseSurface = mix(baseColor * lighting, litBaseSurface, surfaceMask);
-    surfaceColor = mix(litBaseSurface, surfaceColor * lighting, showEmptyUvChecker * hasUvOverlay);
-    surfaceColor = mix(surfaceColor, overlayPrelightColor * lighting, overlayAlpha);
-    vec3 displayColor = mix(surfaceColor, liveOverlayDisplayColor, liveOverlayAlpha);
+    )
+  );
+  if (normalPreviewEnabled > 0.5) {
     gl_FragDepthEXT = gl_FragCoord.z;
-    float capturedCoverage = 1.0 - (1.0 - baseTextureAlpha * surfaceMask) *
-      (1.0 - overlayAlpha) * (1.0 - liveOverlayAlpha);
-
-
-
-    if (showEmptyUvChecker < 0.5 && hasAnyColor > 0.5 &&
-        showEmptyProjectionHatch > 0.5 && showEmptyProjectionHatch < 1.5) {
-      displayColor += (computeUvEmptyPreviewColor() - baseColor * lighting) * (1.0 - capturedCoverage);
-    }
-    float captureAlpha = showEmptyProjectionHatch > 1.5
-      ? step(${PROJECTION_RELIABILITY_CUTOFF.toFixed(2)}, capturedCoverage) : 1.0;
-    gl_FragColor = vec4(clamp(displayColor, 0.0, 1.0), captureAlpha);
+    gl_FragColor = vec4(normalize(mat3(viewMatrix) * normal) * 0.5 + 0.5, 1.0);
+    return;
+  }
+  if (wirePreviewEnabled > 0.5) {
+    gl_FragDepthEXT = gl_FragCoord.z;
+    gl_FragColor = vec4(clamp(baseColor * computeWhiteMembraneLight(normal), 0.0, 1.0), 1.0);
     #include <tonemapping_fragment>
     #include <colorspace_fragment>
+    return;
   }
+  float lambert = mix(computeWhiteMembraneLight(normal), computePreviewLight(normal), hasAnyColor);
+  vec4 baseTexel = texture2D(baseMap, vUv);
+  float baseRenderedColor = texture2D(baseRenderedColorMaskMap, vUv).r * useBaseRenderedColorMaskMap;
+  vec4 overlayTexel = sampleUvOverlay(uvOverlayMap, vUv);
+  float overlayRenderedColor = max(
+    uvOverlayRenderedColor,
+    texture2D(uvOverlayRenderedColorMaskMap, vUv).r * useUvOverlayRenderedColorMaskMap
+  );
+  vec4 liveOverlayTexel = sampleUvOverlay(liveUvOverlayMap, vUv);
+  overlayTexel.rgb = applyHsvAdjustments(
+    overlayTexel.rgb,
+    uvOverlayHueShift,
+    uvOverlaySaturationShift,
+    uvOverlayLightnessShift
+  );
+  liveOverlayTexel.rgb = applyHsvAdjustments(
+    liveOverlayTexel.rgb,
+    liveUvOverlayHueShift,
+    liveUvOverlaySaturationShift,
+    liveUvOverlayLightnessShift
+  );
+
+
+  if (uvOverlayBelowBase > 0.5) {
+    float belowAlpha = overlayTexel.a * useUvOverlayMap * uvOverlayOpacity;
+    float a = baseTexel.a + belowAlpha * (1.0 - baseTexel.a);
+    baseTexel.rgb = (baseTexel.rgb * baseTexel.a + overlayTexel.rgb * belowAlpha *
+      (1.0 - baseTexel.a)) / max(a, 0.000001);
+    baseRenderedColor = (baseRenderedColor * baseTexel.a + overlayRenderedColor * belowAlpha *
+      (1.0 - baseTexel.a)) / max(a, 0.000001);
+    baseTexel.a = a;
+    overlayTexel.a = 0.0;
+  }
+  if (uvBaseUnderlayOpacity > 0.0) {
+    vec4 underlay = texture2D(uvBaseUnderlayMap, vUv);
+    float belowAlpha = underlay.a * uvBaseUnderlayOpacity;
+    float a = baseTexel.a + belowAlpha * (1.0 - baseTexel.a);
+    baseTexel.rgb = (baseTexel.rgb * baseTexel.a + underlay.rgb * belowAlpha *
+      (1.0 - baseTexel.a)) / max(a, 0.000001);
+    baseRenderedColor *= baseTexel.a / max(a, 0.000001);
+    baseTexel.a = a;
+  }
+  vec4 surfaceMaskTexel = texture2D(surfaceMaskMap, vec2(vUv.x, 1.0 - vUv.y));
+  float baseTextureAlpha = useBaseMap * baseTexel.a * baseTextureOpacity;
+  vec3 baseSurface = mix(baseColor, baseTexel.rgb, baseTextureAlpha);
+  float surfaceMask = mix(1.0, max(surfaceMaskTexel.r, max(surfaceMaskTexel.g, surfaceMaskTexel.b)), useSurfaceMaskMap);
+  baseSurface = mix(baseColor, baseSurface, surfaceMask);
+  vec3 uvPreviewBase = computeUvEmptyPreviewColor();
+  float overlayAlpha = overlayTexel.a * useUvOverlayMap * uvOverlayOpacity;
+  float liveOverlayAlpha = liveOverlayTexel.a * useLiveUvOverlayMap * liveUvOverlayOpacity;
+  float hasUvOverlay = max(
+    useUvOverlayMap * step(0.0001, uvOverlayOpacity),
+    useLiveUvOverlayMap * step(0.0001, liveUvOverlayOpacity)
+  );
+  vec3 surfaceColor = mix(baseSurface, uvPreviewBase, hasUvOverlay * showEmptyUvChecker);
+  float remainingTransparency = (1.0 - overlayAlpha) * (1.0 - liveOverlayAlpha);
+  float lighting = mix(lambert, 1.0, hasUvOverlay * showEmptyUvChecker * remainingTransparency * 0.45);
+  vec3 liveOverlayDisplayColor = liveOverlayTexel.rgb * mix(
+    lighting,
+    1.0 / max(previewExposure, 0.0001),
+    liveUvOverlayRenderedColor
+  );
+  float renderedColorExposureCompensation = 1.0 / max(previewExposure, 0.0001);
+  vec3 overlayPrelightColor = overlayTexel.rgb * mix(
+    1.0,
+    renderedColorExposureCompensation / max(lighting, 0.0001),
+    overlayRenderedColor
+  );
+  vec3 litBaseSurface = mix(
+    baseColor * lighting,
+    baseTexel.rgb * mix(lighting, renderedColorExposureCompensation, baseRenderedColor),
+    baseTextureAlpha
+  );
+  litBaseSurface = mix(baseColor * lighting, litBaseSurface, surfaceMask);
+  surfaceColor = mix(litBaseSurface, surfaceColor * lighting, showEmptyUvChecker * hasUvOverlay);
+  surfaceColor = mix(surfaceColor, overlayPrelightColor * lighting, overlayAlpha);
+  vec3 displayColor = mix(surfaceColor, liveOverlayDisplayColor, liveOverlayAlpha);
+  gl_FragDepthEXT = gl_FragCoord.z;
+  float capturedCoverage = 1.0 - (1.0 - baseTextureAlpha * surfaceMask) *
+    (1.0 - overlayAlpha) * (1.0 - liveOverlayAlpha);
+
+
+
+  if (showEmptyUvChecker < 0.5 && hasAnyColor > 0.5 &&
+      showEmptyProjectionHatch > 0.5 && showEmptyProjectionHatch < 1.5) {
+    displayColor += (computeUvEmptyPreviewColor() - baseColor * lighting) * (1.0 - capturedCoverage);
+  }
+  float captureAlpha = showEmptyProjectionHatch > 1.5
+    ? step(${PROJECTION_RELIABILITY_CUTOFF.toFixed(2)}, capturedCoverage) : 1.0;
+  gl_FragColor = vec4(clamp(displayColor, 0.0, 1.0), captureAlpha);
+  #include <tonemapping_fragment>
+  #include <colorspace_fragment>
+}
 `;
 
 export type UvOverlayPreviewMaterialInput = {
