@@ -9,8 +9,8 @@ export const EMPTY_PROJECTION_COVERAGE_FEATHER_END = 0.12;
 export const EMPTY_PROJECTION_MAX_VISIBLE_ALPHA =
   Math.ceil(EMPTY_PROJECTION_COVERAGE_FEATHER_END * 255) - 1;
 
-// PROJECTION-RELIABLE-FOOTPRINT v1.0.0: harden geometric support, not authored masks.
-export const PROJECTION_RELIABILITY_CUTOFF = 0.98;
+// PROJECTION-RELIABLE-FOOTPRINT v1.1.0: broaden support without changing visibility gates.
+export const PROJECTION_RELIABILITY_CUTOFF = 0.90;
 export function reliableProjectionSupport(support) {
   return Number.isFinite(support) && support >= PROJECTION_RELIABILITY_CUTOFF ? 1 : 0;
 }
