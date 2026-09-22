@@ -3,6 +3,7 @@
 2026-09-22 M06（协作 M07/M09）：`PROJECTION-RELIABLE-FOOTPRINT` v1.1.0 按用户确认将综合几何覆盖门槛从 0.98 放宽至 0.90，保留 minimumProjectionFacing、深度遮挡、背面保护及 surface-locked 重绘分支。单层/多层/compact array/预览合成/GPU UV 与 CPU loose fallback 共用阈值，作者 alpha/蒙版不变，Worker 沿用栅格结果。UV bake 协议 10、UV merge 13、内容修补投影缓存 v3 排除旧派生结果；既有合并 PNG 不重写，无 Project/Layer Schema 或资产迁移。回滚恢复阈值及缓存版本；刷新后普通投影重新计算，已合并贴图需从原投影图层重新合并才能体现新范围。本地修改，未推送或部署。
 
 2026-09-21 M08：`ERASER-FEATHER` v2 将橡皮擦同步为实心中心与线性外圈，实心半径为 1-min(0.9,feather)，最大羽化仍保留 10% 中心。擦除保持完整光标半径，不套用彩色局部重绘的 3px 内缩或最小 16px 过渡。UvRepaint 原生彩色图层及普通 UV/投影蒙版 GPU 擦除共用线性公式；Canvas 笔刷缓存区分线性橡皮与原选区曲线，预热/实时/历史提交沿用同一擦除像素。画蒙版、普通画笔、颜色重绘、远端输入、CPU/Worker 合成和导出公式不变，不重写已有资产，无迁移。回滚恢复橡皮 smoothstep 与 Canvas 旧渐变。浏览器测试覆盖 2K/4K、最大羽化中心、线性外圈、撤销及保存。
+2026-09-21 UI-05/UI-06 → M03/M08：`ALG-CAP-006` v1.0.1 将共享 renderer/背景快照限制在每次同步 GPU 提交段，逐 tile/pass 重新取得当前状态，恢复幂等，避免异步完成覆盖 resize。`INPAINT-PROJECTION-TEXTURE-SIZE` v1.0.0 在蒙版 canvas 改变尺寸或历史恢复时释放旧 WebGL2 不可变纹理分配，沿用原上传重新分配，修复落点偏移/上传失败。像素公式、相机、完整分辨率、QA、CPU/Worker/shader、UV/export 与 Schema/资产不变，无迁移。真实 Edge 旧实现约 82px/51px 偏移，修复后三路径小于 1px；回归及回滚见 [截图与蒙版对齐](changes/CHG-20260921-CAPTURE-RESIZE-MASK-ALIGNMENT.md)。
 
 2026-09-21 UI-05 / M04（M03）：`MULTIVIEW-PRESETS` v1.2.1 按用户确认将默认预设 1 八向俯角由 15° 改为 30°，方向 y=水平长度×tan(30°) 后归一化。方位角、底方向 (0,-1,0)、九视角顺序、GPT 2+4+3 分批、ModelView 串行和预设 2/自定义不变；既有结果/相机数据不重写、无迁移，刷新加载新预设。回滚恢复默认俯角及描述为 15°。回归覆盖 30° 单位方向、方位不变、正底和分组。
 
@@ -27,6 +28,21 @@
 2026-09-21 M08（审计 M06/M07/M11）：`ALG-LR-UV-PAINT` v3.0.0 将原生 UV 局部重绘彩色笔迹改为实心中心加线性外圈羽化；保留羽化比例与 3px@2K 退让，过渡宽度上限为有效半径的 90%，保证至少 10% 实心半径。橡皮/选区仍走原 smoothstep，未修改旧资产或生成蒙版。GPU 输出 RGBA 直接用于显示、历史、PNG、CPU/Worker 合成及导出，无二次羽化或 Schema 迁移。批准、公式、验证与回退见 [线性外圈羽化](changes/CHG-20260921-REPAINT-LINEAR-FEATHER.md)。本地修改，未推送或部署。
 
 2026-09-21 M08（审计 M06/M07/M11）：`ALG-LR-UV-PAINT` v2.0.0 补齐原生 UV 手动彩色笔迹内缩：按实际屏幕笔段解析距离，2K 视口参考退让 3px、向内至少 16px 过渡并保留较大用户羽化，小笔刷限制宽度；既有 max-alpha 累计，不做全局 UV 岛腐蚀，不以生成蒙版限制手动绘制。橡皮/mask-only 不变，GPU 实时与历史/PNG/合并/export 共用已处理 RGBA，不新增 GPU pass、RT 或逐笔全图读回。无 Schema/资产迁移，旧笔迹不重写；ADR、批准、矩阵与回退见 [实际笔迹内缩](changes/CHG-20260921-UV-REPAINT-STROKE-INWARD.md)。本地验证，未推送或部署，真实座垫黑边仍需发布后复核。
+2026-09-21 M08 / M15：个人 AutoDL 接口切换用户指定 li3d-8-2，版本 `autodl-li3d-8-2-768-2step-20260921-v1`；精确恢复提示词节点 Ready 序列化异常，修正后实际参数与 li3d-8 相同。复测热运行 2.333s、新文件名四图 2.783s，接口返图 2048×2048。网页仍通过 LI3D 后端，此次不修改其上游；无图像算法或 Schema 迁移。细分计时、边界及回滚见 [li3d-8-2 记录](changes/CHG-20260921-LI3D82-SWITCH.md)。
+
+2026-09-21 M08：按用户要求先将个人直连当前版本本地提交为 159cb1f（未推送），再关闭 personalRepaintEnabled，所有入口恢复 LI3D 后端 /api/modelview/inpaint；旧 URL 参数不再启用直连。仅调用路径恢复，输入/GPU/CPU/Worker/shader/回贴/persistence/export 语义不变，无 Schema 迁移。详见 [个人直连记录中的切回说明](changes/CHG-20260921-AUTODL-DIRECT-REPAINT.md)。
+
+2026-09-21 M08 / M15：按用户指定将个人 AutoDL 接口切换为 li3d-8（768 推理、2 步、单 LoRA 0.8，输出保留原尺寸），更新四图节点映射与远端版本；修复源文件提示词缓存节点旧字段错位。原组图片实测重复输入 2.341s、新文件名输入 2.728s；接口实际执行 2.711s，2K PNG 校验通过。无前端图像算法/Schema 变更，旧生成保留；参数差异、原始数据与成组回滚见 [li3d-8 切换记录](changes/CHG-20260921-LI3D8-SWITCH.md)。
+
+2026-09-21 M08 / M15：AUTODL-DIRECT-REPAINT-STATUS/1.0.0 将个人服务等待与 ComfyUI 排队显示为“排队中”，以本任务进入 queue_running 为执行依据，按钮/预览同步上传、排队、执行和返图状态。工作流、图像算法、QA、Command/CAS/export 不变，无历史迁移；验证与回滚见 [个人直连变更卡](changes/CHG-20260921-AUTODL-DIRECT-REPAINT.md)。
+
+2026-09-21 M08：个人 AutoDL 节点级诊断，使用同组四图对比未命中节点缓存、重复输入、新文件名输入及追加采样进度；未修改运行算法或服务。执行实测 13.324 / 7.190 / 8.101 秒，追加缓存状态变化样本 15.077 秒亦保留，不以单步进度代替总耗时。原始数据、事件区间口径及限制见 [节点耗时报告](changes/CHG-20260921-AUTODL-NODE-TIMING.md)。无 Schema 或迁移变更。
+
+2026-09-21 M08 / M15：个人直连上传优化 AUTODL-DIRECT-REPAINT-UPLOAD/1.0.0，gzip 原请求字节与多视图参考内容缓存；仅缓存明确失效且尚未入队时补传，保持原幂等性、鉴权、解压体积上限及完整图片。无图像算法/Schema 迁移。固定输入交错 3 轮对照，命中缓存请求体减少 52.4%，含压缩准备的上传往返中位 1712.2→838.4ms；测试边界、原始数据与回滚见 [个人直连变更卡](changes/CHG-20260921-AUTODL-DIRECT-REPAINT.md)。
+
+2026-09-21 M08 / M15：个人直连新增可选诊断 AUTODL-DIRECT-REPAINT-TIMING/1.0.0，独立记录请求准备、POST 往返、云端排队/执行/完成发现、PNG 下载、结果处理；计时落盘到原任务与 Generation metadata，旧记录兼容，无图像算法或 Schema 迁移。真实 2K 样本及嵌套计时边界见 [个人直连变更卡](changes/CHG-20260921-AUTODL-DIRECT-REPAINT.md)。
+
+2026-09-21 M08（协作 M04/M13/M15）：新增用户明确授权的个人 AutoDL 直连试用，`AUTODL-DIRECT-REPAINT/1.0.0`。仅个人构建与 `personalRepaint=1` 同时启用时，四图生图直达指定 AutoDL HTTPS 受限接口，采用用户确认的云端 True-V3 Q5_K/2 步工作流；不经 LI3D 生图代理，不调用网站润色或自动参考生成。默认正式构建编译移除此入口；工程保存仍走 Cloud verified assets / Command / CAS / ownership。AutoDL 管理 Token 与 SSH 凭据不进入浏览器，个人访问码不写工程或 Git。GPU/CPU/Worker/shader、原选区/回贴/UV/export 保持，无历史迁移。实现、验证边界及回滚见 [个人直连变更卡](changes/CHG-20260921-AUTODL-DIRECT-REPAINT.md)。用户批准后已启动云端接口；真实 HTTPS 鉴权、浏览器四图生成、2K 返图、模型回贴及撤销像素一致性验收通过。仅本机个人入口已提供，正式站未部署，实例重启自启动和多用户运行不在本次验收范围。
 
 2026-09-21 UI-04 / M02：高面数导入减面确认框仅说明细节丢失、轮廓变化和贴图拉伸/错位风险，并提示用户可取消、自行手动减至 150 万三角面以内确认效果后重传；不再描述实现步骤。纯文案 Patch，IMPORT-DECIMATE 算法、阈值、独立 UV 确认、取消/失败和原文件保护行为均不变，无 Schema 或资产迁移；回滚仅恢复文案。浏览器回归同步新提示断言。
 
@@ -1225,7 +1241,7 @@ Bake 设置包含 resolution、frontal/rear distance、distance/cage、cage infl
 | `ALG-CAP-007` 生成取景 | v1.2.0；GPT 固定方图、98% 长边占比；ModelView 保持原拟合；捕获与回贴共用相机，保守回退不裁模型 |
 | `GPT-ALPHA-PREVIEW-CROP` | v1.0.0；仅透明结果预览副本，轮廓外扩 8px，原图/下载/回贴不变 |
 | `LOCAL-REPAINT-BRUSH-DEFAULT` | v1.1.0；视口和独立画布初始大小 30，用户后续调整不覆盖 |
-| `ALG-CAP-006` 捕获状态隔离 v1.0.0 | 首次及逐 tile/pass 的 await 前归还共享 renderer/背景；每个同步 draw 重绑捕获 target/clear，保留像素与分辨率 |
+| `ALG-CAP-006` 捕获状态隔离 v1.0.1 | 每个同步提交段取得当前 renderer/背景并幂等归还，跨 await 不重放旧 viewport/scissor；保留像素与分辨率 |
 | `CAPTURE-MATERIAL-ISOLATION` v1.0.0 | flat 材质/uniforms 仅在每个同步 tile draw 内借用，逐 tile 恢复；材质身份变化拒绝混合截图，已有纹理在 clay 展示前冻结 |
 | `ALG-GEN-001` 单视图生成 | `1.3.0`；当前相机 Capture + 材质参考 → Generation；GPT 初始白模与已有贴图补全共用图一几何锁定/图二材质参考的局部弱光影模板；GPT 局部重绘现独立使用 `GPT-REPAINT-NORMAL` v1.0.0。结果按既有 Alpha 策略与独立 capture mask/depth 创建投影图层 |
 | `ALG-GEN-002` 多视图批次 | `1.3.0`；N 个捕获共享 batch；GPT 与单视图共用局部弱光影材质补全模板；完成层串行 commit，整批结束一次发布新投影栈 |

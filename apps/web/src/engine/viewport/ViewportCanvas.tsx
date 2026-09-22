@@ -6575,6 +6575,15 @@ function createDirtyRect(
   return { x, y, width: Math.max(1, right - x), height: Math.max(1, bottom - y) };
 }
 
+function setProjectionCanvasSize(layer: UvPaintLayer, width: number, height: number) {
+  // WebGL2 storage is immutable: resizing only the source canvas offsets a
+  // smaller mask inside the old allocation, or rejects a larger upload.
+  if (layer.projectionCanvas.width !== width || layer.projectionCanvas.height !== height)
+    layer.projectionTexture.dispose();
+  layer.projectionCanvas.width = width;
+  layer.projectionCanvas.height = height;
+}
+
 function resizeProjectionCanvas(layer: UvPaintLayer, aspect: number, clear = true) {
   const safeAspect = Number.isFinite(aspect) && aspect > 0 ? aspect : 1;
   const width =
@@ -6592,12 +6601,10 @@ function resizeProjectionCanvas(layer: UvPaintLayer, aspect: number, clear = tru
     previous.width = layer.projectionCanvas.width;
     previous.height = layer.projectionCanvas.height;
     previous.getContext('2d')?.drawImage(layer.projectionCanvas, 0, 0);
-    layer.projectionCanvas.width = width;
-    layer.projectionCanvas.height = height;
+    setProjectionCanvasSize(layer, width, height);
     layer.projectionContext.drawImage(previous, 0, 0, width, height);
   } else if (sizeChanged) {
-    layer.projectionCanvas.width = width;
-    layer.projectionCanvas.height = height;
+    setProjectionCanvasSize(layer, width, height);
   }
   if (clear) layer.projectionContext.clearRect(0, 0, width, height);
 }
@@ -9502,8 +9509,7 @@ function SurfacePaintOverlay() {
       layer.currentProjectionMeshes.clear();
       const pending = state.pendingProjection;
       if (pending) {
-        layer.projectionCanvas.width = pending.canvas.width;
-        layer.projectionCanvas.height = pending.canvas.height;
+        setProjectionCanvasSize(layer, pending.canvas.width, pending.canvas.height);
         layer.projectionContext.drawImage(pending.canvas, 0, 0);
         layer.maskProjectorMatrix.copy(pending.projectorMatrix);
         layer.maskProjectorObjectMatrix.copy(pending.projectorObjectMatrix);

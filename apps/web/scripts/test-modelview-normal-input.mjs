@@ -54,6 +54,7 @@ globalThis.fetch = async (url, options) => {
 try {
   const { createModelviewApiClient } = load('../src/services/modelviewApiClient.ts', {
     './workspaceApiBase': { getWorkspaceApiBase: () => '' },
+    './personalRepaintMode': load('../src/services/personalRepaintMode.ts', {}),
     './workspaceApiClient': { urlToDataUrl: async url => `data:${url}` },
   });
   const input = { clientGenerationId: 'job', projectId: 'project',
