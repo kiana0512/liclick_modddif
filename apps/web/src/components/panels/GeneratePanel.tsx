@@ -1,4 +1,5 @@
 import { captureLocalRepaintNormal } from '@/engine/localRepaint/captureLocalRepaintNormal';
+import { GenerationServerStatus } from './GenerationServerStatus';
 import { personalRepaintEnabled } from '@/services/personalRepaintMode';
 import { sameGenerationRecovery } from '@/services/generationRecoveryComparison';
 import {
@@ -426,6 +427,7 @@ function GenerationProgressStatus({ generation }: { generation: Generation }) {
       <span className="ml-2 tabular-nums text-white/62">
         {minutes}:{seconds}
       </span>
+      <GenerationServerStatus generation={generation} />
     </div>
   );
 }
@@ -4089,13 +4091,25 @@ export function GeneratePanel({
           startedAt: current?.startedAt ?? Date.now(),
           detail: '正在融合当前效果与蒙版预览',
         }));
-        preparedGenerationInput = await prepareLocalRepaintGenerationInput({
+        const preparationInput = {
           gptGuide: isGptLocalRepaint,
           currentEffectUrl: flatCurrentEffectUrl,
           clayPreviewUrl,
           authoredMaskUrl: currentPaintMaskDataUrl,
           coverageDepthUrl: isGptLocalRepaint ? undefined : capture.depthUrl,
-        });
+        };
+        if (isGptLocalRepaint) {
+          preparedGenerationInput = await prepareLocalRepaintGenerationInput(preparationInput);
+        } else {
+          const { prepareRepaintInputs } = await import('@/engine/localRepaint/prepareRepaintInputs');
+          const prepared = await prepareRepaintInputs(preparationInput,
+            () => captureLocalRepaintNormal(capture, captureCameraSnapshot, requestAbortController!.signal, normalBackground),
+            requestAbortController.signal);
+          capture = prepared.capture;
+          preparedGenerationInput = prepared.prepared;
+        }
+        document.body.dataset.localRepaintButton2InputWorkerMs = preparedGenerationInput.processMs.toFixed(1);
+        document.body.dataset.localRepaintButton2InputPhases = JSON.stringify(preparedGenerationInput.phaseDurationsMs);
         currentPaintMaskDataUrl = preparedGenerationInput.selectionMaskUrl ?? currentPaintMaskDataUrl;
       } finally {
         revokeRegisteredObjectUrl(clayPreviewUrl);
@@ -4103,17 +4117,10 @@ export function GeneratePanel({
       capture = {
         ...capture,
         colorUrl: preparedGenerationInput.compositeUrl,
-        // Capture/paintback keeps the unexpanded selection union. The expanded mask is
-        // a remote-sampling input only and must never become the interactive
-        // local-repaint brush authorization mask.
+        // Capture/paintback keeps the selection union, independently of the
+        // remote sampling mask. Neither limits manual repaint brush coverage.
         maskUrl: currentPaintMaskDataUrl,
       };
-      if (!isGptLocalRepaint) {
-        capture = await captureLocalRepaintNormal(
-          capture, captureCameraSnapshot, requestAbortController.signal,
-          normalBackground,
-        );
-      }
       useProjectStore.getState().addCapture(capture);
       document.body.dataset.localRepaintButton2ViewCaptureMs = (
         performance.now() - viewCaptureStartedAt

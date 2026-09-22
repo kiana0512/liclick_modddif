@@ -50,7 +50,7 @@ assert.match(
 assert.match(panel, /mask: \{ path: `\$\{generationId\}-mask\.png`, dataUrl: maskDataUrl \}/);
 assert.match(panel, /const \[currentEffectDataUrl, materialReferenceDataUrl, maskDataUrl, normalDataUrl\]/);
 assert.match(panel, /prompt: effectivePrompt/);
-assert.match(panel, /prepareLocalRepaintGenerationInput\(\{/);
+assert.match(panel, /prepareLocalRepaintGenerationInput\(preparationInput\)/);
 assert.match(panel, /currentEffectUrl: flatCurrentEffectUrl/);
 assert.match(panel, /clayPreviewUrl/);
 assert.match(panel, /authoredMaskUrl: currentPaintMaskDataUrl/);

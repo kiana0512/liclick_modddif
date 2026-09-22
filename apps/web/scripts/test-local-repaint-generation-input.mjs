@@ -299,7 +299,7 @@ if (process.env.LICLICK_BENCHMARK_MASK_PNG === '1') {
 
 assert.match(
   panelSource,
-  /prepareLocalRepaintGenerationInput\(\{[\s\S]*?currentEffectUrl: flatCurrentEffectUrl,[\s\S]*?clayPreviewUrl,[\s\S]*?authoredMaskUrl: currentPaintMaskDataUrl/,
+  /const preparationInput = \{[\s\S]*?currentEffectUrl: flatCurrentEffectUrl,[\s\S]*?clayPreviewUrl,[\s\S]*?authoredMaskUrl: currentPaintMaskDataUrl/,
   'Repaint input must use the frozen authored effect and original mask; clay is optional for GPT only.',
 );
 assert.match(
@@ -310,7 +310,7 @@ assert.match(
 assert.match(
   panelSource,
   /urlToDataUrl\(preparedGenerationInput\.submittedMaskUrl\)/,
-  'Only ModelView should receive the expanded/feathered mask.',
+  'ModelView should receive the prepared sampling mask.',
 );
 assert.match(
   panelSource,
@@ -395,11 +395,14 @@ for (let i = 0; i < w * h; i++) {
     'Selected pixels are opaque white; every protected pixel stays byte-identical');
 }
 const radius = workerRuntime.result.dilationRadius, feather = workerRuntime.result.featherRadius;
+assert.equal(radius, 0, 'Local repaint does not expand the sampling mask');
+assert.equal(feather, 0, 'No outward blur may reintroduce a margin');
 const expectedMask = boxBlur(dilateMask(core, w, h, radius, bounds), w, h, feather,
   { minX: Math.max(0,bounds.minX-radius), minY: Math.max(0,bounds.minY-radius), maxX: Math.min(w-1,bounds.maxX+radius), maxY: Math.min(h-1,bounds.maxY+radius) });
 for (let i = 0; i < expectedMask.length; i++) {
   const expected = core[i] ? 255 : expectedMask[i];
-  assert.deepEqual([...submitted.subarray(i*4,i*4+4)], [expected,expected,expected,255], 'Existing dilated/feathered RGB mask unchanged');
+  assert.equal(expected, core[i] ? 255 : 0, 'No submitted coverage outside the effective selection');
+  assert.deepEqual([...submitted.subarray(i*4,i*4+4)], [expected,expected,expected,255], 'Local sampling mask follows selection without expansion');
 }
 assert.equal(closed, 2, 'Both transferred bitmaps are released');
 await workerRuntime.onmessage({ data: { id: 2, mode: 'local', currentEffect: bitmap(original), inputMask: bitmap(new Uint8ClampedArray(selection.length)) } });
@@ -489,4 +492,4 @@ const runEnabled = () => new Function(...Object.keys(enabledScope), `return (asy
 assert.equal(await runEnabled(), 'polished repair');
 assert.equal(await runEnabled(), 'polished repair');
 assert.equal(polishCalls, 1, 'Explicit enable runs Qwen once; same frozen input reuses the new-policy cache');
-console.log('Local repaint: pure white pixels, unchanged mask expansion, no clay input, default-off prompt/cache/network and existing morphology tests passed.');
+console.log('Local repaint: pure white pixels, zero extra mask expansion, no clay input, default-off prompt/cache/network and existing morphology tests passed.');

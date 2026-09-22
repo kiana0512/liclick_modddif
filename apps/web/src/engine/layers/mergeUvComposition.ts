@@ -8,7 +8,7 @@ import { compareUvLayersForComposition } from './uvLayerComposition';
  * trusted to match the live layer stack. Version 12 also includes ordinary
  * user-created UV paint layers; their UUID/name is not a repaint discriminator.
  */
-export const UV_MERGE_COMPOSITION_VERSION = 12;
+export const UV_MERGE_COMPOSITION_VERSION = 13;
 
 export function compositeRenderedColorMaskUnderInPlace(
   frontMask: Uint8Array,

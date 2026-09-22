@@ -1,6 +1,18 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
+2026-09-22 M15 发布集成：`BUILD-STRING-POOL` v1 仅在构建 chunk 内复用重复的长字符串值（至少 64 字符），AST 限定值位置，不修改文本内容、属性名、模块路径、指令或业务公式，无运行时解压/跨包依赖。服务器来源显示抽为同包组件，生命周期不变；旧并行准备源码断言同步。保留现有压缩参数/预算，实测总 JS 3,258,492/3,262,000，编辑器 497,785/499,624 bytes。等价性测试覆盖 Unicode/转义/属性及生产压缩；无数据迁移，回滚移除构建插件并恢复组件内联。
+
+2026-09-22 M08/M04：`LOCAL-REPAINT-SAMPLING-MASK` v2 取消原局部重绘提交蒙版的额外外扩及向外模糊，dilationRadius/featherRadius 均为 0，元数据同步；有效选区并集、白色填充、可见面裁切及历史兼容的核心选区处理不变。仅 local Worker 分支改变，单/多视图补全保留原半径公式，GPT 原本不额外外扩，画笔/橡皮羽化、回贴 GPU/CPU/Worker、保存导出不变。无资产迁移，旧请求不重写；回滚恢复 local 半径公式。测试检查 local 半径为零及选区外提交像素为零。本地修改，未部署。
+
+2026-09-22 M08（协作 M03/M04）：`REPAINT-INPUT-PREPARE` v1.0.0 在原局部重绘提交前，将已冻结输入的 CPU Worker 融合/PNG 编码与唯一 GPU 法线捕获并行；效果图/深度捕获仍顺序，GPT 原流程不变。两分支全部结算后才返回，失败/取消清理成功分支生成的临时 URL，不提前释放提交锁。保留 2K、冻结相机、黑/蓝背景、蒙版并集/外扩/羽化/纯白填充、GPU/CPU/Worker 像素算法及保存导出协议；新增 Worker 各阶段耗时诊断。无资产/Schema 迁移，回滚恢复融合后采法线。测试验证并行启动、原结果身份、失败等待及取消清理；未宣称真实项目端到端提速幅度。本地修改，未部署。
+
+2026-09-22 M15（审计 M06/M08）：`SHADER-TEMPLATE-FORMAT` v1.4.2 将既有构建期 GLSL 空白压缩白名单扩展至 ProjectedLayerPreviewCompositor、projectedSelectionDisplay、projectedSelectionPreview。逐模块比较 JS 叶节点及 GLSL token/预处理指令，保留插值分隔、注释和换行保护规则，不修改公式、分辨率、QA、UI、CPU/Worker、持久化或导出协议；不提高包体预算。无数据迁移，回滚移除三个白名单入口及对应测试即可。
+
+2026-09-22 M06（协作 M07/M09）：`PROJECTION-RELIABLE-FOOTPRINT` v1.1.0 按用户确认将综合几何覆盖门槛从 0.98 放宽至 0.90，保留 minimumProjectionFacing、深度遮挡、背面保护及 surface-locked 重绘分支。单层/多层/compact array/预览合成/GPU UV 与 CPU loose fallback 共用阈值，作者 alpha/蒙版不变，Worker 沿用栅格结果。UV bake 协议 10、UV merge 13、内容修补投影缓存 v3 排除旧派生结果；既有合并 PNG 不重写，无 Project/Layer Schema 或资产迁移。回滚恢复阈值及缓存版本；刷新后普通投影重新计算，已合并贴图需从原投影图层重新合并才能体现新范围。本地修改，未推送或部署。
+
 2026-09-22 M04/M15 发布集成：合并 master e04c3f38 后 JS 实测 3,260,798、编辑器 499,080 bytes；有界增加总预算 5,500、编辑器 600 bytes，保留 256-byte 余量及其他质量门禁。两处测试全局引用修正；无业务/Schema 变化。详见 [可见缺口合并发布记录](changes/CHG-20260922-LOCAL-REPAINT-VISIBLE-GAPS.md)。
+
+2026-09-22 M04 / M08 / M15：GENERATION-SERVER-DISPLAY/1.0.0 在生图进度中显示服务来源，ModelView 三入口分别查询已有鉴权 status 接口，仅展示配置 URL 的 host；个人任务显示实例标识，莉刻任务注明算力节点未公开，失败显示信息不可用。查询不阻断生图，切换任务取消旧查询；无图像算法、Schema、Command/CAS/export 变化，无迁移，回滚展示组件及查询函数即可。
 
 2026-09-21 M08：`ERASER-FEATHER` v2 将橡皮擦同步为实心中心与线性外圈，实心半径为 1-min(0.9,feather)，最大羽化仍保留 10% 中心。擦除保持完整光标半径，不套用彩色局部重绘的 3px 内缩或最小 16px 过渡。UvRepaint 原生彩色图层及普通 UV/投影蒙版 GPU 擦除共用线性公式；Canvas 笔刷缓存区分线性橡皮与原选区曲线，预热/实时/历史提交沿用同一擦除像素。画蒙版、普通画笔、颜色重绘、远端输入、CPU/Worker 合成和导出公式不变，不重写已有资产，无迁移。回滚恢复橡皮 smoothstep 与 Canvas 旧渐变。浏览器测试覆盖 2K/4K、最大羽化中心、线性外圈、撤销及保存。
 2026-09-21 UI-05/UI-06 → M03/M08：`ALG-CAP-006` v1.0.1 将共享 renderer/背景快照限制在每次同步 GPU 提交段，逐 tile/pass 重新取得当前状态，恢复幂等，避免异步完成覆盖 resize。`INPAINT-PROJECTION-TEXTURE-SIZE` v1.0.0 在蒙版 canvas 改变尺寸或历史恢复时释放旧 WebGL2 不可变纹理分配，沿用原上传重新分配，修复落点偏移/上传失败。像素公式、相机、完整分辨率、QA、CPU/Worker/shader、UV/export 与 Schema/资产不变，无迁移。真实 Edge 旧实现约 82px/51px 偏移，修复后三路径小于 1px；回归及回滚见 [截图与蒙版对齐](changes/CHG-20260921-CAPTURE-RESIZE-MASK-ALIGNMENT.md)。

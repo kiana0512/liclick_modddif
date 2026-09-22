@@ -95,6 +95,9 @@ function verifyShaderOnly(node) {
 }
 verifyShaderOnly(compositorAst);
 const additionalShaderFiles = [
+  '../src/engine/projection/ProjectedLayerPreviewCompositor.ts',
+  '../src/engine/localRepaint/projectedSelectionDisplay.ts',
+  '../src/engine/localRepaint/projectedSelectionPreview.ts',
   '../src/engine/bake/residentQualityComposite.ts',
   '../src/engine/projection/createRuntimeProjectionDepth.ts',
   '../src/engine/capture/captureDepth.ts',
@@ -127,7 +130,8 @@ for (const relativeFile of additionalShaderFiles) {
       }
       assert.ok(
         /(?:void main|#include|uniform|varying|precision|gl_|texture2D|texelFetch)/.test(node.getText(ast)) ||
-          /(?:Shader|shader|material|vertexAssignment|fragmentBlend)/.test(owners.join(' ')),
+          /(?:Shader|shader|material|vertexAssignment|fragmentBlend)/.test(owners.join(' ')) ||
+          (relativeFile.endsWith('/projectedSelectionDisplay.ts') && owners.includes('depthFunctions')),
         `Only GLSL templates may be compacted: ${owners.join(' ')}`,
       );
     }
@@ -157,10 +161,6 @@ for (const code of [repaintSource, compact(repaintSource)]) {
   assert.match(shader, /void\s+main\s*\(\)\s*\{\s*paintSourceVertex\s*\(/, 'The UV paint entry must invoke the frozen source projection after production formatting');
   assert.equal((shader.match(/void\s+main\s*\(/g) ?? []).length, 1);
 }
-assert.equal(
-  plugin.transform(compositorSource, new URL('../src/engine/projection/ProjectedLayerPreviewCompositor.ts', import.meta.url).pathname),
-  undefined,
-);
 stdout.write(`Shader formatting preserves actual module tokens and GLSL line boundaries; removes ${saved + additionalSaved} source bytes.\n`);
 
 // Independently tokenize GLSL, including compound operators and numeric

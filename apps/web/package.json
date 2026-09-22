@@ -4,6 +4,7 @@
   "version": "0.1.3",
   "type": "module",
   "scripts": {
+    "test:string-pool": "node scripts/test-string-pool.mjs",
     "test:camera-projection-switch": "node scripts/test-camera-projection-switch.mjs",
     "check:camera-projection-switch-browser": "node scripts/run-camera-projection-switch-browser.mjs",
     "test:uv-live-bitmap-lifecycle": "node scripts/test-uv-live-bitmap-lifecycle.mjs",
