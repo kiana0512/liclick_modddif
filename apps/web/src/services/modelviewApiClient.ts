@@ -95,6 +95,23 @@ async function requestJson<T>(
   }
 }
 
+export async function getGenerationServerLabel(provider: unknown, signal?: AbortSignal): Promise<string> {
+  if (provider === 'autodl-personal') return 'AutoDL · pro-78993043bdb0';
+  const routes: Record<string, string> = {
+    'modelview-int8': 'status',
+    'modelview-single-view': 'single-view/status',
+    'modelview-single-view-inpaint': 'single-view-inpaint/status',
+  };
+  const route = typeof provider === 'string' ? routes[provider] : undefined;
+  if (!route) return provider === 'liclick-atlas' ? '莉刻服务 · 算力服务器未公开' : '服务器信息暂不可用';
+  try {
+    const status = await requestJson<{ serviceUrl: string }>(`/api/modelview/${route}`, { signal, timeoutMs: 10000 });
+    return `LI3D 后端 · ${new URL(status.serviceUrl).host}`;
+  } catch {
+    return 'LI3D 后端 · 服务器信息暂不可用';
+  }
+}
+
 function toGeneration(
   input: ModelviewGenerationInput,
   result: ModelviewResponse,

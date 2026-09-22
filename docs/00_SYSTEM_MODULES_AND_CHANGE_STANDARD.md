@@ -6,6 +6,8 @@
 
 2026-09-22 M04/M15 发布集成：合并 master e04c3f38 后 JS 实测 3,260,798、编辑器 499,080 bytes；有界增加总预算 5,500、编辑器 600 bytes，保留 256-byte 余量及其他质量门禁。两处测试全局引用修正；无业务/Schema 变化。详见 [可见缺口合并发布记录](changes/CHG-20260922-LOCAL-REPAINT-VISIBLE-GAPS.md)。
 
+2026-09-22 M04 / M08 / M15：GENERATION-SERVER-DISPLAY/1.0.0 在生图进度中显示服务来源，ModelView 三入口分别查询已有鉴权 status 接口，仅展示配置 URL 的 host；个人任务显示实例标识，莉刻任务注明算力节点未公开，失败显示信息不可用。查询不阻断生图，切换任务取消旧查询；无图像算法、Schema、Command/CAS/export 变化，无迁移，回滚展示组件及查询函数即可。
+
 2026-09-21 M08：`ERASER-FEATHER` v2 将橡皮擦同步为实心中心与线性外圈，实心半径为 1-min(0.9,feather)，最大羽化仍保留 10% 中心。擦除保持完整光标半径，不套用彩色局部重绘的 3px 内缩或最小 16px 过渡。UvRepaint 原生彩色图层及普通 UV/投影蒙版 GPU 擦除共用线性公式；Canvas 笔刷缓存区分线性橡皮与原选区曲线，预热/实时/历史提交沿用同一擦除像素。画蒙版、普通画笔、颜色重绘、远端输入、CPU/Worker 合成和导出公式不变，不重写已有资产，无迁移。回滚恢复橡皮 smoothstep 与 Canvas 旧渐变。浏览器测试覆盖 2K/4K、最大羽化中心、线性外圈、撤销及保存。
 2026-09-21 UI-05/UI-06 → M03/M08：`ALG-CAP-006` v1.0.1 将共享 renderer/背景快照限制在每次同步 GPU 提交段，逐 tile/pass 重新取得当前状态，恢复幂等，避免异步完成覆盖 resize。`INPAINT-PROJECTION-TEXTURE-SIZE` v1.0.0 在蒙版 canvas 改变尺寸或历史恢复时释放旧 WebGL2 不可变纹理分配，沿用原上传重新分配，修复落点偏移/上传失败。像素公式、相机、完整分辨率、QA、CPU/Worker/shader、UV/export 与 Schema/资产不变，无迁移。真实 Edge 旧实现约 82px/51px 偏移，修复后三路径小于 1px；回归及回滚见 [截图与蒙版对齐](changes/CHG-20260921-CAPTURE-RESIZE-MASK-ALIGNMENT.md)。
 
