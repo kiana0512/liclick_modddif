@@ -4021,9 +4021,9 @@ export function GeneratePanel({
       await waitForBrowserPaint();
       await waitForBrowserPaint();
       // ModelView receives one square 2K composite: authored BaseColor outside
-      // the selection and exact RGB white inside. GPT retains its clay guide.
+      // the selection union and exact RGB white inside. GPT retains its clay guide.
       // Qwen receives the clean authored view instead, plus the original
-      // authored mask and full multiview reference, so neither placeholder
+      // unexpanded selection union and full multiview reference, so neither placeholder
       // shading nor the remote-only blending margin biases its diagnosis.
       document.body.dataset.perfLocalRepaintPhase = 'button2-mask-capture';
       setLocalRepaintPreparation((current) => ({
@@ -4031,7 +4031,7 @@ export function GeneratePanel({
         detail: '正在准备当前蒙版',
       }));
       const maskCaptureStartedAt = performance.now();
-      const currentPaintMaskDataUrl =
+      let currentPaintMaskDataUrl =
         await initialMaskState.paintMaskCapture({
           aspect: captureAspect,
           camera: captureCameraSnapshot.camera,
@@ -4055,13 +4055,20 @@ export function GeneratePanel({
           objectId,
           resolution: LOCAL_REPAINT_INPUT_RESOLUTION,
           framing: 'current',
-          colorMode: isGptLocalRepaint ? 'flat-target-coverage' : 'flat-target',
+          colorMode: 'flat-target-coverage',
           aspect: captureAspect,
           cameraSnapshot: captureCameraSnapshot,
         },
         currentPaintMaskDataUrl,
         { archive: false },
       );
+      let depthPreviewPromise: ReturnType<typeof captureRepaintDepth> | undefined;
+      if (!isGptLocalRepaint) {
+        depthPreviewPromise = captureRepaintDepth();
+        const depth = await depthPreviewPromise;
+        if (!depth) throw new Error('无法读取当前视角的未贴图区域，请重试。');
+        capture = { ...capture, depthUrl: depth.depthUrl, depthEncoding: depth.depthEncoding };
+      }
       const flatCurrentEffectUrl = capture.colorUrl;
       promptAnalysisCurrentEffectUrl = flatCurrentEffectUrl;
       let clayPreviewUrl: string | undefined;
@@ -4087,14 +4094,16 @@ export function GeneratePanel({
           currentEffectUrl: flatCurrentEffectUrl,
           clayPreviewUrl,
           authoredMaskUrl: currentPaintMaskDataUrl,
+          coverageDepthUrl: isGptLocalRepaint ? undefined : capture.depthUrl,
         });
+        currentPaintMaskDataUrl = preparedGenerationInput.selectionMaskUrl ?? currentPaintMaskDataUrl;
       } finally {
         revokeRegisteredObjectUrl(clayPreviewUrl);
       }
       capture = {
         ...capture,
         colorUrl: preparedGenerationInput.compositeUrl,
-        // Capture/paintback keeps the authored selection. The expanded mask is
+        // Capture/paintback keeps the unexpanded selection union. The expanded mask is
         // a remote-sampling input only and must never become the interactive
         // local-repaint brush authorization mask.
         maskUrl: currentPaintMaskDataUrl,
@@ -4265,7 +4274,7 @@ export function GeneratePanel({
           gptRepaintInputPolicy: isGptLocalRepaint ? 'geometry-normal-v1' : undefined,
           gptRepaintUseMaterialReference: isGptLocalRepaint ? gptRepaintUseMaterialReference : undefined,
           paintMaskRevision: currentPaintMaskRevision,
-          paintMaskSource: 'user',
+          paintMaskSource: isGptLocalRepaint ? 'user' : 'user-and-visible-gaps-v1',
           authoredMaskUrl: currentPaintMaskDataUrl,
           submittedMaskUrl: isGptLocalRepaint ? undefined : preparedGenerationInput.submittedMaskUrl,
           promptSource: resolvedPrompt.source,
@@ -4307,7 +4316,6 @@ export function GeneratePanel({
         isGptLocalRepaint ? Promise.resolve('') : urlToDataUrl(preparedGenerationInput.submittedMaskUrl),
         isGptLocalRepaint ? Promise.resolve('') : urlToDataUrl(capture.normalUrl!),
       ]);
-      let depthPreviewPromise: ReturnType<typeof captureRepaintDepth> | undefined;
       const { createModelviewApiClient } = await import('@/services/modelviewApiClient');
       const personalRequestPreparationMs = personalRepaintEnabled ? performance.now() - personalRequestStartedAt : 0;
       const generationPromise = isGptLocalRepaint ? (async () => {
@@ -4380,8 +4388,7 @@ export function GeneratePanel({
           syncGeneration(pendingGeneration);
         } : undefined },
       );
-      // Keep the original provider submission ahead of the local-only depth
-      // capture. GPT waits for this same promise before persisting/submitting.
+      // Reuse ModelView depth from gap detection; GPT captures it before submission.
       function captureRepaintDepth() {
         return captureCurrentDepthPreview({
           objectId,

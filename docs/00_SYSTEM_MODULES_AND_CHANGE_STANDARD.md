@@ -4,6 +4,8 @@
 
 2026-09-22 M06（协作 M07/M09）：`PROJECTION-RELIABLE-FOOTPRINT` v1.1.0 按用户确认将综合几何覆盖门槛从 0.98 放宽至 0.90，保留 minimumProjectionFacing、深度遮挡、背面保护及 surface-locked 重绘分支。单层/多层/compact array/预览合成/GPU UV 与 CPU loose fallback 共用阈值，作者 alpha/蒙版不变，Worker 沿用栅格结果。UV bake 协议 10、UV merge 13、内容修补投影缓存 v3 排除旧派生结果；既有合并 PNG 不重写，无 Project/Layer Schema 或资产迁移。回滚恢复阈值及缓存版本；刷新后普通投影重新计算，已合并贴图需从原投影图层重新合并才能体现新范围。本地修改，未推送或部署。
 
+2026-09-22 M04/M15 发布集成：合并 master e04c3f38 后 JS 实测 3,260,798、编辑器 499,080 bytes；有界增加总预算 5,500、编辑器 600 bytes，保留 256-byte 余量及其他质量门禁。两处测试全局引用修正；无业务/Schema 变化。详见 [可见缺口合并发布记录](changes/CHG-20260922-LOCAL-REPAINT-VISIBLE-GAPS.md)。
+
 2026-09-21 M08：`ERASER-FEATHER` v2 将橡皮擦同步为实心中心与线性外圈，实心半径为 1-min(0.9,feather)，最大羽化仍保留 10% 中心。擦除保持完整光标半径，不套用彩色局部重绘的 3px 内缩或最小 16px 过渡。UvRepaint 原生彩色图层及普通 UV/投影蒙版 GPU 擦除共用线性公式；Canvas 笔刷缓存区分线性橡皮与原选区曲线，预热/实时/历史提交沿用同一擦除像素。画蒙版、普通画笔、颜色重绘、远端输入、CPU/Worker 合成和导出公式不变，不重写已有资产，无迁移。回滚恢复橡皮 smoothstep 与 Canvas 旧渐变。浏览器测试覆盖 2K/4K、最大羽化中心、线性外圈、撤销及保存。
 2026-09-21 UI-05/UI-06 → M03/M08：`ALG-CAP-006` v1.0.1 将共享 renderer/背景快照限制在每次同步 GPU 提交段，逐 tile/pass 重新取得当前状态，恢复幂等，避免异步完成覆盖 resize。`INPAINT-PROJECTION-TEXTURE-SIZE` v1.0.0 在蒙版 canvas 改变尺寸或历史恢复时释放旧 WebGL2 不可变纹理分配，沿用原上传重新分配，修复落点偏移/上传失败。像素公式、相机、完整分辨率、QA、CPU/Worker/shader、UV/export 与 Schema/资产不变，无迁移。真实 Edge 旧实现约 82px/51px 偏移，修复后三路径小于 1px；回归及回滚见 [截图与蒙版对齐](changes/CHG-20260921-CAPTURE-RESIZE-MASK-ALIGNMENT.md)。
 
@@ -28,6 +30,7 @@
 2026-09-21 UI-06/UI-10 → M08：`REPAINT-BRUSH-CONTEXT-MENU` v1.0.0 将局部重绘画笔的鼠标右键从擦除改为打开已有大小/羽化面板；在射线拾取、历史和擦除派发前返回。右键打开后，面板外左键只关闭并消费 pointerdown/click，面板内调参保留；下一笔正常绘制。独立橡皮、笔尾擦除、其他工具右键和 Alt/MMB 导航不变。算法像素、GPU/CPU/Worker/shader、UV/export、Schema/Command/CAS/ownership/资产不变，无迁移。验证与回退见 [右键画笔面板](changes/CHG-20260921-REPAINT-BRUSH-CONTEXT-MENU.md)。本地修改，未推送或部署。
 
 2026-09-21 M08（审计 M06/M07/M11）：`ALG-LR-UV-PAINT` v3.0.0 将原生 UV 局部重绘彩色笔迹改为实心中心加线性外圈羽化；保留羽化比例与 3px@2K 退让，过渡宽度上限为有效半径的 90%，保证至少 10% 实心半径。橡皮/选区仍走原 smoothstep，未修改旧资产或生成蒙版。GPU 输出 RGBA 直接用于显示、历史、PNG、CPU/Worker 合成及导出，无二次羽化或 Schema 迁移。批准、公式、验证与回退见 [线性外圈羽化](changes/CHG-20260921-REPAINT-LINEAR-FEATHER.md)。本地修改，未推送或部署。
+2026-09-22 M04（协作 M03/M06/M07/M08/M09/M12）：`LOCAL-REPAINT-VISIBLE-GAPS/1.0.0` 将 ModelView 局部重绘手绘选区与同冻结视角可见未贴图区域合并。复用覆盖 alpha 和 packed depth，不按 RGB 判空，排除背景/孔洞；白色输入、采样蒙版和未外扩回贴选区一致绑定，保留 live 手绘选区。深度前移并复用，Worker 合成，GPU/shader、分辨率、QA、Schema/Command/CAS/ownership 与历史像素不变，无迁移；回滚恢复手绘输入。151 项回归、2K 实际浏览器 PNG 像素检查、类型/构建/包体通过；详情与对等审计见 [可见缺口合并](changes/CHG-20260922-LOCAL-REPAINT-VISIBLE-GAPS.md)。本地修改，未推送或部署。
 
 2026-09-21 M08（审计 M06/M07/M11）：`ALG-LR-UV-PAINT` v2.0.0 补齐原生 UV 手动彩色笔迹内缩：按实际屏幕笔段解析距离，2K 视口参考退让 3px、向内至少 16px 过渡并保留较大用户羽化，小笔刷限制宽度；既有 max-alpha 累计，不做全局 UV 岛腐蚀，不以生成蒙版限制手动绘制。橡皮/mask-only 不变，GPU 实时与历史/PNG/合并/export 共用已处理 RGBA，不新增 GPU pass、RT 或逐笔全图读回。无 Schema/资产迁移，旧笔迹不重写；ADR、批准、矩阵与回退见 [实际笔迹内缩](changes/CHG-20260921-UV-REPAINT-STROKE-INWARD.md)。本地验证，未推送或部署，真实座垫黑边仍需发布后复核。
 2026-09-21 M08 / M15：个人 AutoDL 接口切换用户指定 li3d-8-2，版本 `autodl-li3d-8-2-768-2step-20260921-v1`；精确恢复提示词节点 Ready 序列化异常，修正后实际参数与 li3d-8 相同。复测热运行 2.333s、新文件名四图 2.783s，接口返图 2048×2048。网页仍通过 LI3D 后端，此次不修改其上游；无图像算法或 Schema 迁移。细分计时、边界及回滚见 [li3d-8-2 记录](changes/CHG-20260921-LI3D82-SWITCH.md)。

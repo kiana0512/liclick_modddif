@@ -126,7 +126,7 @@ assert.match(
 );
 assert.match(
   generatePanelSource,
-  /captureCurrentLocalRepaintView\([\s\S]*resolution: LOCAL_REPAINT_INPUT_RESOLUTION,[\s\S]*colorMode: isGptLocalRepaint \? 'flat-target-coverage' : 'flat-target'/,
+  /captureCurrentLocalRepaintView\([\s\S]*resolution: LOCAL_REPAINT_INPUT_RESOLUTION,[\s\S]*colorMode: 'flat-target-coverage'/,
   'the generation path must first capture the frozen-camera current BaseColor effect',
 );
 assert.match(

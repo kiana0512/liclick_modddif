@@ -16,7 +16,7 @@ let rejectCacheOnce = false;
 async function decodeRequest(init) {
   const blob = new Blob([init.body]);
   return JSON.parse(await new Response(init.headers['Content-Encoding'] === 'gzip'
-    ? blob.stream().pipeThrough(new DecompressionStream('gzip')) : blob).text());
+    ? blob.stream().pipeThrough(new globalThis.DecompressionStream('gzip')) : blob).text());
 }
 globalThis.fetch = async (url, init) => {
   requests.push({ url, init });
@@ -55,7 +55,7 @@ const changedReference = {...input, materialImage:{dataUrl:'new-reference'.repea
 const changedResult = await generatePersonalRepaint(changedReference);
 assert.equal(changedResult.timings.referenceCacheHit, false);
 assert.deepEqual(await decodeRequest(requests.filter(r => r.init.method === 'POST').at(-1).init), changedReference);
-const aborted = new AbortController(); aborted.abort();
+const aborted = new globalThis.AbortController(); aborted.abort();
 const states = [];
 const jobStates = ['queued', 'queued', 'running', 'succeeded'];
 globalThis.fetch = async (url) => url.endsWith('/result')
