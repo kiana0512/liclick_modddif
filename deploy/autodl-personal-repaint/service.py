@@ -17,7 +17,7 @@ from PIL import Image
 
 ROOT = Path(os.environ.get('REPAINT_HOME', '/root/li3d-personal-repaint'))
 COMFY = 'http://127.0.0.1:6006'
-WORKFLOW = 'autodl-li3d-8-768-2step-20260921-v1'
+WORKFLOW = 'autodl-li3d-8-2-768-2step-20260921-v1'
 FIELDS = {'image': '4', 'materialImage': '5', 'mask': '44', 'normalImage': '81'}
 ORIGINS = {'https://li3d.lilithgames.com', 'http://127.0.0.1:4517'}
 MAX_BODY = 160 * 1024 * 1024

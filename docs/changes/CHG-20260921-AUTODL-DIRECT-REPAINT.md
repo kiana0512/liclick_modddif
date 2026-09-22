@@ -1,5 +1,7 @@
 # 个人 AutoDL 局部重绘直连
 
+2026-09-21 后续切回：用户要求先提交当前版本、不要推送，再恢复 LI3D 后端调用。个人直连与 li3d-8 版本已保存为本地提交 `159cb1f`。随后将 personalRepaintEnabled 固定为 false，旧 personalRepaint=1 参数和个人构建环境变量均不再启用直连；局部重绘恢复 `/api/modelview/inpaint`，后端工作流由既有后端配置负责。本次仅关闭前端入口，不修改远端实例或删除历史任务。GPU/CPU/Worker/shader、输入尺寸、回贴与持久化不变，无 Schema 迁移；需要恢复时可从该提交还原入口条件并重新构建。
+
 用户已确认：生成请求跳过 LI3D 后端，先供个人使用，采用云实例现有工作流。
 
 - 主模块 M08，协作 M04/M13/M15；协议 `AUTODL-DIRECT-REPAINT/1.0.0`。

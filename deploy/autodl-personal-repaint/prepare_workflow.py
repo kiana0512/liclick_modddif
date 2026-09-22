@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 import urllib.request
 
-source = Path('/root/ComfyUI/user/default/workflows/li3d-8.json')
+source = Path('/root/ComfyUI/user/default/workflows/li3d-8-2.json')
 root = Path('/root/li3d-personal-repaint')
 workflow = json.loads(source.read_bytes())
 schemas = json.load(urllib.request.urlopen('http://127.0.0.1:6006/object_info', timeout=30))
@@ -29,6 +29,10 @@ for node in workflow['nodes']:
     # li3d-8 predates the added tail widget: its serialized status widgets
     # occupy the new input positions. Restore the saved device/cache settings.
     if kind == 'Li3DPromptCacheEncode' and node['widgets_values'][1:3] == ['default', True]:
+        inputs.update(tail_prompt='', device='default', disk_cache=True)
+    # li3d-8-2 serialized UI status text into every non-model widget.
+    # Restore the node defaults only for this exact corrupted signature.
+    if kind == 'Li3DPromptCacheEncode' and node['widgets_values'][1:] == ['Ready'] * 4:
         inputs.update(tail_prompt='', device='default', disk_cache=True)
     for name in schema.get('required', {}):
         assert name in inputs, f'Missing input: {kind}.{name}'

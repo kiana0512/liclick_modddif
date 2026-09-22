@@ -26,6 +26,10 @@
 2026-09-21 M08（审计 M06/M07/M11）：`ALG-LR-UV-PAINT` v3.0.0 将原生 UV 局部重绘彩色笔迹改为实心中心加线性外圈羽化；保留羽化比例与 3px@2K 退让，过渡宽度上限为有效半径的 90%，保证至少 10% 实心半径。橡皮/选区仍走原 smoothstep，未修改旧资产或生成蒙版。GPU 输出 RGBA 直接用于显示、历史、PNG、CPU/Worker 合成及导出，无二次羽化或 Schema 迁移。批准、公式、验证与回退见 [线性外圈羽化](changes/CHG-20260921-REPAINT-LINEAR-FEATHER.md)。本地修改，未推送或部署。
 
 2026-09-21 M08（审计 M06/M07/M11）：`ALG-LR-UV-PAINT` v2.0.0 补齐原生 UV 手动彩色笔迹内缩：按实际屏幕笔段解析距离，2K 视口参考退让 3px、向内至少 16px 过渡并保留较大用户羽化，小笔刷限制宽度；既有 max-alpha 累计，不做全局 UV 岛腐蚀，不以生成蒙版限制手动绘制。橡皮/mask-only 不变，GPU 实时与历史/PNG/合并/export 共用已处理 RGBA，不新增 GPU pass、RT 或逐笔全图读回。无 Schema/资产迁移，旧笔迹不重写；ADR、批准、矩阵与回退见 [实际笔迹内缩](changes/CHG-20260921-UV-REPAINT-STROKE-INWARD.md)。本地验证，未推送或部署，真实座垫黑边仍需发布后复核。
+2026-09-21 M08 / M15：个人 AutoDL 接口切换用户指定 li3d-8-2，版本 `autodl-li3d-8-2-768-2step-20260921-v1`；精确恢复提示词节点 Ready 序列化异常，修正后实际参数与 li3d-8 相同。复测热运行 2.333s、新文件名四图 2.783s，接口返图 2048×2048。网页仍通过 LI3D 后端，此次不修改其上游；无图像算法或 Schema 迁移。细分计时、边界及回滚见 [li3d-8-2 记录](changes/CHG-20260921-LI3D82-SWITCH.md)。
+
+2026-09-21 M08：按用户要求先将个人直连当前版本本地提交为 159cb1f（未推送），再关闭 personalRepaintEnabled，所有入口恢复 LI3D 后端 /api/modelview/inpaint；旧 URL 参数不再启用直连。仅调用路径恢复，输入/GPU/CPU/Worker/shader/回贴/persistence/export 语义不变，无 Schema 迁移。详见 [个人直连记录中的切回说明](changes/CHG-20260921-AUTODL-DIRECT-REPAINT.md)。
+
 2026-09-21 M08 / M15：按用户指定将个人 AutoDL 接口切换为 li3d-8（768 推理、2 步、单 LoRA 0.8，输出保留原尺寸），更新四图节点映射与远端版本；修复源文件提示词缓存节点旧字段错位。原组图片实测重复输入 2.341s、新文件名输入 2.728s；接口实际执行 2.711s，2K PNG 校验通过。无前端图像算法/Schema 变更，旧生成保留；参数差异、原始数据与成组回滚见 [li3d-8 切换记录](changes/CHG-20260921-LI3D8-SWITCH.md)。
 
 2026-09-21 M08 / M15：AUTODL-DIRECT-REPAINT-STATUS/1.0.0 将个人服务等待与 ComfyUI 排队显示为“排队中”，以本任务进入 queue_running 为执行依据，按钮/预览同步上传、排队、执行和返图状态。工作流、图像算法、QA、Command/CAS/export 不变，无历史迁移；验证与回滚见 [个人直连变更卡](changes/CHG-20260921-AUTODL-DIRECT-REPAINT.md)。
