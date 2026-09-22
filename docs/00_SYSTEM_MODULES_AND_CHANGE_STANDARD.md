@@ -1691,3 +1691,5 @@ M13/M15，`IDENTITY-TELEMETRY` v1.1.0，日聚合 schema v3：来源由后端确
 2026-09-10 普通模式性能浮条隐藏（M13，UI 展示调整）：普通视口不再挂载 LightweightPerformanceHud，同时移除其独立 rAF 采样。调试开关及 perfLab=1 仍挂载原 PerformanceTestHud，perfLab=0 隐藏。独立性能录制、指标算法、生产渲染、Schema 与持久化不变，无迁移；回退恢复轻量浮条及普通模式挂载即可。
 
 2026-09-22 CHG-20260922-UV-REPAINT-ERASER-LIVE：M08/M06/M07/M09，ALG-ERASE-001 显示生命周期 UV-ERASER-LIVE/1.0.0。完整 UV 源就绪后启用局部重绘图层实时橡皮擦预览，保留占位图保护，修正预览撤销/重做与连续笔迹初始化。1K/4K 真实浏览器回归通过；像素公式、Worker、导出、Schema 与持久化版本不变，无迁移；测试限制与回滚见对应变更卡。
+
+2026-09-22 CHG-20260922-REPAINT-FRINGE-ERASER：M06/M08/M07/M09，ALG-ERASE-001 显示生命周期 UV-ERASER-LIVE/1.1.0；修正半透明 UV 的白膜底色泄漏，排除 native 重绘重复普通擦除预热，恢复 UV 实时刷新使用完整分辨率脏区上传。持久化版本/Schema 不变，无迁移；验证、现有测试失败与回滚见对应变更卡。

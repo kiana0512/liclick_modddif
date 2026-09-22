@@ -789,8 +789,8 @@ assert.match(
 );
 assert.match(
   viewportCanvasSource,
-  /!canUseSurfacePaint \|\|\s*isEditingPersistedLocalRepaint[\s\S]*?beginLiveEraserPreview/,
-  'A completed local repaint must never prewarm the all-white generic projected-layer eraser mask.',
+  /!canUseSurfacePaint \|\|\s*isLocalRepaintApplyMode[\s\S]*?beginLiveEraserPreview/,
+  'A local repaint session (persisted or native GPU) must never prewarm the generic eraser.',
 );
 assert.match(
   viewportCanvasSource,

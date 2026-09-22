@@ -5593,9 +5593,9 @@ const uvOverlayFragmentShader = `
 
 
 
-    if (showEmptyUvChecker < 0.5 && hasAnyColor > 0.5 && capturedCoverage == 0.0 &&
+    if (showEmptyUvChecker < 0.5 && hasAnyColor > 0.5 &&
         showEmptyProjectionHatch > 0.5 && showEmptyProjectionHatch < 1.5) {
-      displayColor = computeUvEmptyPreviewColor();
+      displayColor += (computeUvEmptyPreviewColor() - baseColor * lighting) * (1.0 - capturedCoverage);
     }
     float captureAlpha = showEmptyProjectionHatch > 1.5
       ? step(${PROJECTION_RELIABILITY_CUTOFF.toFixed(2)}, capturedCoverage) : 1.0;

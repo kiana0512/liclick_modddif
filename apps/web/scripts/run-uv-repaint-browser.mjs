@@ -96,7 +96,7 @@ try {
     await page.waitForFunction(async () => (await window.uvFixture.state()).painted > 0);
     const painted = await page.evaluate(() => window.uvFixture.state());
     await page.evaluate(() => window.uvFixture.erase());
-    await page.waitForTimeout(150);
+    // A resident native session must accept the first stroke after switching.
     await click();
     await page.waitForFunction(async () => (await window.uvFixture.state()).center[3] === 0);
     await page.evaluate(() => window.uvFixture.undo());
@@ -141,7 +141,7 @@ try {
     await click();
     await page.mouse.move(20, 20);
     const overlap = await page.evaluate(() => window.uvFixture.pixels());
-    if (!same(overlap[0], both[1])) throw Error('Top repaint did not cover the lower layer');
+    if (!same(overlap[0], both[1])) throw Error('Top repaint did not cover the lower layer: '+JSON.stringify({overlap,both}));
     await page.evaluate(() => window.uvFixture.undo());
     const unoverlapped = await page.evaluate(() => window.uvFixture.pixels());
     if (!unoverlapped.every((pixel, i) => same(pixel, both[i])))

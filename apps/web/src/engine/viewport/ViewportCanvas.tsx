@@ -1,3 +1,4 @@
+import type { CanvasTexturePatches } from '@/engine/paint/canvasTexturePatches';
 import { computeViewAlignedSurfaceTangents } from '@/engine/paint/viewAlignedBrush';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { Bvh } from '@react-three/drei';
@@ -6935,6 +6936,14 @@ function SurfacePaintOverlay() {
   }>();
   const dirtyTexturesRef = useRef(new Set<THREE.CanvasTexture>());
   const textureUpdateFrameRef = useRef<number>();
+  const eraserTexturePatches = useRef<CanvasTexturePatches>();
+  useEffect(() => {
+    let cancelled = false;
+    void import('@/engine/paint/canvasTexturePatches').then(({ CanvasTexturePatches }) => {
+      if (!cancelled) eraserTexturePatches.current = new CanvasTexturePatches();
+    });
+    return () => { cancelled = true; eraserTexturePatches.current?.dispose(); eraserTexturePatches.current = undefined; };
+  }, []);
   const projectionTextureUpdateTimerRef = useRef<number>();
   const projectionTextureLastUpdateAtRef = useRef(0);
   const projectedEraserBatchesRef = useRef(new Map<string, PendingProjectedEraserBatch>());
@@ -8449,7 +8458,7 @@ function SurfacePaintOverlay() {
     if (
       (paintTool !== 'brush' && paintTool !== 'eraser') ||
       !canUseSurfacePaint ||
-      isEditingPersistedLocalRepaint
+      isLocalRepaintApplyMode
     ) {
       return;
     }
@@ -8542,7 +8551,7 @@ function SurfacePaintOverlay() {
     getUvPaintLayer,
     gl,
     invalidate,
-    isEditingPersistedLocalRepaint,
+    isLocalRepaintApplyMode,
     paintTool,
     prepareProjectedEraserGpuPreview,
   ]);
@@ -9412,6 +9421,7 @@ function SurfacePaintOverlay() {
   }), []);
 
   useFrame(() => {
+    eraserTexturePatches.current?.flush(gl, layerRef.current?.liveResultTexture);
     const model = getTargetModel();
     const layer = layerRef.current;
     if (model && layer?.objectId === model.objectId) {
@@ -11897,9 +11907,9 @@ function SurfacePaintOverlay() {
           layer.eraserGpu.stamp(gpuStamp);
         } else if (layer.liveEraserPreviewActive) {
           if (layer.target === 'projected-mask') (layer.eraserGpuBacklog ??= []).push(gpuStamp);
-          drawSurfaceBrushSegment(
+          const liveBounds = drawSurfaceBrushSegment(
             layer.liveResultContext,
-            layer.liveResultTexture as THREE.CanvasTexture,
+            undefined,
             fromUv,
             result.uv,
             uvBrush,
@@ -11908,6 +11918,10 @@ function SurfacePaintOverlay() {
             'uv',
             eraserFeather,
           );
+          if (eraserTexturePatches.current)
+            eraserTexturePatches.current.add(layer.liveResultTexture as THREE.CanvasTexture, liveBounds);
+          else scheduleTextureUpdate(layer.liveResultTexture as THREE.CanvasTexture);
+          invalidate();
         }
         const bounds = drawSurfaceBrushSegment(
           layer.paintPreviewContext,
@@ -12253,6 +12267,7 @@ function SurfacePaintOverlay() {
       canConnectLocalRepaintStroke,
       deactivateLiveInpaintScreenPreview,
       drawSurfaceBrushSegment,
+      eraserTexturePatches,
       ensureOverlayForMesh,
       ensurePaintPreviewOverlayForMesh,
       getStrokeSourceUv,
