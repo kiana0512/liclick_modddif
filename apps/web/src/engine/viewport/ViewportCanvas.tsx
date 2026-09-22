@@ -1,4 +1,4 @@
-import type { CanvasTexturePatches } from '@/engine/paint/canvasTexturePatches';
+import type { createPatches } from '@/engine/paint/uvPatches';
 import { computeViewAlignedSurfaceTangents } from '@/engine/paint/viewAlignedBrush';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { Bvh } from '@react-three/drei';
@@ -6936,11 +6936,11 @@ function SurfacePaintOverlay() {
   }>();
   const dirtyTexturesRef = useRef(new Set<THREE.CanvasTexture>());
   const textureUpdateFrameRef = useRef<number>();
-  const eraserTexturePatches = useRef<CanvasTexturePatches>();
+  const eraserTexturePatches = useRef<ReturnType<typeof createPatches>>();
   useEffect(() => {
     let cancelled = false;
-    void import('@/engine/paint/canvasTexturePatches').then(({ CanvasTexturePatches }) => {
-      if (!cancelled) eraserTexturePatches.current = new CanvasTexturePatches();
+    void import('@/engine/paint/uvPatches').then(({ createPatches }) => {
+      if (!cancelled) eraserTexturePatches.current = createPatches();
     });
     return () => { cancelled = true; eraserTexturePatches.current?.dispose(); eraserTexturePatches.current = undefined; };
   }, []);
