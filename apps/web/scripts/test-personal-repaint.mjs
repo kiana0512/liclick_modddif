@@ -69,4 +69,3 @@ globalThis.fetch = async () => { failedPosts++; throw new TypeError('network dow
 await assert.rejects(generatePersonalRepaint(input), /network down/);
 assert.equal(failedPosts, 1, 'Never retry ambiguous submissions');
 console.log('Personal repaint: direct HTTPS, exact inputs, no cookies, cancellation and no blind retries passed.');
-/* global DecompressionStream, AbortController */
