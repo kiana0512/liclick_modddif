@@ -132,7 +132,7 @@ assert.match(panel, /updateGenerationSettings\(\{ textureGptQuality: resolveGptT
 const client = readFileSync(new URL('../src/services/liclickApiClient.ts', import.meta.url), 'utf8');
 assert.match(client, /quality: input.quality/);
 assert.match(panel, /gptGuide: isGptLocalRepaint/);
-assert.match(panel, /colorMode: isGptLocalRepaint \? 'flat-target-coverage'/);
+assert.match(panel, /colorMode: 'flat-target-coverage'/);
 assert.match(panel, /if \(!isGptLocalRepaint && materialReference && !isMultiviewReference/);
 assert.match(panel, /maskUrl: currentPaintMaskDataUrl/);
 assert.match(panel, /prepareRepaintResult\(\s*generation.resultUrl, capture.depthUrl, isGptLocalRepaint/);

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { projectionGapMaskFromAlpha } from '../src/engine/projection/projectionCoverageContract.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 import ts from 'typescript';
@@ -328,7 +329,7 @@ assert.match(
 );
 assert.match(
   generationInputWorkerSource,
-  /blobs\.map\(\(blob\) => createImageBitmap\(blob\)\)/,
+  /blobs\.map\(\(blob\) => blob \? createImageBitmap\(blob\) : undefined\)/,
   'Each Blob must be passed to createImageBitmap without Array.map index/array arguments.',
 );
 assert.doesNotMatch(
@@ -367,10 +368,10 @@ class PixelCanvas {
   async convertToBlob() { return new Blob([this.pixels], { type: 'image/png' }); }
 }
 const workerRuntime = { postMessage: value => { workerRuntime.result = value; } };
-new Function('self', 'OffscreenCanvas', 'ImageData', ts.transpileModule(
+new Function('self', 'OffscreenCanvas', 'ImageData', 'projectionGapMaskFromAlpha', ts.transpileModule(
   workerSource.replace(/^import[^\n]+\n/gm, '').replace(/export \{\};?/, ''),
   { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None } },
-).outputText)(workerRuntime, PixelCanvas, class { constructor(data, width, height) { Object.assign(this, { data, width, height }); } });
+).outputText)(workerRuntime, PixelCanvas, class { constructor(data, width, height) { Object.assign(this, { data, width, height }); } }, projectionGapMaskFromAlpha);
 const w = 128, h = 96;
 const original = new Uint8ClampedArray(w * h * 4);
 const selection = new Uint8ClampedArray(original.length);
@@ -405,6 +406,51 @@ await workerRuntime.onmessage({ data: { id: 2, mode: 'local', currentEffect: bit
 assert.match(workerRuntime.result.error, /蒙版为空/);
 assert.equal(closed, 4);
 
+{
+// Full production Worker: union only visible geometry with missing texture.
+const coverage = new Uint8ClampedArray(original);
+const depth = new Uint8ClampedArray(original.length).fill(255);
+const authored = new Uint8ClampedArray(selection);
+const expectedUnion = new Uint8Array(w * h);
+for (let i = 0; i < w * h; i++) {
+  const x = i % w, y = Math.floor(i / w), offset = i * 4;
+  const visible = x >= 8 && x < 120 && y >= 8 && y < 88 && !(x >= 95 && y >= 70);
+  const missing = x >= 80 && x < 100 || (x === 25 && y === 25);
+  if (visible) depth.set([100, 20, 0, 255], offset);
+  coverage[offset + 3] = visible ? (missing ? (x === 25 ? 254 : 0) : 255) : 0;
+  // Real black/white textures must remain protected; RGB never marks a gap.
+  if (x < 30 && y > 40) coverage.set([0, 0, 0, 255], offset);
+  if (x < 30 && y > 60) coverage.set([255, 255, 255, 255], offset);
+  expectedUnion[i] = visible && (strength[i] || coverage[offset + 3] < 255) ? 255 : 0;
+}
+// Even an accidentally selected background pixel is excluded by frozen depth.
+authored.set([255, 255, 255, 255], 0);
+const coverageBefore = new Uint8ClampedArray(coverage);
+await workerRuntime.onmessage({data:{id:3,mode:'local',currentEffect:bitmap(coverage),inputMask:bitmap(authored),coverageDepth:bitmap(depth)}});
+assert.equal(workerRuntime.result.error, undefined);
+const union = new Uint8Array(await workerRuntime.result.selectionMaskBlob.arrayBuffer());
+const unionGuide = new Uint8Array(await workerRuntime.result.compositeBlob.arrayBuffer());
+const unionSubmitted = new Uint8Array(await workerRuntime.result.submittedMaskBlob.arrayBuffer());
+for (let i = 0; i < w * h; i++) {
+  const offset = i * 4, value = expectedUnion[i];
+  assert.deepEqual([...union.subarray(offset, offset + 4)], [value, value, value, 255], 'Unexpanded union preserves selected and visible uncovered pixels only');
+  assert.deepEqual([...unionGuide.subarray(offset, offset + 4)], value ? [255,255,255,255] : [...coverageBefore.subarray(offset, offset + 4)], 'Guide marks union white and protects existing unselected texture');
+  if (value) assert.equal(unionSubmitted[offset], 255);
+  if (depth[offset] === 255) assert.equal(unionSubmitted[offset], 0, 'Sampling margin must not enter background or holes');
+}
+assert.deepEqual(coverage, coverageBefore, 'Input coverage is immutable');
+assert.equal(closed, 7, 'Coverage depth bitmap released with other inputs');
+await workerRuntime.onmessage({data:{id:4,mode:'local',currentEffect:bitmap(coverage),inputMask:bitmap(authored),coverageDepth:{...bitmap(depth),width:w-1}}});
+assert.match(workerRuntime.result.error, /dimensions differ/);
+assert.equal(closed, 10, 'Dimension failure releases all inputs');
+const repaintFlow = panelSource.slice(panelSource.indexOf('let currentPaintMaskDataUrl ='), panelSource.indexOf('const rawUserPrompt = localRepaintPrompt.trim()'));
+assert.match(repaintFlow, /colorMode: 'flat-target-coverage'/);
+assert.match(repaintFlow, /coverageDepthUrl: isGptLocalRepaint \? undefined : capture.depthUrl/);
+assert.match(repaintFlow, /currentPaintMaskDataUrl = preparedGenerationInput.selectionMaskUrl \?\? currentPaintMaskDataUrl/);
+assert.ok(repaintFlow.indexOf('setPaintMaskDataUrl(') < repaintFlow.indexOf('preparedGenerationInput.selectionMaskUrl'), 'Derived union must not overwrite the live user selection');
+assert.match(panelSource, /paintMaskSource: isGptLocalRepaint \? 'user' : 'user-and-visible-gaps-v1'/);
+
+}
 assert.match(panelSource, /localRepaintSmartPolish: false/);
 assert.match(panelSource, /aria-label="局部重绘智能润色"[\s\S]*?aria-checked=\{localRepaintSmartPolish\}/);
 assert.match(panelSource, /\.\.\.\(localRepaintSmartPolish \? \{ prompt: effectivePrompt \} : \{\}\)/);

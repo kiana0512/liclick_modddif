@@ -418,7 +418,7 @@ assert.match(
 );
 assert.match(
   generatePanelSource,
-  /captureCurrentLocalRepaintView\([\s\S]*?resolution: LOCAL_REPAINT_INPUT_RESOLUTION[\s\S]*?colorMode: isGptLocalRepaint \? 'flat-target-coverage' : 'flat-target'[\s\S]*?cameraSnapshot: captureCameraSnapshot/,
+  /captureCurrentLocalRepaintView\([\s\S]*?resolution: LOCAL_REPAINT_INPUT_RESOLUTION[\s\S]*?colorMode: 'flat-target-coverage'[\s\S]*?cameraSnapshot: captureCameraSnapshot/,
   'The local-repaint current-effect input must capture frozen-camera BaseColor without PBR lighting.',
 );
 assert.match(
