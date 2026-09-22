@@ -31,7 +31,7 @@ try {
   const result = await page.evaluate(async () => {
     const THREE = await import('/node_modules/three/build/three.module.js');
     const { createUvOverlayPreviewMaterial } = await import('/src/engine/projection/ProjectedLayerMaterial.ts');
-    const { CanvasTexturePatches } = await import('/src/engine/paint/canvasTexturePatches.ts');
+    const { createPatches } = await import('/src/engine/paint/uvPatches.ts');
     const renderer = new THREE.WebGLRenderer(); renderer.setSize(256,256);
     const target = new THREE.WebGLRenderTarget(256,256);
     const scene = new THREE.Scene(), camera = new THREE.OrthographicCamera(-1,1,1,-1,.1,10); camera.position.z=2;
@@ -52,7 +52,7 @@ try {
     const ctx=canvas.getContext('2d');ctx.fillStyle='#ff0000';ctx.fillRect(0,0,4096,4096);
     const map=new THREE.CanvasTexture(canvas);map.generateMipmaps=false;map.minFilter=THREE.LinearFilter;
     mesh.material=new THREE.MeshBasicMaterial({map});renderer.initTexture(map);
-    const patches=new CanvasTexturePatches();const version=map.version;
+    const patches=createPatches();const version=map.version;
     ctx.clearRect(2032,2032,32,32);ctx.fillStyle='#0000ff';ctx.fillRect(2032,2032,32,32);
     patches.add(map,{x:2032,y:2032,width:32,height:32});patches.flush(renderer,map);
     const patched=read();if(patched[2]<240 || patched[0]>5 || map.version!==version)throw Error('Dirty upload failed '+patched);
