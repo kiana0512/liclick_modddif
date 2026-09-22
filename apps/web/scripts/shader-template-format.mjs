@@ -121,7 +121,8 @@ export function shaderTemplateFormatPlugin() {
         return { code: compactThreeShaderChunks(code), map: null };
       }
       // Application templates remain explicitly scoped; UI text is untouched.
-      if (!/\/engine\/(?:projection\/(?:ProjectedLayerMaterial|createRuntimeProjectionDepth)|bake\/(?:gpuUvBakeRenderer|residentQualityComposite)|capture\/(?:captureDepth|captureNormal)|localRepaint\/(?:uvRepaint|consumeSelectionMask|boundedProjectionSampling)|export\/comfyControlInputExporter)\.ts$|\/engine\/viewport\/ViewportCanvas\.tsx$/.test(id.replaceAll('\\', '/'))) return;
+      // SHADER-TEMPLATE-FORMAT/1.4.2: audited preview/selection shaders share the same token-preserving formatter.
+      if (!/\/engine\/(?:projection\/(?:ProjectedLayerMaterial|ProjectedLayerPreviewCompositor|createRuntimeProjectionDepth)|bake\/(?:gpuUvBakeRenderer|residentQualityComposite)|capture\/(?:captureDepth|captureNormal)|localRepaint\/(?:uvRepaint|consumeSelectionMask|boundedProjectionSampling|projectedSelectionDisplay|projectedSelectionPreview)|export\/comfyControlInputExporter)\.ts$|\/engine\/viewport\/ViewportCanvas\.tsx$/.test(id.replaceAll('\\', '/'))) return;
       return { code: compactShaderTemplateIndentation(code), map: null };
     },
   };
