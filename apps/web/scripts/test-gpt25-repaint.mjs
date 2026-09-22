@@ -133,7 +133,7 @@ const client = readFileSync(new URL('../src/services/liclickApiClient.ts', impor
 assert.match(client, /quality: input.quality/);
 assert.match(panel, /gptGuide: isGptLocalRepaint/);
 assert.match(panel, /colorMode: 'flat-target-coverage'/);
-assert.match(panel, /if \(!isGptLocalRepaint && materialReference && !isMultiviewReference/);
+assert.match(panel, /prepareReferenceLighting\(currentProject\.id, materialReference, requestAbortController\.signal\)/);
 assert.match(panel, /maskUrl: currentPaintMaskDataUrl/);
 assert.match(panel, /prepareRepaintResult\(\s*generation.resultUrl, capture.depthUrl, isGptLocalRepaint/);
 const editor = readFileSync(new URL('../src/routes/EditorPage.tsx', import.meta.url), 'utf8');

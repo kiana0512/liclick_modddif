@@ -44,7 +44,7 @@ assert.match(
 );
 assert.match(
   panel,
-  /\(cancelConfirmGeneration \|\|[\s\S]*?cancelTextureSnapshotConfirmOpen \|\|[\s\S]*?cancelLocalRepaintPreparationConfirmOpen \|\|[\s\S]*?cancelContentAwareRepairConfirmOpen\)[\s\S]*?终止莉刻生图[\s\S]*?丢弃本次等待结果？[\s\S]*?终止并丢弃/,
+  /\(cancelConfirmGeneration \|\|[\s\S]*?cancelTextureSnapshotConfirmOpen \|\|[\s\S]*?cancelLocalRepaintPreparationConfirmOpen \|\|[\s\S]*?cancelContentAwareRepairConfirmOpen\)[\s\S]*?终止莉刻生图[\s\S]*?图片正在处理中，是否要中断[\s\S]*?终止并丢弃/,
   'snapshot and final repair cancellation must use the same confirmation surface as every submitted generation',
 );
 assert.match(
