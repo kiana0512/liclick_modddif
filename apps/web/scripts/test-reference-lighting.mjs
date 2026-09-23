@@ -64,4 +64,28 @@ await service.interruptReferenceLighting('pending');
 complete = true;
 await service.prepareReferenceLighting('pending', reference);
 assert.equal(submissions, 4, 'Explicit interruption permits a new attempt');
+// Upgrade only a proven pre-upload failure. Keep original source and history;
+// concurrent consumers and reload reuse the new stable generation identity.
+await service.prepareReferenceLighting('legacy-upload', reference);
+const oldId = [...jobs.keys()].at(-1);
+const uploadError = '结构引导图经原尺寸无损编码后仍超过 Atlas 上传限制；当前服务未配置大图对象存储上传。未提交生成任务，图片未缩小或有损压缩。';
+jobs.set(oldId, { id: oldId, status: 'failed', error: uploadError });
+service = load();
+const beforeRetry = submissions;
+await Promise.all([service.prepareReferenceLighting('legacy-upload', reference), service.prepareReferenceLighting('legacy-upload', reference)]);
+assert.equal(submissions, beforeRetry + 1);
+assert.ok(jobs.has(oldId), 'Keep failed history');
+assert.ok(jobs.has(oldId.replace(/-g0$/, '-g1')));
+service = load();
+await service.prepareReferenceLighting('legacy-upload', reference);
+assert.equal(submissions, beforeRetry + 1, 'Reload does not repeat paid generation');
+for (const [label, error, taskId] of [['accepted', uploadError, 'paid-task'], ['ambiguous', 'Network timeout', undefined]]) {
+  await service.prepareReferenceLighting(label, reference);
+  const id = [...jobs.keys()].at(-1);
+  jobs.set(id, { id, status: 'failed', error, taskId });
+  service = load();
+  const count = submissions;
+  await assert.rejects(service.prepareReferenceLighting(label, reference));
+  assert.equal(submissions, count, 'Accepted or ambiguous task must never be automatically resubmitted');
+}
 console.log('Reference lighting passed: concurrent dedupe, immutable source, content identity, reload, account isolation, consumer cancellation and explicit interruption.');
