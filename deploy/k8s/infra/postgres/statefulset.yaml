@@ -1,0 +1,167 @@
+# Self-hosted PostgreSQL for li3d's Cloud project repository (LICLICK_CLOUD_DATABASE_URL) —
+# not a shared/self-service DB platform (none exists in this cluster; the only other
+# Postgres found was liyops-vm's own instance, not for other teams' use). Modeled on
+# that instance's image (same ACR mirror, confirmed already present).
+#
+# Applied directly with kubectl, not through deploy/k8s/overlays/zprod's kustomize
+# (same pattern as deploy/k8s/infra/ci-deployer/ and the gitlab-runner setup) — this
+# is cluster infra provisioned once, not something the CI deploy job manages.
+#
+#   kubectl --context zprod apply -f deploy/k8s/infra/postgres/statefulset.yaml
+#
+# Requires the `postgres-credentials` Secret to already exist in the li3d namespace
+# (POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_DB) — see deploy/k8s/infra/postgres/README.md.
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: li3d
+  labels:
+    app: li3d
+    component: postgres
+spec:
+  clusterIP: None
+  selector:
+    app: li3d
+    component: postgres
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  namespace: li3d
+  labels:
+    app: li3d
+    component: postgres
+spec:
+  serviceName: postgres
+  replicas: 1
+  # Single instance, RWO storage — do not scale this out. If HA is ever needed,
+  # replace with a proper replication/operator setup rather than more replicas
+  # of this StatefulSet.
+  updateStrategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      app: li3d
+      component: postgres
+  template:
+    metadata:
+      labels:
+        app: li3d
+        component: postgres
+    spec:
+      securityContext:
+        # 70:70 — this Alpine-based postgres image's real postgres user/group
+        # (confirmed via `id` / /etc/passwd inside the running container).
+        # NOT 999: that's a common convention on Debian-based images, but
+        # here it happens to belong to an unrelated "ping" group (iputils),
+        # which caused a very confusing failure mode when this was wrong —
+        # postgres itself ran fine (confirmed reachable via `psql`), but
+        # `pg_isready` reported PQPING_NO_ATTEMPT ("no attempt") because
+        # libpq couldn't access files/dirs actually owned by postgres:postgres
+        # (70:70) while running as 999:999, and the readiness/liveness
+        # probes killed the otherwise-healthy container in a loop.
+        runAsUser: 70
+        runAsGroup: 70
+        runAsNonRoot: true
+        fsGroup: 70
+      containers:
+        - name: postgres
+          image: tsh-devops-prod-all-0001-registry.cn-shanghai.cr.aliyuncs.com/devops/postgres:16-alpine
+          ports:
+            - name: postgres
+              containerPort: 5432
+          env:
+            # Belt-and-suspenders alongside runAsUser: 70 above — matches
+            # /etc/passwd's own HOME for postgres (70) in this image, so
+            # this is redundant once the uid is correct, but cheap insurance
+            # against whatever numeric-uid-with-no-passwd-lookup behavior
+            # caused HOME=/ (and the pg_isready PQPING_NO_ATTEMPT failures
+            # that came with it) while this ran as the wrong uid.
+            - name: HOME
+              value: /var/lib/postgresql
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials
+                  key: POSTGRES_PASSWORD
+            - name: POSTGRES_DB
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials
+                  key: POSTGRES_DB
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+          readinessProbe:
+            exec:
+              # -h 127.0.0.1 forces TCP instead of the default unix socket at
+              # /var/run/postgresql — that directory's permissions don't play
+              # well with runAsUser below (harmless "chmod: Operation not
+              # permitted" from the image's entrypoint script, but it leaves
+              # pg_isready unable to even attempt a socket connection).
+              # No -U/-d: $(POSTGRES_USER)-style substitution isn't resolved
+              # inside a probe's exec.command (confirmed empirically — kubelet
+              # passes the literal unexpanded string to pg_isready, which then
+              # fails immediately with "no attempt"), and pg_isready doesn't
+              # need a valid role/db to report the server as accepting
+              # connections anyway.
+              command: ["pg_isready", "-h", "127.0.0.1"]
+            initialDelaySeconds: 15
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 6
+          livenessProbe:
+            exec:
+              # -h 127.0.0.1 forces TCP instead of the default unix socket at
+              # /var/run/postgresql — that directory's permissions don't play
+              # well with runAsUser below (harmless "chmod: Operation not
+              # permitted" from the image's entrypoint script, but it leaves
+              # pg_isready unable to even attempt a socket connection).
+              # No -U/-d: $(POSTGRES_USER)-style substitution isn't resolved
+              # inside a probe's exec.command (confirmed empirically — kubelet
+              # passes the literal unexpanded string to pg_isready, which then
+              # fails immediately with "no attempt"), and pg_isready doesn't
+              # need a valid role/db to report the server as accepting
+              # connections anyway.
+              command: ["pg_isready", "-h", "127.0.0.1"]
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            timeoutSeconds: 5
+            # High tolerance on purpose: this exec probe occasionally hits a
+            # transient containerd race right after (re)start ("no running
+            # task found") even though postgres itself is confirmed healthy
+            # in the container logs at that exact moment — a low threshold
+            # here previously turned that one-off blip into a real crash
+            # loop (livenessProbe killing an otherwise-healthy postgres,
+            # which then hit the same blip again on its own restart).
+            failureThreshold: 8
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 2Gi
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: zstack-csi-rbd
+        resources:
+          requests:
+            storage: 20Gi

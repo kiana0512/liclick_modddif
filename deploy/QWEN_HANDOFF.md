@@ -14,10 +14,13 @@ API Key 必須是可以访问该代理和模型的有效密钥，由持有人私
 不要把占位符当成真实值，不写入 Git、Docker ARG、前端 VITE_* 或构建日志。
 
 效率组负责在 GitLab CI/CD 设置受保护、掩码/隐藏变量，并完成运行时注入。
-单独添加 GitLab 变量不会自动进入 Kubernetes 容器。当前 li3d-server Deployment 使用 envFrom
-加载 Kustomize 生成的 li3d-server-secrets；可在部署任务 kubectl apply -k 之前，
-把 QWEN3_VL_PLUS_API_KEY 写入既有生成文件 deploy/k8s/base/secrets/server.env，
-或采用效率组维护的独立 Secret 引用。避免手改会被后续 apply 重建的带哈希 Secret。
+
+**注入链路已接好（2026-08-25）**：`deploy/prepare-cloud-secret.sh` 在 `deploy:k8s` job 里
+`kubectl apply -k` 之前执行，会把 `QWEN3_VL_PLUS_API_KEY`（如果这个 CI/CD 变量存在）追加进
+`deploy/k8s/base/secrets/server.env`，跟 `LICLICK_OBJECT_STORAGE_SESSION_TOKEN` 用的是同一个
+可选追加模式——变量不存在时静默跳过，不阻塞其他改动的发布。写完的临时文件会被
+kustomize 的 `secretGenerator` 读进 `li3d-server-secrets` 这个带哈希后缀的 Secret，
+`apply` 之后立即 shred 掉，不需要手改任何已生成的 Secret。
 
 本次代码不包含实际密钥，也未代替效率组执行变量配置。效率组修改发布脚本后，应正常合并其提交。
 验收时只检查变量是否存在，日志不要输出值；正式测试由已登录用户调用局部重绘分析。

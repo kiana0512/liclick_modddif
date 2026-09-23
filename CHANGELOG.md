@@ -1,5 +1,17 @@
 # Changelog
 
+### 2026-09-22 Expand document reading when the evidence requires it
+
+- M15, no algorithm change. Standard version 2.22.0 → 2.22.1: AGENTS.md, section 0 and docs/README.md now start with task-relevant sections and allow expansion for cross-module dependencies, contract changes or insufficient evidence. Absolute reading restrictions were removed. CLAUDE.md continues to import AGENTS.md.
+- Runtime behavior, algorithms, schemas and acceptance gates are unchanged; no data migration is required. Rollback restores only the reading-route wording and preserves existing test data. The affected guidance was subsequently translated into English without changing its meaning.
+
+### 2026-09-22 文档治理：入口分层与历史分离
+
+- M15，`CHG-20260922-DOC-PROGRESSIVE-DISCLOSURE`，唯一准则文档版本 2.21.2 → 2.22.0。入口 `AGENTS.md` 由"修改前完整阅读唯一准则"改为按任务分节加载的阅读路径，并给出停止条件；硬约束第 3 条对纯文案、样式、文档改动豁免 algorithm ID 定位。
+- 唯一准则新增第 0 节任务到章节映射表与目录锚点；历史变更流水与第 18 节修订历史整体移入 `docs/00_SYSTEM_REVISION_LOG.md`，切分阶段 1,674 行逐行比对零丢失。第 14 节被取代的旧审批条款逐字归档于同一文件。正文由 1,676 行 / 503,434 字节降至 710 行 / 137,053 字节。
+- 第 14 节审批触发由文件数、行数改为风险维度判定，规模降级为自查提示。新增 `CLAUDE.md` 以 `@AGENTS.md` 导入同一份规则。
+- 不修改源码、算法、Schema、门禁脚本或 CI 配置；无像素、分辨率、持久化或导出变化，无迁移。
+
 ### 2026-09-08 投影 UV 离屏预热异步编译
 
 - UI-06 / M06，`ALG-PROJ-007` v2.1.5：根据真实性能日志，在 UV 采样预热首绘前异步准备离屏 framebuffer 程序，避免视口程序已编译但离屏首绘仍同步链接造成约半秒停顿。
@@ -170,3 +182,7 @@
 ## Baseline before 2026-08-26
 
 此前功能演进保留在 Git 提交和既有日期型 audit/merge/optimization 文档中，不追溯伪造发布版本。当前功能基线见根 `README.md`，当前维护规范见唯一准则。
+
+### Documentation migration onto master (2026-09-22)
+
+Migrated the progressive-disclosure documentation onto master `c2ef7667`, retaining upstream records and current contracts. Documentation version 2.22.2; no source, dependency, build or CI changes. Existing token measurements remain historical scenario results.

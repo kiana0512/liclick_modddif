@@ -685,7 +685,7 @@ async function saveDirectBlobAsset(input: SaveBlobAssetInput) {
         assetId: intent.assetId,
         sha256,
       }),
-      timeoutMs: 15_000,
+      timeoutMs: 75_000,
     },
   );
 }
