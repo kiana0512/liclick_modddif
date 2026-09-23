@@ -4,6 +4,8 @@
 
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
+2026-09-23 M15（关联 M02/M10）：`BLENDER-SERVER-RUNTIME/1.0.0` 将固定 SHA-256 的官方 Blender 5.1.2 Linux x64 及运行库纳入最终 server 镜像，显式配置路径，并以正式非 root 账号执行真实 UV 修复/GLB 回读及破坏性输入拒绝验收，失败阻止镜像发布。`IMPORT-UV-REPAIR/1.3.0`、`IMPORT-DECIMATE/1.1.0` 算法及 GPU/CPU/Worker/shader、保存/export、Schema/Command/CAS/ownership 不变，无资产迁移；验证、限制和回滚见 [Blender 镜像运行时变更卡](changes/CHG-20260923-BLENDER-SERVER-RUNTIME.md)。本地修改，尚未部署。
+
 2026-09-23 M04：`MATERIAL-REFERENCE-UPLOAD/1.0.0` 对明确材质参考自动选择原尺寸无损、经逐像素验证的近无损及最后的最高可容纳质量上传副本，完整请求严格小于莉刻 4,000,000 字节。原图与去光照保留，法线/蒙版/结构输入仍精确；`REFERENCE-LIGHTING/2.0.1` 仅迁移无远端 taskId 的已知旧上传前失败，不重复已接受任务。GPU/CPU/Worker/shader 投影、UV、保存导出、Schema/Command/CAS/ownership 不变，无资产迁移；验证与回滚见 [材质参考上传变更卡](changes/CHG-20260923-MATERIAL-REFERENCE-UPLOAD.md)。本地修复，未部署此补丁。
 
 2026-09-22 M04/M08：`GPT-RETURN-BACKGROUND-CLEANUP` v1 仅在 v2 返图透明边界 QA 失败后尝试 alpha 八连通分量清理。主体占全部非零 alpha 至少 80% 且主体独立通过原严格边界容差；仅移除触及画布边缘、至少 90% 像素位于预期包围盒外 2px 的独立分量，删除总量不得超过主体 10%。弱 alpha 桥接也视为相连；不按 RGB 删除，不裁原蒙版，不移动缩放返图；清理后原 QA 再验。超过 4096² 或 4096 分量不自动修复；协作取消、失败不改原远端资产。清理像素用于恢复画布，随后 GPU/CPU/Worker 投影及保存导出沿用同一结果；无 Schema/资产迁移。回滚移除恢复入口的清理重试即可。此保守方案不保证修复贴近主体/连通黑边或不透明白底。未拿到用户原始异常 PNG，验证采用合成透明返图。

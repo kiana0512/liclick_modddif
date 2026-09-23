@@ -2,6 +2,18 @@
 # M15 / CLOUD-DEPLOYMENT v1.0.0. Build from the repository root.
 ARG NODE_IMAGE=node:22-bookworm-slim
 ARG NGINX_IMAGE=nginxinc/nginx-unprivileged:1.27-alpine
+# BLENDER-SERVER-RUNTIME/1.0.0: the production image owns the executable,
+# independent of any host installation. Keep this download layer cacheable.
+FROM ${NODE_IMAGE} AS blender-runtime
+RUN test "$(dpkg --print-architecture)" = amd64 \
+    && apt-get update && apt-get install -y --no-install-recommends ca-certificates curl xz-utils \
+    && curl --fail --location --retry 3 --connect-timeout 30 --max-time 900 \
+      https://download.blender.org/release/Blender5.1/blender-5.1.2-linux-x64.tar.xz -o /tmp/blender.tar.xz \
+    && echo 'aaccb355f50183979b698bcce7467103a76261b5fa59f4972295842662a285fb  /tmp/blender.tar.xz' | sha256sum --check --strict \
+    && mkdir -p /opt/blender \
+    && tar -xJf /tmp/blender.tar.xz --strip-components=1 -C /opt/blender \
+    && rm /tmp/blender.tar.xz
+
 FROM ${NODE_IMAGE} AS deps
 WORKDIR /repo
 RUN apt-get update && apt-get install -y --no-install-recommends openssl ca-certificates \
@@ -60,26 +72,35 @@ ARG RELEASE_VERSION
 ARG BUILD_TIME
 ARG ATLAS_NPM_REGISTRY=https://registry-cnpm.lilithgame.com/
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates openssl tini \
+      libsm6 libice6 libx11-6 libxxf86vm1 libxfixes3 libxi6 libxrender1 \
+      libgl1 libegl1 libxkbcommon0 libgomp1 libdbus-1-3 \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid 10001 liclick \
     && useradd --uid 10001 --gid 10001 --home /data/workspace --shell /usr/sbin/nologin --system liclick
 # Server-managed runtime, pinned to the existing secure login contract.
 RUN npm install --global @lilith/atlas-skillhub@2.9.1 --registry="${ATLAS_NPM_REGISTRY}"
 WORKDIR /app
+COPY --from=blender-runtime /opt/blender/ /opt/blender/
 COPY --from=build --chown=liclick:liclick /repo/package.json ./package.json
 COPY --from=build --chown=liclick:liclick /out/server/ ./apps/server/
 COPY --from=build --chown=liclick:liclick /repo/apps/server/dist/ ./apps/server/dist/
 COPY --from=build --chown=liclick:liclick /repo/apps/server/sql/ ./apps/server/sql/
 COPY --from=build --chown=liclick:liclick /repo/apps/server/scripts/migrate-cloud-projects.mjs ./apps/server/scripts/migrate-cloud-projects.mjs
 COPY --chown=liclick:liclick deploy/validate-runtime-env.mjs ./deploy/validate-runtime-env.mjs
+COPY --chown=liclick:liclick deploy/verify-blender-runtime.mjs ./deploy/verify-blender-runtime.mjs
+COPY --chown=liclick:liclick apps/server/scripts/test-import-uv-merge-distance.py ./apps/server/scripts/test-import-uv-merge-distance.py
 RUN mkdir -p /data/workspace && chown -R liclick:liclick /data
 ENV NODE_ENV=production SERVER_HOST=0.0.0.0 SERVER_PORT=4517 \
     HOME=/data/workspace LICLICK_WORKSPACE_DIR=/data/workspace \
     LICLICK_RUNTIME_MODE=cloud LICLICK_PROJECT_REPOSITORY=postgres LICLICK_SERVE_WEB=false \
+    BLENDER_EXECUTABLE_PATH=/opt/blender/blender \
     ATLAS_SKILLHUB_PATH=/usr/local/lib/node_modules/@lilith/atlas-skillhub/dist/index.js \
     LICLICK_RELEASE_ID=${RELEASE_ID} LICLICK_GIT_SHA=${GIT_SHA} \
     LICLICK_RELEASE_VERSION=${RELEASE_VERSION} LICLICK_BUILD_TIME=${BUILD_TIME}
 USER liclick:liclick
+# Exercise the shipped Python kernel and GLB I/O as the actual runtime user.
+# Missing shared libraries, permissions or UV QA failures must block publication.
+RUN node deploy/verify-blender-runtime.mjs
 EXPOSE 4517
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s CMD \
   node -e "fetch('http://127.0.0.1:4517/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
