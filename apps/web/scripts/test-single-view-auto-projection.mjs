@@ -32,6 +32,7 @@ const declarations = [];
 let recovery;
 const batchGuards = [];
 let recoveryEffect;
+let completeViewSource, checkpointSource;
 function visit(node) {
   if (ts.isFunctionDeclaration(node) && names.includes(node.name?.text)) declarations.push(node.getText(ast));
   if (ts.isBinaryExpression(node) && node.left.getText(ast) === 'recoverSingleViewProjectionsRef.current') recovery = node.getText(ast);
@@ -39,6 +40,8 @@ function visit(node) {
     /(?:begin|end)ProjectedPreviewBatch/.test(node.thenStatement.getText(ast))) batchGuards.push(node.getText(ast));
   if (ts.isCallExpression(node) && node.expression.getText(ast) === 'useEffect' &&
     node.arguments[0]?.getText(ast).includes('let wakePending')) recoveryEffect = node.arguments[0].getText(ast);
+  if (ts.isVariableDeclaration(node) && node.name.getText(ast) === 'completeView') completeViewSource = node.initializer.getText(ast);
+  if (ts.isIfStatement(node) && node.expression.getText(ast).startsWith('needsTextureCompletionCheckpoint(')) checkpointSource = node.getText(ast);
   ts.forEachChild(node, visit);
 }
 visit(ast);
@@ -49,7 +52,8 @@ assert.match(panel, /wakeSingleViewProjectionsRef.current\?\.\(\);\s*\}, \[gener
 assert.match(panel, /await recoverSingleViewProjectionsRef.current\?\.\(\)/);
 assert.match(panel, /setTimeout\(\(\) => void recover\(\), wakePending \? 0 : 5000\)/);
 assert.match(panel, /removeEventListener\('online', recover\)/);
-assert.match(panel, /syncGeneration\(withProjectionCommit\(generation, layer.id\)\);\s*try \{\s*await saveCriticalProjectState/);
+assert.match(panel, /await persistProjectionCommit\(generation, layer.id, syncGeneration/);
+assert(completeViewSource && checkpointSource, 'exercise the actual completion and checkpoint wiring');
 
 // Execute the actual effect: a result arriving during recovery queues an
 // immediate next pass, not a five-second delay or concurrent asset upload.
@@ -85,17 +89,22 @@ assert.equal(timers.size, 0);
 assert.equal(listeners.size, 0);
 assert.equal(wakeRef.current, undefined);
 
-function fixture(allowUpdates = false) {
+function fixture(allowUpdates = false, multiview = false) {
   let rows = [], generations = [base], failureCount = 0, sequence = 0;
   let cleanedImages = 0;
   let onAsset, onSave, previewRows;
   const state = { currentProjectId: 'p' };
   const capture = { id: 'capture', objectId: 'o', camera: { frozen: true }, maskUrl: 'mask', depthUrl: 'depth' };
   const project = { id: 'p', workspaceMode: 'download-fallback', captures: [capture] };
-  const notices = [], saves = [];
+  const notices = [], saves = [], progress = [];
   const sync = (g) => { generations = [g, ...generations.filter((item) => item.id !== g.id)]; };
   const scope = {
     ...policy, console: { warn() {}, error() {} },
+    signal: undefined, throwIfTexturePipelineCancelled() {}, textureBatchWasCancelled: () => false,
+    isMultiviewRequest: multiview,
+    pendingGenerations: [{ generationId: base.id, capture }], submittedGenerations: [base],
+    updateTexturePipelineProgress: (value, title) => progress.push({ value, title }),
+    setGenerateNotice: (notice) => notices.push(notice),
     currentProject: project, currentProjectId: 'p', workflowSubmissionLocked: false,
     submitLocksRef: { current: new Set() }, recoverSingleViewProjectionsRef: {},
     autoProjectionFailureNoticeRef: { current: new Map() },
@@ -128,13 +137,66 @@ function fixture(allowUpdates = false) {
     SINGLE_VIEW_MINIMUM_PROJECTION_FACING: 0.18, t: (key) => key,
   };
   const api = new Function(...Object.keys(scope), compile(`${declarations.join('\n')}\n${recovery};
-    return { add: addGenerationAsProjectedLayer, recover: recoverSingleViewProjectionsRef.current };`))(...Object.values(scope));
-  return { ...api, rows: () => rows, generations: () => generations, notices, saves, state,
+    let singleViewProjectionSaved = false, completedTextureViewCount = 0;
+    const completeView = ${completeViewSource};
+    const saveGenerationStateBestEffort = () => saveCriticalProjectState();
+    return { add: addGenerationAsProjectedLayer, recover: recoverSingleViewProjectionsRef.current,
+      complete: (generation) => completeView(generation, generation),
+      checkpoint: async (results, failureMessages = []) => {
+        const completedGenerations = results.map((result) => result.generation);
+        const projectedGenerationCount = useLayerStore.getState().layers.filter((layer) =>
+          completedGenerations.some((generation) => layer.generationId === generation.id)).length;
+        ${checkpointSource}
+      }
+    };`))(...Object.values(scope));
+  return { ...api, rows: () => rows, generations: () => generations, notices, saves, state, progress,
     cleanedImages: () => cleanedImages,
     previewRows: () => previewRows ?? rows, onSave: (callback) => { onSave = callback; },
     batch: (multi, phase) => new Function('isMultiviewRequest', 'useLayerStore', compile(batchGuards[phase]))(multi, scope.useLayerStore),
     fail: (count) => { failureCount = count; }, deleteAll: () => { rows = []; },
     setGenerations: (value) => { generations = value; }, onAsset: (callback) => { onAsset = callback; } };
+}
+// Actual single-view completion remains pending until the projection save ACK,
+// then reuses that exact generation receipt instead of a second project save.
+for (const provider of ['modelview-single-view', 'liclick-atlas']) {
+  const completed = fixture();
+  let releaseSave, enteredSave;
+  const saving = new Promise((resolve) => { enteredSave = resolve; });
+  const gate = new Promise((resolve) => { releaseSave = resolve; });
+  completed.onSave(() => { enteredSave(); return gate; });
+  let settled = false;
+  const operation = completed.complete({ ...base, metadata: { ...base.metadata, provider } })
+    .then((result) => { settled = true; return result; });
+  await saving;
+  assert.equal(settled, false, 'rendered is not yet durably completed');
+  assert.equal(completed.previewRows().length, 1);
+  assert.equal(completed.progress.at(-1).title, '回贴完成，正在保存');
+  releaseSave();
+  const result = await operation;
+  assert.deepEqual(result.generation, completed.saves[0].generations[0], 'no timestamp/metadata rewrite after ACK');
+  await completed.checkpoint([result]);
+  assert.equal(completed.saves.length, 1, `${provider}: two serial post-projection checkpoints reduced to one`);
+}
+// No ACK (save failure or pre-existing in-memory receipt) cannot bypass the
+// terminal checkpoint. Deletion/failure/multiview also retain that checkpoint.
+const saveFailure = fixture();
+let failSave = true;
+saveFailure.onSave(() => { if (failSave) { failSave = false; throw new Error('save failed'); } });
+const failedProjection = await saveFailure.complete(base);
+assert.equal(failedProjection.projected, false);
+await saveFailure.checkpoint([failedProjection]);
+assert.equal(saveFailure.saves.length, 2);
+const reused = fixture();
+await reused.add(base, { automatic: true });
+const existing = await reused.complete(reused.generations()[0]);
+await reused.checkpoint([existing]);
+assert.equal(reused.saves.length, 2, 'metadata alone is not a fresh save ACK');
+for (const scenario of ['multiview', 'deleted', 'failed']) {
+  const completing = fixture(false, scenario === 'multiview');
+  const result = await completing.complete(base);
+  if (scenario === 'deleted') completing.deleteAll();
+  await completing.checkpoint([result], scenario === 'failed' ? ['failure'] : []);
+  assert.equal(completing.saves.length, 2, scenario);
 }
 // Execute both production transaction branches with the same single/multiview input.
 for (const mode of ['single', 'multiview']) {

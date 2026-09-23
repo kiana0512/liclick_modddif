@@ -171,8 +171,13 @@ try {
   );
   assert.match(
     viewportSource,
-    /getUvPaintLayer\(model, true\)[\s\S]*?prepareProjectedEraserGpuPreview\(layer, model\)\.then\([\s\S]*?beginLiveEraserPreview\(layer, model\.group\)/,
-    'The active projected layer must keep its neutral GPU mask and exact display stack warm before eraser activation.',
+    /getUvPaintLayer\(model, true\)[\s\S]*?prepareProjectedEraserGpuPreview\(layer, model\)\.then\([\s\S]*?beginLiveEraserPreview\(layer, model\.group, false\)/,
+    'The active projected layer must keep its neutral GPU mask warm without replacing the verified idle UV display.',
+  );
+  assert.match(
+    viewportSource,
+    /if \(paintTool === 'eraser'\)[\s\S]*?beginLiveEraserPreview\(layer, model\.group\)[\s\S]*?prepareProjectedEraserGpuPreview\(layer, model\)/,
+    'Selecting the eraser must arm the exact live display before accepting the first stroke.',
   );
   assert.match(
     viewportSource,
@@ -196,7 +201,7 @@ try {
   );
   assert.match(
     viewportSource,
-    /previousLayer\.objectId !== model\.objectId \|\|[\s\S]*?previousLayer\.layerId !== activePaintLayerId[\s\S]*?previousLayer\.pendingPaintCommits > 0 \|\|[\s\S]*?previousLayer\.liveEraserPreviewActive \|\|[\s\S]*?previousLayer\.projectedEraserResidentHandoffPromise[\s\S]*?await handoffPromise;[\s\S]*?endLiveEraserPreview\(previousLayer\);[\s\S]*?await previousLayer\.projectedEraserResidentHandoffPromise;[\s\S]*?const layer = getUvPaintLayer\(model\);/,
+    /previousLayer\.objectId !== model\.objectId \|\|[\s\S]*?previousLayer\.layerId !== activePaintLayerId[\s\S]*?previousLayer\.pendingPaintCommits > 0 \|\|[\s\S]*?previousLayer\.liveEraserPreviewActive \|\|[\s\S]*?previousLayer\.projectedEraserResidentHandoffPromise[\s\S]*?await handoffPromise;[\s\S]*?endLiveEraserPreview\(previousLayer, gl\);[\s\S]*?await previousLayer\.projectedEraserResidentHandoffPromise;[\s\S]*?const layer = getUvPaintLayer\(model\);/,
     'Layer or model selection must wait for both the queued pixel commit and the resident material handoff before reusing the single live eraser sampler.',
   );
   assert.match(
@@ -211,7 +216,7 @@ try {
   );
   assert.match(
     viewportSource,
-    /liclick:projected-material-resident[\s\S]*?projectedEraserResidentHandoffsRef\.current[\s\S]*?endLiveEraserPreview\(layer\)/,
+    /liclick:projected-material-resident[\s\S]*?projectedEraserResidentHandoffsRef\.current[\s\S]*?endLiveEraserPreview\(layer, gl\)/,
     'A resident material publication must retry and complete pending projected eraser handoffs.',
   );
   const claimStart = viewportSource.indexOf('if (!result) return;\n      setViewportPaintPointer');

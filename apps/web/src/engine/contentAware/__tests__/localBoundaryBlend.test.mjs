@@ -42,6 +42,35 @@ test('worker launch transfers disposable pixels but keeps resident topology buff
   }
 });
 
+test('production worker result omits atlas-sized diagnostics without changing sparse RGBA or stats', async () => {
+  const f = fixture(4);
+  let request;
+  const PreviousWorker = globalThis.Worker;
+  globalThis.Worker = class {
+    postMessage(nextRequest) {
+      request = nextRequest;
+      globalThis.queueMicrotask(() => this.onmessage({
+        data: {
+          kind: 'result',
+          filledRgba: new ArrayBuffer(16),
+          stats: { repairedPixels: 1, outputChecksum: 42 },
+        },
+      }));
+    }
+    terminate() {}
+  };
+  try {
+    const result = await runSurfaceAwareRepair(f, { includeDiagnostics: false });
+    assert.equal(request.includeDiagnostics, false);
+    assert.equal(result.filledRgba.byteLength, 16);
+    assert.equal(result.stats.outputChecksum, 42);
+    assert.equal('repairedMask' in result, false);
+    assert.equal('sourceExclusionMask' in result, false);
+  } finally {
+    if (PreviousWorker === undefined) delete globalThis.Worker; else globalThis.Worker = PreviousWorker;
+  }
+});
+
 test('a narrow seam interpolates both local boundaries instead of a constant or nearest-owner stripe', () => {
   const f = fixture(9); pixel(f, 0, [110, 80, 75]); pixel(f, 8, [150, 100, 95]); f.writeMask.fill(255, 1, 8);
   const before = f.rgba.slice(); const repaired = repairSurfaceTexture(f);
@@ -58,13 +87,13 @@ test('a narrow seam interpolates both local boundaries instead of a constant or 
   assert.equal(repaired.stats.sourceRegionLockedComponents, 0);
 });
 
-test('mouth pink uses its own boundary, never the nearby yellow skin or foreign seam link', () => {
+test('no-seam fast path keeps mouth pink on its own boundary', () => {
   const f = fixture(14);
   f.topologyRegionIds.fill(2, 6);
   for (let i = 0; i < 6; i++) pixel(f, i, [230, 175, 35]);
   pixel(f, 6, [140, 80, 90]); pixel(f, 13, [160, 100, 105]); f.writeMask.fill(255, 7, 13);
   f.seamLinks = new Uint32Array([5, 9]);
-  const repaired = repairSurfaceTexture({ ...f, maxSeamCrossings: 1, fillUnreachableWithGlobalAverage: true, lockToDominantSourceRegion: true });
+  const repaired = repairSurfaceTexture({ ...f, maxSeamCrossings: 0, fillUnreachableWithGlobalAverage: true, lockToDominantSourceRegion: true });
   for (let i = 7; i < 13; i++) {
     const [r, g, b] = rgb(repaired, i);
     assert.ok(r >= 140 && r <= 160 && g <= 100 && b >= 90, 'only pink local boundary colors');
@@ -104,7 +133,10 @@ test('blend is deterministic, cancellable, and radius scales without lowering ou
   let abort = false;
   assert.throws(() => repairSurfaceTexture(f, { shouldAbort: () => abort, onProgress: (p) => { if (p.phase === 'blending') abort = true; } }), /cancelled/);
   for (const size of [1024, 2048, 4096, 8192]) {
-    const p = createVisibleSurfaceCompletionPolicy(size).propagation;
+    const policy = createVisibleSurfaceCompletionPolicy(size);
+    const p = policy.propagation;
+    assert.equal(policy.gapMask.minimumComponentPixels, 1);
+    assert.equal(policy.gapMask.minimumComponentSpan, 0);
     assert.equal(p.maxDistance, size / 128); assert.equal(p.localBoundaryBlend, true);
     assert.equal(p.adaptiveGapDistance, true);
     assert.equal(p.fillUnreachableWithGlobalAverage, false); assert.equal(p.maxSeamCrossings, 0);
@@ -126,6 +158,26 @@ test('adaptive distance fills a wide gap from original boundaries without promot
   assert.ok(rgb(result,128)[0] > 120 && rgb(result,128)[0] < 150, 'both boundaries blend at the centre');
   for(let i=1;i<progress.length;i++) assert.ok(progress[i]>=progress[i-1], 'expansion never resets progress');
   assert.deepEqual(f.rgba, original);
+});
+
+test('flat local colour reaches a byte-identical fixed point without spending all blend iterations', () => {
+  const f = fixture(65);
+  pixel(f, 0, [132, 84, 96]);
+  pixel(f, 64, [132, 84, 96]);
+  f.writeMask.fill(255, 1, 64);
+  const blendingProgress = [];
+
+  const result = repairSurfaceTexture(f, {
+    onProgress: progress => {
+      if (progress.phase === 'blending') blendingProgress.push(progress);
+    },
+  });
+
+  assert.equal(result.stats.repairedPixels, 63);
+  assert.equal(blendingProgress.length, 1);
+  for (let index = 1; index < 64; index += 1) {
+    assert.deepEqual(rgb(result, index), [132, 84, 96]);
+  }
 });
 
 test('adaptive distance follows a winding selected gap, never jumps an unselected barrier', () => {

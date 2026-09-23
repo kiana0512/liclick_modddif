@@ -1,0 +1,31 @@
+{
+  "health": {
+    "ready": true,
+    "workflow": "autodl-li3d-8-2-768-2step-20260921-v1"
+  },
+  "job": {
+    "id": "89f1d03776915cb526d86834cde03f33f00d05a049e02a23f0a7a1a49049ae67",
+    "status": "succeeded",
+    "workflow": "autodl-li3d-8-2-768-2step-20260921-v1",
+    "timings": {
+      "bodyReadMs": 12.745443731546402,
+      "validateAndStoreMs": 154.05968576669693,
+      "acceptMs": 166.80612415075302,
+      "serviceQueueMs": 1.9235201179981232,
+      "comfyInputUploadMs": 23.509647697210312,
+      "comfySubmitMs": 36.325596272945404,
+      "executionMs": 2798,
+      "comfySubmitAndQueueMs": 37.01171875,
+      "completionDetectionMs": 514.35888671875,
+      "comfyResultReadMs": 2.496488392353058,
+      "resultValidateAndStoreMs": 41.73438623547554,
+      "workerTotalMs": 3417.5861813127995
+    },
+    "materialCacheId": "169312860221a60c97ca27ff376b4414b4454dedd52d8087cecd57779505bc9b"
+  },
+  "outputSize": [
+    2048,
+    2048
+  ],
+  "measurementBoundary": "instance-local personal API; excludes browser and public network"
+}

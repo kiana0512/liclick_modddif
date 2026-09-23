@@ -26,7 +26,7 @@ test('Bundle gate keeps its hard limit and local release headroom', () => {
     const run = (...args) => spawnSync(process.execPath,
       [path.join(root,'scripts/check-web-bundle-budget.mjs'),...args], {cwd:temporary,encoding:'utf8'});
     for(const remaining of [-8,-4,0,255,256,430]) {
-      fs.writeFileSync(path.join(assets,'other.js'),Buffer.alloc(3256500-fixed-remaining));
+      fs.writeFileSync(path.join(assets,'other.js'),Buffer.alloc(3269800-fixed-remaining));
       assert.equal(run().status,remaining>=0 ? 0 : 1);
       assert.equal(run('--reserve-bytes=256').status,remaining>=256 ? 0 : 1);
     }
@@ -176,6 +176,11 @@ test('master verifies both containers with no publishing and release retains eve
 
 test('runtime packaging and migration agree on paths and preserve existing PVC', () => {
   const docker = read('deploy/Dockerfile');
+  assert.match(docker, /until corepack prepare pnpm@9\.15\.4 --activate/);
+  assert.match(docker, /corepack prepare failed after \$\{prepare_attempt\} attempts/);
+  assert.match(docker, /until pnpm install --frozen-lockfile/);
+  assert.match(docker, /pnpm install failed after \$\{install_attempt\} attempts/);
+  assert.equal((docker.match(/-ge 3/g) ?? []).length, 2);
   assert.match(docker, /COPY packages\/contracts\/package.json/);
   assert.match(docker, /pnpm run build:release/);
   assert.match(docker, /pnpm run check:cloud-artifact/);

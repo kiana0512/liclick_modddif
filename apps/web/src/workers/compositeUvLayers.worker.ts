@@ -13,21 +13,37 @@ type CompositeUvResponse =
 
 self.onmessage = async (event: MessageEvent<CompositeUvRequest>) => {
   const { id, layers } = event.data;
-  const decodedBitmaps: ImageBitmap[] = [];
+  const ownedBitmaps = new Set(layers.flatMap((layer) => ('bitmap' in layer ? [layer.bitmap] : [])));
+  const controller = new AbortController();
+  let output: ImageBitmap | undefined;
   try {
-    const preparedLayers = await Promise.all(
+    // Drain native decodes before replying on failure. Aborting fetches avoids
+    // waiting for unrelated network work; already-started decodes still settle.
+    const prepared = await Promise.allSettled(
       layers.map(async (layer) => {
         if ('bitmap' in layer) return layer;
-        const response = await fetch(layer.imageUrl, { credentials: 'same-origin' });
-        if (!response.ok) throw new Error(`UV layer request failed (${response.status}).`);
-        const bitmap = await createImageBitmap(await response.blob(), {
-          imageOrientation: 'none',
-          premultiplyAlpha: 'none',
-        });
-        decodedBitmaps.push(bitmap);
-        return { bitmap, opacity: layer.opacity };
+        try {
+          const response = await fetch(layer.imageUrl, {
+            credentials: 'same-origin', signal: controller.signal,
+          });
+          if (!response.ok) throw new Error(`UV layer request failed (${response.status}).`);
+          const bitmap = await createImageBitmap(await response.blob(), {
+            imageOrientation: 'none',
+            premultiplyAlpha: 'none',
+          });
+          ownedBitmaps.add(bitmap);
+          return { bitmap, opacity: layer.opacity };
+        } catch (error) {
+          controller.abort(error);
+          throw error;
+        }
       }),
     );
+    if (controller.signal.aborted) throw controller.signal.reason;
+    const preparedLayers = prepared.map((result) => {
+      if (result.status === 'rejected') throw result.reason;
+      return result.value;
+    });
     const width = Math.max(1, ...preparedLayers.map(({ bitmap }) => bitmap.width || 1));
     const height = Math.max(1, ...preparedLayers.map(({ bitmap }) => bitmap.height || 1));
     const canvas = new OffscreenCanvas(width, height);
@@ -47,16 +63,16 @@ self.onmessage = async (event: MessageEvent<CompositeUvRequest>) => {
       context.drawImage(bitmap, 0, 0, width, height);
       context.restore();
       bitmap.close();
+      ownedBitmaps.delete(bitmap);
     }
 
-    const bitmap = canvas.transferToImageBitmap();
-    const response: CompositeUvResponse = { id, bitmap, width, height };
-    self.postMessage(response, { transfer: [bitmap] });
+    output = canvas.transferToImageBitmap();
+    const response: CompositeUvResponse = { id, bitmap: output, width, height };
+    self.postMessage(response, { transfer: [output] });
+    output = undefined;
   } catch (error) {
-    for (const layer of layers) {
-      if ('bitmap' in layer) layer.bitmap.close();
-    }
-    for (const bitmap of decodedBitmaps) bitmap.close();
+    for (const bitmap of ownedBitmaps) bitmap.close();
+    output?.close();
     const response: CompositeUvResponse = {
       id,
       error: error instanceof Error ? error.message : String(error),

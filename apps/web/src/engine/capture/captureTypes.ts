@@ -21,6 +21,8 @@ export type CapturePassOutput = {
 
 export type CaptureCurrentViewRequest = {
   signal?: AbortSignal;
+  /** Explicit remote normal-guide backdrop; omitted keeps other capture consumers unchanged. */
+  normalBackground?: 'black' | 'blue';
   objectId: string;
   resolution: CaptureResolution;
   aspect?: number;

@@ -1,4 +1,3 @@
-import fs from 'node:fs';
 import path from 'node:path';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { requireAuth } from '../auth/authMiddleware.js';
@@ -10,7 +9,11 @@ import {
 } from '../services/assetJobOwnership.js';
 import { fetchAssetJobSnapshot } from '../services/assetProcessingProxy.js';
 import {
-  getNormalBakeOutputPath,
+  createAssetHistoryRefreshCoordinator,
+  waitForAssetHistoryRefreshBudget,
+} from '../services/assetHistoryRefreshCoordinator.js';
+import {
+  getNormalBakeOutputMetadata,
   listNormalBakeJobs,
   type BakeChannelId,
   type NormalBakeJob,
@@ -45,6 +48,12 @@ type HistoryRecord = {
   outputs: HistoryOutput[];
   error?: string;
 };
+
+const assetHistoryRefreshCoordinator = createAssetHistoryRefreshCoordinator({
+  globalConcurrency: 8,
+  perOwnerConcurrency: 4,
+});
+const assetHistoryRefreshWaitBudgetMs = 2_750;
 
 const bakeChannelLabels: Record<BakeChannelId, string> = {
   baseColor: 'Base Color',
@@ -103,20 +112,16 @@ function bakeParameters(job: NormalBakeJob): HistoryParameter[] {
   ];
 }
 
-function bakeOutputs(job: NormalBakeJob, userId: string): HistoryOutput[] {
+async function bakeOutputs(job: NormalBakeJob, userId: string): Promise<HistoryOutput[]> {
   const outputs: HistoryOutput[] = [];
   let totalBytes = 0;
   const base = bakeEnglishBase(job);
   for (const channel of job.settings.channels) {
     const output = job.outputs?.[channel] ?? (channel === 'normal' ? job.output : undefined);
-    const outputPath = getNormalBakeOutputPath(job.id, userId, channel);
-    if (!output || !outputPath) continue;
-    let sizeBytes = 0;
-    try {
-      sizeBytes = fs.statSync(outputPath).size;
-    } catch {
-      continue;
-    }
+    if (!output) continue;
+    const metadata = await getNormalBakeOutputMetadata(job.id, userId, channel);
+    if (!metadata) continue;
+    const { sizeBytes } = metadata;
     totalBytes += sizeBytes;
     outputs.push({
       id: channel,
@@ -141,7 +146,7 @@ function bakeOutputs(job: NormalBakeJob, userId: string): HistoryOutput[] {
   return outputs;
 }
 
-function bakeHistoryRecord(job: NormalBakeJob, userId: string): HistoryRecord {
+async function bakeHistoryRecord(job: NormalBakeJob, userId: string): Promise<HistoryRecord> {
   return {
     id: job.id,
     module: 'bake',
@@ -151,7 +156,7 @@ function bakeHistoryRecord(job: NormalBakeJob, userId: string): HistoryRecord {
     createdAt: job.createdAt,
     ...(job.finishedAt ? { finishedAt: job.finishedAt } : {}),
     parameters: bakeParameters(job),
-    outputs: bakeOutputs(job, userId),
+    outputs: await bakeOutputs(job, userId),
     ...(cleanText(job.error) ? { error: cleanText(job.error) } : {}),
   };
 }
@@ -293,17 +298,23 @@ async function refreshedAssetHistory(
   const initial = (await listAssetJobHistory(userId, undefined, 100))
     .filter((record) => !record.mode || record.mode === module)
     .slice(0, Math.max(limit, 30));
-  await Promise.all(initial.map(async (record) => {
+  const refreshes = initial.map((record) => {
     const status = record.status?.toUpperCase();
-    if (status && ['SUCCEEDED', 'FAILED', 'CANCELLED'].includes(status)) return;
-    try {
-      const snapshot = await fetchAssetJobSnapshot(record.jobId, 2_500);
-      await updateAssetJobSnapshot(record.jobId, userId, snapshot);
-    } catch {
-      // The durable local record remains visible when the remote worker is
-      // offline or its retention window has expired.
-    }
-  }));
+    if (status && ['SUCCEEDED', 'FAILED', 'CANCELLED'].includes(status)) return undefined;
+    return assetHistoryRefreshCoordinator.schedule(userId, record.jobId, async () => {
+      try {
+        const snapshot = await fetchAssetJobSnapshot(record.jobId, 2_500);
+        await updateAssetJobSnapshot(record.jobId, userId, snapshot);
+      } catch {
+        // The durable local record remains visible when the remote worker is
+        // offline or its retention window has expired.
+      }
+    });
+  }).filter((refresh): refresh is Promise<void> => Boolean(refresh));
+  // A slow or unavailable worker must not hold the history response until all
+  // queued records have exhausted their individual remote timeouts. Remaining
+  // refreshes continue behind the bounded process-wide coordinator.
+  await waitForAssetHistoryRefreshBudget(refreshes, assetHistoryRefreshWaitBudgetMs);
   return listAssetJobHistory(userId, module, module === 'retopology' ? 100 : limit);
 }
 
@@ -326,13 +337,21 @@ export async function handleHistoryRoute(
   }
   const requestedLimit = Number(url.searchParams.get('limit') ?? 30);
   const limit = Math.min(100, Math.max(1, Number.isFinite(requestedLimit) ? Math.trunc(requestedLimit) : 30));
-  const records = module === 'bake'
-    ? listNormalBakeJobs(user.id, limit).map((job) => bakeHistoryRecord(job, user.id))
-    : groupedAssetHistoryRecords(
-        module,
-        await refreshedAssetHistory(user.id, module, limit),
-        limit,
-      );
+  let records: HistoryRecord[];
+  if (module === 'bake') {
+    records = [];
+    // Process one job at a time so a 100-row request cannot fan out into
+    // hundreds of concurrent filesystem operations on a shared server.
+    for (const job of await listNormalBakeJobs(user.id, limit)) {
+      records.push(await bakeHistoryRecord(job, user.id));
+    }
+  } else {
+    records = groupedAssetHistoryRecords(
+      module,
+      await refreshedAssetHistory(user.id, module, limit),
+      limit,
+    );
+  }
   sendJson(response, 200, { records });
   return true;
 }

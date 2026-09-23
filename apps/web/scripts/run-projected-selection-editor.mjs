@@ -1,16 +1,20 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { execFileSync } from 'node:child_process';
 import { createServer } from 'vite';
-const {chromium}=await import(process.env.PLAYWRIGHT_MODULE?pathToFileURL(process.env.PLAYWRIGHT_MODULE).href:'playwright');
 const root=fileURLToPath(new URL('..',import.meta.url));
 const artifacts=path.resolve(process.env.SELECTION_ARTIFACTS??path.join(root,'../../.codex-tmp/selection-editor'));
 fs.mkdirSync(artifacts,{recursive:true});
+const baseline=process.argv.includes('--capture-baseline')?execFileSync('git',['show','HEAD:apps/web/src/engine/capture/renderTargetUtils.ts'],{encoding:'utf8'}):undefined;
 const server=await createServer({root,configFile:false,appType:'custom',cacheDir:'node_modules/.vite-selection-editor',
+  plugins:baseline?[{name:'capture-regression-baseline',enforce:'pre',transform(_code,id){if(id.endsWith('/engine/capture/renderTargetUtils.ts'))return baseline;}}]:[],
   optimizeDeps:{entries:['scripts/projected-selection-editor-fixture.mjs'],include:['fflate']},resolve:{alias:{'@':`${root}/src`}},server:{host:'127.0.0.1',port:5197,strictPort:true}});
-server.middlewares.use('/__fixture',(_q,r)=>{r.setHeader('Content-Type','text/html');r.end('<!doctype html><title>Selection editor acceptance</title>');});
+server.middlewares.use('/__fixture',(_q,r)=>{r.setHeader('Content-Type','text/html');r.end('<!doctype html><title>Selection editor acceptance</title><script type="module">import {setup} from "/scripts/projected-selection-editor-fixture.mjs";setup('+Boolean(process.env.SELECTION_CAR_FILE)+').then(result=>{window.fixtureSetup=result;document.body.dataset.fixtureReady="true"}).catch(error=>{window.fixtureError=String(error?.stack??error);document.body.dataset.fixtureReady="error"})</script>');});
 if(process.env.SELECTION_CAR_FILE)server.middlewares.use('/__selection_car.fbx',(_q,r)=>{r.setHeader('Content-Type','application/octet-stream');fs.createReadStream(process.env.SELECTION_CAR_FILE).pipe(r);});
 await server.listen();console.log('PREVIEW_URL='+server.resolvedUrls.local[0]+'__fixture');
+if(process.argv.includes('--serve-only'))await new Promise(()=>{});
+const {chromium}=await import(process.env.PLAYWRIGHT_MODULE?pathToFileURL(process.env.PLAYWRIGHT_MODULE).href:'playwright');
 const browser=await chromium.launch({channel:'msedge',headless:true});
 let page;
 try{
@@ -19,15 +23,69 @@ try{
   const errors=[];page.on('pageerror',e=>{errors.push(e.message);console.log('PAGE_ERROR',e.message);});
   page.on('console',m=>{if(m.type()==='error'){errors.push(m.text());console.log('CONSOLE_ERROR',m.text());}});
   await page.goto(server.resolvedUrls.local[0]+'__fixture');
-  const setup=await page.evaluate(async car=>(await import('/scripts/projected-selection-editor-fixture.mjs')).setup(car),Boolean(process.env.SELECTION_CAR_FILE));
+  await page.waitForFunction(()=>document.body.dataset.fixtureReady);
+  const setup=await page.evaluate(()=>{if(window.fixtureError)throw Error(window.fixtureError);return window.fixtureSetup;});
   console.log('SETUP',JSON.stringify(setup));
   await page.waitForTimeout(1200);
-  const box=await page.locator('canvas').first().boundingBox();
+  let box=await page.locator('canvas').first().boundingBox();
   const stroke=async(x0,y0,x1,y1,steps=16)=>{
     await page.mouse.move(box.x+x0*box.width,box.y+y0*box.height);await page.mouse.down();
     await page.mouse.move(box.x+x1*box.width,box.y+y1*box.height,{steps});await page.mouse.up();
     await page.evaluate(()=>window.selectionFixture.settle());
   };
+  const buttonOne=page.getByRole('button',{name:'蒙版绘制：左键执行当前加选或减选工具'});
+  const resetStress=page.getByRole('button',{name:'重置压力轮次',exact:true});
+  const baselineStress=page.getByRole('button',{name:'记录落笔基线',exact:true});
+  const inspectStress=page.getByRole('button',{name:'检查压力结果',exact:true});
+  await buttonOne.waitFor();
+  if(process.argv.includes('--capture-resize')){
+    const resizeResults=[];
+    for(const [index,kind] of ['tiles','passes','readback'].entries()){
+      await page.evaluate(()=>window.selectionFixture.clear());
+      await page.evaluate(kind=>window.selectionFixture.beginCaptureResize(kind),kind);
+      await page.waitForFunction(()=>window.selectionFixture.captureResizeState().phase==='waiting');
+      const height=index%2?960:1100;
+      await page.setViewportSize({width:1280,height});
+      await page.waitForFunction(h=>Math.abs(window.selectionFixture.captureResizeState().size[1]-(h-52))<1,height);
+      const state=await page.evaluate(()=>window.selectionFixture.finishCaptureResize());
+      box=await page.locator('canvas').first().boundingBox();
+      await buttonOne.click();
+      await page.evaluate(()=>window.selectionFixture.settle());
+      await page.evaluate(()=>window.selectionFixture.screenSnapshot('resize'));
+      await stroke(.48,.42,.52,.42,6);
+      const diff=await page.evaluate(()=>window.selectionFixture.screenDiff('resize'));
+      const x=diff.centerX/diff.width,y=1-diff.centerY/diff.height;
+      console.log('CAPTURE_RESIZE_SAMPLE',JSON.stringify({kind,...state,offsetCssPixels:[(x-.5)*box.width,(y-.42)*box.height]}));
+      if(diff.count<20||Math.abs(x-.5)*box.width>4||Math.abs(y-.42)*box.height>4)throw Error('Mask/cursor offset after resize: '+JSON.stringify({kind,x,y,diff}));
+      if(state.viewport[2]!==state.size[0]||state.viewport[3]!==state.size[1])throw Error('Capture restored stale viewport: '+JSON.stringify({kind,...state}));
+      resizeResults.push({kind,...state,offsetCssPixels:[(x-.5)*box.width,(y-.42)*box.height]});
+    }
+    console.log('CAPTURE_RESIZE_ALIGNMENT',JSON.stringify(resizeResults));
+    await page.evaluate(()=>window.selectionFixture.clear());
+  }
+  const stress=[];
+  for(let round=0;round<30;round++){
+    await resetStress.click();
+    await page.waitForFunction(()=>JSON.parse(document.querySelector('#button-one-stress-report')?.textContent||'{}').phase==='ready');
+    const beforeActivation=await page.evaluate(()=>window.selectionFixture.state().activationRevision);
+    const clicks=1+(round%3);
+    for(let click=0;click<clicks;click++)await buttonOne.click();
+    const afterActivation=await page.evaluate(()=>window.selectionFixture.state().activationRevision);
+    if(afterActivation-beforeActivation<clicks)throw Error(`Button 1 activation token lost at round ${round+1}`);
+    await baselineStress.click();
+    await page.waitForFunction(()=>JSON.parse(document.querySelector('#button-one-stress-report')?.textContent||'{}').phase==='baseline');
+    const y=.42+(round%3)*.08;
+    await stroke(.43,y,.57,y,12);
+    await inspectStress.click();
+    await page.waitForFunction(()=>JSON.parse(document.querySelector('#button-one-stress-report')?.textContent||'{}').phase==='painted');
+    const result=JSON.parse(await page.locator('#button-one-stress-report').textContent());
+    if(!result.content||!result.hash)throw Error(`Button 1 did not paint at round ${round+1}`);
+    if(result.diff.count<20)throw Error(`Button 1 overlay missing at round ${round+1}: ${JSON.stringify(result.diff)}`);
+    const cx=result.diff.centerX/result.diff.width,cy=1-result.diff.centerY/result.diff.height;
+    if(Math.abs(cx-.5)>.16||Math.abs(cy-y)>.16)throw Error(`Button 1 overlay drift at round ${round+1}: ${JSON.stringify({cx,cy,y,diff:result.diff})}`);
+    stress.push({round:round+1,clicks,activationRevision:afterActivation,overlayPixels:result.diff.count,center:[cx,cy],maskHash:result.hash});
+  }
+  console.log('BUTTON_ONE_STRESS',JSON.stringify(stress));
   await page.evaluate(()=>window.selectionFixture.start());
   await stroke(.42,.42,.58,.42);
   const cold=await page.evaluate(()=>window.selectionFixture.stop());

@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { isViewportInteractionBusy } from '@/engine/viewport/viewportInteractionState';
+import { isViewportInteractionBusy } from '@/engine/viewport/input';
 import { waitForBrowserPaint } from '@/utils/browserScheduling';
 
 export type ContentAwareTopologyPhase = 'analyze' | 'rasterize' | 'seams' | 'complete';

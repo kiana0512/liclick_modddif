@@ -42,6 +42,18 @@ const send = async (overrides = {}) => {
 };
 const bytes = result => { assert.equal(result.type, 'result'); return [...new Uint8ClampedArray(result.output)]; };
 const first = bytes(await send());
+const attributed = await send({ renderedColorMask: new Uint8Array([200]).buffer });
+assert.deepEqual(
+  [...new Uint8Array(attributed.renderedColorMask)],
+  [Math.round(200 * 128 / new Uint8ClampedArray(attributed.output)[3])],
+  'Worker updates rendered-color attribution from the exact old/new alpha bytes',
+);
+const transparent = await send({
+  front: new Uint8ClampedArray([0, 0, 0, 128]).buffer,
+  opacity: 0,
+  renderedColorMask: new Uint8Array([211]).buffer,
+});
+assert.deepEqual([...new Uint8Array(transparent.renderedColorMask)], [211]);
 assert.deepEqual(bytes(await send()), first);
 assert.equal(decodes, 1, 'unchanged underlay must decode only once across transferred outputs');
 assert.deepEqual(bytes(await send({ opacity: 0.3 })), bytes(await send({ opacity: 0.3, underlayCacheKey: undefined })));

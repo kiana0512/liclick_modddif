@@ -1,5 +1,8 @@
 import type { Generation } from '@/types/generation';
+import type { Capture } from '@/types/capture';
+import { urlToDataUrl } from './workspaceApiClient';
 import { getWorkspaceApiBase } from './workspaceApiBase';
+import { personalRepaintEnabled } from './personalRepaintMode';
 
 const workspaceApiBase = getWorkspaceApiBase(import.meta.env.VITE_LICLICK_WORKSPACE_API);
 
@@ -24,17 +27,27 @@ type ModelviewGenerationInput = {
   modelViewReferenceId?: string;
 };
 
-export type ModelviewInpaintInput = ModelviewGenerationInput & {
+export type ModelviewSingleViewInpaintInput = ModelviewGenerationInput & {
+  resultBlend?: { version: 1; currentImage: { path: string; dataUrl: string };
+    objectMask: { path: string; dataUrl: string };
+    camera: { projection: 'perspective' | 'orthographic'; projectionMatrix: number[] } };
+  promptPolishEnabled?: boolean;
+  normalImage: { path: string; dataUrl: string };
   mask: {
     path: string;
     dataUrl: string;
   };
 };
 
-export type ModelviewSingleViewInput = ModelviewGenerationInput;
-export type ModelviewSingleViewInpaintInput = ModelviewInpaintInput;
+type ModelviewNormalInput = { normalImage: { path: string; dataUrl: string } };
+export type ModelviewSingleViewInput = ModelviewGenerationInput & ModelviewNormalInput & { mask: { path: string; dataUrl: string } };
+export type ModelviewInpaintInput = ModelviewSingleViewInpaintInput & { referenceViewCount: number };
 
 type ModelviewResponse = {
+  resultComposition?: string;
+  rawResultUrl?: string;
+  resultBlendMaskUrl?: string;
+  resultBlendBaseUrl?: string;
   id: string;
   resultUrl?: string;
   resultUrls?: string[];
@@ -47,7 +60,7 @@ async function requestJson<T>(
   path: string,
   init?: RequestInit & { timeoutMs?: number },
 ): Promise<T> {
-  const { timeoutMs = 1_920_000, headers, signal, ...fetchInit } = init ?? {};
+  const { timeoutMs = 2_760_000, headers, signal, ...fetchInit } = init ?? {};
   const requestHeaders = new Headers(headers);
   if (fetchInit.body && !requestHeaders.has('content-type')) {
     requestHeaders.set('content-type', 'application/json');
@@ -82,6 +95,23 @@ async function requestJson<T>(
   }
 }
 
+export async function getGenerationServerLabel(provider: unknown, signal?: AbortSignal): Promise<string> {
+  if (provider === 'autodl-personal') return 'AutoDL · pro-78993043bdb0';
+  const routes: Record<string, string> = {
+    'modelview-int8': 'status',
+    'modelview-single-view': 'status',
+    'modelview-single-view-inpaint': 'status',
+  };
+  const route = typeof provider === 'string' ? routes[provider] : undefined;
+  if (!route) return provider === 'liclick-atlas' ? '莉刻服务 · 算力服务器未公开' : '服务器信息暂不可用';
+  try {
+    const status = await requestJson<{ serviceUrl: string }>(`/api/modelview/${route}`, { signal, timeoutMs: 10000 });
+    return `LI3D 后端 · ${new URL(status.serviceUrl).host}`;
+  } catch {
+    return 'LI3D 后端 · 服务器信息暂不可用';
+  }
+}
+
 function toGeneration(
   input: ModelviewGenerationInput,
   result: ModelviewResponse,
@@ -113,6 +143,9 @@ function toGeneration(
       modelviewClientId: result.modelviewClientId,
       resultUrls: result.resultUrls,
       output: result.output,
+      ...(result.resultComposition ? { resultComposition: result.resultComposition,
+        rawResultUrl: result.rawResultUrl, resultBlendMaskUrl: result.resultBlendMaskUrl,
+        resultBlendBaseUrl: result.resultBlendBaseUrl } : {}),
       objectId: input.objectId,
       materialReferenceId: input.materialReferenceId,
       materialReferenceGroupId: input.materialReferenceGroupId,
@@ -129,44 +162,63 @@ function toGeneration(
 
 export function createModelviewApiClient() {
   return {
+    async prepareResultBlend(currentEffectUrl: string | undefined, capture: Capture, signal?: AbortSignal): Promise<NonNullable<ModelviewSingleViewInpaintInput['resultBlend']>> {
+      if (!currentEffectUrl) throw new Error('生成前的当前视角图不可用，请重新捕获。');
+      signal?.throwIfAborted();
+      const [current, objectMask] = await Promise.all([urlToDataUrl(currentEffectUrl), urlToDataUrl(capture.maskUrl)]);
+      signal?.throwIfAborted();
+      return { version: 1,
+        currentImage: { path: `${capture.id}-blend-base.png`, dataUrl: current },
+        objectMask: { path: `${capture.id}-object-mask.png`, dataUrl: objectMask },
+        camera: { projection: capture.camera.projection, projectionMatrix: [...capture.camera.projectionMatrix] },
+      };
+    },
     async generateSingleView(
       input: ModelviewSingleViewInput,
       options?: { signal?: AbortSignal },
     ): Promise<Generation> {
-      const result = await requestJson<ModelviewResponse>('/api/modelview/single-view', {
+      const result = await requestJson<ModelviewResponse>('/api/modelview/inpaint', {
         method: 'POST',
         signal: options?.signal,
-        body: JSON.stringify(input),
+        body: JSON.stringify({ ...input, referenceViewCount: input.materialReferenceRole === 'multi-view' ? 6 : 1 }),
       });
       return toGeneration(
         input,
         result,
         'modelview-single-view',
-        '2026.08.26-c0e6218-single-view-4step-r1',
+        input.materialReferenceRole === 'multi-view' ? 'modelview-inpaint' : 'modelview-single-view-inpaint',
       );
     },
     async generateSingleViewInpaint(
       input: ModelviewSingleViewInpaintInput,
       options?: { signal?: AbortSignal },
     ): Promise<Generation> {
-      const result = await requestJson<ModelviewResponse>('/api/modelview/single-view-inpaint', {
+      const result = await requestJson<ModelviewResponse>('/api/modelview/inpaint', {
         method: 'POST',
         signal: options?.signal,
-        body: JSON.stringify(input),
+        body: JSON.stringify({ ...input, referenceViewCount: input.materialReferenceRole === 'multi-view' ? 6 : 1 }),
       });
       return toGeneration(
         input,
         result,
         'modelview-single-view-inpaint',
-        '2026.08.31-e39ed5f-single-view-inpaint-4input-rseed-steps2-r1',
+        input.materialReferenceRole === 'multi-view' ? 'modelview-inpaint' : 'modelview-single-view-inpaint',
       );
     },
     async generateInpaint(
       input: ModelviewInpaintInput,
-      options?: { signal?: AbortSignal },
+      options?: { signal?: AbortSignal; onStatus?: (status: string) => void },
     ): Promise<Generation> {
+      if (personalRepaintEnabled) {
+        const { generatePersonalRepaint } = await import('./personalRepaintClient');
+        const result = await generatePersonalRepaint(input, options?.signal, options?.onStatus);
+        const generation = toGeneration(input, result, 'autodl-personal', result.workflow, 'inpaint');
+        generation.metadata.personalRepaintTimings = result.timings;
+        return generation;
+      }
       const result = await requestJson<ModelviewResponse>('/api/modelview/inpaint', {
         method: 'POST',
+        timeoutMs: 2_760_000,
         signal: options?.signal,
         body: JSON.stringify(input),
       });
@@ -174,7 +226,7 @@ export function createModelviewApiClient() {
         input,
         result,
         'modelview-int8',
-        '2026.08.28-cd48a78-truev3-gguf-mask-4input-rseed-r1',
+        input.referenceViewCount === 1 ? 'modelview-single-view-inpaint' : 'modelview-inpaint',
         'inpaint',
       );
     },

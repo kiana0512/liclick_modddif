@@ -2,7 +2,7 @@ import { recordWebGpuProductionDispatch } from '@/engine/performance/gpuComputeB
 import {
   isViewportInteractionBusy,
   subscribeViewportInteraction,
-} from '@/engine/viewport/viewportInteractionState';
+} from '@/engine/viewport/input';
 
 // Smaller submissions keep the render queue available to the viewport during
 // 4K UV composition. This changes scheduling only; every RGBA byte is still
@@ -22,6 +22,7 @@ export type WebGpuRgbaCompositeMetrics = {
 
 export type WebGpuRgbaCompositeResult = {
   data: Uint8ClampedArray<ArrayBuffer>;
+  renderedColorMask?: Uint8Array<ArrayBuffer>;
   metrics: WebGpuRgbaCompositeMetrics;
   verification?: {
     byteMismatches: number;
@@ -57,6 +58,7 @@ type CompositeRequest = {
   interactiveChunkBytes: number;
   idleChunkBytes: number;
   encodePng?: boolean;
+  renderedColorMask?: ArrayBuffer;
 };
 
 type BudgetRequest = { type: 'budget'; interactive: boolean };
@@ -68,6 +70,7 @@ type CompositeResponse =
       type: 'result';
       id: number;
       output?: ArrayBuffer;
+      renderedColorMask?: ArrayBuffer;
       pngUrl?: string;
       pngByteLength?: number;
       encodeMs?: number;
@@ -157,6 +160,9 @@ function getWorker() {
     } else if (event.data.output) {
       request.resolve({
         data: new Uint8ClampedArray(event.data.output),
+        renderedColorMask: event.data.renderedColorMask
+          ? new Uint8Array(event.data.renderedColorMask)
+          : undefined,
         metrics: event.data.metrics,
         verification: event.data.verification,
       });
@@ -306,15 +312,25 @@ export function compositeRgbaUrlUnderWithWebGpu(
   signal?: AbortSignal,
   sourceOver = false,
   underlayCacheKey?: string,
+  renderedColorMask?: Uint8Array,
 ) {
   const prepareStartedAt = performance.now();
   if (front.length !== width * height * 4) {
     return Promise.reject(new RangeError('RGBA buffer dimensions do not match.'));
   }
+  if (renderedColorMask && renderedColorMask.length !== width * height) {
+    return Promise.reject(new RangeError('Rendered-color mask dimensions do not match.'));
+  }
+  if (renderedColorMask && sourceOver) {
+    return Promise.reject(new RangeError('Rendered-color attribution requires source-under.'));
+  }
   const layerOpacity = Math.max(0, Math.min(1, opacity));
   if (layerOpacity <= 0 || front.length === 0) {
     return Promise.resolve<WebGpuRgbaCompositeResult>({
       data: new Uint8ClampedArray(transferableBuffer(front)),
+      renderedColorMask: renderedColorMask
+        ? new Uint8Array(transferableBuffer(renderedColorMask))
+        : undefined,
       metrics: {
         uploadMs: 0,
         computeMs: 0,
@@ -329,6 +345,9 @@ export function compositeRgbaUrlUnderWithWebGpu(
 
   const id = nextRequestId++;
   const frontBuffer = transferableBuffer(front);
+  const renderedColorMaskBuffer = renderedColorMask
+    ? transferableBuffer(renderedColorMask)
+    : undefined;
   recordMainThreadCompositeTiming('prepare', performance.now() - prepareStartedAt, {
     byteLength: front.byteLength,
     exactBuffer:
@@ -347,6 +366,7 @@ export function compositeRgbaUrlUnderWithWebGpu(
     width,
     height,
     opacity: layerOpacity,
+    renderedColorMask: renderedColorMaskBuffer,
     verify:
       typeof window !== 'undefined' &&
       new URLSearchParams(window.location.search).get('perfWebGpuAb') === '1',
@@ -365,7 +385,10 @@ export function compositeRgbaUrlUnderWithWebGpu(
     const compositeWorker = getWorker();
     recordMainThreadCompositeTiming('get-worker', performance.now() - workerStartedAt);
     const postStartedAt = performance.now();
-    compositeWorker.postMessage(request, [frontBuffer]);
+    compositeWorker.postMessage(
+      request,
+      renderedColorMaskBuffer ? [frontBuffer, renderedColorMaskBuffer] : [frontBuffer],
+    );
     recordMainThreadCompositeTiming('post-message', performance.now() - postStartedAt, {
       byteLength: front.byteLength,
     });

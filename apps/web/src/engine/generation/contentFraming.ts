@@ -5,26 +5,29 @@ import {
 } from '@liclick/contracts';
 
 type CoverageImage = Pick<ImageData, 'width' | 'height' | 'data'>;
+type CoverageChannel = boolean | 'linear-depth';
 
-export type FramedSilhouettePolicy = 'strict' | 'capture-mask';
-
-/** GPT-CONTENT-BOUNDS/1.0.0. Bounds depend only on each row's first/last
+/** GPT-CONTENT-BOUNDS/1.1.0. Bounds depend only on each row's first/last
  * covered pixel. Interior holes/colours never change the exact outer bounds.
  * Yield every 16 rows, including empty rows, for cancellable cooperative scans.
  */
-function* contentBounds({ width, height, data }: CoverageImage, normal: boolean, alpha: number) {
+function* contentBounds({ width, height, data }: CoverageImage, normal: CoverageChannel, alpha: number) {
   let left = width, top = height, right = -1, bottom = -1;
   for (let y = 0; y < height; y++) {
     const row = y * width * 4;
     let first = 0, last = width - 1;
     for (; first < width; first++) {
       const i = row + first * 4;
-      if (data[i + 3] >= alpha && (normal || data[i] > 0)) break;
+      if (data[i + 3] >= alpha && (normal === 'linear-depth'
+        ? data[i] < 254 || data[i + 1] < 254 || data[i + 2] < 254
+        : normal || data[i] > 0)) break;
     }
     if (first < width) {
       for (; last > first; last--) {
         const i = row + last * 4;
-        if (data[i + 3] >= alpha && (normal || data[i] > 0)) break;
+        if (data[i + 3] >= alpha && (normal === 'linear-depth'
+          ? data[i] < 254 || data[i + 1] < 254 || data[i + 2] < 254
+          : normal || data[i] > 0)) break;
       }
       left = Math.min(left, first); right = Math.max(right, last);
       top = Math.min(top, y); bottom = y;
@@ -34,7 +37,7 @@ function* contentBounds({ width, height, data }: CoverageImage, normal: boolean,
   return [left, top, right, bottom] as const;
 }
 
-async function cooperativeBounds(image: CoverageImage, normal: boolean, alpha: number, checkpoint?: () => Promise<void>) {
+export async function cooperativeBounds(image: CoverageImage, normal: CoverageChannel, alpha: number, checkpoint?: () => Promise<void>) {
   await checkpoint?.();
   const scan = contentBounds(image, normal, alpha);
   let step = scan.next(), started = performance.now();
@@ -47,10 +50,11 @@ async function cooperativeBounds(image: CoverageImage, normal: boolean, alpha: n
   return step.value;
 }
 
-/** Full geometry coverage: mask white channel or geometry-normal alpha, not material RGB. */
+/** Full geometry coverage: mask white, transparent-normal alpha, or packed depth
+ * against its white clear value. Never infer source coverage from material RGB. */
 export function findContentFraming(
   image: Pick<ImageData, 'width' | 'height' | 'data'>,
-  normal = false,
+  normal: CoverageChannel = false,
   imageSize = '2K',
 ): GenerationFraming {
   const scan = contentBounds(image, normal, 1);
@@ -59,7 +63,7 @@ export function findContentFraming(
   return frameFromBounds(image, step.value, imageSize);
 }
 
-export async function findContentFramingCooperatively(image: CoverageImage, normal: boolean, imageSize: string, checkpoint: () => Promise<void>) {
+export async function findContentFramingCooperatively(image: CoverageImage, normal: CoverageChannel, imageSize: string, checkpoint: () => Promise<void>) {
   return frameFromBounds(image, await cooperativeBounds(image, normal, 1, checkpoint), imageSize);
 }
 
@@ -74,7 +78,7 @@ function frameFromBounds({ width, height }: CoverageImage, [x0, y0, x1, y1]: rea
     width: w + border * 2,
     height: h + border * 2,
   };
-  // Square input and square generation; preserve source pixels by padding only.
+  // Square crop and generation; preserve source pixels without resampling.
   const output = generationOutputSize(1, 1, imageSize);
   const cw = Math.max(content.width, content.height), ch = cw;
   return validateGenerationFraming({
@@ -95,6 +99,7 @@ function frameFromBounds({ width, height }: CoverageImage, [x0, y0, x1, y1]: rea
 }
 
 /** Retain the provider's detail; restore only transparent canvas padding, never shrink to the old screenshot. */
+// GPT-CONTENT-FRAMING/2.2.1: validate geometry ratio, not provider-native pixel dimensions.
 export function restoredFrameLayout(frame: GenerationFraming, width: number, height: number) {
   validateGenerationFraming(frame);
   // Both dimensions must admit the SAME scale before independent grid rounding.
@@ -108,13 +113,14 @@ export function restoredFrameLayout(frame: GenerationFraming, width: number, hei
     !Number.isSafeInteger(width) ||
     !Number.isSafeInteger(height) ||
     !(width > 0 && height > 0) ||
-    (frame.version === 2
-      ? width !== frame.outputWidth || height !== frame.outputHeight
-      : ratioMismatch && !gridRounded)
-  )
-    throw new Error(
+    (ratioMismatch && !gridRounded)
+  ) {
+    const mismatch = new Error(
       `远端回图比例异常（提交 ${frame.width}×${frame.height} → 返回 ${width}×${height}），已保留结果并停止回贴。`,
-    );
+    ) as Error & { code: string };
+    mismatch.code = 'GPT_RETURN_FRAME_RATIO_MISMATCH';
+    throw mismatch;
+  }
   const scale = Math.max(width / frame.width, height / frame.height);
   const fullWidth = Math.ceil(frame.sourceWidth * scale),
     fullHeight = Math.ceil(frame.sourceHeight * scale);
@@ -140,32 +146,4 @@ export function restoredFrameLayout(frame: GenerationFraming, width: number, hei
     patchWidth: (frame.width * fullWidth) / frame.sourceWidth,
     patchHeight: (frame.height * fullHeight) / frame.sourceHeight,
   };
-}
-
-/** Conservative silhouette check only: no claim to detect internal deformation. */
-export async function validateFramedSilhouette(
-  frame: GenerationFraming,
-  image: Pick<ImageData, 'width' | 'height' | 'data'>,
-  checkpoint?: () => Promise<void>,
-  policy: FramedSilhouettePolicy = 'strict',
-) {
-  if (frame.version !== 2) return;
-  const layout = restoredFrameLayout(frame, image.width, image.height),
-    s = frame.subject!;
-  const [left, top, right, bottom] = await cooperativeBounds(image, true, 128, checkpoint);
-  const sx = layout.width / frame.sourceWidth,
-    sy = layout.height / frame.sourceHeight;
-  const expected = [
-    s.left * sx - layout.left,
-    s.top * sy - layout.top,
-    (s.left + s.width) * sx - layout.left,
-    (s.top + s.height) * sy - layout.top,
-  ];
-  const actual = [left, top, right + 1, bottom + 1];
-  // Texture-map layers are clipped again by the immutable capture mask. A wider
-  // edge tolerance accepts alpha feathering but still rejects empty/half/shifted returns.
-  const relaxed = policy === 'capture-mask';
-  const tolerance = Math.max(relaxed ? 32 : 16, Math.max(s.width * sx, s.height * sy) * (relaxed ? 0.12 : 0.02));
-  if (right < left || actual.some((v, i) => Math.abs(v - expected[i]) > tolerance))
-    throw new Error('远端回图透明轮廓与模型不对齐，已保留结果并停止回贴，未自动重新生成。');
 }

@@ -5,8 +5,11 @@ type GenerationInputWorkerRequest = {
   mode: 'local' | 'single' | 'gpt-local';
   id: number;
   currentEffect: ImageBitmap;
-  clayPreview: ImageBitmap;
+  clayPreview?: ImageBitmap;
+  coverageDepth?: ImageBitmap;
   inputMask: ImageBitmap;
+  whiteFill?: boolean;
+  fullObject?: boolean;
 };
 
 type GenerationInputWorkerResponse =
@@ -14,6 +17,7 @@ type GenerationInputWorkerResponse =
       id: number;
       compositeBlob: Blob;
       submittedMaskBlob: Blob;
+      selectionMaskBlob?: Blob;
       dilationRadius: number;
       featherRadius: number;
       processMs: number;
@@ -496,8 +500,9 @@ function writeMaskPixels(mask: Uint8Array, width: number, height: number) {
 
 self.onmessage = async (event: MessageEvent<GenerationInputWorkerRequest>) => {
   const request = event.data;
-  const { id, currentEffect, clayPreview, inputMask } = request;
+  const { id, currentEffect, clayPreview, inputMask, coverageDepth } = request;
   const isSingleViewCompletion = request.mode === 'single';
+  const whiteSingleView = isSingleViewCompletion && request.whiteFill === true;
   const startedAt = performance.now();
   try {
     const phaseDurationsMs: Record<string, number> = {};
@@ -512,19 +517,19 @@ self.onmessage = async (event: MessageEvent<GenerationInputWorkerRequest>) => {
     if (
       width <= 0 ||
       height <= 0 ||
-      clayPreview.width !== width ||
-      clayPreview.height !== height ||
+      (request.mode !== 'local' && !whiteSingleView && (!clayPreview || clayPreview.width !== width || clayPreview.height !== height)) ||
+      (coverageDepth && (coverageDepth.width !== width || coverageDepth.height !== height)) ||
       inputMask.width !== width ||
       inputMask.height !== height
     ) {
       throw new Error('Texture input dimensions differ.');
     }
     const currentPixels = readPixels(currentEffect, width, height);
-    const clayPixels = readPixels(clayPreview, width, height);
+    const clayPixels = clayPreview ? readPixels(clayPreview, width, height) : undefined;
     finishPhase('read-input-pixels');
     if (request.mode === 'gpt-local') {
       const maskPixels = readPixels(inputMask, width, height);
-      const composite = composeGptRepaintGuide(currentPixels.data, clayPixels.data, maskPixels.data);
+      const composite = composeGptRepaintGuide(currentPixels.data, clayPixels!.data, maskPixels.data);
       const canvas = new OffscreenCanvas(width, height);
       const context = canvas.getContext('2d');
       if (!context) throw new Error('Could not encode GPT repaint guide.');
@@ -535,14 +540,20 @@ self.onmessage = async (event: MessageEvent<GenerationInputWorkerRequest>) => {
       return;
     }
     const scale = Math.max(width, height) / 2048;
+    let selectionMask: Uint8Array | undefined;
+    let visibleObjectMask: Uint8ClampedArray | undefined;
     let compositeCore: Uint8Array;
     let coreBounds: MaskBounds;
     let objectPixelCount = 0;
     let uncoveredPixelCount = 0;
     let texturedPixelCount = 0;
+    let singleViewHasTexture = false;
+    let singleViewObjectMask: Uint8ClampedArray | undefined;
     if (isSingleViewCompletion) {
       const targetMask = readObjectMask(inputMask, width, height);
-      const gapMask = projectionGapMaskFromAlpha(currentPixels, targetMask);
+      singleViewObjectMask = targetMask.data;
+      const gapMask = whiteSingleView && request.fullObject
+        ? targetMask : projectionGapMaskFromAlpha(currentPixels, targetMask);
       for (let index = 0; index < targetMask.data.length; index += 1) {
         if ((targetMask.data[index] ?? 0) === 0) continue;
         objectPixelCount += 1;
@@ -552,7 +563,8 @@ self.onmessage = async (event: MessageEvent<GenerationInputWorkerRequest>) => {
       texturedPixelCount = Math.max(0, objectPixelCount - uncoveredPixelCount);
       const hasVisibleTexture =
         texturedPixelCount >= Math.max(64, Math.round(objectPixelCount * 0.0005));
-      if (!hasVisibleTexture || uncoveredPixelCount === 0) {
+      singleViewHasTexture = hasVisibleTexture;
+      if ((!hasVisibleTexture && !whiteSingleView) || uncoveredPixelCount === 0) {
         self.postMessage({
           id,
           hasVisibleTexture,
@@ -560,7 +572,10 @@ self.onmessage = async (event: MessageEvent<GenerationInputWorkerRequest>) => {
         } satisfies GenerationInputWorkerResponse);
         return;
       }
-      compositeCore = Uint8Array.from(gapMask.data, (value) => (value > 0 ? 255 : 0));
+      compositeCore = Uint8Array.from(
+        whiteSingleView && !hasVisibleTexture ? targetMask.data : gapMask.data,
+        (value) => (value > 0 ? 255 : 0),
+      );
       coreBounds = getMaskBounds(compositeCore, width, height);
     } else {
       const maskPixels = readPixels(inputMask, width, height);
@@ -578,18 +593,36 @@ self.onmessage = async (event: MessageEvent<GenerationInputWorkerRequest>) => {
         );
       }
       finishPhase('extract-authored-mask');
-      ({ core: compositeCore, bounds: coreBounds } = buildCompositeCoreMask(
-        authoredStrength,
-        width,
-        height,
-        scale,
-      ));
+      if (coverageDepth) {
+        // LOCAL-REPAINT-VISIBLE-GAPS/1.0.0: coverage alpha, never RGB.
+        // Packed depth excludes clear background and hidden surfaces in this view.
+        const depth = readPixels(coverageDepth, width, height).data;
+        visibleObjectMask = new Uint8ClampedArray(width * height);
+        for (let index = 0; index < visibleObjectMask.length; index++) {
+          const offset = index * 4;
+          visibleObjectMask[index] = depth[offset] >= 254 && depth[offset + 1] >= 254 && depth[offset + 2] >= 254 ? 0 : 255;
+        }
+        const gaps = projectionGapMaskFromAlpha(currentPixels, { width, height, data: visibleObjectMask });
+        selectionMask = authoredStrength;
+        for (let index = 0; index < selectionMask.length; index++) {
+          selectionMask[index] = visibleObjectMask[index] ? Math.max(selectionMask[index], gaps.data[index]) : 0;
+        }
+        // Do not close holes in this union: they may be textured islands or background.
+        compositeCore = selectionMask;
+        coreBounds = getMaskBounds(compositeCore, width, height);
+      } else {
+        ({ core: compositeCore, bounds: coreBounds } = buildCompositeCoreMask(
+          authoredStrength, width, height, scale,
+        ));
+      }
     }
     if (coreBounds.maxX < coreBounds.minX || coreBounds.maxY < coreBounds.minY) {
       throw new Error('Input mask is empty.');
     }
     finishPhase('build-core-mask');
-    const compositeEdgeRadius = isSingleViewCompletion ? 0 : Math.max(1, Math.round(1.5 * scale));
+    // MODELVIEW-WHITE-INPUT/1.0.0: exact white marking, no grey/clay edge.
+    // Only single-view completion retains the independent sampling margin.
+    const compositeEdgeRadius = 0;
     const compositeAlpha = boxBlur(
       compositeCore,
       width,
@@ -609,16 +642,28 @@ self.onmessage = async (event: MessageEvent<GenerationInputWorkerRequest>) => {
     const maxX = coreBounds.maxX;
     const maxY = coreBounds.maxY;
     const minimumDimension = Math.min(maxX - minX + 1, maxY - minY + 1);
-    const dilationRadius = Math.max(
+    // LOCAL-REPAINT-SAMPLING-MASK/2: local requests never expand beyond the selection.
+    // Single/multiview completion retains its existing sampling margin.
+    const dilationRadius = isSingleViewCompletion ? Math.max(
       Math.round(24 * scale),
       Math.min(Math.round(64 * scale), Math.round(minimumDimension * 0.25)),
-    );
-    const featherRadius = Math.max(
+    ) : 0;
+    const featherRadius = isSingleViewCompletion ? Math.max(
       Math.round(4 * scale),
       Math.min(Math.round(10 * scale), Math.round(dilationRadius * 0.2)),
-    );
+    ) : 0;
 
     const compositePixels = new Uint8ClampedArray(currentPixels.data);
+    // MODELVIEW-SINGLE-WHITE/1.0.0: remote guides are opaque black outside the
+    // frozen object silhouette. Coverage is derived from alpha, never RGB.
+    if (whiteSingleView && singleViewObjectMask) {
+      for (let index = 0; index < singleViewObjectMask.length; index += 1) {
+        if (singleViewObjectMask[index]) continue;
+        const offset = index * 4;
+        compositePixels.fill(0, offset, offset + 3);
+        compositePixels[offset + 3] = 255;
+      }
+    }
     const compositeBounds = expandMaskBounds(coreBounds, compositeEdgeRadius, width, height);
     for (let y = compositeBounds.minY; y <= compositeBounds.maxY; y += 1) {
       const row = y * width;
@@ -627,15 +672,19 @@ self.onmessage = async (event: MessageEvent<GenerationInputWorkerRequest>) => {
         const alpha = compositeAlpha[index] / 255;
         if (alpha <= 0) continue;
         const offset = index * 4;
+        if (!isSingleViewCompletion || whiteSingleView) {
+          compositePixels.fill(255, offset, offset + 4);
+          continue;
+        }
         for (let channel = 0; channel < 4; channel += 1) {
           compositePixels[offset + channel] = Math.round(
             currentPixels.data[offset + channel] * (1 - alpha) +
-              clayPixels.data[offset + channel] * alpha,
+              clayPixels!.data[offset + channel] * alpha,
           );
         }
       }
     }
-    finishPhase('blend-clay-composite');
+    finishPhase(isSingleViewCompletion && !whiteSingleView ? 'blend-clay-composite' : 'fill-white-selection');
 
     const dilated = dilateMask(compositeCore, width, height, dilationRadius, coreBounds);
     const dilatedBounds = expandMaskBounds(coreBounds, dilationRadius, width, height);
@@ -645,6 +694,11 @@ self.onmessage = async (event: MessageEvent<GenerationInputWorkerRequest>) => {
       for (let x = coreBounds.minX; x <= coreBounds.maxX; x += 1) {
         const index = row + x;
         if (compositeCore[index] > 0) submittedMask[index] = 255;
+      }
+    }
+    if (visibleObjectMask) {
+      for (let index = 0; index < submittedMask.length; index++) {
+        if (!visibleObjectMask[index]) submittedMask[index] = 0;
       }
     }
     finishPhase('build-submitted-mask');
@@ -662,19 +716,25 @@ self.onmessage = async (event: MessageEvent<GenerationInputWorkerRequest>) => {
       compositeCanvas.convertToBlob({ type: 'image/png' }),
       maskCanvas.convertToBlob({ type: 'image/png' }),
     ]);
+    let selectionMaskBlob: Blob | undefined;
+    if (selectionMask) {
+      maskContext.putImageData(writeMaskPixels(selectionMask, width, height), 0, 0);
+      selectionMaskBlob = await maskCanvas.convertToBlob({ type: 'image/png' });
+    }
     finishPhase('encode-output-png');
     const response: GenerationInputWorkerResponse = isSingleViewCompletion
       ? {
           id,
           compositeBlob,
           submittedMaskBlob,
-          hasVisibleTexture: true,
+          hasVisibleTexture: singleViewHasTexture,
           uncoveredPixelCount,
         }
       : {
           id,
           compositeBlob,
           submittedMaskBlob,
+          selectionMaskBlob,
           dilationRadius,
           featherRadius,
           processMs: performance.now() - startedAt,
@@ -689,7 +749,8 @@ self.onmessage = async (event: MessageEvent<GenerationInputWorkerRequest>) => {
     self.postMessage(response);
   } finally {
     currentEffect.close();
-    clayPreview.close();
+    clayPreview?.close();
+    coverageDepth?.close();
     inputMask.close();
   }
 };

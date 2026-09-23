@@ -1,16 +1,10 @@
-import type { GenerationFraming } from '@liclick/contracts';
 import type { LiclickGenerateTextureSingleViewInput } from '@/services/liclickApiClient';
 import { urlToDataUrl } from '@/services/workspaceApiClient';
 import { blobToDataUrl, urlToImageData } from '@/engine/localRepaint/imageUtils';
-import {
-  findContentFramingCooperatively,
-  restoredFrameLayout,
-  validateFramedSilhouette,
-  type FramedSilhouettePolicy,
-} from './contentFraming';
+import { findContentFramingCooperatively, restoredFrameLayout } from './contentFraming';
 import { yieldToBrowserTask } from '@/utils/browserScheduling';
 
-async function load(url: string, signal?: AbortSignal) {
+export async function load(url: string, signal?: AbortSignal) {
   signal?.throwIfAborted();
   const dataUrl = await urlToDataUrl(url);
   signal?.throwIfAborted();
@@ -39,7 +33,7 @@ async function load(url: string, signal?: AbortSignal) {
   return decoded;
 }
 
-async function encode(canvas: HTMLCanvasElement) {
+export async function encode(canvas: HTMLCanvasElement) {
   const blob = await new Promise<Blob>((resolve, reject) =>
     canvas.toBlob((b) => (b ? resolve(b) : reject(new Error('生成图片编码失败。'))), 'image/png'),
   );
@@ -49,7 +43,13 @@ async function encode(canvas: HTMLCanvasElement) {
 export async function prepareContentFraming(input: LiclickGenerateTextureSingleViewInput) {
   const capture = input.capture!;
   const normal = input.workflow === 'local-repaint';
-  const coverageUrl = normal ? capture.normalUrl : capture.maskUrl;
+  // GPT-REPAINT-GEOMETRY-FRAMING/1.0.0. Normal guides now have an opaque
+  // blue/black backdrop; their alpha is no longer model coverage. Reuse the
+  // immutable depth pass already captured/saved before submission. maskUrl in
+  // repaint is the author's selection, not the full model silhouette.
+  if (normal && capture.depthEncoding !== 'linear-view')
+    throw new Error('缺少同视角模型深度轮廓，未提交生成任务。');
+  const coverageUrl = normal ? capture.depthUrl : capture.maskUrl;
   if (!coverageUrl) throw new Error('缺少模型轮廓，未提交生成任务。');
   const coverage = await urlToImageData(await urlToDataUrl(coverageUrl), undefined, undefined, {
     cooperative: true,
@@ -57,7 +57,7 @@ export async function prepareContentFraming(input: LiclickGenerateTextureSingleV
   });
   if (coverage.width !== capture.width || coverage.height !== capture.height)
     throw new Error('模型轮廓与截图尺寸不一致。');
-  const framing = await findContentFramingCooperatively(coverage, normal, input.imageSize ?? '2K', async () => {
+  const framing = await findContentFramingCooperatively(coverage, normal ? 'linear-depth' : false, input.imageSize ?? '2K', async () => {
     input.signal?.throwIfAborted();
     await yieldToBrowserTask();
     input.signal?.throwIfAborted();
@@ -76,11 +76,9 @@ export async function prepareContentFraming(input: LiclickGenerateTextureSingleV
     try {
       const ctx = canvas.getContext('2d');
       if (!ctx) throw new Error('无法创建裁切画布。');
-      // Integer translation only: no resize, no colour/alpha replacement, same crop for both guides.
-      const c = framing.cropBounds!;
-      ctx.beginPath();
-      ctx.rect(c.left - framing.left, c.top - framing.top, c.width, c.height);
-      ctx.clip();
+      // GPT-CONTENT-FRAMING/2.2.0: the canvas itself is the square crop.
+      // Keep source background across its short axis; a second rectangular
+      // clip would erase it into transparent bands. Both guides stay aligned.
       ctx.drawImage(image, -framing.left, -framing.top);
       references[index] = {
         ...references[index],
@@ -94,38 +92,4 @@ export async function prepareContentFraming(input: LiclickGenerateTextureSingleV
     }
   }
   return { framing, references, exactIds: references.slice(0, alignedCount).map((r) => r.id) };
-}
-
-export async function restoreContentFraming(
-  url: string,
-  framing: GenerationFraming,
-  signal?: AbortSignal,
-  silhouettePolicy: FramedSilhouettePolicy = 'strict',
-) {
-  const image = await load(url, signal);
-  const layout = restoredFrameLayout(framing, image.naturalWidth, image.naturalHeight);
-  if (framing.version === 2) {
-    const pixels = await urlToImageData(image.src, undefined, undefined, {
-      cooperative: true,
-      signal,
-    });
-    await validateFramedSilhouette(framing, pixels, async () => {
-      signal?.throwIfAborted();
-      await yieldToBrowserTask();
-    }, silhouettePolicy);
-    signal?.throwIfAborted();
-  }
-  const canvas = document.createElement('canvas');
-  canvas.width = layout.width;
-  canvas.height = layout.height;
-  try {
-    const ctx = canvas.getContext('2d');
-    if (!ctx) throw new Error('无法创建回贴画布。');
-    ctx.drawImage(image, layout.left, layout.top, layout.patchWidth, layout.patchHeight);
-    const result = await encode(canvas);
-    signal?.throwIfAborted();
-    return result;
-  } finally {
-    canvas.width = canvas.height = 0;
-  }
 }

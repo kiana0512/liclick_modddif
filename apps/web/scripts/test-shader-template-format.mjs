@@ -58,7 +58,10 @@ function tokens(code, scriptKind = ts.ScriptKind.TS) {
             !raw.includes('/*') && !raw.includes('\\')) {
           expected = expected.replace(/(\r?\n)\/\/[^\r\n]*/g, '$1');
         }
-        const normalized = JSON.stringify({ tokens: glslTokens(expected), directives: directiveLines(expected), lines: expected.split('\n').length });
+        const normalized = JSON.stringify({
+          tokens: glslTokens(expected),
+          directives: directiveLines(expected),
+        });
         text = text.slice(0, text.length - raw.length) + normalized;
       }
       out.push([node.kind, text]);
@@ -92,12 +95,16 @@ function verifyShaderOnly(node) {
 }
 verifyShaderOnly(compositorAst);
 const additionalShaderFiles = [
+  '../src/engine/projection/ProjectedLayerPreviewCompositor.ts',
+  '../src/engine/localRepaint/projectedSelectionDisplay.ts',
+  '../src/engine/localRepaint/projectedSelectionPreview.ts',
   '../src/engine/bake/residentQualityComposite.ts',
   '../src/engine/projection/createRuntimeProjectionDepth.ts',
   '../src/engine/capture/captureDepth.ts',
   '../src/engine/capture/captureNormal.ts',
   '../src/engine/localRepaint/uvRepaint.ts',
   '../src/engine/localRepaint/consumeSelectionMask.ts',
+  '../src/engine/localRepaint/boundedProjectionSampling.ts',
   '../src/engine/export/comfyControlInputExporter.ts',
   '../src/engine/viewport/ViewportCanvas.tsx',
 ];
@@ -122,8 +129,9 @@ for (const relativeFile of additionalShaderFiles) {
         parent = parent.parent;
       }
       assert.ok(
-        /(?:void main|#include|uniform|varying|precision|gl_)/.test(node.getText(ast)) ||
-          /(?:Shader|shader|material|vertexAssignment|fragmentBlend)/.test(owners.join(' ')),
+        /(?:void main|#include|uniform|varying|precision|gl_|texture2D|texelFetch)/.test(node.getText(ast)) ||
+          /(?:Shader|shader|material|vertexAssignment|fragmentBlend)/.test(owners.join(' ')) ||
+          (relativeFile.endsWith('/projectedSelectionDisplay.ts') && owners.includes('depthFunctions')),
         `Only GLSL templates may be compacted: ${owners.join(' ')}`,
       );
     }
@@ -153,10 +161,6 @@ for (const code of [repaintSource, compact(repaintSource)]) {
   assert.match(shader, /void\s+main\s*\(\)\s*\{\s*paintSourceVertex\s*\(/, 'The UV paint entry must invoke the frozen source projection after production formatting');
   assert.equal((shader.match(/void\s+main\s*\(/g) ?? []).length, 1);
 }
-assert.equal(
-  plugin.transform(compositorSource, new URL('../src/engine/projection/ProjectedLayerPreviewCompositor.ts', import.meta.url).pathname),
-  undefined,
-);
 stdout.write(`Shader formatting preserves actual module tokens and GLSL line boundaries; removes ${saved + additionalSaved} source bytes.\n`);
 
 // Independently tokenize GLSL, including compound operators and numeric

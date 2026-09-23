@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { uvTileIndex, uploadUvRgba, withUvRenderTarget, type UvContributionTiles } from './uvContributionTiles';
+import { uvTileIndex, uploadUvRed, uploadUvRgba, withUvRenderTarget, type UvContributionTiles } from './uvContributionTiles';
 import { yieldToBrowserTask } from '@/utils/browserScheduling';
 import { createId } from '@/utils/id';
 import type { GpuLayerSourceSize } from './gpuUvBakeRenderer';
@@ -15,6 +15,7 @@ type Record = {
   width: number;
   height: number;
   compressed: boolean;
+  qualityChannels?: 1 | 4;
   sourceSize: GpuLayerSourceSize;
   tiles?: { data: Uint32Array<ArrayBuffer>; size: number; columns: number };
 };
@@ -55,7 +56,12 @@ export class UvContributionArchive {
     if (this.has(key)) return;
     const { width, height } = input.color;
     const color = await read(renderer, input.color, check);
-    const qualityTarget = new THREE.WebGLRenderTarget(width, height, { depthBuffer: false });
+    // WebGLRenderer's asynchronous readback accepts RGBA targets only. Pack
+    // four canonical R8 values into each RGBA texel instead of expanding every
+    // quality value to four identical bytes.
+    const qualityTarget = new THREE.WebGLRenderTarget(Math.ceil(width / 4), height, {
+      depthBuffer: false,
+    });
     const geometry = new THREE.BufferGeometry();
     geometry.setAttribute(
       'position',
@@ -73,14 +79,24 @@ export class UvContributionArchive {
       },
       vertexShader: 'in vec3 position;void main(){gl_Position=vec4(position,1.0);}',
       fragmentShader: `precision highp float;precision highp int;uniform sampler2D source;uniform bool red;
-      out vec4 value;void main(){vec4 c=texelFetch(source,ivec2(gl_FragCoord.xy),0);value=vec4(red?c.r:c.a);}`,
+      out vec4 value;float q(ivec2 p){if(p.x>=textureSize(source,0).x)return 0.0;
+      vec4 c=texelFetch(source,p,0);return red?c.r:c.a;}
+      void main(){ivec2 p=ivec2(gl_FragCoord.xy);p.x*=4;
+      value=vec4(q(p),q(p+ivec2(1,0)),q(p+ivec2(2,0)),q(p+ivec2(3,0)));}`,
     });
     const mesh = new THREE.Mesh(geometry, material);
     mesh.frustumCulled = false;
     let quality: Uint8Array<ArrayBuffer>;
     try {
       withUvRenderTarget(renderer,qualityTarget,()=>renderer.render(mesh,new THREE.Camera()));
-      quality = await read(renderer, qualityTarget, check);
+      const packedQuality = await read(renderer, qualityTarget, check);
+      if (width % 4 === 0) quality = packedQuality;
+      else {
+        quality = new Uint8Array(width * height);
+        const stride = qualityTarget.width * 4;
+        for (let y = 0; y < height; y++)
+          quality.set(packedQuality.subarray(y * stride, y * stride + width), y * width);
+      }
     } finally {
       qualityTarget.dispose();
       geometry.dispose();
@@ -97,6 +113,7 @@ export class UvContributionArchive {
       width,
       height,
       compressed,
+      qualityChannels: 1,
       sourceSize: input.sourceSize,
       tiles: input.tiles
         ? {
@@ -116,15 +133,18 @@ export class UvContributionArchive {
       ? record.bytes.stream().pipeThrough(new DecompressionStream('deflate'))
       : record.bytes.stream();
     const bytes = await new Response(stream).arrayBuffer();
-    const size = record.width * record.height * 4;
-    if (bytes.byteLength !== size * 2) throw Error('Invalid saved UV contribution length');
+    const size = record.width * record.height * 4,
+      qualityChannels = record.qualityChannels ?? 4,
+      qualitySize = record.width * record.height * qualityChannels;
+    if (bytes.byteLength !== size + qualitySize) throw Error('Invalid saved UV contribution length');
     const textures: THREE.DataTexture[] = [];
     let tiles: UvContributionTiles | undefined;
     try {
-      for (let offset = 0; offset < 2; offset++) {
-        textures.push(await uploadUvRgba(renderer,new Uint8Array(bytes,offset*size,size),
-          record.width,record.height,{check}));
-      }
+      textures.push(await uploadUvRgba(renderer,new Uint8Array(bytes,0,size),
+        record.width,record.height,{check}));
+      textures.push(qualityChannels === 1
+        ? await uploadUvRed(renderer,new Uint8Array(bytes,size,qualitySize),record.width,record.height,{check})
+        : await uploadUvRgba(renderer,new Uint8Array(bytes,size,qualitySize),record.width,record.height,{check}));
       check?.();
       if (record.tiles)
         tiles = {

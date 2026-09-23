@@ -1,6 +1,6 @@
 import { blobToDataUrl, imageDataToBlob, resizeImageData, urlToImageData } from './imageUtils';
 import { createDisplayPreviewQueue, requestDisplayPreview, type DisplayPreviewRequest } from './displayPreviewQueue';
-import { waitForViewportInteractionIdle } from '@/engine/viewport/viewportInteractionState';
+import { waitForViewportInteractionIdle } from '@/engine/viewport/input';
 import { waitForBrowserPaint } from '@/utils/browserScheduling';
 
 const previewCache = new Map<string, Promise<string>>();

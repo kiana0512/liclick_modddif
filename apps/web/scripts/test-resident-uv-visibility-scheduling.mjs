@@ -39,7 +39,7 @@ uv.dispose(); root.children[0].geometry.dispose();
 
 // Exercise the real idle function with a permanently busy camera. Cancellation
 // must drain after a paint, without waiting for pointer release.
-const interactionSource = read('engine/viewport/viewportInteractionState');
+const interactionSource = read('engine/viewport/input');
 const ast = ts.createSourceFile('interaction.ts', interactionSource, ts.ScriptTarget.Latest, true);
 const idleFunction = ast.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === 'waitForViewportInteractionIdle');
 let paints = 0;
@@ -57,6 +57,8 @@ assert.equal(paints, 1, 'busy camera cannot hold an obsolete upload until releas
 for (const busy of [false, true]) {
   const events = [], jobs = [], ready = [], datasets = {}, composites = [];
   let acknowledge = true;
+  let eraserDraft;
+  let livePaintPreview;
   const model = { group: new THREE.Group(), objectId: 'o' };
   const renderer = { domElement: { addEventListener() {}, removeEventListener() {} },
     getContext: () => ({ isContextLost: () => false }) };
@@ -78,13 +80,14 @@ for (const busy of [false, true]) {
       uploadPreviewTextureInStripes: async () => {}, releaseTransientPreviewUploadSource() {},
     },
     '@/utils/browserScheduling': { yieldToBrowserTask: async () => { events.push('yield'); } },
-    '@/engine/viewport/viewportInteractionState': { isViewportInteractionBusy: () => false },
+    '@/engine/viewport/input': { isViewportInteractionBusy: () => false },
     './ProjectedLayerMaterial': { markSparseAlphaBaseTexture() {} },
     '@/engine/bake/ProjectedUvRasterCache': { ProjectedUvRasterCache: class { dispose() {} } },
     './residentUvPresentation': { markResidentUvPending() {}, finishResidentUvPresentation() {}, releaseResidentUvManagement() {} },
     './ResidentUvCompressedCache': { ResidentUvCompressedCache: Cache },
     './liveProjectedCanvasTextureRegistry': { getLiveProjectedCanvasState() {} },
-    '@/engine/paint/eraserUvDraft': { getEraserUvDraft() {} }, '@/utils/blobUrlRegistry': { revokeRegisteredObjectUrl() {} },
+    '@/engine/paint/eraserUvDraft': { getEraserUvDraft: () => eraserDraft }, '@/utils/blobUrlRegistry': { revokeRegisteredObjectUrl() {} },
+    '@/engine/paint/liveSurfacePaintPreviewRegistry': { getLiveSurfacePaintPreview: () => livePaintPreview },
     '@/engine/bake/bakeProjectedLayerToTexture': {
       bakeVisibleProjectedLayersToTexture: async input => {
         events.push('bake');
@@ -93,7 +96,7 @@ for (const busy of [false, true]) {
     },
     '@/engine/bake/prepareMergeProjectionLayers': { prepareMergeProjectionLayers: async layers => layers },
     './createMaskedProjectedImage': {},
-    '@/engine/bake/persistentMergePreparation': { persistentMergeKey: async () => {
+    '@/engine/bake/persistentMergePreparation': { persistentMergeScope: () => 'scope', persistentMergeKey: async () => {
       events.push('hash'); return 'verified-key';
     } },
     '@/engine/performance/webGpuRgbaComposite': { compositeRgbaUrlUnderWithWebGpu: (pixels, url, width, height, opacity, signal) => {
@@ -112,8 +115,20 @@ for (const busy of [false, true]) {
     onReady(result) { events.push('ready'); ready.push(result); if (acknowledge) display.acknowledgePresentation(result.colorTexture); },
     onError(error) { throw error; },
   });
+  let draftFlushes = 0;
+  eraserDraft = undefined;
+  livePaintPreview = { displayArmed: true, target: 'projected-mask', objectId: 'o', layerId: 'fast' };
+  display.request(request('fast')); display.step(); await flush();
+  assert.equal(jobs.length, 0, 'armed GPU mask must prevent Resident UV work before pointer-down');
+  assert.equal(draftFlushes, 0, 'tool activation must not create or flush a full-resolution draft');
+  eraserDraft = undefined; livePaintPreview = undefined;
+  display.cancelPending();
   display.request(request('old')); display.step(); await flush();
   assert.equal(jobs.length, 1);
+  livePaintPreview = { displayArmed: true, target: 'projected-mask', objectId: 'o', layerId: 'old' };
+  assert.throws(() => jobs[0].input.checkCancelled(), { name: 'AbortError' },
+    'selecting the GPU-mask tool cancels an in-flight final Resident UV convergence');
+  eraserDraft = undefined; livePaintPreview = undefined;
   display.request(request('intermediate')); display.request(request('latest'));
   display.step(busy);
   jobs[0].reject(new DOMException('superseded', 'AbortError')); await flush();

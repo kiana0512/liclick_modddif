@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { reconcileRepaintWorkflowGuide } from '../src/components/editor/localRepaintWorkflowGuide.ts';
+import { getShortcutBindings, shortcutMatches, useShortcutStore } from '../src/stores/shortcutStore.ts';
 
 const sourceRoot = new URL('../src/', import.meta.url);
 const [editorPage, generatePanel, bottomToolDock, sceneStore, viewportCanvas] = await Promise.all([
@@ -86,12 +87,58 @@ assert.match(
   'returning to either mask brush must restore mask presentation',
 );
 assert.match(
+  bottomToolDock,
+  /onPaintToolChange\(isMaskPaintTool \? paintTool : 'inpaint-add'\)/,
+  'clicking the highlighted mask step must reassert the current tool instead of swallowing recovery',
+);
+assert.match(
+  sceneStore,
+  /const isMaskTool =[\s\S]*paintToolActivationRevision = isMaskTool[\s\S]*state\.paintToolActivationRevision \+ 1/,
+  'each mask-tool activation must publish a fresh ephemeral viewport command token',
+);
+assert.match(
+  viewportCanvas,
+  /rearmPaintMaskInputSessionRef\.current\(\);[\s\S]*?syncInpaintMaskProjection\(model\)/,
+  'the viewport must close orphaned input before rebuilding the selected-mask presentation',
+);
+assert.match(
+  viewportCanvas,
+  /isPaintingRef\.current[\s\S]*?finishPaintStroke\(undefined, 'pointercancel'\)[\s\S]*?setViewportPaintPointer\(canvas\)/,
+  'mask-session recovery must handle both an orphaned live stroke and stale pointer ownership',
+);
+assert.match(
+  viewportCanvas,
+  /isInpaintMode,[\s\S]*paintToolActivationRevision,[\s\S]*shouldShowInpaintMask/,
+  'repeated activation must rerun the mask projection/overlay synchronization effect',
+);
+assert.match(
   viewportCanvas,
   /shouldShowColorPaintOverlays &&\s*paintMaskPresentationVisible &&/,
   'the viewport mask must honor its independent presentation flag',
 );
 
 console.log('Local generation entry alignment regression checks passed.');
+
+const keyD = { code: 'KeyD', ctrlKey: true, metaKey: false, shiftKey: false, altKey: false };
+assert.equal(shortcutMatches(keyD, 'texture.clearMask'), true, 'Ctrl+D clears the mask');
+assert.equal(shortcutMatches({ ...keyD, ctrlKey: false, metaKey: true }, 'texture.clearMask'), true);
+assert.equal(shortcutMatches({ ...keyD, shiftKey: true }, 'texture.clearMask'), false, 'Old default is removed');
+assert.equal(shortcutMatches({ ...keyD, ctrlKey: false }, 'texture.clearMask'), false);
+assert.equal(shortcutMatches({ ...keyD, altKey: true }, 'texture.clearMask'), false);
+assert.deepEqual(getShortcutBindings('texture.duplicateLayer'), [], 'Duplicate keeps its menu but has no default shortcut');
+assert.equal(shortcutMatches(keyD, 'texture.duplicateLayer'), false);
+assert.match(bottomToolDock, /<span>\{labels.resetInpaintRegion\}<\/span>[\s\S]*?CTRL D/);
+assert.doesNotMatch(bottomToolDock, /CTRL SHIFT D/);
+const layersPanel = await readFile(new URL('components/panels/LayersPanel.tsx', sourceRoot), 'utf8');
+assert.match(layersPanel, /onClick=\{\(\) => run\(onDuplicate\)\}/, 'Menu duplication remains available');
+assert.doesNotMatch(layersPanel, />CTRL D<\/span>/, 'Duplicate menu must not advertise the mask shortcut');
+assert.match(editorPage, /shortcutMatches\(event, 'texture.clearMask'\)\) \{\s*event.preventDefault\(\);\s*if \(!runPaintMaskHistoryAction\('clear'\)\)/,
+  'Clear retains browser-default suppression and mask undo history');
+useShortcutStore.setState({ overrides: { 'texture.clearMask': [{ code: 'KeyL', primary: true }] } });
+assert.equal(shortcutMatches(keyD, 'texture.clearMask'), false, 'Explicit user custom bindings remain authoritative');
+assert.equal(shortcutMatches({ ...keyD, code: 'KeyL' }, 'texture.clearMask'), true);
+useShortcutStore.setState({ overrides: {} });
+console.log('Mask clear shortcut regression checks passed.');
 
 let guide = { step: 'generate', running: false, successKey: 0, paintTool: 'inpaint-add' };
 const updateGuide = (patch) => {

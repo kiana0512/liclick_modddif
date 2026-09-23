@@ -1,4 +1,4 @@
-import { isViewportInteractionBusy } from '@/engine/viewport/viewportInteractionState';
+import { isViewportInteractionBusy } from '@/engine/viewport/input';
 
 export type DisplayPreviewRequest = { signal?: AbortSignal; revision?: number };
 type Preview = { alignedUrl: string; fittedUrl: string };

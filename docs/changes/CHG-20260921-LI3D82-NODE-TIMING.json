@@ -1,0 +1,406 @@
+[
+  {
+    "label": "fresh-inputs-A",
+    "promptId": "7eb01d88-dcc4-438f-8547-216dcd4aa27d",
+    "sourceJob": "ac5f02a90352f2a9ac6b7a59ba6157a0806c141a70310bef3069870541563f45",
+    "seed": 770021,
+    "executionMs": 10838.791,
+    "submitToStartMs": 26.424,
+    "beforeFirstNodeMs": 24.855,
+    "cachedNodes": [
+      "16",
+      "89",
+      "3",
+      "1",
+      "60"
+    ],
+    "nodes": [
+      {
+        "id": "4",
+        "type": "LoadImage",
+        "ms": 66.258
+      },
+      {
+        "id": "44",
+        "type": "LoadImage",
+        "ms": 52.61
+      },
+      {
+        "id": "88",
+        "type": "ImageToMask",
+        "ms": 1.686
+      },
+      {
+        "id": "77",
+        "type": "GetImageSize",
+        "ms": 1.25
+      },
+      {
+        "id": "52",
+        "type": "ImageResize+",
+        "ms": 7.609
+      },
+      {
+        "id": "45",
+        "type": "ImageToMask",
+        "ms": 1.015
+      },
+      {
+        "id": "23",
+        "type": "ImageResize+",
+        "ms": 4.62
+      },
+      {
+        "id": "7",
+        "type": "VAEEncode",
+        "ms": 70.736
+      },
+      {
+        "id": "43",
+        "type": "SetLatentNoiseMask",
+        "ms": 6.026
+      },
+      {
+        "id": "21",
+        "type": "LoraLoaderModelOnly",
+        "ms": 17.318
+      },
+      {
+        "id": "15",
+        "type": "BasicScheduler",
+        "ms": 4.444
+      },
+      {
+        "id": "81",
+        "type": "LoadImage",
+        "ms": 83.087
+      },
+      {
+        "id": "87",
+        "type": "ImageResize+",
+        "ms": 5.037
+      },
+      {
+        "id": "73",
+        "type": "VAEEncode",
+        "ms": 67.972
+      },
+      {
+        "id": "5",
+        "type": "LoadImage",
+        "ms": 62.194
+      },
+      {
+        "id": "24",
+        "type": "ImageResize+",
+        "ms": 3.079
+      },
+      {
+        "id": "8",
+        "type": "VAEEncode",
+        "ms": 857.408
+      },
+      {
+        "id": "9",
+        "type": "Li3DPromptCacheEncode",
+        "ms": 2772.836
+      },
+      {
+        "id": "10",
+        "type": "ReferenceLatent",
+        "ms": 1.646
+      },
+      {
+        "id": "11",
+        "type": "ReferenceLatent",
+        "ms": 1.767
+      },
+      {
+        "id": "83",
+        "type": "ReferenceLatent",
+        "ms": 1.014
+      },
+      {
+        "id": "12",
+        "type": "BasicGuider",
+        "ms": 1.79
+      },
+      {
+        "id": "14",
+        "type": "RandomNoise",
+        "ms": 0.789
+      },
+      {
+        "id": "17",
+        "type": "SamplerCustomAdvanced",
+        "ms": 6155.349
+      },
+      {
+        "id": "18",
+        "type": "VAEDecode",
+        "ms": 89.731
+      },
+      {
+        "id": "62",
+        "type": "PreviewImage",
+        "ms": 37.772
+      },
+      {
+        "id": "25",
+        "type": "ImageScale",
+        "ms": 88.748
+      },
+      {
+        "id": "86",
+        "type": "ImageCompositeMasked",
+        "ms": 23.548
+      },
+      {
+        "id": "78",
+        "type": "SaveImage",
+        "ms": 183.504
+      },
+      {
+        "id": "29",
+        "type": "PreviewImage",
+        "ms": 143.095
+      }
+    ]
+  },
+  {
+    "label": "same-inputs-new-seed",
+    "promptId": "5891b7a9-d25b-4fd1-8202-4bb3116aec65",
+    "sourceJob": "ac5f02a90352f2a9ac6b7a59ba6157a0806c141a70310bef3069870541563f45",
+    "seed": 770022,
+    "executionMs": 2332.818,
+    "submitToStartMs": 24.143,
+    "beforeFirstNodeMs": 24.16,
+    "cachedNodes": [
+      "16",
+      "8",
+      "7",
+      "45",
+      "52",
+      "77",
+      "15",
+      "10",
+      "11",
+      "12",
+      "43",
+      "83",
+      "73",
+      "87",
+      "44",
+      "88",
+      "89",
+      "9",
+      "21",
+      "24",
+      "3",
+      "1",
+      "23",
+      "5",
+      "60",
+      "81",
+      "4"
+    ],
+    "nodes": [
+      {
+        "id": "14",
+        "type": "RandomNoise",
+        "ms": 13.031
+      },
+      {
+        "id": "17",
+        "type": "SamplerCustomAdvanced",
+        "ms": 1702.015
+      },
+      {
+        "id": "18",
+        "type": "VAEDecode",
+        "ms": 89.744
+      },
+      {
+        "id": "62",
+        "type": "PreviewImage",
+        "ms": 35.738
+      },
+      {
+        "id": "25",
+        "type": "ImageScale",
+        "ms": 109.886
+      },
+      {
+        "id": "86",
+        "type": "ImageCompositeMasked",
+        "ms": 26.673
+      },
+      {
+        "id": "78",
+        "type": "SaveImage",
+        "ms": 186.485
+      },
+      {
+        "id": "29",
+        "type": "PreviewImage",
+        "ms": 145.087
+      }
+    ]
+  },
+  {
+    "label": "fresh-inputs-B",
+    "promptId": "5b76fb26-399b-49bb-98b9-6d81e887123d",
+    "sourceJob": "ac5f02a90352f2a9ac6b7a59ba6157a0806c141a70310bef3069870541563f45",
+    "seed": 770023,
+    "executionMs": 2783.186,
+    "submitToStartMs": 26.491,
+    "beforeFirstNodeMs": 25.807,
+    "cachedNodes": [
+      "16",
+      "15",
+      "89",
+      "9",
+      "21",
+      "3",
+      "1",
+      "60"
+    ],
+    "nodes": [
+      {
+        "id": "4",
+        "type": "LoadImage",
+        "ms": 63.898
+      },
+      {
+        "id": "44",
+        "type": "LoadImage",
+        "ms": 52.759
+      },
+      {
+        "id": "88",
+        "type": "ImageToMask",
+        "ms": 0.703
+      },
+      {
+        "id": "77",
+        "type": "GetImageSize",
+        "ms": 0.805
+      },
+      {
+        "id": "52",
+        "type": "ImageResize+",
+        "ms": 4.73
+      },
+      {
+        "id": "45",
+        "type": "ImageToMask",
+        "ms": 0.836
+      },
+      {
+        "id": "23",
+        "type": "ImageResize+",
+        "ms": 4.828
+      },
+      {
+        "id": "7",
+        "type": "VAEEncode",
+        "ms": 64.24
+      },
+      {
+        "id": "43",
+        "type": "SetLatentNoiseMask",
+        "ms": 4.192
+      },
+      {
+        "id": "81",
+        "type": "LoadImage",
+        "ms": 74.765
+      },
+      {
+        "id": "87",
+        "type": "ImageResize+",
+        "ms": 3.849
+      },
+      {
+        "id": "73",
+        "type": "VAEEncode",
+        "ms": 68.05
+      },
+      {
+        "id": "5",
+        "type": "LoadImage",
+        "ms": 56.94
+      },
+      {
+        "id": "24",
+        "type": "ImageResize+",
+        "ms": 2.18
+      },
+      {
+        "id": "8",
+        "type": "VAEEncode",
+        "ms": 47.806
+      },
+      {
+        "id": "10",
+        "type": "ReferenceLatent",
+        "ms": 1.033
+      },
+      {
+        "id": "11",
+        "type": "ReferenceLatent",
+        "ms": 0.977
+      },
+      {
+        "id": "83",
+        "type": "ReferenceLatent",
+        "ms": 1.119
+      },
+      {
+        "id": "12",
+        "type": "BasicGuider",
+        "ms": 1.081
+      },
+      {
+        "id": "14",
+        "type": "RandomNoise",
+        "ms": 0.929
+      },
+      {
+        "id": "17",
+        "type": "SamplerCustomAdvanced",
+        "ms": 1699.008
+      },
+      {
+        "id": "18",
+        "type": "VAEDecode",
+        "ms": 88.589
+      },
+      {
+        "id": "62",
+        "type": "PreviewImage",
+        "ms": 38.075
+      },
+      {
+        "id": "25",
+        "type": "ImageScale",
+        "ms": 118.491
+      },
+      {
+        "id": "86",
+        "type": "ImageCompositeMasked",
+        "ms": 20.733
+      },
+      {
+        "id": "78",
+        "type": "SaveImage",
+        "ms": 199.551
+      },
+      {
+        "id": "29",
+        "type": "PreviewImage",
+        "ms": 137.212
+      }
+    ]
+  }
+]

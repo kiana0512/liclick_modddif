@@ -1,4 +1,4 @@
-// ALG-GEN-001/002 v1.3.0: shared scoped weak-light material completion.
+// ALG-GEN-001/002 v1.3.1: shared scoped weak-light material completion.
 const textureMapPrompt = `只在图一指定的待补全区域绘制材质，不重新生成物体。目标是接近平坦材质预览的效果：固有颜色明确、纹理清晰、光影较弱，而不是摄影级产品渲染。
 
 一、严格保持图一的几何和构图

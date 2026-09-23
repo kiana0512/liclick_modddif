@@ -1,5 +1,7 @@
 # Li3D 零组件云端版开发交接包
 
+> 历史交接快照：本包冻结于 2026-08-23。下列分支、候选 SHA、生产状态和接手顺序仅用于追溯，不是 2026-09-17 当前操作指令。当前真值请先读 [系统模块与变更唯一准则](../00_SYSTEM_MODULES_AND_CHANGE_STANDARD.md)、[文档地图](../README.md) 和 [性能稳定性审计](../PERFORMANCE_STABILITY_RISK_AUDIT_2026-09-17.zh-CN.md)。
+
 更新日期：2026-08-23  
 适用分支：`codex/modernization`  
 当前 A100 候选代码：`cf76e224a28f1b0f7f185139cdf306f397563534`  
@@ -54,4 +56,3 @@
 5. 不删除 Revision、ownership、幂等和时间戳冲突门禁来“解决”409。
 6. 不把 Secret、Cookie、CA 私钥、对象存储口令或数据库密码提交到 Git 和文档。
 7. 不在没有备份和目标确认的情况下清理 A100 共享磁盘数据。
-

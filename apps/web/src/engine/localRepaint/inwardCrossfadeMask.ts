@@ -4,6 +4,25 @@ export const LOCAL_REPAINT_INWARD_CROSSFADE_MIN_WIDTH = 6;
 export const LOCAL_REPAINT_INWARD_CROSSFADE_MAX_WIDTH = 24;
 export const LOCAL_REPAINT_INWARD_CROSSFADE_MASK_THRESHOLD = 0.08;
 
+/** ERASER-FEATHER v2: full-radius linear falloff with at least 10% solid core. */
+export function getEraserSolidCore(feather: number) {
+  return 1 - Math.max(0, Math.min(0.9, feather));
+}
+
+/** ALG-LR-UV-PAINT v3.0.0: solid core + linear outer blend of the brush capsule.
+ * Distances are CSS pixels, normalized to a 2K viewport (not UV-island edges or
+ * the generation selection). Small brushes retain an opaque centre. */
+export function getLocalRepaintStrokeBlend(radius: number, feather: number, viewportSpan: number) {
+  const scale = viewportSpan / LOCAL_REPAINT_INWARD_CROSSFADE_REFERENCE_SIZE;
+  const outer = radius - Math.min(3 * scale, radius * 0.25);
+  // Even maximum feather retains an opaque core (10% of effective radius).
+  const width = Math.min(outer * 0.9, Math.max(
+    LOCAL_REPAINT_INWARD_CROSSFADE_REFERENCE_WIDTH * scale,
+    radius * Math.max(0, Math.min(1, feather)),
+  ));
+  return [(outer - width) / radius, outer / radius] as const;
+}
+
 export type LocalRepaintMaskRect = { x: number; y: number; width: number; height: number };
 
 function clamp(value: number, minimum: number, maximum: number) {
@@ -136,4 +155,33 @@ export function updateLocalRepaintInwardCrossfadeCanvas(input: {
   }
   input.targetContext.putImageData(output, outputRect.x, outputRect.y);
   return outputRect;
+}
+
+/** ALG-LR-008 v3.1.0: generation selection is not a manual brush boundary.
+ * Feather the actual strokes, not this source-space permission texture.
+ * Source alpha, capture depth and the actual brush still bound all writes.
+ */
+export function createManualRepaintFalloffPixels(mask: ImageData) {
+  const output = new Uint8ClampedArray(mask.data.length);
+  for (let i = 0; i < mask.data.length; i += 4) {
+    if (Math.max(mask.data[i], mask.data[i + 1], mask.data[i + 2]) * mask.data[i + 3] / 65025 > 0.03) {
+      output.fill(255);
+      break;
+    }
+  }
+  return output;
+}
+
+/** Automatic application remains inside the original author selection. */
+export function createBoundedRepaintFalloffPixels(mask: ImageData) {
+  const output = createLocalRepaintInwardCrossfadePixels({
+    source: mask.data, width: mask.width, height: mask.height,
+  });
+  for (let i = 0; i < output.length; i += 4) {
+    const authored = Math.max(mask.data[i], mask.data[i + 1], mask.data[i + 2]) * mask.data[i + 3] / 255;
+    const alpha = Math.min(output[i], authored);
+    output[i] = output[i + 1] = output[i + 2] = 255;
+    output[i + 3] = alpha;
+  }
+  return output;
 }

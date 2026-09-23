@@ -17,6 +17,7 @@ import {
   bakeArtifactChannel,
   selectBakeArtifactFileNames,
 } from './bakeArtifactPlan.js';
+import { createSerializedAtomicFileWriter } from './atomicFileService.js';
 
 export type BakeChannelId =
   | 'baseColor'
@@ -162,6 +163,8 @@ class BakeRequestError extends Error {
 
 const jobs = new Map<string, InternalJob>();
 const monitors = new Set<string>();
+const jobFileWriter = createSerializedAtomicFileWriter();
+let bakeJobIndexRefresh: Promise<Map<string, string[]>> | undefined;
 const maxLogLines = 400;
 const outputFileNames: Record<BakeChannelId, string> = {
   baseColor: 'basecolor.png',
@@ -569,27 +572,34 @@ function publicJob(job: InternalJob): NormalBakeJob {
 
 function persist(job: InternalJob) {
   job.updatedAt = new Date().toISOString();
-  fs.mkdirSync(job.directory, { recursive: true });
-  fs.writeFileSync(path.join(job.directory, 'job.json'), JSON.stringify(publicJob(job), null, 2));
+  const snapshot = `${JSON.stringify(publicJob(job), null, 2)}\n`;
+  return jobFileWriter.write(job.id, path.join(job.directory, 'job.json'), snapshot);
 }
 
-function appendLog(job: InternalJob, message: string) {
+async function appendLog(job: InternalJob, message: string) {
   const clean = message.trim();
   if (!clean) return;
   job.logs.push(clean);
   if (job.logs.length > maxLogLines) job.logs.splice(0, job.logs.length - maxLogLines);
-  persist(job);
+  await persist(job);
 }
 
-function pngSize(filePath: string) {
+function persistResumedJob(job: InternalJob) {
+  void persist(job).catch((error) => {
+    console.error(`[BakeJob] Failed to persist resumed job ${job.id}.`, error);
+  });
+}
+
+async function pngSize(filePath: string) {
   const header = Buffer.alloc(24);
-  const descriptor = fs.openSync(filePath, 'r');
+  const descriptor = await fs.promises.open(filePath, 'r');
   try {
-    if (fs.readSync(descriptor, header, 0, header.length, 0) !== header.length) {
+    const { bytesRead } = await descriptor.read(header, 0, header.length, 0);
+    if (bytesRead !== header.length) {
       throw new Error('PNG output is truncated.');
     }
   } finally {
-    fs.closeSync(descriptor);
+    await descriptor.close();
   }
   if (!header.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) {
     throw new Error('Remote bake output is not a readable PNG.');
@@ -650,7 +660,7 @@ function mapRemoteError(error: unknown) {
   return '';
 }
 
-function applyRemoteStatus(job: InternalJob, payload: RemoteJobPayload) {
+async function applyRemoteStatus(job: InternalJob, payload: RemoteJobPayload) {
   if (!job.remote) return;
   const previousRemoteStatus = job.remote.status;
   const status = payload.status ?? job.remote.status ?? 'QUEUED';
@@ -695,7 +705,7 @@ function applyRemoteStatus(job: InternalJob, payload: RemoteJobPayload) {
     job.logs.push(`[Remote] 收到非终态 ${safeStatus}，继续等待远端任务。`);
     if (job.logs.length > maxLogLines) job.logs.splice(0, job.logs.length - maxLogLines);
   }
-  persist(job);
+  await persist(job);
 }
 
 async function downloadArtifacts(job: InternalJob, payload: RemoteJobPayload) {
@@ -747,7 +757,7 @@ async function downloadArtifacts(job: InternalJob, payload: RemoteJobPayload) {
     }
     const localPath = job.outputPaths[channel];
     if (!alreadyPersisted) await fs.promises.writeFile(localPath, data);
-    const dimensions = pngSize(localPath);
+    const dimensions = await pngSize(localPath);
     if (
       dimensions.width !== job.settings.resolution ||
       dimensions.height !== job.settings.resolution
@@ -763,7 +773,7 @@ async function downloadArtifacts(job: InternalJob, payload: RemoteJobPayload) {
     };
   };
   let completedDownloads = 0;
-  const recordCompletedDownload = () => {
+  const recordCompletedDownload = async () => {
     completedDownloads += 1;
     job.progress = Math.max(
       job.progress,
@@ -772,13 +782,13 @@ async function downloadArtifacts(job: InternalJob, payload: RemoteJobPayload) {
     if (job.remote) {
       job.remote.stageMessage = `正在下载所需产物 ${completedDownloads}/${artifactsToDownload.length}`;
     }
-    persist(job);
+    await persist(job);
   };
   if (job.remote) {
     job.remote.stage = 'downloading-artifacts';
     job.remote.stageMessage = `正在下载所需产物 0/${artifactsToDownload.length}`;
   }
-  persist(job);
+  await persist(job);
   await mapWithConcurrency(
     artifactsToDownload,
     artifactDownloadConcurrency,
@@ -792,12 +802,19 @@ async function downloadArtifacts(job: InternalJob, payload: RemoteJobPayload) {
         cachedChannel && job.settings.channels.includes(cachedChannel)
           ? job.outputPaths[cachedChannel]
           : path.join(outputDirectory, safeName);
-      if (fs.existsSync(cachedPath) && fs.statSync(cachedPath).size === artifact.size_bytes) {
+      let cachedSize: number | undefined;
+      try {
+        cachedSize = (await fs.promises.stat(cachedPath)).size;
+      } catch {
+        // Missing, unreadable or concurrently replaced cache entries are
+        // treated as misses and re-downloaded through the verified path.
+      }
+      if (cachedSize === artifact.size_bytes) {
         const cachedData = await fs.promises.readFile(cachedPath);
         const cachedSha = createHash('sha256').update(cachedData).digest('hex');
         if (cachedSha === artifact.sha256.toLowerCase()) {
           await saveDownloadedArtifact(artifact, cachedData, true);
-          recordCompletedDownload();
+          await recordCompletedDownload();
           return;
         }
       }
@@ -823,13 +840,23 @@ async function downloadArtifacts(job: InternalJob, payload: RemoteJobPayload) {
         throw new Error(`${artifact.filename} 的下载尺寸与 artifacts 清单不一致。`);
       }
       await saveDownloadedArtifact(artifact, response.body);
-      recordCompletedDownload();
+      await recordCompletedDownload();
     },
   );
 
   if (job.settings.generateRoughnessFromBakedBaseColor) {
     const bakedBaseColorPath = job.outputPaths.baseColor;
-    if (!outputs.baseColor || !fs.existsSync(bakedBaseColorPath)) {
+    let bakedBaseColorExists = false;
+    if (outputs.baseColor) {
+      try {
+        await fs.promises.access(bakedBaseColorPath);
+        bakedBaseColorExists = true;
+      } catch {
+        // Keep the existing product error instead of publishing a roughness
+        // task from a missing or unreadable Base Color.
+      }
+    }
+    if (!outputs.baseColor || !bakedBaseColorExists) {
       throw new Error('自动生成 Roughness 需要烘焙后的 Base Color，但该产物不存在。');
     }
     job.progress = 98;
@@ -837,8 +864,7 @@ async function downloadArtifacts(job: InternalJob, payload: RemoteJobPayload) {
       job.remote.stage = 'generating-roughness';
       job.remote.stageMessage = '正在用烘焙后的 Base Color 生成最终 Roughness';
     }
-    appendLog(job, '[ComfyUI] 正在提交烘焙后的 Base Color 生成最终 Roughness。');
-    persist(job);
+    await appendLog(job, '[ComfyUI] 正在提交烘焙后的 Base Color 生成最终 Roughness。');
 
     const roughnessResult = await generateRemoteRoughness(
       {
@@ -854,7 +880,7 @@ async function downloadArtifacts(job: InternalJob, payload: RemoteJobPayload) {
     }
     const finalRoughnessPath = job.outputPaths.roughness;
     await fs.promises.writeFile(finalRoughnessPath, roughnessResult.data);
-    const roughnessDimensions = pngSize(finalRoughnessPath);
+    const roughnessDimensions = await pngSize(finalRoughnessPath);
     if (
       roughnessDimensions.width !== job.settings.resolution ||
       roughnessDimensions.height !== job.settings.resolution
@@ -872,7 +898,7 @@ async function downloadArtifacts(job: InternalJob, payload: RemoteJobPayload) {
       job.remote.stage = 'roughness-finished';
       job.remote.stageMessage = '最终 Roughness 已生成';
     }
-    appendLog(
+    await appendLog(
       job,
       `[ComfyUI] 最终 Roughness 已生成${
         roughnessResult.jobId ? `，GPU 任务 ${roughnessResult.jobId}` : ''
@@ -887,7 +913,7 @@ async function downloadArtifacts(job: InternalJob, payload: RemoteJobPayload) {
   job.progress = 100;
   job.finishedAt = new Date().toISOString();
   job.error = undefined;
-  persist(job);
+  await persist(job);
 }
 
 function delay(milliseconds: number) {
@@ -909,7 +935,7 @@ async function monitorRemoteJob(job: InternalJob) {
           throw new Error('远端状态响应的 job_id 与提交响应不一致。');
         }
         consecutivePollErrors = 0;
-        applyRemoteStatus(job, payload);
+        await applyRemoteStatus(job, payload);
         if (payload.status === 'SUCCEEDED') {
           try {
             await downloadArtifacts(job, payload);
@@ -917,7 +943,7 @@ async function monitorRemoteJob(job: InternalJob) {
           } catch (error) {
             consecutivePostprocessErrors += 1;
             const message = error instanceof Error ? error.message : String(error);
-            appendLog(
+            await appendLog(
               job,
               `[Postprocess] 后处理失败（${consecutivePostprocessErrors}/3）：${message}`,
             );
@@ -934,7 +960,7 @@ async function monitorRemoteJob(job: InternalJob) {
       } catch (error) {
         if (job.remote?.status === 'SUCCEEDED') throw error;
         consecutivePollErrors += 1;
-        appendLog(
+        await appendLog(
           job,
           `[Remote] 状态同步失败（${consecutivePollErrors}/10）：${
             error instanceof Error ? error.message : String(error)
@@ -949,7 +975,13 @@ async function monitorRemoteJob(job: InternalJob) {
     job.stage = 'finished';
     job.error = error instanceof Error ? error.message : '远端 Substance Baker 状态同步失败。';
     job.finishedAt = new Date().toISOString();
-    appendLog(job, `[Remote] ${job.error}`);
+    try {
+      await appendLog(job, `[Remote] ${job.error}`);
+    } catch (persistenceError) {
+      // This monitor runs in the background. A failed terminal write must remain
+      // observable without becoming an unhandled rejection that stops the server.
+      console.error(`[BakeJob] Failed to persist failed remote job ${job.id}.`, persistenceError);
+    }
   } finally {
     monitors.delete(job.id);
   }
@@ -975,6 +1007,20 @@ function loadJob(id: string) {
   }
 }
 
+async function loadJobAsync(id: string) {
+  if (!/^[a-zA-Z0-9_-]+$/.test(id)) return undefined;
+  const persistedPath = path.join(serverConfig.workspaceDir, 'bake-jobs', id, 'job.json');
+  try {
+    const job = internalJobFromPersisted(
+      JSON.parse(await fs.promises.readFile(persistedPath, 'utf8')) as NormalBakeJob,
+    );
+    jobs.set(id, job);
+    return job;
+  } catch {
+    return undefined;
+  }
+}
+
 function resumePrematurelyCancelledRemoteJob(job: InternalJob) {
   if (
     job.status !== 'cancelled' ||
@@ -988,7 +1034,9 @@ function resumePrematurelyCancelledRemoteJob(job: InternalJob) {
   job.stage = 'waiting-for-worker';
   job.finishedAt = undefined;
   job.error = undefined;
-  appendLog(job, '[Remote] 恢复此前被过早终止的远端任务状态同步。');
+  job.logs.push('[Remote] 恢复此前被过早终止的远端任务状态同步。');
+  if (job.logs.length > maxLogLines) job.logs.splice(0, job.logs.length - maxLogLines);
+  persistResumedJob(job);
   return true;
 }
 
@@ -1174,7 +1222,7 @@ export async function createNormalBakeJob(input: {
     },
   };
   jobs.set(id, job);
-  persist(job);
+  await persist(job);
 
   const boundary = `----liclick-substance-${randomUUID()}`;
   const metadata = JSON.stringify({
@@ -1236,8 +1284,8 @@ export async function createNormalBakeJob(input: {
       deliveryReady: payload.delivery_ready,
       timing: payload.timing,
     };
-    applyRemoteStatus(job, payload);
-    appendLog(job, `[Remote] 已提交 ${profile}，远端任务 ${payload.job_id}。`);
+    await applyRemoteStatus(job, payload);
+    await appendLog(job, `[Remote] 已提交 ${profile}，远端任务 ${payload.job_id}。`);
     void monitorRemoteJob(job);
     return publicJob(job);
   } catch (error) {
@@ -1245,7 +1293,7 @@ export async function createNormalBakeJob(input: {
     job.stage = 'finished';
     job.error = error instanceof Error ? error.message : '提交远端 Substance Baker 失败。';
     job.finishedAt = new Date().toISOString();
-    appendLog(job, `[Remote] ${job.error}`);
+    await appendLog(job, `[Remote] ${job.error}`);
     throw error;
   }
 }
@@ -1258,19 +1306,64 @@ export function getNormalBakeJob(id: string, userId: string) {
   return publicJob(job);
 }
 
-export function listNormalBakeJobs(userId: string, limit = 30) {
+export async function getNormalBakeJobAsync(id: string, userId: string) {
+  const job = jobs.get(id) ?? await loadJobAsync(id);
+  if (!job || job.ownerUserId !== userId) return undefined;
+  resumePrematurelyCancelledRemoteJob(job);
+  if (!['succeeded', 'failed', 'cancelled'].includes(job.status)) void monitorRemoteJob(job);
+  return publicJob(job);
+}
+
+export async function listNormalBakeJobs(userId: string, limit = 30) {
   const normalizedUserId = userId.trim();
   if (!normalizedUserId) return [];
-  const jobsDirectory = path.join(serverConfig.workspaceDir, 'bake-jobs');
-  if (!fs.existsSync(jobsDirectory)) return [];
+  if (!bakeJobIndexRefresh) {
+    bakeJobIndexRefresh = (async () => {
+      const jobsDirectory = path.join(serverConfig.workspaceDir, 'bake-jobs');
+      let entries: fs.Dirent[];
+      try {
+        entries = await fs.promises.readdir(jobsDirectory, { withFileTypes: true });
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+          return new Map<string, string[]>();
+        }
+        throw error;
+      }
+      const jobIds = entries
+        .filter((entry) => entry.isDirectory() && /^[a-zA-Z0-9_-]+$/.test(entry.name))
+        .map((entry) => entry.name);
+      let nextIndex = 0;
+      await Promise.all(Array.from({ length: Math.min(8, jobIds.length) }, async () => {
+        while (nextIndex < jobIds.length) {
+          const id = jobIds[nextIndex];
+          nextIndex += 1;
+          if (!jobs.has(id)) await loadJobAsync(id);
+        }
+      }));
+      const jobIdsByOwner = new Map<string, string[]>();
+      for (const id of jobIds) {
+        const ownerUserId = jobs.get(id)?.ownerUserId;
+        // Missing owner ids deliberately remain orphaned. Never infer ownership
+        // from a project name or expose an old job to the current employee.
+        if (!ownerUserId) continue;
+        const ownerJobIds = jobIdsByOwner.get(ownerUserId) ?? [];
+        ownerJobIds.push(id);
+        jobIdsByOwner.set(ownerUserId, ownerJobIds);
+      }
+      return jobIdsByOwner;
+    })().finally(() => {
+      bakeJobIndexRefresh = undefined;
+    });
+  }
 
   const candidates: NormalBakeJob[] = [];
-  for (const entry of fs.readdirSync(jobsDirectory, { withFileTypes: true })) {
-    if (!entry.isDirectory() || !/^[a-zA-Z0-9_-]+$/.test(entry.name)) continue;
-    const job = getNormalBakeJob(entry.name, normalizedUserId);
-    // Missing owner ids deliberately remain orphaned. Never infer ownership
-    // from a project name or expose an old job to the current employee.
-    if (job) candidates.push(job);
+  const jobIdsByOwner = await bakeJobIndexRefresh;
+  for (const id of jobIdsByOwner.get(normalizedUserId) ?? []) {
+    const job = jobs.get(id);
+    if (!job || job.ownerUserId !== normalizedUserId) continue;
+    resumePrematurelyCancelledRemoteJob(job);
+    if (!['succeeded', 'failed', 'cancelled'].includes(job.status)) void monitorRemoteJob(job);
+    candidates.push(publicJob(job));
   }
 
   return candidates
@@ -1281,6 +1374,29 @@ export function listNormalBakeJobs(userId: string, limit = 30) {
         : right.id.localeCompare(left.id);
     })
     .slice(0, Math.min(100, Math.max(1, Math.trunc(limit) || 30)));
+}
+
+export async function getNormalBakeOutputMetadata(
+  id: string,
+  userId: string,
+  channel: BakeChannelId = 'normal',
+) {
+  const job = jobs.get(id) ?? await loadJobAsync(id);
+  if (
+    !job ||
+    job.ownerUserId !== userId ||
+    job.status !== 'succeeded' ||
+    !job.settings.channels.includes(channel)
+  ) {
+    return undefined;
+  }
+  const outputPath = job.outputPaths[channel];
+  try {
+    const metadata = await fs.promises.stat(outputPath);
+    return metadata.isFile() ? { path: outputPath, sizeBytes: metadata.size } : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 export async function recoverNormalBakeJobArtifacts(id: string) {
@@ -1295,27 +1411,17 @@ export async function recoverNormalBakeJobArtifacts(id: string) {
   if (payload.status !== 'SUCCEEDED') {
     throw new BakeRequestError(`远端任务尚未完成（${payload.status ?? 'UNKNOWN'}）。`, 409);
   }
-  applyRemoteStatus(job, payload);
+  await applyRemoteStatus(job, payload);
   await downloadArtifacts(job, payload);
   return publicJob(job);
 }
 
-export function getNormalBakeOutputPath(
+export async function getNormalBakeOutputPath(
   id: string,
   userId: string,
   channel: BakeChannelId = 'normal',
 ) {
-  const job = jobs.get(id) ?? loadJob(id);
-  if (
-    !job ||
-    job.ownerUserId !== userId ||
-    job.status !== 'succeeded' ||
-    !job.settings.channels.includes(channel)
-  ) {
-    return undefined;
-  }
-  const outputPath = job.outputPaths[channel];
-  return fs.existsSync(outputPath) ? outputPath : undefined;
+  return (await getNormalBakeOutputMetadata(id, userId, channel))?.path;
 }
 
 export async function cancelNormalBakeJob(id: string, userId: string) {
@@ -1329,7 +1435,7 @@ export async function cancelNormalBakeJob(id: string, userId: string) {
     timeoutMs: 30_000,
   });
   ensureRemoteSuccess(response);
-  applyRemoteStatus(job, parseJson<RemoteJobPayload>(response));
+  await applyRemoteStatus(job, parseJson<RemoteJobPayload>(response));
   return publicJob(job);
 }
 

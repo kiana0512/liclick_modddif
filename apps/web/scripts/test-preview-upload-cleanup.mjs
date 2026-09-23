@@ -93,7 +93,7 @@ async function run(failure, flipY, fast = false, mask = false, allowWhileInterac
     markPreviewUploadStep() {}, invalidatePreviewTextureAfterUploadFailure: () => invalidations++,
     PREVIEW_TEXTURE_UPLOAD_STRIPES_PER_FLUSH: 4,
     DETACHED_PREVIEW_TEXTURE_UPLOAD_PIXELS_PER_FRAME: 4,
-    DETACHED_PREVIEW_TEXTURE_UPLOAD_STRIPES_PER_YIELD: 2,
+    DETACHED_PREVIEW_TEXTURE_UPLOAD_STRIPES_PER_YIELD: 1,
     DETACHED_PREVIEW_TEXTURE_UPLOAD_SYNCHRONOUS_BUDGET_MS: 4,
   };
   if (failure === 'late-crop') context.texSubImage2D = () => { throw new Error('submit failed'); };
@@ -159,7 +159,7 @@ await run(undefined, false, true, true, true);
 const visibleBatch = await run(undefined, false, true, false, false, true);
 assert.equal(visibleBatch.taskYields, 0, 'healthy visible uploads batch sub-budget stripes without one macrotask per stripe');
 const detachedBatch = await run(undefined, false, true, false, false, false);
-assert.equal(detachedBatch.taskYields, 1, 'detached uploads yield once per bounded exact-stripe batch');
+assert.equal(detachedBatch.taskYields, 3, 'detached uploads yield between every exact stripe');
 await run('detached-yield', false, true, false, false, false);
 for (const mask of [false, true, 'rgba']) await run('cancel-during-idle', false, true, mask);
 const deferredVisibleBatch = await run(undefined, false, true, false, false, true, true);

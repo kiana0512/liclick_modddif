@@ -5,6 +5,7 @@ import https from 'node:https';
 import tls from 'node:tls';
 import { createHash, randomUUID } from 'node:crypto';
 import sharp from 'sharp';
+import { prepareSingleViewResultBlend, blendSingleViewResult, SINGLE_VIEW_RESULT_BLEND, type BlendCamera } from './singleViewResultBlend.js';
 import { createModelviewIdempotencyKey } from './modelviewIdempotency.js';
 import { serverConfig } from '../config.js';
 import { gpuControlLanCa } from '../certs/gpuControlLanCa.js';
@@ -23,11 +24,16 @@ type ModelviewGenerationInput = {
   materialImage: ModelviewControlFile;
 };
 
-export type ModelviewInpaintInput = ModelviewGenerationInput & {
+export type ModelviewSingleViewInpaintInput = ModelviewGenerationInput & {
+  resultBlend?: { version: 1; currentImage: ModelviewControlFile; objectMask: ModelviewControlFile; camera: BlendCamera };
+  promptPolishEnabled?: boolean;
   mask: ModelviewControlFile;
+  normalImage: ModelviewControlFile;
 };
 
-export type ModelviewSingleViewInput = ModelviewGenerationInput;
+export type ModelviewInpaintInput = ModelviewSingleViewInpaintInput & { referenceViewCount: number };
+type ModelviewNormalInput = { normalImage: ModelviewControlFile };
+export type ModelviewSingleViewInput = ModelviewGenerationInput & ModelviewNormalInput;
 
 type ModelviewServiceKind = 'inpaint' | 'single-view' | 'single-view-inpaint';
 
@@ -72,10 +78,10 @@ function serviceDefinition(kind: ModelviewServiceKind): ModelviewServiceDefiniti
       apiKey: serverConfig.modelviewSingleViewInpaintApiKey,
       timeoutMs: serverConfig.modelviewSingleViewInpaintTimeoutMs,
       jobPrefix: 'modelview-single-view-inpaint',
-      idempotencySuffix: 'single-view-inpaint:4input-rseed-steps2-r1',
+      idempotencySuffix: 'single-view-inpaint:refcontrol-normal-2step-r1',
       filenameSuffix: 'modelview-single-view-inpaint',
       source: 'modelview-single-view-inpaint',
-      workflow: '2026.08.31-e39ed5f-single-view-inpaint-4input-rseed-steps2-r1',
+      workflow: '2026.09.18-refcontrol-normal-single-view-inpaint-2step-r1',
       finalNode: 'SaveImage #29',
     };
   }
@@ -88,10 +94,10 @@ function serviceDefinition(kind: ModelviewServiceKind): ModelviewServiceDefiniti
       apiKey: serverConfig.modelviewSingleViewApiKey,
       timeoutMs: serverConfig.modelviewSingleViewTimeoutMs,
       jobPrefix: 'modelview-single-view',
-      idempotencySuffix: 'single-view:4step-r1',
+      idempotencySuffix: 'single-view:refcontrol-normal-4step-r1',
       filenameSuffix: 'modelview-single-view',
       source: 'modelview-single-view',
-      workflow: '2026.08.26-c0e6218-single-view-4step-r1',
+      workflow: '2026.09.18-refcontrol-normal-single-view-4step-r1',
       finalNode: 'SaveImage #29',
     };
   }
@@ -103,10 +109,10 @@ function serviceDefinition(kind: ModelviewServiceKind): ModelviewServiceDefiniti
     apiKey: serverConfig.modelviewInpaintApiKey,
     timeoutMs: serverConfig.modelviewInpaintTimeoutMs,
     jobPrefix: 'modelview-inpaint',
-    idempotencySuffix: 'inpaint:4input-rseed-r1',
+    idempotencySuffix: 'inpaint:refcontrol-normal-4step-r1',
     filenameSuffix: 'modelview-int8',
     source: 'modelview-inpaint',
-    workflow: '2026.08.28-cd48a78-truev3-gguf-mask-4input-rseed-r1',
+    workflow: '2026.09.18-refcontrol-normal-4step-r1',
     finalNode: 'SaveImage #29',
   };
 }
@@ -188,12 +194,13 @@ function createIdempotencyKey(jobId: string, service: ModelviewServiceDefinition
 function multipartBody(input: {
   boundary: string;
   files: Array<{
-    field: 'image' | 'material_image' | 'mask';
+    field: 'image' | 'material_image' | 'mask' | 'normal_image';
     filename: string;
     mime: string;
     image: Buffer;
   }>;
   prompt?: string;
+  referenceViewCount?: number;
 }) {
   const chunks: Buffer[] = [];
   input.files.forEach((file) => {
@@ -208,6 +215,9 @@ function multipartBody(input: {
       Buffer.from('\r\n', 'utf8'),
     );
   });
+  if (input.referenceViewCount !== undefined) {
+    chunks.push(Buffer.from(`--${input.boundary}\r\nContent-Disposition: form-data; name="reference_view_count"\r\n\r\n${input.referenceViewCount}\r\n`));
+  }
   if (input.prompt) {
     chunks.push(
       Buffer.from(
@@ -223,12 +233,13 @@ function multipartBody(input: {
   return Buffer.concat(chunks);
 }
 
-async function validateInpaintImageAndMask(image: { buffer: Buffer }, mask: { buffer: Buffer }) {
+async function validateInpaintImageAndMask(image: { buffer: Buffer }, mask: { buffer: Buffer }, normal?: { buffer: Buffer }) {
   try {
-    const [imageMetadata, maskMetadata, maskStats] = await Promise.all([
+    const [imageMetadata, maskMetadata, maskStats, normalMetadata] = await Promise.all([
       sharp(image.buffer, { failOn: 'error' }).metadata(),
       sharp(mask.buffer, { failOn: 'error' }).metadata(),
       sharp(mask.buffer, { failOn: 'error' }).stats(),
+      normal ? sharp(normal.buffer, { failOn: 'error' }).metadata() : undefined,
     ]);
     if (
       !imageMetadata.width ||
@@ -247,6 +258,11 @@ async function validateInpaintImageAndMask(image: { buffer: Buffer }, mask: { bu
         422,
       );
     }
+    if (normalMetadata && (normalMetadata.width !== imageMetadata.width || normalMetadata.height !== imageMetadata.height)) {
+      throw new ModelviewInpaintError('法线图尺寸必须与当前效果图、蒙版完全一致。', 422);
+    }
+    // Decode to reject corrupt payloads without re-encoding submitted bytes.
+    if (normal) await sharp(normal.buffer, { failOn: 'error' }).stats();
     if ((maskStats.channels[0]?.max ?? 0) <= 0) {
       throw new ModelviewInpaintError('蒙版红色通道为全黑，请先绘制局部重绘区域。', 422);
     }
@@ -254,10 +270,38 @@ async function validateInpaintImageAndMask(image: { buffer: Buffer }, mask: { bu
     if (error instanceof ModelviewInpaintError) throw error;
     throw new ModelviewInpaintError(
       error instanceof Error
-        ? `无法校验当前效果图与蒙版：${error.message}`
+        ? `无法校验当前效果图、蒙版${normal ? '与法线图' : ''}：${error.message}`
         : '无法校验当前效果图与蒙版。',
       422,
     );
+  }
+}
+
+async function validateNormalImage(image: { buffer: Buffer }, normal: { buffer: Buffer }) {
+  try {
+    const [imageMetadata, normalMetadata] = await Promise.all([
+      sharp(image.buffer, { failOn: 'error' }).metadata(),
+      sharp(normal.buffer, { failOn: 'error' }).metadata(),
+    ]);
+    if (
+      !imageMetadata.width || !imageMetadata.height ||
+      !normalMetadata.width || !normalMetadata.height
+    ) {
+      throw new ModelviewInpaintError('主图或法线图缺少有效尺寸。', 422);
+    }
+    if (
+      imageMetadata.width !== normalMetadata.width ||
+      imageMetadata.height !== normalMetadata.height
+    ) {
+      throw new ModelviewInpaintError(
+        `法线图尺寸 ${normalMetadata.width}×${normalMetadata.height} 必须与主图 ${imageMetadata.width}×${imageMetadata.height} 完全一致。`,
+        422,
+      );
+    }
+    await sharp(normal.buffer, { failOn: 'error' }).stats();
+  } catch (error) {
+    if (error instanceof ModelviewInpaintError) throw error;
+    throw new ModelviewInpaintError('主图或法线图不是可读取的有效图片。', 422);
   }
 }
 
@@ -409,12 +453,20 @@ export function checkModelviewSingleViewInpaintServiceStatus() {
 }
 
 async function generateModelviewImage(
-  input: ModelviewInpaintInput | ModelviewSingleViewInput,
+  input: ModelviewInpaintInput | ModelviewSingleViewInput | ModelviewSingleViewInpaintInput,
   userId: string,
   kind: ModelviewServiceKind,
   options: { signal?: AbortSignal },
 ) {
   const service = serviceDefinition(kind);
+  const referenceViewCount = kind === 'inpaint' ? (input as ModelviewInpaintInput).referenceViewCount : undefined;
+  if (kind === 'inpaint') {
+    if (!Number.isInteger(referenceViewCount) || referenceViewCount! < 1 || referenceViewCount! > 6) {
+      throw new ModelviewInpaintError('reference_view_count 必须显式指定为 1～6 的整数。', 422);
+    }
+    service.idempotencySuffix = `inpaint:${referenceViewCount === 1 ? 'single' : 'multi'}:v2`;
+    service.workflow = referenceViewCount === 1 ? 'modelview-single-view-inpaint' : 'modelview-inpaint';
+  }
   const operationLabel =
     kind === 'inpaint'
       ? '局部重绘'
@@ -430,11 +482,21 @@ async function generateModelviewImage(
   if (!input.materialImage?.dataUrl) {
     throw new ModelviewInpaintError(`${operationLabel}多视图材质参考图不能为空。`, 422);
   }
-  const inpaintInput = kind === 'single-view' ? undefined : (input as ModelviewInpaintInput);
+  const inpaintInput = kind === 'single-view' ? undefined : (input as ModelviewSingleViewInpaintInput);
   if (inpaintInput && !inpaintInput.mask?.dataUrl) {
     throw new ModelviewInpaintError(`${operationLabel}蒙版不能为空。`, 422);
   }
-  const prompt = input.prompt?.trim() ?? '';
+  const normalInput = input.normalImage;
+  if (!normalInput?.dataUrl) {
+    throw new ModelviewInpaintError(`${operationLabel}需要同一视角的法线图。`, 422);
+  }
+  // ModelView's new workflow owns the default prompt. Never let a stale client
+  // or saved prompt override it unless the user explicitly enabled polishing.
+  const prompt = kind === 'inpaint' && inpaintInput?.promptPolishEnabled === true
+    ? input.prompt?.trim() ?? '' : '';
+  if (kind === 'inpaint' && inpaintInput?.promptPolishEnabled === true && !prompt) {
+    throw new ModelviewInpaintError('智能润色已开启，但没有可提交的提示词。', 422);
+  }
   if (Array.from(prompt).length > 4096) {
     throw new ModelviewInpaintError(`${operationLabel}提示词不能超过 4096 个字符。`, 400);
   }
@@ -449,7 +511,24 @@ async function generateModelviewImage(
   const mask = inpaintInput
     ? dataUrlToBuffer(inpaintInput.mask.dataUrl, `${operationLabel}蒙版`)
     : undefined;
-  if (mask) await validateInpaintImageAndMask(image, mask);
+  const normal = dataUrlToBuffer(normalInput.dataUrl, `${operationLabel}法线图`);
+  if (mask) await validateInpaintImageAndMask(image, mask, normal);
+  else await validateNormalImage(image, normal);
+  // These inputs stay on the LI3D control plane; never put them in multipart.
+  const blendInput = inpaintInput?.resultBlend;
+  let preparedBlend: Awaited<ReturnType<typeof prepareSingleViewResultBlend>> | undefined;
+  if (blendInput) {
+    try {
+      if (blendInput.version !== 1) throw new Error('不支持的渐变合成版本。');
+      preparedBlend = await prepareSingleViewResultBlend(
+        dataUrlToBuffer(blendInput.currentImage?.dataUrl, '冻结视角图').buffer,
+        dataUrlToBuffer(blendInput.objectMask?.dataUrl, '模型轮廓').buffer,
+        normal.buffer, blendInput.camera, options.signal,
+      );
+    } catch (error) {
+      throw new ModelviewInpaintError(error instanceof Error ? error.message : '渐变合成输入无效。', 422);
+    }
+  }
   const boundaryHash = createHash('sha256').update(idempotencyKey).digest('hex').slice(0, 32);
   const boundary = `----Li3DModelview${boundaryHash}`;
   const body = multipartBody({
@@ -480,10 +559,27 @@ async function generateModelviewImage(
             },
           ]
         : []),
+      ...(normal && normalInput ? [{
+        field: 'normal_image' as const,
+        filename: safeFilename(normalInput.path, 'normal.png'),
+        mime: normal.mime,
+        image: normal.buffer,
+      }] : []),
     ],
+    referenceViewCount,
     prompt: prompt || undefined,
   });
-  const response = await requestModelview(body, boundary, idempotencyKey, service, options.signal);
+  let response: RemoteResponse;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      response = await requestModelview(body, boundary, idempotencyKey, service, options.signal);
+      if (kind === 'inpaint' && response.statusCode === 504 && attempt < 2) continue;
+      break;
+    } catch (error) {
+      if (kind !== 'inpaint' || options.signal?.aborted || attempt >= 2) throw error;
+      // Reuse the exact frozen body/key after an uncertain transport failure.
+    }
+  }
   const remoteJobId =
     typeof response.headers['x-job-id'] === 'string' ? response.headers['x-job-id'] : undefined;
   const remoteClientId =
@@ -507,21 +603,39 @@ async function generateModelviewImage(
     );
   }
 
-  const sha256 = createHash('sha256').update(response.body).digest('hex');
+  const saveResultAsset = async (buffer: Buffer, mime: string, suffix: string) =>
+    await saveBinaryAsset({ userId, projectId, category: 'generations', mime, buffer,
+      filename: `${jobId}-${suffix}.png` }) ?? await saveUserRecoveryAsset({ userId, mime, buffer,
+      filename: `${jobId}-${suffix}.png` });
+  let resultBody = response.body;
+  let resultMime = contentType;
+  let blendMetadata: Record<string, string> = {};
+  if (preparedBlend) {
+    const raw = await saveResultAsset(response.body, contentType, 'raw');
+    options.signal?.throwIfAborted();
+    resultBody = await blendSingleViewResult(response.body, preparedBlend, options.signal);
+    resultMime = 'image/png';
+    const blendMask = await saveResultAsset(preparedBlend.maskPng, 'image/png', 'blend-mask');
+    const current = dataUrlToBuffer(blendInput!.currentImage.dataUrl, '冻结视角图');
+    const base = await saveResultAsset(current.buffer, current.mime, 'blend-base');
+    blendMetadata = { resultComposition: SINGLE_VIEW_RESULT_BLEND, rawResultUrl: raw.url,
+      resultBlendMaskUrl: blendMask.url, resultBlendBaseUrl: base.url };
+  }
+  const sha256 = createHash('sha256').update(resultBody).digest('hex');
   const projectAsset = await saveBinaryAsset({
     userId,
     projectId,
     category: 'generations',
-    mime: contentType,
-    buffer: response.body,
+    mime: resultMime,
+    buffer: resultBody,
     filename: `${jobId}-${service.filenameSuffix}.png`,
   });
   const saved =
     projectAsset ??
     (await saveUserRecoveryAsset({
       userId,
-      mime: contentType,
-      buffer: response.body,
+      mime: resultMime,
+      buffer: resultBody,
       filename: `${jobId}-${service.filenameSuffix}.png`,
     }));
   if (!projectAsset) {
@@ -539,18 +653,21 @@ async function generateModelviewImage(
     jobId: remoteJobId ?? '(missing X-Job-ID)',
     clientId: remoteClientId,
     idempotencyKey,
-    bytes: response.body.byteLength,
+    projectId, referenceViewCount, completedAt: new Date().toISOString(),
+    artifactSha256: response.headers['x-artifact-sha256'],
+    bytes: resultBody.byteLength,
     sha256,
   });
   return {
     id: jobId,
     resultUrl: saved.url,
     resultUrls: [saved.url],
+    ...blendMetadata,
     modelviewJobId: remoteJobId,
     modelviewClientId: remoteClientId,
     output: {
-      contentType,
-      bytes: response.body.byteLength,
+      contentType: resultMime,
+      bytes: resultBody.byteLength,
       sha256,
       source: service.source,
       storage: projectAsset ? 'project' : 'user-recovery',
@@ -577,7 +694,7 @@ export function generateModelviewSingleView(
 }
 
 export function generateModelviewSingleViewInpaint(
-  input: ModelviewInpaintInput,
+  input: ModelviewSingleViewInpaintInput,
   userId: string,
   options: { signal?: AbortSignal } = {},
 ) {

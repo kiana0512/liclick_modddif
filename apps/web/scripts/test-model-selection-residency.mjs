@@ -367,6 +367,30 @@ await Promise.all([rejected, second]);
 assert.deepEqual(admitted, ['B', 'A']);
 
 // Framing must reject scene-only selection before traversing any model bounds.
+const controllerSource = read('CameraController.tsx');
+const boundsSource = controllerSource.slice(controllerSource.indexOf('function getCombinedBoundingBox'), controllerSource.indexOf('export function CameraController'));
+const combinedBounds = compile(`${boundsSource}\nconst run = getCombinedBoundingBox;`, {
+  THREE, tupleFromVector: vector => vector.toArray(),
+});
+const empty = new THREE.Group();
+assert.equal(combinedBounds([empty]), undefined);
+const boxMesh = new THREE.Mesh(new THREE.BoxGeometry(2, 3, 5));
+const boundsParent = new THREE.Group();
+boundsParent.position.set(2, -4, 7); boundsParent.rotation.set(.5, .3, -.2);
+boundsParent.scale.set(2, .7, 3); boundsParent.add(boxMesh);
+boxMesh.position.set(-4, 1, 3); boxMesh.rotation.set(.8, .1, .6);
+const boundsObjects = [empty, boundsParent, ...models.map(model => model.group)];
+const expectedBounds = new THREE.Box3();
+for (const object of boundsObjects) {
+  object.updateMatrixWorld(true);
+  expectedBounds.union(new THREE.Box3().setFromObject(object));
+}
+assert.deepEqual(combinedBounds(boundsObjects), {
+  min: expectedBounds.min.toArray(), max: expectedBounds.max.toArray(),
+  center: expectedBounds.getCenter(new THREE.Vector3()).toArray(),
+  size: expectedBounds.getSize(new THREE.Vector3()).toArray(),
+});
+boxMesh.geometry.dispose(); boxMesh.material.dispose();
 const cameraEffect = effect(read('CameraController.tsx'), 'const currentModelIds');
 let boundReads = 0;
 let fits = 0;
@@ -377,9 +401,10 @@ const cameraScope = {
   workspaceModeRef: { current: 'scene' }, workspaceMode: 'scene',
   getWorkspaceCameraTransition: () => 'none', isStrictModelAppend: () => false,
   importSettings: { autoFitCamera: true }, camera: { uuid: 'camera' },
-  orbitTargetKeyRef: { current: `camera:scene:${models.map((model) => model.objectId).join('|')}` },
+  orbitTargetKeyRef: { current: `scene:${models.map((model) => model.objectId).join('|')}` },
   getCombinedBoundingBox: () => { boundReads++; return {}; },
   fitCameraToBoundingBox: () => { fits++; }, gl: {}, scene: {},
+  useSceneStore: { getState: () => ({ viewport: {} }) },
 };
 const updateCamera = compile(cameraEffect, cameraScope);
 for (let i = 0; i < 71; i++) updateCamera();

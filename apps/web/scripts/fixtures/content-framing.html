@@ -3,12 +3,13 @@
 <script type="module">
   import {
     prepareContentFraming,
-    restoreContentFraming,
   } from '/src/engine/generation/contentFramingImages.ts';
+  import { restoreContentFraming } from '/src/engine/generation/contentFramingRestore.ts';
   import { findContentFraming, restoredFrameLayout } from '/src/engine/generation/contentFraming.ts';
   import * as THREE from 'three';
   import { captureMask } from '/src/engine/capture/captureMask.ts';
   import { captureNormal } from '/src/engine/capture/captureNormal.ts';
+  import { captureDepth } from '/src/engine/capture/captureDepth.ts';
   const result = document.getElementById('result');
   const check = (test, message) => {
     if (!test) throw new Error(message);
@@ -18,7 +19,12 @@
     c.width = 200;
     c.height = 200;
     const x = c.getContext('2d');
-    if (!normal) {
+    if (normal === 'depth') {
+      x.fillStyle = '#ffffff';
+      x.fillRect(0, 0, 200, 200);
+      x.fillStyle = '#507080';
+      x.fillRect(60, 90, 80, 30);
+    } else if (!normal) {
       x.fillStyle = '#ffffff';
       x.fillRect(60, 90, 80, 30);
     } else {
@@ -63,8 +69,26 @@
     );
     const mb = findContentFraming(await pixels(maskPass.url)),
       nb = findContentFraming(await pixels(normalPass.url), true);
-    check(mb.width < 90 && mb.height < 50, 'white viewport background polluted geometry mask');
+    check(mb.subject.width < 90 && mb.subject.height < 50, 'white viewport background polluted geometry mask');
     check(JSON.stringify(mb) === JSON.stringify(nb), 'actual normal/mask bounds differ');
+    const depthPass = await captureDepth(request);
+    const db = findContentFraming(await pixels(depthPass.url), 'linear-depth');
+    check(JSON.stringify(db) === JSON.stringify(mb), 'actual depth/mask bounds differ');
+    for (const background of ['blue', 'black']) {
+      const opaque = await captureNormal(request, { geometryGuide: true, space: 'view', background });
+      const actual = await prepareContentFraming({
+        workflow: 'local-repaint',
+        capture: { width: 128, height: 128, normalUrl: opaque.url,
+          depthUrl: depthPass.url, depthEncoding: 'linear-view', maskUrl: 'not-the-author-mask' },
+        referenceImages: [{ id: 'guide', url: normalPass.url }, { id: 'normal', url: opaque.url }],
+      });
+      check(JSON.stringify(actual.framing) === JSON.stringify(mb), 'opaque normal polluted repaint framing');
+      const returned = await pixels(await restoreContentFraming(actual.references[0].url, actual.framing));
+      const expectedPixels = await pixels(normalPass.url);
+      check(returned.data.every((v, i) => v === expectedPixels.data[i]), 'transparent return drifted');
+      URL.revokeObjectURL(opaque.url);
+    }
+    URL.revokeObjectURL(depthPass.url);
     check(
       scene.background.getHexString() === 'ffffff' && other.visible,
       'capture leaked scene state',
@@ -86,7 +110,8 @@
     ];
     const input = {
       workflow: 'local-repaint',
-      capture: { width: 200, height: 200, maskUrl: mask, normalUrl: normal },
+      capture: { width: 200, height: 200, maskUrl: mask, normalUrl: normal,
+        depthUrl: fixture('depth'), depthEncoding: 'linear-view' },
       referenceImages: references,
     };
     const prepared = await prepareContentFraming(input);
@@ -201,6 +226,8 @@
       ok: true,
       checks: [
         'real WebGL white-background geometry capture',
+        'frozen depth silhouette with opaque blue/black normal backgrounds',
+        'transparent repaint return preserves original camera placement and RGBA',
         'pixel-exact roundtrip',
         'normal alignment',
         'reference unchanged',

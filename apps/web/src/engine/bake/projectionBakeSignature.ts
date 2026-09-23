@@ -4,7 +4,7 @@ import type {BakeReport,UvBakeResolution} from './uvBakeTypes';
 import {getProjectedLayerStackSignature} from './layerStackCache';
 import {getDebugUvBakeStatus} from './uvBakeDebugControls';
 import {yieldToBrowserTask} from '@/utils/browserScheduling';
-import {waitForViewportInteractionIdle} from '@/engine/viewport/viewportInteractionState';
+import {waitForViewportInteractionIdle} from '@/engine/viewport/input';
 const attributeIdentities=new WeakMap<object,number>();
 let nextAttributeIdentity=1;
 function attributeIdentity(value:object|undefined|null) {

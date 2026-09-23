@@ -1,9 +1,16 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
+import './test-user-file-upload-limit.mjs';
 
 const source = await readFile(
   new URL('../src/components/panels/ReferenceGroupPicker.tsx', import.meta.url),
   'utf8',
+);
+
+assert.match(
+  source,
+  /state\?\.status === 'generating' \? '处理中' : role === 'multi-view' \? '去光影处理' : '生成多视图'/,
+  'multi-view menu uses the requested delight label without changing single-view or busy labels',
 );
 
 assert.match(

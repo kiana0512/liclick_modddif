@@ -2,12 +2,13 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { reliableProjectionSupport, projectionGapMaskFromAlpha, PROJECTION_RELIABILITY_CUTOFF } from '../src/engine/projection/projectionCoverageContract.mjs';
 
-assert.equal(PROJECTION_RELIABILITY_CUTOFF, 0.98);
-for (const support of [0, 0.12, 0.5, 0.97999, NaN, -1]) assert.equal(reliableProjectionSupport(support), 0);
-for (const support of [0.98, 0.999, 1]) assert.equal(reliableProjectionSupport(support), 1);
+assert.equal(PROJECTION_RELIABILITY_CUTOFF, 0.90);
+for (const support of [0, 0.12, 0.5, 0.89999, NaN, -1]) assert.equal(reliableProjectionSupport(support), 0);
+for (const support of [0.90, 0.92, 0.95, 0.97999, 0.98, 0.999, 1]) assert.equal(reliableProjectionSupport(support), 1);
 for (let i = 0; i <= 255; i++) {
   const authoredAlpha = i / 255;
   assert.equal(authoredAlpha * reliableProjectionSupport(1), authoredAlpha, 'author opacity/eraser feather stays continuous');
+  assert.equal(authoredAlpha * reliableProjectionSupport(0.95), authoredAlpha, 'newly admitted support preserves authored alpha');
   assert.equal(authoredAlpha * reliableProjectionSupport(0.5), 0);
 }
 const object = { width: 4, height: 2, data: new Uint8Array([255,255,255,0,255,255,255,255]) };

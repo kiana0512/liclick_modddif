@@ -1,17 +1,21 @@
 import * as THREE from 'three';
 import { yieldToBrowserTask } from '@/utils/browserScheduling';
 
-// UV-LAYER-CONTRIBUTION/1.0.2: lossless 64² tiles of quantized UV color + quality.
+// UV-LAYER-CONTRIBUTION/1.0.4: lossless 64² tiles of quantized UV color + quality.
 // Alpha 1..5 still contributes to coverage counts, so only alpha == 0 is absent.
 export type UvContributionTiles = { index: THREE.DataTexture; columns: number };
 
 /** Exact RGBA rows, bounded transfers, no full-frame ImageBitmap/Worker roundtrip. */
-export async function uploadUvRgba(renderer: THREE.WebGLRenderer, pixels: Uint8Array<ArrayBuffer> | Uint8ClampedArray<ArrayBuffer>,
-  width: number, height: number, options: {flipRows?: boolean; beforeStripe?: () => Promise<void>;
-    check?: () => void; configure?: (texture: THREE.DataTexture) => void} = {}) {
-  const texture=new THREE.DataTexture(null,width,height);
+type UvUploadOptions = {flipRows?: boolean; beforeStripe?: () => Promise<void>;
+  check?: () => void; configure?: (texture: THREE.DataTexture) => void};
+
+async function uploadUvBytes(renderer: THREE.WebGLRenderer,
+  pixels: Uint8Array<ArrayBuffer> | Uint8ClampedArray<ArrayBuffer>, width: number, height: number,
+  bytesPerPixel: 1 | 4, format: THREE.PixelFormat, options: UvUploadOptions = {}) {
+  const texture=new THREE.DataTexture(null,width,height,format);
+  texture.unpackAlignment=1;
   options.configure?.(texture);texture.source.dataReady=false;texture.needsUpdate=true;
-  const rows=Math.max(1,Math.floor(1048576/(width*4))),rowBytes=width*4;
+  const rows=Math.max(1,Math.floor(1048576/(width*bytesPerPixel))),rowBytes=width*bytesPerPixel;
   try {
     await options.beforeStripe?.();options.check?.();
     const allocationStarted=performance.now();renderer.initTexture(texture);
@@ -29,7 +33,8 @@ export async function uploadUvRgba(renderer: THREE.WebGLRenderer, pixels: Uint8A
           data.set(pixels.subarray(offset,offset+rowBytes),row*rowBytes);
         }
       } else data=pixels.subarray(y*rowBytes,(y+count)*rowBytes);
-      const stripe=new THREE.DataTexture(data,width,count);
+      const stripe=new THREE.DataTexture(data,width,count,format);
+      stripe.unpackAlignment=1;
       const copyStarted=performance.now();
       try {renderer.copyTextureToTexture(stripe,texture,null,new THREE.Vector2(0,y));}
       finally {stripe.dispose();}
@@ -42,6 +47,19 @@ export async function uploadUvRgba(renderer: THREE.WebGLRenderer, pixels: Uint8A
     return texture;
   } catch(error) {texture.dispose();throw error;}
 }
+
+/** Exact RGBA rows, bounded transfers, no full-frame ImageBitmap/Worker roundtrip. */
+export function uploadUvRgba(renderer: THREE.WebGLRenderer,
+  pixels: Uint8Array<ArrayBuffer> | Uint8ClampedArray<ArrayBuffer>, width: number, height: number,
+  options: UvUploadOptions = {}) {
+  return uploadUvBytes(renderer,pixels,width,height,4,THREE.RGBAFormat,options);
+}
+
+/** UV-CONTRIBUTION-ARCHIVE/1.1.0: quality remains its canonical one-byte R8 value. */
+export function uploadUvRed(renderer: THREE.WebGLRenderer, pixels: Uint8Array<ArrayBuffer>,
+  width: number, height: number, options: UvUploadOptions = {}) {
+  return uploadUvBytes(renderer,pixels,width,height,1,THREE.RedFormat,options);
+}
 const vertexShader = `precision highp float; in vec3 position;
 void main(){gl_Position=vec4(position,1.0);}`;
 const header = `precision highp float; precision highp int; precision highp usampler2D;
@@ -51,9 +69,9 @@ uniform int columns; uniform int sourceColumns;`;
 const reduceShader = `${header}
 layout(location=0) out vec4 result;
 void main(){
-  ivec2 start=ivec2(gl_FragCoord.xy)*4, size=textureSize(source,0);
+  ivec2 start=ivec2(gl_FragCoord.xy)*8, size=textureSize(source,0);
   float occupied=0.0;
-  for(int y=0;y<4;y++)for(int x=0;x<4;x++){
+  for(int y=0;y<8;y++)for(int x=0;x<8;x++){
     ivec2 p=start+ivec2(x,y);
     if(any(greaterThanEqual(p,size)))continue;
     vec4 c=texelFetch(source,p,0);
@@ -142,18 +160,27 @@ export async function compactUvContribution(
   let atlas: THREE.WebGLRenderTarget | undefined;
   try {
     let size = resolution;
-    for (let level = 0; level < 3; level++) {
-      size = Math.ceil(size / 4);
+    // Two exact 8x8 reductions cover the same 64x64 source tile as the old
+    // three 4x4 reductions. This removes one render target/pass/yield without
+    // changing the boolean occupancy or the packed colour/quality bytes.
+    for (let level = 0; level < 2; level++) {
+      size = Math.ceil(size / 8);
       const target = makeTarget(size, size);
       targets.push(target);
       draw(target);
       material.uniforms.source.value = target.texture;
       material.uniforms.first.value = false;
-      await yieldToBrowserTask();
-      checkCancelled?.();
+      // The final reduction is followed by an asynchronous GPU readback, which
+      // already yields while preserving command order. Only the intermediate
+      // level needs an explicit cooperative task boundary.
+      if (level + 1 < 2) {
+        await yieldToBrowserTask();
+        checkCancelled?.();
+      }
     }
+    checkCancelled?.();
     const occupancy = new Uint8Array(size * size * 4);
-    await renderer.readRenderTargetPixelsAsync(targets[2], 0, 0, size, size, occupancy);
+    await renderer.readRenderTargetPixelsAsync(targets[targets.length - 1], 0, 0, size, size, occupancy);
     checkCancelled?.();
     const addresses = new Uint32Array(size * size),
       active: number[] = [];

@@ -323,12 +323,15 @@ try {
   const uploaded = [],
     marked = [];
   let cancelled = 0, promoted = 0;
+  const gl = { id: 'history-renderer' };
+  const promotionModes = [];
   const bindings = {
     clearEraserUvDraft(owner) { assert.equal(owner, layer, 'Undo clears only its own interactive UV draft'); },
     eraserVersionBefore: undefined,
     ERASER_ALGORITHM_VERSION: 1,
     projectedEraserBatchesRef: { current: new Map() },
     projectedEraserCommit: { model: { group: {} } },
+    gl,
     layer,
     layerRef: { current: active },
     historyTiles,
@@ -340,7 +343,9 @@ try {
     scheduleTextureUpdate: (texture) => uploaded.push(texture),
     useLayerStore: layerStore,
     useProjectStore: projectStore,
-    promoteProjectedEraserMaskToResidentMaterial() {
+    promoteProjectedEraserMaskToResidentMaterial(_layer, _root, renderer, mode) {
+      assert.equal(renderer, gl, 'Undo/redo promotes through the active WebGL renderer');
+      promotionModes.push(mode);
       promoted += 1;
     },
     scheduleProjectedEraserRefinement() {},
@@ -371,6 +376,11 @@ try {
   assert.equal(layers[0].eraserAlgorithmVersion, 1, 'Redo restores the eraser marker together with pixels');
   assert.equal(cancelled, 2);
   assert.equal(promoted, 2, 'Undo and redo both promote the restored full-resolution mask');
+  assert.deepEqual(
+    promotionModes,
+    ['replace', 'replace'],
+    'Undo and redo replace the resident array slice from the authoritative paint canvas',
+  );
 
   // Numeric tile replay tests real staging with three strokes, overlap, a new UV island, and a brush overwrite.
   const tile = (bounds, before, after) => ({ bounds, before: [before], after: [after] });

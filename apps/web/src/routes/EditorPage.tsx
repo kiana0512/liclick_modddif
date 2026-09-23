@@ -76,7 +76,6 @@ import {
   buildContentAwareSurfaceTopology,
   CONTENT_AWARE_REPAIR_REQUEST_EVENT,
   createVisibleSurfaceCompletionPolicy,
-  runSurfaceAwareRepair,
   CONTENT_AWARE_UV_MAX_RESOLUTION,
   type ContentAwareRepairRequestDetail,
 } from '@/engine/contentAware';
@@ -109,9 +108,10 @@ import {
   syncProjectedLayerMaterialProjection,
 } from '@/engine/projection/ProjectedLayerMaterial';
 import { loadModelFromFile, loadModelFromUrl } from '@/engine/loaders/loadModelFromFile';
+import { disposeImportCandidate, prepareModelUvImport } from '@/engine/loaders/prepareModelUvImport';
+import { useModelUvRepairConfirmation } from '@/components/editor/ModelUvRepairDialog';
 import {
   assertModelTriangleLimit,
-  disposeRejectedModel,
   TEXTURE_MODEL_TRIANGLE_LIMIT,
 } from '@/engine/loaders/modelTriangleLimit';
 import {
@@ -130,6 +130,7 @@ import {
   getRgbaAlphaCoverageRatio,
   compareUvMergeSources,
   isFlattenableUvMergeSource,
+  isUvPaintLayer,
   UV_MERGE_COMPOSITION_VERSION,
 } from '@/engine/layers/mergeUvComposition';
 import {
@@ -139,6 +140,7 @@ import {
 } from '@/engine/performance/webGpuRgbaComposite';
 import {
   applyAlphaFromMask,
+  blobToImageData,
   blobToDataUrl,
   compositeUsingMask,
   contentAwareFillMaskedPixels,
@@ -199,7 +201,7 @@ import { ViewportCanvas } from '@/engine/viewport/ViewportCanvas';
 import {
   isViewportInteractionBusy,
   subscribeViewportInteraction,
-} from '@/engine/viewport/viewportInteractionState';
+} from '@/engine/viewport/input';
 import {
   markPerformanceEvent,
   startPerformanceSpan,
@@ -272,6 +274,7 @@ import {
 import { useSettingsStore } from '@/stores/settingsStore';
 import { shortcutMatches, type ShortcutActionId } from '@/stores/shortcutStore';
 import { useToastStore } from '@/stores/toastStore';
+import { allowUserFileUpload } from '@/services/userFileUploadPolicy';
 import { runPaintMaskHistoryAction } from '@/engine/paint/paintMaskHistoryActions';
 import { getEraserTargetPolicy } from '@/engine/paint/eraserTargetPolicy';
 import type { BakeProgress, UvBakeResolution } from '@/engine/bake/uvBakeTypes';
@@ -984,6 +987,7 @@ export function EditorPage({
   const automaticBakeEntryRef = useRef<string>();
   const modelImportRunningRef = useRef(false);
   const modelImportRevisionRef = useRef(0);
+  const uvRepairConfirmation = useModelUvRepairConfirmation();
   const modelImportProgressTimerRef = useRef<number>();
   const contentAwareRepairRunningRef = useRef(false);
   const contentAwareRepairAbortControllerRef = useRef<AbortController>();
@@ -1301,9 +1305,9 @@ export function EditorPage({
         repairResolution,
         {
           includeInvisible: false,
-          includeSeamLinks: true,
-          seamBandPixels: 1,
-          minimumSeamNormalDot: 0.72,
+          // Prewarm only the common no-seam pass. Rare residual islands build
+          // verified physical seam links lazily after that pass reports them.
+          includeSeamLinks: false,
           yieldIntervalMs: 4,
         },
       );
@@ -1345,6 +1349,12 @@ export function EditorPage({
 
   const pushToast = useToastStore((state) => state.pushToast);
   const authStatus = useAuthStore((state) => state.status);
+  useEffect(() => {
+    if (authStatus !== 'authenticated') return;
+    void import('@/services/referenceLighting').then(({ warmReferenceLighting }) => {
+      warmReferenceLighting(projectId, references);
+    });
+  }, [authStatus, projectId, references]);
   const authenticatedUserId = useAuthStore((state) => state.user?.id);
   const t = useT();
   const workspacePanels = useWorkspaceLayoutStore((state) => state.panels);
@@ -2614,6 +2624,7 @@ export function EditorPage({
       uvSets: object.uvSets,
       boundingBox: object.boundingBox ?? loaded.result.boundingBox,
       originalBoundingBox: object.originalBoundingBox ?? loaded.result.originalBoundingBox,
+      sourceUnitScaleFactor: object.sourceUnitScaleFactor ?? loaded.result.sourceUnitScaleFactor,
       importNormalizationTransform:
         object.importNormalizationTransform ?? loaded.result.importNormalizationTransform,
       childMeshCount: object.childMeshCount ?? loaded.result.childMeshCount,
@@ -3292,10 +3303,20 @@ export function EditorPage({
     }
   }
 
-  function handleBackToProjects() {
+  async function handleBackToProjects() {
     if (generationConflictLocked) {
       showGenerationConflict('返回项目列表');
       return;
+    }
+
+    const lighting = await import('@/services/referenceLighting');
+    if (lighting.hasReferenceLightingWork(projectId)) {
+      if (!window.confirm('图片正在处理中，是否要中断')) return;
+      try { await lighting.interruptReferenceLighting(projectId); }
+      catch (error) {
+        pushToast({ tone: 'error', title: '中断图片处理失败', description: error instanceof Error ? error.message : '请重试。' });
+        return;
+      }
     }
     if (backNavigationPendingRef.current) return;
     const currentProject = useProjectStore.getState().getCurrentProject();
@@ -3502,6 +3523,8 @@ export function EditorPage({
     onProgress?: (event: ModelImportProgressEvent, detail?: string) => void,
     isCurrentImport: () => boolean = () => true,
   ) {
+    let candidate: Awaited<ReturnType<typeof loadModelFromFile>> | undefined;
+    let registered = false;
     try {
       onProgress?.({ phase: 'preparing', phaseProgress: 0 });
       const parsedModel = await loadModelFromFile(
@@ -3514,15 +3537,17 @@ export function EditorPage({
         resourceFiles,
         (event) => onProgress?.(event),
       );
-      try {
-        assertModelTriangleLimit(parsedModel.root, TEXTURE_MODEL_TRIANGLE_LIMIT);
-      } catch (limitError) {
-        disposeRejectedModel(parsedModel.root);
-        if (parsedModel.sourceUrl.startsWith('blob:')) URL.revokeObjectURL(parsedModel.sourceUrl);
-        throw limitError;
-      }
+      const prepared = await prepareModelUvImport({
+        file, parsed: parsedModel, resources: resourceFiles,
+        normalize: { normalize: importSettings.normalizeOnImport, ground: importSettings.groundOnImport, targetMaxDimension: 3 },
+        confirm: uvRepairConfirmation.confirm, isCurrent: isCurrentImport,
+        progress: detail => onProgress?.({ phase: 'materials' }, detail),
+      });
+      if (!prepared) return false;
+      candidate = prepared.loaded;
+      assertModelTriangleLimit(candidate.root, TEXTURE_MODEL_TRIANGLE_LIMIT);
       const loaded = placeImportedModelBesideScene(
-        parsedModel,
+        prepared.loaded,
         useSceneStore.getState().importedModels,
       );
       if (!isCurrentImport()) return false;
@@ -3537,8 +3562,8 @@ export function EditorPage({
           const saved = await saveBlobAsset({
             projectId: project.id,
             category: 'models',
-            blob: file,
-            filename: `${object.id}-${file.name}`,
+            blob: prepared.file,
+            filename: `${object.id}-${prepared.file.name}`,
             onProgress: ({ loadedBytes, totalBytes }) =>
               onProgress?.(
                 { phase: 'persisting', loadedBytes, totalBytes },
@@ -3563,6 +3588,7 @@ export function EditorPage({
       onProgress?.({ phase: 'persisting', phaseProgress: 1 }, t('modelImportSavingFile'));
       onProgress?.({ phase: 'registering', phaseProgress: 0.15 }, t('modelImportAddingToScene'));
       setImportedModel(loaded.result, object);
+      registered = true;
       if (shouldFocusImportedModelAfterImport(useWorkspaceLayoutStore.getState().mode)) {
         focusCameraOrbitOnObjectId(object.id);
       }
@@ -3625,10 +3651,13 @@ export function EditorPage({
         description: error instanceof Error ? error.message : 'The model could not be loaded.',
       });
       return false;
+    } finally {
+      if (candidate && !registered) disposeImportCandidate(candidate);
     }
   }
 
   async function handleImportModels(files: File[]) {
+    if (!allowUserFileUpload(files)) return;
     if (modelMutationLocked) {
       notifyEditorTaskRunning();
       return;
@@ -3709,11 +3738,13 @@ export function EditorPage({
     } finally {
       modelImportRunningRef.current = false;
       setModelImportBusy(false);
+      if (loadedFileCount === 0 && isCurrentImport()) setModelImportProgress(undefined);
       if (modelInputRef.current) modelInputRef.current.value = '';
     }
   }
 
   async function handleImportReferenceImages(files: File[], sourceUrls: string[] = []) {
+    if (!allowUserFileUpload(files)) return;
     if (editorTaskRunning) {
       notifyEditorTaskRunning();
       return;
@@ -3838,6 +3869,7 @@ export function EditorPage({
   }
 
   async function handleLoadProject(file: File) {
+    if (!allowUserFileUpload([file])) return;
     try {
       const importedProject = await importProjectJson(file);
       loadedProjectIdRef.current = importedProject.id;
@@ -3991,6 +4023,7 @@ export function EditorPage({
   }
 
   async function replaceLayerImage(layer: Layer, file: File) {
+    if (!allowUserFileUpload([file])) return;
     if (layer.type !== 'projected' && layer.type !== 'uv') return;
     try {
       captureHistory(`替换图层图片：${layer.name}`);
@@ -4201,7 +4234,7 @@ export function EditorPage({
       if (!runtime.roiRect || !runtime.editMask || !runtime.protectMask) {
         throw new Error('局部重绘恢复上下文不完整，请重新生成。');
       }
-      const editedImage = await urlToImageData(await blobToDataUrl(outputImage));
+      const editedImage = await blobToImageData(outputImage, true);
       const source = runtime.workingImageData;
       const editedFrame =
         editedImage.width === source.width && editedImage.height === source.height
@@ -4960,9 +4993,7 @@ export function EditorPage({
       let mergedRgba = mergedImageData.data;
       readbackDurationMs = performance.now() - readbackStartedAt;
 
-      // Flatten selected UV sources underneath projection coverage. This is
-      // the step that used to be silently skipped, causing a selected content-
-      // aware repair layer to disappear after merge.
+      // Bases/repair fill beneath projections; authored UV paint covers them.
       const uvCompositeStartedAt = performance.now();
       let mergedImageUrl: string | undefined;
       let mergedOutputBytes = 0;
@@ -4981,7 +5012,7 @@ export function EditorPage({
               bakeResolution,
               layer.opacity,
               options?.taskContext?.signal,
-              isNativeUvRepaintLayer(layer),
+              isUvPaintLayer(layer),
             );
             const metrics: WebGpuRgbaCompositeMetrics = result.metrics;
             mergedRgba = result.data;
@@ -5011,7 +5042,7 @@ export function EditorPage({
           }
         } else {
           const source = await urlToImageData(uvSourceUrl, bakeResolution, bakeResolution);
-          mergedRgba = isNativeUvRepaintLayer(layer)
+          mergedRgba = isUvPaintLayer(layer)
             ? compositeRgbaUnderInPlace(source.data, mergedRgba, 1, layer.opacity)
             : compositeRgbaUnderInPlace(mergedRgba, source.data, layer.opacity);
         }
@@ -7001,12 +7032,9 @@ export function EditorPage({
               repairResolution,
               {
                 includeInvisible: false,
-                // A bounded physical-seam bridge can seed a fully blank UV island.
-                // The repair core limits propagation to one seam crossing so colour
-                // cannot cascade through an arbitrary chain of neighbouring islands.
-                includeSeamLinks: true,
-                seamBandPixels: 1,
-                minimumSeamNormalDot: 0.72,
+                // Keep the common pass seam-free. The bounded fallback builds
+                // links on demand only when this pass proves a residual exists.
+                includeSeamLinks: false,
                 yieldIntervalMs: 4,
                 signal: abortController.signal,
                 onProgress: silentForeground
@@ -7095,54 +7123,50 @@ export function EditorPage({
             progress: 0.74,
           });
         }
-        const repair = await runSurfaceAwareRepair(
-          {
-            width: repairResolution,
-            height: repairResolution,
-            rgba: workingImageData.data,
-            writeMask: detectedGaps.mask,
-            // The input is already the final quality-ranked composite of all
-            // six projections. This FBX shares its complete UV atlas between
-            // two surface components, so excluding conflict texels would
-            // exclude every possible donor. The repair engine still excludes
-            // the detected holes plus padding before propagating colour.
-            topologyMask: topology.topologyMask,
-            topologyRegionIds: topology.regionIds,
-            seamLinks: topology.seamLinks,
-            // Complete every reachable hatch-visible texel in one Worker pass.
-            // The queue remains O(N); adaptive filling stays inside selected
-            // gaps and same-region original boundaries, never foreign seams.
-            ...completionPolicy.propagation,
-          },
-          {
-            signal: abortController.signal,
-            transferOwnership: { rgba: true, writeMask: true },
-            onProgress: silentForeground
-              ? undefined
-              : (progress) =>
-                  setManualBakeProgress({
-                    title: t('contentAwareRepair'),
-                    detail: t('contentAwareRepairFilling'),
-                    progress: 0.74 + progress.progress * 0.2,
-                  }),
-          },
+        const { runVisibleSurfaceRepairWithFallback } = await import(
+          '@/engine/contentAware/runBoundedSeamFallbackRepair'
         );
-        reportRepairRunState('running', 'repair-worker-ready', {
-          repairedPixels: repair.stats.repairedPixels,
-          outputChecksum: repair.stats.outputChecksum,
+        const repair = await runVisibleSurfaceRepairWithFallback({
+          root: targetModel.group,
+          width: repairResolution,
+          height: repairResolution,
+          rgba: workingImageData.data,
+          writeMask: detectedGaps.mask,
+          topology,
+          propagation: completionPolicy.propagation,
+          signal: abortController.signal,
+          onProgress: silentForeground
+            ? undefined
+            : (progress) =>
+                setManualBakeProgress({
+                  title: t('contentAwareRepair'),
+                  detail: t('contentAwareRepairFilling'),
+                  progress: 0.74 + progress * 0.24,
+                }),
         });
-        console.info('[Liclick Content Aware] Surface repair', JSON.stringify(repair.stats));
-        if (repair.stats.repairedPixels === 0) {
+        const { filledRgba, repairedPixels, unresolvedPixels, outputChecksum } = repair;
+        reportRepairRunState('running', 'repair-worker-ready', {
+          repairedPixels,
+          unresolvedPixels,
+          outputChecksum,
+          seamLinkCount: repair.seamLinkCount,
+          seamTopologyBuildTimeMs: repair.seamTopologyBuildTimeMs,
+        });
+        console.info('[Liclick Content Aware] Surface repair', JSON.stringify({
+          initial: repair.initialStats,
+          fallback: repair.fallbackStats,
+        }));
+        if (repairedPixels === 0) {
           throw new Error(t('contentAwareRepairNoReachableSource'));
         }
         // `filledRgba` is intentionally sparse: only successfully repaired gap
         // texels are opaque. It never contains a flattened copy of source layers.
-        const repairTexture = new ImageData(repair.filledRgba, repairResolution, repairResolution);
+        const repairTexture = new ImageData(filledRgba, repairResolution, repairResolution);
         if (!silentForeground) {
           setManualBakeProgress({
             title: t('contentAwareRepair'),
             detail: t('contentAwareRepairFilling'),
-            progress: 0.96,
+            progress: 0.99,
           });
         }
         if (!benchmarkOnly) captureHistory('创建独立内容识别 UV 修补图层');
@@ -7156,16 +7180,17 @@ export function EditorPage({
         if (!benchmarkOnly) setProjectLayers(useLayerStore.getState().layers);
         reportRepairRunState('complete', 'atomic-publish', {
           layerId: repairLayer.id,
-          repairedPixels: repair.stats.repairedPixels,
-          outputChecksum: repair.stats.outputChecksum,
+          repairedPixels,
+          unresolvedPixels,
+          outputChecksum,
         });
         options?.taskContext?.markFirstResult({ layerId: repairLayer.id });
         if (!benchmarkOnly && !silentForeground) {
           pushToast({
-            tone: repair.stats.unresolvedPixels > 0 ? 'warning' : 'success',
+            tone: unresolvedPixels > 0 ? 'warning' : 'success',
             title: t('contentAwareFillComplete'),
-            description: `${t('uvRepairLayerCreated')}: ${repairLayer.name} · ${repair.stats.repairedPixels.toLocaleString()} px` +
-              (repair.stats.unresolvedPixels > 0 ? `；仍有 ${repair.stats.unresolvedPixels.toLocaleString()} px 缺少可靠边界颜色，可使用局部重绘补充。` : ''),
+            description: `${t('uvRepairLayerCreated')}: ${repairLayer.name} · ${repairedPixels.toLocaleString()} px` +
+              (unresolvedPixels > 0 ? `；仍有 ${unresolvedPixels.toLocaleString()} px 缺少可靠边界颜色，可使用局部重绘补充。` : ''),
             dedupeKey: `content-aware-repair:${repairLayer.id}`,
           });
         }
@@ -8109,6 +8134,7 @@ export function EditorPage({
           onLaunch={() => void handlePhotoshopLaunch()}
         />
       ) : null}
+      {uvRepairConfirmation.dialog}
       {modelImportProgress
         ? createPortal(<AutoBakeProgressBar progress={modelImportProgress} />, document.body)
         : manualBakeProgress

@@ -2,19 +2,29 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import ts from 'typescript';
 const source=fs.readFileSync(new URL('../src/engine/bake/persistentMergePreparation.ts',import.meta.url),'utf8');
-const code=ts.transpileModule(source.replace(/^import[^\n]+\n/gm,''),{
+const code=ts.transpileModule(source.replace(/^import[^\n]+\n/gm,'').replaceAll('import.meta.url',"''"),{
   compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS},
 }).outputText;
 const stored=new Map();
 let copiedSlices=0;
+let paintWaits=0;
 const cache={match:async req=>stored.get(req.url)?.clone(),put:async(req,res)=>stored.set(req.url,res),
   keys:async()=>[...stored.keys()].map(url=>new Request(url)),delete:async req=>stored.delete(req.url)};
 class Pixels {constructor(data,width,height){this.data=data;this.width=width;this.height=height;}}
 let user='user-a';
 let activeFetches=0,peakFetches=0;
+let activeDigests=0,peakDigests=0;
+let interactionWaits=0;
 const fetched=[];
-const scope={exports:{},crypto:globalThis.crypto,window:{caches:{}},caches:{open:async()=>cache},
+const crypto={subtle:{digest:async(...args)=>{
+  activeDigests++;peakDigests=Math.max(peakDigests,activeDigests);
+  await new Promise(resolve=>setTimeout(resolve,2));
+  try{return await globalThis.crypto.subtle.digest(...args);}finally{activeDigests--;}
+}}};
+const scope={exports:{},crypto,window:{caches:{}},caches:{open:async()=>cache},
   yieldToBrowserTask:async()=>{copiedSlices++;await new Promise(resolve=>setTimeout(resolve,0));},
+  waitForBrowserPaint:async()=>{paintWaits++;await new Promise(resolve=>setTimeout(resolve,0));},
+  waitForViewportInteractionIdle:async()=>{interactionWaits++;},
   location:{origin:'https://test.invalid'},Request,Response,TextEncoder,TextDecoder:globalThis.TextDecoder,ImageData:Pixels,
   document:{createElement:()=>({})},useAuthStore:{getState:()=>({user:{id:user}})},
   getDebugUvBakeStatus:()=>({}),getMergeUvPostprocessOptions:()=>({gutter:8}),
@@ -37,11 +47,17 @@ const input={projectId:'project',objectId:'object',resolution:512,group:a.group,
   layers:[{id:'layer',order:0,imageUrl:'blob:old'}]};
 const key=await api.persistentMergeKey(input);
 assert.ok(key);
+assert.equal(interactionWaits,3,'geometry copies and source response materialization wait for viewport idle');
 fetched.length=0;peakFetches=0;
+peakDigests=0;
+const waitsBeforeMany=interactionWaits;
 const manyLayers=Array.from({length:9},(_,i)=>({id:`layer-${i}`,order:i,imageUrl:`blob:source-${i%7}`}));
 assert.ok(await api.persistentMergeKey({...input,layers:manyLayers}));
+assert.equal(interactionWaits-waitsBeforeMany,9,'every geometry copy and unique source response preserves interaction priority');
 assert.equal(fetched.length,7,'shared source assets are verified only once per key');
 assert.equal(peakFetches,3,'source verification overlaps network waits within a fixed memory bound');
+assert(peakDigests>=4,'bounded geometry and source SHA queues overlap instead of serializing');
+assert(peakDigests<=5,'two geometry and three source SHA jobs are the global concurrency bound');
 assert.equal(await api.persistentMergeKey({...input,group:b.group,layers:[{...input.layers[0],imageUrl:'blob:new'}]}),key,
   'reload UUIDs and blob URLs do not invalidate identical geometry/source bytes');
 b.attributes.uv.array[0]=0.5;
@@ -50,7 +66,9 @@ user='user-b';assert.notEqual(await api.persistentMergeKey(input),key,'user cach
 const result={report:{width:512,height:512},bakedTexture:{id:'derived'},
   imageData:new Pixels(new Uint8ClampedArray(512*512*4).fill(123),512,512)};
 await api.writePersistentMerge(key,result);
+const waitsBeforeRead=interactionWaits;
 const restored=await api.readPersistentMerge(key,512);
+assert.equal(interactionWaits-waitsBeforeRead,1,'persistent cache response materialization waits for viewport idle');
 assert.deepEqual(restored.imageData.data,result.imageData.data);
 assert.equal(await api.readPersistentMerge(key,1024),undefined,'resolution is checked');
 const url=[...stored.keys()][0];const response=stored.get(url);const bytes=new Uint8Array(await response.arrayBuffer());
@@ -71,5 +89,6 @@ const originalFirst=full[0];full[0]^=255;
 const fullRestored=await api.readPersistentMerge(fullKey,4096);
 assert.equal(fullRestored.imageData.data[0],originalFirst,'writer retains a private immutable snapshot');
 full[0]=originalFirst;assert.deepEqual(fullRestored.imageData.data,full);
-assert(copiedSlices>=64,'large copies cross scheduling boundaries');
+assert(copiedSlices+paintWaits>=64,'large copies cross scheduling boundaries');
+assert(paintWaits>=16,'4K persistence forces a real paint after every bounded 4 MiB batch');
 console.log('Persistent Merge cache: cross-reload geometry/source identity, user isolation, UV invalidation, exact RGBA restore, resolution and corruption checks passed.');

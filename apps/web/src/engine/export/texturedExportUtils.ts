@@ -15,13 +15,14 @@ import {
 import {
   getVisibleUvLayerStack,
   isLocalRepaintUvOverlayLayer,
-  compareUvLayersForComposition,
 } from '@/engine/layers/uvLayerComposition';
 import { findMergedUvBakeLayer, resolveBakeUvMergePlan } from '@/features/workflow/selectBakeBaseColor';
 import {
   compositeRgbaUnderInPlace,
   getMergeUvPostprocessOptions,
   isContentAwareUvUnderlay,
+  isUvPaintLayer,
+  compareUvMergeSources,
 } from '@/engine/layers/mergeUvComposition';
 import { encodeRgbaPngBlob } from '@/utils/encodeRgbaPng';
 import {
@@ -430,7 +431,7 @@ function findVisibleUvLayers(objectId: string) {
     (layer) => layer.role !== 'base-color' && layer.id !== mergedLayer.id,
   );
   const firstLocalOverlayIndex = retainedLayers.findIndex((layer) =>
-    isLocalRepaintUvOverlayLayer(layer),
+    isLocalRepaintUvOverlayLayer(layer) || isUvPaintLayer(layer),
   );
   if (firstLocalOverlayIndex < 0) return [...retainedLayers, mergedLayer];
   return [
@@ -543,14 +544,14 @@ async function flattenVisibleLayersToBaseColor(
   // order. This prevents a repaint from being flattened into the base and then
   // applied a second time.
   const contentAwareUnderlayLayers = uvLayers.filter(
-    (layer) => layer.role === 'content-aware-underlay',
+    (layer) => isContentAwareUvUnderlay(layer),
   );
   const baseUvLayers = uvLayers.filter(
     (layer) =>
-      layer.role !== 'content-aware-underlay' &&
-      !isLocalRepaintUvOverlayLayer(layer),
+      !isContentAwareUvUnderlay(layer) &&
+      !isLocalRepaintUvOverlayLayer(layer) && !isUvPaintLayer(layer),
   );
-  const localRepaintUvLayers = uvLayers.filter((layer) => isLocalRepaintUvOverlayLayer(layer));
+  const localRepaintUvLayers = uvLayers.filter((layer) => isLocalRepaintUvOverlayLayer(layer) || isUvPaintLayer(layer));
   const sourceLayerRecords = await Promise.all(
     [...contentAwareUnderlayLayers, ...baseUvLayers, ...localRepaintUvLayers].map(
       async (layer) => {
@@ -892,6 +893,7 @@ export async function prepareTexturedModelExport(
   input: ModelExportInput,
   options: TexturedModelExportOptions = {},
 ): Promise<PreparedTexturedExport> {
+  await flushLiveUvCommits();
   const root = cloneExportRoot(input);
 
   const resolution = exportResolutionToSize[useSettingsStore.getState().resolution] ?? 2048;
@@ -1000,9 +1002,7 @@ export async function prepareFbxModelExport(input: ModelExportInput): Promise<Pr
         : new ImageData(resolution, resolution));
       if (!pixels) throw new Error('Could not read temporary UV bake.');
       const mergedIds = new Set([plan.baseUvLayerId, ...plan.uvUnderlayLayerIds]);
-      const underlays = uvLayers.filter((layer) => mergedIds.has(layer.id)).sort((left, right) =>
-        Number(isContentAwareUvUnderlay(left)) - Number(isContentAwareUvUnderlay(right)) ||
-        compareUvLayersForComposition(left, right, 'top-to-bottom'));
+      const underlays = uvLayers.filter((layer) => mergedIds.has(layer.id)).sort(compareUvMergeSources);
       for (const layer of underlays) {
         const bitmap = await createImageBitmap(await blobFromImageAssetUrl(layer.imageUrl));
         const canvas = document.createElement('canvas');
@@ -1011,7 +1011,12 @@ export async function prepareFbxModelExport(input: ModelExportInput): Promise<Pr
           const context = canvas.getContext('2d', { willReadFrequently: true });
           if (!context) throw new Error('Could not composite temporary UV underlay.');
           context.drawImage(bitmap, 0, 0, resolution, resolution);
-          compositeRgbaUnderInPlace(pixels.data, context.getImageData(0, 0, resolution, resolution).data, layer.opacity);
+          const source = context.getImageData(0, 0, resolution, resolution).data;
+          if (isUvPaintLayer(layer)) {
+            pixels.data.set(compositeRgbaUnderInPlace(source, pixels.data, 1, layer.opacity));
+          } else {
+            compositeRgbaUnderInPlace(pixels.data, source, layer.opacity);
+          }
         } finally { bitmap.close(); canvas.width = canvas.height = 1; }
       }
       atlas = await encodeRgbaPngBlob(resolution, resolution, pixels.data);

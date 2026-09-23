@@ -28,13 +28,18 @@ const start = fixture.indexOf('  const group = new THREE.Group();');
 const end = fixture.indexOf('  useProjectStore.setState');
 fixture = fixture.slice(0,start) + String.raw`
   const project=await (await fetch('/__project')).json();
-  const object=project.objects[0];
-  const {FBXLoader}=await import('three/examples/jsm/loaders/FBXLoader.js');
-  const group=await new FBXLoader().loadAsync(object.sourcePath);
+  const preferredObjectId=${JSON.stringify(process.env.LICLICK_UV_OBJECT_ID ?? '')};
+  const object=project.objects.find(candidate=>candidate.id===preferredObjectId)??project.objects.reduce((best,candidate)=>{
+    const count=id=>project.layers.filter(layer=>layer.objectId===id&&layer.type==='projected').length;
+    return !best||count(candidate.id)>count(best.id)?candidate:best;
+  },undefined);
+  const {loadModelFromUrl}=await import('/src/engine/loaders/loadModelFromFile.ts');
+  const loaded=await loadModelFromUrl({sourceUrl:object.sourcePath,fileName:object.sourceFileName??object.sourcePath});
+  const group=loaded.result.group;
   group.position.fromArray(object.transform.position);group.rotation.fromArray(object.transform.rotation);group.scale.fromArray(object.transform.scale);group.updateMatrixWorld(true);
-  const model={objectId:object.id,name:object.name,format:'fbx',group,sourceFileName:'comparison.fbx',
+  const model={...loaded.result,objectId:object.id,name:object.name,group,
     materialSlots:object.materialSlots.map(slot=>slot.name),uvSets:object.uvSets,boundingBox:object.boundingBox,
-    originalBoundingBox:object.originalBoundingBox,childMeshCount:object.childMeshCount,warnings:[],restoreStage:'full'};
+    originalBoundingBox:object.originalBoundingBox,childMeshCount:object.childMeshCount,restoreStage:'full'};
 ` + fixture.slice(end);
 fixture = fixture.replace("resolution: '1K'", "resolution: '4K'");
 fixture = fixture.replace('  useProjectStore.setState', `  const firstStartedAt=performance.now();

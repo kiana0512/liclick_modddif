@@ -12,6 +12,16 @@ const objects = new Map();
 let mode = 'native';
 let reads = 0;
 let heads = 0;
+// WHATWG Fetch blocks these ports before any network request is made. Windows
+// can still hand one of them out for listen(0), which made this regression
+// fail nondeterministically even though the signed-transfer code was correct.
+const fetchForbiddenPorts = new Set([
+  1, 7, 9, 11, 13, 15, 17, 19, 20, 21, 22, 23, 25, 37, 42, 43, 53, 69, 77, 79,
+  87, 95, 101, 102, 103, 104, 109, 110, 111, 113, 115, 117, 119, 123, 135, 137,
+  139, 143, 161, 179, 389, 427, 465, 512, 513, 514, 515, 526, 530, 531, 532, 540,
+  548, 554, 556, 563, 587, 601, 636, 989, 990, 993, 995, 1719, 1720, 1723, 2049,
+  3659, 4045, 5060, 5061, 6000, 6566, 6665, 6666, 6667, 6668, 6669, 6697, 10080,
+]);
 
 const handler = async (request, response) => {
   const url = new URL(request.url ?? '/', `http://${request.headers.host}`);
@@ -84,9 +94,16 @@ const objectStorage = createServer(handler);
 const internalStorage = createServer(handler);
 await new Promise((resolve) => internalStorage.listen(0, '127.0.0.1', resolve));
 
-await new Promise((resolve) => objectStorage.listen(0, '127.0.0.1', resolve));
-const address = objectStorage.address();
-assert.ok(address && typeof address === 'object');
+let address;
+for (let attempt = 0; attempt < 10; attempt += 1) {
+  await new Promise((resolve) => objectStorage.listen(0, '127.0.0.1', resolve));
+  address = objectStorage.address();
+  assert.ok(address && typeof address === 'object');
+  if (!fetchForbiddenPorts.has(address.port)) break;
+  await new Promise((resolve, reject) => objectStorage.close((error) => (error ? reject(error) : resolve())));
+  address = undefined;
+}
+assert.ok(address && typeof address === 'object', 'Unable to reserve a Fetch-compatible test port.');
 
 try {
   process.env.LICLICK_WORKSPACE_DIR = workspace;

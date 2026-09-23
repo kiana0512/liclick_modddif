@@ -126,12 +126,12 @@ assert.match(
 );
 assert.match(
   generatePanelSource,
-  /captureCurrentLocalRepaintView\([\s\S]*resolution: LOCAL_REPAINT_INPUT_RESOLUTION,[\s\S]*colorMode: isGptLocalRepaint \? 'flat-target-coverage' : 'flat-target'/,
+  /captureCurrentLocalRepaintView\([\s\S]*resolution: LOCAL_REPAINT_INPUT_RESOLUTION,[\s\S]*colorMode: 'flat-target-coverage'/,
   'the generation path must first capture the frozen-camera current BaseColor effect',
 );
 assert.match(
   generatePanelSource,
-  /prepareLocalRepaintGenerationInput\(\{[\s\S]*currentEffectUrl: flatCurrentEffectUrl,[\s\S]*clayPreviewUrl,[\s\S]*authoredMaskUrl: currentPaintMaskDataUrl/,
+  /const preparationInput = \{[\s\S]*currentEffectUrl: flatCurrentEffectUrl,[\s\S]*clayPreviewUrl,[\s\S]*authoredMaskUrl: currentPaintMaskDataUrl/,
   'the input worker must receive the unchanged authored mask alongside aligned current and clay captures',
 );
 assert.match(
@@ -146,7 +146,7 @@ assert.match(
 );
 assert.match(
   generatePanelSource,
-  /image: \{ path: 'current-effect\.png',[\s\S]*materialImage: \{[\s\S]*mask: \{ path: `\$\{generationId\}-mask\.png`/,
+  /image: \{ path: 'preview-white-filled\.png',[\s\S]*materialImage: \{[\s\S]*mask: \{ path: `\$\{generationId\}-mask\.png`/,
   'the local repaint request must submit current effect, material reference and mask',
 );
 assert.match(

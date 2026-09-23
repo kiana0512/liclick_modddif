@@ -113,6 +113,8 @@ type SceneStore = {
   projectionMode: ProjectionMode;
   transformMode: TransformMode;
   paintTool: PaintToolMode;
+  /** Ephemeral command token; repeated mask-tool activation must rearm the viewport session. */
+  paintToolActivationRevision: number;
   paintMaskRevision: number;
   paintMaskResetRevision: number;
   paintMaskInvertRevision: number;
@@ -291,6 +293,7 @@ export const useSceneStore = create<SceneStore>()(
       projectionMode: 'perspective',
       transformMode: 'select',
       paintTool: 'none',
+      paintToolActivationRevision: 0,
       paintMaskRevision: 0,
       paintMaskResetRevision: 0,
       paintMaskInvertRevision: 0,
@@ -538,15 +541,25 @@ export const useSceneStore = create<SceneStore>()(
         ),
       setPaintTool: (paintTool) =>
         set((state) => {
+          const isMaskTool = paintTool === 'inpaint-add' || paintTool === 'inpaint-subtract';
           const paintMaskPresentationVisible =
-            paintTool === 'inpaint-add' || paintTool === 'inpaint-subtract'
-              ? true
-              : state.paintMaskPresentationVisible;
-          return state.paintTool === paintTool &&
+            isMaskTool ? true : state.paintMaskPresentationVisible;
+          const paintToolActivationRevision = isMaskTool
+            ? state.paintToolActivationRevision + 1
+            : state.paintToolActivationRevision;
+          if (
+            !isMaskTool &&
+            state.paintTool === paintTool &&
             state.transformMode === 'select' &&
             state.paintMaskPresentationVisible === paintMaskPresentationVisible
-            ? state
-            : { paintTool, transformMode: 'select', paintMaskPresentationVisible };
+          )
+            return state;
+          return {
+            paintTool,
+            transformMode: 'select',
+            paintMaskPresentationVisible,
+            paintToolActivationRevision,
+          };
         }),
       markPaintMaskChanged: () =>
         set((state) => ({ paintMaskRevision: state.paintMaskRevision + 1 })),

@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 
-// ALG-LR-014 v1: consume working selection, never the frozen generation mask.
-export const SELECTION_CONSUMPTION_VERSION = 1;
+// ALG-LR-014 v2: clear supported stroke pixels, independently of color feather strength.
+export const SELECTION_CONSUMPTION_VERSION = 2;
 
 export type SelectionPixelPatch = { offset: number; before: Uint8Array; after: Uint8Array };
 
@@ -86,6 +86,7 @@ export function getSelectionConsumptionMaterial(source: THREE.ShaderMaterial) {
         float strokeAlpha = texture2D(consumptionStrokeMap, mix(strokeUv, vec2(vUv.x, 1.0 - vUv.y), consumptionUsesUv)).a;
         float alpha = consumptionUsesUv > 0.5 ? strokeAlpha : gl_FragColor.a * step(0.0039, strokeAlpha);
         if (alpha <= 0.01) discard;
+        alpha = 1.0;
         vec3 normal = normalize(objectNormalDelta * vWorldNormal);
         float front = step(0.0, dot(normal, projectorPosition - capturePosition.xyz));
         gl_FragColor = vec4(alpha * front, alpha * (1.0 - front), alpha, alpha);

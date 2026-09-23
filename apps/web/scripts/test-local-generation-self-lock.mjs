@@ -157,10 +157,7 @@ assert.match(
   /\}\) : resolveLocalRepaintMaterialReference\(\{[\s\S]*?selectedReferenceIds: referenceStateAtSubmission\.selectedReferenceIds,[\s\S]*?historicalReferenceId:/,
   'Local repaint must resolve the currently selected single-view or multiview reference before historical fallback.',
 );
-assert.match(
-  generatePanel,
-  /if \(!isGptLocalRepaint && materialReference && !isMultiviewReference\(materialReference\)\) \{[\s\S]*?materialReference = await generatePairedMultiviewReference\(materialReference\)/,
-  'The original ModelView branch must convert single-view references while holding the repaint lock; GPT must not.',
-);
+assert.match(generatePanel, /materialReference = await prepareReferenceLighting/,
+  'Generation waits for private lighting processing without replacing single-view references.');
 
 stdout.write('Local generation self-lock regression test passed.\n');

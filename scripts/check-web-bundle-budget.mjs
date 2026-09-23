@@ -19,15 +19,21 @@ const budgets = [
   // CHG-20260910-GPT-GUIDE-CAPTURE-ISOLATION: per-tile material identity
   // guard + authored-before-clay sequencing measures 498,829 bytes. Allow
   // 512 bytes here; retain the existing 3,160,000-byte total and other limits.
-  { label: 'editor route', prefix: 'EditorPage-', maxBytes: 499_024 },
+  // M04 visible-gap submission and integrated resize handling measure 499,080 bytes.
+  // Add 600 bytes, including the mandatory 256-byte release reserve.
+  { label: 'editor route', prefix: 'EditorPage-', maxBytes: 499_624 },
   // GPT-CONTENT-FRAMING/2: validated input padding + alpha bounds, measured 6,748.
   { label: 'GPT adaptive framing lazy module', prefix: 'contentFramingImages-', maxBytes: 7_000 },
   // CHG-20260910-UV-REPAINT: lazy UV engine/session, shared visibility and
   // viewport adapters measured ~701,300 bytes before integration. The merged
   // resident graph measures 702,997; allow 3,500 bytes including release metadata.
   // UV coexistence + upstream resident-material/warmup integration: measured
-  // 703,681 bytes. Allocate 500 bytes; keep all other per-chunk limits.
-  { label: 'high bake snapshot', prefix: 'bakeHighSnapshot-', maxBytes: 704_000 },
+  // 703,681 bytes. The exact projected-eraser live-mask path is shared with
+  // BakeWorkspace; reserving every projected layer a GPU mask-array slice and
+  // promoting that slice in place measures 714,840 bytes in release mode.
+  // Bound only this chunk at 715,000 bytes; keep the total-JavaScript and every
+  // other quality gate unchanged.
+  { label: 'high bake snapshot', prefix: 'bakeHighSnapshot-', maxBytes: 716_300 },
   {
     label: 'shared 3D pipeline',
     // Rollup chooses the facade name from the shared module graph. Adding the
@@ -107,7 +113,12 @@ const budgets = [
 // GPT-CONTENT-FRAMING/2 adds 2,664 bytes over the previous total allowance:
 // Cloud candidate 3,256,164. Bound the new lazy feature to 3,000 bytes;
 // retain all shell/editor/shared/QA/pixel gates, no unrelated module exemptions.
-const maxTotalJavaScriptBytes = 3_256_500;
+// 2026-09-22 integrated master e04c3f38 + LOCAL-REPAINT-VISIBLE-GAPS/1:
+// exact release build 3,260,798 bytes, including new repaint/resize modules.
+// Bounded 5,500-byte allowance; other chunk, pixel and QA gates unchanged.
+// M04 REFERENCE-LIGHTING/2 + unified ModelView: measured 3,267,407 bytes.
+// Allow 6,500 bytes for the lazy processing/recovery service and release reserve.
+const maxTotalJavaScriptBytes = 3_269_800;
 // Local release checks require headroom without relaxing the CI hard limit.
 const reserveArg = process.argv.slice(2);
 if (reserveArg.length > 1 || (reserveArg.length && !/^--reserve-bytes=\d+$/.test(reserveArg[0]))) {

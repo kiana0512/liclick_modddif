@@ -80,7 +80,13 @@ function fixture(mode) {
     requestAbortController: new globalThis.AbortController(), capture, captureRepaintDepth: async () => ({ depthUrl: 'blob:depth' }),
     depthPreviewPromise: undefined, objectId: 'object', captureAspect: 1, captureCameraSnapshot: capture.camera,
     LOCAL_REPAINT_INPUT_RESOLUTION: 2048,
-    captureCurrentNormalGuide: async () => ({ normalUrl: 'blob:normal', width: 2048, height: 2048 }),
+    normalBackground: 'blue',
+    captureLocalRepaintNormal: async (value, camera, signal, background) => {
+      assert.equal(camera, capture.camera);
+      assert.equal(signal.aborted, false);
+      assert.equal(background, 'blue');
+      return { ...value, normalUrl: 'blob:normal' };
+    },
     pendingGeneration: { id: 'job', metadata: {} },
     syncGeneration: (generation) => { project.generations = [generation]; },
     generationId: 'job', effectivePrompt: 'repair', currentEffectDataUrl: 'data:guide', materialReference: undefined,

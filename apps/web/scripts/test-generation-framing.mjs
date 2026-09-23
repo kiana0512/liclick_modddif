@@ -195,7 +195,11 @@ assert.match(panel, /if \(!initialMaskState.paintMaskCapture\)/);
 assert.match(panel, /await initialMaskState.paintMaskCapture\(\{\s*aspect: captureAspect,\s*camera: captureCameraSnapshot.camera/);
 assert.doesNotMatch(panel, /\?\? useSceneStore.getState\(\).paintMaskDataUrl/);
 assert.match(source, /request.framing === 'fit-object' && !request.cameraSnapshot/);
-assert.match(panel, /cameraSnapshot: capturedView.cameraSnapshot/);
+const remoteFlow = panel.slice(panel.indexOf('async function handleRemoteSequentialMultiviewGenerate'),
+  panel.indexOf('async function handleGptPairedMultiviewGenerate'));
+assert.match(remoteFlow, /const cameraSnapshot = await frameGenerationCapture\(/);
+assert.match(remoteFlow, /captureCurrentColorPreview\(\{[\s\S]*?cameraSnapshot,[\s\S]*?getTextureMapMultiviewCaptures\(\[view\], signal, \{\s*cameraSnapshot,/,
+  'Current texture and this view capture must use the same frozen camera');
 assert.match(panel, /cameraSnapshot: viewSnapshots.get\(view.id\)/);
 model.geometry.dispose(); helper.geometry.dispose(); model.material.dispose();
 console.log(`Generation framing passed: ${checks} perspective/orthographic, pole, aspect, near/far and immutable snapshot cases.`);

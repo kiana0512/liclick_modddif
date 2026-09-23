@@ -7,7 +7,7 @@ import * as fflate from 'fflate';
 
 const load = (file, dependencies) => {
   const source = fs.readFileSync(new URL(`../src/engine/bake/${file}.ts`, import.meta.url), 'utf8');
-  const js = ts.transpileModule(source, {
+  const js = ts.transpileModule(source.replaceAll('import.meta.url', "''"), {
     compilerOptions: {
       target: ts.ScriptTarget.ES2022,
       module: ts.ModuleKind.CommonJS,
@@ -22,23 +22,44 @@ const load = (file, dependencies) => {
 };
 const { resolvePixelCpu } = load('qualityBlendCpuPixel', {});
 {
-  const {uploadUvRgba}=load('uvContributionTiles',{three:THREE,
+  const contributionSource = fs.readFileSync(
+    new URL('../src/engine/bake/uvContributionTiles.ts', import.meta.url),
+    'utf8',
+  );
+  assert.match(contributionSource, /ivec2 start=ivec2\(gl_FragCoord\.xy\)\*8/,
+    'Contribution occupancy reduces exact 8x8 blocks');
+  assert.match(contributionSource, /for\(int y=0;y<8;y\+\+\)for\(int x=0;x<8;x\+\+\)/,
+    'Every texel in the 8x8 occupancy block is examined');
+  assert.match(contributionSource, /for \(let level = 0; level < 2; level\+\+\)/,
+    'Two reductions preserve the exact 64x64 contribution tile footprint');
+  assert.match(contributionSource, /size = Math\.ceil\(size \/ 8\)/);
+  assert.match(contributionSource, /if \(level \+ 1 < 2\) \{\s*await yieldToBrowserTask\(\)/,
+    'Only the intermediate reduction schedules an explicit browser task');
+  assert.doesNotMatch(contributionSource,
+    /material\.uniforms\.first\.value = false;\s*await yieldToBrowserTask\(\)/,
+    'Final reduction proceeds directly to its asynchronous GPU readback');
+  assert.match(contributionSource, /targets\[targets\.length - 1\]/,
+    'Occupancy readback follows the final reduction level');
+  const {uploadUvRed,uploadUvRgba}=load('uvContributionTiles',{three:THREE,
     '@/utils/browserScheduling':{yieldToBrowserTask:async()=>{}}});
-  for(const [width,height] of [[1,1],[65,67],[300,301],[1024,1025]])for(const flipRows of [false,true]) {
-    const source=Uint8Array.from({length:width*height*4},(_,i)=>(i*37)&255),before=source.slice();
+  for(const [width,height] of [[1,1],[65,67],[300,301],[1024,1025]])for(const flipRows of [false,true]) for(const channels of [1,4]) {
+    const source=Uint8Array.from({length:width*height*channels},(_,i)=>(i*37)&255),before=source.slice();
     const output=new Uint8Array(source.length);let maximum=0;
     const renderer={initTexture(texture){assert.equal(texture.source.dataReady,false);},copyTextureToTexture(stripe,_target,_region,position){
-      maximum=Math.max(maximum,stripe.image.data.byteLength);output.set(stripe.image.data,position.y*width*4);
+      maximum=Math.max(maximum,stripe.image.data.byteLength);output.set(stripe.image.data,position.y*width*channels);
     }};
-    const texture=await uploadUvRgba(renderer,source,width,height,{flipRows});
-    for(let y=0;y<height;y++)assert.deepEqual(output.subarray(y*width*4,(y+1)*width*4),
-      source.subarray((flipRows?height-1-y:y)*width*4,(flipRows?height-y:y+1)*width*4));
+    const texture=await (channels===1?uploadUvRed:uploadUvRgba)(renderer,source,width,height,{flipRows});
+    assert.equal(texture.format,channels===1?THREE.RedFormat:THREE.RGBAFormat);
+    for(let y=0;y<height;y++)assert.deepEqual(output.subarray(y*width*channels,(y+1)*width*channels),
+      source.subarray((flipRows?height-1-y:y)*width*channels,(flipRows?height-y:y+1)*width*channels));
     assert.deepEqual(source,before);assert(maximum<=1048576);texture.dispose();
   }
-  let released=0,checks=0;
-  await assert.rejects(uploadUvRgba({initTexture(t){t.addEventListener('dispose',()=>released++);},copyTextureToTexture(){}},
-    new Uint8Array(300*301*4),300,301,{check(){if(++checks===3)throw Error('cancelled');}}),/cancelled/);
-  assert.equal(released,1,'Cancelled direct upload releases its unpublished destination');
+  for(const [upload,channels] of [[uploadUvRed,1],[uploadUvRgba,4]]) {
+    let released=0,checks=0;
+    await assert.rejects(upload({initTexture(t){t.addEventListener('dispose',()=>released++);},copyTextureToTexture(){}},
+      new Uint8Array(300*301*channels),300,301,{check(){if(++checks===3)throw Error('cancelled');}}),/cancelled/);
+    assert.equal(released,1,'Cancelled direct upload releases its unpublished destination');
+  }
 }
 let sentinels,
   packed,
@@ -374,7 +395,7 @@ compactCache.dispose();
   const {projectionAttributeRevision}=load('projectionBakeSignature',{
     './layerStackCache':{},'./uvBakeDebugControls':{},
     '@/utils/browserScheduling':{yieldToBrowserTask:async()=>{throw Error('Attribute revision must not schedule pixel copies');}},
-    '@/engine/viewport/viewportInteractionState':{waitForViewportInteractionIdle:async()=>{throw Error('Attribute revision must not wait for interaction');}},
+    '@/engine/viewport/input':{waitForViewportInteractionIdle:async()=>{throw Error('Attribute revision must not wait for interaction');}},
   });
   const uv=new THREE.Float32BufferAttribute([0,0,1,1],2);
   const first=projectionAttributeRevision(uv);
@@ -409,13 +430,17 @@ new Function('Worker', 'document', 'exports', ts.transpileModule(clientSource.re
 const client = new clientExports.ResidentUvCompressedCache();
 const image = () => ({ width: 16, height: 16, data: new Uint8ClampedArray(16 * 16 * 4) });
 const a = image(), b = image(), c = image();
-client.offer('a', a); client.offer('b', b); client.offer('c', c);
+client.offer('a', a, undefined, 'verified-a', 'owner-a:project-a');
+client.offer('b', b, undefined, 'verified-b', 'owner-b:project-b');
+client.offer('c', c, undefined, 'verified-c', 'owner-c:project-c');
 assert.deepEqual(sent.map(message => message.key), ['a']);
 assert.equal(a.data.byteLength, 0);
 workers[0].onmessage({ data: { id: sent[0].id, keys: ['a'] } });
 assert.deepEqual(sent.map(message => message.key), ['a', 'c'], 'Only the newest pending completed UV is compressed');
 assert.equal(b.data.byteLength, 1024);
 assert.equal(c.data.byteLength, 0);
+assert.equal(sent[1].persistentKey, 'verified-c');
+assert.equal(sent[1].scope, 'owner-c:project-c', 'Queued entries keep their own active-pointer scope');
 client.offer('d', image()); client.dispose();
 assert.equal(sent.length, 2, 'Disposal clears queued work before resolving in-flight work');
 }
@@ -459,13 +484,13 @@ await cacheWorker.onmessage({ data: { id: 3, type: 'restore', key: 'missing' } }
 assert.equal(cacheReply.output, undefined);
 // A fresh worker has no in-memory keys: F5 must recover exact RGBA and mask,
 // while another input/account digest and corrupt bytes must miss.
-const disk = new Map();
+const disk = new Map(), cacheStores = new Map([['li3d-resident-uv-display-v1', disk]]);
 const previousCaches = globalThis.caches;
-globalThis.caches = { async open() { return {
-  async put(key, response) { disk.set(typeof key === 'string' ? key : key.url, response.clone()); },
-  async match(key) { return disk.get(typeof key === 'string' ? key : key.url)?.clone(); },
-  async keys() { return [...disk.keys()].map(key => new Request(key)); },
-  async delete(key) { return disk.delete(typeof key === 'string' ? key : key.url); },
+globalThis.caches = { async open(name) { const store = cacheStores.get(name) ?? new Map(); cacheStores.set(name, store); return {
+  async put(key, response) { store.set(typeof key === 'string' ? key : key.url, response.clone()); },
+  async match(key) { return store.get(typeof key === 'string' ? key : key.url)?.clone(); },
+  async keys() { return [...store.keys()].map(key => new Request(key)); },
+  async delete(key) { return store.delete(typeof key === 'string' ? key : key.url); },
 }; } };
 const freshWorker = () => {
   const worker = { location: { origin: 'https://li3d.test' }, postMessage: cacheWorker.postMessage };
@@ -479,9 +504,16 @@ try {
   const mask = new Uint8Array(1024 ** 2).fill(3);
   rgba[3] = 0; rgba[0] = 219;
   const persistentKey = 'a'.repeat(64);
+  const scope = 'owner-a:project-a:object-a:1024';
   await freshWorker().onmessage({ data: { id: 1, type: 'store', key: 'runtime-a', persistentKey,
-    resolution: 1024, color: rgba.buffer, mask: mask.buffer } });
+    scope, resolution: 1024, color: rgba.buffer, mask: mask.buffer } });
   assert.equal(disk.size, 1);
+  await freshWorker().onmessage({ data: { id: 11, type: 'restore-latest', key: 'reload-runtime', scope } });
+  assert.equal(cacheReply.persistentKey, persistentKey);
+  assert.deepEqual(new Uint8Array(cacheReply.output, 0, rgba.length), rgba,
+    'Matching project state may decompress while its verified key is calculated');
+  await freshWorker().onmessage({ data: { id: 12, type: 'restore-latest', key: 'other-project', scope: 'other' } });
+  assert.equal(cacheReply.output, undefined, 'A different project state cannot speculatively restore the active UV');
   await freshWorker().onmessage({ data: { id: 2, type: 'restore', key: 'new-runtime-url', persistentKey } });
   assert.deepEqual(new Uint8Array(cacheReply.output, 0, rgba.length), rgba);
   assert.deepEqual(new Uint8Array(cacheReply.output, rgba.length), mask);
@@ -491,14 +523,15 @@ try {
   await activeWorker.onmessage({ data: { id: 5, type: 'restore', key: 'a', persistentKey } });
   assert.deepEqual(cacheReply.keys, ['a'], 'F5-restored compressed bytes remain reusable');
   await activeWorker.onmessage({ data: { id: 6, type: 'activate', key: 'a' } });
-  for (const [index, key] of ['b', 'c', 'd'].entries()) {
+  for (const [index, key] of ['b', 'c', 'd', 'e'].entries()) {
     await activeWorker.onmessage({ data: { id: 10 + index, type: 'store', key, persistentKey: key.repeat(64),
       resolution: 1024, color: new Uint8Array(rgba.length).fill(index).buffer, mask: new ArrayBuffer(0) } });
     await activeWorker.onmessage({ data: { id: 20 + index, type: 'activate', key } });
     await activeWorker.onmessage({ data: { id: 30 + index, type: 'activate', key: 'a' } });
     assert(disk.has('https://li3d.test/__li3d_internal/resident-uv/' + persistentKey), 'Returning to displayed A must keep its disk snapshot');
-    assert.equal(disk.size, 2, 'Pinning the visible state must not increase disk capacity');
+    assert(disk.size <= 4, 'Hydration cache stays inside its bounded four-state window');
   }
+  assert.equal(disk.size, 4, 'A/B/C hydration states survive without cyclic two-entry thrash');
   await freshWorker().onmessage({ data: { id: 40, type: 'restore', key: 'F5-after-toggles', persistentKey } });
   assert.deepEqual(new Uint8Array(cacheReply.output, 0, rgba.length), rgba, 'F5 after A/B/A/C/A recovers exact A without rebaking');
   const key = [...disk.keys()][0], old = disk.get(key);
@@ -512,7 +545,8 @@ globalThis.window = { caches: {} };
 globalThis.fetch = async () => new Response(new Uint8Array([sourceByte]));
 try {
   const { persistentMergeKey } = load('persistentMergePreparation', {
-    '@/utils/browserScheduling': { yieldToBrowserTask: async () => {} },
+    '@/utils/browserScheduling': { yieldToBrowserTask: async () => {}, waitForBrowserPaint: async () => {} },
+    '@/engine/viewport/input': { waitForViewportInteractionIdle: async () => {} },
     '@/stores/authStore': { useAuthStore: { getState: () => ({ user: userId ? { id: userId } : undefined }) } },
     './uvBakeDebugControls': { getDebugUvBakeStatus: () => ({}) },
     '@/engine/layers/mergeUvComposition': { getMergeUvPostprocessOptions: () => ({}) },
@@ -622,7 +656,26 @@ await presentation.waitForResidentUvPresentation(scene, 'other-object');
   assert.match(displaySource, /createWorkerBackedMaskPreviewTexture\(\s*mask,/);
   assert.doesNotMatch(displaySource, /new Uint8ClampedArray\(mask\.length \* 4\)/);
   assert.match(displaySource, /result\.renderedColorMask\?\.length/);
+  assert.match(
+    displaySource,
+    /mask = combined\.renderedColorMask \?\? mask;[\s\S]*?if \(mask\) result\.renderedColorMask = mask;[\s\S]*?this\.compressed\.offer\(request\.signature, result\.imageData!, result\.renderedColorMask/,
+    'The compressed cache must receive the Worker-returned mask owner, not the detached request buffer.',
+  );
   assert.match(displaySource, /THREE\.RedFormat/);
+  assert.match(displaySource, /Promise\.all\(\[[\s\S]*?keyPromise,[\s\S]*?this\.compressed\.restore\(request\.signature, undefined, persistentScope, true\)/,
+    'Verified source hashing and scoped disk decompression must overlap');
+  assert.match(displaySource, /persistentKey && candidate\?\.persistentKey === persistentKey \? candidate/,
+    'Speculative pixels cannot publish until the complete source digest matches');
+  assert.match(
+    displaySource,
+    /const fastPreview = getLiveSurfacePaintPreview\(\);[\s\S]*?if \(fastPreview\?\.displayArmed[\s\S]*?fastPreview\.target === 'projected-mask'[\s\S]*?fastPreview\.objectId === original\.sourceModel\.objectId[\s\S]*?original\.sourceLayers\.some[\s\S]*?\) return;[\s\S]*?draft\?\.flush\(\)/,
+    'Selecting an armed projected eraser must bypass Resident UV before any draft or full-resolution flush exists.',
+  );
+  assert.match(
+    displaySource,
+    /interactive \? latestDraft !== draft : Boolean\([\s\S]*?latestPreview\?\.displayArmed[\s\S]*?original\.sourceLayers\.some/,
+    'A final Resident UV convergence must cancel as soon as the GPU-mask tool takes display ownership.',
+  );
 
   const bakeSource = fs.readFileSync(
     new URL('../src/engine/bake/bakeProjectedLayerToTexture.ts', import.meta.url),

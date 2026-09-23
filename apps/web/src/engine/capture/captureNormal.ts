@@ -49,7 +49,7 @@ function getEncodedNormalMaterial(renderer: THREE.WebGLRenderer, space: NormalCa
 
 export async function captureNormal(
   request: CapturePassRequest,
-  options: { space?: NormalCaptureSpace; geometryGuide?: boolean } = {},
+  options: { space?: NormalCaptureSpace; geometryGuide?: boolean; background?: 'black' | 'blue' } = {},
 ): Promise<CapturePassOutput> {
   const material = getEncodedNormalMaterial(request.gl, options.space ?? 'view');
   const restore = applyTargetOnlyMaterial(
@@ -59,10 +59,20 @@ export async function captureNormal(
   );
 
   try {
+    // NORMAL-GUIDE-BACKGROUND/1.0.0: clear only uncovered geometry pixels.
+    // Never key out blue pixels: those are also valid surface normals.
+    const renderRequest = options.background ? {
+      ...request,
+      clearAlpha: 1,
+      clearColor: options.background === 'black' ? new THREE.Color(0, 0, 0)
+        : new THREE.Color().setRGB(128 / 255, 128 / 255, 1,
+          options.geometryGuide ? THREE.LinearSRGBColorSpace : THREE.SRGBColorSpace),
+    } : request;
     return {
-      url: await renderSceneToPngUrl(request, {
+      url: await renderSceneToPngUrl(renderRequest, {
         onRenderSubmitted: restore,
         ...(options.geometryGuide ? { dataTexture: true, ignoreSceneBackground: true, samples: 0 } : {}),
+        ...(options.background ? { ignoreSceneBackground: true } : {}),
       }),
       warnings: [],
     };

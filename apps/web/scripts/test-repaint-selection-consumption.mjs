@@ -54,6 +54,8 @@ try {
   assert.equal(getSelectionConsumptionMaterial(source), consume);
   assert.equal(consume.uniforms.maskMap, source.uniforms.maskMap, 'borrow immutable authorization');
   assert.match(consume.fragmentShader, /repaintFragment\(\);/, 'same actual alpha calculation');
+  assert.match(consume.fragmentShader, /if \(alpha <= 0.01\) discard;\s*alpha = 1.0;/,
+    'supported coverage clears selection fully instead of inheriting color feather');
   assert.match(
     consume.fragmentShader,
     /alpha \* front, alpha \* \(1.0 - front\)/,

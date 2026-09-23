@@ -1,5 +1,5 @@
 import type { GenerationJob } from '../routes/liclick.js';
-import { submitLiclickImageJob, type LiclickImageSubmission } from './liclickGenerationService.js';
+import { submitLiclickImageJob, type GenerateImageInput, type LiclickImageSubmission } from './liclickGenerationService.js';
 
 // MULTIVIEW-REFERENCE-PIPELINE/1.0.0. User-tested Sunburst low -> medium.
 // REFERENCE-DELIGHT-PROMPT/1.2.0: preserve midtones, suppress highlights, lift shadows conservatively.
@@ -52,8 +52,19 @@ export const referenceDelightPrompt = `对输入图片进行去光照编辑，�
 
 保留原有背景颜色和透明区域，移除额外地面投影。只输出编辑后的图片，不添加说明、标签、边框、水印或额外视图。`;
 
+/** REFERENCE-LIGHTING/1.0.0: one editing request, using the shared color-preserving prompt. */
+export function prepareReferencePipelineInput(input: GenerateImageInput): GenerateImageInput {
+  if (input.referencePipeline === 'six-view-delight-v1') return { ...input, model: 'gpt-image-2.5-sunburst', quality: 'low', count: 1 };
+  if (input.referencePipeline === 'delight-only-v1') return { ...input,
+    prompt: referenceDelightPrompt, model: 'gpt-image-2.5-sunburst', quality: 'medium', count: 1,
+    aspectRatio: 'auto', imageSize: 'auto',
+  };
+  return input;
+}
+
 export function referenceStageMessage(job: GenerationJob) {
   if (!job.input.referencePipeline) return undefined;
+  if (job.input.referencePipeline === 'delight-only-v1') return '光照处理中';
   return job.referenceDelight ? '第二步：去光照（Sunburst 中质量）' : '第一步：生成六视图（Sunburst 低质量）';
 }
 

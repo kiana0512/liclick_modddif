@@ -3,6 +3,7 @@ import { createRegisteredObjectUrl, getRegisteredObjectUrlBlob } from '@/utils/b
 export type PreparedLocalRepaintGenerationInput = {
   compositeUrl: string;
   submittedMaskUrl: string;
+  selectionMaskUrl?: string;
   dilationRadius: number;
   featherRadius: number;
   processMs: number;
@@ -20,7 +21,8 @@ type LocalRepaintWorkerResult = {
   id: number;
   compositeBlob: Blob;
   submittedMaskBlob?: Blob;
-} & Omit<PreparedLocalRepaintGenerationInput, 'compositeUrl' | 'submittedMaskUrl'>;
+  selectionMaskBlob?: Blob;
+} & Omit<PreparedLocalRepaintGenerationInput, 'compositeUrl' | 'submittedMaskUrl' | 'selectionMaskUrl'>;
 
 type SingleViewWorkerResult = {
   id: number;
@@ -73,8 +75,11 @@ async function readImageBlob(url: string) {
 async function prepareWorkerInput(input: {
   mode: 'local' | 'single' | 'gpt-local';
   currentEffectUrl: string;
-  clayPreviewUrl: string;
+  clayPreviewUrl?: string;
+  coverageDepthUrl?: string;
   maskUrl: string;
+  whiteFill?: boolean;
+  fullObject?: boolean;
 }) {
   if (
     typeof Worker === 'undefined' ||
@@ -85,22 +90,26 @@ async function prepareWorkerInput(input: {
   }
   const blobs = await Promise.all([
     readImageBlob(input.currentEffectUrl),
-    readImageBlob(input.clayPreviewUrl),
     readImageBlob(input.maskUrl),
+    input.clayPreviewUrl ? readImageBlob(input.clayPreviewUrl) : undefined,
+    input.coverageDepthUrl ? readImageBlob(input.coverageDepthUrl) : undefined,
   ]);
-  const [currentEffect, clayPreview, inputMask] = await Promise.all(
-    blobs.map((blob) => createImageBitmap(blob)),
+  const [currentEffect, inputMask, clayPreview, coverageDepth] = await Promise.all(
+    blobs.map((blob) => blob ? createImageBitmap(blob) : undefined),
   );
+  if (!currentEffect || !inputMask) throw new Error("Missing repaint input.");
   const id = nextRequestId++;
   return new Promise<WorkerResult>((resolve, reject) => {
     pendingRequests.set(id, { resolve, reject });
     try {
-      const payload = { mode: input.mode, id, currentEffect, clayPreview, inputMask };
-      getWorker().postMessage(payload, { transfer: [currentEffect, clayPreview, inputMask] });
+      const payload = { mode: input.mode, id, currentEffect, clayPreview, inputMask, coverageDepth,
+        whiteFill: input.whiteFill, fullObject: input.fullObject };
+      getWorker().postMessage(payload, { transfer: [currentEffect, inputMask, ...(clayPreview ? [clayPreview] : []), ...(coverageDepth ? [coverageDepth] : [])] });
     } catch (error) {
       pendingRequests.delete(id);
       currentEffect.close();
-      clayPreview.close();
+      clayPreview?.close();
+      coverageDepth?.close();
       inputMask.close();
       reject(error instanceof Error ? error : new Error(String(error)));
     }
@@ -110,19 +119,23 @@ async function prepareWorkerInput(input: {
 export async function prepareLocalRepaintGenerationInput(input: {
   gptGuide?: boolean;
   currentEffectUrl: string;
-  clayPreviewUrl: string;
+  clayPreviewUrl?: string;
+  coverageDepthUrl?: string;
   authoredMaskUrl: string;
 }): Promise<PreparedLocalRepaintGenerationInput> {
   const result = (await prepareWorkerInput({
     mode: input.gptGuide ? 'gpt-local' : 'local',
     currentEffectUrl: input.currentEffectUrl,
     clayPreviewUrl: input.clayPreviewUrl,
+    coverageDepthUrl: input.coverageDepthUrl,
     maskUrl: input.authoredMaskUrl,
   })) as LocalRepaintWorkerResult;
+  if (input.coverageDepthUrl && !result.selectionMaskBlob) throw new Error('Missing visible repaint selection.');
   if (!input.gptGuide && !result.submittedMaskBlob) throw new Error('Missing repaint sampling mask.');
   return {
     compositeUrl: createRegisteredObjectUrl(result.compositeBlob),
     submittedMaskUrl: input.gptGuide ? input.authoredMaskUrl : createRegisteredObjectUrl(result.submittedMaskBlob!),
+    selectionMaskUrl: result.selectionMaskBlob ? createRegisteredObjectUrl(result.selectionMaskBlob) : undefined,
     dilationRadius: result.dilationRadius,
     featherRadius: result.featherRadius,
     processMs: result.processMs,
@@ -134,12 +147,16 @@ export async function prepareSingleViewTextureCompletion(input: {
   currentEffectUrl: string;
   clayPreviewUrl: string;
   objectMaskUrl: string;
+  whiteFill?: boolean;
+  fullObject?: boolean;
 }): Promise<PreparedSingleViewTextureCompletion> {
   const result = (await prepareWorkerInput({
     mode: 'single',
     currentEffectUrl: input.currentEffectUrl,
-    clayPreviewUrl: input.clayPreviewUrl,
+    clayPreviewUrl: input.whiteFill ? undefined : input.clayPreviewUrl,
     maskUrl: input.objectMaskUrl,
+    whiteFill: input.whiteFill,
+    fullObject: input.fullObject,
   })) as SingleViewWorkerResult;
   return {
     imageUrl: result.compositeBlob

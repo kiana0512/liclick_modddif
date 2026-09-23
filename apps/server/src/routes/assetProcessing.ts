@@ -15,6 +15,7 @@ import {
   type AssetHistoryRegistration,
 } from '../services/assetJobOwnership.js';
 import { sendJson } from './httpUtils.js';
+import { handleImportUvRepair } from './importUvRepair.js';
 
 function requireSubmissionJobId(
   payload: unknown,
@@ -141,6 +142,11 @@ export async function handleAssetProcessingRoute(
 ) {
   const user = await requireAuth(request, response);
   if (!user) return true;
+
+  if (url.pathname === '/api/asset-processing/import-uv-repair' || url.pathname === '/api/asset-processing/import-decimate') {
+    await handleImportUvRepair(request, response, url);
+    return true;
+  }
 
   if (url.pathname === '/api/asset-processing/status' && request.method === 'GET') {
     sendJson(response, 200, await assetProcessingProxyStatus());

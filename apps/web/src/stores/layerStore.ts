@@ -8,7 +8,7 @@ import { markPerformanceEvent } from '@/engine/performance/performanceTimeline';
 import { isContentAwareEraserUnderlay } from '@/engine/paint/eraserTargetPolicy';
 import { prepareUvMergeConsumption } from '@/engine/layers/uvMergeConsumption';
 import { expandAuthoredLayerVisibilityIds } from '@/engine/layers/layerVisibility';
-import { isViewportInteractionBusy } from '@/engine/viewport/viewportInteractionState';
+import { isViewportInteractionBusy } from '@/engine/viewport/input';
 import { SINGLE_VIEW_MINIMUM_PROJECTION_FACING } from '@/engine/projection/projectionTypes';
 import { useSceneStore } from './sceneStore';
 

@@ -32,3 +32,33 @@ export function withProjectionCommit(generation: Generation, layerId: string): G
     },
   };
 }
+
+export interface ProjectionSaveObserver {
+  onSaving?: () => void;
+  onSaved?: (generation: Generation) => void;
+}
+
+/** SINGLE-VIEW-COMPLETION/1.0.0: reuse only an acknowledged projection checkpoint. */
+export async function persistProjectionCommit(
+  generation: Generation,
+  layerId: string,
+  sync: (generation: Generation) => void,
+  save: () => Promise<void>,
+  observer?: ProjectionSaveObserver,
+) {
+  const committed = withProjectionCommit(generation, layerId);
+  sync(committed);
+  observer?.onSaving?.();
+  await save();
+  observer?.onSaved?.(committed);
+}
+
+export function needsTextureCompletionCheckpoint(
+  multiview: boolean,
+  saved: boolean,
+  completed: number,
+  projected: number,
+  failures: number,
+) {
+  return multiview || !saved || completed !== 1 || projected !== 1 || failures !== 0;
+}

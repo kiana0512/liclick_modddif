@@ -13,7 +13,7 @@ const source = process.argv.includes('--baseline')
   : await readFile(new URL('../src/engine/capture/renderTargetUtils.ts', import.meta.url), 'utf8');
 const readbackSource = await readFile(new URL('../src/engine/bake/gpuReadbackStripes.ts', import.meta.url), 'utf8');
 const ast = ts.createSourceFile('capture.ts', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
-const names = ['captureSharedRendererState', 'restoreSharedRendererState', 'renderSceneToPngUrl', 'renderScenePassesToPngUrl'];
+const names = ['captureSharedRendererState', 'restoreSharedRendererState', ...(source.includes('function preserveCaptureState(') ? ['preserveCaptureState'] : []), 'renderSceneToPngUrl', 'renderScenePassesToPngUrl'];
 const functions = names.map((name) => {
   const declaration = ast.statements.find((node) => ts.isFunctionDeclaration(node) && node.name?.text === name);
   assert(declaration, name);
@@ -23,7 +23,7 @@ const compiled = ts.transpileModule('const yieldToBrowserTask = waitForBrowserPa
   readbackSource.replace(/import[^;]+;/g, '').replace('export async', 'async') + '\n' + functions,
   { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None } }).outputText;
 
-async function check({ width = 5, height = 3, tileSize = 2, passes = 0, fail, display = false } = {}) {
+async function check({ width = 5, height = 3, tileSize = 2, passes = 0, fail, display = false, resize = false } = {}) {
   const originalTarget = new THREE.WebGLRenderTarget(7, 9);
   const scene = new THREE.Scene();
   const background = new THREE.Color('#13579b');
@@ -34,6 +34,15 @@ async function check({ width = 5, height = 3, tileSize = 2, passes = 0, fail, di
   let viewport = new THREE.Vector4(1, 2, 7, 9);
   let scissor = new THREE.Vector4(2, 3, 4, 5);
   let scissorTest = false;
+  let expectedViewport = viewport.clone();
+  let expectedScissor = scissor.clone();
+  const resizeViewport = () => {
+    if (!resize) return;
+    expectedViewport = new THREE.Vector4(0, 0, expectedViewport.z + 13, expectedViewport.w + 51);
+    expectedScissor = expectedViewport.clone();
+    viewport.copy(expectedViewport);
+    scissor.copy(expectedScissor);
+  };
   let prepared = false;
   let draws = 0;
   let waits = 0;
@@ -82,6 +91,7 @@ async function check({ width = 5, height = 3, tileSize = 2, passes = 0, fail, di
       pixels.set(buffers.get(readTarget));
       await Promise.resolve();
       assertRestored('readback await');
+      resizeViewport();
       if (fail === 'readback') throw new Error('readback');
     },
   };
@@ -89,8 +99,8 @@ async function check({ width = 5, height = 3, tileSize = 2, passes = 0, fail, di
     assert.equal(target, originalTarget, `${at}: viewport must not inherit the capture framebuffer`);
     assert.equal(scene.background, background, `${at}: background must not leak`);
     assert.equal(prepared, false, `${at}: material must not leak`);
-    assert.deepEqual(viewport.toArray(), [1, 2, 7, 9]);
-    assert.deepEqual(scissor.toArray(), [2, 3, 4, 5]);
+    assert.deepEqual(viewport.toArray(), expectedViewport.toArray(), `${at}: latest viewport size must survive capture completion`);
+    assert.deepEqual(scissor.toArray(), expectedScissor.toArray());
     assert.equal(scissorTest, false);
     assert.equal(clearColor.getHexString(), '2468ac');
     assert.equal(clearAlpha, 0.4);
@@ -100,6 +110,7 @@ async function check({ width = 5, height = 3, tileSize = 2, passes = 0, fail, di
   const wait = async () => {
     waits += 1;
     assertRestored(`idle/paint wait ${waits}`);
+    resizeViewport();
     if (fail === 'idle') throw new Error('idle');
   };
   const api = new Function('THREE', 'markCapturePerformancePhase', 'waitForSubmittedGpuWork',
@@ -108,6 +119,7 @@ async function check({ width = 5, height = 3, tileSize = 2, passes = 0, fail, di
     THREE, () => {}, async () => {
       await Promise.resolve();
       assertRestored('GPU fence await');
+      resizeViewport();
       if (fail === 'fence') throw new Error('fence');
     }, wait, async (pixels, w, h) => {
       encodes += 1;
@@ -142,9 +154,14 @@ await check();
 await check({ display: true });
 await check({ tileSize: 8 });
 await check({ passes: 3 });
+for (const options of [{}, { display: true }, { tileSize: 8 }, { passes: 3 }]) {
+  await check({ ...options, resize: true });
+}
 for (const fail of ['idle', 'render', 'fence', 'readback']) {
   await check({ fail });
   await check({ passes: 3, fail });
+  await check({ fail, resize: true });
+  await check({ passes: 3, fail, resize: true });
 }
 // Actual scene/skeleton cloning and production queue; only the WebGL driver is
 // substituted so this ownership regression can run without touching a UI.

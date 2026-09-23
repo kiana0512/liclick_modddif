@@ -1,15 +1,8 @@
 import type { MaskBitmap, Rect } from '@/types/localRepaint';
 import { yieldToBrowserTask } from '@/utils/browserScheduling';
-import { waitForViewportInteractionIdle } from '@/engine/viewport/viewportInteractionState';
+import { waitForViewportInteractionIdle } from '@/engine/viewport/input';
 
-export async function blobToDataUrl(blob: Blob) {
-  return new Promise<string>((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result));
-    reader.onerror = () => reject(reader.error ?? new Error('Could not read blob.'));
-    reader.readAsDataURL(blob);
-  });
-}
+export { interactionSafeBlobDataUrl as blobToDataUrl } from '@/engine/viewport/input';
 
 export function dataUrlToBlob(dataUrl: string) {
   const [header, encoded] = dataUrl.split(',');
@@ -86,6 +79,15 @@ export async function urlToImageData(
     // ImageData owns its pixels. Release the scratch bitmap on success,
     // readback failure and cancellation instead of waiting for canvas GC.
     canvas.width = 0;
+  }
+}
+
+export async function blobToImageData(blob: Blob, cooperative = false) {
+  const url = URL.createObjectURL(blob);
+  try {
+    return await urlToImageData(url, undefined, undefined, { cooperative });
+  } finally {
+    URL.revokeObjectURL(url);
   }
 }
 

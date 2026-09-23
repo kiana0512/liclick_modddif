@@ -6,6 +6,23 @@ const source = readFileSync(
   new URL('../src/engine/generation/contentFraming.ts', import.meta.url),
   'utf8',
 );
+const silhouetteSource = readFileSync(
+  new URL('../src/engine/generation/contentFramingSilhouette.ts', import.meta.url),
+  'utf8',
+);
+const retrySource = readFileSync(
+  new URL('../src/engine/generation/gptReturnSilhouetteRetry.ts', import.meta.url),
+  'utf8',
+);
+const retryModule = { exports: {} };
+new Function(
+  'module',
+  'exports',
+  ts.transpileModule(retrySource, {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+  }).outputText,
+)(retryModule, retryModule.exports);
+const retryPolicy = retryModule.exports;
 const module = { exports: {} };
 new Function(
   'module',
@@ -15,7 +32,24 @@ new Function(
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
   }).outputText,
 )(module, module.exports, () => contracts);
-const { findContentFraming, restoredFrameLayout, validateFramedSilhouette } = module.exports;
+const silhouetteModule = { exports: {} };
+new Function(
+  'module',
+  'exports',
+  'require',
+  ts.transpileModule(silhouetteSource, {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+  }).outputText,
+)(silhouetteModule, silhouetteModule.exports, (name) => {
+  assert.equal(name, './contentFraming');
+  return module.exports;
+});
+const { findContentFraming, restoredFrameLayout } = module.exports;
+const { validateFramedSilhouette } = silhouetteModule.exports;
+const retryPrompt = retryPolicy.buildTextureMapSilhouetteRetryPrompt('original');
+assert.match(retryPrompt, /透明的像素继续保持透明/);
+assert.equal(retryPolicy.buildTextureMapSilhouetteRetryPrompt(retryPrompt), retryPrompt);
+assert.equal(retryPolicy.createTextureMapSilhouetteRetryId('job'), 'job-silhouette-retry-1');
 function coverage(width, height, rect, normal = false) {
   const data = new Uint8ClampedArray(width * height * 4);
   for (let y = rect.y; y < rect.y + rect.h; y++)
@@ -80,6 +114,28 @@ const exact = {
   width: 1710,
   height: 1470,
 };
+const frontBottomIncident = {
+  version: 2,
+  sourceWidth: 2048,
+  sourceHeight: 2048,
+  left: -1,
+  top: -4,
+  width: 2050,
+  height: 2050,
+  cropBounds: { left: -1, top: 247, width: 2050, height: 1549 },
+  subject: { left: 20, top: 268, width: 2008, height: 1507 },
+  ratioWidth: 1,
+  ratioHeight: 1,
+  outputWidth: 2048,
+  outputHeight: 2048,
+};
+const incidentMismatch = await validateFramedSilhouette(
+  frontBottomIncident,
+  coverage(2048, 2048, { x: 0, y: 272, w: 2048, h: 1776 }, true),
+  undefined,
+  'capture-mask',
+).catch((error) => error);
+assert.equal(incidentMismatch.code, 'GPT_RETURN_SILHOUETTE_MISMATCH');
 assert.deepEqual(contracts.generationOutputSize(69, 100, '1K'), { width: 848, height: 1232 });
 assert.throws(() => contracts.generationOutputSize(0, 1, '2K'));
 for (const [w, h, ow, oh] of [
@@ -111,7 +167,23 @@ for (const imageSize of ['1K', '2K', '4K']) {
     const s = f.outputWidth / f.width;
     assert.ok(Math.abs(l.left - f.left * s) <= 0.5);
     assert.ok(Math.abs(l.top - f.top * s) <= 0.5);
-    assert.throws(() => restoredFrameLayout(f, f.outputWidth + 16, f.outputHeight), /比例/);
+    const nativeWidth = Math.round(f.outputWidth / 2);
+    const nativeHeight = Math.round(f.outputHeight / 2);
+    const native = restoredFrameLayout(f, nativeWidth, nativeHeight);
+    assert.equal(native.patchWidth, nativeWidth, 'same-ratio native provider width is preserved');
+    assert.equal(native.patchHeight, nativeHeight, 'same-ratio native provider height is preserved');
+    assert.doesNotThrow(
+      () => restoredFrameLayout(f, f.outputWidth + 16, f.outputHeight),
+      'one provider grid quantum is not a ratio failure',
+    );
+    let ratioError;
+    try {
+      restoredFrameLayout(f, f.outputWidth + 64, f.outputHeight);
+    } catch (error) {
+      ratioError = error;
+    }
+    assert.match(String(ratioError), /比例/);
+    assert.equal(ratioError.code, 'GPT_RETURN_FRAME_RATIO_MISMATCH');
     const box = {
       x: Math.round((rect.x - f.left) * s),
       y: Math.round((rect.y - f.top) * s),
@@ -132,6 +204,8 @@ for (const imageSize of ['1K', '2K', '4K']) {
       /cancel/,
     );
     const changed = coverage(f.outputWidth, f.outputHeight, { ...box, w: Math.floor(box.w / 2) });
+    const mismatch = await validateFramedSilhouette(f, changed, undefined, 'capture-mask').catch((error) => error);
+    assert.equal(mismatch.code, 'GPT_RETURN_SILHOUETTE_MISMATCH');
     await assert.rejects(() => validateFramedSilhouette(f, changed), /轮廓/);
     await assert.rejects(() => validateFramedSilhouette(f, changed, undefined, 'capture-mask'), /轮廓/);
     const feathered = coverage(f.outputWidth, f.outputHeight, {
@@ -232,11 +306,23 @@ const clientModule = evaluate(
     },
     './generationErrorMessage': { getUserFacingGenerationError: (m) => m },
     './referenceImagePreprocessor': { prepareReferenceForAtlas: async (r) => r },
+    '@/engine/viewport/input': {
+      interactionSafeJsonResponse: (response) => response.json().catch(() => undefined),
+    },
     '@/utils/mapWithConcurrency': {
       mapWithConcurrency: async (items, _limit, fn) => {
         const output = [];
         for (const i of items) output.push(await fn(i));
         return output;
+      },
+    },
+    '@/engine/generation/contentFramingRestore': {
+      restoreContentFraming: async (url, frame, signal, policy) => {
+        signal?.throwIfAborted();
+        restores++;
+        assert.deepEqual(frame, exact);
+        assert.equal(policy, 'capture-mask');
+        return 'restored:' + url;
       },
     },
     '@/engine/generation/contentFramingImages': {
@@ -247,13 +333,6 @@ const clientModule = evaluate(
           references: [{ id: 'guide', name: 'guide', url: 'cropped-guide' }],
           exactIds: ['guide'],
         };
-      },
-      restoreContentFraming: async (url, frame, signal, policy) => {
-        signal?.throwIfAborted();
-        restores++;
-        assert.deepEqual(frame, exact);
-        assert.equal(policy, 'capture-mask');
-        return 'restored:' + url;
       },
     },
   },
@@ -338,6 +417,10 @@ globalThis.document = {
             clip = [x, y, w, h];
           },
           clip() {},
+          putImageData(pixels, dx, dy) {
+            fixtures.set('cleaned-canvas-input', pixels);
+            this.drawImage({ src: 'cleaned-canvas-input' }, dx, dy);
+          },
           drawImage(image, dx, dy, dw, dh) {
             const source = fixtures.get(image.src);
             if (dw !== undefined) {
@@ -393,16 +476,37 @@ const imageAdapter = evaluate(
       },
     },
     './contentFraming': module.exports,
+    './contentFramingSilhouette': silhouetteModule.exports,
     '@/utils/browserScheduling': { yieldToBrowserTask: async () => {} },
+  },
+);
+const restoreAdapter = evaluate(
+  readFileSync(
+    new URL('../src/engine/generation/contentFramingRestore.ts', import.meta.url),
+    'utf8',
+  ),
+  {
+    './returnBackgroundCleanup': evaluate(readFileSync(new URL('../src/engine/generation/returnBackgroundCleanup.ts', import.meta.url), 'utf8'), { './contentFraming': module.exports }),
+    '@/engine/localRepaint/imageUtils': {
+      urlToImageData: async (url) => fixtures.get(url),
+    },
+    '@/utils/browserScheduling': { yieldToBrowserTask: async () => {} },
+    './contentFraming': module.exports,
+    './contentFramingImages': imageAdapter,
+    './contentFramingSilhouette': silhouetteModule.exports,
   },
 );
 try {
   fixtures.set('normal', coverage(220, 220, { x: 30, y: 70, w: 150, h: 60 }, true));
+  const depth = coverage(220, 220, { x: 0, y: 0, w: 220, h: 220 });
+  for (let y = 70; y < 130; y++) for (let x = 30; x < 180; x++)
+    depth.data.set([42, 80, 128, 255], (y * 220 + x) * 4);
+  fixtures.set('depth', depth);
   const combined = coverage(220, 220, { x: 0, y: 0, w: 220, h: 220 });
-  // Nonconstant opaque background proves newly added padding is not copied from the source.
+  // Nonconstant opaque background must survive across the full square crop.
   for (let i = 0; i < combined.data.length; i += 4) combined.data[i] = (i / 4) % 251;
   fixtures.set('combined', combined);
-  const capture = { width: 220, height: 220, normalUrl: 'normal', maskUrl: 'author-mask' };
+  const capture = { width: 220, height: 220, normalUrl: 'normal', maskUrl: 'author-mask', depthUrl: 'depth', depthEncoding: 'linear-view' };
   const references = [
     { id: 'combined', url: 'combined' },
     { id: 'normal', url: 'normal' },
@@ -417,8 +521,35 @@ try {
   assert.deepEqual(preparedInput.exactIds, ['combined', 'normal']);
   assert.equal(preparedInput.references[2], references[2]);
   assert.equal(capture.maskUrl, 'author-mask');
-  const f = preparedInput.framing,
-    c = f.cropBounds;
+  const f = preparedInput.framing;
+  // A renderer normal guide may have an opaque blue/black backdrop. Its alpha
+  // is not geometry coverage; neither is the much smaller authored selection.
+  for (const background of [[128, 128, 255, 255], [0, 0, 0, 255]]) {
+    const opaqueNormal = coverage(220, 220, { x: 30, y: 70, w: 150, h: 60 }, true);
+    for (let y = 0; y < 220; y++) for (let x = 0; x < 220; x++) {
+      if (x < 30 || x >= 180 || y < 70 || y >= 130)
+        opaqueNormal.data.set(background, (y * 220 + x) * 4);
+    }
+    fixtures.set('opaque-normal', opaqueNormal);
+    const result = await imageAdapter.prepareContentFraming({
+      workflow: 'local-repaint', imageSize: '1K',
+      capture: { ...capture, normalUrl: 'opaque-normal' },
+      referenceImages: [references[0], { ...references[1], url: 'opaque-normal' }],
+    });
+    assert.deepEqual(result.framing, f, 'Normal backdrop must not change frozen geometry framing');
+  }
+  for (const invalidCapture of [
+    { ...capture, depthUrl: undefined },
+    { ...capture, depthEncoding: undefined },
+    { ...capture, depthUrl: 'small-depth' },
+    { ...capture, depthUrl: 'empty-depth' },
+  ]) {
+    fixtures.set('small-depth', coverage(10, 10, { x: 0, y: 0, w: 10, h: 10 }));
+    fixtures.set('empty-depth', coverage(220, 220, { x: 0, y: 0, w: 220, h: 220 }));
+    await assert.rejects(() => imageAdapter.prepareContentFraming({
+      workflow: 'local-repaint', capture: invalidCapture, referenceImages: references,
+    }), /轮廓|深度/);
+  }
   for (let index = 0; index < 2; index++) {
     const actual = fixtures.get(preparedInput.references[index].url),
       sourcePixels = fixtures.get(references[index].url);
@@ -427,10 +558,6 @@ try {
         const sx = x + f.left,
           sy = y + f.top;
         const inside =
-          sx >= c.left &&
-          sy >= c.top &&
-          sx < c.left + c.width &&
-          sy < c.top + c.height &&
           sx >= 0 &&
           sy >= 0 &&
           sx < 220 &&
@@ -441,6 +568,33 @@ try {
             inside ? sourcePixels.data[(sy * 220 + sx) * 4 + channel] : 0,
           );
       }
+  }
+  // Texture inputs must keep the short-axis background, including portrait
+  // car captures. Also cover frames extending beyond the original canvas:
+  // only genuinely missing source pixels may become transparent.
+  for (const bounds of [
+    { x: 80, y: 20, w: 60, h: 180 },
+    { x: 20, y: 80, w: 180, h: 60 },
+    { x: 0, y: 0, w: 60, h: 200 },
+  ]) {
+    fixtures.set('full-mask', coverage(220, 220, bounds));
+    const result = await imageAdapter.prepareContentFraming({
+      workflow: 'texture-map', imageSize: '2K',
+      capture: { width: 220, height: 220, maskUrl: 'full-mask' },
+      referenceImages: [references[0], references[2]],
+    });
+    const frame = result.framing;
+    const pixels = fixtures.get(result.references[0].url);
+    assert.equal(pixels.width, pixels.height);
+    assert.deepEqual(result.exactIds, ['combined']);
+    assert.equal(result.references[1], references[2]);
+    for (let y = 0; y < pixels.height; y++) for (let x = 0; x < pixels.width; x++) {
+      const sx = x + frame.left, sy = y + frame.top;
+      const inside = sx >= 0 && sy >= 0 && sx < 220 && sy < 220;
+      for (let channel = 0; channel < 4; channel++)
+        assert.equal(pixels.data[(y * pixels.width + x) * 4 + channel],
+          inside ? combined.data[(sy * 220 + sx) * 4 + channel] : 0);
+    }
   }
   const scale = f.outputWidth / f.width,
     s = f.subject;
@@ -453,7 +607,21 @@ try {
       h: Math.round(s.height * scale),
     }),
   );
-  const restoredUrl = await imageAdapter.restoreContentFraming('remote-output', f);
+  const restoredUrl = await restoreAdapter.restoreContentFraming('remote-output', f);
+  const dirty = fixtures.get('remote-output');
+  // Detached opaque corner junk must be removed from the actual restored pixels.
+  for (let y = 0; y < 20; y++) for (let x = 0; x < 20; x++)
+    dirty.data.set([0, 0, 0, 255], (y * dirty.width + x) * 4);
+  const cleanedUrl = await restoreAdapter.restoreContentFraming('remote-output', f);
+  assert.deepEqual(fixtures.get(cleanedUrl), fixtures.get(restoredUrl));
+  for (const changed of [
+    { x: 100, y: 0, w: 200, h: 100 }, // shifted/shrunk
+    { x: 0, y: 0, w: f.outputWidth, h: f.outputHeight }, // opaque full background
+    { x: 0, y: 0, w: 0, h: 0 }, // empty
+  ]) {
+    fixtures.set('misaligned-output', coverage(f.outputWidth, f.outputHeight, changed));
+    await assert.rejects(() => restoreAdapter.restoreContentFraming('misaligned-output', f), /轮廓/);
+  }
   assert.equal(
     fixtures.get(restoredUrl).width,
     restoredFrameLayout(f, f.outputWidth, f.outputHeight).width,
@@ -462,12 +630,12 @@ try {
   const before = canvases.length;
   const abort = new globalThis.AbortController();
   abort.abort();
-  await assert.rejects(() => imageAdapter.restoreContentFraming('remote-output', f, abort.signal));
+  await assert.rejects(() => restoreAdapter.restoreContentFraming('remote-output', f, abort.signal));
   assert.equal(canvases.length, before);
 } finally {
   globalThis.Image = originalImage;
   globalThis.document = originalDocument;
 }
 console.log(
-  'Framing image adapter: byte-exact paired crop, transparent padding, unchanged references/mask, native return and cancellation passed.',
+  'Framing image adapter: full square background, byte-exact paired crop, source-edge padding, unchanged references/mask, native return and cancellation passed.',
 );

@@ -20,8 +20,9 @@ import {
   CLAY_MODEL_ROUGHNESS,
   createClayModelMaterial,
 } from '@/engine/materials/clayModelMaterial';
-import { waitForBrowserPaint } from '@/utils/browserScheduling';
+import { waitForBrowserPaint, yieldToBrowserTask } from '@/utils/browserScheduling';
 import { PROJECTED_RASTER_DEPTH_GLSL } from './projectionRasterDepth';
+import { yieldProjectedArrayUploadTurn } from './projectedArrayUploadScheduling';
 
 const DEFAULT_PREVIEW_COLOR = CLAY_MODEL_COLOR;
 const DEFAULT_WIRE_COLOR = '#e9ebe8';
@@ -217,6 +218,7 @@ type ProjectedLayerUniformBinding = {
   layerId: string;
   imageUrl: string;
   maskUrl?: string;
+  maskArrayPromotionRevision?: number;
   maskMapUniform?: string;
   projectedMapUniform: string;
   opacityUniform: string;
@@ -294,8 +296,10 @@ export function getProjectedLayerSamplerBudget(
     projected === 1
       ? 0
       : normalizedFeatures.useTextureArrays
-        ? maskLayers.filter((layer) => isLiveProjectedCanvasUrl(layer.maskUrl)).length +
-          Number(maskLayers.some((layer) => !isLiveProjectedCanvasUrl(layer.maskUrl)))
+        // Every array layer owns a reserved neutral keep-mask slice. First use
+        // of the projected eraser can therefore promote pixels into that slice
+        // without adding a sampler or rebuilding the complete author stack.
+        ? 1
         : maskLayers.length;
   const depths =
     projected === 1
@@ -683,7 +687,7 @@ const fragmentShader = `
     float inside = inX * inY * inZ * hasW;
 
     vec3 normal = captureWorldNormal;
-    vec3 projectorViewDir = normalize(projectorPosition - captureWorldPosition.xyz);
+    vec3 projectorViewDir = captureWorldDirection(captureWorldPosition.xyz, projectorPosition, projectorMatrix, projectorViewMatrix);
     float ndv = dot(normal, projectorViewDir);
     float frontFacing = step(${NDV_HARD_REJECT.toFixed(2)}, ndv);
     float backfaceAlpha = mix(mix(1.0, frontFacing, enableBackfaceCulling), 1.0, useDepthCheck);
@@ -735,7 +739,7 @@ const fragmentShader = `
 
     float faceOnFactor = abs(captureViewVertexNormal.z);
     float projectionFacingFactor = abs(
-      dot(captureViewVertexNormal, normalize(-captureViewPosition))
+      dot(captureViewVertexNormal, captureViewDirection(captureViewPosition, projectorMatrix))
     );
     float useProjectionFacingGuard = step(0.001, minimumProjectionFacing);
     float projectionFacingCoverage = mix(
@@ -888,7 +892,7 @@ const fragmentShader = `
     angleCoverage = mix(angleCoverage, lockedFacingCoverage, surfaceLockedVisibility);
     float coverageEdge = computeImageEdgeFade(uv, ${IMAGE_COVERAGE_EDGE_FADE.toFixed(3)});
     float continuousCoverage = clamp(layerOpacity * sourceAlpha * reliableProjectionSupport(angleCoverage * visibilityCoverage * projectionFacingCoverage * mix(0.35, 1.0, coverageEdge)), 0.0, 1.0);
-    float lockedSurfaceFacing = abs(dot(captureViewVertexNormal, normalize(-captureViewPosition)));
+    float lockedSurfaceFacing = abs(dot(captureViewVertexNormal, captureViewDirection(captureViewPosition, projectorMatrix)));
 
 
 
@@ -1090,13 +1094,13 @@ function buildStackFragmentShader(
   const projectionFacingCoverage = (index: number) => {
     const minimum = THREE.MathUtils.clamp(layers[index].minimumProjectionFacing ?? 0, 0, 0.99);
     return minimum > 0
-      ? `smoothstep(${minimum.toFixed(3)}, ${Math.min(0.999, minimum + PROJECTION_FACING_FEATHER).toFixed(3)}, abs(dot(captureViewVertexNormal, normalize(-captureViewPosition))))`
+      ? `smoothstep(${minimum.toFixed(3)}, ${Math.min(0.999, minimum + PROJECTION_FACING_FEATHER).toFixed(3)}, abs(dot(captureViewVertexNormal, captureViewDirection(captureViewPosition, projectorMatrix${index}))))`
       : '1.0';
   };
   const layerUsesProjectedArray = (index: number) =>
     features.useTextureArrays && !isLiveProjectedCanvasUrl(layers[index].imageUrl);
   const layerUsesMaskArray = (index: number) =>
-    features.useTextureArrays && !isLiveProjectedCanvasUrl(layers[index].maskUrl);
+    features.useTextureArrays && layers[index].maskArraySlice !== undefined;
   const layerUsesDepthArray = (index: number) =>
     features.useTextureArrays && !isLiveProjectedCanvasUrl(layers[index].depthUrl);
   const layerUsesNormalArray = (index: number) =>
@@ -1406,9 +1410,7 @@ function buildStackFragmentShader(
           float hasW = step(0.0001, projected.w);
           float inside = inX * inY * inZ * hasW;
 
-          vec3 projectorViewDir = normalize(
-            compactProjectorPositions[layerIndex] - captureWorldPosition.xyz
-          );
+          vec3 projectorViewDir = captureWorldDirection(captureWorldPosition.xyz, compactProjectorPositions[layerIndex], compactProjectorMatrices[layerIndex], compactProjectorViewMatrices[layerIndex]);
           float ndv = dot(captureWorldNormal, projectorViewDir);
           float frontFacing = step(${NDV_HARD_REJECT.toFixed(2)}, ndv);
           float backfaceAlpha = mix(
@@ -1482,7 +1484,7 @@ function buildStackFragmentShader(
             smoothstep(
               minimumFacing,
               min(0.999, minimumFacing + ${PROJECTION_FACING_FEATHER.toFixed(3)}),
-              abs(dot(captureViewVertexNormal, normalize(-captureViewPosition)))
+              abs(dot(captureViewVertexNormal, captureViewDirection(captureViewPosition, compactProjectorMatrices[layerIndex])))
             ),
             step(0.0001, minimumFacing)
           );
@@ -1597,7 +1599,7 @@ function buildStackFragmentShader(
           float surfaceAngleCoverage = smoothstep(
             ${SURFACE_LOCKED_FACING_START.toFixed(3)},
             ${SURFACE_LOCKED_FACING_END.toFixed(3)},
-            abs(dot(captureViewVertexNormal, normalize(-captureViewPosition)))
+            abs(dot(captureViewVertexNormal, captureViewDirection(captureViewPosition, compactProjectorMatrices[layerIndex])))
           );
           float angleCoverage = mix(
             normalAngleCoverage,
@@ -1626,7 +1628,7 @@ function buildStackFragmentShader(
             smoothstep(
               ${(SURFACE_LOCKED_MIN_SAFE_FACING - 0.08).toFixed(2)},
               ${(SURFACE_LOCKED_MIN_SAFE_FACING + 0.08).toFixed(2)},
-              abs(dot(captureViewVertexNormal, normalize(-captureViewPosition)))
+              abs(dot(captureViewVertexNormal, captureViewDirection(captureViewPosition, compactProjectorMatrices[layerIndex])))
             ),
             1.0,
             compactUseDepths[layerIndex]
@@ -1728,7 +1730,7 @@ function buildStackFragmentShader(
       float inside = inX * inY * inZ * hasW;
 
       vec3 normal = captureWorldNormal;
-      vec3 projectorViewDir = normalize(projectorPosition${index} - captureWorldPosition.xyz);
+      vec3 projectorViewDir = captureWorldDirection(captureWorldPosition.xyz, projectorPosition${index}, projectorMatrix${index}, projectorViewMatrix${index});
       float ndv = dot(normal, projectorViewDir);
       float frontFacing = step(${NDV_HARD_REJECT.toFixed(2)}, ndv);
       float backfaceAlpha = ${layerUsesDepth(index) ? '1.0' : 'mix(1.0, frontFacing, enableBackfaceCulling)'};
@@ -1767,7 +1769,7 @@ function buildStackFragmentShader(
       float alphaCoverage = step(0.01, sourceAlpha);
       float angleCoverage = ${
         layerUsesSurfaceLock(index)
-          ? `smoothstep(${SURFACE_LOCKED_FACING_START.toFixed(3)}, ${SURFACE_LOCKED_FACING_END.toFixed(3)}, abs(dot(captureViewVertexNormal, normalize(-captureViewPosition))))`
+          ? `smoothstep(${SURFACE_LOCKED_FACING_START.toFixed(3)}, ${SURFACE_LOCKED_FACING_END.toFixed(3)}, abs(dot(captureViewVertexNormal, captureViewDirection(captureViewPosition, projectorMatrix${index}))))`
           : layerUsesDepth(index)
             ? `smoothstep(${DEPTH_BACKED_ANGLE_COVERAGE_START.toFixed(2)}, ${DEPTH_BACKED_ANGLE_COVERAGE_END.toFixed(2)}, abs(ndv))`
             : `smoothstep(${NDV_COVERAGE_START.toFixed(2)}, ${NDV_COVERAGE_END.toFixed(2)}, ndv)`
@@ -1775,7 +1777,7 @@ function buildStackFragmentShader(
       float coverageEdge = computeImageEdgeFade(uv, ${IMAGE_COVERAGE_EDGE_FADE.toFixed(3)});
       float coverage = ${
         layerUsesSurfaceLock(index)
-          ? `layerOpacity${index} * sourceAlpha * projectionFacingCoverage * ${layerUsesDepth(index) ? '1.0' : `smoothstep(${(SURFACE_LOCKED_MIN_SAFE_FACING - 0.08).toFixed(2)}, ${(SURFACE_LOCKED_MIN_SAFE_FACING + 0.08).toFixed(2)}, abs(dot(captureViewVertexNormal, normalize(-captureViewPosition))))`} * visibilityCoverage`
+          ? `layerOpacity${index} * sourceAlpha * projectionFacingCoverage * ${layerUsesDepth(index) ? '1.0' : `smoothstep(${(SURFACE_LOCKED_MIN_SAFE_FACING - 0.08).toFixed(2)}, ${(SURFACE_LOCKED_MIN_SAFE_FACING + 0.08).toFixed(2)}, abs(dot(captureViewVertexNormal, captureViewDirection(captureViewPosition, projectorMatrix${index}))))`} * visibilityCoverage`
           : `clamp(layerOpacity${index} * sourceAlpha * reliableProjectionSupport(angleCoverage * visibilityCoverage * projectionFacingCoverage * mix(0.35, 1.0, coverageEdge)), 0.0, 1.0)`
       };
       float angleWeight = computeAngleWeight(${layerUsesDepth(index) ? 'abs(ndv)' : 'ndv'}, layerStrength${index});
@@ -1828,7 +1830,7 @@ function buildStackFragmentShader(
       float inside = inX * inY * inZ * hasW;
 
       vec3 normal = captureWorldNormal;
-      vec3 projectorViewDir = normalize(projectorPosition${index} - captureWorldPosition.xyz);
+      vec3 projectorViewDir = captureWorldDirection(captureWorldPosition.xyz, projectorPosition${index}, projectorMatrix${index}, projectorViewMatrix${index});
       float ndv = dot(normal, projectorViewDir);
       float frontFacing = step(${NDV_HARD_REJECT.toFixed(2)}, ndv);
       float backfaceAlpha = ${layerUsesDepth(index) ? '1.0' : 'mix(1.0, frontFacing, enableBackfaceCulling)'};
@@ -1867,7 +1869,7 @@ function buildStackFragmentShader(
       float alphaCoverage = step(0.01, sourceAlpha);
       float angleCoverage = ${
         layerUsesSurfaceLock(index)
-          ? `smoothstep(${SURFACE_LOCKED_FACING_START.toFixed(3)}, ${SURFACE_LOCKED_FACING_END.toFixed(3)}, abs(dot(captureViewVertexNormal, normalize(-captureViewPosition))))`
+          ? `smoothstep(${SURFACE_LOCKED_FACING_START.toFixed(3)}, ${SURFACE_LOCKED_FACING_END.toFixed(3)}, abs(dot(captureViewVertexNormal, captureViewDirection(captureViewPosition, projectorMatrix${index}))))`
           : layerUsesDepth(index)
             ? `smoothstep(${DEPTH_BACKED_ANGLE_COVERAGE_START.toFixed(2)}, ${DEPTH_BACKED_ANGLE_COVERAGE_END.toFixed(2)}, abs(ndv))`
             : `smoothstep(${NDV_COVERAGE_START.toFixed(2)}, ${NDV_COVERAGE_END.toFixed(2)}, ndv)`
@@ -1875,7 +1877,7 @@ function buildStackFragmentShader(
       float coverageEdge = computeImageEdgeFade(uv, ${IMAGE_COVERAGE_EDGE_FADE.toFixed(3)});
       float coverage = ${
         layerUsesSurfaceLock(index)
-          ? `layerOpacity${index} * sourceAlpha * projectionFacingCoverage * ${layerUsesDepth(index) ? '1.0' : `smoothstep(${(SURFACE_LOCKED_MIN_SAFE_FACING - 0.08).toFixed(2)}, ${(SURFACE_LOCKED_MIN_SAFE_FACING + 0.08).toFixed(2)}, abs(dot(captureViewVertexNormal, normalize(-captureViewPosition))))`} * visibilityCoverage`
+          ? `layerOpacity${index} * sourceAlpha * projectionFacingCoverage * ${layerUsesDepth(index) ? '1.0' : `smoothstep(${(SURFACE_LOCKED_MIN_SAFE_FACING - 0.08).toFixed(2)}, ${(SURFACE_LOCKED_MIN_SAFE_FACING + 0.08).toFixed(2)}, abs(dot(captureViewVertexNormal, captureViewDirection(captureViewPosition, projectorMatrix${index}))))`} * visibilityCoverage`
           : `clamp(layerOpacity${index} * sourceAlpha * reliableProjectionSupport(angleCoverage * visibilityCoverage * projectionFacingCoverage * mix(0.35, 1.0, coverageEdge)), 0.0, 1.0)`
       };
       float angleWeight = computeAngleWeight(${layerUsesDepth(index) ? 'abs(ndv)' : 'ndv'}, layerStrength${index});
@@ -2559,12 +2561,20 @@ function getProjectionLayerStructureSignature(
         [
           layer.layerId,
           layer.imageUrl,
-          layer.maskUrl ?? '',
+          normalizedFeatures.useTextureArrays
+            ? `reserved-uv-mask:${layer.layerId}`
+            : (layer.maskUrl ?? ''),
           layer.depthUrl ?? '',
           layer.depthIsLinearView ? 1 : 0,
           layer.normalUrl ?? '',
-          layer.useMask ? 1 : 0,
-          layer.maskSpace ?? 'projection',
+          normalizedFeatures.useTextureArrays
+            ? 1
+            : layer.useMask
+              ? 1
+              : 0,
+          normalizedFeatures.useTextureArrays
+            ? 'uv'
+            : (layer.maskSpace ?? 'projection'),
           layer.useDepthCheck ? 1 : 0,
           layer.useNormalCheck ? 1 : 0,
           layer.ignoreSourceAlpha ? 1 : 0,
@@ -2918,9 +2928,17 @@ export function syncProjectedLayerResidentMaskTextureInObject(
   layerId: string,
   maskUrl: string,
   texture: THREE.Texture,
+  arrayPromotion?: {
+    renderer: THREE.WebGLRenderer;
+    liveMultiplierTexture: THREE.Texture;
+    mode?: 'multiply' | 'replace';
+    revision: number;
+  },
 ) {
   prepareLiveEraserMaskTexture(texture);
+  if (arrayPromotion) prepareLiveEraserMaskTexture(arrayPromotion.liveMultiplierTexture);
   const visited = new Set<THREE.Material>();
+  const promotedArrays = new Set<THREE.DataArrayTexture>();
   let materialCount = 0;
   let boundMaterialCount = 0;
   let updated = false;
@@ -2937,7 +2955,163 @@ export function syncProjectedLayerResidentMaskTextureInObject(
         | undefined;
       if (!state) continue;
       materialCount += 1;
-      const binding = state.bindings.find((item) => item.layerId === layerId);
+      const layerIndex = state.bindings.findIndex((item) => item.layerId === layerId);
+      const binding = layerIndex >= 0 ? state.bindings[layerIndex] : undefined;
+      const stateLayer = (layerIndex >= 0 ? state.layers?.[layerIndex] : undefined) as
+        | (ProjectionLayerStackInput['layers'][number] & { maskArraySlice?: number })
+        | undefined;
+      const maskArray = material.uniforms.maskMaps?.value;
+      const maskArraySlice = stateLayer?.maskArraySlice;
+      if (
+        binding &&
+        state.usesTextureArrays &&
+        maskArray instanceof THREE.DataArrayTexture &&
+        maskArraySlice !== undefined &&
+        arrayPromotion
+      ) {
+        if (
+          binding.maskUrl === maskUrl &&
+          binding.maskArrayPromotionRevision === arrayPromotion.revision
+        ) {
+          boundMaterialCount += 1;
+          continue;
+        }
+        if (typeof document !== 'undefined') {
+          document.body.dataset.projectedMaskArrayPromotion = `start:${layerId}:${maskArraySlice}`;
+        }
+        if (!promotedArrays.has(maskArray)) {
+          const image = maskArray.image as {
+            width?: number;
+            height?: number;
+          };
+          const width = Math.max(1, Number(image.width ?? 1));
+          const height = Math.max(1, Number(image.height ?? 1));
+          const uvScale = material.uniforms[`maskMapUvScale${layerIndex}`]?.value;
+          const target = new THREE.WebGLRenderTarget(width, height, {
+            depthBuffer: false,
+            stencilBuffer: false,
+            generateMipmaps: false,
+            minFilter: THREE.LinearFilter,
+            magFilter: THREE.LinearFilter,
+            format: THREE.RGBAFormat,
+            type: THREE.UnsignedByteType,
+          });
+          target.texture.colorSpace = THREE.NoColorSpace;
+          const mergeMaterial = new THREE.RawShaderMaterial({
+            glslVersion: THREE.GLSL3,
+            depthTest: false,
+            depthWrite: false,
+            toneMapped: false,
+            uniforms: {
+              sourceMasks: { value: maskArray },
+              liveMultiplier: { value: arrayPromotion.liveMultiplierTexture },
+              replaceSource: { value: arrayPromotion.mode === 'replace' ? 1 : 0 },
+              sourceSlice: { value: maskArraySlice },
+              sourceUvScale: {
+                value:
+                  uvScale instanceof THREE.Vector2 ? uvScale : new THREE.Vector2(1, 1),
+              },
+            },
+            vertexShader: `
+              in vec3 position;
+              in vec2 uv;
+              out vec2 vUv;
+              void main() {
+                vUv = uv;
+                gl_Position = vec4(position.xy, 0.0, 1.0);
+              }
+            `,
+            fragmentShader: `
+              precision highp float;
+              precision highp sampler2DArray;
+              uniform sampler2DArray sourceMasks;
+              uniform sampler2D liveMultiplier;
+              uniform float replaceSource;
+              uniform float sourceSlice;
+              uniform vec2 sourceUvScale;
+              in vec2 vUv;
+              out vec4 outputColor;
+              void main() {
+                vec4 baseTexel = texture(sourceMasks, vec3(vUv * sourceUvScale, sourceSlice));
+                vec4 liveTexel = texture(liveMultiplier, vUv);
+                float baseKeep = dot(baseTexel.rgb, vec3(0.299, 0.587, 0.114)) * baseTexel.a;
+                float liveKeep = dot(liveTexel.rgb, vec3(0.299, 0.587, 0.114)) * liveTexel.a;
+                float keep = mix(baseKeep * liveKeep, liveKeep, replaceSource);
+                outputColor = vec4(vec3(keep), 1.0);
+              }
+            `,
+          });
+          const mergeScene = new THREE.Scene();
+          const mergeGeometry = new THREE.PlaneGeometry(2, 2);
+          const mergeMesh = new THREE.Mesh(mergeGeometry, mergeMaterial);
+          mergeMesh.frustumCulled = false;
+          mergeScene.add(mergeMesh);
+          const mergeCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+          const renderer = arrayPromotion.renderer;
+          const context = renderer.getContext() as WebGL2RenderingContext;
+          const previousTarget = renderer.getRenderTarget();
+          const previousFace = renderer.getActiveCubeFace();
+          const previousMip = renderer.getActiveMipmapLevel();
+          const previousActiveTexture = context.getParameter(context.ACTIVE_TEXTURE) as number;
+          const previousArrayBinding = context.getParameter(
+            context.TEXTURE_BINDING_2D_ARRAY,
+          ) as WebGLTexture | null;
+          try {
+            renderer.setRenderTarget(target);
+            renderer.render(mergeScene, mergeCamera);
+            const properties = renderer.properties.get(maskArray) as {
+              __webglTexture?: WebGLTexture;
+            };
+            if (!properties.__webglTexture) return {
+              updated,
+              bound: false,
+            };
+            clearWebGlErrors(context);
+            context.bindTexture(context.TEXTURE_2D_ARRAY, properties.__webglTexture);
+            context.copyTexSubImage3D(
+              context.TEXTURE_2D_ARRAY,
+              0,
+              0,
+              0,
+              maskArraySlice,
+              0,
+              0,
+              width,
+              height,
+            );
+            assertNoProjectedArrayWebGlError(context, 'upload');
+            promotedArrays.add(maskArray);
+            binding.maskUrl = maskUrl;
+            binding.maskArrayPromotionRevision = arrayPromotion.revision;
+            if (stateLayer) {
+              stateLayer.maskUrl = maskUrl;
+              stateLayer.maskSpace = 'uv';
+              stateLayer.useMask = true;
+            }
+            if (material.uniforms.compactMaskUsesUv?.value?.[layerIndex] !== undefined) {
+              material.uniforms.compactMaskUsesUv.value[layerIndex] = 1;
+            }
+            if (material.uniforms.compactUseMasks?.value?.[layerIndex] !== undefined) {
+              material.uniforms.compactUseMasks.value[layerIndex] = 1;
+            }
+            updated = true;
+            if (typeof document !== 'undefined') {
+              document.body.dataset.projectedMaskArrayPromotion = `ready:${layerId}:${maskArraySlice}`;
+            }
+          } finally {
+            context.activeTexture(previousActiveTexture);
+            context.bindTexture(context.TEXTURE_2D_ARRAY, previousArrayBinding);
+            renderer.resetState();
+            renderer.setRenderTarget(previousTarget, previousFace, previousMip);
+            mergeMesh.removeFromParent();
+            mergeGeometry.dispose();
+            mergeMaterial.dispose();
+            target.dispose();
+          }
+        }
+        boundMaterialCount += 1;
+        continue;
+      }
       if (
         !binding ||
         binding.maskUrl !== maskUrl ||
@@ -3183,6 +3357,11 @@ export function updateProjectedLayerStackMaterial(
     return false;
   if (layers.some((layer, index) => state.bindings[index]?.layerId !== layer.layerId))
     return false;
+  if (
+    state.usesTextureArrays &&
+    layers.some((layer, index) => state.bindings[index]?.maskUrl !== layer.maskUrl)
+  )
+    return false;
   updateSharedPreviewUniforms(material, input);
   for (let index = 0; index < layers.length; index += 1) {
     const binding = state.bindings[index];
@@ -3420,10 +3599,6 @@ export async function prewarmProjectedLayerTextureSources(
 type ProjectedTextureArrayBundle = {
   texture: THREE.DataArrayTexture;
   uvScales: THREE.Vector2[];
-  uploadYieldCount: number;
-  allocationDurationMs: number;
-  uploadDurationMs: number;
-  maximumStripeDurationMs: number;
 };
 
 const PROJECTED_ARRAY_COLOR_MEMORY_BUDGET = 64 * 1024 * 1024;
@@ -3437,6 +3612,7 @@ const PROJECTED_ARRAY_DEPTH_MEMORY_BUDGET = 224 * 1024 * 1024;
 const PROJECTED_ARRAY_NORMAL_MEMORY_BUDGET = 64 * 1024 * 1024;
 const PROJECTED_ARRAY_MIN_PREVIEW_SIDE = 256;
 const PROJECTED_ARRAY_MAX_COLOR_PREVIEW_SIDE = 1536;
+const PROJECTED_ARRAY_UPLOAD_CANCELLED = 'Projected texture array upload was cancelled.';
 const PROJECTED_ARRAY_MAX_MASK_PREVIEW_SIDE = 2048;
 const PROJECTED_ARRAY_MAX_DEPTH_PREVIEW_SIDE = 2048;
 const PROJECTED_ARRAY_MAX_NORMAL_PREVIEW_SIDE = 1024;
@@ -3467,8 +3643,14 @@ function getTexturePixelSize(texture: THREE.Texture) {
   return { width, height };
 }
 
-function yieldProjectedArrayUploadFrame() {
-  return waitForBrowserPaint();
+function yieldProjectedArrayUploadWork(
+  isViewportInteractionBusy?: () => boolean,
+) {
+  return yieldProjectedArrayUploadTurn(
+    isViewportInteractionBusy,
+    waitForBrowserPaint,
+    yieldToBrowserTask,
+  );
 }
 
 async function waitForProjectedArrayGpuFence(
@@ -3491,7 +3673,7 @@ async function waitForProjectedArrayGpuFence(
         throw new Error('Projected texture array GPU fence wait failed.');
       }
       polls += 1;
-      await yieldProjectedArrayUploadFrame();
+      await waitForBrowserPaint();
     }
   } finally {
     context.deleteSync(sync);
@@ -3510,8 +3692,8 @@ async function waitForProjectedArrayUploadWindow(
 ) {
   // Never spin or wait for the complete gesture: loading speed is user-facing
   // too. Yield presentation once, then let the caller submit one bounded unit.
-  if (isViewportInteractionBusy?.()) await yieldProjectedArrayUploadFrame();
-  if (isCancelled?.()) throw new Error('Projected texture array upload was cancelled.');
+  if (isViewportInteractionBusy?.()) await waitForBrowserPaint();
+  if (isCancelled?.()) throw new Error(PROJECTED_ARRAY_UPLOAD_CANCELLED);
 }
 
 let projectedArrayUploadTail = Promise.resolve();
@@ -3613,7 +3795,7 @@ async function packProjectedTextureArrayOnMainThread(
   const textureData = new Uint8Array(sliceByteLength * sources.length);
   let uploadedPixelsThisFrame = 0;
   for (let index = 0; index < sources.length; index += 1) {
-    if (isCancelled?.()) throw new Error('Projected texture array upload was cancelled.');
+    if (isCancelled?.()) throw new Error(PROJECTED_ARRAY_UPLOAD_CANCELLED);
     await waitForProjectedArrayUploadWindow(isViewportInteractionBusy, isCancelled);
     const source = sources[index];
     const size = sourceSizes[index];
@@ -3640,8 +3822,8 @@ async function packProjectedTextureArrayOnMainThread(
       index < sources.length - 1
     ) {
       uploadedPixelsThisFrame = 0;
-      await yieldProjectedArrayUploadFrame();
-      if (isCancelled?.()) throw new Error('Projected texture array upload was cancelled.');
+      await yieldProjectedArrayUploadWork(isViewportInteractionBusy);
+      if (isCancelled?.()) throw new Error(PROJECTED_ARRAY_UPLOAD_CANCELLED);
     }
   }
   return textureData;
@@ -3712,10 +3894,12 @@ async function uploadProjectedTextureArrayInStripes(input: {
   for (let layerIndex = 0; layerIndex < input.layerCount; layerIndex += 1) {
     for (let firstRow = 0; firstRow < input.height; firstRow += rowsPerStripe) {
       if (input.isCancelled?.()) {
-        throw new Error('Projected texture array upload was cancelled.');
+        throw new Error(PROJECTED_ARRAY_UPLOAD_CANCELLED);
       }
-      await yieldProjectedArrayUploadFrame();
-      await waitForProjectedArrayUploadWindow(input.isViewportInteractionBusy, input.isCancelled);
+      await yieldProjectedArrayUploadWork(input.isViewportInteractionBusy);
+      if (input.isCancelled?.()) {
+        throw new Error(PROJECTED_ARRAY_UPLOAD_CANCELLED);
+      }
 
       const rowCount = Math.min(rowsPerStripe, input.height - firstRow);
       const firstByte = (layerIndex * input.width * input.height + firstRow * input.width) * 4;
@@ -3799,7 +3983,11 @@ async function uploadProjectedTextureArrayInStripes(input: {
       uploadYieldCount += 1;
     }
   }
-  return { uploadYieldCount, uploadDurationMs, maximumStripeDurationMs };
+  return {
+    uploadYieldCount,
+    uploadDurationMs,
+    maximumStripeDurationMs,
+  };
 }
 
 async function createProjectedTextureArray(
@@ -3878,12 +4066,12 @@ async function createProjectedTextureArray(
     isCancelled,
     isViewportInteractionBusy,
   );
-  if (isCancelled?.()) throw new Error('Projected texture array upload was cancelled.');
+  if (isCancelled?.()) throw new Error(PROJECTED_ARRAY_UPLOAD_CANCELLED);
   return withProjectedArrayUploadLock(async () => {
     // CPU preparation for other profiles continues in parallel. Keep WebGL
     // uploads serialized and yield between slices so input always gets a frame.
-    await yieldProjectedArrayUploadFrame();
-    await waitForProjectedArrayUploadWindow(isViewportInteractionBusy, isCancelled);
+    await yieldProjectedArrayUploadWork(isViewportInteractionBusy);
+    if (isCancelled?.()) throw new Error(PROJECTED_ARRAY_UPLOAD_CANCELLED);
 
     const texture = new THREE.DataArrayTexture(textureData, width, height, sources.length);
     texture.name = `LiclickProjected${profile[0].toUpperCase()}${profile.slice(1)}Array`;
@@ -3962,10 +4150,6 @@ async function createProjectedTextureArray(
       uvScales: previewSizes.map(
         (size) => new THREE.Vector2((size?.width ?? 1) / width, (size?.height ?? 1) / height),
       ),
-      uploadYieldCount,
-      allocationDurationMs,
-      uploadDurationMs,
-      maximumStripeDurationMs,
     };
   });
 }
@@ -4423,6 +4607,7 @@ export async function createProjectedLayerStackMaterial(
 
   const loadedLayers: Array<
     (typeof layers)[number] & {
+      sourceMaskUrl?: string;
       projectedArraySlice?: number;
       maskArraySlice?: number;
       depthArraySlice?: number;
@@ -4497,7 +4682,12 @@ export async function createProjectedLayerStackMaterial(
     // upload; a transient mask lookup miss must not reveal its full source image.
     if ((requestedMask && !maskTexture) || (requestedNormal && !normalTexture)) continue;
     const index = loadedLayers.length;
-    const shouldUseMask = requestedMask && Boolean(maskTexture);
+    const ownsReservedUvMask = useTextureArrays;
+    const effectiveMaskTexture = ownsReservedUvMask ? (maskTexture ?? neutralTexture) : maskTexture;
+    const effectiveMaskUrl = ownsReservedUvMask
+      ? (layer.maskUrl ?? `reserved-uv-mask:${layer.layerId}`)
+      : layer.maskUrl;
+    const shouldUseMask = ownsReservedUvMask || (requestedMask && Boolean(maskTexture));
     const shouldUseDepth = requestedDepth && Boolean(depthTexture);
     const shouldUseNormal = requestedNormal && Boolean(normalTexture);
     if (shouldUseMask) {
@@ -4523,7 +4713,7 @@ export async function createProjectedLayerStackMaterial(
     const objectNormalDelta = new THREE.Matrix3().getNormalMatrix(objectMatrixDelta);
 
     const usesProjectedArray = useTextureArrays && !isLiveProjectedCanvasUrl(layer.imageUrl);
-    const usesMaskArray = useTextureArrays && !isLiveProjectedCanvasUrl(layer.maskUrl);
+    const usesMaskArray = useTextureArrays && shouldUseMask;
     const usesDepthArray = useTextureArrays && !isLiveProjectedCanvasUrl(layer.depthUrl);
     const usesNormalArray = useTextureArrays && !isLiveProjectedCanvasUrl(layer.normalUrl);
     const projectedArraySlice = usesProjectedArray
@@ -4531,7 +4721,12 @@ export async function createProjectedLayerStackMaterial(
       : -1;
     const maskArraySlice =
       shouldUseMask && usesMaskArray
-        ? resolveArraySlice(layer.maskUrl, maskTexture, maskTextures, maskArraySliceByUrl)
+        ? resolveArraySlice(
+            `reserved-uv-mask:${layer.layerId}`,
+            effectiveMaskTexture,
+            maskTextures,
+            maskArraySliceByUrl,
+          )
         : -1;
     const depthArraySlice =
       shouldUseDepth && usesDepthArray
@@ -4544,7 +4739,8 @@ export async function createProjectedLayerStackMaterial(
     if (!usesProjectedArray) {
       uniforms[`projectedMap${index}`] = { value: texture };
     }
-    if (shouldUseMask && !usesMaskArray) uniforms[`maskMap${index}`] = { value: maskTexture };
+    if (shouldUseMask && !usesMaskArray)
+      uniforms[`maskMap${index}`] = { value: effectiveMaskTexture };
     if (shouldUseDepth && !usesDepthArray) uniforms[`depthMap${index}`] = { value: depthTexture };
     if (shouldUseNormal && !usesNormalArray)
       uniforms[`normalMap${index}`] = { value: normalTexture };
@@ -4586,6 +4782,9 @@ export async function createProjectedLayerStackMaterial(
     normalArraySlices.push(normalArraySlice);
     loadedLayers.push({
       ...layer,
+      sourceMaskUrl: layer.maskUrl,
+      ...(effectiveMaskUrl ? { maskUrl: effectiveMaskUrl } : {}),
+      ...(ownsReservedUvMask && !layer.maskUrl ? { maskSpace: 'uv' as const } : {}),
       useMask: shouldUseMask,
       useDepthCheck: shouldUseDepth,
       useNormalCheck: shouldUseNormal,
@@ -4718,33 +4917,6 @@ export async function createProjectedLayerStackMaterial(
           performance.now() - arrayPipelineStartedAt
         ).toFixed(1);
         document.body.dataset.projectedArrayPipelineReadyUnixMs = String(Date.now());
-        document.body.dataset.projectedArrayUploadYieldCount = String(
-          [projectedArray, maskArray, depthArray, normalArray].reduce(
-            (total, bundle) => total + (bundle?.uploadYieldCount ?? 0),
-            0,
-          ),
-        );
-        document.body.dataset.projectedArrayAllocationDurationMs = [
-          projectedArray,
-          maskArray,
-          depthArray,
-          normalArray,
-        ]
-          .reduce((total, bundle) => total + (bundle?.allocationDurationMs ?? 0), 0)
-          .toFixed(1);
-        document.body.dataset.projectedArrayUploadDurationMs = [
-          projectedArray,
-          maskArray,
-          depthArray,
-          normalArray,
-        ]
-          .reduce((total, bundle) => total + (bundle?.uploadDurationMs ?? 0), 0)
-          .toFixed(1);
-        document.body.dataset.projectedArrayMaximumStripeDurationMs = Math.max(
-          ...[projectedArray, maskArray, depthArray, normalArray].map(
-            (bundle) => bundle?.maximumStripeDurationMs ?? 0,
-          ),
-        ).toFixed(1);
       }
       if (projectedArray) uniforms.projectedMaps = { value: projectedArray.texture };
       if (maskArray) uniforms.maskMaps = { value: maskArray.texture };
@@ -4961,7 +5133,7 @@ export async function createProjectedLayerStackMaterial(
     bindings: loadedLayers.map((layer, index) => ({
       layerId: layer.layerId,
       imageUrl: layer.imageUrl,
-      maskUrl: layer.maskUrl,
+      maskUrl: layer.sourceMaskUrl,
       ...(layer.useMask && layer.maskUrl && (layer.maskArraySlice ?? -1) < 0
         ? { maskMapUniform: `maskMap${index}` }
         : {}),
@@ -5037,21 +5209,31 @@ export function createProjectedLayerStackProgramWarmupMaterial(
   // has an array slice. Slice numbers themselves are uniforms in that path.
   // Assigning placeholders therefore produces byte-for-byte identical GLSL
   // without decoding or uploading a single image.
-  const programLayers = layers.map((layer) => ({
-    ...layer,
-    ...(!useTextureArrays || isLiveProjectedCanvasUrl(layer.imageUrl)
-      ? {}
-      : { projectedArraySlice: 0 }),
-    ...(!useTextureArrays || !layer.useMask || isLiveProjectedCanvasUrl(layer.maskUrl)
-      ? {}
-      : { maskArraySlice: 0 }),
-    ...(!useTextureArrays || !layer.useDepthCheck || isLiveProjectedCanvasUrl(layer.depthUrl)
-      ? {}
-      : { depthArraySlice: 0 }),
-    ...(!useTextureArrays || !layer.useNormalCheck || isLiveProjectedCanvasUrl(layer.normalUrl)
-      ? {}
-      : { normalArraySlice: 0 }),
-  }));
+  const programLayers = layers.map((layer) => {
+    const ownsReservedUvMask = useTextureArrays;
+    return {
+      ...layer,
+      ...(ownsReservedUvMask
+        ? {
+            maskUrl: `reserved-uv-mask:${layer.layerId}`,
+            maskSpace: 'uv' as const,
+            useMask: true,
+          }
+        : {}),
+      ...(!useTextureArrays || isLiveProjectedCanvasUrl(layer.imageUrl)
+        ? {}
+        : { projectedArraySlice: 0 }),
+      ...(!useTextureArrays || (!layer.useMask && !ownsReservedUvMask)
+        ? {}
+        : { maskArraySlice: 0 }),
+      ...(!useTextureArrays || !layer.useDepthCheck || isLiveProjectedCanvasUrl(layer.depthUrl)
+        ? {}
+        : { depthArraySlice: 0 }),
+      ...(!useTextureArrays || !layer.useNormalCheck || isLiveProjectedCanvasUrl(layer.normalUrl)
+        ? {}
+        : { normalArraySlice: 0 }),
+    };
+  });
   const material = new THREE.ShaderMaterial({
     name: `LiclickProjectedLayerStackWarmup:${layers.length}`,
     vertexShader,
@@ -5409,9 +5591,9 @@ const uvOverlayFragmentShader = `
 
 
 
-    if (showEmptyUvChecker < 0.5 && hasAnyColor > 0.5 && capturedCoverage == 0.0 &&
+    if (showEmptyUvChecker < 0.5 && hasAnyColor > 0.5 &&
         showEmptyProjectionHatch > 0.5 && showEmptyProjectionHatch < 1.5) {
-      displayColor = computeUvEmptyPreviewColor();
+      displayColor += (computeUvEmptyPreviewColor() - baseColor * lighting) * (1.0 - capturedCoverage);
     }
     float captureAlpha = showEmptyProjectionHatch > 1.5
       ? step(${PROJECTION_RELIABILITY_CUTOFF.toFixed(2)}, capturedCoverage) : 1.0;

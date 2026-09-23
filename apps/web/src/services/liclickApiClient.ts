@@ -9,6 +9,7 @@ import {
   type ReferencePreprocessingResult,
 } from './referenceImagePreprocessor';
 import { mapWithConcurrency } from '@/utils/mapWithConcurrency';
+import { interactionSafeJsonResponse } from '@/engine/viewport/input';
 
 export class LiclickApiError extends Error {
   readonly status: number;
@@ -65,7 +66,8 @@ export type LiclickGenerateTextureSingleViewInput = GenerateTextureInput & {
   /** Local preparation only: aligned geometry guides must not be resampled. */
   pixelExactReferenceIds?: string[];
   signal?: AbortSignal;
-  referencePipeline?: 'six-view-delight-v1';
+  referencePipeline?: 'six-view-delight-v1' | 'delight-only-v1';
+  backgroundReference?: boolean;
   clientGenerationId?: string;
   projectId?: string;
   prompt: string;
@@ -184,7 +186,7 @@ async function requestJson<T>(
     window.clearTimeout(timeout);
     callerSignal?.removeEventListener('abort', abortFromCaller);
   }
-  const payload = await response.json().catch(() => undefined);
+  const payload = await interactionSafeJsonResponse<unknown>(response);
   if (!response.ok) {
     const errorCode =
       payload && typeof payload === 'object' && 'code' in payload && typeof payload.code === 'string'
@@ -209,7 +211,7 @@ async function requestJson<T>(
 
 export async function restoreFramedJobResult<T extends { resultUrl?: string; resultUrls?: string[]; framing?: GenerationFraming; framingRestored?: boolean; workflow?: 'liclick' | 'texture-map' | 'local-repaint' }>(result: T, signal?: AbortSignal, workflow = result.workflow): Promise<T> {
   if (!result.resultUrl || !result.framing || result.framingRestored) return result;
-  const { restoreContentFraming } = await import('@/engine/generation/contentFramingImages');
+  const { restoreContentFraming } = await import('@/engine/generation/contentFramingRestore');
   const urls = [...new Set([result.resultUrl, ...(result.resultUrls ?? [])])];
   const policy = workflow === 'texture-map' ? 'capture-mask' : 'strict';
   const restored = await mapWithConcurrency(urls, 1, url => restoreContentFraming(url, result.framing!, signal, policy));
@@ -275,6 +277,7 @@ export function createLiclickApiClient(config: LiclickApiConfig = {}): LiclickAp
           imageSize: input.imageSize,
           quality: input.quality,
           referencePipeline: input.referencePipeline,
+          backgroundReference: input.backgroundReference,
           count: input.count,
           references: preparedReferences.map(({ id, name, url }) => ({ id, name, url })),
         }),

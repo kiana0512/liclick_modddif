@@ -3,16 +3,26 @@ import { readFile } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 import ts from 'typescript';
 import * as THREE from 'three';
+import { ownershipPolicy } from './test-texture-generation-recovery-ownership.mjs';
 
 const read = (name) => readFile(new URL(`../src/${name}`, import.meta.url), 'utf8');
 const compile = (source) => ts.transpileModule(source, { compilerOptions: {
   target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS,
 } }).outputText;
 const scheduler = {};
+const completionPolicy = {};
+new Function('exports', compile(await read('engine/generation/singleViewAutoProjection.ts')))(completionPolicy);
 const materialIdentity = {};
 new Function('exports', compile(await read('engine/projection/projectedMaterialIdentity.ts')))(materialIdentity);
 new Function('exports', 'require', compile(await read('engine/generation/gptMultiviewPairs.ts')))(scheduler, () => materialIdentity);
-const { planGptViewPairs, runGptViewPairs, settleGptPairInOrder, hasResidentGptLayers, waitForGptPairPresentation } = scheduler;
+const {
+  planGptViewPairs,
+  runGptViewPairs,
+  settleGptPairInOrder,
+  gptPairCompletionDisposition,
+  hasResidentGptLayers,
+  waitForGptPairPresentation,
+} = scheduler;
 const make = (names) => names.map((id) => ({ id, value: id, label: id, viewDirection: [0, 0, 1] }));
 const expected1 = [['front', 'back'], ['front-left', 'back-right'], ['left', 'right'], ['back-left', 'front-right'], ['top', 'bottom']];
 const expected2 = [['front', 'back'], ['left', 'right'], ['right-top', 'left-bottom'], ['front-top', 'back-bottom'], ['left-top', 'right-bottom'], ['back-top', 'front-bottom'], ['top', 'bottom']];
@@ -32,8 +42,43 @@ for (const [preset, expected] of [['preset-1', expected1], ['preset-2', expected
 assert.deepEqual(ids(planGptViewPairs(make(['front', 'left', 'back', 'right', 'top', 'bottom']), 'custom')), [['front', 'back'], ['left', 'right', 'top', 'bottom']]);
 assert.deepEqual(ids(planGptViewPairs(make(['front', 'top', 'front']), 'preset-1')), [['front'], ['top']]);
 assert.deepEqual(planGptViewPairs([], 'custom'), []);
+const preset3 = ['front', 'front-left', 'left', 'back-left', 'back', 'back-right', 'right', 'front-right', 'bottom'];
+const planned3 = ids(planGptViewPairs(make(preset3), 'preset-3'));
+assert.deepEqual(planned3, [['front', 'back'], ['front-left', 'back-right', 'left', 'right'], ['back-left', 'front-right', 'bottom']]);
+assert.equal(new Set(planned3.flat()).size, 9);
+assert(!planned3.flat().includes('top'));
+assert.deepEqual(ids(planGptViewPairs(make(preset3), 'custom')), planned3, 'editing preset 3 preserves inherited pairs and bottom');
+const extraCamera = { id: 'user-camera', value: 'bottom' };
+assert.deepEqual(ids(planGptViewPairs([...make(preset3), extraCamera], 'custom')),
+  [planned3[0], planned3[1], ['back-left', 'front-right'], ['user-camera'], ['bottom']],
+  'custom singleton cameras remain isolated');
+const raised3 = make(preset3).map(view => ({...view, id:`preset-3-${view.id}`, viewDirection:[0, .5, Math.sqrt(3)/2]}));
+for (const preset of ['preset-3', 'custom']) {
+  const groups = planGptViewPairs(raised3, preset);
+  assert.deepEqual(ids(groups), planned3.map(group=>group.map(id=>`preset-3-${id}`)));
+  assert(groups.flat().every(view=>raised3.includes(view)), 'raised cameras must never be reconstructed as horizontal cameras');
+}
+const transform = await read('engine/scene/transformActions.ts');
+const directionFunction = transform.slice(transform.indexOf('export function getObjectViewPresetDirection('), transform.indexOf('export function setCameraToObjectView('));
+const directions = {};
+new Function('exports', 'THREE', compile(directionFunction))(directions, THREE);
+for (const name of preset3.slice(0, -1)) {
+  const flat = directions.getObjectViewPresetDirection(name);
+  const raised = directions.getObjectViewPresetDirection(name, 30);
+  assert(Math.abs(raised.length()-1)<1e-12);
+  assert(Math.abs(raised.y-Math.sin(Math.PI/6))<1e-12);
+  assert(Math.abs(Math.atan2(flat.x,flat.z)-Math.atan2(raised.x,raised.z))<1e-12);
+  assert.equal(flat.y,0,'existing presets remain horizontal');
+}
+assert.deepEqual(directions.getObjectViewPresetDirection('bottom',30).toArray(),[0,-1,0]);
 assert.deepEqual(planGptViewPairs([], 'custom', 'fast'), []);
 assert.deepEqual(ids(planGptViewPairs(make(['front', 'top', 'front']), 'preset-1', 'fast')), [['front'], ['top']]);
+assert.equal(gptPairCompletionDisposition(2, 2, 0), 'complete');
+assert.equal(gptPairCompletionDisposition(2, 1, 1), 'continue-after-qa');
+assert.equal(gptPairCompletionDisposition(4, 2, 2), 'continue-after-qa');
+assert.equal(gptPairCompletionDisposition(2, 1, 0), 'stop');
+assert.equal(gptPairCompletionDisposition(2, 0, 1), 'stop');
+assert.equal(gptPairCompletionDisposition(2, 3, 0), 'stop');
 
 const defer = () => { let resolve; const promise = new Promise((r) => { resolve = r; }); return { promise, resolve }; };
 const first = defer(), second = defer(), presentation = defer();
@@ -88,6 +133,35 @@ material.userData.liclickProjectedLayerStackState.bindings.push({ layerId: 'new'
 assert.equal(hasResidentGptLayers(root, ['new']), true);
 material.name = 'LiclickProjectedLayerWarmup';
 assert.equal(hasResidentGptLayers(root, ['new']), false, 'warmup bindings cannot release the batch');
+material.name = 'LiclickUvOverlayPreview';
+material.userData.liclickResidentUvProjectionLayers = ['old'];
+assert.equal(hasResidentGptLayers(root, ['new']), false, 'old incremental atlas cannot release a new result');
+material.userData.liclickResidentUvProjectionLayers.push('new');
+assert.equal(hasResidentGptLayers(root, ['new']), true, 'in-place UV updates need no resident event');
+assert.equal(hasResidentGptLayers(undefined, ['new']), false);
+assert.equal(hasResidentGptLayers(new THREE.Group(), ['new']), false);
+root.visible = false;
+assert.equal(hasResidentGptLayers(root, ['new']), false);
+root.visible = true;
+const pendingMesh = new THREE.Mesh(new THREE.BoxGeometry(), new THREE.MeshBasicMaterial());
+root.add(pendingMesh);
+assert.equal(hasResidentGptLayers(root, ['new']), false, 'all visible mesh materials must be ready');
+root.remove(pendingMesh); pendingMesh.geometry.dispose(); pendingMesh.material.dispose();
+let checks = 0, paintChecks = 0;
+await waitForGptPairPresentation(
+  () => ++checks !== 2,
+  () => {},
+  async () => { paintChecks++; },
+);
+assert.equal(paintChecks, 4, 'readiness lost during paint must wait and recheck');
+let abortPending = false;
+const pendingCancellation = waitForGptPairPresentation(
+  () => false,
+  () => { if (abortPending) throw new Error('cancelled'); },
+  async () => {},
+);
+abortPending = true;
+await assert.rejects(pendingCancellation, /cancelled/);
 let frames = 0;
 await waitForGptPairPresentation(() => true, () => {}, async () => { frames++; });
 assert.equal(frames, 2);
@@ -128,11 +202,18 @@ let textureEntryDeclaration;
 let compactProgressLabelDeclaration;
 function visit(node) {
   if (ts.isFunctionDeclaration(node) && node.name?.text === 'handleTextureMapGenerate') textureEntryDeclaration = node.getText(ast);
-  if (ts.isFunctionDeclaration(node) && ['handleGptPairedMultiviewGenerate', 'handleTextureMapMultiviewGenerate'].includes(node.name?.text)) declarations.push(node.getText(ast));
+  if (ts.isFunctionDeclaration(node) && [
+    'markSilhouetteRetryFailed',
+    'submitSilhouetteAlignmentRetry',
+    'submitGptTextureViewWithSilhouetteRetry',
+    'waitForGptTextureGenerationWithSilhouetteRetry',
+    'handleGptPairedMultiviewGenerate',
+    'handleTextureMapMultiviewGenerate',
+  ].includes(node.name?.text)) declarations.push(node.getText(ast));
   if (ts.isFunctionDeclaration(node) && node.name?.text === 'compactTextureProgressButtonLabel') compactProgressLabelDeclaration = node.getText(ast);
   ts.forEachChild(node, visit);
 }
-visit(ast); assert.equal(declarations.length, 2); assert(compactProgressLabelDeclaration);
+visit(ast); assert.equal(declarations.length, 6); assert(compactProgressLabelDeclaration);
 const compactProgressLabel = new Function(
   `${compile(compactProgressLabelDeclaration)}; return compactTextureProgressButtonLabel;`,
 )();
@@ -142,7 +223,7 @@ assert.equal(
   '第 2/7 组',
 );
 assert.equal(compactProgressLabel('生成纹理贴图 · 第 2/7 组'), '生成纹理贴图 · 第 2/7 组');
-async function fixture(failedView, fullyCovered = false, mode = 'stable', preset = 'custom', names = ['front', 'left', 'back', 'right', 'top', 'bottom'], captureError, slowStatusSave = false) {
+async function fixture(failedView, fullyCovered = false, mode = 'stable', preset = 'custom', names = ['front', 'left', 'back', 'right', 'top', 'bottom'], captureError, slowStatusSave = false, silhouetteFailure) {
   let sequence = 0, rows = [], frozen = false, repairCount = 0, whitePresentation = false;
   const jobs = new Map(), requests = [], captures = [], saved = [];
   const checkpoint = defer();
@@ -151,10 +232,51 @@ async function fixture(failedView, fullyCovered = false, mode = 'stable', preset
   const sceneRoot = new THREE.Group(), resident = new THREE.ShaderMaterial({ name: 'LiclickProjectedLayerStack:layers' });
   sceneRoot.add(new THREE.Mesh(new THREE.BoxGeometry(), resident));
   const active = () => { assert.equal(frozen, false, 'capture must not run against a frozen preview'); };
-  const scope = {
-    require: (name) => name.endsWith('gptMultiviewPairs') ? scheduler : {
-      buildTextureMapPrompt: () => 'initial', buildTextureMapCompletionPrompt: () => 'completion',
+  const silhouetteRetryPolicy = {
+    GPT_SILHOUETTE_RETRY_LIMIT: 1,
+    SILHOUETTE_RETRY_FAILURE_MESSAGE: 'alignment drift; retrying once',
+    silhouetteRetryAttempt: (metadata) => metadata.silhouetteRetryAttempt ?? 0,
+    isGptReturnSilhouetteMismatch: (error) => error?.code === 'GPT_RETURN_SILHOUETTE_MISMATCH',
+    terminalSilhouetteRetryError: () => Object.assign(
+      new Error('连续两次 alignment failed'),
+      { code: 'GPT_RETURN_SILHOUETTE_MISMATCH' },
+    ),
+    createTextureMapSilhouetteRetry: (failed) => {
+      const id = `${failed.id}-silhouette-retry-1`;
+      return {
+        viewLabel: failed.metadata.cameraViewLabel ?? 'current',
+        generation: {
+          ...failed,
+          id,
+          prompt: `alignment-retry:${failed.prompt}`,
+          resultUrl: undefined,
+          status: 'running',
+          metadata: {
+            ...failed.metadata,
+            clientGenerationId: id,
+            serverJobId: undefined,
+            taskId: undefined,
+            completedAt: undefined,
+            error: undefined,
+            framingRestored: undefined,
+            generationFraming: undefined,
+            serverSubmitted: false,
+            startedAt: new Date().toISOString(),
+            silhouetteRetryOf: failed.id,
+            silhouetteRetryAttempt: 1,
+          },
+        },
+      };
     },
+  };
+  const scope = {
+    ...completionPolicy,
+    ...ownershipPolicy,
+    require: (name) => name.endsWith('gptMultiviewPairs')
+      ? scheduler
+      : name.endsWith('gptReturnSilhouetteRetry')
+        ? silhouetteRetryPolicy
+        : { buildTextureMapPrompt: () => 'initial', buildTextureMapCompletionPrompt: () => 'completion' },
     captureObjectId: 'object', currentProject: project, selectedCameraViewPreset: preset,
     singleViewProvider: 'gpt', prompt: 'user draft', imageModel: 'gpt', resolution: '2k', resolutionToSize: { '2k': 2048 },
     objects: [{ id: 'object' }], t: (key) => key, console,
@@ -209,20 +331,40 @@ async function fixture(failedView, fullyCovered = false, mode = 'stable', preset
     syncGeneration: (job) => jobs.set(job.id, job),
     isCancelledGeneration: () => false,
     getUserFacingGenerationError: (error) => String(error),
-    createFailedGeneration: (job, error) => ({ ...job, status: 'failed', metadata: { ...job.metadata, error } }),
+    createFailedGeneration: (job, error, extra = {}) => ({ ...job, status: 'failed', metadata: { ...job.metadata, ...extra, error } }),
     mergeGenerationMetadataPreservingStartedAt: (a, b) => ({ ...a, ...b }),
     submitGptTextureView: async (id, prompt, guide, reference, capture) => {
       assert.equal(reference.id, 'material', 'second input remains the user-selected material reference');
       assert(saved.some((patch) => patch.captures?.some((item) => item.id === capture.id)), 'capture must be durable before submission');
       requests.push({ id, prompt, guide, capture });
-      assert.equal(capture.maskUrl, `original-mask-${jobs.get(id).metadata.cameraViewId}`);
-      return jobs.get(id);
+      const job = jobs.get(id);
+      assert.equal(capture.maskUrl, `original-mask-${job.metadata.cameraViewId}`);
+      if (
+        silhouetteFailure?.stage === 'submit' &&
+        job.metadata.cameraViewId === silhouetteFailure.view &&
+        silhouetteFailure.failures > (job.metadata.silhouetteRetryAttempt ?? 0)
+      ) {
+        throw Object.assign(new Error('return QA mismatch'), {
+          code: silhouetteFailure.code ?? 'GPT_RETURN_SILHOUETTE_MISMATCH',
+        });
+      }
+      return job;
     },
     waitForLiclickGeneration: async (job) => {
       if (slowStatusSave && !observedWhileSaving) {
         observedWhileSaving = true;
         assert.equal(statusSaves, 1, 'status checkpoint started before result observation');
         checkpoint.resolve();
+      }
+      if (
+        silhouetteFailure &&
+        (silhouetteFailure?.stage ?? 'wait') === 'wait' &&
+        job.metadata.cameraViewId === silhouetteFailure.view &&
+        (silhouetteFailure.failures > (job.metadata.silhouetteRetryAttempt ?? 0))
+      ) {
+        throw Object.assign(new Error('return QA mismatch'), {
+          code: silhouetteFailure.code ?? 'GPT_RETURN_SILHOUETTE_MISMATCH',
+        });
       }
       if (job.metadata.cameraViewId === failedView) throw new Error('controlled network failure');
       return { ...job, status: 'succeeded', resultUrl: `result:${job.id}` };
@@ -268,6 +410,44 @@ assert(failure.error);
 assert.deepEqual(failure.captures, [['front', 'back']]);
 assert.deepEqual(failure.rows.map((row) => row.id), ['front']);
 assert.equal(failure.repairCount, 0);
+const recoveredSilhouette = await fixture(
+  undefined, false, 'fast', 'custom', undefined, undefined, false,
+  { view: 'front', failures: 1 },
+);
+assert.ifError(recoveredSilhouette.error);
+assert.equal(recoveredSilhouette.requests.length, 7, 'one rejected silhouette submits exactly one replacement view');
+assert.equal(recoveredSilhouette.requests.filter((request) => request.capture.id === 'capture-front').length, 2);
+assert.match(recoveredSilhouette.requests.find((request) => request.id.endsWith('-silhouette-retry-1')).prompt, /^alignment-retry:/);
+assert.deepEqual(recoveredSilhouette.rows.map((row) => row.id), recoveredSilhouette.captures.flat());
+const recoveredImmediateSilhouette = await fixture(
+  undefined, false, 'fast', 'custom', undefined, undefined, false,
+  { view: 'front', failures: 1, stage: 'submit' },
+);
+assert.ifError(recoveredImmediateSilhouette.error);
+assert.equal(recoveredImmediateSilhouette.requests.length, 7, 'an immediate bad response also receives only one replacement');
+assert.deepEqual(recoveredImmediateSilhouette.rows.map((row) => row.id), recoveredImmediateSilhouette.captures.flat());
+const rejectedSilhouette = await fixture(
+  undefined, false, 'fast', 'custom', undefined, undefined, false,
+  { view: 'front', failures: 2 },
+);
+assert.ifError(rejectedSilhouette.error);
+assert.equal(rejectedSilhouette.requests.length, 7, 'the retry budget cannot create a submission storm');
+assert.deepEqual(rejectedSilhouette.captures, [['front', 'back'], ['left', 'right', 'top', 'bottom']]);
+assert.deepEqual(
+  rejectedSilhouette.rows.map((row) => row.id),
+  ['back', 'left', 'right', 'top', 'bottom'],
+  'the rejected view is skipped while its sibling and later group continue',
+);
+assert.equal(rejectedSilhouette.repairCount, 1);
+const rejectedRatio = await fixture(
+  undefined, false, 'fast', 'custom', undefined, undefined, false,
+  { view: 'front', failures: 1, code: 'GPT_RETURN_FRAME_RATIO_MISMATCH' },
+);
+assert.ifError(rejectedRatio.error);
+assert.equal(rejectedRatio.requests.length, 6, 'ratio QA does not consume the silhouette retry budget');
+assert.deepEqual(rejectedRatio.captures, [['front', 'back'], ['left', 'right', 'top', 'bottom']]);
+assert.deepEqual(rejectedRatio.rows.map((row) => row.id), ['back', 'left', 'right', 'top', 'bottom']);
+assert.equal(rejectedRatio.repairCount, 1);
 for (const [preset, expected] of [['preset-1', expected1], ['preset-2', expected2]]) for (const stored of [undefined, 'stable', 'fast', 'unknown']) {
   const result = await fixture(undefined, false, stored, preset, expected.flat());
   assert.ifError(result.error);
@@ -311,11 +491,16 @@ assert.match(generationErrors.getUserFacingGenerationError(internalAbort), /意�
 
 async function testEntryFailure(error, cancel = false) {
   const notices = [], toasts = [], logged = [], locks = new Set();
+  const ownership = ownershipPolicy.createTextureGenerationRecoveryOwnership();
   let progress, finished = 0, saved = 0;
   const scope = {
     ...generationErrors, textureViewMode: 'multi', cameraViews: make(['front', 'back']),
+    currentProjectId: 'project', textureRecoveryOwnershipRef: { current: ownership },
     workflowSubmissionLocked: false, previewIsGenerating: false,
     selectedSingleReference: undefined, selectedMultiviewReference: { id: 'reference' },
+    useReferenceStore: { getState: () => ({ references: [{ id: 'reference' }], selectedReferenceIds: ['reference'] }) },
+    resolveLocalRepaintMaterialReference: ({ references }) => references[0],
+    prepareReferenceLighting: async (_projectId, reference) => reference,
     submitLocksRef: { current: locks }, texturePipelineAbortControllerRef: {},
     setSubmissionActive() {}, setTexturePipelineCancelling() {}, setCancelTextureSnapshotConfirmOpen() {},
     setTexturePipelineProgress: value => { progress = typeof value === 'function' ? value(progress) : value; },
@@ -325,12 +510,15 @@ async function testEntryFailure(error, cancel = false) {
     console: { error: (...args) => logged.push(args) },
     handleTextureMapMultiviewGenerate: async (_ref, _views, _mode, signal) => {
       assert.equal(signal.aborted, false);
+      assert.equal(ownership.backgroundTicket('project', 'texture-map')(), false);
       if (cancel) scope.texturePipelineAbortControllerRef.current.abort('user-cancelled-texture-generation');
       throw error;
     },
   };
-  const entry = new Function(...Object.keys(scope), `${compile(textureEntryDeclaration)}; return handleTextureMapGenerate;`)(...Object.values(scope));
+  const entrySource = textureEntryDeclaration.replace("(await import('@/services/referenceLighting')).prepareReferenceLighting", 'prepareReferenceLighting');
+  const entry = new Function(...Object.keys(scope), `${compile(entrySource)}; return handleTextureMapGenerate;`)(...Object.values(scope));
   await entry();
+  assert.equal(ownership.backgroundTicket('project', 'texture-map')(), true, 'error/cancel releases foreground ownership');
   assert.equal(locks.size, 0); assert.equal(finished, 1); assert.equal(progress, undefined);
   assert.equal(scope.texturePipelineAbortControllerRef.current, undefined);
   if (cancel) {

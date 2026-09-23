@@ -6,7 +6,18 @@ FROM ${NODE_IMAGE} AS deps
 WORKDIR /repo
 RUN apt-get update && apt-get install -y --no-install-recommends openssl ca-certificates \
     && rm -rf /var/lib/apt/lists/*
-RUN corepack enable && corepack prepare pnpm@9.15.4 --activate
+RUN corepack enable \
+    && prepare_attempt=1 \
+    && until corepack prepare pnpm@9.15.4 --activate; do \
+      if [ "$prepare_attempt" -ge 3 ]; then \
+        echo "corepack prepare failed after ${prepare_attempt} attempts."; \
+        exit 1; \
+      fi; \
+      retry_delay=$((prepare_attempt * 5)); \
+      echo "corepack prepare attempt ${prepare_attempt} failed; retrying in ${retry_delay}s."; \
+      sleep "$retry_delay"; \
+      prepare_attempt=$((prepare_attempt + 1)); \
+    done
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY apps/server/package.json apps/server/package.json
 COPY apps/web/package.json apps/web/package.json
@@ -14,7 +25,17 @@ COPY packages/contracts/package.json packages/contracts/package.json
 COPY packages/core/package.json packages/core/package.json
 COPY packages/shared/package.json packages/shared/package.json
 COPY packages/connector-protocol/package.json packages/connector-protocol/package.json
-RUN pnpm install --frozen-lockfile
+RUN install_attempt=1 \
+    && until pnpm install --frozen-lockfile; do \
+      if [ "$install_attempt" -ge 3 ]; then \
+        echo "pnpm install failed after ${install_attempt} attempts."; \
+        exit 1; \
+      fi; \
+      retry_delay=$((install_attempt * 5)); \
+      echo "pnpm install attempt ${install_attempt} failed; retrying in ${retry_delay}s."; \
+      sleep "$retry_delay"; \
+      install_attempt=$((install_attempt + 1)); \
+    done
 
 FROM deps AS build
 COPY . .

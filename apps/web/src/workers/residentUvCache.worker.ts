@@ -1,12 +1,15 @@
 /// <reference lib="webworker" />
 
-type Entry = { bytes: Uint8Array<ArrayBuffer>; resolution: number; maskLength: number; persistentKey?: string };
+type Entry = { bytes: Uint8Array<ArrayBuffer>; resolution: number; maskLength: number; persistentKey?: string; scope?: string };
 const entries = new Map<string, Entry>();
 let activeKey: string | undefined;
 let diskWrites = Promise.resolve<string | undefined>(undefined);
 const budget = 256 * 1024 * 1024;
+const diskEntryLimit = 4;
 let retained = 0;
 const diskCache = 'li3d-resident-uv-display-v1';
+const pointerCache = 'li3d-resident-uv-active-v1';
+const pointerRequest = () => `${self.location.origin}/__li3d_internal/resident-uv-active`;
 const diskRequest = (key: string) => `${self.location.origin}/__li3d_internal/resident-uv/${key}`;
 const digest = async (bytes: Uint8Array<ArrayBuffer>) =>
   Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)), b => b.toString(16).padStart(2, '0')).join('');
@@ -21,8 +24,18 @@ async function readDisk(key: string, miss: (reason: string) => void) {
     if (![1024, 2048, 4096, 8192].includes(resolution) ||
       (maskLength !== 0 && maskLength !== resolution ** 2) || bytes.length > budget ||
       await digest(bytes) !== response.headers.get('x-sha256')) { miss('invalid-bytes-or-metadata'); return; }
-    return { bytes, resolution, maskLength };
+    return { bytes, resolution, maskLength, persistentKey: key };
   } catch { miss('storage-unavailable'); }
+}
+async function readLatest(scope: unknown) {
+  if (typeof scope !== 'string') return;
+  try {
+    const response = await (await caches.open(pointerCache)).match(pointerRequest());
+    if (!response) return;
+    const pointer = JSON.parse(await response.text());
+    if (pointer.scope !== scope || !validDiskKey(pointer.key)) return;
+    return readDisk(pointer.key, () => undefined);
+  } catch { return undefined; }
 }
 function remember(key: string, entry: Entry) {
   const previous = entries.get(key);
@@ -41,15 +54,39 @@ async function writeDisk(key: string, entry: Entry) {
     await cache.put(diskRequest(key), new Response(entry.bytes, { headers: {
       'content-type': 'application/octet-stream', 'x-sha256': await digest(entry.bytes),
       'x-resolution': String(entry.resolution), 'x-mask-length': String(entry.maskLength),
+      'x-compressed-length': String(entry.bytes.byteLength),
     } }));
-    // Two full-resolution snapshots bound disk storage independently of the memory LRU.
+    // UV-DISPLAY-DERIVED-CACHE/1.2: project hydration can legitimately visit
+    // A/B/C resident combinations before settling. A two-entry FIFO makes the
+    // next reload miss A, then evict B, then evict C forever. Keep a tiny LRU
+    // window, bounded by both entry count and compressed bytes, and pin the
+    // actually presented state while trimming legacy entries conservatively.
     const keys = await cache.keys();
-    // UV-DISPLAY-DERIVED-CACHE/1.1: pin the actually presented snapshot. A late
-    // background write must not evict the state to which the user just returned.
     const pinned = entries.get(activeKey ?? '')?.persistentKey;
-    const removable = keys.filter(old => old.url !== diskRequest(key) && old.url !== diskRequest(pinned ?? ''));
-    for (const old of removable.slice(0, Math.max(0, keys.length - 2))) await cache.delete(old);
-    return `saved:${keys.length}`;
+    const protectedUrls = new Set([diskRequest(key), diskRequest(pinned ?? '')]);
+    const records = await Promise.all(keys.map(async request => {
+      const response = await cache.match(request);
+      const declared = Number(response?.headers.get('x-compressed-length'));
+      return {
+        request,
+        // Missing legacy metadata is charged at the full budget so migration
+        // cannot silently retain an unbounded old cache.
+        bytes: Number.isFinite(declared) && declared > 0 ? declared : budget,
+      };
+    }));
+    let diskBytes = records.reduce((total, record) => total + record.bytes, 0);
+    let diskEntries = records.length;
+    for (const record of records) {
+      if (diskEntries <= diskEntryLimit && diskBytes <= budget) break;
+      if (protectedUrls.has(record.request.url)) continue;
+      if (await cache.delete(record.request)) {
+        diskEntries--;
+        diskBytes -= record.bytes;
+      }
+    }
+    if (entry.scope) await (await caches.open(pointerCache)).put(pointerRequest(),
+      new Response(JSON.stringify({ key, scope: entry.scope })));
+    return `saved:${diskEntries}`;
   } catch (error) { return error instanceof Error ? error.name : 'storage-unavailable'; }
 }
 function persist(entry: Entry, presentedKey?: string) {
@@ -85,7 +122,8 @@ self.onmessage = async ({ data }) => {
       );
       if (bytes.byteLength <= budget) {
         const entry = { bytes, resolution: data.resolution, maskLength: mask.length,
-          persistentKey: validDiskKey(data.persistentKey) ? data.persistentKey : undefined };
+          persistentKey: validDiskKey(data.persistentKey) ? data.persistentKey : undefined,
+          scope: typeof data.scope === 'string' ? data.scope : undefined };
         remember(key, entry);
         diskWrite = await persist(entry);
       }
@@ -93,12 +131,15 @@ self.onmessage = async ({ data }) => {
     } else {
       let miss = 'memory-miss';
       const existing = entries.get(key);
-      const entry: Entry | undefined = existing ?? (validDiskKey(data.persistentKey) ? await readDisk(data.persistentKey, reason => { miss = reason; }) : undefined);
+      const latest = type === 'restore-latest';
+      const entry: Entry | undefined = existing ?? (latest ? await readLatest(data.scope) :
+        validDiskKey(data.persistentKey) ? await readDisk(data.persistentKey, reason => { miss = reason; }) : undefined);
       if (!entry) {
         self.postMessage({ id, miss });
         return;
       }
       if (!existing && validDiskKey(data.persistentKey)) entry.persistentKey = data.persistentKey;
+      if (typeof data.scope === 'string') entry.scope = data.scope;
       const source = new ReadableStream<BufferSource>({
         start(controller) {
           controller.enqueue(entry.bytes);
@@ -110,8 +151,9 @@ self.onmessage = async ({ data }) => {
       ).arrayBuffer();
       if (output.byteLength !== entry.resolution ** 2 * 4 + entry.maskLength)
         throw new Error('Invalid cached UV length');
-      remember(key, entry);
-      self.postMessage({ id, output, resolution: entry.resolution, maskLength: entry.maskLength, keys: [...entries.keys()] }, [
+      if (!latest) remember(key, entry);
+      self.postMessage({ id, output, resolution: entry.resolution, maskLength: entry.maskLength,
+        persistentKey: entry.persistentKey, keys: [...entries.keys()] }, [
         output,
       ]);
     }

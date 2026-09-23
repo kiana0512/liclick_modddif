@@ -1,6 +1,6 @@
 import { OrthographicCamera, PerspectiveCamera } from '@react-three/drei';
 import { useFrame, useThree } from '@react-three/fiber';
-import { useEffect, useRef } from 'react';
+import { useEffect, useLayoutEffect, useRef } from 'react';
 import * as THREE from 'three';
 import { applySerializedCamera } from '@/engine/projection/ProjectionCamera';
 import { fitCameraToBoundingBox } from '@/engine/scene/fitCameraToObject';
@@ -13,32 +13,25 @@ import {
   isStrictModelAppend,
 } from './cameraFramingPolicy';
 import { BlenderOrbitControls } from './BlenderOrbitControls';
+import { switchCameraProjection } from './switchCameraProjection';
 import {
   markViewportInteractionActivity,
   markViewportInteractionEnd,
   markViewportInteractionStart,
-} from './viewportInteractionState';
+} from './input';
 
 function getCombinedBoundingBox(objects: THREE.Object3D[]): ModelBoundingBox | undefined {
   const box = new THREE.Box3();
-  let hasObject = false;
-  objects.forEach((object) => {
+  for (const object of objects) {
     object.updateMatrixWorld(true);
-    const objectBox = new THREE.Box3().setFromObject(object);
-    if (objectBox.isEmpty()) return;
-    box.union(objectBox);
-    hasObject = true;
-  });
-  if (!hasObject) return undefined;
-  const center = new THREE.Vector3();
-  const size = new THREE.Vector3();
-  box.getCenter(center);
-  box.getSize(size);
+    box.expandByObject(object);
+  }
+  if (box.isEmpty()) return undefined;
   return {
     min: tupleFromVector(box.min),
     max: tupleFromVector(box.max),
-    center: tupleFromVector(center),
-    size: tupleFromVector(size),
+    center: tupleFromVector(box.getCenter(new THREE.Vector3())),
+    size: tupleFromVector(box.getSize(new THREE.Vector3())),
   };
 }
 
@@ -52,22 +45,30 @@ export function CameraController() {
   const setViewportRuntime = useSceneStore((state) => state.setViewportRuntime);
   const workspaceMode = useWorkspaceLayoutStore((state) => state.mode);
   const controlsRef = useRef<BlenderOrbitControls | null>(null);
+  const appliedRestoreRef = useRef<typeof restoreCameraRequest>();
   const orbitTargetKeyRef = useRef<string>();
   const importedModelIdsRef = useRef<Set<string>>(new Set());
   const workspaceModeRef = useRef(workspaceMode);
-  const { gl, scene, camera, size } = useThree();
+  const { gl, scene, camera } = useThree();
 
   useFrame((_, deltaSeconds) => {
     controlsRef.current?.updateWheelTransition(deltaSeconds);
   });
 
-  useEffect(() => {
+  // Drei updates the orthographic frustum in its child layout effect, including
+  // resize, before this parent hands over the current view.
+  useLayoutEffect(() => {
     if (!(camera instanceof THREE.PerspectiveCamera || camera instanceof THREE.OrthographicCamera)) return;
     const controls = new BlenderOrbitControls(
       camera,
       gl.domElement,
       markViewportInteractionActivity,
     );
+    const previous = controlsRef.current;
+    if (previous) {
+      controls.target.copy(previous.target);
+      switchCameraProjection(previous.camera, camera, controls.target);
+    }
     const canvas = gl.domElement;
     let pointerActive = false;
     const handlePointerDown = () => {
@@ -83,50 +84,27 @@ export function CameraController() {
       pointerActive = false;
       markViewportInteractionEnd();
     };
-    canvas.addEventListener('pointerdown', handlePointerDown, { passive: true });
-    canvas.addEventListener('pointermove', handlePointerMove, { passive: true });
-    window.addEventListener('pointerup', handlePointerUp, { passive: true });
-    window.addEventListener('pointercancel', handlePointerUp, { passive: true });
+    const listeners = [
+      [canvas, 'pointerdown', handlePointerDown],
+      [canvas, 'pointermove', handlePointerMove],
+      [window, 'pointerup', handlePointerUp],
+      [window, 'pointercancel', handlePointerUp],
+    ] as const;
+    listeners.forEach(([element, type, listener]) => element.addEventListener(type, listener, { passive: true }));
     controlsRef.current = controls;
-    orbitTargetKeyRef.current = undefined;
-    importedModelIdsRef.current = new Set();
+    setViewportRuntime({ gl, scene, camera, controls: {
+      target: controls.target,
+      update: controls.update,
+      setEnabled: (enabled) => { controls.enabled = enabled; },
+      subscribeChange: (listener) => controls.subscribeChange(listener),
+    } });
     return () => {
       controls.dispose();
       if (pointerActive) markViewportInteractionEnd();
-      canvas.removeEventListener('pointerdown', handlePointerDown);
-      canvas.removeEventListener('pointermove', handlePointerMove);
-      window.removeEventListener('pointerup', handlePointerUp);
-      window.removeEventListener('pointercancel', handlePointerUp);
-      if (controlsRef.current === controls) controlsRef.current = null;
+      listeners.forEach(([element, type, listener]) => element.removeEventListener(type, listener));
+      // Retain the disposed control's final camera/target until its replacement
+      // inherits them. dispose() has already removed all input/frame listeners.
     };
-  }, [camera, gl.domElement]);
-
-  useEffect(() => {
-    if (!(camera instanceof THREE.OrthographicCamera)) return;
-    camera.left = size.width / -2;
-    camera.right = size.width / 2;
-    camera.top = size.height / 2;
-    camera.bottom = size.height / -2;
-    camera.updateProjectionMatrix();
-  }, [camera, size.height, size.width]);
-
-  useEffect(() => {
-    const activeControls = controlsRef.current;
-    setViewportRuntime({
-      gl,
-      scene,
-      camera,
-      controls: activeControls
-        ? {
-            target: activeControls.target,
-            update: () => activeControls.update(),
-            setEnabled: (enabled) => {
-              activeControls.enabled = enabled;
-            },
-            subscribeChange: (listener) => activeControls.subscribeChange(listener),
-          }
-        : undefined,
-    });
   }, [camera, gl, scene, setViewportRuntime]);
 
   useEffect(() => {
@@ -156,7 +134,7 @@ export function CameraController() {
         ? importedModels.find((model) => model.objectId === selectedObjectId)
         : importedModel) ?? importedModels[0];
     const targetModels = isSceneWorkspace ? importedModels : [selectedModel];
-    const targetKey = `${camera.uuid}:${workspaceMode}:${targetModels
+    const targetKey = `${workspaceMode}:${targetModels
       .map((model) => model.objectId)
       .join('|')}`;
     // Switching into texture mode is the deliberate focus action: the selected
@@ -180,21 +158,8 @@ export function CameraController() {
     const boundingBox = getCombinedBoundingBox(targetModels.map((model) => model.group));
     if (!boundingBox) return;
     orbitTargetKeyRef.current = targetKey;
-    fitCameraToBoundingBox(
-      {
-        gl,
-        scene,
-        camera,
-        controls: {
-          target: controls.target,
-          update: controls.update,
-          setEnabled: (enabled) => {
-            controls.enabled = enabled;
-          },
-        },
-      },
-      boundingBox,
-    );
+    // The layout effect has already published this camera's controls.
+    fitCameraToBoundingBox(useSceneStore.getState().viewport!, boundingBox);
   }, [
     camera,
     gl,
@@ -207,24 +172,24 @@ export function CameraController() {
   ]);
 
   useEffect(() => {
-    if (!restoreCameraRequest) return;
+    if (!restoreCameraRequest || appliedRestoreRef.current === restoreCameraRequest) return;
+    // A restore can arrive with a projection-mode change. Wait for its camera,
+    // then consume it once so later manual toggles cannot replay the old view.
+    const cameraMode = camera instanceof THREE.OrthographicCamera ? 'orthographic' : 'perspective';
+    if (cameraMode !== restoreCameraRequest.camera.type) return;
+    appliedRestoreRef.current = restoreCameraRequest;
     applySerializedCamera(camera, restoreCameraRequest.camera);
     // Serialized captures do not include camera.up. Reset it before controls
     // rebuild the look-at quaternion so a previous pole crossing cannot leak a
     // rolled orbit basis into the restored view.
     camera.up.set(0, 1, 0);
     controlsRef.current?.target.fromArray(restoreCameraRequest.camera.target);
-    orbitTargetKeyRef.current = undefined;
     controlsRef.current?.update();
   }, [camera, restoreCameraRequest]);
 
-  return (
-    <>
-      {projectionMode === 'perspective' ? (
-        <PerspectiveCamera makeDefault position={[3.2, 2.4, 4]} fov={45} />
-      ) : (
-        <OrthographicCamera makeDefault position={[3.2, 2.4, 4]} zoom={90} />
-      )}
-    </>
+  return projectionMode === 'perspective' ? (
+    <PerspectiveCamera makeDefault position={[3.2, 2.4, 4]} fov={45} />
+  ) : (
+    <OrthographicCamera makeDefault position={[3.2, 2.4, 4]} zoom={90} />
   );
 }

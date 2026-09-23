@@ -288,7 +288,7 @@ const candidateFragmentShader = `
     texel.rgb = applyAdjustments(texel.rgb);
     float sourceAlpha = mix(texel.a, 1.0, ignoreSourceAlpha) * maskAlpha;
     if (sourceAlpha < 0.01) discard;
-    vec3 viewDirection = normalize(projectorPosition - captureWorldPosition.xyz);
+    vec3 viewDirection = captureWorldDirection(captureWorldPosition.xyz, projectorPosition, projectorMatrix, projectorViewMatrix);
     float ndv = dot(captureWorldNormal, viewDirection);
     if (useDepthCheck < 0.5 && ndv < -0.35) discard;
     float visibilityBackedNdv = mix(ndv, abs(ndv), useDepthCheck);
@@ -405,7 +405,7 @@ const candidateFragmentShader = `
       supportedVisibilityCoverage,
       grazingConfidence
     );
-    float projectionFacingFactor = abs(dot(captureViewVertexNormal, normalize(-captureViewPosition)));
+    float projectionFacingFactor = abs(dot(captureViewVertexNormal, captureViewDirection(captureViewPosition, projectorMatrix)));
     float lockedFacingCoverage = smoothstep(
       ${SURFACE_LOCKED_FACING_START.toFixed(3)},
       ${SURFACE_LOCKED_FACING_END.toFixed(3)},
@@ -424,7 +424,7 @@ const candidateFragmentShader = `
     angleCoverage = mix(angleCoverage, lockedFacingCoverage, surfaceLockedVisibility);
     float depthWeight = mix(0.7, 1.0, visibilityCoverage);
     float continuousCoverage = clamp(layerOpacity * sourceAlpha * reliableProjectionSupport(angleCoverage * visibilityCoverage * mix(0.35, 1.0, edgeFade(uv, 0.015))), 0.0, 1.0);
-    float lockedSurfaceFacing = abs(dot(captureViewVertexNormal, normalize(-captureViewPosition)));
+    float lockedSurfaceFacing = abs(dot(captureViewVertexNormal, captureViewDirection(captureViewPosition, projectorMatrix)));
 
 
 

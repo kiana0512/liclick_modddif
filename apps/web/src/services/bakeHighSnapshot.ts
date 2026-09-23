@@ -59,58 +59,17 @@ export function normalizeBakeWorkspaceObjectIds(project?: Project): Project | un
   };
 }
 
-function cloneTuple(value: [number, number, number]): [number, number, number] {
-  return [...value];
-}
-
 export function cloneBakeHighObject(
   object: SceneObject,
   objectId: string,
   asset: BakeAssetReference,
 ): SceneObject {
+  const clone = structuredClone(object);
   return {
-    ...object,
+    ...clone,
     id: objectId,
     name: asset.name,
     sourcePath: asset.url,
-    materialSlots: object.materialSlots.map((slot) => ({ ...slot })),
-    uvSets: [...object.uvSets],
-    boundingBox: object.boundingBox
-      ? {
-          min: cloneTuple(object.boundingBox.min),
-          max: cloneTuple(object.boundingBox.max),
-          center: cloneTuple(object.boundingBox.center),
-          size: cloneTuple(object.boundingBox.size),
-        }
-      : undefined,
-    originalBoundingBox: object.originalBoundingBox
-      ? {
-          min: cloneTuple(object.originalBoundingBox.min),
-          max: cloneTuple(object.originalBoundingBox.max),
-          center: cloneTuple(object.originalBoundingBox.center),
-          size: cloneTuple(object.originalBoundingBox.size),
-        }
-      : undefined,
-    importNormalizationTransform: object.importNormalizationTransform
-      ? {
-          ...object.importNormalizationTransform,
-          position: cloneTuple(object.importNormalizationTransform.position),
-          scale: cloneTuple(object.importNormalizationTransform.scale),
-        }
-      : undefined,
-    userTransform: object.userTransform
-      ? {
-          position: cloneTuple(object.userTransform.position),
-          rotation: cloneTuple(object.userTransform.rotation),
-          scale: cloneTuple(object.userTransform.scale),
-        }
-      : undefined,
-    warnings: object.warnings ? [...object.warnings] : undefined,
-    transform: {
-      position: cloneTuple(object.transform.position),
-      rotation: cloneTuple(object.transform.rotation),
-      scale: cloneTuple(object.transform.scale),
-    },
     visible: true,
     selected: true,
   };

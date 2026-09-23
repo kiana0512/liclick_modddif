@@ -13,7 +13,7 @@ import {
   type PreviewTextureUploadTimings,
 } from '@/engine/viewport/previewTextureCache';
 import { waitForBrowserPaint, yieldToBrowserTask } from '@/utils/browserScheduling';
-import { isViewportInteractionBusy, waitForViewportInteractionIdle } from '@/engine/viewport/viewportInteractionState';
+import { isViewportInteractionBusy, waitForViewportInteractionIdle } from '@/engine/viewport/input';
 import { uploadUvRgba } from '@/engine/bake/uvContributionTiles';
 import { markSparseAlphaBaseTexture } from './ProjectedLayerMaterial';
 import { ProjectedUvRasterCache } from '@/engine/bake/ProjectedUvRasterCache';
@@ -22,6 +22,7 @@ import { ResidentUvCompressedCache } from './ResidentUvCompressedCache';
 import { isLiveProjectedCanvasUrl, registerLiveProjectedCanvasTexture, releaseLiveProjectedCanvasTexture, getLiveProjectedCanvasState } from './liveProjectedCanvasTextureRegistry';
 import type { ResidentUvMaskBinding } from './residentUvPresentation';
 import { getEraserUvDraft } from '@/engine/paint/eraserUvDraft';
+import { getLiveSurfacePaintPreview } from '@/engine/paint/liveSurfacePaintPreviewRegistry';
 import { getRegisteredObjectUrlBlob, revokeRegisteredObjectUrl } from '@/utils/blobUrlRegistry';
 
 export type ProjectedPreviewComposite = {
@@ -60,7 +61,7 @@ export function preloadProjectedUvBakeKernel() {
   return projectedUvBakeKernelPromise;
 }
 
-/** UV-DISPLAY-BUFFER/1.5.1. The display owns derived UV buffers, never layers/assets.
+/** UV-DISPLAY-BUFFER/1.5.3. The display owns derived UV buffers, never layers/assets.
  * Use resident Top-K and gutter; seam repair is disabled by default for display.
  * Keep the front buffer until its replacement has uploaded and been bound.
  */
@@ -138,13 +139,17 @@ export class ResidentProjectedUvDisplay {
       performance.now() < this.retryAt
     )
       return;
+    const fastPreview = getLiveSurfacePaintPreview();
+    if (fastPreview?.displayArmed && fastPreview.target === 'projected-mask' &&
+      fastPreview.objectId === original.sourceModel.objectId &&
+      original.sourceLayers.some(layer => layer.id === fastPreview.layerId && layer.visible && layer.opacity > 0)) return;
     const candidate = getEraserUvDraft();
     const draft = candidate?.owner.target === 'projected-mask' &&
       candidate.owner.objectId === original.sourceModel.objectId &&
       original.sourceLayers.some(layer => layer.id === candidate.owner.layerId && layer.visible && layer.opacity > 0)
       ? candidate : undefined;
-    draft?.flush();
     const interactive = Boolean(draft && draft.revision > 0);
+    draft?.flush();
     if (interactiveOnly && !interactive) return;
     const key = interactive ? `${original.signature}:eraser:${draft!.id}:${draft!.revision}` : original.signature;
     const cached = this.cache.get(key);
@@ -166,8 +171,16 @@ export class ResidentProjectedUvDisplay {
     if (interactive) markResidentUvPending(original.sourceModel.group, original.sourceModel.objectId);
     this.active = true;
     const revision = this.revision;
-    const cancelled = () => this.disposed || revision !== this.revision ||
-      (interactive && getEraserUvDraft() !== draft);
+    const cancelled = () => {
+      const latestDraft = getEraserUvDraft();
+      const latestPreview = getLiveSurfacePaintPreview();
+      return this.disposed || revision !== this.revision ||
+        (interactive ? latestDraft !== draft : Boolean(
+          latestPreview?.displayArmed &&
+          latestPreview.target === 'projected-mask' &&
+          latestPreview.objectId === original.sourceModel.objectId &&
+          original.sourceLayers.some(layer => layer.id === latestPreview.layerId && layer.visible && layer.opacity > 0)));
+    };
     const guard = () => {
       if (cancelled()) throw new DOMException('UV display superseded.', 'AbortError');
     };
@@ -186,17 +199,30 @@ export class ResidentProjectedUvDisplay {
       let restored = interactive ? undefined : await this.compressed.restore(request.signature);
       // Preserve the original verification snapshot timing. Only the first
       // presentation waits for disk; optional cache publication waits for binding.
-      const keyPromise = !restored && request.projectId ? import('@/engine/bake/persistentMergePreparation')
-        .then(({ persistentMergeKey }) => persistentMergeKey({
+      const persistentLayers = [...request.sourceLayers, ...(request.underlayLayers ?? [])]
+        .filter(layer => layer.visible && layer.opacity > 0);
+      const persistence = !restored && request.projectId ? import('@/engine/bake/persistentMergePreparation')
+        .then(({ persistentMergeKey, persistentMergeScope }) => {
+          const input = {
           projectId: request.projectId!, objectId: request.sourceModel.objectId,
           resolution: request.resolution, group: request.sourceModel.group,
-          layers: [...request.sourceLayers, ...(request.underlayLayers ?? [])].filter(layer => layer.visible && layer.opacity > 0),
+          layers: persistentLayers,
           purpose: this.skipUvSeams ? 'resident-uv-display-4-no-seams' : 'resident-uv-display-4',
-        })).catch(() => undefined) : Promise.resolve(undefined);
+          };
+          return [persistentMergeKey(input), persistentMergeScope(input)] as const;
+        }).catch(() => [Promise.resolve(undefined), undefined] as const) :
+        Promise.resolve([Promise.resolve(undefined), undefined] as const);
+      let persistentScope: string | undefined;
       if (!interactive && !restored && !this.front) {
-        persistentKey = await keyPromise;
+        const [keyPromise, scope] = await persistence;
+        persistentScope = scope;
+        const [verifiedKey, candidate] = await Promise.all([
+          keyPromise, this.compressed.restore(request.signature, undefined, persistentScope, true),
+        ]);
+        persistentKey = verifiedKey;
         guard();
-        restored = await this.compressed.restore(request.signature, persistentKey);
+        restored = persistentKey && candidate?.persistentKey === persistentKey ? candidate :
+          await this.compressed.restore(request.signature, persistentKey, persistentScope);
       }
       guard();
       stages.cacheLookupMs = performance.now() - startedAt;
@@ -264,7 +290,7 @@ export class ResidentProjectedUvDisplay {
       if ('rawComposite' in result && result.rawComposite) this.rawComposite = result.rawComposite;
       // Empty is the canonical all-zero mask for ordinary BaseColor stacks.
       // Avoid both a 4K main-thread scan and a needless R8 upload in that case.
-      const mask = result.renderedColorMask?.length ? result.renderedColorMask : undefined;
+      let mask = result.renderedColorMask?.length ? result.renderedColorMask : undefined;
       let hasRenderedColor = false;
       if (mask) {
         let sliceStarted = performance.now();
@@ -290,25 +316,18 @@ export class ResidentProjectedUvDisplay {
         for (const layer of request.underlayLayers) {
           guard();
           const rgba = result.imageData.data;
-          // Preserve rendered-color attribution when albedo underneath adds coverage.
-          const alpha = mask && hasRenderedColor ? new Uint8Array(mask.length) : undefined;
-          if (alpha) for (let start = 0; start < alpha.length; start += 262144) {
-            for (let i = start; i < Math.min(start + 262144, alpha.length); i++) alpha[i] = rgba[i * 4 + 3];
-            await yieldToBrowserTask(); guard();
-          }
           const combined = await compositeRgbaUrlUnderWithWebGpu(rgba, layer.imageUrl,
             request.resolution, request.resolution, layer.opacity, abort.signal, false,
-            JSON.stringify([layer.id, layer.contentRevision ?? 0]));
+            JSON.stringify([layer.id, layer.contentRevision ?? 0]),
+            mask && hasRenderedColor ? mask : undefined);
           guard();
           result.imageData = new ImageData(combined.data, request.resolution, request.resolution);
-          if (alpha && mask) for (let start = 0; start < alpha.length; start += 262144) {
-            for (let i = start; i < Math.min(start + 262144, alpha.length); i++) {
-              const coverage = combined.data[i * 4 + 3];
-              mask[i] = coverage ? Math.round(mask[i] * alpha[i] / coverage) : 0;
-            }
-            await yieldToBrowserTask(); guard();
-          }
+          mask = combined.renderedColorMask ?? mask;
         }
+        // The Worker transfer detaches the previous mask buffer. Keep the bake
+        // result pointed at the returned owner so the compressed cache stores
+        // the same attribution bytes that are published to the GPU.
+        if (mask) result.renderedColorMask = mask;
       }
       stages.underlayCompositeMs = performance.now() - underlayStartedAt;
       const uploadStartedAt = performance.now();
@@ -416,11 +435,12 @@ export class ResidentProjectedUvDisplay {
       );
       if (!interactive && !restored) {
         this.persistAfterPresentation = { texture: colorTexture, run: () => {
-          void yieldToBrowserTask().then(() => {
-            if (cancelled()) return undefined;
-            return persistentKey ?? keyPromise;
-          }).then(key => {
-            if (!cancelled()) this.compressed.offer(request.signature, result.imageData!, result.renderedColorMask, key);
+          void yieldToBrowserTask().then(async () => {
+            if (cancelled()) return;
+            const [key, scope] = await persistence;
+            return [persistentKey ?? await key, persistentScope ?? scope] as const;
+          }).then(value => {
+            if (value && !cancelled()) this.compressed.offer(request.signature, result.imageData!, result.renderedColorMask, ...value);
           }).catch(() => undefined);
         } };
       }

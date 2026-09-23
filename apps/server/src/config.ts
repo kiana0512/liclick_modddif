@@ -70,7 +70,7 @@ const modelviewInpaintCaPath = path.resolve(
 const modelviewInpaintApiKey =
   process.env.LICLICK_MODELVIEW_INPAINT_API_KEY?.trim() ?? '';
 const modelviewInpaintTimeoutMs = Number(
-  process.env.LICLICK_MODELVIEW_INPAINT_TIMEOUT_MS ?? 1_900_000,
+  process.env.LICLICK_MODELVIEW_INPAINT_TIMEOUT_MS ?? 2_700_000,
 );
 const modelviewSingleViewUrl =
   process.env.LICLICK_MODELVIEW_SINGLE_VIEW_URL?.trim() ||
@@ -87,7 +87,7 @@ const modelviewSingleViewCaPath = path.resolve(
 const modelviewSingleViewApiKey =
   process.env.LICLICK_MODELVIEW_SINGLE_VIEW_API_KEY?.trim() || modelviewInpaintApiKey;
 const modelviewSingleViewTimeoutMs = Number(
-  process.env.LICLICK_MODELVIEW_SINGLE_VIEW_TIMEOUT_MS ?? 2_600_000,
+  process.env.LICLICK_MODELVIEW_SINGLE_VIEW_TIMEOUT_MS ?? 2_700_000,
 );
 const modelviewSingleViewInpaintUrl =
   process.env.LICLICK_MODELVIEW_SINGLE_VIEW_INPAINT_URL?.trim() ||
@@ -106,7 +106,7 @@ const modelviewSingleViewInpaintApiKey =
   process.env.LICLICK_MODELVIEW_SINGLE_VIEW_INPAINT_API_KEY?.trim() ||
   modelviewSingleViewApiKey;
 const modelviewSingleViewInpaintTimeoutMs = Number(
-  process.env.LICLICK_MODELVIEW_SINGLE_VIEW_INPAINT_TIMEOUT_MS ?? 1_900_000,
+  process.env.LICLICK_MODELVIEW_SINGLE_VIEW_INPAINT_TIMEOUT_MS ?? 2_700_000,
 );
 const qwen3VlPlusBaseUrl = serverHttpUrl(
   process.env.QWEN3_VL_PLUS_API_BASE_URL?.trim() || 'https://llm-proxy.lilith.com/v1',

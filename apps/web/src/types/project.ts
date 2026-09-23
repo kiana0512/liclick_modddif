@@ -33,6 +33,8 @@ export type ReferenceImage = {
   referenceRole?: 'single-view' | 'multi-view';
   derivedFromReferenceId?: string;
   referenceSource?: 'uploaded' | 'generated';
+  /** Result of the shared color-preserving reference pipeline; avoid processing twice. */
+  lightingProcessed?: 'reference-delight-v1';
   generationId?: string;
 };
 
@@ -47,6 +49,8 @@ export type ProjectSettings = {
     /** Legacy setting retained for old projects; new GPT batches always use accelerated groups. */
     textureMultiviewMode?: 'stable' | 'fast';
     localRepaintProvider?: 'modelview' | 'gpt';
+    /** Opt-in ModelView prompt override; absent/false uses the remote workflow prompt. */
+    localRepaintSmartPolish?: boolean;
     /** Missing/false uses only the composite and geometry normal in GPT repaint. */
     gptRepaintUseMaterialReference?: boolean;
     model: string;

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { buildContentAwareRepairMask } from '../buildRepairMask.ts';
+import { createVisibleSurfaceCompletionPolicy } from '../visibleSurfaceCompletionPolicy.ts';
 
 function createFixture(width, height) {
   const pixelCount = width * height;
@@ -150,6 +151,29 @@ test('defaults reject an isolated texel and an already-aborted signal stays abor
     buildContentAwareRepairMask({ ...fixture, signal: controller.signal }),
     (error) => error instanceof Error && error.name === 'AbortError',
   );
+});
+
+test('production visible-surface policy retains isolated hatch texels but never selects geometry outside the UV core', async () => {
+  const fixture = createFixture(4096, 1);
+  setAlpha(fixture, 1024, 0, 0);
+  setAlpha(fixture, 3072, 0, 0);
+  fixture.coreMask[indexAt(fixture, 3072, 0)] = 0;
+  fixture.topologyMask[indexAt(fixture, 3072, 0)] = 0;
+  fixture.regionIds[indexAt(fixture, 3072, 0)] = 0;
+
+  const policy = createVisibleSurfaceCompletionPolicy(4096, 4096);
+  const result = await buildContentAwareRepairMask({
+    ...fixture,
+    ...policy.gapMask,
+    weakGrowPixels: 0,
+  });
+
+  assert.equal(policy.gapMask.minimumComponentPixels, 1);
+  assert.equal(policy.gapMask.minimumComponentSpan, 0);
+  assertSelected(result, fixture, [[1024, 0]]);
+  assertSelected(result, fixture, [[3072, 0]], 0);
+  assert.equal(result.stats.hardPixels, 1);
+  assert.equal(result.stats.noiseRejectedPixels, 0);
 });
 
 test('retains a large low-confidence projection region when the scan threshold is raised', async () => {

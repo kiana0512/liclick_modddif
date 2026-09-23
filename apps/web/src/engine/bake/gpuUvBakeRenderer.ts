@@ -16,7 +16,7 @@ import type { Layer } from '@/types/layer';
 import {
   isViewportInteractionBusy,
   waitForViewportInteractionIdle as waitForSharedViewportInteractionIdle,
-} from '@/engine/viewport/viewportInteractionState';
+} from '@/engine/viewport/input';
 import { waitForBrowserPaint } from '@/utils/browserScheduling';
 import {
   residentPreviewTextureCache,
@@ -393,7 +393,7 @@ const fragmentShader = `
     imageUv.y = 1.0 - imageUv.y;
     vec2 projectedSampleUv = vec2(imageUv.x, mix(imageUv.y, 1.0 - imageUv.y, projectedImageUvFlipY));
 
-    vec3 projectorViewDir = normalize(projectorPosition - captureWorldPosition.xyz);
+    vec3 projectorViewDir = captureWorldDirection(captureWorldPosition.xyz, projectorPosition, projectorMatrix, projectorViewMatrix);
     float ndv = dot(captureWorldNormal, projectorViewDir);
     float frontFacing = step(${NDV_HARD_REJECT.toFixed(2)}, ndv);
     if (useDepthCheck < 0.5 && enableBackfaceCulling > 0.5 && frontFacing < 0.5) discard;
@@ -430,7 +430,7 @@ const fragmentShader = `
     );
     float faceOnFactor = abs(captureViewVertexNormal.z);
     float projectionFacingFactor = abs(
-      dot(captureViewVertexNormal, normalize(-captureViewPosition))
+      dot(captureViewVertexNormal, captureViewDirection(captureViewPosition, projectorMatrix))
     );
     if (projectionFacingFactor < minimumProjectionFacing) discard;
     float useProjectionFacingGuard = step(0.001, minimumProjectionFacing);

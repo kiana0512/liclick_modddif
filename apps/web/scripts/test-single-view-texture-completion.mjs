@@ -1,7 +1,9 @@
+/* global AbortController */
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import ts from 'typescript';
+import { projectionGapMaskFromAlpha } from '../src/engine/projection/projectionCoverageContract.mjs';
 
 const root = path.resolve(import.meta.dirname, '..');
 const [panel, textureMapPrompts, workerClient, worker] = await Promise.all([
@@ -46,7 +48,7 @@ assert.match(
 );
 assert.match(
   panel,
-  /usesRemoteSingleViewInpaint = true[\s\S]*?generateSingleViewInpaint\([\s\S]*?mask:\s*\{[\s\S]*?completion-mask\.png[\s\S]*?completionMaskDataUrl/,
+  /usesRemoteSingleViewInpaint = singleViewCompletion\.hasVisibleTexture[\s\S]*?generateSingleViewInpaint\([\s\S]*?mask:\s*\{[\s\S]*?completion-mask\.png[\s\S]*?completionMaskDataUrl/,
   'remote partial coverage must route the fused image and RGB gap mask to single-view inpaint',
 );
 assert.match(
@@ -57,15 +59,64 @@ assert.match(
 assert.match(
   panel,
   /return modelviewClient\.generateSingleView\([\s\S]*?white-model\.png/,
-  'remote all-clay views must retain the original two-image generation path',
+  'remote all-clay views must retain the full-generation endpoint and original white image',
 );
 const panelAst = ts.createSourceFile('GeneratePanel.tsx', panel, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
 let submitView;
+let handleReference;
+let submitRemoteView;
 function findSubmitView(node) {
   if (ts.isFunctionDeclaration(node) && node.name?.text === 'submitGptTextureView') submitView = node;
+  if (ts.isFunctionDeclaration(node) && node.name?.text === 'handleGeneratePairedMultiview') handleReference = node;
+  if (ts.isArrowFunction(node) && node.parameters[0]?.getText(panelAst).includes('capture, generationId, modelViewReference, pendingGeneration')) submitRemoteView = node;
   ts.forEachChild(node, findSubmitView);
 }
 findSubmitView(panelAst);
+assert.ok(submitRemoteView, 'The actual per-view submit callback must exist');
+const remoteSubmitJs = ts.transpileModule(`const submit = ${submitRemoteView.getText(panelAst)};`, {
+  compilerOptions: { target: ts.ScriptTarget.ES2022 },
+}).outputText;
+for (const inpaint of [false, true]) for (const normalUrl of ['same-camera-normal', undefined]) {
+  const calls = [];
+  const signal = new AbortController().signal;
+  const scope = {
+    signal, throwIfTexturePipelineCancelled() {}, usesRemoteSingleView: true,
+    currentSingleViewEffectUrl: 'frozen-current-effect-with-coverage',
+    usesRemoteSingleViewInpaint: inpaint, currentProject: { id: 'project' }, object: { id: 'object' },
+    materialReference: { id: 'reference', url: 'reference-bytes' }, referenceGroupId: () => 'group',
+    singleViewCompletion: { completionMaskUrl: 'unchanged-expanded-mask' }, urlToDataUrl: async url => url,
+    modelviewClient: { ...Object.fromEntries(['generateSingleView', 'generateSingleViewInpaint'].map(name =>
+      [name, async (input, options) => { calls.push({ name, input, options }); return 'result'; }])),
+      prepareResultBlend: async (current, capture, blendSignal) => {
+        assert.equal(blendSignal, signal);
+        return { version: 1, currentImage: { dataUrl: current }, objectMask: { dataUrl: capture.maskUrl }, camera: capture.camera };
+      },
+    },
+  };
+  const submit = new Function(...Object.keys(scope), `${remoteSubmitJs}; return submit;`)(...Object.values(scope));
+  const camera = { projection: 'orthographic', projectionMatrix: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, -1, 0, 0, 0, 0, 1] };
+  const input = { capture: { id: 'capture', colorUrl: 'unchanged-whitefill', normalUrl, maskUrl: 'frozen-object-mask', camera },
+    generationId: 'generation', modelViewReference: { id: 'view' } };
+  if (!normalUrl) {
+    await assert.rejects(submit(input), /法线图不可用/);
+    assert.equal(calls.length, 0);
+    continue;
+  }
+  assert.equal(await submit(input), 'result');
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].name, inpaint ? 'generateSingleViewInpaint' : 'generateSingleView');
+  assert.deepEqual(calls[0].input.normalImage, { path: 'capture-normal.png', dataUrl: normalUrl });
+  assert.equal(calls[0].input.image.dataUrl, 'unchanged-whitefill');
+  assert.equal(calls[0].input.mask?.dataUrl, inpaint ? 'unchanged-expanded-mask' : 'frozen-object-mask');
+  if (inpaint) {
+    assert.equal(calls[0].input.resultBlend.currentImage.dataUrl, 'frozen-current-effect-with-coverage');
+    assert.equal(calls[0].input.resultBlend.objectMask.dataUrl, 'frozen-object-mask');
+    assert.deepEqual(calls[0].input.resultBlend.camera, camera);
+    assert.equal(calls[0].input.resultBlend.version, 1);
+  } else assert.equal(calls[0].input.resultBlend, undefined);
+  assert.equal(calls[0].input.prompt, undefined);
+  assert.equal(calls[0].options.signal, signal);
+}
 assert.ok(submitView, 'The shared GPT submission helper must exist.');
 const submitJs = ts.transpileModule(submitView.getText(panelAst), {
   compilerOptions: { target: ts.ScriptTarget.ES2022 },
@@ -92,7 +143,7 @@ assert.equal(request.resolution, '4K', 'The project/UV resolution is not downgra
 assert.equal(request.aspectRatio, '1:1');
 assert.equal(request.quality, 'max');
 assert.equal(request.model, 'gpt-image-2.5-flare');
-assert.match(panel, /return submitGptTextureView\(\s*generationId,\s*pendingGeneration.prompt,\s*modelViewReference,\s*materialReference,\s*capture/);
+assert.match(panel, /return submitGptTextureViewWithSilhouetteRetry\(\s*pendingGeneration,\s*modelViewReference,\s*materialReference,\s*capture,\s*signal/);
 assert.match(textureMapPrompts, /只在图一指定的待补全区域绘制材质，不重新生成物体/);
 assert.match(
   textureMapPrompts,
@@ -124,14 +175,45 @@ assert.doesNotMatch(
   'the old whole-surface fallback prompt must not remain',
 );
 
+assert.ok(handleReference, 'The reference action must exist.');
+const handleReferenceJs = ts.transpileModule(handleReference.getText(panelAst), {
+  compilerOptions: { target: ts.ScriptTarget.ES2022 },
+}).outputText;
+for (const lighting of [false, true]) {
+  for (const outcome of ['success', 'failure', 'cancelled']) {
+    const progress = [], active = [], toasts = [], inputs = [];
+    const locks = new Set();
+    const reference = { id: lighting ? 'multi' : 'single' };
+    const updateProgress = () => {};
+    const scope = {
+      isMultiviewReference: () => lighting, workflowSubmissionLocked: false,
+      submitLocksRef: { current: locks }, notifyWorkflowOperationLocked: () => assert.fail('Unexpected lock'),
+      setSubmissionActive: value => active.push(value),
+      setTexturePipelineProgress: value => progress.push(value), setGenerateNotice: () => {},
+      updateTexturePipelineProgress: updateProgress,
+      generatePairedMultiviewReference: async (input, onProgress) => {
+        inputs.push(input);
+        assert.equal(onProgress, updateProgress);
+        assert.equal(locks.has('single'), true);
+        if (outcome !== 'success') throw new Error(outcome);
+      },
+      waitForBrowserPaint: async () => {}, pushToast: toast => toasts.push(toast),
+      isGenerationCancellation: error => error.message === 'cancelled',
+      getUserFacingGenerationError: error => error.message, multiviewGenerationFailureFallback: 'failed',
+    };
+    const handle = new Function(...Object.keys(scope), `${handleReferenceJs}; return handleGeneratePairedMultiview;`)(...Object.values(scope));
+    await handle(reference);
+    assert.deepEqual(inputs, [reference]);
+    assert.deepEqual(progress, [{ active: true, progress: 4,
+      label: lighting ? '准备光照处理' : '准备多视图参考' }, undefined]);
+    assert.deepEqual(active, [true, false]);
+    assert.equal(locks.size, 0, 'Success, failure and cancellation must all clear the shared CTA lock');
+    assert.deepEqual(toasts.map(toast => toast.tone), outcome === 'cancelled' ? [] : [outcome === 'success' ? 'success' : 'error']);
+  }
+}
 assert.match(
   panel,
-  /async function handleGeneratePairedMultiview[\s\S]*?setTexturePipelineProgress\(\{ active: true, progress: 4, label: '准备多视图参考' \}\)[\s\S]*?generatePairedMultiviewReference\(singleReference, updateTexturePipelineProgress\)[\s\S]*?setTexturePipelineProgress\(undefined\)/,
-  'standalone single-view reference completion must drive and clear the shared CTA progress',
-);
-assert.match(
-  panel,
-  /onProgress\?\.\(16, '提交多视图参考'\)[\s\S]*?onProgress\?\.\(32, '生成多视图参考'\)[\s\S]*?onProgress\?\.\(88, '保存多视图参考'\)[\s\S]*?onProgress\?\.\(100, '多视图参考已就绪'\)/,
+  /onProgress\?\.\(16, '提交多视图参考'\)[\s\S]*?onProgress\?\.\(32, lighting \? '光照处理中' : '生成多视图参考'\)[\s\S]*?onProgress\?\.\(88, '保存多视图参考'\)[\s\S]*?onProgress\?\.\(100, '多视图参考已就绪'\)/,
   'paired multiview generation must publish monotonic submission, generation and persistence phases',
 );
 assert.match(
@@ -143,7 +225,7 @@ assert.match(
 assert.match(worker, /projectionGapMaskFromAlpha\(currentPixels, targetMask\)/);
 assert.doesNotMatch(worker, /inferProjectionGapMask/, 'new captures must not infer coverage from artwork RGB');
 assert.match(worker, /texturedPixelCount >= Math\.max\(64, Math\.round\(objectPixelCount \* 0\.0005\)\)/);
-assert.match(worker, /compositeEdgeRadius = isSingleViewCompletion \? 0/);
+assert.match(worker, /compositeEdgeRadius = 0/);
 for (const policy of [
   /Math\.round\(24 \* scale\)/,
   /Math\.round\(64 \* scale\)/,
@@ -157,7 +239,7 @@ assert.match(worker, /const submittedMask = boxBlur\([\s\S]*?dilated/);
 assert.match(worker, /if \(compositeCore\[index\] > 0\) submittedMask\[index\] = 255/);
 assert.match(worker, /pixels\[offset\] = value[\s\S]*?pixels\[offset \+ 3\] = 255/);
 assert.match(worker, /submittedMaskBlob/);
-assert.doesNotMatch(worker, /white|gray|grey.*threshold/i, 'coverage must not use a white/grey color heuristic');
+assert.doesNotMatch(worker, /(?:white|gray|grey).*threshold/i, 'coverage must not use a white/grey color heuristic');
 
 const expansionCoreSource = `${worker.slice(
   worker.indexOf('type MaskBounds'),
@@ -241,16 +323,75 @@ for (const mode of ['local', 'single']) {
     async (url) => blobs.get(url), pending,
     () => ({ postMessage(payload, { transfer }) {
       posts.push(payload);
-      assert.deepEqual(transfer, [payload.currentEffect, payload.clayPreview, payload.inputMask]);
+      assert.deepEqual(transfer, [payload.currentEffect, payload.inputMask, ...(payload.clayPreview ? [payload.clayPreview] : [])]);
       assert.equal(payload.currentEffect.source, blobs.get('effect'));
-      assert.equal(payload.clayPreview.source, blobs.get('clay'));
+      assert.equal(payload.clayPreview?.source, mode === 'single' ? blobs.get('clay') : undefined);
       assert.equal(payload.inputMask.source, blobs.get('mask'));
       pending.get(payload.id).resolve({ id: payload.id, mode: payload.mode });
     } }),
   );
-  assert.deepEqual(await prepare({ mode, currentEffectUrl: 'effect', clayPreviewUrl: 'clay', maskUrl: 'mask' }), { id: 1, mode });
-  assert.equal(bitmaps.length, 3);
-  assert.equal(posts.length, 1, 'One complete, ordered input triplet reaches the Worker');
+  assert.deepEqual(await prepare({ mode, currentEffectUrl: 'effect', clayPreviewUrl: mode === 'single' ? 'clay' : undefined, maskUrl: 'mask' }), { id: 1, mode });
+  assert.equal(bitmaps.length, mode === 'single' ? 3 : 2);
+  assert.equal(posts.length, 1, 'One complete input reaches the Worker; ModelView no longer decodes clay');
 }
 
-console.log('Single-view texture completion and local repaint bitmap dispatch regression checks passed.');
+// Execute the production Worker: remote white input must preserve authored
+// pixels and byte-identical dilation, while the legacy GPT guide stays clay.
+class PixelCanvas {
+  constructor(width, height) { Object.assign(this, { width, height }); }
+  getContext() { return {
+    clearRect() {}, drawImage: image => { this.data = image.data; },
+    getImageData: () => ({ data: this.data, width: this.width, height: this.height }),
+    putImageData: image => { this.data = image.data; },
+  }; }
+  async convertToBlob() { return new Blob([this.data]); }
+}
+const runtime = { postMessage(value) { this.result = value; } };
+new Function('self', 'OffscreenCanvas', 'ImageData', 'projectionGapMaskFromAlpha',
+  ts.transpileModule(worker.replace(/^import[^\n]+\n/gm, '').replace(/export \{\};?/, ''),
+    { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None } }).outputText,
+)(runtime, PixelCanvas, class { constructor(data, width, height) { Object.assign(this, { data, width, height }); } }, projectionGapMaskFromAlpha);
+const width = 128, height = 128;
+const effect = new Uint8ClampedArray(width * height * 4);
+const clay = new Uint8ClampedArray(effect.length);
+const objectPixels = new Uint8ClampedArray(effect.length);
+for (let i = 0; i < width * height; i++) {
+  const x = i % width, y = Math.floor(i / width);
+  const inside = x >= 8 && x < 120 && y >= 8 && y < 120;
+  const gap = inside && x >= 45 && x < 85 && y >= 45 && y < 85;
+  effect.set([i % 173, i % 131, i % 83, gap ? 0 : 255], i * 4);
+  clay.set([123, 124, 125, 255], i * 4);
+  objectPixels.set([inside ? 255 : 0, inside ? 255 : 0, inside ? 255 : 0, 255], i * 4);
+}
+let released = 0;
+const bitmap = data => ({ data, width, height, close() { released++; } });
+async function runWhite(whiteFill, fullObject = false, pixels = effect) {
+  await runtime.onmessage({ data: { id: 42, mode: 'single', whiteFill, fullObject,
+    currentEffect: bitmap(pixels), inputMask: bitmap(objectPixels),
+    ...(whiteFill ? {} : { clayPreview: bitmap(clay) }),
+  } });
+  assert.equal(runtime.result.error, undefined);
+  return runtime.result;
+}
+const legacy = await runWhite(false);
+const remote = await runWhite(true);
+assert.equal(released, 5, 'Remote white input releases two bitmaps, legacy GPT three');
+assert.equal(remote.uncoveredPixelCount, 1600);
+assert.equal(remote.hasVisibleTexture, true);
+assert.deepEqual(await remote.submittedMaskBlob.arrayBuffer(), await legacy.submittedMaskBlob.arrayBuffer(),
+  'Remote expansion and feathering must be byte-identical to the previous completion mask');
+const output = new Uint8Array(await remote.compositeBlob.arrayBuffer());
+for (let i = 0; i < width * height; i++) {
+  const expected = !objectPixels[i * 4] ? [0, 0, 0, 255]
+    : effect[i * 4 + 3] < 255 ? [255, 255, 255, 255] : [...effect.subarray(i * 4, i * 4 + 4)];
+  assert.deepEqual([...output.subarray(i * 4, i * 4 + 4)], expected);
+}
+const allWhite = await runWhite(true, true);
+assert.equal(allWhite.hasVisibleTexture, false);
+const fullPixels = new Uint8Array(await allWhite.compositeBlob.arrayBuffer());
+for (let i = 0; i < width * height; i++) assert.deepEqual([...fullPixels.subarray(i * 4, i * 4 + 4)],
+  objectPixels[i * 4] ? [255, 255, 255, 255] : [0, 0, 0, 255]);
+const covered = await runWhite(true, false, clay);
+assert.equal(covered.uncoveredPixelCount, 0);
+assert.equal(covered.compositeBlob, undefined, 'Covered views must be skipped rather than regenerated');
+console.log('Single-view completion: remote white/black pixels, unchanged RGB expanded mask, full/partial/covered inputs and legacy GPT passed.');

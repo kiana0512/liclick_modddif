@@ -325,7 +325,7 @@ assert.match(
   'The live multiplier may be cleared only after every resident material samples the committed mask texture.',
 );
 const endLiveEraserPreviewSource = viewportCanvasInteractionSource.match(
-  /function endLiveEraserPreview\(layer: UvPaintLayer\)[\s\S]*?\n}\n\nfunction getPaintHistoryTileBounds/,
+  /function endLiveEraserPreview\(layer: UvPaintLayer, renderer\?: THREE\.WebGLRenderer\)[\s\S]*?\n}\n\nfunction getPaintHistoryTileBounds/,
 )?.[0];
 assert.ok(endLiveEraserPreviewSource, 'The projected-layer eraser preview teardown must exist.');
 assert.match(
@@ -335,7 +335,7 @@ assert.match(
 );
 assert.match(
   viewportCanvasInteractionSource,
-  /updateLayer\(layer\.layerId,[\s\S]*?promoteProjectedEraserMaskToResidentMaterial\(layer, projectedEraserCommit\.model\.group\)[\s\S]*?\.finally\(\(\) => \{[\s\S]*?pendingPaintCommits === 0 && !layer\.liveEraserPreviewActive[\s\S]*?endLiveEraserPreview\(layer\)/,
+  /updateLayer\(layer\.layerId,[\s\S]*?promoteProjectedEraserMaskToResidentMaterial\([\s\S]*?layer,[\s\S]*?projectedEraserCommit\.model\.group[\s\S]*?\.finally\(\(\) => \{[\s\S]*?pendingPaintCommits === 0 && !layer\.liveEraserPreviewActive[\s\S]*?endLiveEraserPreview\(layer, gl\)/,
   'Pointer-up must promote the full-resolution canvas and finish a deferred teardown after the last queued commit.',
 );
 assert.match(
@@ -369,13 +369,42 @@ assert.match(
 );
 assert.match(
   sceneRootSource,
-  /function applyLiveProjectedMaskBinding[\s\S]*?preview\.composition === 'replace' \? preview\.assetUrl : preview\.residentMaskUrl[\s\S]*?maskSpace: 'uv'/,
-  'The projected stack must use the prewarmed resident mask URL during the live eraser handoff.',
+  /function applyLiveProjectedMaskBinding[\s\S]*?if \(preview\.composition === 'multiply-original-mask'\) return layer;[\s\S]*?const maskUrl = preview\.assetUrl/,
+  'The transient projected eraser multiplier must remain outside the authored texture-array structure.',
+);
+const projectedTextureArraySignatureSource = sceneRootSource.slice(
+  sceneRootSource.indexOf('const projectedTextureArrayStructureSignature'),
+  sceneRootSource.indexOf('const projectedSamplerBudget'),
+);
+assert.doesNotMatch(
+  projectedTextureArraySignatureSource,
+  /liveProjectedMaskRevisionSignature/,
+  'A direct live mask sampler pixel revision must not repack the authored texture arrays.',
 );
 assert.match(
   sceneRootSource,
-  /function liveProjectedMaskRevisionSignature[\s\S]*?getLiveProjectedCanvasState\(maskUrl\)\?\.revision[\s\S]*?const projectedTextureArrayStructureSignature[\s\S]*?useProjectedTextureArrays[\s\S]*?liveProjectedMaskRevisionSignature\(layer\.maskUrl\)/,
-  'A packed projected mask must invalidate the texture array when its stable live canvas pixels change.',
+  /const useProjectedProgramWarmupTextureArrays = Boolean\([\s\S]*?gl\.capabilities\.isWebGL2[\s\S]*?projectedProgramWarmupInputs\.length > 1/,
+  'A multi-view WebGL2 stack must prepare its texture arrays before eraser activation.',
+);
+assert.match(
+  sceneRootSource,
+  /const projectedTextureArrayReadySignatureRef = useRef\(''\)[\s\S]*?projectedTextureArrayReadySignatureRef\.current === textureArrayBuildSignature[\s\S]*?projectedTextureArrayReadySignatureRef\.current = textureArrayBuildSignature/,
+  'A multi-view WebGL2 stack must prewarm once and preserve its GPU-ready signature after material transfer.',
+);
+assert.match(
+  viewportCanvasInteractionSource,
+  /liveEraserPreviewDirty: boolean[\s\S]*?!layer\.liveEraserPreviewDirty[\s\S]*?clearLiveSurfacePaintPreview\(layer\.layerId, layer\.liveResultUrl\)[\s\S]*?layer\.liveEraserPreviewDirty = true/,
+  'Neutral tool activation must switch layers synchronously while real strokes retain the persistence handoff.',
+);
+assert.match(
+  projectedLayerMaterialSource,
+  /Every array layer owns a reserved neutral keep-mask slice[\s\S]*?\? 1[\s\S]*?reserved-uv-mask:\$\{layer\.layerId\}[\s\S]*?copyTexSubImage3D/,
+  'Every projected array layer must reserve a mask slot and promote a completed stroke with an in-place GPU slice copy.',
+);
+assert.match(
+  projectedLayerMaterialSource,
+  /replaceSource[\s\S]*?mix\(baseKeep \* liveKeep, liveKeep, replaceSource\)/,
+  'Normal handoff must multiply the live keep-mask while undo/redo can atomically replace the reserved slice.',
 );
 assert.match(
   sceneRootSource,
@@ -389,7 +418,7 @@ assert.match(
 );
 assert.match(
   generatePanelSource,
-  /captureCurrentLocalRepaintView\([\s\S]*?resolution: LOCAL_REPAINT_INPUT_RESOLUTION[\s\S]*?colorMode: isGptLocalRepaint \? 'flat-target-coverage' : 'flat-target'[\s\S]*?cameraSnapshot: captureCameraSnapshot/,
+  /captureCurrentLocalRepaintView\([\s\S]*?resolution: LOCAL_REPAINT_INPUT_RESOLUTION[\s\S]*?colorMode: 'flat-target-coverage'[\s\S]*?cameraSnapshot: captureCameraSnapshot/,
   'The local-repaint current-effect input must capture frozen-camera BaseColor without PBR lighting.',
 );
 assert.match(
@@ -516,15 +545,20 @@ assert.match(
   /const activeUvMaskLayerId = useLayerStore[\s\S]*?activeLayer\.maskSpace === 'uv'/,
   'renderer subscriptions must retain the active UV-mask correctness gate',
 );
-assert.doesNotMatch(
+assert.match(
   sceneRootSource,
-  /activeLayerUsesProjectedEraser|projectedEraserArmed/,
-  'arming the projected eraser must not switch the viewport back to projected material display',
+  /const residentUvDisplayEnabled = true;[\s\S]*?const useProjectedTextureArrays = Boolean\([\s\S]*?projectedEraserArmed[\s\S]*?gl\.capabilities\.isWebGL2[\s\S]*?const exactProjectedEraserStackSafe = Boolean\([\s\S]*?projectedTextureArraySamplerBudget[\s\S]*?const canUseExactProjectedEraserStack = Boolean\([\s\S]*?projectedEraserArmed && exactProjectedEraserStackSafe[\s\S]*?residentUvDisplayEnabled && !canUseExactProjectedEraserStack[\s\S]*?const materialProjectionInputs = canUseExactProjectedEraserStack[\s\S]*?\? previewProjectionInputs[\s\S]*?: \[\]/,
+  'Idle frames must remain UV-only while an armed multi-view eraser restores the exact texture-array stack without Resident UV.',
 );
 assert.match(
   sceneRootSource,
-  /const residentUvDisplayEnabled = true;[\s\S]*?const useProjectedTextureArrays = false;[\s\S]*?const materialProjectionInputs = \[\] as typeof previewProjectionInputs;/,
-  'projected layers must be UV-generation inputs only; viewport material inputs stay UV-only',
+  /liveSurfacePaintPreview\?\.displayArmed[\s\S]*?target === 'projected-mask'[\s\S]*?objectId === importedModel\.objectId/,
+  'A retained commit handoff may keep the exact eraser stack armed only for its owning model.',
+);
+assert.match(
+  viewportCanvasInteractionSource,
+  /beginLiveEraserPreview\(layer, model\.group, false\)[\s\S]*?if \(paintTool === 'eraser'\)[\s\S]*?beginLiveEraserPreview\(layer, model\.group\)/,
+  'Neutral GPU prewarm must stay UV-only until the eraser tool explicitly owns presentation.',
 );
 assert.match(
   sceneRootSource,
@@ -605,19 +639,21 @@ assert.doesNotMatch(
 );
 assert.match(
   sceneRootSource,
-  /const authoritativeResidentUvTexture =\s*hasLowerRepaintUv\s*\? loadedUvTexture\s*:\s*authoritativeOrdinaryUvLayers\.length > 0\s*\?[\s\S]*?authoritativeExactUvTexture \?\? loadedUvTexture \?\? authoritativeProxyUvTexture[\s\S]*?: undefined/,
+  /const authoritativeResidentUvTexture =\s*authoritativeOrdinaryUvLayers\.length > 0\s*\?[\s\S]*?authoritativeExactUvTexture \?\?[\s\S]*?authoritativeOrdinaryUvKey === visibleResidentUvKey \? loadedUvTexture : undefined[\s\S]*?authoritativeProxyUvTexture[\s\S]*?: undefined/,
   'A late material publication must preserve lower repaint UVs without resurrecting hidden ordinary UVs.',
 );
 assert.match(
   sceneRootSource,
-  /const hasLowerRepaintUv = authoritativeLocalRepaintUvLayers\.some\([\s\S]*?layer\.id !== liveTopUvLayer\?\.id/,
-  'Only visible repaint rows outside the dedicated top sampler can keep the lower UV sampler enabled.',
+  /const authoritativeOrdinaryUvLayers = authoritativeUvStack\.filter\([\s\S]*?layer\.id !== authoritativeTopUvLayer\?\.id/,
+  'Every visible UV row outside the actual top sampler, including manual repaint, belongs to the lower stack.',
 );
 assert.match(
   sceneRootSource,
   /if \(isLiveProjectedCanvasUrl\(imageUrl\)\) return undefined/,
   'Borrowed UV render targets must bypass the ordinary image decode/upload/cache lifecycle.',
 );
+assert.match(sceneRootSource, /residentAllVisibleUvState\.ready\s*\? residentAllVisibleUvState\.texture/, 'Prewarm must not cache a previous composition under the next visibility key.');
+assert.match(sceneRootSource, /layer\.imageUrl && !isLiveProjectedCanvasUrl\(layer\.imageUrl\)/, 'Toggle prewarm must not decode runtime URLs as images.');
 assert.match(
   sceneRootSource,
   /visible=\{initialMaterialPresentationVisibleForGroup\}/,
@@ -739,7 +775,7 @@ const viewportCanvasSource = readFileSync(
 assert.match(
   viewportCanvasSource,
   /const rightModelEraseContact =\s*event\.pointerType === 'mouse' && event\.button === 2 && Boolean\(result\);[\s\S]*?const localRepaintEraseContact =\s*isLocalRepaintApplyMode &&[\s\S]*?rightModelEraseContact[\s\S]*?isEditingPersistedLocalRepaint && event\.button === 0/,
-  'RMB model hits, pen erasers and the selected primary eraser gesture must subtract local repaint.',
+  'After repaint RMB has exited to its settings menu, pen and primary eraser routing remains intact.',
 );
 assert.match(
   viewportCanvasSource,
@@ -753,8 +789,8 @@ assert.match(
 );
 assert.match(
   viewportCanvasSource,
-  /!canUseSurfacePaint \|\|\s*isEditingPersistedLocalRepaint[\s\S]*?beginLiveEraserPreview/,
-  'A completed local repaint must never prewarm the all-white generic projected-layer eraser mask.',
+  /!canUseSurfacePaint \|\|\s*isLocalRepaintApplyMode[\s\S]*?beginLiveEraserPreview/,
+  'A local repaint session (persisted or native GPU) must never prewarm the generic eraser.',
 );
 assert.match(
   viewportCanvasSource,
@@ -950,8 +986,8 @@ assert(
 );
 assert.match(
   repaintSourceTransparency,
-  /brush-mask-only-v1[\s\S]*?createLocalRepaintFalloffInWorker\(\{[\s\S]*?mask: allowedMaskImage[\s\S]*?width[\s\S]*?height/,
-  'Local repaint projection falloff must be derived only from the authored brush mask.',
+  /manual-brush-scope-v3[\s\S]*?createLocalRepaintFalloffInWorker\(\{[\s\S]*?mask: allowedMaskImage[\s\S]*?width[\s\S]*?height/,
+  'Manual source permission must use the new scope cache and validate the frozen source mask without clipping to it.',
 );
 assert.doesNotMatch(
   repaintSourceTransparency,
@@ -1004,8 +1040,8 @@ const repaintFalloffWorkerSource = readFileSync(
 );
 assert.match(
   repaintFalloffWorkerSource,
-  /weightTotal[\s\S]*?farthestCornerRadius[\s\S]*?fadeEndRadius[\s\S]*?transferToImageBitmap/,
-  'The worker must preserve authored brush falloff without an extra texture silhouette.',
+  /createManualRepaintFalloffPixels\(maskPixels\)[\s\S]*?transferToImageBitmap/,
+  'The worker must use bounded inward author coverage without an extra texture silhouette.',
 );
 assert.doesNotMatch(
   repaintFalloffWorkerSource,
@@ -1046,6 +1082,18 @@ try {
     };
   }
   const projection = await server.ssrLoadModule('/src/engine/projection/ProjectedLayerMaterial.ts');
+  const { getTopUvPreviewLayer } = await server.ssrLoadModule('/src/engine/projection/uvPreviewStack.ts');
+  const manual = { id: 'uuid-manual', type: 'uv', order: 0, visible: true, imageUrl: 'liclick-live-projected-canvas:uuid-manual:rgba' };
+  const lower = { ...manual, id: 'uuid-lower', order: 1 };
+  assert.equal(getTopUvPreviewLayer([manual, lower], [{ order: 2 }]), manual);
+  assert.equal(getTopUvPreviewLayer([lower], [{ order: 2 }]), lower);
+  assert.equal(getTopUvPreviewLayer([], [{ order: 2 }]), undefined);
+  assert.equal(getTopUvPreviewLayer([lower], [{ order: 0 }]), undefined);
+  assert.equal(getTopUvPreviewLayer([lower], [{ order: 0, visible: false }]), lower);
+  assert.equal(getTopUvPreviewLayer([lower], [{ order: 0 }], 'active-preview'), lower);
+  assert.equal(getTopUvPreviewLayer([{ ...manual, imageUrl: '/saved.png' }], []), undefined);
+  const legacy = { ...manual, imageUrl: '/saved.png', role: 'local-repaint-overlay' };
+  assert.equal(getTopUvPreviewLayer([legacy], []), legacy);
   const { compileForRenderTarget } = await server.ssrLoadModule(
     '/src/engine/projection/compileForRenderTarget.ts',
   );
@@ -1271,7 +1319,12 @@ try {
   assert.ok(hybrid);
   assert.match(hybrid.fragmentShader, /COMPACT_LAYER_CAPACITY = 9/,
     'One live repaint must not expand nine layers of depth visibility math.');
-  assert.match(hybrid.fragmentShader, /if\(i==8\)t=texture2D\(maskMap8,uv\)/);
+  assert.doesNotMatch(
+    hybrid.fragmentShader,
+    /texture2D\(maskMap8,uv\)/,
+    'A live durable eraser mask must use its reserved array slice, not add a direct sampler.',
+  );
+  assert.match(hybrid.fragmentShader, /compactMaskArraySlices\[i\]/);
   assert.match(hybrid.fragmentShader, /compactDepthArraySlices\[i\]/);
   assert.equal((hybrid.fragmentShader.match(/float computeCompactVisibility\(/g) ?? []).length, 1);
   const simpleHybrid = warmHybrid(hybridLayers.map((layer) => ({ ...layer, useDepthCheck: false })));
@@ -1287,6 +1340,26 @@ try {
     'Compact loops must still obey the device sampler budget.');
   hybrid.dispose(); simpleHybrid.dispose(); liveDepth.dispose();
   const sceneStore = await server.ssrLoadModule('/src/stores/sceneStore.ts');
+  sceneStore.useSceneStore.getState().setPaintTool('none');
+  const maskActivationBaseline = sceneStore.useSceneStore.getState().paintToolActivationRevision;
+  sceneStore.useSceneStore.getState().setPaintTool('inpaint-add');
+  assert.equal(
+    sceneStore.useSceneStore.getState().paintToolActivationRevision,
+    maskActivationBaseline + 1,
+    'Entering the mask tool must arm one viewport session.',
+  );
+  sceneStore.useSceneStore.getState().setPaintTool('inpaint-add');
+  assert.equal(
+    sceneStore.useSceneStore.getState().paintToolActivationRevision,
+    maskActivationBaseline + 2,
+    'Repeated activation of the highlighted mask tool must publish a recovery command.',
+  );
+  sceneStore.useSceneStore.getState().setPaintTool('none');
+  assert.equal(
+    sceneStore.useSceneStore.getState().paintToolActivationRevision,
+    maskActivationBaseline + 2,
+    'Leaving paint mode must not create a false mask recovery command.',
+  );
   const visibilityLayers = [
     { id: 'visibility-a', type: 'projected', visible: true, order: 0 },
     { id: 'visibility-b', type: 'projected', visible: true, order: 1 },

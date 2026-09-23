@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { clone as cloneSkeleton } from 'three/examples/jsm/utils/SkeletonUtils.js';
 import type { ViewportRuntime } from '@/stores/sceneStore';
-import { waitForViewportInteractionIdle } from '@/engine/viewport/viewportInteractionState';
+import { waitForViewportInteractionIdle } from '@/engine/viewport/input';
 
 let renderer: THREE.WebGLRenderer | undefined;
 let tail: Promise<unknown> = Promise.resolve();

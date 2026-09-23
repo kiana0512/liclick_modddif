@@ -1,8 +1,8 @@
 # Liclick 3D Texture
 
-Liclick 3D Texture（LI3D）现代化分支是一套零安装浏览器工作台。统一首页连接贴图绘制、自动展 UV、模型烘焙和生产工具箱；用户不需要下载 LI3D 本地组件。
+Liclick 3D Texture（LI3D）当前主线是一套零安装浏览器工作台。统一首页连接贴图绘制、自动展 UV、模型烘焙和生产工具箱；用户不需要下载 LI3D 本地组件。
 
-本文描述当前主线代码的真实行为。系统模块、算法调用和强制变更规则以 [系统模块与变更唯一准则](docs/00_SYSTEM_MODULES_AND_CHANGE_STANDARD.md) 为准；现代化演进的完整交付说明见 [2026-08-21 现代化交付记录](docs/modernization/HANDOFF_2026-08-21.zh-CN.md)，其它文档分类见 [docs/README.md](docs/README.md)。
+本文描述当前主线代码的真实行为。系统模块、算法调用和强制变更规则以 [系统模块与变更唯一准则](docs/00_SYSTEM_MODULES_AND_CHANGE_STANDARD.md) 为准；当前性能稳定性和风险热点见 [2026-09-17 全仓审计](docs/PERFORMANCE_STABILITY_RISK_AUDIT_2026-09-17.zh-CN.md)，其它文档分类见 [docs/README.md](docs/README.md)。
 
 ## 产品与计算边界
 
@@ -80,7 +80,8 @@ pnpm simulate:cloud-deployment -- --serve
 
 ## 发布与数据规则
 
-- `master` 保留原始产品基线，现代化修改只进入 `codex/modernization`，通过验收前不得直接合并主线。
+- `master` 是当前代码基线；每次只处理一个明确问题，合并前执行对应回归和发布门禁，不从历史 `codex/modernization` 文档反推当前分支策略。
+- 2026-09-17 当前运行时代码基线为 `d745d066`：UV/拓扑历史远端刷新已限制为全局 8 路、单用户 4 路并合并相同 Job 的同时请求。合并 `origin/master@5481e23c` 后，正式 `verify:prepush`、Server 25/25、Web 147/147、本地 API/集成 Web 冒烟及独立导入浏览器回归均通过；Cloud 产物为 218 个文件、25.04 MiB，Web 为 105 个 JS chunks、3,217,996 bytes。Cloud release-readiness 仍因 8 项真实生产证据为 `in_progress` 而拒绝发布；该记录不等同于生产部署或远端流水线已完成。
 - Web、Server、协议和 Schema 必须来自同一 Git SHA 与 Release Manifest；同一 SHA 只构建一次。
 - 生产 Secret、OAuth Token、Cookie、证书私钥、工作区资产和测试账号数据不得提交 Git。
 - Cloud 构建不得包含安装器、`127.0.0.1:4618`、本地守护进程或本地身份桥接回退。
@@ -92,6 +93,7 @@ pnpm simulate:cloud-deployment -- --serve
 2. 自动拓扑真实任务当前被 `RETOPOLOGY_COORDINATE_MISMATCH` 阻断。
 3. 生产 HTTPS OAuth 回调、企业应用发布、PostgreSQL/对象存储事务化和目标域名部署尚未完成最终验收。
 4. 性能需要继续完成 input-to-present、帧耗、Long Task、静止渲染和内存回落矩阵。
-5. 仓库仍有历史 lint 基线问题；不能把 typecheck/build/smoke 通过描述成 lint 全绿。
+5. 当前全仓 lint 为 0 error、2 个既有 warning；后续仍须同时执行 typecheck、回归、构建和发布边界门禁，不能以 lint 通过替代功能/性能验收。
+6. Cloud release-readiness 仍有 8 项 required capability 为 `in_progress`；不得仅因本地冒烟、构建或某次 GitLab 流水线通过而改写为可生产发布。
 
 架构决策见 [现代化总纲](docs/modernization/README.md)，发布门禁见 [ACCEPTANCE_GATES](docs/modernization/ACCEPTANCE_GATES.md)。

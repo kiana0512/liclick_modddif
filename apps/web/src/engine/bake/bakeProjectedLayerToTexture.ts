@@ -37,12 +37,12 @@ import type {
 import { useLayerStore } from '@/stores/layerStore';
 import { useProjectStore } from '@/stores/projectStore';
 import { useSceneStore } from '@/stores/sceneStore';
-import { isViewportInteractionBusy } from '@/engine/viewport/viewportInteractionState';
+import { isViewportInteractionBusy } from '@/engine/viewport/input';
 import type { Layer } from '@/types/layer';
 import { createRegisteredObjectUrl } from '@/utils/blobUrlRegistry';
 import { encodeRgbaPngBlob } from '@/utils/encodeRgbaPng';
 import { createId } from '@/utils/id';
-import { waitForBrowserPaint, yieldToBrowserTask } from '@/utils/browserScheduling';
+import { waitForBrowserPaint } from '@/utils/browserScheduling';
 import { usesUnlitRenderedColor } from '@/engine/viewport/renderedLayerColor';
 import { blendProjectedRastersInWorker } from './qualityBlendWorker';
 import { residentQualityPolicy, verifyResidentQuality } from './residentQualityComposite';
@@ -329,7 +329,12 @@ async function clearWeakTransparentTexels(imageData: ImageData, coverage?: Uint8
   }
   for (let first = 0; first < data.length; first += BAKE_PIXELS_PER_YIELD * 4) {
     if (performance.now() - sliceStartedAt >= 4) {
-      await (isViewportInteractionBusy() ? waitForBrowserPaint() : yieldToBrowserTask());
+      // scheduler.yield() may run every continuation before Chromium presents
+      // another frame. A 4K cleanup then becomes one 200ms+ frame despite its
+      // small individual slices. Cross a real paint boundary here even after
+      // the pointer was released; this exact finalization runs in the user's
+      // immediate re-entry window and must stay preemptible.
+      await waitForBrowserPaint();
       sliceStartedAt = performance.now();
     }
     const end = Math.min(first + BAKE_PIXELS_PER_YIELD * 4, data.length);
@@ -1098,7 +1103,11 @@ async function bakeVisibleProjectedLayersToTextureUnlocked(
   const performanceBreakdown: Record<string, number> = {};
   const yieldPostprocess = async () => {
     input.checkCancelled?.();
-    await (isViewportInteractionBusy() ? waitForBrowserPaint() : yieldToBrowserTask());
+    // Postprocess slices are already sized to a small CPU budget. A scheduler
+    // continuation can still run dozens of those slices before the compositor
+    // presents, so use a real paint boundary for both active and just-released
+    // interaction windows.
+    await waitForBrowserPaint();
     input.checkCancelled?.();
   };
   let uvGutterTopologyPromise:

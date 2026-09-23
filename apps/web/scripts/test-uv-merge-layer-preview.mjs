@@ -25,7 +25,7 @@ assert.doesNotMatch(
 );
 assert.match(
   sceneRootSource,
-  /objectUvLayers\.some\(\(layer\) =>\s*\(hasLowerRepaintUv \|\| isRenderedLocalRepaintLayer\(layer\)\) &&\s*previousLayerVisibilityById\.get\(layer\.id\) !== layer\.visible/,
+  /objectUvLayers\.some\(\(layer\) =>\s*previousLayerVisibilityById\.get\(layer\.id\) !== layer\.visible/,
   'Mixed UV composites and repaint sampler reassignment must reconcile on both eye directions.',
 );
 assert.match(

@@ -48,6 +48,10 @@ const visibilityReuseSource = await readFile(
   new URL('../src/engine/bake/projectionVisibilityReuse.ts', import.meta.url),
   'utf8',
 );
+const projectedArrayUploadSchedulingSource = await readFile(
+  new URL('../src/engine/projection/projectedArrayUploadScheduling.ts', import.meta.url),
+  'utf8',
+);
 
 const visibilityReuseJs = ts.transpileModule(visibilityReuseSource, {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
@@ -55,6 +59,21 @@ const visibilityReuseJs = ts.transpileModule(visibilityReuseSource, {
 const visibilityReuseExports = {};
 new Function('exports', visibilityReuseJs)(visibilityReuseExports);
 const { canReuseAuthoredProjectionVisibility } = visibilityReuseExports;
+const projectedArrayUploadSchedulingJs = ts.transpileModule(projectedArrayUploadSchedulingSource, {
+  compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
+}).outputText;
+const projectedArrayUploadSchedulingExports = {};
+new Function('exports', projectedArrayUploadSchedulingJs)(projectedArrayUploadSchedulingExports);
+const { yieldProjectedArrayUploadTurn } = projectedArrayUploadSchedulingExports;
+for (const busy of [false, true]) {
+  const calls = [];
+  await yieldProjectedArrayUploadTurn(
+    () => busy,
+    async () => calls.push('paint'),
+    async () => calls.push('task'),
+  );
+  assert.deepEqual(calls, [busy ? 'paint' : 'task']);
+}
 const authoredVisibility = {
   depthUrl: 'depth.png',
   depthEncoding: 'linear-view',
@@ -144,14 +163,17 @@ new Function('exports', uniformBudgetJs)(budgetExports);
 const { isProjectedUniformBudgetSafe } = budgetExports;
 assert.match(sceneRootSource, /const residentUvDisplayEnabled = true;/,
   'every supported viewport must consume a verified UV display buffer');
-assert.match(sceneRootSource, /const useProjectedTextureArrays = false;/,
-  'authored projections must not enter a texture-array display material');
+assert.match(sceneRootSource,
+  /const useProjectedTextureArrays = Boolean\([\s\S]*?projectedEraserArmed[\s\S]*?gl\.capabilities\.isWebGL2[\s\S]*?previewProjectionInputs\.length > 1/,
+  'the heavier texture-array renderer must be scoped to an armed WebGL2 multi-view eraser');
 assert.match(sceneRootSource, /const canUseDirectVisibleStackAfterArrayFailure = false;/,
   'array failure must retain the verified UV front buffer instead of publishing a direct projection');
-assert.match(sceneRootSource, /const canUseExactProjectedEraserStack = false;/,
-  'the projected eraser must also publish through its derived UV path');
-assert.match(sceneRootSource, /const materialProjectionInputs = \[\] as typeof previewProjectionInputs;/,
-  'the material publisher must never receive authored projection inputs');
+assert.match(sceneRootSource,
+  /const exactProjectedEraserStackSafe = Boolean\([\s\S]*?useProjectedTextureArrays[\s\S]*?projectedTextureArraySamplerBudget[\s\S]*?directProjectedSamplerBudget[\s\S]*?isProjectedUniformBudgetSafe[\s\S]*?const canUseExactProjectedEraserStack = Boolean\([\s\S]*?projectedEraserArmed && exactProjectedEraserStackSafe/,
+  'the projected eraser may use direct or array presentation only after the selected exact stack passes device budgets');
+assert.match(sceneRootSource,
+  /const materialProjectionInputs = canUseExactProjectedEraserStack[\s\S]*?\? previewProjectionInputs[\s\S]*?: \[\]/,
+  'the material publisher must stay UV-only outside the bounded exact eraser session');
 assert.equal(isProjectedUniformBudgetSafe(34, 1024), false, 'reported 34-layer shader must not reach the driver');
 assert.equal(isProjectedUniformBudgetSafe(14, 1024), true);
 assert.equal(isProjectedUniformBudgetSafe(14, 256), false, 'limits follow the actual device');
@@ -359,6 +381,31 @@ assert.match(
 );
 assert.match(
   materialSource,
+  /await yieldProjectedArrayUploadWork\(input\.isViewportInteractionBusy\)/,
+  'idle array stripes must use task yields while active interaction keeps paint-aligned yields',
+);
+assert.doesNotMatch(
+  materialSource,
+  /yieldProjectedArrayUploadWork\(input\.isViewportInteractionBusy\);\s*await waitForProjectedArrayUploadWindow/,
+  'one bounded upload stripe must not pay both a task/frame yield and a second frame wait',
+);
+assert.match(
+  viewportSource,
+  /const reusableEraserGpu =[\s\S]*?currentLayer\.objectId === model\.objectId[\s\S]*?currentLayer\.paintDefaultResolution === paintResolution[\s\S]*?!isPaintingRef\.current[\s\S]*?currentLayer\.pendingPaintCommits === 0[\s\S]*?!currentLayer\.projectedEraserResidentHandoffPromise/,
+  'a settled projected layer must transfer its compiled model/resolution eraser GPU to the next row',
+);
+assert.match(
+  viewportSource,
+  /unregisterLiveUvRenderTarget\(currentLayer\.liveResultUrl, reusableEraserGpu\.texture\)[\s\S]*?currentLayer\.eraserGpu = undefined[\s\S]*?disposeUvPaintLayer\(currentLayer\)/,
+  'GPU transfer must detach ownership before disposing the previous layer session',
+);
+assert.match(
+  viewportSource,
+  /reusableEraserGpu\.resetWhite\(\)[\s\S]*?registerLiveUvRenderTarget\([\s\S]*?paintLayer\.eraserGpu = reusableEraserGpu[\s\S]*?paintLayer\.eraserGpuReady = Promise\.resolve\(\)/,
+  'the transferred eraser must be neutralized and synchronously rebound before the next stroke',
+);
+assert.match(
+  materialSource,
   /MAX_PROJECTED_SOURCE_TEXTURE_CACHE_ENTRIES = 48[\s\S]*?while \(projectedTextureCache\.size > MAX_PROJECTED_SOURCE_TEXTURE_CACHE_ENTRIES\)[\s\S]*?projectedTextureCache\.delete\(oldestKey\)/,
   'decoded projected source textures must use a bounded LRU cache across multi-model projects',
 );
@@ -449,7 +496,7 @@ assert.match(
 );
 assert.match(
   sceneRootSource,
-  /authoritativeExactUvTexture \?\? loadedUvTexture \?\? authoritativeProxyUvTexture/,
+  /authoritativeExactUvTexture \?\?\s*\(authoritativeOrdinaryUvKey === visibleResidentUvKey \? loadedUvTexture : undefined\) \?\?\s*authoritativeProxyUvTexture/,
   'the 512px-to-exact UV handoff must keep a valid sampler until 4K is resident',
 );
 assert.match(

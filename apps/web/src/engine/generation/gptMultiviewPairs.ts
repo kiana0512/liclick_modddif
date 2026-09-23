@@ -1,7 +1,7 @@
 import type { Object3D, Mesh, Material } from 'three';
 import { isResidentProjectedMaterial } from '../projection/projectedMaterialIdentity';
 
-// GPT-MULTIVIEW-PAIR-SEQUENCE v1.4.0. Fixed accelerated groups; preview order unchanged.
+// GPT-MULTIVIEW-PAIR-SEQUENCE v1.5.1. QA-only rejection may advance; transport/projection failures stop.
 const presetPairs = {
   'preset-1': [
     ['front', 'back'],
@@ -25,12 +25,12 @@ const presetPairs = {
 
 export function planGptViewPairs<T extends { id: string; value?: string }>(
   views: readonly T[],
-  preset: keyof typeof presetPairs,
+  preset: keyof typeof presetPairs | 'preset-3',
 ): T[][] {
   const remaining = new Map(views.map((view) => [view.id, view]));
   const take = (names: readonly string[]) =>
     names.flatMap((name) => {
-      const view = [...remaining.values()].find((item) => item.value === name && item.id === name);
+      const view = [...remaining.values()].find((item) => item.value === name && (item.id === name || item.id === `preset-3-${name}`));
       if (!view) return [];
       remaining.delete(view.id);
       return [view];
@@ -38,7 +38,7 @@ export function planGptViewPairs<T extends { id: string; value?: string }>(
   // Adding a camera switches the UI selection to "custom" without replacing
   // its inherited preset cameras. Keep those original fixed pairs as well.
   const inheritedPreset =
-    preset === 'custom'
+    preset === 'preset-3' ? 'preset-1' : preset === 'custom'
       ? views.some((view) => view.value?.endsWith('-top') || view.value?.endsWith('-bottom'))
         ? 'preset-2'
         : 'preset-1'
@@ -52,8 +52,10 @@ export function planGptViewPairs<T extends { id: string; value?: string }>(
   for (const pair of pairs) {
     const previous = groups.at(-1);
     // Keep the initial pair and added/unpaired cameras isolated. Combine only
-    // consecutive complete preset pairs, preserving deterministic commit order.
-    if (groups.length > 1 && previous?.length === 2 && pair.length === 2) {
+    // consecutive complete preset pairs, or the trailing bottom-only pole in
+    // the orbit preset, preserving deterministic commit order (2 + 4 + 3).
+    if (groups.length > 1 && previous?.length === 2 && (pair.length === 2 ||
+      (pair === poles && inheritedPreset === 'preset-1' && pair[0]?.value === 'bottom'))) {
       previous.push(...pair);
     } else {
       groups.push([...pair]);
@@ -72,6 +74,29 @@ export async function runGptViewPairs<T>(
     await execute(pairs[index]!, index);
     assertActive();
   }
+}
+
+export type GptPairCompletionDisposition = 'complete' | 'continue-after-qa' | 'stop';
+
+export function gptPairCompletionDisposition(
+  expected: number,
+  projected: number,
+  qaRejected: number,
+): GptPairCompletionDisposition {
+  if (
+    !Number.isSafeInteger(expected) ||
+    !Number.isSafeInteger(projected) ||
+    !Number.isSafeInteger(qaRejected) ||
+    expected < 1 ||
+    projected < 0 ||
+    projected > expected ||
+    qaRejected < 0
+  ) {
+    return 'stop';
+  }
+  const missing = expected - projected;
+  if (missing === 0) return 'complete';
+  return qaRejected === missing ? 'continue-after-qa' : 'stop';
 }
 
 // Jobs wait in parallel, but commits never depend on network completion order.
@@ -99,7 +124,7 @@ export async function settleGptPairInOrder<T, R, C>(
 }
 
 // Inspect actual material bindings, not a generic resident event or stale row count.
-export function hasResidentGptLayers(root: Object3D | undefined, required: readonly string[]) {
+export function hasResidentProjectedLayers(root: Object3D | undefined, required: readonly string[]) {
   if (!root?.visible || !required.length) return false;
   let found = false;
   let complete = true;
@@ -120,7 +145,9 @@ export function hasResidentGptLayers(root: Object3D | undefined, required: reado
   return found && complete;
 }
 
-export async function waitForGptPairPresentation(
+// MODELVIEW-PRESENTATION-BARRIER v1.0.0: durable bindings also cover material reuse
+// and completion before the caller starts waiting. No event or timeout bypass.
+export async function waitForProjectedLayerPresentation(
   ready: () => boolean,
   assertActive: () => void,
   present: () => Promise<void>,
@@ -145,3 +172,7 @@ export async function waitForGptPairPresentation(
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
 }
+
+// Preserve the existing GPT contract while sharing the same strict barrier.
+export const hasResidentGptLayers = hasResidentProjectedLayers;
+export const waitForGptPairPresentation = waitForProjectedLayerPresentation;

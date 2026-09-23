@@ -84,6 +84,9 @@ const { createLiclickApiClient } = load('../src/services/liclickApiClient.ts', {
     return result;
   } },
   '@/utils/mapWithConcurrency': load('../src/utils/mapWithConcurrency.ts'),
+  '@/engine/viewport/input': {
+    interactionSafeJsonResponse: (response) => response.json().catch(() => undefined),
+  },
 });
 try {
   for (const enabled of [false, true, false]) {
@@ -190,7 +193,7 @@ assert.equal(disposed, 0, 'Renderer-owned normal material survives per-angle com
 
 // Execute the production switch JSX, including click and disabled states.
 const panel = read('../src/components/panels/GeneratePanel.tsx');
-const start = panel.indexOf('<div className="mb-2 flex items-center justify-between gap-2 text-xs text-white/75">');
+const start = panel.lastIndexOf('<div className="mb-2 flex items-center justify-between gap-2 text-xs text-white/75">', panel.indexOf('<span>使用材质参考图</span>'));
 assert.ok(start > 0);
 const markup = panel.slice(start, panel.indexOf('</div>', start) + 6);
 const { Toggle } = evaluate(`export function Toggle({ gptRepaintUseMaterialReference, workflowConfigurationLocked, workflowSubmissionLocked, updateGenerationSettings }) { return (${markup}); }`, { 'react/jsx-runtime': jsx });
@@ -206,6 +209,6 @@ for (const enabled of [false, true]) for (const locked of [false, true]) {
 }
 assert.match(panel, /gptRepaintUseMaterialReference: false/);
 assert.match(panel, /isLocalRepaintTab && \(!isGptLocalRepaint \|\| gptRepaintUseMaterialReference\)/);
-assert.match(panel, /captureCurrentNormalGuide\(\{[\s\S]*?resolution: LOCAL_REPAINT_INPUT_RESOLUTION,[\s\S]*?cameraSnapshot: captureCameraSnapshot/);
-assert.match(panel, /capture = \{ \.\.\.capture, normalUrl: normal.normalUrl \};[\s\S]*?saveCriticalProjectState\(\{ captures: recoveryCaptures \}\)/);
+assert.match(panel, /captureLocalRepaintNormal\(capture, captureCameraSnapshot, requestAbortController!\.signal, normalBackground\)/);
+assert.match(panel, /capture = await captureLocalRepaintNormal\(capture,[\s\S]*?saveCriticalProjectState\(\{ captures: recoveryCaptures \}\)/);
 console.log('GPT normal repaint: optional switch, two/three actual serialized inputs, prompt roles, exact pixels, cancellation, camera and geometry material cleanup passed (no paid generation).');

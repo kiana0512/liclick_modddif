@@ -84,6 +84,7 @@ type CompositeRequest = {
   interactiveChunkBytes: number;
   idleChunkBytes: number;
   encodePng?: boolean;
+  renderedColorMask?: ArrayBuffer;
 };
 
 type NormalizedCompositeRequest = CompositeRequest & { underlay: ArrayBuffer };
@@ -109,6 +110,7 @@ type WorkerResponse =
       type: 'result';
       id: number;
       output?: ArrayBuffer;
+      renderedColorMask?: ArrayBuffer;
       pngUrl?: string;
       pngByteLength?: number;
       encodeMs?: number;
@@ -373,10 +375,12 @@ async function copyToReadbackInBudgetedChunks(
 }
 
 function compositeOnCpu(frontBuffer: ArrayBuffer, underlayBuffer: ArrayBuffer, opacity: number, frontOpacity = 1,
-  firstOffset = 0, endOffset = frontBuffer.byteLength) {
+  firstOffset = 0, endOffset = frontBuffer.byteLength, maskBuffer?: ArrayBuffer) {
   const front = new Uint8ClampedArray(frontBuffer);
   const underlay = new Uint8ClampedArray(underlayBuffer);
+  const mask = maskBuffer ? new Uint8Array(maskBuffer) : undefined;
   for (let offset = firstOffset; offset < endOffset; offset += 4) {
+    const previousAlpha = front[offset + 3];
     const frontAlpha = (front[offset + 3] / 255) * frontOpacity;
     const underlayAlpha = (underlay[offset + 3] / 255) * opacity;
     const visibleUnderlayAlpha = underlayAlpha * (1 - frontAlpha);
@@ -387,6 +391,7 @@ function compositeOnCpu(frontBuffer: ArrayBuffer, underlayBuffer: ArrayBuffer, o
         front[offset + 1] = underlay[offset + 1];
         front[offset + 2] = underlay[offset + 2];
       }
+      if (mask) mask[offset / 4] = 0;
       continue;
     }
     front[offset] = Math.round(
@@ -399,6 +404,8 @@ function compositeOnCpu(frontBuffer: ArrayBuffer, underlayBuffer: ArrayBuffer, o
       (front[offset + 2] * frontAlpha + underlay[offset + 2] * visibleUnderlayAlpha) / outputAlpha,
     );
     front[offset + 3] = Math.round(outputAlpha * 255);
+    if (mask) mask[offset / 4] = front[offset + 3]
+      ? Math.round((mask[offset / 4] * previousAlpha) / front[offset + 3]) : 0;
   }
   return frontBuffer;
 }
@@ -416,7 +423,8 @@ async function compositeOnCpuBudgeted(
   for (let firstOffset = 0; firstOffset < frontBuffer.byteLength; firstOffset += sliceBytes) {
     throwIfCancelled(request);
     const endOffset = Math.min(frontBuffer.byteLength, firstOffset + sliceBytes);
-    compositeOnCpu(frontBuffer,underlayBuffer,opacity,request.frontOpacity,firstOffset,endOffset);
+    compositeOnCpu(frontBuffer,underlayBuffer,opacity,request.frontOpacity,firstOffset,endOffset,
+      request.renderedColorMask);
     if (endOffset < frontBuffer.byteLength) await yieldGpuBudget();
   }
   return frontBuffer;
@@ -516,7 +524,8 @@ async function runComposite(rawRequest: CompositeRequest) {
   }
   const device = await getDevice();
   if (!device) {
-    const output = compositeOnCpu(request.front, request.underlay, request.opacity, request.frontOpacity);
+    const output = compositeOnCpu(request.front, request.underlay, request.opacity, request.frontOpacity,
+      0, request.front.byteLength, request.renderedColorMask);
     return {
       output,
       metrics: {
@@ -566,7 +575,8 @@ async function runComposite(rawRequest: CompositeRequest) {
     destroyResources();
     devicePromise = undefined;
     const cpuStartedAt = performance.now();
-    const output = compositeOnCpu(request.front, request.underlay, request.opacity, request.frontOpacity);
+    const output = compositeOnCpu(request.front, request.underlay, request.opacity, request.frontOpacity,
+      0, request.front.byteLength, request.renderedColorMask);
     return {
       output,
       metrics: {
@@ -579,6 +589,21 @@ async function runComposite(rawRequest: CompositeRequest) {
         backend: 'cpu-worker' as const,
       },
     };
+  }
+}
+
+async function updateRenderedColorMask(request: NormalizedCompositeRequest, output: ArrayBuffer) {
+  if (!request.renderedColorMask) return;
+  const mask = new Uint8Array(request.renderedColorMask), previous = new Uint8Array(request.front),
+    next = new Uint8Array(output), slicePixels = 256 * 1024;
+  for (let start = 0; start < mask.length; start += slicePixels) {
+    throwIfCancelled(request);
+    const end = Math.min(mask.length, start + slicePixels);
+    for (let i = start; i < end; i++) {
+      const alpha = next[i * 4 + 3];
+      mask[i] = alpha ? Math.round((mask[i] * previous[i * 4 + 3]) / alpha) : 0;
+    }
+    if (end < mask.length) await wait(0);
   }
 }
 
@@ -655,6 +680,9 @@ scope.onmessage = (event) => {
         result.metrics.backend === 'webgpu-worker'
           ? verifyGpuOutput(normalizedRequest, result.output)
           : { output: result.output };
+      if (result.metrics.backend === 'webgpu-worker') {
+        await updateRenderedColorMask(normalizedRequest, verified.output);
+      }
       if (request.encodePng) {
         throwIfCancelled(request);
         if (!request.width || !request.height) {
@@ -693,10 +721,16 @@ scope.onmessage = (event) => {
           type: 'result',
           id: request.id,
           output: verified.output,
+          renderedColorMask: normalizedRequest.renderedColorMask,
           metrics: result.metrics,
           verification: verified.verification,
         };
-        scope.postMessage(response, [verified.output]);
+        scope.postMessage(
+          response,
+          normalizedRequest.renderedColorMask
+            ? [verified.output, normalizedRequest.renderedColorMask]
+            : [verified.output],
+        );
       }
     } catch (error) {
       const response: WorkerResponse = {

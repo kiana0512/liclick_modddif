@@ -12,7 +12,7 @@ assert(start >= 0 && end > start);
 const compiled = ts.transpileModule(source.slice(start, end), {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
 }).outputText;
-const run = new Function('THREE', 'gl', 'nextBuild', 'projectedTextureArrayBuildRef', 'compileForRenderTarget', 'waitForBrowserPaint', 'window', 'document',
+const run = new Function('THREE', 'gl', 'nextBuild', 'projectedTextureArrayBuildRef', 'projectedTextureArrayReadySignatureRef', 'textureArrayBuildSignature', 'compileForRenderTarget', 'waitForBrowserPaint', 'window', 'document',
   `${compiled}\nreturn nextBuild.precompilePromise;`);
 
 for (const onScreen of [true, false]) for (const mode of ['complete', 'cancel', 'render-error', 'compile-error', 'wait-error', 'no-fence']) {
@@ -21,6 +21,9 @@ for (const onScreen of [true, false]) for (const mode of ['complete', 'cancel', 
   let target = original, face = originalFace, mip = originalMip, frames = 0, deleted = 0, disposed = 0;
   const compiledTargets = [];
   const nextBuild = { promise: Promise.resolve(new THREE.ShaderMaterial()), cancelled: false };
+  const readySignature = { current: '' };
+  const textureArrayBuildSignature = `array-${onScreen}-${mode}`;
+  const document = { body: { dataset: {} } };
   const context = {
     SYNC_GPU_COMMANDS_COMPLETE: 1, ALREADY_SIGNALED: 2, CONDITION_SATISFIED: 3, WAIT_FAILED: 4,
     fenceSync: () => mode === 'no-fence' ? null : {}, flush() {},
@@ -57,13 +60,34 @@ for (const onScreen of [true, false]) for (const mode of ['complete', 'cancel', 
     if (mode === 'compile-error') throw Error(mode);
   };
   const waitForBrowserPaint = () => new Promise((resolve) => window.requestAnimationFrame(resolve));
-  const result = run(THREE, gl, nextBuild, { current: nextBuild }, compile, waitForBrowserPaint, window, { body: { dataset: {} } });
+  const result = run(
+    THREE,
+    gl,
+    nextBuild,
+    { current: nextBuild },
+    readySignature,
+    textureArrayBuildSignature,
+    compile,
+    waitForBrowserPaint,
+    window,
+    document,
+  );
   if (mode.endsWith('error')) await assert.rejects(result, new RegExp(mode));
   else await result;
   restored();
   assert.equal(disposed, mode === 'compile-error' ? 0 : 1);
   assert.equal(deleted, ['complete', 'cancel', 'wait-error'].includes(mode) ? 1 : 0);
   if (mode === 'complete') assert.equal(frames, 3);
+  assert.equal(
+    readySignature.current,
+    ['complete', 'no-fence'].includes(mode) ? textureArrayBuildSignature : '',
+    'Only a completed and still-current GPU warmup may publish the reusable ready signature.',
+  );
+  assert.equal(
+    document.body.dataset.projectedEarlyArrayBuildStatus,
+    ['complete', 'no-fence'].includes(mode) ? 'ready' : undefined,
+    'Cancelled or failed warmups must not report a reusable ready array.',
+  );
   original?.dispose();
   (await nextBuild.promise).dispose();
 }

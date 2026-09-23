@@ -116,6 +116,7 @@ export function BottomToolDock({
   labels,
 }: BottomToolDockProps) {
   const dockRef = useRef<HTMLDivElement>(null);
+  const repaintContextMenuRef = useRef(false);
   const [activeMenu, setActiveMenu] = useState<
     'eraser' | 'inpaint-add' | 'inpaint-subtract' | 'inpaint-apply' | undefined
   >();
@@ -243,21 +244,51 @@ export function BottomToolDock({
   }
 
   useEffect(() => {
-    if (!activeMenu) return undefined;
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setActiveMenu(undefined);
+    let dismissClick = false;
+    const closeMenu = () => {
+      repaintContextMenuRef.current = false;
+      setActiveMenu(undefined);
     };
-    const closeOnOutsidePointer = (event: PointerEvent) => {
-      if (!dockRef.current?.contains(event.target as Node)) {
-        setActiveMenu(undefined);
+    const openBrushMenu = () => {
+      if (mode !== 'texture' || paintTool !== 'inpaint-apply') return;
+      repaintContextMenuRef.current = true;
+      setActiveMenu('inpaint-apply');
+    };
+    const dismissBrushMenu = (event: PointerEvent) => {
+      dismissClick = false;
+      if (dockRef.current?.contains(event.target as Node)) return;
+      if (repaintContextMenuRef.current) {
+        if (event.button !== 0) return;
+        dismissClick = true;
+        event.preventDefault();
+        event.stopImmediatePropagation();
       }
+      closeMenu();
     };
-    window.addEventListener('keydown', closeOnEscape);
-    window.addEventListener('pointerdown', closeOnOutsidePointer, true);
+    // Consume the click tail too: closing must not select a model or paint.
+    const consumeDismissClick = (event: MouseEvent) => {
+      if (!dismissClick) return;
+      dismissClick = false;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') closeMenu();
+    };
+    const listeners = { 'liclick:repaint-brush-menu': openBrushMenu,
+      pointerdown: dismissBrushMenu, click: consumeDismissClick, keydown: closeOnEscape };
+    const bind = (method: 'addEventListener' | 'removeEventListener') => {
+      Object.entries(listeners).forEach(([name, listener]) => window[method](name, listener as EventListener, true));
+    };
+    bind('addEventListener');
     return () => {
-      window.removeEventListener('keydown', closeOnEscape);
-      window.removeEventListener('pointerdown', closeOnOutsidePointer, true);
+      bind('removeEventListener');
+      if (repaintContextMenuRef.current) closeMenu();
     };
+  }, [mode, paintTool]);
+
+  useEffect(() => {
+    if (activeMenu !== 'inpaint-apply') repaintContextMenuRef.current = false;
   }, [activeMenu]);
 
   useEffect(() => {
@@ -499,7 +530,7 @@ export function BottomToolDock({
                         >
                           <span>{labels.resetInpaintRegion}</span>
                           <span className="rounded bg-white/16 px-1.5 py-0.5 text-[10px] text-white/76">
-                            CTRL SHIFT D
+                            CTRL D
                           </span>
                         </button>
                         <button
@@ -525,10 +556,11 @@ export function BottomToolDock({
                     onClick={() => {
                       // The mask step is a mode selector, not an on/off toggle.
                       onOpenLocalRepaintPanel?.();
-                      // Repeated clicks only open or close its settings menu so
-                      // the resident repaint presentation stays mounted.
+                      // Reassert an already selected mask tool as well. The
+                      // viewport consumes that activation token to recover a
+                      // stale overlay/pointer session without a page refresh.
+                      onPaintToolChange(isMaskPaintTool ? paintTool : 'inpaint-add');
                       if (!isMaskPaintTool) {
-                        onPaintToolChange('inpaint-add');
                         setGuideStep('generate');
                       }
                       toggleMenu('inpaint-add');

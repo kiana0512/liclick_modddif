@@ -1,4 +1,4 @@
-const CACHE_NAME = 'liclick-content-aware-projection-v2'; // Reliable footprint; old feathered rasters are not reused.
+const CACHE_NAME = 'liclick-content-aware-projection-v3'; // Broader reliable footprint; old coverage is not reused.
 const CACHE_PATH = '/__liclick_internal_cache/content-aware-projection/';
 const MAX_CACHE_ENTRIES = 4;
 

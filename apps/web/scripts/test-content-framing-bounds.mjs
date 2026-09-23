@@ -5,6 +5,7 @@ import ts from 'typescript';
 import * as contracts from '../../../packages/contracts/dist/index.js';
 
 const source = readFileSync(new URL('../src/engine/generation/contentFraming.ts', import.meta.url), 'utf8');
+const silhouetteSource = readFileSync(new URL('../src/engine/generation/contentFramingSilhouette.ts', import.meta.url), 'utf8');
 function load(clock = performance) {
   const module = { exports: {} };
   new Function('module', 'exports', 'require', 'performance', ts.transpileModule(source, {
@@ -15,6 +16,13 @@ function load(clock = performance) {
   return module.exports;
 }
 const current = load();
+const silhouetteModule = { exports: {} };
+new Function('module', 'exports', 'require', ts.transpileModule(silhouetteSource, {
+  compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+}).outputText)(silhouetteModule, silhouetteModule.exports, name => {
+  assert.equal(name, './contentFraming'); return current;
+});
+const { validateFramedSilhouette } = silhouetteModule.exports;
 let seed = 17;
 const random = () => (seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0);
 for (let fixture = 0; fixture < 120; fixture++) {
@@ -28,12 +36,14 @@ for (let fixture = 0; fixture < 120; fixture++) {
   if (fixture % 10 === 1) {
     image.data.fill(0); image.data.set([0, 0, 255, 1], (random() % (width * height)) * 4);
   }
-  for (const normal of [false, true]) {
+  for (const normal of [false, true, 'linear-depth']) {
     // Frozen exhaustive predicate reference; the optimized scan skips interiors.
     let left = width, top = height, right = -1, bottom = -1;
     for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
       const i = (y * width + x) * 4;
-      if (image.data[i + 3] > 0 && (normal || image.data[i] > 0)) {
+      if (image.data[i + 3] > 0 && (normal === 'linear-depth'
+        ? image.data[i] < 254 || image.data[i + 1] < 254 || image.data[i + 2] < 254
+        : normal || image.data[i] > 0)) {
         left = Math.min(left, x); top = Math.min(top, y);
         right = Math.max(right, x); bottom = Math.max(bottom, y);
       }
@@ -49,7 +59,7 @@ for (let fixture = 0; fixture < 120; fixture++) {
   }
 }
 // Checkpoints include empty rows, abort before publishing a crop, and preserve
-// genuine provider size/transparent-silhouette errors instead of loosening QA.
+// genuine provider ratio/transparent-silhouette errors instead of loosening QA.
 let time = 0, checkpoints = 0;
 const timed = load({ now: () => time += 3 });
 const empty = { width: 1024, height: 1024, data: new Uint8ClampedArray(1024 * 1024 * 4) };
@@ -59,11 +69,12 @@ await assert.rejects(() => timed.findContentFramingCooperatively(empty, false, '
 }), error => error === cancelled);
 assert.equal(checkpoints, 2);
 const frame = current.findContentFraming({ width: 1, height: 1, data: new Uint8ClampedArray([255, 255, 255, 255]) });
-assert.throws(() => current.restoredFrameLayout(frame, frame.outputWidth - 1, frame.outputHeight), /远端回图比例异常/);
-await assert.rejects(() => current.validateFramedSilhouette(frame, { width: frame.outputWidth, height: frame.outputHeight,
-  data: new Uint8ClampedArray(frame.outputWidth * frame.outputHeight * 4) }), /透明轮廓与模型不对齐/);
-await assert.rejects(() => current.validateFramedSilhouette(frame, { width: frame.outputWidth, height: frame.outputHeight,
-  data: new Uint8ClampedArray(frame.outputWidth * frame.outputHeight * 4) }, undefined, 'capture-mask'), /透明轮廓与模型不对齐/);
+assert.doesNotThrow(() => current.restoredFrameLayout(frame, frame.outputWidth / 2, frame.outputHeight / 2));
+assert.throws(() => current.restoredFrameLayout(frame, frame.outputWidth + 64, frame.outputHeight), /远端回图比例异常/);
+await assert.rejects(() => validateFramedSilhouette(frame, { width: frame.outputWidth, height: frame.outputHeight,
+  data: new Uint8ClampedArray(frame.outputWidth * frame.outputHeight * 4) }), /透明轮廓不对齐/);
+await assert.rejects(() => validateFramedSilhouette(frame, { width: frame.outputWidth, height: frame.outputHeight,
+  data: new Uint8ClampedArray(frame.outputWidth * frame.outputHeight * 4) }, undefined, 'capture-mask'), /透明轮廓不对齐/);
 
 // Execute the real image-loader function to check async decode, compatibility
 // when decode rejects, and cancellation while an otherwise loaded image decodes.
@@ -94,4 +105,4 @@ assert.equal(yields, 1);
 failDecode = true;
 assert.ok(await exports.load('drawable-image'));
 assert.equal(decodeCalls, 3); assert.equal(yields, 2);
-console.log('Content bounds passed: 240 exhaustive mask/normal references, identical cooperative framing, empty-row cancellation, strict size/silhouette errors and async decode cancellation/compatibility.');
+console.log('Content bounds passed: 360 exhaustive mask/normal/depth references, identical cooperative framing, empty-row cancellation, native-size/strict-ratio/silhouette QA and async decode cancellation/compatibility.');

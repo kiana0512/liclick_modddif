@@ -5,7 +5,14 @@ const panel=read('components/panels/GeneratePanel.tsx');
 const textarea=panel.match(/<textarea[\s\S]*?\/>/)?.[0];
 assert.ok(textarea);
 assert.match(textarea,/data-task-preview-allowed="true"/);
-assert.doesNotMatch(textarea,/readOnly|workflowConfigurationLocked|disabled=/);
+assert.doesNotMatch(textarea,/readOnly|workflowConfigurationLocked/);
+const disabledExpression=textarea.match(/disabled=\{([^}]+)\}/)?.[1];
+assert.ok(disabledExpression);
+const disabled=new Function('isLocalRepaintTab','isGptLocalRepaint','localRepaintSmartPolish',`return ${disabledExpression};`);
+for(const local of [false,true])for(const gpt of [false,true])for(const polish of [false,true]) {
+  assert.equal(disabled(local,gpt,polish),local&&!gpt&&!polish,
+    'Only ModelView workflow-default mode disables prompt input; other prompt drafts remain editable during tasks');
+}
 assert.match(textarea,/setLocalRepaintPrompt\(event.target.value\)/);
 const writer=panel.match(/function updateGenerationSettings\([\s\S]*?\n {2}function writePromptValue/)?.[0];
 assert.ok(writer);assert.doesNotMatch(writer,/workflowConfigurationLocked/);

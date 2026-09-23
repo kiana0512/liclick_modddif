@@ -20,7 +20,7 @@ export async function run(requested = Number(new globalThis.URLSearchParams(glob
   const mainStart = performance.now(), main = width <= 2048 ? await runSurfaceAwareRepair(input, { useWorker: false }) : undefined;
   const mainMs = performance.now() - mainStart;
   const workerStart = performance.now();
-  const worker = await runSurfaceAwareRepair(input);
+  const worker = await runSurfaceAwareRepair(input, { includeDiagnostics: false });
   const workerMs = performance.now() - workerStart;
   let mismatches = 0;
   for (let i = 0; i < original.length; i++) {
@@ -29,7 +29,8 @@ export async function run(requested = Number(new globalThis.URLSearchParams(glob
   }
   check(mismatches === 0, 'worker/main bytes identical');
   check(worker.stats.globalFallbackPixels === 0 && worker.stats.sourceRegionLockedComponents === 0, 'no global/single-color fallback');
-  check(worker.repairedMask[width - 50] === 0, 'blank foreign component stays open');
+  check(worker.filledRgba[(width - 50) * 4 + 3] === 0, 'blank foreign component stays open');
+  check(!('repairedMask' in worker) && !('sourceExclusionMask' in worker), 'production result omits diagnostic masks');
   check(worker.stats.repairedPixels === 128 * height && worker.stats.maxDistanceReached === 64,
     'wide gap fills beyond the initial 16px, without borrowing from foreign components');
   const center = (midpoint * width + midpoint) * 4;
@@ -41,8 +42,31 @@ export async function run(requested = Number(new globalThis.URLSearchParams(glob
   const context = canvas.getContext('2d'); context.drawImage(bitmap, 0, 0); bitmap.close();
   const restored = context.getImageData(midpoint, midpoint, 1, 1).data;
   check(restored[0] === worker.filledRgba[center] && restored[3] === 255, 'PNG contains exact repaired center');
+  const seamRgba = new Uint8ClampedArray(8 * 4), seamMask = new Uint8Array(8);
+  const seamTopology = new Uint8Array(8), seamRegions = new Uint32Array(8);
+  for (const index of [0, 1, 2]) { seamTopology[index] = 1; seamRegions[index] = 1; }
+  for (const index of [5, 6, 7]) { seamTopology[index] = 1; seamRegions[index] = 2; }
+  seamRgba.set([154, 88, 42, 255], 0); for (const index of [1, 2, 5, 6, 7]) seamMask[index] = 255;
+  const seamPolicy = { ...createVisibleSurfaceCompletionPolicy(8, 1).propagation,
+    coverageSkirtPixels: 0, outputBleedPixels: 0, sourceColorOutlierThreshold: 0 };
+  const seamFirst = await runSurfaceAwareRepair({ width: 8, height: 1, rgba: seamRgba,
+    writeMask: seamMask, topologyMask: seamTopology, topologyRegionIds: seamRegions,
+    ...seamPolicy }, { includeDiagnostics: false, returnUnresolvedInput: true,
+    transferOwnership: { rgba: true, writeMask: true } });
+  check(seamFirst.stats.unresolvedPixels === 3 && seamFirst.continuationSourceRgba && seamFirst.unresolvedMask,
+    'fast path returns zero-copy unresolved continuation only when needed');
+  const seamSecond = await runSurfaceAwareRepair({ width: 8, height: 1,
+    rgba: seamFirst.continuationSourceRgba, writeMask: seamFirst.unresolvedMask,
+    topologyMask: seamTopology, topologyRegionIds: seamRegions, seamLinks: new Uint32Array([2, 5]),
+    ...seamPolicy, maxSeamCrossings: 1 }, { includeDiagnostics: false,
+    accumulatedFilledRgba: seamFirst.filledRgba, transferOwnership: { rgba: true, writeMask: true } });
+  check(seamSecond.stats.unresolvedPixels === 0 && seamSecond.stats.repairedPixels === 3,
+    'bounded physical seam fallback completes only the residual island');
+  for (const index of [1, 2, 5, 6, 7]) check(seamSecond.filledRgba[index * 4 + 3] === 255,
+    'accumulated sparse output retains both repair passes');
   return { resolution: `${width}x${height}`, workerMainByteMismatches: mismatches,
     repairedPixels: worker.stats.repairedPixels, unresolvedPixels: worker.stats.unresolvedPixels,
     globalFallbackPixels: worker.stats.globalFallbackPixels, centerRgb: [...restored.slice(0, 3)],
-    mainMs: main ? Math.round(mainMs) : null, workerMs: Math.round(workerMs), pngBytes: blob.size };
+    boundedSeamContinuation: true, mainMs: main ? Math.round(mainMs) : null,
+    workerMs: Math.round(workerMs), pngBytes: blob.size };
 }

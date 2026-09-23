@@ -11,7 +11,7 @@ type PendingComposite = {
   ownerKey: string;
   layers: CompositeUvLayerInput[];
   resolve: (bitmap: ImageBitmap) => void;
-  reject: (error: Error) => void;
+  reject: (error: unknown) => void;
 };
 
 let worker: Worker | undefined;
@@ -32,30 +32,36 @@ function releaseTaskBitmaps(task: PendingComposite) {
 }
 
 function updateQueueProbe() {
-  document.body.dataset.uvCompositeQueueDepth = String(
-    Number(Boolean(activeComposite)) + queuedComposites.size,
-  );
-  document.body.dataset.uvCompositeReplacedCount = String(replacedCompositeCount);
-  document.body.dataset.uvCompositeCancelledCount = String(cancelledCompositeCount);
+  const probe = document.body.dataset;
+  probe.uvCompositeQueueDepth = String((activeComposite ? 1 : 0) + queuedComposites.size);
+  probe.uvCompositeReplacedCount = String(replacedCompositeCount);
+  probe.uvCompositeCancelledCount = String(cancelledCompositeCount);
 }
 
 function dispatchNextComposite() {
-  if (activeComposite || queuedComposites.size === 0) {
+  if (activeComposite || !queuedComposites.size) {
     updateQueueProbe();
     return;
   }
-  const next = queuedComposites.entries().next().value as [string, PendingComposite] | undefined;
-  if (!next) return;
-  const [ownerKey, task] = next;
-  queuedComposites.delete(ownerKey);
+  const task = queuedComposites.values().next().value!;
+  queuedComposites.delete(task.ownerKey);
   activeComposite = task;
   updateQueueProbe();
-  getWorker().postMessage(
-    { id: task.id, layers: task.layers },
-    {
-      transfer: task.layers.flatMap((layer) => ('bitmap' in layer ? [layer.bitmap] : [])),
-    },
-  );
+  try {
+    getWorker().postMessage(
+      { id: task.id, layers: task.layers },
+      {
+        transfer: task.layers.flatMap((layer) => ('bitmap' in layer ? [layer.bitmap] : [])),
+      },
+    );
+  } catch (error) {
+    activeComposite = undefined;
+    releaseTaskBitmaps(task);
+    task.reject(error);
+    updateQueueProbe();
+    // Avoid recursive dispatch if several queued tasks fail synchronously.
+    queueMicrotask(dispatchNextComposite);
+  }
 }
 
 function getWorker() {
@@ -96,6 +102,23 @@ export function canCompositeUvLayersInWorker() {
   );
 }
 
+/** Keep successful snapshots for transfer; drain and close every input on failure. */
+export function prepareUvCompositeBitmaps(
+  pending: Promise<{ bitmap: ImageBitmap; opacity: number }>[],
+) {
+  return Promise.all(pending).catch(async (error: unknown) => {
+    // Native bitmap decoding cannot be cancelled. Keep the caller's composing
+    // guard until late successes are owned and released, before the next job.
+    await Promise.all(
+      pending.map((decode) => decode.then(
+        (layer) => layer.bitmap.close(),
+        () => {},
+      )),
+    );
+    throw error;
+  });
+}
+
 export function compositeUvLayersInWorker(layers: CompositeUvLayerInput[], ownerKey = 'default') {
   const id = nextRequestId++;
   return new Promise<ImageBitmap>((resolve, reject) => {
@@ -109,13 +132,6 @@ export function compositeUvLayersInWorker(layers: CompositeUvLayerInput[], owner
     queuedComposites.set(ownerKey, task);
     dispatchNextComposite();
   });
-}
-
-export function compositeUvLayerUrlsInWorker(
-  layers: Array<{ imageUrl: string; opacity: number }>,
-  ownerKey = 'default',
-) {
-  return compositeUvLayersInWorker(layers, ownerKey);
 }
 
 /**

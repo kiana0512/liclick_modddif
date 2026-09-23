@@ -5,10 +5,10 @@ import { compareUvLayersForComposition } from './uvLayerComposition';
 
 /**
  * Increment when a merged UV produced by an older editor can no longer be
- * trusted to match the live layer stack. Version 10 includes native UV repaint
- * above projections. Historical UV assets remain authored underlays.
+ * trusted to match the live layer stack. Version 12 also includes ordinary
+ * user-created UV paint layers; their UUID/name is not a repaint discriminator.
  */
-export const UV_MERGE_COMPOSITION_VERSION = 11;
+export const UV_MERGE_COMPOSITION_VERSION = 13;
 
 export function compositeRenderedColorMaskUnderInPlace(
   frontMask: Uint8Array,
@@ -205,22 +205,32 @@ export function isContentAwareUvUnderlay(
   );
 }
 
+/** Manual repaint writes into ordinary UV rows without changing their role.
+ * Keep imported/merged bases and legacy content-aware fallbacks underneath. */
+export function isUvPaintLayer(
+  layer: Pick<Layer, 'id' | 'type' | 'role' | 'generationId'>,
+) {
+  return layer.type === 'uv' && !isContentAwareUvUnderlay(layer) &&
+    layer.role !== 'base-color' && layer.role !== 'merged-uv' && layer.role !== 'local-repaint-draft' &&
+    (isNativeUvRepaintLayer(layer) || !layer.role);
+}
+
 export function isFlattenableUvMergeSource(
   layer: Pick<Layer, 'id' | 'type' | 'role' | 'generationId' | 'imageUrl'>,
 ) {
   return Boolean(
     layer.type === 'uv' &&
       layer.imageUrl &&
-      (isContentAwareUvUnderlay(layer) || layer.role === 'merged-uv' || isNativeUvRepaintLayer(layer)),
+      (isContentAwareUvUnderlay(layer) || layer.role === 'merged-uv' || isUvPaintLayer(layer)),
   );
 }
 
-/** Underlays go behind projection first; native repaint then covers that result
+/** Underlays go behind projection first; authored UV paint then covers that result
  * bottom-to-top, exactly as the viewport's authored UV overlay stack. */
 export function compareUvMergeSources(left: Layer, right: Layer) {
-  const over = Number(isNativeUvRepaintLayer(left)) - Number(isNativeUvRepaintLayer(right));
+  const over = Number(isUvPaintLayer(left)) - Number(isUvPaintLayer(right));
   if (over) return over;
-  if (isNativeUvRepaintLayer(left)) return compareUvLayersForComposition(left, right, 'bottom-to-top');
+  if (isUvPaintLayer(left)) return compareUvLayersForComposition(left, right, 'bottom-to-top');
   return Number(isContentAwareUvUnderlay(left)) - Number(isContentAwareUvUnderlay(right)) ||
     compareUvLayersForComposition(left, right, 'top-to-bottom');
 }
