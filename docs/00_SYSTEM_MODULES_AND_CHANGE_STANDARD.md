@@ -413,7 +413,7 @@ The baseline update above supersedes older descriptions in this section where th
 | `ALG-LR-003` 并行深度保护 | `2.0.0` | 1K linear-view depth 与远端请求并行；失败保留生成结果但明确 warning，几何保护降级 |
 | `ALG-LR-004` 历史增强边界谐调 | `14.0.0-compatible` | 仅读取/重建旧 v6-v14 Generation 和图层；新 `direct-v1` 任务不调用 |
 | `ALG-LR-005` 历史兼容边界谐调 | `5.0.0-compatible` | 仅保留旧 v3-v5 全幅合成与 legacy 切换的读取兼容；新 `direct-v1` 任务不调用 |
-| `ALG-LR-006` 表面画笔重投影 | `2.1.0` | raycast 命中表面，投射到 frozen source UV；最小绝对 face-on 0.01；世界半径 0.004-0.12 包围盒比例；texture radius 1-72；迁移与回退见 CHG-20260923-REPAINT-FACING-THRESHOLD |
+| `ALG-LR-006` 表面画笔重投影 | `2.2.0` | raycast 命中表面，投射到 frozen source UV；最小绝对 face-on 0.03；世界半径 0.004-0.12 包围盒比例；texture radius 1-72；迁移与回退见 CHG-20260923-REPAINT-FACING-THRESHOLD |
 | `ALG-LR-007` 低延迟实时覆盖 | `2.2.2`（显示所有权以本次源码校正为准） | 当前源码在应用画笔激活时使用 depth-aware exact overlay，同 ID resident twin 临时静音；退出后仍由正式材质按图层顺序显示。新建顶层 preview 在首笔发布前不加入背景栈；位于 priority 层下方的 preview 才提前加入 ordered stack。pointer-down 只消费已准备的资源，pointer-up 保留已有 `contentRevision` 并发布累计蒙版。新生成重绘行直接切换橡皮擦时，仅在 source 与实时 composite 双重证明拥有当前行时沿用热源；冷恢复和历史行切换仍按 `projectionLayerId` 隔离。不改变 source 像素、capture projector、depth/surface-lock、颜色、blend、1024 live 上限或显示所有权 |
 | `ALG-LR-008` 延迟投影持久化 | `3.0.0`（作者授权改为内向羽化，见本次变更卡） | interactive UV bake 固定关闭；生图前 Project Command snapshot 后台执行。蒙版工具/生图开始即并行编译并持有 exact overlay 程序，预读作者蒙版；返图颜色缩放与 falloff 并行。内存 Session 按 Generation/目标复用活动任务。高清读取和 GPU 准备有 20 秒预算；仅背景栈已有行进入 resident 等待，单层直接蒙版登记完整、辅助网格排除，交接失败明确结束会话。Session 驱动按钮，DOM 仅诊断；pointer-up 两帧内发布权威图层行，idle 3000ms 仅合并持久化并设置 needsRebake=true；保存前必须把 live canvas 编码上传成 verified asset，runtime URL 不得进入 Project Revision；提交/GPU 准备调度含隐藏页兜底，不替代真实呈现交接；返图三纹理上传之间显式让帧并检查取消 |
 | `ALG-LR-009` Inward Crossfade 栈合成 | `1.0.0` | 连续重绘层向内部交叉淡化，避免普通 alpha stacking 在边缘重复显露接缝 |

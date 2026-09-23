@@ -741,7 +741,7 @@ assert.match(
 );
 assert.match(
   viewportCanvasInteractionSource,
-  /LOCAL_REPAINT_MINIMUM_FACE_ON = 0\.01/,
+  /LOCAL_REPAINT_MINIMUM_FACE_ON = 0\.03/,
   'Local repaint projection must feather inward before reaching grazing side faces.',
 );
 assert.match(

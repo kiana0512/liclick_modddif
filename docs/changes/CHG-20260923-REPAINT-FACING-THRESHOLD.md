@@ -1,5 +1,11 @@
 # 局部重绘朝向门槛 0.01
 
+## 后续调整：0.03（ALG-LR-006 v2.2.0）
+
+用户再次明确要求将门槛从 0.01 改为 0.03，并推送 master、部署 A100。以下 v2.1.0 审计的输入、调用链、空间、CPU/GPU/Worker/shader、持久化和导出边界继续适用，仅共享常量与测试期望改为 0.03；GPU 羽化范围相应为 0.03→0.11，宽度仍为 0.08。新建/重新发布层写入 0.03，旧图层及已烘焙资产不批量迁移。回退恢复 0.01；负责人 Codex，状态 production。针对最终提交执行完整 verify:prepush，发布后校验 A100 版本、产物哈希及 readiness。
+
+## 初次调整记录
+
 - 模块：UI-06/UI-10 → M08/M06；ALG-LR-006 表面画笔重投影 / Surface brush reprojection v2.1.0，production。负责人：Codex；用户明确指定门槛 0.01。
 - 输入：冻结生成相机、表面命中与法线、source/mask/depth。无量纲最小绝对 face-on 从 0.08 改成 0.01；沿用捕获空间、颜色空间和投影矩阵。
 - CPU：无 depth 的落笔保护消费共享常量；带 depth 的既有绕过规则保持。GPU/shader：预览与新建/编辑发布的局部重绘层通过 minimumProjectionFacing 消费同一常量；羽化宽度仍为 0.08。
