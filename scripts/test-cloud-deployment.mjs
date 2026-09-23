@@ -136,8 +136,12 @@ test('secret preparation preserves existing keys and blocks missing or multiline
     assert.doesNotMatch(success.stdout + success.stderr, /test-only-key|test-access|test-secret/);
     const missing = run({ ...valid, LICLICK_CLOUD_DATABASE_URL: '' });
     assert.notEqual(missing.status, 0);
+    // Injects through a variable the script still writes. Object storage
+    // moved out of this script (endpoint/bucket are plain ConfigMap config,
+    // AK/SK are an out-of-band cluster Secret), so LICLICK_OBJECT_STORAGE_*
+    // no longer reaches append_env and can't exercise its newline guard.
     for (const newline of ['\n', '\r']) {
-      const bad = run({ ...valid, LICLICK_OBJECT_STORAGE_BUCKET: 'test' + newline + 'INJECTED=true' });
+      const bad = run({ ...valid, QWEN3_VL_PLUS_API_KEY: 'test' + newline + 'INJECTED=true' });
       assert.notEqual(bad.status, 0);
       assert.ok(!fs.readFileSync(output, 'utf8').includes('INJECTED=true'));
     }

@@ -1075,3 +1075,29 @@ Source: `c2ef76672a28e494fcf8322042d2cb96996b50fe`. The records below are preser
 2026-09-22 CHG-20260922-UV-REPAINT-ERASER-LIVE：M08/M06/M07/M09，ALG-ERASE-001 显示生命周期 UV-ERASER-LIVE/1.0.0。完整 UV 源就绪后启用局部重绘图层实时橡皮擦预览，保留占位图保护，修正预览撤销/重做与连续笔迹初始化。1K/4K 真实浏览器回归通过；像素公式、Worker、导出、Schema 与持久化版本不变，无迁移；测试限制与回滚见对应变更卡。
 
 2026-09-22 CHG-20260922-REPAINT-FRINGE-ERASER：M06/M08/M07/M09，ALG-ERASE-001 显示生命周期 UV-ERASER-LIVE/1.1.0；修正半透明 UV 的白膜底色泄漏，排除 native 重绘重复普通擦除预热，恢复 UV 实时刷新使用完整分辨率脏区上传。持久化版本/Schema 不变，无迁移；验证、现有测试失败与回滚见对应变更卡。
+
+## 2026-09-23 origin/release 合并补录
+
+2026-09-23 master/release 集成（M15，`CLOUD-DEPLOYMENT` v1.0.0）：将已通过 master 流水线 #636940 的 `673e93ff` 合入 `release`，保留线上 `ca092b08` 的 Ceph SHA-256 验证、数据库、对象存储、K8s/Nginx、IDaaS 与资源配置。资产传输回归保留 release 的完整性检查及 master 的 Fetch 禁止端口规避；维护记录保留双方历史。本次集成不新增算法语义、Schema 或资产迁移，业务版本与缓存失效规则沿用 master 各变更卡，完整分辨率、QA、Command/CAS/ownership/verified assets 不放宽。最终合并提交必须通过完整 verify:prepush 后以 `[deploy]` 推送；server/web/db-push 使用相同不可变 SHA，部署后核对流水线及正式站 release/health/ready。失败时整组回滚到 `ca092b08` 镜像，保留数据库、对象资产和 PVC；此条不预先宣称部署成功。
+
+2026-09-16 master/release 集成（M15，`CLOUD-DEPLOYMENT` v1.0.0）：将 `master` 提交 `0bb0e6ec` 合入 `release`，保留 release 现有 K8s、Nginx、数据库、对象存储、Ceph 完整性、IDaaS 与资源配置。业务源码采用 master 的视口输入、投影选区显示、局部重绘、生成稳定性和 UV 性能修复；完整分辨率、QA、Project Command、Revision CAS、ownership、verified assets、持久化与导出约束不放宽，无 Schema 或资产迁移。最终 release 合并提交以 `[deploy]` 触发 server/web 同一不可变 SHA 镜像与串行部署；失败时 server/web/db-push 一同回滚到 `35db5bc4` 对应镜像，保留数据库、工程、对象资产和 PVC。线上结果以 release 流水线及 `/api/release`、health、ready 核验为准。
+
+2026-09-14 master/release 集成（M15，`CLOUD-DEPLOYMENT` v1.0.0）：master 流水线 #631284 对提交 `ba5954d8` 的 verify、build、containerize 全部通过后，将该提交正常合入 release；保留 release `ad569f3` 的生产 K8s、Nginx、Ceph 完整性、对象存储、数据库、IDaaS 和部署资源配置。投影仍只作为生成 UV 的输入，视口仅发布已验证 UV；完整分辨率、Top-K、QA、Project Command、Revision CAS、ownership、verified assets、持久化与导出不放宽。release 合并提交以 `[deploy]` 触发同一不可变 SHA 镜像和串行部署；失败时回滚至 `ad569f3` 对应镜像，保留数据库、工程、对象资产和 PVC，无 Schema 或资产迁移。
+
+2026-09-12 master/release 集成（M15，`CLOUD-DEPLOYMENT` v1.0.0）：在 master 流水线 #630472 对提交 `6f263364` 的 8 项 verify/build/container 检查全部通过后，将 `origin/master` 合入 release；保留 release `b8b3644` 的生产 K8s、Nginx、Ceph 完整性、对象存储、数据库和部署配置。业务源码与算法版本采用 master 变更卡，Project Command、Revision CAS、ownership、verified assets、完整分辨率和 QA 不放宽，无新增 Schema 或资产迁移。release 提交以 `[deploy]` 触发 server/web 同一不可变 SHA 镜像和 K8s 串行发布；失败时 server/web/db-push 一同回滚至 `b8b3644` 对应镜像，保留数据库、工程、对象资产和 PVC。线上结果以 release 流水线及 `/api/release`、health、ready 核验为准。
+
+2026-09-11 master/release 集成（M15，CLOUD-DEPLOYMENT v1.0.0）：本次发布合入 master c0bef7f，保留 release d58e414 的生产资源、Nginx、Ceph 完整性校验及对象存储配置。仅维护文档发生冲突，双方记录均保留；业务算法和缓存版本沿用对应变更卡，无新增 Schema 或资产迁移。最终 release 提交须通过正式包体检查及 CI，部署结果以上线 SHA 与健康检查为准。失败时将 server/web/db-push 一同恢复至 d58e414 镜像，保留数据库、工程、对象资产和 PVC。
+
+2026-09-10 master/release 集成（M15）：合入已通过 CI #629195 的 master 71216521；保留 release b226dfb 的 Ceph 校验、生产对象存储、数据库与部署配置。仅维护文档存在合并冲突，两侧记录均保留。算法版本与缓存版本沿用 master 各变更卡，无新增 Schema 或资产迁移；发布失败可恢复 b226dfb 对应镜像，保留现有工程与资产。实际发布结果以本次 release 流水线及线上版本核验为准。
+
+2026-09-08 master/release 集成（M15）：合入 master a112655，包括 b374a9f/a0093a3 橡皮材质驻留交接、a7fa3b9 GPT2 提示词和 a112655 远端多视图逐视角生成；完整保留 release f3870f3 的 Ceph 流式 SHA-256 校验、内网 RGW 配置和生产部署基础设施。仅维护文档产生合并冲突，业务代码保持各分支已提交实现。算法版本沿用各变更卡，无新增 Schema 或数据迁移；回退整批镜像时保留 Ceph 修复与生产配置，已有工程/资产不删除。集成本地验证：88 项 Web/14 项 Server 回归、全仓 typecheck、lint（0 errors，15 条既有 warnings）、6 项部署策略、contracts/边界检查与完整 Cloud 构建通过；80 chunks / 3,133,800 bytes，通过原包体门禁，OAuth/资产/重启部署模拟通过。Ceph 前一批 f3870f3 的 CI #627368（含 deploy）已全部成功；本次新增功能的生产部署和真实项目验收以新流水线与维护者实测为准。
+
+变更卡 `CHG-20260908-CEPH-SHA256-READBACK`：M14，协作 M02/M15，`ALG-ASSET-VERIFY-001` v1.1.0。基于 release de1507c 保留效率组内网 RGW/公开浏览器地址分离。缺少附加 checksum 时流式读回验证实际 SHA-256；每进程最多 4 项执行、16 项等待，60 秒预算含排队/HEAD/GET，同用户同资产完成请求合并；前端完成接口等待上限 75 秒，校验完立即返回。完整性失败仍保持 pending，不放宽 verified、ownership、Revision CAS 或 Command 幂等性。线协议 v1/Schema 不变，无迁移；回退会恢复旧 Ceph 拒绝，但保留资产数据。真实 Ceph 与生产体验待验收，详见对应变更卡。
+
+| `2.20.99` | 2026-09-14 | `ad569f3 + ba5954d8` | M15 release 集成：master 流水线 #631284 的 verify/build/containerize 全部通过后正常合入 release，保留生产部署、对象存储、数据库、IDaaS 和资源配置；以 `[deploy]` 触发不可变 SHA 发布。算法、完整分辨率、QA、Schema、CAS、ownership、verified assets 与导出不放宽，无迁移；失败回滚至 `ad569f3`。 |
+
+| `2.20.83` | 2026-09-12 | `b8b3644 + 6f263364` | M15 release 集成：master 流水线 #630472 全绿后合入 release，保留既有生产 K8s/Nginx/Ceph/对象存储/数据库部署链；以 `[deploy]` 发布 server/web 同一不可变 SHA。算法语义、完整分辨率、QA、Schema、CAS、ownership 与 verified assets 不变，无迁移；失败时整组回滚至 `b8b3644`，保留数据库、工程资产和 PVC。 |
+
+2026-09-09 release 集成（M15）：合入 master 942417c，保留 release dff6ba6 的 Ceph 完整性验证、生产配置及部署策略。算法版本沿用各变更卡，不新增 Schema 或数据迁移。UV 90% 等待和复杂图层交互峰值仍列为下次优化，未宣称零卡顿。回滚使用上一 release dff6ba6 的前后端同版本镜像，保留生产数据与资产。发布结果以本次 release 流水线及部署核验为准。
+
+2026-09-09 release 增量发布（M15/M04）：同步 master 405f7f51 的 MODELVIEW-CONNECTION-LIFECYCLE v1.0.1 修复，保留 release 8a6d0e21 的生产配置及 Ceph 验证。无新增算法语义或数据迁移；回退前后端至 8a6d0e21 同版本镜像，保留工程和资产。

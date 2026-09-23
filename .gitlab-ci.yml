@@ -204,7 +204,11 @@ deploy:k8s:
       FEISHU_OAUTH_CLIENT_ID=$LI3D_FEISHU_CLIENT_ID
       FEISHU_OAUTH_CLIENT_SECRET=$LI3D_FEISHU_CLIENT_SECRET
       EOF
-    - test "$LI3D_CLOUD_DATA_READY" = "true"
+    # The LI3D_CLOUD_DATA_READY gate that used to sit here guarded against
+    # deploying the Cloud backend before legacy PVC/SQLite data had been
+    # migrated into PostgreSQL. That migration was explicitly dropped from
+    # scope (2026-09-03): the new database starts empty and old projects are
+    # not carried over, so the gate had nothing left to protect.
     - sh deploy/prepare-cloud-secret.sh
     # Set immutable tags before any cluster mutation.
     - 'sed -i "s/newTag: .*/newTag: $IMAGE_TAG/" "$KUSTOMIZE_OVERLAY/kustomization.yaml"'

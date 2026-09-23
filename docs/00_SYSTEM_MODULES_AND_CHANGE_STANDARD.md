@@ -213,7 +213,7 @@ Cloud 权威实现使用 PostgreSQL JSONB 当前快照和不可变 Revision 表�
 
 ### 4.4 对象存储协议
 
-`ASSET_TRANSFER_PROTOCOL_VERSION=1`，单资产最大 `160 MiB`。类别固定为 models、references、captures、generations、layers、baked。浏览器计算 SHA-256，请求绑定 user/project/category/filename/MIME/size/hash 的上传意图，使用短期签名 PUT 上传；完成接口通过 HEAD 校验长度、MIME 和 checksum 后把资产从 pending 置为 verified。对象 key 为 `users/<sha256(userId)>/projects/<projectId>/<assetId>/<safe-name>`。下载先校验 ownership，再返回短时签名 GET；访问对象存储时 `credentials: omit`。
+`ASSET_TRANSFER_PROTOCOL_VERSION=1`，单资产最大 `160 MiB`。类别固定为 models、references、captures、generations、layers、baked。浏览器计算 SHA-256，请求绑定 user/project/category/filename/MIME/size/hash 的上传意图，使用短期签名 PUT 上传；完成接口执行 `ALG-ASSET-VERIFY-001` v1.1.0：HEAD 校验长度、MIME；有 SHA-256 checksum 时直接比对，缺失时通过配置的内网 endpoint 流式 GET 计算实际 SHA-256，全部匹配才把资产从 pending 置为 verified。明确 checksum 不匹配不得读回放行，metadata/ETag 不替代 SHA-256。对象 key 为 `users/<sha256(userId)>/projects/<projectId>/<assetId>/<safe-name>`。下载先校验 ownership，再返回短时签名 GET；访问对象存储时 `credentials: omit`。
 
 ### 4.5 浏览器保存调度 `SAVE-SCHEDULER` v1.1.0
 

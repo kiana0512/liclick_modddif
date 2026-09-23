@@ -10,6 +10,7 @@ import { serverConfig } from '../config.js';
 import { projectRepository } from '../repositories/projectRepository.js';
 import { postgresControlRepository } from '../repositories/postgresControlRepository.js';
 import type { SavedAsset } from '../types/asset.js';
+import { ObjectIntegrityError, verifyObjectIntegrity } from './objectIntegrityService.js';
 import { createS3Presigner } from './s3PresignedUrlService.js';
 import {
   createId,
@@ -93,6 +94,18 @@ function checksumBase64(sha256: string) {
 function presigner() {
   const config = assertObjectStorageConfigured();
   return createS3Presigner(config);
+}
+
+// For requests this server makes itself, rather than URLs handed to a browser.
+// Defaults to the same endpoint, so behaviour is unchanged unless
+// LICLICK_OBJECT_STORAGE_INTERNAL_ENDPOINT is set; when it is, verification
+// reaches the storage service directly instead of looping back out through
+// the public ingress (and stops depending on public DNS/TLS resolving from
+// inside the cluster). The signature covers `host`, so this must be signed
+// against whichever endpoint the request is actually sent to.
+function internalPresigner() {
+  const config = assertObjectStorageConfigured();
+  return createS3Presigner({ ...config, endpoint: config.internalEndpoint });
 }
 
 function objectKeyFor(input: {
@@ -247,6 +260,8 @@ export async function saveProxiedObjectStorageAsset(input: {
   return result.asset;
 }
 
+const pendingCompletions = new Map<string, Promise<{ asset: SavedAsset; replayed: boolean }>>();
+
 export async function completeAssetUploadIntent(
   userId: string,
   projectId: string,
@@ -268,45 +283,36 @@ export async function completeAssetUploadIntent(
   if (Date.parse(record.expiresAt) < Date.now()) {
     throw new AssetTransferError('Asset upload intent has expired.', 410, 'ASSET_INTENT_EXPIRED');
   }
-  const checksumModeHeaders = { 'x-amz-checksum-mode': 'ENABLED' };
-  const headUrl = presigner()({
-    method: 'HEAD',
-    objectKey: record.objectKey,
-    expiresInSeconds: Math.min(120, config.signedUrlTtlSeconds),
-    headers: checksumModeHeaders,
-  });
-  const response = await fetch(headUrl, { method: 'HEAD', headers: checksumModeHeaders });
-  if (!response.ok) {
-    throw new AssetTransferError(
-      `Object storage did not confirm the uploaded asset (${response.status}).`,
-      409,
-      'ASSET_OBJECT_NOT_READY',
-    );
-  }
-  const actualSize = Number(response.headers.get('content-length'));
-  const actualMime = response.headers.get('content-type')?.split(';')[0]?.trim().toLowerCase();
-  const actualChecksum = response.headers.get('x-amz-checksum-sha256');
-  if (actualSize !== record.sizeBytes || actualMime !== record.mimeType) {
-    throw new AssetTransferError(
-      'Uploaded asset metadata does not match the signed intent.',
-      409,
-      'ASSET_METADATA_MISMATCH',
-    );
-  }
-  if (actualChecksum !== checksumBase64(record.sha256)) {
-    throw new AssetTransferError(
-      'Object storage checksum verification failed.',
-      409,
-      'ASSET_CHECKSUM_MISMATCH',
-    );
-  }
-  const verified: StoredAssetTransfer = {
-    ...record,
-    status: 'verified',
-    verifiedAt: new Date().toISOString(),
-  };
-  await persistTransfer(verified);
-  return { asset: savedAsset(verified), replayed: false };
+  const key = JSON.stringify([userId, projectId, intentId]);
+  const existing = pendingCompletions.get(key);
+  if (existing) return existing;
+  const completion = (async () => {
+    try {
+      await verifyObjectIntegrity({
+        ...record,
+        url: (method, headers) => internalPresigner()({
+          method, headers, objectKey: record.objectKey,
+          expiresInSeconds: Math.min(120, config.signedUrlTtlSeconds),
+        }),
+      });
+    } catch (error) {
+      if (error instanceof ObjectIntegrityError) {
+        throw new AssetTransferError(error.message, error.statusCode, error.code);
+      }
+      throw error;
+    }
+    const verified: StoredAssetTransfer = {
+      ...record,
+      status: 'verified',
+      verifiedAt: new Date().toISOString(),
+    };
+    await persistTransfer(verified);
+    return { asset: savedAsset(verified), replayed: false };
+  })();
+  pendingCompletions.set(key, completion);
+  try { return await completion; }
+  finally { if (pendingCompletions.get(key) === completion) pendingCompletions.delete(key); }
+
 }
 
 export async function createAssetDownloadUrl(

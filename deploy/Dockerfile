@@ -87,6 +87,18 @@ ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["sh", "-c", "node deploy/validate-runtime-env.mjs && exec node apps/server/dist/index.js"]
 
 FROM ${NGINX_IMAGE} AS web
+# The base image ships `worker_processes auto`, and nginx resolves "auto" from
+# the HOST's CPU count — it does not read the cgroup quota. On these 64-core
+# nodes that started 64 worker processes to share the pod's 1-CPU limit
+# (verified in-pod 2026-09-10: nproc=64, 64 workers, cpu.max 50000 100000).
+# Pin it to 8. This has to happen here rather than in default.conf.template:
+# worker_processes is a main-context directive, and the entrypoint's envsubst
+# only renders templates into conf.d, which is included inside `http {}`.
+# The grep is the point of the `&&` — if a future base image renames or drops
+# the directive the sed would silently no-op, so fail the build instead.
+# Not using NGINX_ENTRYPOINT_WORKER_PROCESSES_AUTOTUNE: it derives the count
+# from the CPU quota, which would give 1, not 8.
+RUN sed -i 's/^worker_processes .*/worker_processes 8;/' /etc/nginx/nginx.conf && grep -qx 'worker_processes 8;' /etc/nginx/nginx.conf
 COPY deploy/docker/nginx/default.conf.template /etc/nginx/templates/default.conf.template
 COPY --from=build /repo/apps/web/dist /usr/share/nginx/html
 ENV BACKEND_HOST=liclick-server BACKEND_PORT=4517
