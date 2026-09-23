@@ -4,7 +4,7 @@ import { useAuthStore } from '@/stores/authStore';
 import type { ReferenceImage } from '@/types/project';
 import { sha256Hex } from '@/utils/sha256';
 
-// REFERENCE-LIGHTING/2: stable server job is the private source/result binding.
+// REFERENCE-LIGHTING/2.0.1: stable server job is the private source/result binding.
 // No component abort signal owns the shared processing request.
 const pending = new Map<string, Promise<string>>();
 const digests = new Map<string, Promise<string>>();
@@ -43,7 +43,18 @@ const pause = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, m
 async function identity(projectId: string, reference: ReferenceImage) {
   const bytes = new TextEncoder().encode(JSON.stringify(['lighting-v2', useAuthStore.getState().user?.id, projectId, reference.id, await contentDigest(reference.url)]));
   const key = `reference-lighting-${await sha256Hex(bytes)}`;
-  return `${key}-g${Number(localStorage.getItem(key) ?? 0)}`;
+  const attempt = Number(localStorage.getItem(key) ?? 0);
+  let id = `${key}-g${attempt}`;
+  if (!pending.has(id)) {
+    // Only the old, explicit pre-upload failure is safe to migrate. Never
+    // replay an accepted/ambiguous paid task or invalidate successful bindings.
+    const job = await createLiclickApiClient().getGenerationJob(id).catch(() => undefined);
+    if (job?.status === 'failed' && !job.taskId && job.error?.includes('当前服务未配置大图对象存储上传。未提交生成任务')) {
+      localStorage.setItem(key, String(attempt + 1));
+      id = `${key}-g${attempt + 1}`;
+    }
+  }
+  return id;
 }
 
 async function processReference(projectId: string, reference: ReferenceImage, id: string, signal: AbortSignal) {

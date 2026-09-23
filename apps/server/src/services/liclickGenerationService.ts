@@ -4,7 +4,7 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { generationFramingRatio, generationOutputSize, type GenerationFraming } from '@liclick/contracts';
 import { callAtlasToolJson, parseJsonFromOutput } from '../auth/atlasAuthService.js';
-import { preparePixelExactUploadArguments } from './pixelExactReferenceUpload.js';
+import { prepareMaterialReferenceUploadArguments, preparePixelExactUploadArguments } from './pixelExactReferenceUpload.js';
 import { prepareRepaintColorUploadArguments } from './repaintColorReferenceUpload.js';
 
 type ReferenceInput = {
@@ -735,6 +735,7 @@ async function uploadReference(
   _tempDir: string,
   atlasContext: LiclickAtlasContext = {},
   colorGuide = false,
+  materialReference = false,
 ): Promise<UploadedReference> {
   const personalAtlasHomeDir = atlasContext.atlasHomeDir?.trim();
   if (!personalAtlasHomeDir) {
@@ -745,7 +746,7 @@ async function uploadReference(
   if (reference.url.startsWith('data:')) {
     const { buffer } = dataUrlToBuffer(reference.url);
     const digest = createHash('sha256').update(buffer).digest('hex');
-    cacheKey = `${personalAtlasHomeDir}:image:${colorGuide ? 'gpt-color-v2:' : ''}${digest}`;
+    cacheKey = `${personalAtlasHomeDir}:image:${materialReference ? 'material-v1:' : colorGuide ? 'gpt-color-v2:' : ''}${digest}`;
   } else {
     cacheKey = `${personalAtlasHomeDir}:image-url:${reference.url}`;
     toolArguments.url = reference.url;
@@ -755,7 +756,9 @@ async function uploadReference(
   if (!uploadPromise) {
     uploadPromise = (async () => {
       if (reference.url.startsWith('data:')) {
-        Object.assign(toolArguments, colorGuide
+        Object.assign(toolArguments, materialReference
+          ? await prepareMaterialReferenceUploadArguments(reference.url, atlasContext)
+          : colorGuide
           ? await prepareRepaintColorUploadArguments(reference.url)
           : await preparePixelExactUploadArguments(reference.url, atlasContext));
       }
@@ -846,6 +849,15 @@ export function isGptTextureColorGuide(input: GenerateImageInput, index: number)
     /^Current model view - \S/.test(input.references?.[0]?.name ?? '');
 }
 
+export function isMaterialReference(input: GenerateImageInput, index: number) {
+  if (index < 0 || index >= (input.references?.length ?? 0)) return false;
+  if (input.referencePipeline) return input.references?.length === 1;
+  if (input.workflow === 'liclick') return true;
+  if (isGptTextureColorGuide(input, 0)) return index >= 1;
+  if (isGptRepaintColorGuide(input, 0)) return index >= 2;
+  return false;
+}
+
 export async function submitLiclickImageJob(
   input: GenerateImageInput,
   atlasContext: LiclickAtlasContext = {},
@@ -857,7 +869,8 @@ export async function submitLiclickImageJob(
     const references = (input.references ?? []).slice(0, 10);
     const uploadedReferences = await Promise.all(
       references.map((reference, index) => uploadReference(reference, tempDir, atlasContext,
-        isGptRepaintColorGuide(input, index) || isGptTextureColorGuide(input, index))),
+        isGptRepaintColorGuide(input, index) || isGptTextureColorGuide(input, index),
+        isMaterialReference(input, index))),
     );
     const { model, extraParams } = buildExtraParams(input, uploadedReferences);
     const prompt = buildSubmissionPrompt(input, model);

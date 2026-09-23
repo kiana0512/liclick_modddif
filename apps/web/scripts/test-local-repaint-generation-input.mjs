@@ -395,15 +395,19 @@ for (let i = 0; i < w * h; i++) {
     'Selected pixels are opaque white; every protected pixel stays byte-identical');
 }
 const radius = workerRuntime.result.dilationRadius, feather = workerRuntime.result.featherRadius;
-assert.equal(radius, 0, 'Local repaint does not expand the sampling mask');
-assert.equal(feather, 0, 'No outward blur may reintroduce a margin');
+assert.ok(radius > 0, 'Local repaint restores the remote sampling margin');
+assert.ok(feather > 0, 'Remote sampling margin has a feathered edge');
+let expandedPixels = 0, featheredPixels = 0;
 const expectedMask = boxBlur(dilateMask(core, w, h, radius, bounds), w, h, feather,
   { minX: Math.max(0,bounds.minX-radius), minY: Math.max(0,bounds.minY-radius), maxX: Math.min(w-1,bounds.maxX+radius), maxY: Math.min(h-1,bounds.maxY+radius) });
 for (let i = 0; i < expectedMask.length; i++) {
   const expected = core[i] ? 255 : expectedMask[i];
-  assert.equal(expected, core[i] ? 255 : 0, 'No submitted coverage outside the effective selection');
-  assert.deepEqual([...submitted.subarray(i*4,i*4+4)], [expected,expected,expected,255], 'Local sampling mask follows selection without expansion');
+  if (!core[i] && submitted[i*4] > 0) expandedPixels++;
+  if (!core[i] && submitted[i*4] > 0 && submitted[i*4] < 255) featheredPixels++;
+  assert.deepEqual([...submitted.subarray(i*4,i*4+4)], [expected,expected,expected,255], 'Local sampling mask restores expansion and feathering');
 }
+assert.ok(expandedPixels > 0, 'Submitted mask extends beyond the write selection');
+assert.ok(featheredPixels > 0, 'Submitted margin contains partial coverage');
 assert.equal(closed, 2, 'Both transferred bitmaps are released');
 await workerRuntime.onmessage({ data: { id: 2, mode: 'local', currentEffect: bitmap(original), inputMask: bitmap(new Uint8ClampedArray(selection.length)) } });
 assert.match(workerRuntime.result.error, /蒙版为空/);
@@ -492,4 +496,4 @@ const runEnabled = () => new Function(...Object.keys(enabledScope), `return (asy
 assert.equal(await runEnabled(), 'polished repair');
 assert.equal(await runEnabled(), 'polished repair');
 assert.equal(polishCalls, 1, 'Explicit enable runs Qwen once; same frozen input reuses the new-policy cache');
-console.log('Local repaint: pure white pixels, zero extra mask expansion, no clay input, default-off prompt/cache/network and existing morphology tests passed.');
+console.log('Local repaint: pure white pixels, restored remote mask expansion and feathering, no clay input, default-off prompt/cache/network and existing morphology tests passed.');

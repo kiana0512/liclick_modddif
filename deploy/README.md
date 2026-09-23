@@ -29,6 +29,25 @@ Cloud artifact 和既有包体门禁。前后端使用相同 release ID、Git SH
 Atlas SkillHub 2.9.1 从现有公司 npm registry 安装到服务端镜像，仅托管每用户授权。
 不导入个人密钥，不启用共享测试账号，不恢复已退休安装器路由。
 
+### Blender 导入预处理运行时
+
+`BLENDER-SERVER-RUNTIME/1.0.0`：server 镜像自带官方 Blender 5.1.2 Linux x64，
+Dockerfile 固定下载地址及 SHA-256，安装 Linux 动态库，并设置
+`BLENDER_EXECUTABLE_PATH=/opt/blender/blender`。不依赖宿主机安装或旧 A100 tools 目录挂载；
+镜像仅支持 amd64，其他架构会在构建时明确失败。生产 ConfigMap/Secret 不应覆盖此变量为旧宿主机路径。
+
+在最终 server 阶段切换为 UID/GID 10001 后执行 `node deploy/verify-blender-runtime.mjs`，
+加载实际编译产物里的 UV 修复脚本，验证 GLB 导入、合并顶点、智能 UV 展开、材质、导出回读，
+以及破坏表面的输入必须被 QA 拒绝；临时测试文件始终清理。没有 GPU 或显示服务也须通过。
+版本错误、动态库缺失、权限错误、超时或 QA 失败都阻止镜像发布，不能只用 `/api/health` 代替验收。
+
+现有 master `container:verify` 与 release `build:server` 自动执行此 Dockerfile 门禁，
+无需增加 CI Secret、宿主机服务或 Kubernetes 挂载。首次构建需要访问 `download.blender.org`
+（约 396 MB 安装包），后续复用独立下载层缓存；若 Runner 禁止外网，由效率组提供同 SHA-256 的内部制品源。
+本地可在 server 编译后设置相同版本的 `BLENDER_EXECUTABLE_PATH` 运行该验收脚本。
+此项仅补齐现有导入修复/减面的依赖，不替换 Asset V4 的生产 Auto UV/拓扑服务。
+部署和回滚只切换镜像，不迁移数据库或重写既有模型；回退到缺少 Blender 的旧镜像会再次失去导入修复能力。
+
 现有 db-push 名称保留，但命令改为配置校验及 migrate-cloud-projects.mjs；
 使用已有事务和 advisory lock 执行 SQL 001–003，不运行旧 SQLite Prisma db push。
 启动缺少 PostgreSQL 或 HTTPS 对象存储配置会明确失败，不回退文件存储。

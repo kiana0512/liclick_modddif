@@ -1,8 +1,16 @@
 2026-09-22 M04/M13/M12：`MODELVIEW-REFERENCE-ROUTING/2.0.0` 与 `REFERENCE-LIGHTING/2.0.0`，单视角/多视角贴图及局部重绘按参考角色统一使用 inpaint API，显式 1/6；导入参考后台去光照、隐式绑定、生成等待、恢复去重及离开中断确认。无像素算法迁移；可选处理标记和私有索引保持旧项目兼容。验证、预算、迁移与回滚见 [变更记录](changes/CHG-20260922-MODELVIEW-REFERENCE-LIGHTING.md)。本地修改，未部署。
 
+2026-09-23 M08/M04：`LOCAL-REPAINT-SAMPLING-MASK` v3 恢复原局部重绘远端采样蒙版自适应外扩和羽化（原半径公式），继续按冻结可见轮廓裁切。白色输入标记、原选区及未贴图区域并集、实际回贴写入范围保持不变。GPT 和单/多视图补全行为不变。GPU/CPU/Worker 回贴、保存与导出继续消费未外扩选区；无需资产或 Schema 迁移，历史请求不重写。回滚仅将 local 的 dilationRadius/featherRadius 置零。验证生产 Worker 输出存在外扩/灰度过渡、背景与孔洞仍为零及回贴合成回归。
+
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
+2026-09-23 Blender 发布集成（M15）：合入 master `19457814`，补齐正式 server 的 Blender 5.1.2 运行时与真实 UV 构建验收，同时带入参考图 4MB 上传适配及 master 既有局部重绘采样蒙版修复。保留 release `7d034de5` 的生产 K8s、对象存储、数据库、资源及 nginx 配置；无新 Schema/资产迁移。最终 release 提交须通过完整 verify:prepush，CI 镜像验收和部署结果另行核对；回滚使用 `7d034de5` 同组镜像并保留数据，但旧镜像不具备此次 Blender 导入修复能力。本条不预先宣称部署成功。
+
 2026-09-23 master/release 集成（M15，`CLOUD-DEPLOYMENT` v1.0.0）：将已通过 master 流水线 #636940 的 `673e93ff` 合入 `release`，保留线上 `ca092b08` 的 Ceph SHA-256 验证、数据库、对象存储、K8s/Nginx、IDaaS 与资源配置。资产传输回归保留 release 的完整性检查及 master 的 Fetch 禁止端口规避；维护记录保留双方历史。本次集成不新增算法语义、Schema 或资产迁移，业务版本与缓存失效规则沿用 master 各变更卡，完整分辨率、QA、Command/CAS/ownership/verified assets 不放宽。最终合并提交必须通过完整 verify:prepush 后以 `[deploy]` 推送；server/web/db-push 使用相同不可变 SHA，部署后核对流水线及正式站 release/health/ready。失败时整组回滚到 `ca092b08` 镜像，保留数据库、对象资产和 PVC；此条不预先宣称部署成功。
+
+2026-09-23 M15（关联 M02/M10）：`BLENDER-SERVER-RUNTIME/1.0.0` 将固定 SHA-256 的官方 Blender 5.1.2 Linux x64 及运行库纳入最终 server 镜像，显式配置路径，并以正式非 root 账号执行真实 UV 修复/GLB 回读及破坏性输入拒绝验收，失败阻止镜像发布。`IMPORT-UV-REPAIR/1.3.0`、`IMPORT-DECIMATE/1.1.0` 算法及 GPU/CPU/Worker/shader、保存/export、Schema/Command/CAS/ownership 不变，无资产迁移；验证、限制和回滚见 [Blender 镜像运行时变更卡](changes/CHG-20260923-BLENDER-SERVER-RUNTIME.md)。本地修改，尚未部署。
+
+2026-09-23 M04：`MATERIAL-REFERENCE-UPLOAD/1.0.0` 对明确材质参考自动选择原尺寸无损、经逐像素验证的近无损及最后的最高可容纳质量上传副本，完整请求严格小于莉刻 4,000,000 字节。原图与去光照保留，法线/蒙版/结构输入仍精确；`REFERENCE-LIGHTING/2.0.1` 仅迁移无远端 taskId 的已知旧上传前失败，不重复已接受任务。GPU/CPU/Worker/shader 投影、UV、保存导出、Schema/Command/CAS/ownership 不变，无资产迁移；验证与回滚见 [材质参考上传变更卡](changes/CHG-20260923-MATERIAL-REFERENCE-UPLOAD.md)。本地修复，未部署此补丁。
 
 2026-09-22 M04/M08：`GPT-RETURN-BACKGROUND-CLEANUP` v1 仅在 v2 返图透明边界 QA 失败后尝试 alpha 八连通分量清理。主体占全部非零 alpha 至少 80% 且主体独立通过原严格边界容差；仅移除触及画布边缘、至少 90% 像素位于预期包围盒外 2px 的独立分量，删除总量不得超过主体 10%。弱 alpha 桥接也视为相连；不按 RGB 删除，不裁原蒙版，不移动缩放返图；清理后原 QA 再验。超过 4096² 或 4096 分量不自动修复；协作取消、失败不改原远端资产。清理像素用于恢复画布，随后 GPU/CPU/Worker 投影及保存导出沿用同一结果；无 Schema/资产迁移。回滚移除恢复入口的清理重试即可。此保守方案不保证修复贴近主体/连通黑边或不透明白底。未拿到用户原始异常 PNG，验证采用合成透明返图。
 

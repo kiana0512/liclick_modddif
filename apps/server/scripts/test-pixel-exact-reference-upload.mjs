@@ -1,12 +1,22 @@
 import assert from 'node:assert/strict';
 import sharp from 'sharp';
-import { atlasReferenceDataUrlBudget, losslessReferenceDataUrl, preparePixelExactUploadArguments } from '../dist/services/pixelExactReferenceUpload.js';
+import { atlasReferenceDataUrlBudget, losslessReferenceDataUrl, preparePixelExactUploadArguments, prepareMaterialReferenceUploadArguments } from '../dist/services/pixelExactReferenceUpload.js';
 import { serverConfig } from '../dist/config.js';
 import { readFileSync } from 'node:fs';
 import ts from 'typescript';
 import { Buffer } from 'node:buffer';
 import { URL } from 'node:url';
 import console from 'node:console';
+import { isMaterialReference } from '../dist/services/liclickGenerationService.js';
+
+assert.equal(isMaterialReference({ referencePipeline: 'delight-only-v1', references: [{ url: 'material' }] }, 0), true);
+assert.equal(isMaterialReference({ referencePipeline: 'six-view-delight-v1', references: [{ url: 'material' }] }, 0), true);
+assert.equal(isMaterialReference({ workflow: 'liclick', references: [{ url: 'material' }] }, 0), true);
+for (const input of [{ workflow: 'local-repaint', references: [{ url: 'normal' }] },
+  { workflow: 'texture-map', references: [{ url: 'capture' }] },
+  { referencePipeline: 'delight-only-v1', references: [{ url: 'material' }, { url: 'normal' }] }]) {
+  assert.equal(isMaterialReference(input, 0), false, 'Never apply material policy to geometry or a mixed reference set');
+}
 
 const dataUrl = bytes => `data:image/png;base64,${bytes.toString('base64')}`;
 const decode = async url => sharp(Buffer.from(url.split(',')[1], 'base64')).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
@@ -110,4 +120,52 @@ await assert.rejects(() => cloud(noisy, { userId: 'owned-user', projectId: 'owne
 const callCount = calls.length;
 await assert.rejects(() => cloud(noisy, { projectId: 'owned-project' }), /未配置/);
 assert.equal(calls.length, callCount, 'Missing ownership must not upload');
+
+// Material-only transport: preserve the source, all dimensions/alpha, bound
+// every RGB channel and the actual JSON-RPC envelope, including Base64.
+serverConfig.objectStorage.enabled = false;
+try {
+  assert.deepEqual(await prepareMaterialReferenceUploadArguments(original, {}), { file_path: compressed });
+  for (const format of ['jpeg', 'webp']) {
+    const encoded = await sharp({ create: { width: 256, height: 256, channels: 3, background: '#689ab3' } }).toFormat(format).toBuffer();
+    const file = Buffer.concat([encoded, Buffer.alloc(3 * 1024 * 1024)]);
+    const input = `data:image/${format};base64,${file.toString('base64')}`;
+    assert.ok(input.length > 4_000_000);
+    const converted = await prepareMaterialReferenceUploadArguments(input, {});
+    assert.ok(converted.file_path.length < 4_000_000 - 64 * 1024);
+    assert.ok((await decode(converted.file_path)).data.equals((await decode(input)).data), 'JPEG/WebP material sources can be recompressed without PNG-only errors');
+  }
+  const materialWidth = 1536, materialHeight = 1536;
+  const materialPixels = Buffer.alloc(materialWidth * materialHeight * 4);
+  let seed = 0x9164517;
+  for (let i = 0; i < materialPixels.length; i += 4) {
+    seed ^= seed << 13; seed ^= seed >>> 17; seed ^= seed << 5;
+    materialPixels[i] = 120 + (seed & 15);
+    materialPixels[i + 1] = 120 + ((seed >>> 8) & 15);
+    materialPixels[i + 2] = 120 + ((seed >>> 16) & 15);
+    materialPixels[i + 3] = 255;
+  }
+  const material = dataUrl(await sharp(materialPixels, { raw: { width: materialWidth, height: materialHeight, channels: 4 } }).png().toBuffer());
+  const result = await prepareMaterialReferenceUploadArguments(material, {});
+  const decoded = await decode(result.file_path);
+  assert.equal(decoded.info.width, materialWidth); assert.equal(decoded.info.height, materialHeight);
+  let maxError = 0, squaredError = 0;
+  for (let i = 0; i < materialPixels.length; i++) {
+    const delta = Math.abs(decoded.data[i] - materialPixels[i]);
+    if (i % 4 === 3) assert.equal(delta, 0, 'Alpha stays exact');
+    else { maxError = Math.max(maxError, delta); squaredError += delta * delta; }
+  }
+  assert.ok(maxError > 0 && maxError <= 2, 'Exercise bounded near-lossless, not an already-small fixture');
+  assert.ok(10 * Math.log10(255 ** 2 / (squaredError / (materialWidth * materialHeight * 3))) >= 45);
+  const envelope = { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'upload_asset', arguments: { asset_type: 'image', ...result } } };
+  assert.ok(Buffer.byteLength(JSON.stringify(envelope)) < 4_000_000);
+  assert.ok((await decode(material)).data.equals(materialPixels), 'Original remains immutable');
+  const highEntropy = await prepareMaterialReferenceUploadArguments(noisy, {});
+  assert.ok(highEntropy.file_path.length < 4_000_000 - 64 * 1024);
+  const noisyBefore = await decode(noisy), noisyAfter = await decode(highEntropy.file_path);
+  assert.deepEqual(noisyAfter.info, noisyBefore.info);
+  for (let i = 3; i < noisyBefore.data.length; i += 4) assert.equal(noisyAfter.data[i], noisyBefore.data[i]);
+  console.log(`Material upload: exact alpha/dimensions, max RGB error ${maxError}/255, envelope ${Buffer.byteLength(JSON.stringify(envelope))} bytes.`);
+} finally { serverConfig.objectStorage.enabled = previousEnabled; }
+assert.deepEqual(await fixtureModule.exports.prepareMaterialReferenceUploadArguments(noisy, { userId: 'owned-user', projectId: 'owned-project' }).catch(error => error.message), '结构引导图对象资产未验证或工程不可访问；未提交生成任务。', 'Cloud keeps verified exact transport instead of silently falling back');
 console.log(`Pixel-exact upload passed: ${original.length} -> ${compressed.length} data URL bytes, identical RGBA; 4K retained; oversized failure precedes paid submission.`);

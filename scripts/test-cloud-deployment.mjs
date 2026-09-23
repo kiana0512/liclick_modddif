@@ -9,10 +9,35 @@ import { test } from 'node:test';
 import { parseEnv } from 'node:util';
 import yaml from 'js-yaml';
 import { validateRuntimeEnv } from '../deploy/validate-runtime-env.mjs';
+import { verifyBlenderRuntime } from '../deploy/verify-blender-runtime.mjs';
 
 const root = path.resolve(import.meta.dirname, '..');
 const read = p => fs.readFileSync(path.join(root, p), 'utf8');
 const parse = p => yaml.load(read(p));
+
+test('Blender image verification rejects missing and incompatible executables and cleans temporary files', async () => {
+  for (const executable of [path.join(os.tmpdir(), 'li3d-missing-blender', 'blender'), process.execPath]) {
+    let temporary;
+    await assert.rejects(verifyBlenderRuntime({ executable, run: (file, args, options) => {
+      temporary = options.cwd;
+      return spawnSync(file, args, options);
+    } }), executable === process.execPath ? /Expected the pinned Blender/ : /ENOENT/);
+    assert.equal(fs.existsSync(temporary), false);
+  }
+});
+
+test('server image ships checksum-pinned Blender and runs UV QA after switching to its runtime user', () => {
+  const docker = read('deploy/Dockerfile');
+  assert.match(docker, /https:\/\/download\.blender\.org\/release\/Blender5\.1\/blender-5\.1\.2-linux-x64\.tar\.xz/);
+  assert.match(docker, /aaccb355f50183979b698bcce7467103a76261b5fa59f4972295842662a285fb/);
+  assert.match(docker, /sha256sum --check --strict/);
+  const server = docker.split('FROM ${NODE_IMAGE} AS server')[1].split('FROM ${NGINX_IMAGE} AS web')[0];
+  assert.match(server, /COPY --from=blender-runtime \/opt\/blender\/ \/opt\/blender\//);
+  assert.match(server, /BLENDER_EXECUTABLE_PATH=\/opt\/blender\/blender/);
+  assert.match(server, /COPY[^\n]*deploy\/verify-blender-runtime\.mjs/);
+  assert.match(server, /COPY[^\n]*test-import-uv-merge-distance\.py/);
+  assert.match(server, /USER liclick:liclick[\s\S]*RUN node deploy\/verify-blender-runtime\.mjs/);
+});
 test('Bundle gate keeps its hard limit and local release headroom', () => {
   const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'li3d-bundle-gate-'));
   try {
