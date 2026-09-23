@@ -1,7 +1,7 @@
 import type { GenerationFraming } from '@liclick/contracts';
-import { restoredFrameLayout } from './contentFraming';
+import { cooperativeBounds, restoredFrameLayout } from './contentFraming';
 
-/** GPT-RETURN-BACKGROUND-CLEANUP/1: conservative, alpha-only border-component cleanup.
+/** GPT-RETURN-BACKGROUND-CLEANUP/2: conservative, alpha-only border-component cleanup.
  * Never clip to the input mask: a displaced subject must remain displaced for QA.
  * Plan all removals before writing; cancellation leaves the input unchanged.
  */
@@ -21,6 +21,7 @@ export async function cleanReturnBackground(
   const tolerance = Math.max(16, Math.max(subject.width * sx, subject.height * sy) * 0.02);
   // Bound temporary memory even for provider outputs larger than requested.
   if (width * height > 4096 * 4096) return false;
+  if (await cleanFaintExterior(image, expected, tolerance, checkpoint)) return true;
   const labels = new Uint32Array(width * height);
   const queue = new Uint32Array(width * height);
   const components: { count: number; outside: number; edge: boolean; bounds: number[] }[] = [];
@@ -70,5 +71,57 @@ export async function cleanReturnBackground(
   if (!removed || removed > main.count * 0.1) return false;
   await checkpoint();
   for (let i = 0; i < labels.length; i++) if (remove.has(labels[i])) data[i * 4 + 3] = 0;
+  return true;
+}
+
+/** Remove only edge-connected, translucent residue far outside the observed opaque
+ * subject. The input bounds validate the subject; they never become a clipping mask.
+ * Preserve a padded rectangle around ALL opaque details, including disconnected ones.
+ */
+async function cleanFaintExterior(
+  image: Pick<ImageData, 'width' | 'height' | 'data'>,
+  expected: number[], tolerance: number, checkpoint: () => Promise<void>,
+) {
+  const { width, height, data } = image;
+  const original = await cooperativeBounds(image, true, 128, checkpoint);
+  if (original[2] >= original[0] && [original[0], original[1], original[2] + 1, original[3] + 1]
+    .every((v, i) => Math.abs(v - expected[i]) <= tolerance)) return false;
+  const core = await cooperativeBounds(image, true, 200, checkpoint);
+  if (core[2] < core[0] || [core[0], core[1], core[2] + 1, core[3] + 1]
+    .some((v, i) => Math.abs(v - expected[i]) > tolerance)) return false;
+  const padding = Math.max(4, Math.ceil(Math.max(core[2] - core[0], core[3] - core[1]) * 0.005));
+  const seen = new Uint8Array(width * height), queue = new Uint32Array(width * height);
+  let head = 0, tail = 0, removed = 0;
+  const visit = (x: number, y: number) => {
+    if (x < 0 || y < 0 || x >= width || y >= height) return;
+    const i = y * width + x;
+    if (seen[i] || data[i * 4 + 3] >= 192 ||
+      (x >= core[0] - padding && x <= core[2] + padding &&
+       y >= core[1] - padding && y <= core[3] + padding)) return;
+    seen[i] = 1; queue[tail++] = i;
+    if (data[i * 4 + 3]) removed++;
+  };
+  for (let x = 0; x < width; x++) { visit(x, 0); visit(x, height - 1); }
+  for (let y = 0; y < height; y++) { visit(0, y); visit(width - 1, y); }
+  while (head < tail) {
+    const i = queue[head++], x = i % width, y = Math.floor(i / width);
+    visit(x - 1, y); visit(x + 1, y); visit(x, y - 1); visit(x, y + 1);
+    if (head % 32768 === 0) await checkpoint();
+  }
+  if (!removed) return false;
+  // Verify the planned result before committing any alpha edits.
+  const bounds = [width, height, -1, -1];
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const i = y * width + x;
+      if (seen[i] || data[i * 4 + 3] < 128) continue;
+      bounds[0] = Math.min(bounds[0], x); bounds[1] = Math.min(bounds[1], y);
+      bounds[2] = Math.max(bounds[2], x + 1); bounds[3] = Math.max(bounds[3], y + 1);
+    }
+    if (y % 16 === 0) await checkpoint();
+  }
+  if (bounds.some((v, i) => Math.abs(v - expected[i]) > tolerance)) return false;
+  await checkpoint();
+  for (let i = 0; i < seen.length; i++) if (seen[i]) data[i * 4 + 3] = 0;
   return true;
 }

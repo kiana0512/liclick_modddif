@@ -57,6 +57,43 @@ const cancelled = fixture(); rect(cancelled, 0, 0, 8, 30);
 const before = cancelled.data.slice(); let checkpoints = 0;
 await assert.rejects(() => cleanReturnBackground(frame, cancelled, async () => { if (++checkpoints === 3) throw new Error('cancel'); }), /cancel/);
 assert.deepEqual(cancelled.data, before);
+
+// A translucent border connected to the subject through faint alpha previously
+// made the entire canvas count as one component. Preserve subject and its halo.
+const haze = fixture();
+rect(haze, 0, 0, 2, size, 166);
+rect(haze, 0, 100, 88 - frame.left + 1, 1, 1);
+const hx = 88 - frame.left;
+rect(haze, hx - 2, 90, 2, 12, 150);
+const hazeBefore = haze.data.slice();
+await assert.rejects(() => validateFramedSilhouette(frame, haze));
+assert.equal(await cleanReturnBackground(frame, haze, checkpoint), true);
+await validateFramedSilhouette(frame, haze);
+for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) {
+  const offset = (y * size + x) * 4;
+  assert.deepEqual(haze.data.slice(offset, offset + 3), hazeBefore.slice(offset, offset + 3), 'Never change RGB');
+  if (x >= hx - 4 && x <= hx + 83 && y >= 0 && y <= size - 1)
+    assert.equal(haze.data[offset + 3], hazeBefore[offset + 3], 'Protect subject and near-edge antialiasing');
+}
+assert.equal(haze.data[3], 0);
+for (const kind of ['shift', 'half', 'opaque', 'translucent-subject']) {
+  const image = fixture(); image.data.fill(0);
+  rect(image, kind === 'shift' ? 10 : hx, 28 - frame.top, 80,
+    kind === 'half' ? 90 : 200, kind === 'translucent-subject' ? 180 : 255);
+  rect(image, 0, 0, kind === 'opaque' ? size : 2, size, kind === 'opaque' ? 255 : 166);
+  if (kind === 'translucent-subject') rect(image, 1, 100, hx, 1, 1);
+  const before = image.data.slice();
+  assert.equal(await cleanReturnBackground(frame, image, checkpoint), false, kind);
+  assert.deepEqual(image.data, before, 'Rejected cleanup must not mutate input');
+  await assert.rejects(() => validateFramedSilhouette(frame, image));
+}
+const interrupted = fixture(); rect(interrupted, 0, 0, 2, size, 166);
+const interruptedBefore = interrupted.data.slice();
+let calls = 0;
+await assert.rejects(() => cleanReturnBackground(frame, interrupted, async () => {
+  if (++calls === 10) throw new Error('cancel exterior cleanup');
+}), /cancel exterior/);
+assert.deepEqual(interrupted.data, interruptedBefore);
 const restoreSource = readFileSync(new URL('../src/engine/generation/contentFramingRestore.ts', import.meta.url), 'utf8');
 assert.match(restoreSource, /GPT_RETURN_SILHOUETTE_MISMATCH/);
 assert.match(restoreSource, /await cleanReturnBackground[\s\S]*?await validateFramedSilhouette/);
