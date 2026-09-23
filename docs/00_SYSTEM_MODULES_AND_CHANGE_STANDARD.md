@@ -375,6 +375,8 @@ UI-09 剪刀
 
 `UV_MERGE_COMPOSITION_VERSION=4` 的产品语义是“把当前确定性 PBR 预览光写入最终 UV，并把合并层按 unlit 显示”。它不是生产 Substance 多通道 Bake；只生成当前作者颜色结果。修改此语义必须升级 merge version 并给旧工程迁移/重烘焙策略。
 
+`UV-REPAINT-PREVIEW-BINDING` v1.0.2（UI-06/UI-09/UI-10 → M07，协作 M08）：交错插入投射与原生 UV 重绘层时，顶层采样器判定必须读取当前可见图层的绝对顺序，不能读取仅按同类相对顺序保留的像素缓存对象。保留既有合成缓存、GPU/CPU/Worker/shader 像素公式、分辨率、持久化和导出，无迁移。根因、失败回归、4517 浏览器像素对照及回退见 [交错重绘显示变更卡](changes/CHG-20260923-REPAINT-TOP-SAMPLER-HANDOFF.md)。
+
 ## 8. 局部重绘算法（关键）
 
 **Master baseline update (2026-09-22; c2ef7667).** LOCAL-REPAINT-VISIBLE-GAPS/1.0.0 combines the hand-painted selection with visible untextured areas from the same frozen camera using coverage alpha and packed depth, excluding background and holes. REPAINT-INPUT-PREPARE/1.0.0 runs frozen CPU Worker preparation and the single GPU normal capture concurrently, waits for both branches to settle and cleans temporary URLs on failure/cancellation. LOCAL-REPAINT-SAMPLING-MASK v2 supersedes earlier local-request dilation/feather descriptions: both radii are zero for local repaint; single-view completion keeps its existing formulas. UV-ERASER-LIVE/1.1.0 waits for the complete source, preserves undo/redo and continuous strokes, avoids transparent-UV background leakage and duplicate native-repaint warm-up, and uploads full-resolution dirty regions. These updates do not change persisted assets or Project/Layer schemas. See `changes/CHG-20260922-LOCAL-REPAINT-VISIBLE-GAPS.md`, `changes/CHG-20260922-UV-REPAINT-ERASER-LIVE.md` and `changes/CHG-20260922-REPAINT-FRINGE-ERASER.md` for validation and rollback.

@@ -12,7 +12,7 @@ export function isRenderedLocalRepaintLayer(layer: Layer) {
   );
 }
 
-/** UV-REPAINT-PREVIEW-BINDING/1.0.1. Inputs are visible, ordered UV rows.
+/** UV-REPAINT-PREVIEW-BINDING/1.0.2. Inputs must carry current absolute row order.
  * Manual drawing rows deliberately keep their UUID and ordinary UV role.
  * All display consumers must split the same top sampler from the lower stack.
  * A missing live owner stays on this path (fail closed), never image decoding.

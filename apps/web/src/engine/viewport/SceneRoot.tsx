@@ -2895,10 +2895,12 @@ const ImportedModel = memo(function ImportedModel({
     maxSize: proxyTextureMaxSize,
   });
   const liveTopUvLayer = useMemo(() => {
+    // UV-REPAINT-PREVIEW-BINDING/1.0.2: content caches retain relative order,
+    // so their absolute row numbers can be stale after a mixed-stack insertion.
     return getTopUvPreviewLayer(
-      stableVisibleUvLayers, stableVisibleProjectedLayers, localRepaintPreviewLayerId,
+      visibleUvLayers, visibleProjectedLayers, localRepaintPreviewLayerId,
     );
-  }, [localRepaintPreviewLayerId, stableVisibleProjectedLayers, stableVisibleUvLayers]);
+  }, [localRepaintPreviewLayerId, visibleProjectedLayers, visibleUvLayers]);
   const nonLiveUvLayers = useMemo(
     () =>
       liveTopUvLayer
