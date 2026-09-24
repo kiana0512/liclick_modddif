@@ -5702,8 +5702,8 @@ export function GeneratePanel({
               <SegmentedControl<SingleViewProvider>
                 value={singleViewProvider}
                 options={[
-                  { value: 'gpt', label: 'GPT', disabled: workflowConfigurationLocked || workflowSubmissionLocked },
-                  { value: 'remote', label: 'ModelView', disabled: workflowConfigurationLocked || workflowSubmissionLocked },
+                  { value: 'remote', label: '快速模式', disabled: workflowConfigurationLocked || workflowSubmissionLocked },
+                  { value: 'gpt', label: '精细模式', disabled: workflowConfigurationLocked || workflowSubmissionLocked },
                 ]}
                 onChange={(provider) => {
                   if (workflowConfigurationLocked || workflowSubmissionLocked) return;
@@ -5716,8 +5716,8 @@ export function GeneratePanel({
               <SegmentedControl<'modelview' | 'gpt'>
                 value={generationSettings.localRepaintProvider}
                 options={[
-                  { value: 'modelview', label: personalRepaintEnabled ? '个人云端重绘' : '原局部重绘', disabled: workflowConfigurationLocked || workflowSubmissionLocked },
-                  { value: 'gpt', label: 'GPT 局部重绘', disabled: workflowConfigurationLocked || workflowSubmissionLocked },
+                  { value: 'modelview', label: '快速模式', disabled: workflowConfigurationLocked || workflowSubmissionLocked },
+                  { value: 'gpt', label: '精细模式', disabled: workflowConfigurationLocked || workflowSubmissionLocked },
                 ]}
                 onChange={(localRepaintProvider) => updateGenerationSettings({ localRepaintProvider })}
                 className="mb-2"

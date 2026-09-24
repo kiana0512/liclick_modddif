@@ -74,8 +74,20 @@ assert.match(panel, /const \[singleViewProvider, setSingleViewProvider\] = useSt
 const switchSource = panel.match(/<SegmentedControl<SingleViewProvider>[\s\S]*?\/>/)?.[0];
 assert.ok(switchSource);
 for (const value of ['gpt', 'remote']) assert.ok(switchSource.includes(`value: '${value}'`));
-assert.match(switchSource, /label: 'GPT'/);
-assert.match(switchSource, /label: 'ModelView'/);
+assert.match(switchSource, /value: 'remote', label: '快速模式'/);
+assert.match(switchSource, /value: 'gpt', label: '精细模式'/);
+assert.ok(
+  switchSource.indexOf("value: 'remote'") < switchSource.indexOf("value: 'gpt'"),
+  'The fast ModelView mode must be presented before the detailed GPT mode.',
+);
+const repaintSwitchSource = panel.match(/<SegmentedControl<'modelview' \| 'gpt'>[\s\S]*?\/>/)?.[0];
+assert.ok(repaintSwitchSource);
+assert.match(repaintSwitchSource, /value: 'modelview', label: '快速模式'/);
+assert.match(repaintSwitchSource, /value: 'gpt', label: '精细模式'/);
+assert.ok(
+  repaintSwitchSource.indexOf("value: 'modelview'") < repaintSwitchSource.indexOf("value: 'gpt'"),
+  'Local repaint must present the fast ModelView mode before the detailed GPT mode.',
+);
 assert.equal((switchSource.match(/disabled: workflowConfigurationLocked \|\| workflowSubmissionLocked/g) ?? []).length, 2);
 const onChangeSource = switchSource.match(/onChange=\{\(provider\) => \{([\s\S]*?)\}\}/)?.[1];
 assert.ok(onChangeSource);
@@ -86,7 +98,7 @@ for (const configurationLocked of [false, true]) for (const submissionLocked of 
   assert.deepEqual(changes, configurationLocked || submissionLocked ? [] : ['remote', 'gpt', 'remote']);
 }
 assert.match(panel, /\(isTextureMapTab && singleViewProvider === 'gpt'\) \|\| \(isLocalRepaintTab && isGptLocalRepaint\)/);
-assert.doesNotMatch(panel, /label: 'GPT2'|label: '远端'/);
+assert.doesNotMatch(panel, /label: 'GPT2'|label: '远端'|label: 'ModelView'/);
 const routeStart = panel.indexOf('async function handleTextureMapMultiviewGenerate(');
 const routeEnd = panel.indexOf('    const objectId = captureObjectId;', routeStart);
 assert(routeStart >= 0 && routeEnd > routeStart);
