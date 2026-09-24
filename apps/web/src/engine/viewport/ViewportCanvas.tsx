@@ -323,7 +323,7 @@ const PROJECTED_ERASER_INTERACTIVE_COMMIT_IDLE_MS = 48;
 // Keep the editable footprint slightly inside the captured silhouette. The
 // smooth shader feather runs from 0.08 to 0.16, so grazing side faces fade to
 // the underlying UV instead of receiving a stretched repaint or a black seam.
-const LOCAL_REPAINT_MINIMUM_FACE_ON = 0.08;
+const LOCAL_REPAINT_MINIMUM_FACE_ON = 0.03;
 const INPAINT_BRUSH_MIN_WORLD_RADIUS_RATIO = 0.004;
 const INPAINT_BRUSH_MAX_WORLD_RADIUS_RATIO = 0.12;
 const INPAINT_BRUSH_MIN_TEXTURE_RADIUS = 1;

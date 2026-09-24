@@ -2,17 +2,18 @@
 
 本目录同时包含当前实现说明、历史阶段记录和未来方案。三类文档不能混用：
 
-1. 模块边界、算法调用关系和修改规则以 [00_SYSTEM_MODULES_AND_CHANGE_STANDARD.md](00_SYSTEM_MODULES_AND_CHANGE_STANDARD.md) 为唯一准则；代码是验证具体实现的最终证据。
+1. [00_SYSTEM_MODULES_AND_CHANGE_STANDARD.md](00_SYSTEM_MODULES_AND_CHANGE_STANDARD.md) is the authoritative guide to module boundaries, algorithm relationships and change requirements; source code is the final evidence of implementation. Start with the task routes in section 0. Read those sections first; expand the scope when cross-module dependencies, contract changes or insufficient evidence require it.
 2. 带日期的 audit、merge、optimization、release 文档只描述当时快照，不保证仍然成立。
 3. 名称含 `PLAN`、`SPEC`、`V0_1` 或以 Phase/Week 为主的文档是设计输入，不代表已经交付。
 
 ## 当前真源
 
-开发团队先阅读本页、[系统模块与变更唯一准则](00_SYSTEM_MODULES_AND_CHANGE_STANDARD.md) 和 [2026-09-17 性能稳定性审计](PERFORMANCE_STABILITY_RISK_AUDIT_2026-09-17.zh-CN.md)。[零组件云端版开发交接包](零组件云端版开发交接包/README.md) 是 2026-08-23 的历史交接快照，用于追溯当时 API、账号数据、A100 运维和验收状态，不能覆盖当前代码与准则。
+Read this page and the task routes in section 0 of the [system standard](00_SYSTEM_MODULES_AND_CHANGE_STANDARD.md), then follow the relevant sections. Consult the [2026-09-17 performance audit](PERFORMANCE_STABILITY_RISK_AUDIT_2026-09-17.zh-CN.md) for performance diagnosis, optimization or stability investigations, rather than for every change. The [zero-install Cloud handoff](零组件云端版开发交接包/README.md) is a historical snapshot dated 2026-08-23. Use it to trace APIs, account data, A100 operations and acceptance status from that date; it does not override current code or rules.
 
 | 主题 | 文档 |
 | --- | --- |
 | 模块边界、界面调用、算法参数、图层语义、版本和变更规范（唯一准则） | [00_SYSTEM_MODULES_AND_CHANGE_STANDARD.md](00_SYSTEM_MODULES_AND_CHANGE_STANDARD.md) |
+| 唯一准则的历史变更流水与修订记录（仅追溯决策、兼容或回归问题时读取） | [00_SYSTEM_REVISION_LOG.md](00_SYSTEM_REVISION_LOG.md) |
 | 当前全仓性能稳定性、风险热点与最小修复 | [PERFORMANCE_STABILITY_RISK_AUDIT_2026-09-17.zh-CN.md](PERFORMANCE_STABILITY_RISK_AUDIT_2026-09-17.zh-CN.md) |
 | 总览、运行方式、功能状态、已知问题 | [../README.md](../README.md) |
 | 现代化架构、收尾汇总与真实服务证据 | [modernization/README.md](modernization/README.md)、[modernization/CLOSING_REPORT_2026-08-22.zh-CN.md](modernization/CLOSING_REPORT_2026-08-22.zh-CN.md)、[modernization/FEATURE_ACCEPTANCE_MATRIX.md](modernization/FEATURE_ACCEPTANCE_MATRIX.md) |

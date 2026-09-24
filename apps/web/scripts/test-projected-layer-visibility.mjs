@@ -741,7 +741,7 @@ assert.match(
 );
 assert.match(
   viewportCanvasInteractionSource,
-  /LOCAL_REPAINT_MINIMUM_FACE_ON = 0\.08/,
+  /LOCAL_REPAINT_MINIMUM_FACE_ON = 0\.03/,
   'Local repaint projection must feather inward before reaching grazing side faces.',
 );
 assert.match(
@@ -1094,6 +1094,36 @@ try {
   assert.equal(getTopUvPreviewLayer([{ ...manual, imageUrl: '/saved.png' }], []), undefined);
   const legacy = { ...manual, imageUrl: '/saved.png', role: 'local-repaint-overlay' };
   assert.equal(getTopUvPreviewLayer([legacy], []), legacy);
+  // The texture caches intentionally ignore absolute row renumbering. Reproduce
+  // P1 -> R1 -> P2 -> R2 without refreshing the page: P2's cached order is still
+  // zero after R2 is inserted above it. Presentation must use the current rows.
+  const topUvMemo = sceneRootSource.match(
+    /const liveTopUvLayer = useMemo\(\(\) => \{([\s\S]*?)\n {2}\}, \[([^\]]*)\]\);/,
+  );
+  assert(topUvMemo);
+  const evaluateTopUv = new Function(
+    'getTopUvPreviewLayer', 'visibleUvLayers', 'visibleProjectedLayers',
+    'stableVisibleUvLayers', 'stableVisibleProjectedLayers', 'localRepaintPreviewLayerId',
+    topUvMemo[1],
+  );
+  const firstRepaint = { ...manual, id: 'repaint-1', order: 2,
+    imageUrl: 'liclick-live-projected-canvas:repaint-1:rgba' };
+  const secondRepaint = { ...manual, id: 'repaint-2', order: 0,
+    imageUrl: 'liclick-live-projected-canvas:repaint-2:rgba' };
+  const cachedProjections = [
+    { id: 'projection-2', order: 0 }, { id: 'projection-1', order: 2 },
+  ];
+  const currentProjections = cachedProjections.map(layer => ({ ...layer, order: layer.order + 1 }));
+  assert.equal(evaluateTopUv(
+    getTopUvPreviewLayer, [secondRepaint, firstRepaint], currentProjections,
+    [secondRepaint, firstRepaint], cachedProjections,
+  ), secondRepaint, 'An interleaved second repaint must keep its GPU sampler before pointer-up.');
+  assert.equal(evaluateTopUv(
+    getTopUvPreviewLayer, [{ ...manual, order: 1 }], [{ order: 0 }],
+    [manual], [{ order: 1 }],
+  ), undefined, 'A newly inserted projection above the repaint must use its current order too.');
+  assert(topUvMemo[2].includes('visibleUvLayers') && topUvMemo[2].includes('visibleProjectedLayers'),
+    'Both current mixed-stack orders must invalidate the top sampler selection.');
   const { compileForRenderTarget } = await server.ssrLoadModule(
     '/src/engine/projection/compileForRenderTarget.ts',
   );
