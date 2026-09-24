@@ -6025,7 +6025,6 @@ function createInpaintMaskCaptureMaterial(
           ? (vViewerFacing >= 0.0 ? maskTexel.r : maskTexel.g)
           : max(maskTexel.r, max(maskTexel.g, maskTexel.b)) * maskTexel.a;
         if (maskInverted > 0.5) coverage = 1.0 - coverage;
-        // Unselected foreground still occludes selected surfaces behind it.
         gl_FragColor = vec4(vec3(coverage > 0.01 ? coverage : 0.0), 1.0);
       }
     `,
@@ -9626,12 +9625,11 @@ function SurfacePaintOverlay() {
         undefined,
         true,
       );
-      material.depthWrite = true;
       material.transparent = false;
       material.uniforms.maskInverted.value = layer.maskInverted ? 1 : 0;
       const capturedMeshes = layer.maskInverted ? undefined : new Set(layer.accumulatedMaskMeshes);
       const occluder = new THREE.MeshBasicMaterial({
-        color: 0x000000, side: THREE.DoubleSide, depthTest: true, depthWrite: true, toneMapped: false,
+        color: 0x000000, side: THREE.DoubleSide, toneMapped: false,
       });
       const startedAt = performance.now();
       try {
