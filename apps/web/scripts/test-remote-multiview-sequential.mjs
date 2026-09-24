@@ -85,7 +85,7 @@ for (const configurationLocked of [false, true]) for (const submissionLocked of 
   for (const provider of ['remote', 'gpt', 'remote']) switchProvider(provider, configurationLocked, submissionLocked, value => changes.push(value));
   assert.deepEqual(changes, configurationLocked || submissionLocked ? [] : ['remote', 'gpt', 'remote']);
 }
-assert.match(panel, /\(isTextureMapTab && singleViewProvider === 'gpt'\) \|\| isGptLocalRepaint/);
+assert.match(panel, /\(isTextureMapTab && singleViewProvider === 'gpt'\) \|\| \(isLocalRepaintTab && isGptLocalRepaint\)/);
 assert.doesNotMatch(panel, /label: 'GPT2'|label: '远端'/);
 const routeStart = panel.indexOf('async function handleTextureMapMultiviewGenerate(');
 const routeEnd = panel.indexOf('    const objectId = captureObjectId;', routeStart);
