@@ -10,6 +10,8 @@
 
 ## 2026-09-23 master 合入时保留的修订记录
 
+2026-09-24 M02：新导入参考图统一执行 4,000,000 字节上限，压缩后再保存与去高光；旧参考图不重写。类型检查与边界/失败回归通过，见 CHG-20260924-REFERENCE-IMPORT-BUDGET。
+
 2026-09-23 M08/M06：按用户后续要求，ALG-LR-006 v2.2.0 将局部重绘朝向门槛从 0.01 调整为 0.03；共享落笔保护与新建/重新发布图层参数，保持原深度、遮挡、羽化宽度及旧资产不批量迁移。回退为 0.01，详见 changes/CHG-20260923-REPAINT-FACING-THRESHOLD.md。
 
 2026-09-23 M08/M06：按用户指定将 ALG-LR-006 v2.1.0 局部重绘最小绝对 face-on 从 0.08 调至 0.01，共享用于落笔保护与新建/重新发布图层的 minimumProjectionFacing。既有层显式参数和烘焙图不批量迁移，深度/遮挡与羽化宽度不变。Web typecheck、projection-layers、layer-retention、ordered-composition、seam-harmonization 均通过。详见 changes/CHG-20260923-REPAINT-FACING-THRESHOLD.md。

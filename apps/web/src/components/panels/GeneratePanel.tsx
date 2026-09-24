@@ -5572,7 +5572,7 @@ export function GeneratePanel({
         canCancelGeneration ? 'grid grid-cols-[1fr_52px] gap-2' : ''
       }`}
     >
-      {((isTextureMapTab && singleViewProvider === 'gpt') || isGptLocalRepaint) && (
+      {((isTextureMapTab && singleViewProvider === 'gpt') || (isLocalRepaintTab && isGptLocalRepaint)) && (
         <GptGenerationOptions
           model={textureGptModel}
           quality={textureGptQuality}

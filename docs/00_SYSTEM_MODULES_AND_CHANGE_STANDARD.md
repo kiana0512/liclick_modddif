@@ -98,6 +98,8 @@ LI3D Cloud 控制面（无状态 Node.js App）
 
 ## 2. 大模块划分
 
+M02 参考图导入执行 `REFERENCE-IMPORT-BUDGET` v1.0.0：新导入参考图在进入项目与去高光流程前压缩至编码文件不超过 4,000,000 bytes；小图保留原编码，大图复用 WebP 压缩器。文件选择、粘贴、拖拽及 URL 回退共用实现。旧资产不迁移，任务上传的独立 JSON/Base64 预算继续保留。见 `changes/CHG-20260924-REFERENCE-IMPORT-BUDGET.md`。
+
 | ID | 大模块 | 唯一职责 | 主要实现 |
 | --- | --- | --- | --- |
 | `M01` | Cloud 工程与工作区 | 项目 CRUD、Project Command、Revision、冲突与保存状态 | `workspaceApiClient.ts`、projects routes、ProjectRepository |
@@ -378,6 +380,8 @@ UI-09 剪刀
 `UV-REPAINT-PREVIEW-BINDING` v1.0.2（UI-06/UI-09/UI-10 → M07，协作 M08）：交错插入投射与原生 UV 重绘层时，顶层采样器判定必须读取当前可见图层的绝对顺序，不能读取仅按同类相对顺序保留的像素缓存对象。保留既有合成缓存、GPU/CPU/Worker/shader 像素公式、分辨率、持久化和导出，无迁移。根因、失败回归、4517 浏览器像素对照及回退见 [交错重绘显示变更卡](changes/CHG-20260923-REPAINT-TOP-SAMPLER-HANDOFF.md)。
 
 ## 8. 局部重绘算法（关键）
+
+`INPAINT-CAPTURE-OCCLUSION` v1.1.0：发送用蒙版捕获必须保留目标对象未选中表面的黑色不透明深度写入，禁止因无选区而隐藏前景网格或丢弃零覆盖片元，避免后方蒙版穿透。作者 UV 选区与外扩规则不变。见 CHG-20260924-INPAINT-CAPTURE-OCCLUSION。
 
 **Master update (2026-09-23; e0321d84).** `LOCAL-REPAINT-SAMPLING-MASK` v3 supersedes the v2 zero-radius rule below: local ModelView requests again use the existing adaptive dilation/feather radii, clipped to the frozen visible silhouette. White input, authored selection, actual repaint coverage, GPT and single/multi-view behavior remain unchanged; saved pixels and schemas require no migration.
 

@@ -43,6 +43,20 @@ export type PreparedReference = {
   preprocessing?: ReferencePreprocessingResult;
 };
 
+// REFERENCE-IMPORT-BUDGET/1.0.0: cap the stored image, not only task uploads.
+export const REFERENCE_IMPORT_MAX_BYTES = 4_000_000;
+
+export async function prepareImportedReferenceImage(source: Blob | string): Promise<string> {
+  const blob = typeof source === 'string' ? await referenceUrlToBlob(source) : source;
+  if (blob.size <= REFERENCE_IMPORT_MAX_BYTES) return blobToDataUrl(blob);
+  const prepared = await compressReference(
+    { id: 'import', name: '参考图', url: '', width: 0, height: 0, isPrimary: false },
+    blob,
+    23 + 4 * Math.floor(REFERENCE_IMPORT_MAX_BYTES / 3),
+  );
+  return prepared.url;
+}
+
 type CacheEntry = {
   sourceUrl: string;
   promise: Promise<PreparedReference>;
