@@ -1,3 +1,4 @@
+import { getImageSize } from '@/utils/imageSize';
 import { prepareImportedReferenceImage } from '@/services/referenceImagePreprocessor';
 import { createPortal } from 'react-dom';
 import { allowUserFileUpload } from '@/services/userFileUploadPolicy';
@@ -51,14 +52,6 @@ function referenceRole(reference: ReferenceImage) {
 }
 
 
-function getImageSize(url: string) {
-  return new Promise<{ width: number; height: number }>((resolve) => {
-    const image = new Image();
-    image.onload = () => resolve({ width: image.naturalWidth, height: image.naturalHeight });
-    image.onerror = () => resolve({ width: 0, height: 0 });
-    image.src = url;
-  });
-}
 
 function dispatchImmediateSave() {
   window.dispatchEvent(new Event(IMMEDIATE_PROJECT_SAVE_EVENT));

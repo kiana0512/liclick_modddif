@@ -1,3 +1,4 @@
+import { getImageSize } from '@/utils/imageSize';
 import { prepareImportedReferenceImage } from '@/services/referenceImagePreprocessor';
 import { useEffect, useRef, useState, type DragEvent } from 'react';
 import { createPortal } from 'react-dom';
@@ -17,14 +18,6 @@ import {
 } from '@/components/panels/ReferenceImportDialog';
 
 
-function getImageSize(url: string) {
-  return new Promise<{ width: number; height: number }>((resolve) => {
-    const image = new Image();
-    image.onload = () => resolve({ width: image.naturalWidth, height: image.naturalHeight });
-    image.onerror = () => resolve({ width: 0, height: 0 });
-    image.src = url;
-  });
-}
 
 function getImageFiles(files: FileList) {
   return Array.from(files).filter((file) => file.type.startsWith('image/'));

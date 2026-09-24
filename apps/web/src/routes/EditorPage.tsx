@@ -1,3 +1,4 @@
+import { getImageSize } from '@/utils/imageSize';
 import { prepareImportedReferenceImage } from '@/services/referenceImagePreprocessor';
 import { preservesRepaintResultAlpha } from '@/engine/localRepaint/resultAlphaPolicy';
 import { isNativeUvRepaintLayer } from '@/engine/localRepaint/uvRepaintState';
@@ -2471,14 +2472,6 @@ export function EditorPage({
   // 133 ms during otherwise frame-perfect viewport stress. Final-quality
   // thumbnails are still generated at explicit save/navigation boundaries.
 
-  function getImageSize(url: string) {
-    return new Promise<{ width: number; height: number }>((resolve) => {
-      const image = new window.Image();
-      image.onload = () => resolve({ width: image.naturalWidth, height: image.naturalHeight });
-      image.onerror = () => resolve({ width: 0, height: 0 });
-      image.src = url;
-    });
-  }
 
   function getObjectFileName(object: SceneObject) {
     const sourcePath = object.sourcePath?.split('?')[0].split('#')[0];

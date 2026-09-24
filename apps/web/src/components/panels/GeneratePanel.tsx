@@ -1,3 +1,4 @@
+import { getImageSize } from '@/utils/imageSize';
 import { captureLocalRepaintNormal } from '@/engine/localRepaint/captureLocalRepaintNormal';
 import { personalRepaintEnabled } from '@/services/personalRepaintMode';
 import { sameGenerationRecovery } from '@/services/generationRecoveryComparison';
@@ -563,14 +564,6 @@ function resolveRequestImageSize(imageSize: LiclickImageSize, aspectRatio: Licli
   return imageSize === 'auto' && aspectRatio !== 'auto' ? '1K' : imageSize;
 }
 
-function getImageSize(url: string) {
-  return new Promise<{ width: number; height: number }>((resolve) => {
-    const image = new window.Image();
-    image.onload = () => resolve({ width: image.naturalWidth, height: image.naturalHeight });
-    image.onerror = () => resolve({ width: 0, height: 0 });
-    image.src = url;
-  });
-}
 
 function getImportedModelMatrixWorld(objectId?: string) {
   const sceneState = useSceneStore.getState();
