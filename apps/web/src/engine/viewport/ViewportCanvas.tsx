@@ -6025,8 +6025,7 @@ function createInpaintMaskCaptureMaterial(
           ? (vViewerFacing >= 0.0 ? maskTexel.r : maskTexel.g)
           : max(maskTexel.r, max(maskTexel.g, maskTexel.b)) * maskTexel.a;
         if (maskInverted > 0.5) coverage = 1.0 - coverage;
-        if (coverage <= 0.01) discard;
-        gl_FragColor = vec4(1.0, 1.0, 1.0, coverage);
+        gl_FragColor = vec4(vec3(coverage > 0.01 ? coverage : 0.0), 1.0);
       }
     `,
     transparent: true,
@@ -9626,10 +9625,12 @@ function SurfacePaintOverlay() {
         undefined,
         true,
       );
-      material.depthWrite = true;
-      material.transparent = true;
+      material.transparent = false;
       material.uniforms.maskInverted.value = layer.maskInverted ? 1 : 0;
       const capturedMeshes = layer.maskInverted ? undefined : new Set(layer.accumulatedMaskMeshes);
+      const occluder = new THREE.MeshBasicMaterial({
+        color: 0x000000, side: THREE.DoubleSide, toneMapped: false,
+      });
       const startedAt = performance.now();
       try {
         const maskUrl = await renderSceneToPngUrl(
@@ -9656,7 +9657,7 @@ function SurfacePaintOverlay() {
                 scene.traverse((object) => {
                   if (!(object instanceof THREE.Mesh)) return;
                   if (object.userData.liclickObjectId !== model.objectId) return;
-                  if (!capturedMeshes.has(object)) object.visible = false;
+                  if (object.visible && !capturedMeshes.has(object)) object.material = occluder;
                 });
               }
               return restoreScene;
@@ -9670,6 +9671,7 @@ function SurfacePaintOverlay() {
         return maskUrl;
       } finally {
         material.dispose();
+        occluder.dispose();
       }
     },
     [archiveCurrentInpaintProjection, camera, getTargetModel, gl, scene],

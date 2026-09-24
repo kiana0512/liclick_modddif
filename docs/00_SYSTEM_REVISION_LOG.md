@@ -10,6 +10,8 @@
 
 ## 2026-09-23 master 合入时保留的修订记录
 
+2026-09-24 M02：新导入参考图统一执行 4,000,000 字节上限，压缩后再保存与去高光；旧参考图不重写。类型检查与边界/失败回归通过，见 CHG-20260924-REFERENCE-IMPORT-BUDGET。
+
 2026-09-23 M08/M06：按用户后续要求，ALG-LR-006 v2.2.0 将局部重绘朝向门槛从 0.01 调整为 0.03；共享落笔保护与新建/重新发布图层参数，保持原深度、遮挡、羽化宽度及旧资产不批量迁移。回退为 0.01，详见 changes/CHG-20260923-REPAINT-FACING-THRESHOLD.md。
 
 2026-09-23 M08/M06：按用户指定将 ALG-LR-006 v2.1.0 局部重绘最小绝对 face-on 从 0.08 调至 0.01，共享用于落笔保护与新建/重新发布图层的 minimumProjectionFacing。既有层显式参数和烘焙图不批量迁移，深度/遮挡与羽化宽度不变。Web typecheck、projection-layers、layer-retention、ordered-composition、seam-harmonization 均通过。详见 changes/CHG-20260923-REPAINT-FACING-THRESHOLD.md。
@@ -1120,3 +1122,5 @@ Source: `c2ef76672a28e494fcf8322042d2cb96996b50fe`. The records below are preser
 2026-09-23 Blender 发布集成（M15）：合入 master `19457814`，补齐正式 server 的 Blender 5.1.2 运行时与真实 UV 构建验收，同时带入参考图 4MB 上传适配及 master 既有局部重绘采样蒙版修复。保留 release `7d034de5` 的生产 K8s、对象存储、数据库、资源及 nginx 配置；无新 Schema/资产迁移。最终 release 提交须通过完整 verify:prepush，CI 镜像验收和部署结果另行核对；回滚使用 `7d034de5` 同组镜像并保留数据，但旧镜像不具备此次 Blender 导入修复能力。本条不预先宣称部署成功。
 
 2026-09-24 发布集成（M15，CLOUD-DEPLOYMENT v1.0.0）：合入 master 5fbcaa4a，包含 GPT 回图半透明背景清理、交错投射/局部重绘显示修复与 ALG-LR-006 v2.2.0 朝向门槛 0.03。保留 release 4182e47a 的生产配置和 Blender 运行时；维护规范采用 master 拆分结构，release 独有历史完整保留。无额外算法、Schema 或资产迁移；完整 verify:prepush 通过后推送带 [deploy] 的最终提交，部署结果单独验收。回滚使用 4182e47a 的 server/web/db-push 同组镜像，保留数据库、对象资产和 PVC；不预先宣称部署成功。
+
+2026-09-24 发布集成（M15，CLOUD-DEPLOYMENT v1.0.0）：合入 master ee09f457，包含 REFERENCE-IMPORT-BUDGET v1.0.0、INPAINT-CAPTURE-OCCLUSION v1.1.0、远端 GPT 选项可见性修复及快速/精细模式命名排序。4517 已重新构建重启，首页/鉴权/健康检查与相关回归通过。保留 release 0c2410cb 的生产配置、Blender 运行时与历史记录，无额外算法或 Schema 变化，既有资产不重写；业务迁移边界沿用对应变更卡。最终 release 提交需完整 verify:prepush 后推送 [deploy] 并核验 CI 与线上同版本。回滚使用 0c2410cb 的 server/web/db-push 同组镜像，保留数据库、对象资产与 PVC；本条不预先宣称部署成功。

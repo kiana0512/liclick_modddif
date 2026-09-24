@@ -1,3 +1,5 @@
+import { getImageSize } from '@/utils/imageSize';
+import { prepareImportedReferenceImage } from '@/services/referenceImagePreprocessor';
 import { createPortal } from 'react-dom';
 import { allowUserFileUpload } from '@/services/userFileUploadPolicy';
 import {
@@ -49,23 +51,7 @@ function referenceRole(reference: ReferenceImage) {
   return reference.referenceRole ?? 'single-view';
 }
 
-function fileToDataUrl(file: File) {
-  return new Promise<string>((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result));
-    reader.onerror = () => reject(reader.error ?? new Error('无法读取参考图。'));
-    reader.readAsDataURL(file);
-  });
-}
 
-function getImageSize(url: string) {
-  return new Promise<{ width: number; height: number }>((resolve) => {
-    const image = new Image();
-    image.onload = () => resolve({ width: image.naturalWidth, height: image.naturalHeight });
-    image.onerror = () => resolve({ width: 0, height: 0 });
-    image.src = url;
-  });
-}
 
 function dispatchImmediateSave() {
   window.dispatchEvent(new Event(IMMEDIATE_PROJECT_SAVE_EVENT));
@@ -321,7 +307,7 @@ export function ReferenceGroupPicker({
   }, [openReferenceMenuId]);
 
   const imageFromFile = useCallback(async (file: File): Promise<ReferenceImage> => {
-    const url = await fileToDataUrl(file);
+    const url = await prepareImportedReferenceImage(file);
     const size = await getImageSize(url);
     return {
       id: createId('reference'),
@@ -341,9 +327,13 @@ export function ReferenceGroupPicker({
       setUploadError('请选择图片文件。');
       return;
     }
-    const created = await Promise.all(imageFiles.map((file) => imageFromFile(file)));
-    setPendingImport(created);
-    setUploadError(undefined);
+    try {
+      const created = await Promise.all(imageFiles.map((file) => imageFromFile(file)));
+      setPendingImport(created);
+      setUploadError(undefined);
+    } catch (error) {
+      setUploadError(error instanceof Error ? error.message : '参考图导入失败。');
+    }
   }, [imageFromFile]);
 
   useEffect(() => {

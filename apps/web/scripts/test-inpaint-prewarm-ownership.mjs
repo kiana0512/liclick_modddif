@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import ts from 'typescript';
+import * as THREE from 'three';
 
 // Execute the production effect, layer accessor and capture callback. WebGL
 // allocation/PNG encoding are boundaries, not reimplementations of the policy.
@@ -36,6 +37,11 @@ function harness(overrides = {}) {
     accumulatedMaskTarget: { texture: { authored: true } }, maskInverted: false,
   };
   const layerRef = { current: mask };
+  const scene = new THREE.Scene();
+  const foreground = new THREE.Mesh();
+  foreground.userData.liclickObjectId = 'bike';
+  scene.add(foreground);
+  const originalMaterial = foreground.material;
   const calls = { acquired: 0, disposed: 0, presented: 0, invalidated: 0, encoded: 0 };
   let finish;
   const ready = new Promise(resolve => { finish = resolve; });
@@ -69,7 +75,8 @@ function harness(overrides = {}) {
     currentProjectionOperationRef: { current: 'add' },
     archiveCurrentInpaintProjection: () => { throw new Error('Already archived mask must stay canonical'); },
     gl: { domElement: { getBoundingClientRect: () => ({ width: 1600, height: 900 }) } },
-    scene: {}, camera: {}, PROJECTION_PAINT_MAX_SIZE: 2048,
+    THREE, scene, camera: {}, PROJECTION_PAINT_MAX_SIZE: 2048,
+    applyTargetOnlyMaterial: () => () => { foreground.material = originalMaterial; },
     createInpaintMaskCaptureMaterial: texture => {
       assert.equal(texture, mask.accumulatedMaskTarget.texture);
       return { uniforms: { maskInverted: { value: 0 } }, dispose() {} };
@@ -81,6 +88,13 @@ function harness(overrides = {}) {
       assert.equal(input.height, 2048);
       assert.equal(input.camera.frozen, true);
       assert.equal(options.grayscaleOutput, true);
+      const restore = options.prepareScene();
+      assert.equal(foreground.visible, true, 'Unpainted foreground must remain an occluder');
+      assert.equal(foreground.material.color.getHex(), 0);
+      assert.equal(foreground.material.depthWrite, true);
+      assert.equal(foreground.material.transparent, false);
+      restore();
+      assert.equal(foreground.material, originalMaterial);
       calls.encoded++;
       return 'data:image/png;base64,authored-mask';
     },
