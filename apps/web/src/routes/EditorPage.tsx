@@ -1,3 +1,5 @@
+import { getImageSize } from '@/utils/imageSize';
+import { prepareImportedReferenceImage } from '@/services/referenceImagePreprocessor';
 import { preservesRepaintResultAlpha } from '@/engine/localRepaint/resultAlphaPolicy';
 import { isNativeUvRepaintLayer } from '@/engine/localRepaint/uvRepaintState';
 import {prepareMergeProjection,startMergeProjectionPreparation,mergePreparationSignature} from '@/engine/bake/mergeProjectionPreparation';
@@ -2473,14 +2475,6 @@ export function EditorPage({
   // 133 ms during otherwise frame-perfect viewport stress. Final-quality
   // thumbnails are still generated at explicit save/navigation boundaries.
 
-  function getImageSize(url: string) {
-    return new Promise<{ width: number; height: number }>((resolve) => {
-      const image = new window.Image();
-      image.onload = () => resolve({ width: image.naturalWidth, height: image.naturalHeight });
-      image.onerror = () => resolve({ width: 0, height: 0 });
-      image.src = url;
-    });
-  }
 
   function getObjectFileName(object: SceneObject) {
     const sourcePath = object.sourcePath?.split('?')[0].split('#')[0];
@@ -3768,7 +3762,7 @@ export function EditorPage({
       // file handles. Reading sequentially can make later virtual files expire.
       const fileResults = await Promise.allSettled(
         imageFiles.map(async (file, index): Promise<ReferenceImage> => {
-          const url = await fileToDataUrl(file);
+          const url = await prepareImportedReferenceImage(file);
           const size = await getImageSize(url);
           if (!size.width || !size.height) throw new Error(`无法读取图片：${file.name}`);
           return {
@@ -3791,15 +3785,7 @@ export function EditorPage({
       for (const [index, sourceUrl] of sourceUrls.entries()) {
         if (recoveredFallbackCount >= fallbackLimit) break;
         try {
-          let url = sourceUrl;
-          if (!url.startsWith('data:image/')) {
-            try {
-              url = await urlToDataUrl(url);
-            } catch {
-              // A remote image can still be displayed and persisted even when
-              // its server does not allow a browser-side CORS fetch.
-            }
-          }
+          const url = await prepareImportedReferenceImage(sourceUrl);
           const size = await getImageSize(url);
           if (!size.width || !size.height) continue;
           const sourceName = (() => {

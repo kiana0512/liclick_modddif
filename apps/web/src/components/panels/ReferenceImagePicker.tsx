@@ -1,3 +1,5 @@
+import { getImageSize } from '@/utils/imageSize';
+import { prepareImportedReferenceImage } from '@/services/referenceImagePreprocessor';
 import { useEffect, useRef, useState, type DragEvent } from 'react';
 import { getPipelineTrace } from '@/engine/performance/tracing/pipelineTrace';
 import { createPortal } from 'react-dom';
@@ -7,6 +9,7 @@ import { Button } from '@/components/ui/Button';
 import { useT } from '@/stores/i18nStore';
 import { IMMEDIATE_PROJECT_SAVE_EVENT } from '@/stores/projectStore';
 import { useReferenceStore } from '@/stores/referenceStore';
+import { useToastStore } from '@/stores/toastStore';
 import type { ReferenceImage } from '@/types/project';
 import { createId } from '@/utils/id';
 import { downloadImageAsset } from '@/utils/downloadImage';
@@ -15,25 +18,7 @@ import {
   type ReferenceImportRole,
 } from '@/components/panels/ReferenceImportDialog';
 
-function fileToDataUrl(file: File) {
-  const trace = import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' ? getPipelineTrace()?.begin('reference.read') : undefined;
-  return new Promise<string>((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => { trace?.end(); resolve(String(reader.result)); };
-    reader.onerror = () => { trace?.end('error'); reject(reader.error ?? new Error('Could not read image.')); };
-    try { reader.readAsDataURL(file); } catch (error) { trace?.end('error'); reject(error); }
-  });
-}
 
-function getImageSize(url: string) {
-  const trace = import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' ? getPipelineTrace()?.begin('reference.decode') : undefined;
-  return new Promise<{ width: number; height: number }>((resolve) => {
-    const image = new Image();
-    image.onload = () => { trace?.end(); resolve({ width: image.naturalWidth, height: image.naturalHeight }); };
-    image.onerror = () => { trace?.end('error'); resolve({ width: 0, height: 0 }); };
-    image.src = url;
-  });
-}
 
 function getImageFiles(files: FileList) {
   return Array.from(files).filter((file) => file.type.startsWith('image/'));
@@ -128,9 +113,9 @@ export function ReferenceImagePicker({
     if (blockMutation('导入参考图')) return;
     const imageFiles = Array.isArray(files) ? files.filter((file) => file.type.startsWith('image/')) : getImageFiles(files);
     if (imageFiles.length === 0) return;
-    const nextReferences: ReferenceImage[] = await Promise.all(
+    const nextReferences: ReferenceImage[] | undefined = await Promise.all(
       imageFiles.map(async (file, index) => {
-        const url = await fileToDataUrl(file);
+        const url = await prepareImportedReferenceImage(file);
         const size = await getImageSize(url);
         return {
           id: createId('reference'),
@@ -141,12 +126,18 @@ export function ReferenceImagePicker({
           isPrimary: index === 0,
         };
       }),
-    );
-    if (import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' && nextReferences[0]) {
+    ).catch((error: unknown) => {
+      useToastStore.getState().pushToast({
+        tone: 'error', title: '参考图导入失败',
+        description: error instanceof Error ? error.message : '图片无法读取或压缩。',
+      });
+      return undefined;
+    });
+    if (import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' && nextReferences?.[0]) {
       const trace = getPipelineTrace(), role = trace?.begin('reference.select');
       if (role) trace?.bind(`reference-role:${nextReferences[0].id}`, role.context);
     }
-    setPendingImport(nextReferences);
+    if (nextReferences) setPendingImport(nextReferences);
   }
 
   function closePendingImport() {

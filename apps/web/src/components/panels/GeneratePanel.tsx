@@ -1,3 +1,4 @@
+import { getImageSize } from '@/utils/imageSize';
 import { captureLocalRepaintNormal } from '@/engine/localRepaint/captureLocalRepaintNormal';
 import { personalRepaintEnabled } from '@/services/personalRepaintMode';
 import { sameGenerationRecovery } from '@/services/generationRecoveryComparison';
@@ -563,14 +564,6 @@ function resolveRequestImageSize(imageSize: LiclickImageSize, aspectRatio: Licli
   return imageSize === 'auto' && aspectRatio !== 'auto' ? '1K' : imageSize;
 }
 
-function getImageSize(url: string) {
-  return new Promise<{ width: number; height: number }>((resolve) => {
-    const image = new window.Image();
-    image.onload = () => resolve({ width: image.naturalWidth, height: image.naturalHeight });
-    image.onerror = () => resolve({ width: 0, height: 0 });
-    image.src = url;
-  });
-}
 
 function getImportedModelMatrixWorld(objectId?: string) {
   const sceneState = useSceneStore.getState();
@@ -5597,7 +5590,7 @@ export function GeneratePanel({
         canCancelGeneration ? 'grid grid-cols-[1fr_52px] gap-2' : ''
       }`}
     >
-      {((isTextureMapTab && singleViewProvider === 'gpt') || isGptLocalRepaint) && (
+      {((isTextureMapTab && singleViewProvider === 'gpt') || (isLocalRepaintTab && isGptLocalRepaint)) && (
         <GptGenerationOptions
           model={textureGptModel}
           quality={textureGptQuality}
@@ -5734,8 +5727,8 @@ export function GeneratePanel({
               <SegmentedControl<SingleViewProvider>
                 value={singleViewProvider}
                 options={[
-                  { value: 'gpt', label: 'GPT', disabled: workflowConfigurationLocked || workflowSubmissionLocked },
-                  { value: 'remote', label: 'ModelView', disabled: workflowConfigurationLocked || workflowSubmissionLocked },
+                  { value: 'remote', label: '快速模式', disabled: workflowConfigurationLocked || workflowSubmissionLocked },
+                  { value: 'gpt', label: '精细模式', disabled: workflowConfigurationLocked || workflowSubmissionLocked },
                 ]}
                 onChange={(provider) => {
                   if (workflowConfigurationLocked || workflowSubmissionLocked) return;
@@ -5748,8 +5741,8 @@ export function GeneratePanel({
               <SegmentedControl<'modelview' | 'gpt'>
                 value={generationSettings.localRepaintProvider}
                 options={[
-                  { value: 'modelview', label: personalRepaintEnabled ? '个人云端重绘' : '原局部重绘', disabled: workflowConfigurationLocked || workflowSubmissionLocked },
-                  { value: 'gpt', label: 'GPT 局部重绘', disabled: workflowConfigurationLocked || workflowSubmissionLocked },
+                  { value: 'modelview', label: '快速模式', disabled: workflowConfigurationLocked || workflowSubmissionLocked },
+                  { value: 'gpt', label: '精细模式', disabled: workflowConfigurationLocked || workflowSubmissionLocked },
                 ]}
                 onChange={(localRepaintProvider) => updateGenerationSettings({ localRepaintProvider })}
                 className="mb-2"

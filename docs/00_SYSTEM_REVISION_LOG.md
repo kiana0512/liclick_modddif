@@ -14,6 +14,12 @@
 
 ## 2026-09-23 master 合入时保留的修订记录
 
+2026-09-24 M02：新导入参考图统一执行 4,000,000 字节上限，压缩后再保存与去高光；旧参考图不重写。类型检查与边界/失败回归通过，见 CHG-20260924-REFERENCE-IMPORT-BUDGET。
+
+2026-09-23 M08/M06：按用户后续要求，ALG-LR-006 v2.2.0 将局部重绘朝向门槛从 0.01 调整为 0.03；共享落笔保护与新建/重新发布图层参数，保持原深度、遮挡、羽化宽度及旧资产不批量迁移。回退为 0.01，详见 changes/CHG-20260923-REPAINT-FACING-THRESHOLD.md。
+
+2026-09-23 M08/M06：按用户指定将 ALG-LR-006 v2.1.0 局部重绘最小绝对 face-on 从 0.08 调至 0.01，共享用于落笔保护与新建/重新发布图层的 minimumProjectionFacing。既有层显式参数和烘焙图不批量迁移，深度/遮挡与羽化宽度不变。Web typecheck、projection-layers、layer-retention、ordered-composition、seam-harmonization 均通过。详见 changes/CHG-20260923-REPAINT-FACING-THRESHOLD.md。
+
 2026-09-23 M08/M06：`GPT-RETURN-BACKGROUND-CLEANUP` v2 在共享回图还原路径增加半透明外部背景清理。仅在原 alpha>=128 边界失败、alpha>=200 主体边界与原构图相符时，清理观测主体包围框安全边距之外、连通画布边缘且 alpha<192 的像素；提交前重新验证全部剩余 alpha>=128 边界，保留 RGB、主体及邻近抗锯齿。GPT 单视图/多视图/局部重绘共用；原不透明孤立边缘清理保留。无持久化/Schema 迁移，既有失败不自动重发，回滚恢复 v1。详见 docs/changes/CHG-20260923-RETURN-ALPHA-RESIDUE.md。
 
 2026-09-23 M08/M04：`LOCAL-REPAINT-SAMPLING-MASK` v3 恢复原局部重绘远端采样蒙版自适应外扩和羽化（原半径公式），继续按冻结可见轮廓裁切。白色输入标记、原选区及未贴图区域并集、实际回贴写入范围保持不变。GPT 和单/多视图补全行为不变。GPU/CPU/Worker 回贴、保存与导出继续消费未外扩选区；无需资产或 Schema 迁移，历史请求不重写。回滚仅将 local 的 dilationRadius/featherRadius 置零。验证生产 Worker 输出存在外扩/灰度过渡、背景与孔洞仍为零及回贴合成回归。

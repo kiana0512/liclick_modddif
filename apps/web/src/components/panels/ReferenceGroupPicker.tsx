@@ -1,3 +1,5 @@
+import { getImageSize } from '@/utils/imageSize';
+import { prepareImportedReferenceImage } from '@/services/referenceImagePreprocessor';
 import { createPortal } from 'react-dom';
 import { getPipelineTrace } from '@/engine/performance/tracing/pipelineTrace';
 import { allowUserFileUpload } from '@/services/userFileUploadPolicy';
@@ -50,25 +52,7 @@ function referenceRole(reference: ReferenceImage) {
   return reference.referenceRole ?? 'single-view';
 }
 
-function fileToDataUrl(file: File) {
-  const trace = import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' ? getPipelineTrace()?.begin('reference.read') : undefined;
-  return new Promise<string>((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => { trace?.end(); resolve(String(reader.result)); };
-    reader.onerror = () => { trace?.end('error'); reject(reader.error ?? new Error('无法读取参考图。')); };
-    try { reader.readAsDataURL(file); } catch (error) { trace?.end('error'); reject(error); }
-  });
-}
 
-function getImageSize(url: string) {
-  const trace = import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' ? getPipelineTrace()?.begin('reference.decode') : undefined;
-  return new Promise<{ width: number; height: number }>((resolve) => {
-    const image = new Image();
-    image.onload = () => { trace?.end(); resolve({ width: image.naturalWidth, height: image.naturalHeight }); };
-    image.onerror = () => { trace?.end('error'); resolve({ width: 0, height: 0 }); };
-    image.src = url;
-  });
-}
 
 function dispatchImmediateSave() {
   window.dispatchEvent(new Event(IMMEDIATE_PROJECT_SAVE_EVENT));
@@ -324,7 +308,7 @@ export function ReferenceGroupPicker({
   }, [openReferenceMenuId]);
 
   const imageFromFile = useCallback(async (file: File): Promise<ReferenceImage> => {
-    const url = await fileToDataUrl(file);
+    const url = await prepareImportedReferenceImage(file);
     const size = await getImageSize(url);
     return {
       id: createId('reference'),
@@ -344,13 +328,17 @@ export function ReferenceGroupPicker({
       setUploadError('请选择图片文件。');
       return;
     }
-    const created = await Promise.all(imageFiles.map((file) => imageFromFile(file)));
-    if (import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' && created[0]) {
-      const trace = getPipelineTrace(), role = trace?.begin('reference.select');
-      if (role) trace?.bind(`reference-role:${created[0].id}`, role.context);
+    try {
+      const created = await Promise.all(imageFiles.map((file) => imageFromFile(file)));
+      if (import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' && created[0]) {
+        const trace = getPipelineTrace(), role = trace?.begin('reference.select');
+        if (role) trace?.bind(`reference-role:${created[0].id}`, role.context);
+      }
+      setPendingImport(created);
+      setUploadError(undefined);
+    } catch (error) {
+      setUploadError(error instanceof Error ? error.message : '参考图导入失败。');
     }
-    setPendingImport(created);
-    setUploadError(undefined);
   }, [imageFromFile]);
 
   useEffect(() => {

@@ -67,6 +67,8 @@ FUNCTION-TIMING/1.0.0，2026-09-28。主模块 M13/M15，无业务算法变更�
 
 ## 排除与限制
 
+归档提交合入 origin/master 后，参考图读取/尺寸计时随远端去重迁至 services/referenceImagePreprocessor.ts 的 blobToDataUrl 和 utils/imageSize.ts 的 getImageSize；保留远端压缩及错误处理，两个 Picker 只保留角色选择计时。
+
 - 第三方库内部、React render、像素/顶点循环、shader 内核、未列出的底层 helper 不自动插桩。
 - Node/Blender/远端推理内部不在新版范围；客户端请求/等待可见，不构造 queue/inference。
 - Worker 仅本地任务/函数 wall，与主线程往返分别展示，无跨时钟对齐。

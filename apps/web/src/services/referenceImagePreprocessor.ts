@@ -1,4 +1,5 @@
 import type { ReferenceImage } from '@/types/project';
+import { getPipelineTrace } from '@/engine/performance/tracing/pipelineTrace';
 import { isWorkspaceAssetUrl, readWorkspaceAssetBlob } from './workspaceApiClient';
 
 // Atlas receives call-tool files as Base64 inside a JSON-RPC body. The observed
@@ -43,6 +44,20 @@ export type PreparedReference = {
   preprocessing?: ReferencePreprocessingResult;
 };
 
+// REFERENCE-IMPORT-BUDGET/1.0.0: cap the stored image, not only task uploads.
+export const REFERENCE_IMPORT_MAX_BYTES = 4_000_000;
+
+export async function prepareImportedReferenceImage(source: Blob | string): Promise<string> {
+  const blob = typeof source === 'string' ? await referenceUrlToBlob(source) : source;
+  if (blob.size <= REFERENCE_IMPORT_MAX_BYTES) return blobToDataUrl(blob);
+  const prepared = await compressReference(
+    { id: 'import', name: '参考图', url: '', width: 0, height: 0, isPrimary: false },
+    blob,
+    23 + 4 * Math.floor(REFERENCE_IMPORT_MAX_BYTES / 3),
+  );
+  return prepared.url;
+}
+
 type CacheEntry = {
   sourceUrl: string;
   promise: Promise<PreparedReference>;
@@ -51,10 +66,11 @@ type CacheEntry = {
 const preparationCache = new Map<string, CacheEntry>();
 
 function blobToDataUrl(blob: Blob) {
+  const trace = import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' ? getPipelineTrace()?.begin('reference.read') : undefined;
   return new Promise<string>((resolve, reject) => {
     const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result));
-    reader.onerror = () => reject(reader.error ?? new Error('无法读取参考图。'));
+    reader.onload = () => { trace?.end(); resolve(String(reader.result)); };
+    reader.onerror = () => { trace?.end('error'); reject(reader.error ?? new Error('无法读取参考图。')); };
     reader.readAsDataURL(blob);
   });
 }

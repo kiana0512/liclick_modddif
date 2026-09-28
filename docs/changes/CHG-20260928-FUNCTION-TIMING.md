@@ -40,6 +40,8 @@ corepack pnpm dev:4517 --DEBUG
 
 ## 验证记录
 
+归档集成：提交前正常合入 origin/master ee09f457，保留其参考图体积处理、共享尺寸读取、生成模式命名和蒙版修复；参考图 read/decode 探针迁到共享函数，不恢复两个面板内的重复实现。最终提交按 verify:prepush 重新验证。
+
 - Web 156 项回归通过；新计时测试覆盖默认关闭、截断、隐私、异常、stop/restart、Promise 返回边界、Worker 本地时间和 Generation 保存 ACK。
 - 全仓 typecheck、Web lint 通过；启动器拒绝 DEBUG/SkipBuild 模式不符，发布入口拒绝 --DEBUG。
 - 带正式发布元数据并故意残留 DEBUG 环境的 build:release 通过；构建阶段验证无本次 Trace 模块残留，trace-build.json 为 false。Cloud artifact 与部署模拟通过。工作区未提交，不能当作远端 CI 已通过。
