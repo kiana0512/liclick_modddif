@@ -92,11 +92,12 @@ assert.equal(gptResult.resultUrl, 'original-rgba', 'GPT must preserve original c
 assert.equal(clipCalls.length, 0, 'GPT must never invoke the inset/opaque conversion');
 assert.equal(preservesRepaintResultAlpha(gptResult.metadata), true);
 assert.equal(gptResult.metadata.modelSilhouetteClipVersion, undefined);
-const remoteResult = await prepareRepaintResult('remote-source', 'depth', false);
+await assert.rejects(() => prepareRepaintResult('remote-source', 'depth', false), /缺少原图或蒙版/);
+const remoteResult = await prepareRepaintResult('remote-source', 'depth', false, undefined, 'original-effect', 'submitted-mask');
 assert.equal(remoteResult.resultUrl, 'clipped-result');
 assert.equal(remoteResult.metadata.modelSilhouetteClipVersion, 2);
-assert.equal(remoteResult.metadata.repaintResultPolicy, 'model-silhouette-inset-v2');
-assert.deepEqual(clipCalls[0].slice(0, 2), ['remote-source', 'depth']);
+assert.equal(remoteResult.metadata.repaintResultPolicy, 'model-silhouette-submitted-mask-v1');
+assert.deepEqual(clipCalls[0], ['remote-source', 'depth', undefined, 'original-effect', 'submitted-mask']);
 assert.equal(preservesRepaintResultAlpha({}), false, 'Unversioned legacy jobs keep their old behavior');
 assert.equal(preservesRepaintResultAlpha({ modelSilhouetteClipVersion: 1 }), true);
 assert.equal(preservesRepaintResultAlpha({ modelSilhouetteClipVersion: 2 }), true);

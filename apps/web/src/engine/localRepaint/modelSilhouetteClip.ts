@@ -3,6 +3,35 @@ import { yieldToBrowserTask } from '@/utils/browserScheduling';
 
 /** ALG-LR-013 v1.2.0: 3px@2K frozen model coverage, never provider RGB or authored mask. */
 export const MODEL_SILHOUETTE_CLIP_VERSION = 2;
+
+/** ComfyUI's submitted red-channel mask is also the return-image blend weight. */
+export function compositeRepaintWithSubmittedMask(
+  generated: ImageData,
+  original: ImageData,
+  submittedMask: ImageData,
+) {
+  const { width, height } = generated;
+  if (
+    original.width !== width || original.height !== height ||
+    submittedMask.width !== width || submittedMask.height !== height
+  ) throw new Error('局部重绘图像尺寸不一致。');
+  const output = new ImageData(new Uint8ClampedArray(original.data), width, height);
+  const result = output.data;
+  const source = original.data;
+  const repaint = generated.data;
+  const mask = submittedMask.data;
+  for (let index = 0; index < width * height; index++) {
+    const offset = index * 4;
+    const weight = (mask[offset] / 255) * (mask[offset + 3] / 255);
+    if (weight <= 0) continue;
+    for (let channel = 0; channel < 4; channel++) {
+      const pixel = offset + channel;
+      result[pixel] = Math.round(source[pixel] + (repaint[pixel] - source[pixel]) * weight);
+    }
+  }
+  return output;
+}
+
 export function clipRepaintToModelSilhouette(source: ImageData, depth: ImageData) {
   const { width, height } = source;
   if (width !== depth.width || height !== depth.height)
@@ -42,15 +71,21 @@ export function clipRepaintToModelSilhouette(source: ImageData, depth: ImageData
 
 export async function prepareModelClippedRepaint(
   sourceUrl: string,
-  depthUrl?: string,
-  signal?: AbortSignal,
+  depthUrl: string | undefined,
+  signal: AbortSignal | undefined,
+  originalUrl: string,
+  submittedMaskUrl: string,
 ) {
   if (!depthUrl) throw new Error('缺少生成视角的原模型轮廓，已停止回贴，请重试。');
   const options = { cooperative: true, signal };
   const source = await urlToImageData(sourceUrl, undefined, undefined, options);
   const depth = await urlToImageData(depthUrl, undefined, undefined, options);
+  const original = await urlToImageData(originalUrl, undefined, undefined, options);
+  const submittedMask = await urlToImageData(submittedMaskUrl, undefined, undefined, options);
   signal?.throwIfAborted();
-  const clipped = clipRepaintToModelSilhouette(source, depth);
+  const clipped = clipRepaintToModelSilhouette(
+    compositeRepaintWithSubmittedMask(source, original, submittedMask), depth,
+  );
   await yieldToBrowserTask();
   signal?.throwIfAborted();
   const result = await blobToDataUrl(await imageDataToBlob(clipped));

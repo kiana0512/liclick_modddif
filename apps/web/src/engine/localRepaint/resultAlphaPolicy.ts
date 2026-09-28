@@ -8,6 +8,7 @@ export function preservesRepaintResultAlpha(metadata: Record<string, unknown>) {
 
 export async function prepareRepaintResult(
   sourceUrl: string, depthUrl: string | undefined, isGpt: boolean, signal?: AbortSignal,
+  originalUrl?: string, submittedMaskUrl?: string,
 ) {
   signal?.throwIfAborted();
   if (isGpt) {
@@ -19,9 +20,13 @@ export async function prepareRepaintResult(
   }
   const { MODEL_SILHOUETTE_CLIP_VERSION, prepareModelClippedRepaint } =
     await import('./modelSilhouetteClip');
-  const resultUrl = await prepareModelClippedRepaint(sourceUrl, depthUrl, signal);
+  if (!originalUrl || !submittedMaskUrl)
+    throw new Error('局部重绘缺少原图或蒙版。');
+  const resultUrl = await prepareModelClippedRepaint(
+    sourceUrl, depthUrl, signal, originalUrl, submittedMaskUrl,
+  );
   return { resultUrl, metadata: {
-    repaintResultPolicy: 'model-silhouette-inset-v2',
+    repaintResultPolicy: 'model-silhouette-submitted-mask-v1',
     modelSilhouetteClipVersion: MODEL_SILHOUETTE_CLIP_VERSION,
   } };
 }

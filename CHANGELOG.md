@@ -1,5 +1,9 @@
 # Changelog
 
+### 2026-09-28 局部重绘同蒙版返图叠加
+
+- M08 / `ALG-LR-012` v1.2.0：手绘区域与可见未贴图区域分别沿用各自外扩羽化后合成远端蒙版；返图用提交给 ComfyUI 的同一黑白灰蒙版与原效果图混合，再按模型轮廓裁切。效果图/白模引导图保持纯白硬边。旧结果和 GPT 路径不重算。见 CHG-20260928-LOCAL-REPAINT-SUBMITTED-MASK-BLEND。
+
 ### 2026-09-28 轻量阶段/函数计时
 
 - M13/M15：收敛旧 Trace 为默认关闭的本地函数计时；启动器 --DEBUG 与显式 start/stop，正式产物裁剪检查。移除本次 Perfetto、硬件采样、诊断服务端/SQL/上传/续接，既有 Performance Lab 保持。无业务算法或数据迁移；见 CHG-20260928-FUNCTION-TIMING。

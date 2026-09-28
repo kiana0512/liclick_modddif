@@ -1,6 +1,6 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
-> 文档版本：`2.25.0`
+> 文档版本：`2.25.1`
 >
 > 本文件只描述**现在必须成立的规则**。历史变更流水、变更卡摘要与修订记录已移出到 [00_SYSTEM_REVISION_LOG.md](00_SYSTEM_REVISION_LOG.md)，仅在追溯决策、排查兼容或回归问题时读取。
 
@@ -109,7 +109,7 @@ M02 参考图导入执行 `REFERENCE-IMPORT-BUDGET` v1.0.0：新导入参考图�
 | `M05` | 图层领域 | Layer 类型/角色、顺序、显隐、调整、合并事务 | `types/layer.ts`、`layerStore.ts` |
 | `M06` | 实时投影 | 捕获空间重投影、深度/法线门控、Top-3/Overlay 预览 | `engine/projection` |
 | `M07` | UV 合成与发布 | UV 栅格、权重合成、后处理、PBR 显示固化、PNG 发布 | `engine/bake`、`engine/layers` |
-| `M08` | 局部重绘 | 选择蒙版、效果/白灰几何融合输入、ModelView 四输入、返图直出、表面画笔回贴 | `GeneratePanel`、`localRepaint`、`ViewportCanvas`、`localRepaintGenerationInput.worker` |
+| `M08` | 局部重绘 | 选择蒙版、效果/白模引导输入、ModelView 四输入、按提交蒙版返图叠加、表面画笔回贴 | `GeneratePanel`、`localRepaint`、`ViewportCanvas`、`localRepaintGenerationInput.worker` |
 | `M09` | 内容识别补缝 | UV 缺口识别、表面拓扑传播、修补 underlay | `engine/contentAware` |
 | `M10` | 生产 UV/拓扑/Bake | 真实任务提交、QA、产物验证、Pipeline 交接 | AssetProcessing/Bake workspace、server proxies |
 | `M11` | 输出与标准文件集成 | 贴图、GLB/GLTF/FBX/OBJ/STL、快照、视频、ZIP | `engine/export`、server export |
@@ -395,12 +395,12 @@ The baseline update above supersedes older descriptions in this section where th
 局部选择（多相机表面笔画）
  → 点击局部生图时冻结 square camera + object matrix
  → 同相机捕获 2K flat BaseColor 干净效果图、2K clay-target 白灰几何图和原始 RGB selection mask
- → Worker 从原始 mask 派生双阈值连通、闭运算补断、微小孤岛过滤与小孔填充的合成核，用全不透明核+窄边羽化将 clay 融入效果图
- → ModelView 专用 mask 再从合成核自适应外扩 24–64px@2K 并羽化 4–10px；未修改原始作者 mask
+ → Worker 从原始 mask 派生选择核；提交给远端的当前效果图/白模引导图在选区内直接填纯白，边界不羽化
+ → ModelView 专用 mask 将手绘区域和可见未贴图区域分别按原有 24–64px@2K 外扩、4–10px 羽化后合并；未修改原始作者 mask
  → 若材质参考是单图，先生成 durable 多视图配对
  → Qwen 只看干净效果图 / 完整多视图 / 未外扩原始 mask；留空先输出一句中文修复要求，再用 Klein 2–3 段模板转换；有用户文字直接转换
  → ModelView 四输入（效果+蒙版内白灰几何融合图 / 材质参考 / 外扩羽化 RGB mask / Qwen 最终 prompt）与 1K linear-view depth guard 并行
- → 远端单张 PNG 直接作为新结果，不再执行浏览器校色或接缝融合
+ → 远端单张 PNG 按实际提交给 ComfyUI 的黑白灰 mask 与干净原效果图逐像素叠加，再按原模型深度轮廓裁切；不执行浏览器校色或另算接缝 mask
  → 保存 direct result、mask、capture 与工作流版本元数据
  → 用户用表面画笔决定实际回贴 coverage
  → 1024 live GPU overlay；停笔后两帧内先发布完整 projected repaint 图层行
@@ -413,7 +413,7 @@ The baseline update above supersedes older descriptions in this section where th
 | ALG ID / 名称 | 版本 | 输入与规则 |
 | --- | --- | --- |
 | `ALG-LR-001` 冻结视角选择重投影 | `2.0.0` | 累积多相机表面选择在生成瞬间重投影为 2048 方形 mask；相机/对象矩阵冻结 |
-| `ALG-LR-002` ModelView 四业务输入直出 | `3.1.0`；workflow `2026.08.28-cd48a78-truev3-gguf-mask-4input-rseed-r1` | 远端字段固定为必填 2K 效果/白灰几何融合 `image`、必填 `material_image`、必填同尺寸外扩羽化 RGB `mask`与必填 Qwen 解析后 `prompt`；mask 红通道白色可编辑、黑色保留，禁止 alpha-only；不提交 `viewport_reference`、`seed`、`noise_seed`或 workflow 节点参数；返回 PNG 以 `resultComposition=direct-v1` 直接持久化和投影 |
+| `ALG-LR-002` ModelView 四业务输入 | `3.2.0`；workflow `2026.08.28-cd48a78-truev3-gguf-mask-4input-rseed-r1` | 远端字段固定为必填 2K 当前效果/白模引导 `image`、必填 `material_image`、必填同尺寸外扩羽化 RGB `mask`与可选 `prompt`；mask 红通道白色可编辑、黑色保留，禁止 alpha-only；不提交 `viewport_reference`、`seed`、`noise_seed`或 workflow 节点参数；返回 PNG 按原提交 mask 与生成前效果图合并，以 `resultComposition=submitted-mask-v1` 持久化和投影 |
 | `ALG-LR-003` 并行深度保护 | `2.0.0` | 1K linear-view depth 与远端请求并行；失败保留生成结果但明确 warning，几何保护降级 |
 | `ALG-LR-004` 历史增强边界谐调 | `14.0.0-compatible` | 仅读取/重建旧 v6-v14 Generation 和图层；新 `direct-v1` 任务不调用 |
 | `ALG-LR-005` 历史兼容边界谐调 | `5.0.0-compatible` | 仅保留旧 v3-v5 全幅合成与 legacy 切换的读取兼容；新 `direct-v1` 任务不调用 |
@@ -423,7 +423,7 @@ The baseline update above supersedes older descriptions in this section where th
 | `ALG-LR-009` Inward Crossfade 栈合成 | `1.0.0` | 连续重绘层向内部交叉淡化，避免普通 alpha stacking 在边缘重复显露接缝 |
 | `ALG-LR-010` Provider 兼容编辑 | `1.0.0-compat` | `LocalRepaintDialog` 的 image/edit/protect/hole masks 独立路径，不得与四输入主路径混改 |
 | `ALG-LR-011` 生图透明显示副本 | `1.2.1` | UI-05 重绘效果图和 UI-10 普通投射图层缩略图优先使用 capture linear-view depth 清除明确无几何覆盖的背景，按逐行首末非零像素计算相同精确 alpha bounds，仅裁切一次并保留 6% 留白；几何覆盖区的 RGB/alpha 原样保留。深度不可用时只清除与画布边缘连通的近黑外背景，不做第二次 matte、侵蚀或分位裁边。局部重绘图层不走整图副本，继续使用用户涂绘 mask，只显示笔刷授权区域；实际可见消费者串行、交互空闲调度，像素阶段跨呈现边界检查取消，支持共享取消与 source/depth/mask/revision 有界 LRU；切模型不强制展开图层面板 |
-| `ALG-LR-012` 远端重绘输入融合 | `1.1.0` | 专用 Worker 从原始连续 mask 派生 ModelView 合成核：候选/强核阈值为 24/96，8 邻域保留含强核的连通域，应用 `clamp(0.012×mask短边, 2, 6)px@2K` 闭运算、小于 `max(24px², bbox×0.02%)@2K` 的孤岛过滤和小于 `max(64px², bbox×0.05%)@2K` 的封闭孔填充；`composite=current×(1-a)+clay×a` 使用全不透明核和约 1.5px@2K 窄边羽化。远端 mask 从清理后核再按 `clamp(0.25×核短边, 24, 64)px@2K` 外扩、`clamp(0.2×外扩, 4, 10)px@2K` 羽化。Qwen、Capture、Generation 画笔授权与历史恢复仍使用未外扩、未清理的原始作者 mask |
+| `ALG-LR-012` 远端重绘输入与同蒙版返图融合 | `1.2.0` | Worker 对可见手绘区域与可见未贴图区域分别执行既有 `clamp(0.25×短边, 24, 64)px@2K` 外扩和 `clamp(0.2×外扩, 4, 10)px@2K` 羽化，取逐像素最大值；手绘原区域及未贴图原区域保持全白，深度背景保持全黑。未贴图区域延续原有衔接，原始作者 mask 不改。ComfyUI 返回图按其实际收到的 RGB mask 红通道灰度与生成前干净原效果图混合：`result=original×(1-mask)+remote×mask`，随后执行原模型轮廓裁切。Qwen、Capture、Generation 画笔授权与历史恢复仍使用未外扩的作者/可见缺口选择 mask。旧 `ALG-LR-012` v1.1.0 的闭运算、孤岛/小孔清理仅用于无深度兼容路径，参数不变 |
 
 局部生图远端接收生成阶段的 RGB selection mask，但仍不接收 UV 图集、表面深度或用户最终回贴 coverage。远端 latent mask 不承诺蒙版外像素逐点不变；浏览器继续用同一 `allowedMaskUrl`、capture camera 和 depth guard 限制 3D 写回，用户通过表面画笔决定最终图层 coverage。这些几何授权契约与旧版保持一致。
 
@@ -432,6 +432,8 @@ The baseline update above supersedes older descriptions in this section where th
 迁移：Project Command、Revision、Capture/Generation/Layer Schema、对象存储类别与 ownership 均不升级；旧 v5-v14 结果继续使用已持久化 harmonized/raw 元数据，不批量重算。新任务以 `resultComposition=direct-v1`、`rawResultUrl=resultUrl` 识别并直接投影。回退可恢复旧三输入 workflow 与浏览器 harmonization；已保存的 direct PNG 仍是合法 Generation 资产，禁止删除历史图层或改写 Revision。
 
 `ALG-LR-012` v1.1.0 只改变 ModelView 生成输入的派生蒙版：原始作者 mask 仍是编辑意图、Qwen 定位、Capture、Generation 画笔授权、历史和回贴 coverage 的唯一权威来源，不被清理或覆写。清理后核只用于白灰几何融合图与 `submittedMaskUrl`，不使用凸包或包围盒填充，不跨越大于闭运算直径的结构空隙。GPU、shader、UV raster、投影、返图直出、输出分辨率和 export compositor 无变化；Project/Layer/Generation/Capture Schema、Revision、ownership 与已有资产无迁移。回退时只恢复 Worker 使用原始连续蒙版融合并从原始二值核外扩，不删除任何工程数据。
+
+`ALG-LR-012` v1.2.0 取代上一段的“返图直出”：新 ModelView Generation 使用 `resultComposition=submitted-mask-v1`，`rawResultUrl` 保留原始远端 PNG，`resultUrl` 保存按同一 `submittedMaskUrl` 混合并通过轮廓裁切的 PNG；黑色保留原图、灰色渐变叠加、白色采用返图。原 mask PNG 是远端请求与本地合成的同一资产，尺寸不一致或缺失时停止回贴。GPT 路径和旧 `direct-v1` Generation 原样读取，不批量重算；Project/Layer/Generation/Capture 字段、Revision、ownership、GPU/shader/UV/export 公式不变。回退可恢复单一联合蒙版外扩和直出返图，已有 `submitted-mask-v1` 结果仍是可读取的普通 Generation PNG，不删除历史资产。见 `changes/CHG-20260928-LOCAL-REPAINT-SUBMITTED-MASK-BLEND.md`。
 
 `ALG-LR-007/008` v2.0.2/v2.2.0 与 `ALG-PROJ-007` v2.0.1 不改变投影矩阵、深度编码、face-on 阈值、1024 实时上限、最终 UV 分辨率或颜色合成公式。GPU 继续消费同一 source/mask/depth；CPU、Worker、UV raster、shader 门限与 export compositor 没有算法分叉。生图前 snapshot 与 Generation 最终写回仍进入同一 critical save queue，沿用 Project Command v1、Revision CAS、ownership 与 verified object asset；只把提交前的网络等待移出用户可见关键路径，失败由即时保存恢复。多层恢复的 Worker bitmap 在整组 striped upload 期间固定，缓存上限从 18 调整到 24，并只为当前选中对象预热隐藏 UV 行；其他模型的可见 exact/proxy 仍驻留，不降低图片尺寸或跳过 QA。旧工程无需批量迁移，重开时按现有 Layer/Generation/Capture 字段重建资源。回退可恢复提交前 save barrier、mask URL 严格相等判断、旧 overlay 可见分支和 18 项缓存；已有 projected layer、mask、capture、Generation、对象资产与 Revision 无需删除或改写。
 
