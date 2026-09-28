@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import ts from 'typescript';
-import * as jsx from 'react/jsx-runtime';
 function load(path, dependencies) {
   const module = { exports: {} };
   const code = ts.transpileModule(pipelineTraceDisabled(readFileSync(new URL(path, import.meta.url), 'utf8')).replace('import.meta.env.VITE_LICLICK_WORKSPACE_API', 'undefined'), {
@@ -119,29 +118,13 @@ try {
 }
 console.log('ModelView raw normal: frozen camera, 2K dimensions, cancellation and exact API serialization passed.');
 
-// Execute the real UI switch, including both locks and repeated toggles.
+// The product default is hidden and cannot be changed by stale UI settings.
 const panel = readFileSync(new URL('../src/components/panels/GeneratePanel.tsx', import.meta.url), 'utf8');
-const start = panel.lastIndexOf('<div ', panel.indexOf('<span>法线黑色背景</span>'));
-assert(start > 0);
-const markup = panel.slice(start, panel.indexOf('</div>', start) + 6);
-const code = ts.transpileModule(`function Toggle({ normalBlackBackground, workflowConfigurationLocked, workflowSubmissionLocked, setNormalBlackBackground }) { return (${markup}); }`, {
-  compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX },
-}).outputText;
-const Toggle = new Function('require', 'exports', `${code}; return Toggle;`)(() => jsx, {});
-for (const enabled of [false, true]) for (const configLock of [false, true]) for (const submitLock of [false, true]) {
-  let changed;
-  const view = Toggle({ normalBlackBackground: enabled, workflowConfigurationLocked: configLock,
-    workflowSubmissionLocked: submitLock, setNormalBlackBackground: value => { changed = value; } });
-  const button = view.props.children[1];
-  assert.equal(button.props['aria-checked'], enabled);
-  assert.equal(button.props.disabled, configLock || submitLock);
-  button.props.onClick();
-  assert.equal(changed, configLock || submitLock ? undefined : !enabled);
-}
-assert.match(panel, /\[normalBlackBackground, setNormalBlackBackground\] = useState\(true\)/);
+assert.doesNotMatch(panel, /aria-label="法线黑色背景"|setNormalBlackBackground/);
+assert.match(panel, /const normalBackground = 'black' as const/);
 assert.match(panel, /normalBackground: singleViewProvider === 'remote' \? normalBackground : undefined/);
 assert.match(panel, /\[captureObjectId, resolution, setLastCapture, t, singleViewProvider, normalBackground\]/);
-console.log('Normal background toggle: default on, blue/black forwarding and both runtime locks passed.');
+console.log('Hidden black normal default and capture forwarding passed; legacy blue API support retained.');
 
 // Both branches start before either resolves; failure/cancellation drains owners.
 for (const mode of ['success', 'input-failure', 'normal-failure', 'abort', 'pre-abort']) {

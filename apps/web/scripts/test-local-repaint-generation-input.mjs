@@ -464,7 +464,11 @@ assert.match(panelSource, /paintMaskSource: isGptLocalRepaint \? 'user' : 'user-
 
 }
 assert.match(panelSource, /localRepaintSmartPolish: false/);
-assert.match(panelSource, /aria-label="局部重绘智能润色"[\s\S]*?aria-checked=\{localRepaintSmartPolish\}/);
+assert.doesNotMatch(panelSource, /aria-label="局部重绘智能润色"|开启智能润色后可输入编辑要求/);
+const hiddenPolishDefault = panelSource.match(/const localRepaintSmartPolish = ([^;]+);/)[1];
+for (const saved of [undefined, false, true]) {
+  assert.equal(new Function('generationSettings', `return ${hiddenPolishDefault};`)({ localRepaintSmartPolish: saved }), false);
+}
 assert.match(panelSource, /\.\.\.\(localRepaintSmartPolish \? \{ prompt: effectivePrompt \} : \{\}\)/);
 assert.match(panelSource, /if \(isGptLocalRepaint\) \{\s*const clayPreview = await captureCurrentColorPreview/);
 // Execute prompt resolution from the real component with the switch off, stale
