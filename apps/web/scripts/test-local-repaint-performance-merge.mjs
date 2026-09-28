@@ -71,7 +71,8 @@ assert.doesNotMatch(serverInpaint, /input\.viewportReference/);
 assert.doesNotMatch(serverInpaint, /field: 'viewport_reference'/);
 assert.match(serverInpaint, /field: 'image' \| 'material_image' \| 'mask'/);
 assert.match(serverInpaint, /inpaint:refcontrol-normal-4step-r1/);
-assert.match(panel, /resultComposition: 'direct-v1'/);
+assert.match(panel, /const repaintResultComposition = isGptLocalRepaint \? 'direct-v1' : 'submitted-mask-v1'/);
+assert.match(panel, /resultComposition: repaintResultComposition/);
 assert.match(panel, /cancelledTextureBatchIdsRef/);
 assert.match(panel, /generationBelongsToObject/);
 

@@ -2,6 +2,11 @@ import * as THREE from 'three';
 import type { ModelLoadResult, SupportedImportFormat } from './modelImportTypes';
 import { normalizeImportedModel, type NormalizeImportedModelOptions } from '@/engine/scene/normalizeImportedModel';
 import { createId } from '@/utils/id';
+import { getPipelineTrace, traceSync } from '@/engine/performance/tracing/pipelineTrace';
+
+function normalizeWithTrace(...args: Parameters<typeof normalizeImportedModel>) {
+  return traceSync(getPipelineTrace()!, 'model.normalize', () => normalizeImportedModel(...args));
+}
 
 function findFirstBaseColorTexture(root: THREE.Object3D) {
   let result: THREE.Texture | undefined;
@@ -48,7 +53,7 @@ export function summarizeLoadedGroup(input: {
   objectUrl?: string;
   normalizeOptions?: NormalizeImportedModelOptions;
 }): ModelLoadResult {
-  const normalization = normalizeImportedModel(input.group, {
+  const normalization = (import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' && getPipelineTrace() ? normalizeWithTrace : normalizeImportedModel)(input.group, {
     normalize: input.normalizeOptions?.normalize ?? true,
     ground: input.normalizeOptions?.ground ?? true,
     targetMaxDimension: input.normalizeOptions?.targetMaxDimension ?? 3,
@@ -59,7 +64,7 @@ export function summarizeLoadedGroup(input: {
   const uvSets = new Set<string>();
   let childMeshCount = 0;
 
-  input.group.traverse((child) => {
+  const inspect = (child: THREE.Object3D) => {
     if (!(child instanceof THREE.Mesh)) return;
     childMeshCount += 1;
     child.castShadow = true;
@@ -78,7 +83,9 @@ export function summarizeLoadedGroup(input: {
     if (child.geometry.getAttribute('uv2')) {
       uvSets.add('UV1');
     }
-  });
+  };
+  if (import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' && getPipelineTrace()) traceSync(getPipelineTrace()!, 'model.inspect', () => input.group.traverse(inspect));
+  else input.group.traverse(inspect);
 
   const warnings: string[] = [...normalization.warnings];
   if (childMeshCount === 0) {

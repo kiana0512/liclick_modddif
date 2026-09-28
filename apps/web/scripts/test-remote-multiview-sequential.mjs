@@ -4,7 +4,7 @@ import { setImmediate } from 'node:timers';
 import ts from 'typescript';
 import * as THREE from 'three';
 
-const compile = source => ts.transpileModule(source, { compilerOptions: {
+const compile = source => ts.transpileModule(pipelineTraceDisabled(source), { compilerOptions: {
   module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022,
 } }).outputText;
 const presentation = {}, identity = {};
@@ -172,7 +172,7 @@ assert.doesNotMatch(flow, /prompt: texturePrompt/);
 
 // Execute the production serial loop, including top/bottom, resident barriers,
 // covered-view skipping and cancellation/error stopping the remaining views.
-const serialJs = ts.transpileModule(flow
+const serialJs = ts.transpileModule(pipelineTraceDisabled(flow)
   .replace("import('@/services/modelviewApiClient')", "Promise.resolve({ createModelviewApiClient: modelviewFactory })")
   .replace("import('@/engine/generation/gptMultiviewPairs')", "Promise.resolve(presentationModule)"),
   { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
@@ -355,3 +355,4 @@ assert.match(
 );
 
 console.log('Remote multiview sequential generation regression checks passed.');
+import { pipelineTraceDisabled } from './pipeline-trace-test-build.mjs';

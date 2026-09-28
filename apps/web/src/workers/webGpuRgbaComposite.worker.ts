@@ -1,3 +1,5 @@
+import type { PipelineTraceContext } from '@/engine/performance/tracing/types';
+import { beginWorkerTrace, sendWorkerTiming } from '@/engine/performance/tracing/workerTrace';
 import { encodeRgbaPngBytesChunked } from '@/utils/encodeRgbaPngCore';
 import { yieldWorkerTask } from '@/utils/workerScheduling';
 
@@ -646,7 +648,7 @@ function verifyGpuOutput(
 }
 
 scope.onmessage = (event) => {
-  const request = event.data;
+  const request = event.data as typeof event.data & { traceContext?: PipelineTraceContext };
   if (request.type === 'budget') {
     interactive = request.interactive;
     return;
@@ -663,6 +665,8 @@ scope.onmessage = (event) => {
   }
   const generation = underlayCacheGeneration;
   workQueue = workQueue.then(async () => {
+    const finishTrace = import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' && request.traceContext ? beginWorkerTrace(request.traceContext, 'uv.compose', 'async') : undefined;
+    let traceFailed = false;
     try {
       throwIfCancelled(request);
       fetchControllers.set(request.id, new AbortController());
@@ -733,6 +737,7 @@ scope.onmessage = (event) => {
         );
       }
     } catch (error) {
+      if (import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true') traceFailed = true;
       const response: WorkerResponse = {
         type: 'error',
         id: request.id,
@@ -740,6 +745,7 @@ scope.onmessage = (event) => {
       };
       scope.postMessage(response);
     } finally {
+      if (import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' && finishTrace) sendWorkerTiming(request.id, { ...finishTrace(), status: traceFailed ? 'error' : 'ok' });
       fetchControllers.delete(request.id);
       cancelledRequestIds.delete(request.id);
     }

@@ -1,8 +1,11 @@
 import { encodeGrayscalePngBytes, encodeRgbaPngBytes } from '@/utils/encodeRgbaPngCore';
+import { beginWorkerTrace } from '@/engine/performance/tracing/workerTrace';
+import type { PipelineTraceContext, WorkerTraceTiming } from '@/engine/performance/tracing/types';
 
 export {};
 
 type EncodeRequest = {
+  traceContext?: PipelineTraceContext;
   id: number;
   pixels: ArrayBuffer;
   width: number;
@@ -11,9 +14,9 @@ type EncodeRequest = {
   outputHeight?: number;
   pixelFormat?: 'rgba' | 'grayscale';
 };
-type EncodeResponse =
+type EncodeResponse = (
   | { id: number; png: ArrayBuffer }
-  | { id: number; error: string };
+  | { id: number; error: string }) & { traceTiming?: WorkerTraceTiming };
 
 const scope = self as unknown as {
   onmessage: ((event: MessageEvent<EncodeRequest>) => void) | null;
@@ -65,6 +68,7 @@ function resizeRgbaBilinear(
 }
 
 scope.onmessage = (event) => {
+  const trace = import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' && event.data.traceContext ? beginWorkerTrace(event.data.traceContext) : undefined;
   const {
     id,
     pixels,
@@ -93,7 +97,7 @@ scope.onmessage = (event) => {
         encoded.byteOffset,
         encoded.byteOffset + encoded.byteLength,
       ) as ArrayBuffer;
-      scope.postMessage({ id, png }, [png]);
+      scope.postMessage({ id, png, ...(trace ? { traceTiming: trace() } : {}) }, [png]);
       return;
     }
     const flipped = new Uint8ClampedArray(source.byteLength);
@@ -108,8 +112,8 @@ scope.onmessage = (event) => {
       encoded.byteOffset,
       encoded.byteOffset + encoded.byteLength,
     ) as ArrayBuffer;
-    scope.postMessage({ id, png }, [png]);
+    scope.postMessage({ id, png, ...(trace ? { traceTiming: trace() } : {}) }, [png]);
   } catch (error) {
-    scope.postMessage({ id, error: error instanceof Error ? error.message : String(error) });
+    scope.postMessage({ id, error: error instanceof Error ? error.message : String(error), ...(trace ? { traceTiming: trace() } : {}) });
   }
 };

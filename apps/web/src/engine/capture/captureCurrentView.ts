@@ -1,4 +1,5 @@
 import { captureColor } from './captureColor';
+import { getPipelineTrace } from '@/engine/performance/tracing/pipelineTrace';
 import { fitGeometryCapture, verifyTightCapture } from './tightCaptureFraming';
 export { frameGenerationCapture } from './generationFraming';
 import { flushLiveUvCommits } from '@/engine/projection/liveProjectedCanvasTextureRegistry';
@@ -669,6 +670,9 @@ export async function captureCurrentDepthPreview(request: CaptureCurrentViewRequ
 }
 
 export async function captureCurrentView(request: CaptureCurrentViewRequest): Promise<Capture> {
+  const trace = import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' ? getPipelineTrace() : undefined;
+  const frame = trace?.begin('capture.frame');
+  try {
   const size = Math.min(request.resolution, maxCaptureSize);
   const warnings: string[] = [];
   if (request.resolution > maxCaptureSize) {
@@ -683,6 +687,7 @@ export async function captureCurrentView(request: CaptureCurrentViewRequest): Pr
   const { viewport, captureCamera, captureTarget } = await resolveCaptureCamera(request, aspect);
 
   const passRequest: CapturePassRequest = {
+    ...(import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' && frame ? { traceContext: frame.context } : {}),
     gl: viewport.gl,
     scene: viewport.scene,
     camera: captureCamera,
@@ -732,7 +737,10 @@ export async function captureCurrentView(request: CaptureCurrentViewRequest): Pr
 
   useProjectStore.getState().addCapture(capture);
   console.info('[Liclick 3D Texture] Capture current view:', capture);
+  if (frame) trace?.bind(capture.id, frame.context);
   return capture;
+  } catch (error) { frame?.end(error instanceof Error && error.name === 'AbortError' ? 'cancelled' : 'error'); throw error; }
+  finally { frame?.end(); }
 }
 
 export async function captureCurrentNormalPreview(

@@ -1,4 +1,5 @@
 import type { Generation } from '@/types/generation';
+import { getPipelineTrace } from '@/engine/performance/tracing/pipelineTrace';
 
 /** SINGLE-VIEW-AUTO-PROJECTION v1.2.0. A commit remains consumed after deletion. */
 export function hasProjectionCommit(generation: Generation) {
@@ -50,6 +51,11 @@ export async function persistProjectionCommit(
   sync(committed);
   observer?.onSaving?.();
   await save();
+  if (import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true') {
+    const trace = getPipelineTrace(typeof generation.metadata.projectId === 'string' ? generation.metadata.projectId : undefined);
+    trace?.begin('save.ack', trace.lookup(generation.id), 'sync')?.end();
+    trace?.acknowledge(`projection:${generation.id}:${layerId}`);
+  }
   observer?.onSaved?.(committed);
 }
 

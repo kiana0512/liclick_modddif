@@ -1,5 +1,13 @@
 # LI3D Cloud 准则修订流水与历史变更记录
 
+## 2026-09-28 内容填补完整覆盖
+
+M09（协作 M07/M08）：`ALG-CA-003` v1.4.0 让前两轮局部及一条物理缝仍无法到达的严格 UV core 残余使用已有可靠纹理均色作不透明最终兜底；无可靠纹理则拒绝发布，自动多视图补缝失败不再伪装完成。原分辨率、投影 QA、Layer/Project Schema、Command/CAS/ownership/verified assets 与导出合成契约不变；旧资产不自动重写。验证与回退见 [完整覆盖变更卡](changes/CHG-20260928-CONTENT-REPAIR-COMPLETE-COVERAGE.md)。
+
+## 2026-09-28 轻量计时收敛
+
+2.25.0：M13/M15，FUNCTION-TIMING/1.0.0，默认关闭。按用户要求用 --DEBUG 构建门与 start/stop 取代旧重型 Trace 方案，只保留阶段/函数 wall、本地表格与 JSON；原 Performance Lab 独立保持。移除本次服务端诊断及未发布迁移，无业务算法或数据迁移。见 CHG-20260928-FUNCTION-TIMING。
+
 > 本文件是 [00_SYSTEM_MODULES_AND_CHANGE_STANDARD.md](00_SYSTEM_MODULES_AND_CHANGE_STANDARD.md) 在 2026-09-22 结构重整时移出的历史部分，内容逐行保留，未做删改。
 >
 > **读取时机**：仅在追溯某个决策的来由、排查旧工程兼容问题或回归问题时读取。日常修改不需要打开本文件。
@@ -23,6 +31,15 @@
 2026-09-23 M15（关联 M02/M10）：`BLENDER-SERVER-RUNTIME/1.0.0` 将固定 SHA-256 的官方 Blender 5.1.2 Linux x64 及运行库纳入最终 server 镜像，显式配置路径，并以正式非 root 账号执行真实 UV 修复/GLB 回读及破坏性输入拒绝验收，失败阻止镜像发布。`IMPORT-UV-REPAIR/1.3.0`、`IMPORT-DECIMATE/1.1.0` 算法及 GPU/CPU/Worker/shader、保存/export、Schema/Command/CAS/ownership 不变，无资产迁移；验证、限制和回滚见 [Blender 镜像运行时变更卡](changes/CHG-20260923-BLENDER-SERVER-RUNTIME.md)。本地修改，尚未部署。
 
 2026-09-23 M04：`MATERIAL-REFERENCE-UPLOAD/1.0.0` 对明确材质参考自动选择原尺寸无损、经逐像素验证的近无损及最后的最高可容纳质量上传副本，完整请求严格小于莉刻 4,000,000 字节。原图与去光照保留，法线/蒙版/结构输入仍精确；`REFERENCE-LIGHTING/2.0.1` 仅迁移无远端 taskId 的已知旧上传前失败，不重复已接受任务。GPU/CPU/Worker/shader 投影、UV、保存导出、Schema/Command/CAS/ownership 不变，无资产迁移；验证与回滚见 [材质参考上传变更卡](changes/CHG-20260923-MATERIAL-REFERENCE-UPLOAD.md)。本地修复，未部署此补丁。
+## 2026-09-23 新增文档修订
+
+2.24.0：M13/M15，默认关闭 Pipeline Trace 扩展到 Browser/Worker/Node/Blender、诊断存储/续接、CPU/GPU 采样和 Perfetto。真实 Bicycle 12 attempts、8/9 QA 结果与 30 分钟合成稳定性分别记录；未归档、未部署、未宣称外部硬件/完整性能预算验收。见 [实施卡](changes/CHG-20260923-PIPELINE-TRACE-IMPLEMENTATION.md)。
+
+## 2026-09-22 新增文档修订
+
+`2.23.0`：M13/M15，用户批准 OpenSpec apply；登记默认关闭的 Pipeline Trace 基础预览及明确缺项，无业务算法变更。见 [基础接入卡](changes/CHG-20260922-PIPELINE-TRACE-FOUNDATION.md)。
+
+`2.22.2`：M13/M15，`CHG-20260922-TRACE-PROPOSAL-REVIEW`。仅修订待实施 OpenSpec 的采样边界、生命周期、分级、开关隔离和代码落点，新增阅读入口；当前准则 collector 版本由陈旧的 2.1.0 校正为代码现值 2.2.1。无算法变更、无运行时变更；旧人工录制契约继续有效。详见 [评审修订卡](changes/CHG-20260922-TRACE-PROPOSAL-REVIEW.md)。下方迁入历史内容不改写。
 
 ## 2026-09-22 已被取代的条款
 

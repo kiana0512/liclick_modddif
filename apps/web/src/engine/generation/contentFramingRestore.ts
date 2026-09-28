@@ -1,4 +1,6 @@
 import type { GenerationFraming } from '@liclick/contracts';
+import type { PipelineTraceContext } from '@/engine/performance/tracing/types';
+import { getPipelineTrace, traceAsync } from '@/engine/performance/tracing/pipelineTrace';
 import { urlToImageData } from '@/engine/localRepaint/imageUtils';
 import { yieldToBrowserTask } from '@/utils/browserScheduling';
 import { restoredFrameLayout } from './contentFraming';
@@ -14,8 +16,10 @@ export async function restoreContentFraming(
   framing: GenerationFraming,
   signal?: AbortSignal,
   silhouettePolicy: FramedSilhouettePolicy = 'strict',
+  traceContext?: PipelineTraceContext,
 ) {
-  const image = await load(url, signal);
+  const trace = import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' ? getPipelineTrace() : undefined;
+  const image = await (trace ? traceAsync(trace, 'result.image.load', () => load(url, signal), traceContext) : load(url, signal));
   const layout = restoredFrameLayout(framing, image.naturalWidth, image.naturalHeight);
   let cleanedPixels: ImageData | undefined;
   if (framing.version === 2) {
@@ -29,12 +33,14 @@ export async function restoreContentFraming(
       signal?.throwIfAborted();
     };
     try {
-      await validateFramedSilhouette(framing, pixels, checkpoint, silhouettePolicy);
+      if (trace) await traceAsync(trace, 'result.qa', () => validateFramedSilhouette(framing, pixels, checkpoint, silhouettePolicy), traceContext);
+      else await validateFramedSilhouette(framing, pixels, checkpoint, silhouettePolicy);
     } catch (error) {
       if ((error as { code?: string }).code !== 'GPT_RETURN_SILHOUETTE_MISMATCH') throw error;
       const { cleanReturnBackground } = await import('./returnBackgroundCleanup');
       if (!await cleanReturnBackground(framing, pixels, checkpoint)) throw error;
-      await validateFramedSilhouette(framing, pixels, checkpoint, silhouettePolicy);
+      if (trace) await traceAsync(trace, 'result.qa', () => validateFramedSilhouette(framing, pixels, checkpoint, silhouettePolicy), traceContext);
+      else await validateFramedSilhouette(framing, pixels, checkpoint, silhouettePolicy);
       cleanedPixels = pixels;
     }
     signal?.throwIfAborted();

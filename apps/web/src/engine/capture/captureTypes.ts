@@ -1,9 +1,11 @@
 import type * as THREE from 'three';
+import type { PipelineTraceContext } from '@/engine/performance/tracing/types';
 import type { SerializedCamera } from '@/types/capture';
 
 export type CaptureResolution = 512 | 1024 | 2048 | 4096 | 8192;
 
 export type CapturePassRequest = {
+  traceContext?: PipelineTraceContext;
   gl: THREE.WebGLRenderer;
   scene: THREE.Scene;
   camera: THREE.Camera;

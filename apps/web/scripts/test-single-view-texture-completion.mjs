@@ -176,7 +176,7 @@ assert.doesNotMatch(
 );
 
 assert.ok(handleReference, 'The reference action must exist.');
-const handleReferenceJs = ts.transpileModule(handleReference.getText(panelAst), {
+const handleReferenceJs = ts.transpileModule(pipelineTraceDisabled(handleReference.getText(panelAst)), {
   compilerOptions: { target: ts.ScriptTarget.ES2022 },
 }).outputText;
 for (const lighting of [false, true]) {
@@ -229,14 +229,14 @@ assert.match(worker, /compositeEdgeRadius = 0/);
 for (const policy of [
   /Math\.round\(24 \* scale\)/,
   /Math\.round\(64 \* scale\)/,
-  /Math\.round\(minimumDimension \* 0\.25\)/,
-  /Math\.round\(dilationRadius \* 0\.2\)/,
+  /Math\.round\(dimension \* 0\.25\)/,
+  /Math\.round\(dilation \* 0\.2\)/,
 ]) {
   assert.match(worker, policy, 'remote completion must match local repaint mask expansion policy');
 }
-assert.match(worker, /const dilated = dilateMask\(compositeCore/);
-assert.match(worker, /const submittedMask = boxBlur\([\s\S]*?dilated/);
-assert.match(worker, /if \(compositeCore\[index\] > 0\) submittedMask\[index\] = 255/);
+assert.match(worker, /const result = boxBlur\(dilateMask\(core/);
+assert.match(worker, /const submittedMask = expand\(samplingCore, samplingBounds, dilationRadius, featherRadius\)/);
+assert.match(worker, /if \(core\[index\]\) result\[index\] = 255/);
 assert.match(worker, /pixels\[offset\] = value[\s\S]*?pixels\[offset \+ 3\] = 255/);
 assert.match(worker, /submittedMaskBlob/);
 assert.doesNotMatch(worker, /(?:white|gray|grey).*threshold/i, 'coverage must not use a white/grey color heuristic');
@@ -395,3 +395,4 @@ const covered = await runWhite(true, false, clay);
 assert.equal(covered.uncoveredPixelCount, 0);
 assert.equal(covered.compositeBlob, undefined, 'Covered views must be skipped rather than regenerated');
 console.log('Single-view completion: remote white/black pixels, unchanged RGB expanded mask, full/partial/covered inputs and legacy GPT passed.');
+import { pipelineTraceDisabled } from './pipeline-trace-test-build.mjs';

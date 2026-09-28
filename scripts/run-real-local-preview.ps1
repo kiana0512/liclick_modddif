@@ -1,6 +1,7 @@
 param(
   [int]$Port = 4517,
-  [switch]$SkipBuild
+  [switch]$SkipBuild,
+  [switch]$TraceTiming
 )
 
 $ErrorActionPreference = "Stop"
@@ -104,6 +105,9 @@ if (!(Test-Path -LiteralPath $EnvironmentFile -PathType Leaf)) {
   throw "Real Feishu configuration was not found: $EnvironmentFile"
 }
 
+$env:LI3D_DEBUG_BUILD = if ($TraceTiming) { "true" } else { "false" }
+$env:VITE_LICLICK_PIPELINE_TRACE_ENABLED = "false"
+
 if (!$SkipBuild) {
   Push-Location $Root
   try {
@@ -115,6 +119,11 @@ if (!$SkipBuild) {
     Pop-Location
   }
 }
+
+$TraceBuildFile = Join-Path $Root "apps\web\dist\trace-build.json"
+if (!(Test-Path -LiteralPath $TraceBuildFile)) { throw "Missing trace build identity; rebuild without --SkipBuild." }
+$TraceBuild = Get-Content -LiteralPath $TraceBuildFile -Raw | ConvertFrom-Json
+if ($TraceBuild.enabled -ne [bool]$TraceTiming) { throw "Trace build mode mismatch; rebuild without --SkipBuild." }
 
 Import-EnvironmentFile -Path $EnvironmentFile
 Ensure-AtlasGenerationCredential

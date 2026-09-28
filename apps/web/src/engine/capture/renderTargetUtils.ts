@@ -210,7 +210,8 @@ export async function renderSceneToPngUrl(
           if (options.ignoreSceneBackground) request.scene.background = null;
           const restorePreparedScene = options.prepareScene?.();
           try {
-            request.gl.render(request.scene, request.camera);
+            if (import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' && getPipelineTrace()) traceCaptureRender(request.gl, request.scene, request.camera, request.traceContext);
+            else request.gl.render(request.scene, request.camera);
           } finally {
             restorePreparedScene?.();
           }
@@ -225,7 +226,9 @@ export async function renderSceneToPngUrl(
           // target/scissor state.
           restoreState();
           markCapturePerformancePhase(options.performancePhasePrefix, 'gpu-wait');
-          await tileCompletion;
+          const trace = import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' ? getPipelineTrace() : undefined;
+          if (import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' && trace) await traceAsync(trace, 'gpu.fence.wait', () => tileCompletion, request.traceContext);
+          else await tileCompletion;
           if (
             (x + tileSize < request.width || y + tileSize < request.height) &&
             performance.now() - presentationBudgetStartedAt >= INTERACTIVE_CAPTURE_GPU_BUDGET_MS
@@ -247,7 +250,8 @@ export async function renderSceneToPngUrl(
     } else {
       const restorePreparedScene = options.prepareScene?.();
       try {
-        request.gl.render(request.scene, request.camera);
+        if (import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' && getPipelineTrace()) traceCaptureRender(request.gl, request.scene, request.camera, request.traceContext);
+        else request.gl.render(request.scene, request.camera);
       } finally {
         restorePreparedScene?.();
       }
@@ -269,7 +273,8 @@ export async function renderSceneToPngUrl(
     restoreState();
     options.onRenderSubmitted?.();
     markCapturePerformancePhase(options.performancePhasePrefix, 'readback-wait');
-    pixels = await readbackPromise;
+    const trace = import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' ? getPipelineTrace() : undefined;
+    pixels = await (import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' && trace ? traceAsync(trace, 'capture.readback', () => readbackPromise, request.traceContext) : readbackPromise);
   } finally {
     restoreState();
     sceneTarget.dispose();
@@ -278,7 +283,9 @@ export async function renderSceneToPngUrl(
 
   markCapturePerformancePhase(options.performancePhasePrefix, 'encode-worker');
   const encodeStartedAt = performance.now();
-  const png = await encodeFlippedGpuReadbackPngInWorker(
+  const png = await (import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' && request.traceContext
+    ? (...args: Parameters<typeof encodeFlippedGpuReadbackPngInWorker>) => { args[5] = request.traceContext; return encodeFlippedGpuReadbackPngInWorker(...args); }
+    : encodeFlippedGpuReadbackPngInWorker)(
     pixels,
     request.width,
     request.height,
@@ -340,7 +347,8 @@ export async function renderScenePassesToPngUrl(
       if (options.ignoreSceneBackground) request.scene.background = null;
       const restore = passes[index].prepare();
       try {
-        request.gl.render(request.scene, request.camera);
+        if (import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' && getPipelineTrace()) traceCaptureRender(request.gl, request.scene, request.camera, request.traceContext);
+        else request.gl.render(request.scene, request.camera);
       } finally {
         restore();
       }
@@ -377,13 +385,16 @@ export async function renderScenePassesToPngUrl(
     );
     restoreState();
     options.onRenderSubmitted?.();
-    pixels = await readbackPromise;
+    const trace = import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' ? getPipelineTrace() : undefined;
+    pixels = await (import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' && trace ? traceAsync(trace, 'capture.readback', () => readbackPromise, request.traceContext) : readbackPromise);
   } finally {
     restoreState();
     target.dispose();
   }
 
-  const png = await encodeFlippedGpuReadbackPngInWorker(pixels, request.width, request.height);
+  const png = await (import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' && request.traceContext
+    ? (...args: Parameters<typeof encodeFlippedGpuReadbackPngInWorker>) => { args[5] = request.traceContext; return encodeFlippedGpuReadbackPngInWorker(...args); }
+    : encodeFlippedGpuReadbackPngInWorker)(pixels, request.width, request.height);
   return createRegisteredObjectUrl(new Blob([png], { type: 'image/png' }));
 }
 
@@ -470,3 +481,5 @@ export function applyTargetOnlyMaterial(
     });
   };
 }
+import { getPipelineTrace, traceAsync } from '@/engine/performance/tracing/pipelineTrace';
+import { traceCaptureRender } from '@/engine/performance/tracing/traceCapturePass';

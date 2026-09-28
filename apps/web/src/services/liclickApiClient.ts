@@ -1,3 +1,6 @@
+import type { PipelineTraceContext } from '@/engine/performance/tracing/types';
+import { getPipelineTrace, traceAsync } from '@/engine/performance/tracing/pipelineTrace';
+import { traceFetch } from '@/engine/performance/tracing/traceRequest';
 import type { GenerateTextureInput, Generation } from '@/types/generation';
 import type { GenerationFraming } from '@liclick/contracts';
 import type { ReferenceImage } from '@/types/project';
@@ -145,7 +148,7 @@ async function prepareReferences(
 async function requestJson<T>(
   transport: LiclickTransport,
   path: string,
-  init: RequestInit & { timeoutMs?: number },
+  init: RequestInit & { timeoutMs?: number; traceContext?: PipelineTraceContext },
 ) {
   const {
     timeoutMs = 8 * 60 * 1000,
@@ -153,6 +156,10 @@ async function requestJson<T>(
     signal: callerSignal,
     ...fetchInit
   } = init;
+  let traceContext: PipelineTraceContext | undefined;
+  if (import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' && fetchInit.traceContext) {
+    traceContext = fetchInit.traceContext; delete fetchInit.traceContext;
+  }
   const controller = new AbortController();
   let timedOut = false;
   const abortFromCaller = () => controller.abort(callerSignal?.reason);
@@ -174,7 +181,7 @@ async function requestJson<T>(
       credentials: transport.credentials,
       headers: requestHeaders,
     } satisfies RequestInit;
-    response = await fetch(requestUrl, requestInit);
+    response = await (import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' && getPipelineTrace() ? traceFetch(requestUrl, requestInit, traceContext) : fetch(requestUrl, requestInit));
   } catch (error) {
     if (callerSignal?.aborted) throw error;
     if (timedOut || (error instanceof DOMException && error.name === 'AbortError')) {
@@ -186,7 +193,8 @@ async function requestJson<T>(
     window.clearTimeout(timeout);
     callerSignal?.removeEventListener('abort', abortFromCaller);
   }
-  const payload = await interactionSafeJsonResponse<unknown>(response);
+  const trace = import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' ? getPipelineTrace() : undefined;
+  const payload = await (import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' && trace ? traceAsync(trace, 'result.decode', context => interactionSafeJsonResponse<unknown>(response, context)) : interactionSafeJsonResponse<unknown>(response));
   if (!response.ok) {
     const errorCode =
       payload && typeof payload === 'object' && 'code' in payload && typeof payload.code === 'string'
@@ -209,12 +217,15 @@ async function requestJson<T>(
   return payload as T;
 }
 
-export async function restoreFramedJobResult<T extends { resultUrl?: string; resultUrls?: string[]; framing?: GenerationFraming; framingRestored?: boolean; workflow?: 'liclick' | 'texture-map' | 'local-repaint' }>(result: T, signal?: AbortSignal, workflow = result.workflow): Promise<T> {
+export async function restoreFramedJobResult<T extends { id?: string; resultUrl?: string; resultUrls?: string[]; framing?: GenerationFraming; framingRestored?: boolean; workflow?: 'liclick' | 'texture-map' | 'local-repaint' }>(result: T, signal?: AbortSignal, workflow = result.workflow): Promise<T> {
   if (!result.resultUrl || !result.framing || result.framingRestored) return result;
   const { restoreContentFraming } = await import('@/engine/generation/contentFramingRestore');
   const urls = [...new Set([result.resultUrl, ...(result.resultUrls ?? [])])];
   const policy = workflow === 'texture-map' ? 'capture-mask' : 'strict';
-  const restored = await mapWithConcurrency(urls, 1, url => restoreContentFraming(url, result.framing!, signal, policy));
+  const trace = import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' ? getPipelineTrace() : undefined;
+  const restored = await mapWithConcurrency(urls, 1, url => trace
+    ? restoreContentFraming(url, result.framing!, signal, policy, trace.lookup(result.id))
+    : restoreContentFraming(url, result.framing!, signal, policy));
   signal?.throwIfAborted();
   return { ...result, resultUrl: restored[0], resultUrls: restored, framingRestored: true };
 }
@@ -264,6 +275,7 @@ export function createLiclickApiClient(config: LiclickApiConfig = {}): LiclickAp
         message?: string;
         startedAt?: string;
       }>(await getTransport(), '/api/liclick/generate-image', {
+        ...(import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' && getPipelineTrace() ? { traceContext: getPipelineTrace(input.projectId)?.lookup(input.clientGenerationId) } : {}),
         method: 'POST',
         signal: input.signal,
         body: JSON.stringify({
@@ -282,6 +294,10 @@ export function createLiclickApiClient(config: LiclickApiConfig = {}): LiclickAp
           references: preparedReferences.map(({ id, name, url }) => ({ id, name, url })),
         }),
       });
+      if (import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true') {
+        const trace = getPipelineTrace(input.projectId), context = trace?.lookup(input.clientGenerationId);
+        if (context) trace?.bind(response.id, context);
+      }
       const result = await restoreFramedJobResult(response, input.signal, input.workflow);
       const generationId = input.clientGenerationId ?? result.id;
       return {
@@ -323,6 +339,7 @@ export function createLiclickApiClient(config: LiclickApiConfig = {}): LiclickAp
         await getTransport(),
         `/api/liclick/generate-image/${encodeURIComponent(jobId)}`,
         {
+          ...(import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' && getPipelineTrace() ? { traceContext: getPipelineTrace()?.lookup(jobId) } : {}),
           method: 'GET',
           cache: 'no-store',
           signal: options.signal,

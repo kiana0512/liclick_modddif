@@ -12,6 +12,8 @@ import {
   type StorageQuarantineStatus,
 } from '@liclick/contracts';
 import type { Project } from '@/types/project';
+import { getPipelineTrace, traceAsync, traceSync } from '@/engine/performance/tracing/pipelineTrace';
+import { traceFetch, traceJson } from '@/engine/performance/tracing/traceRequest';
 import { getProjectApiBase } from '@/platform/projectApiBase';
 import { isCloudBuild } from '@/platform/runtimeCapabilities';
 import { createId } from '@/utils/id';
@@ -44,7 +46,10 @@ async function withProjectMutationLock<T>(projectId: string, task: () => Promise
   const tail = previous.catch(() => undefined).then(() => gate);
   projectMutationTails.set(projectId, tail);
 
+  const traceQueue = import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true'
+    ? getPipelineTrace(projectId)?.begin('save.queue') : undefined;
   await previous.catch(() => undefined);
+  traceQueue?.end();
   try {
     return await task();
   } finally {
@@ -55,7 +60,8 @@ async function withProjectMutationLock<T>(projectId: string, task: () => Promise
 
 function waitForRevisionRetry(attempt: number) {
   const delayMs = Math.min(500, 40 * 2 ** attempt);
-  return new Promise<void>((resolve) => window.setTimeout(resolve, delayMs));
+  const wait = new Promise<void>((resolve) => window.setTimeout(resolve, delayMs));
+  return import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' && getPipelineTrace() ? traceAsync(getPipelineTrace()!, 'save.retry.wait', () => wait) : wait;
 }
 
 export function workspacePathAtBase(url: string, base: string) {
@@ -149,7 +155,7 @@ async function requestJson<T>(
   const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
   let response: Response;
   try {
-    response = await fetch(`${workspaceApiBase}${path}`, {
+    response = await (import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' && getPipelineTrace() ? traceFetch : fetch)(`${workspaceApiBase}${path}`, {
       ...fetchInit,
       signal: controller.signal,
       headers: requestHeaders,
@@ -182,7 +188,8 @@ async function requestJson<T>(
       : undefined;
     throw new WorkspaceApiError(response.status, message, { code, currentRevision });
   }
-  return response.json() as Promise<T>;
+  return import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' && getPipelineTrace()
+    ? traceJson<T>(response) : response.json() as Promise<T>;
 }
 
 export async function getWorkspaceHealth() {
@@ -366,10 +373,14 @@ function createProjectCommandId() {
   return createId('command');
 }
 
+function serializeTracedProject(value: unknown) {
+  return traceSync(getPipelineTrace()!, 'save.serialize', () => JSON.stringify(value));
+}
+
 async function executeProjectCommand(command: ProjectCommand, timeoutMs = 3000) {
   const init = {
     method: 'POST',
-    body: JSON.stringify(command),
+    body: (import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' && getPipelineTrace(command.projectId) ? serializeTracedProject : JSON.stringify)(command),
     timeoutMs,
   };
   try {
@@ -461,12 +472,25 @@ async function saveProjectDirect(project: Project) {
   }
   return requestJson<{ project: Project; slug: string }>(`/api/projects/${project.id}`, {
     method: 'PUT',
-    body: JSON.stringify({ ...project, workspaceVersion: project.workspaceVersion ?? '0.6.0' }),
+    body: (import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' && getPipelineTrace(project.id) ? serializeTracedProject : JSON.stringify)({ ...project, workspaceVersion: project.workspaceVersion ?? '0.6.0' }),
     timeoutMs: 30_000,
   });
 }
 
 export async function saveProject(project: Project) {
+  if (import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true') {
+    const trace = getPipelineTrace(project.id);
+    if (trace) return withProjectMutationLock(project.id, async () => {
+      const result = await traceAsync(trace, 'save.execute', () => saveProjectDirect(project));
+      for (const generation of result.project.generations) {
+        if (generation.status !== 'succeeded' || !trace.lookup(generation.id)) continue;
+        const layerId = generation.metadata.projectedLayerId;
+        if (typeof layerId === 'string' && result.project.layers.some(layer => layer.id === layerId && layer.generationId === generation.id)) trace.acknowledge(`projection:${generation.id}:${layerId}`);
+        else if (!generation.metadata.autoProjectExpected) trace.acknowledge(generation.id);
+      }
+      return result;
+    });
+  }
   return withProjectMutationLock(project.id, () => saveProjectDirect(project));
 }
 
@@ -609,6 +633,10 @@ async function blobSha256(blob: Blob) {
   // fallback implementation out of the application shell avoids charging
   // every visitor for the insecure-HTTP compatibility path at startup.
   const { sha256Hex } = await import('@/utils/sha256');
+  if (import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true') {
+    const trace = getPipelineTrace();
+    if (trace) return traceAsync(trace, 'asset.hash', () => sha256Hex(blob));
+  }
   return sha256Hex(blob);
 }
 
@@ -666,17 +694,21 @@ async function saveDirectBlobAsset(input: SaveBlobAssetInput) {
   );
   for (let attempt = 1; attempt <= 2; attempt += 1) {
     try {
-      await putDirectAsset(intent, input.blob, input.onProgress);
+      const trace = import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' ? getPipelineTrace() : undefined;
+      if (import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' && trace) await traceAsync(trace, 'asset.upload.transfer', () => putDirectAsset(intent, input.blob, input.onProgress), undefined, undefined, { bytes: input.blob.size, attempt, lane: 'io' });
+      else await putDirectAsset(intent, input.blob, input.onProgress);
       break;
     } catch (error) {
       const retryable =
         error instanceof WorkspaceApiError &&
         (error.status === 0 || error.status === 408 || error.status === 429 || error.status >= 500);
       if (!retryable || attempt === 2) throw error;
-      await new Promise((resolve) => window.setTimeout(resolve, 250));
+      const wait = new Promise<void>((resolve) => window.setTimeout(resolve, 250));
+      if (import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' && getPipelineTrace(input.projectId)) await traceAsync(getPipelineTrace(input.projectId)!, 'asset.retry.wait', () => wait);
+      else await wait;
     }
   }
-  return requestJson<SavedAssetResponse & { replayed: boolean }>(
+  const completion = requestJson<SavedAssetResponse & { replayed: boolean }>(
     `/api/projects/${input.projectId}/assets/intents/${intent.intentId}/complete`,
     {
       method: 'POST',
@@ -688,9 +720,14 @@ async function saveDirectBlobAsset(input: SaveBlobAssetInput) {
       timeoutMs: 75_000,
     },
   );
+  const trace = import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' ? getPipelineTrace(input.projectId) : undefined;
+  if (import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' && trace) return completion.then(result => { if (result.replayed) trace.begin('asset.reuse', undefined, 'sync')?.end(); return result; });
+  return completion;
 }
 
 function saveBlobAssetWithProgress(input: SaveBlobAssetInput) {
+  const trace = import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true'
+    ? getPipelineTrace(input.projectId)?.begin('asset.upload.transfer', undefined, 'async', undefined, { bytes: input.blob.size, lane: 'io' }) : undefined;
   return new Promise<SavedAssetResponse>((resolve, reject) => {
     const request = new XMLHttpRequest();
     request.open('POST', blobUploadUrl(input));
@@ -706,14 +743,17 @@ function saveBlobAssetWithProgress(input: SaveBlobAssetInput) {
         payload = undefined;
       }
       if (request.status < 200 || request.status >= 300) {
+        trace?.end('error');
         const message = workspaceResponseMessage(payload, request.status);
         reject(new WorkspaceApiError(request.status, message));
         return;
       }
       completeProgress();
+      trace?.end();
       resolve(payload as SavedAssetResponse);
     };
     request.onerror = () => {
+      trace?.end('error');
       reject(
         new WorkspaceApiError(
           0,
@@ -724,6 +764,7 @@ function saveBlobAssetWithProgress(input: SaveBlobAssetInput) {
       );
     };
     request.ontimeout = () => {
+      trace?.end('error');
       reject(new WorkspaceApiError(408, '项目资源上传超时，请稍后重试。'));
     };
     request.send(input.blob);

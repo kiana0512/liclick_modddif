@@ -8,6 +8,7 @@
 4. When the change touches projection, UV composition or local repaint, additionally audit the GPU, CPU, Worker, shader, persistence and export counterparts; record "not applicable" with a reason for any path that genuinely does not apply. A persistence-only change triggers this audit only when it also affects image assets or cross-path semantics.
 5. Read history only to trace a past decision or debug a compatibility/regression issue: `docs/00_SYSTEM_REVISION_LOG.md` and `docs/changes/`.
 6. To decide whether a feature is actually delivered, use `docs/modernization/FEATURE_ACCEPTANCE_MATRIX.md`. A page that opens or a button that exists is not delivery.
+7. For OpenSpec tasks, read the relevant proposal/design/spec/tasks under `openspec/changes/`; these are proposed changes, not current runtime contracts. Validate the change before delivery and keep implementation status explicit.
 
 Text, styling, comment and documentation changes do not normally require algorithm sections; expand the reading scope if dependencies, contract changes or insufficient evidence make them relevant.
 

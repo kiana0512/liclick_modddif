@@ -99,8 +99,10 @@ export interface SurfaceAwareRepairInput {
    */
   lockToDominantSourceRegion?: boolean;
   /** LOCAL-BOUNDARY-REPAIR v1.4: local boundary interpolation.
-   * Keeps dominant single-color locking and global fill disabled. Physical seam
-   * donors remain disabled unless maxSeamCrossings is explicitly greater than 0.
+   * Dominant single-color locking stays disabled. A final residual-only pass
+   * may explicitly enable global authored-colour fallback after local and
+   * physical seam donors are exhausted. Physical seam donors remain disabled
+   * unless maxSeamCrossings is explicitly greater than 0.
    */
   localBoundaryBlend?: boolean;
   /** Expand beyond maxDistance through the selected gap only, using original
@@ -340,7 +342,10 @@ function normalizeInput(input: SurfaceAwareRepairInput): NormalizedInput {
     coverageSkirtPixels: clampInteger(input.coverageSkirtPixels, 0, 0, 4),
     coverageSkirtMaxInputAlpha: clampInteger(input.coverageSkirtMaxInputAlpha, 0, 0, 255),
     outputBleedPixels: clampInteger(input.outputBleedPixels, 0, 0, 32),
-    fillUnreachableWithGlobalAverage: !input.localBoundaryBlend && input.fillUnreachableWithGlobalAverage === true,
+    // The ordinary local-boundary pass leaves unreachable islands untouched.
+    // A caller may explicitly request a final coverage pass after local and
+    // physical-seam donors have both been exhausted.
+    fillUnreachableWithGlobalAverage: input.fillUnreachableWithGlobalAverage === true,
     requireCompleteComponents: input.requireCompleteComponents === true,
     dominantSourceColorThreshold:
       input.dominantSourceColorThreshold === undefined

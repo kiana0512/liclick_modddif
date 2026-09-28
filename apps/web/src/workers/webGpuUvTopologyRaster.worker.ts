@@ -1,3 +1,5 @@
+import type { PipelineTraceContext } from '@/engine/performance/tracing/types';
+import { beginWorkerTrace, sendWorkerTiming } from '@/engine/performance/tracing/workerTrace';
 import { rasterizeUvTriangleCenters } from '../engine/bake/uvPixelCenterRaster';
 
 const GPU_BUFFER_USAGE_MAP_READ = 0x0001;
@@ -333,9 +335,11 @@ async function handleRaster(request: RasterRequest) {
 }
 
 scope.onmessage = (event) => {
-  const request = event.data;
+  const request = event.data as typeof event.data & { traceContext?: PipelineTraceContext };
+  let finishTrace: ReturnType<typeof beginWorkerTrace>;
   workQueue = workQueue
     .then(async () => {
+      if (import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' && request.traceContext) finishTrace = beginWorkerTrace(request.traceContext, 'uv.compose', 'async');
       const result = await handleRaster(request);
       scope.postMessage(
         {
@@ -353,8 +357,10 @@ scope.onmessage = (event) => {
         },
         [result.mask.buffer],
       );
+      if (import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' && finishTrace) sendWorkerTiming(request.id, finishTrace());
     })
     .catch((error) => {
+      if (import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' && finishTrace) sendWorkerTiming(request.id, { ...finishTrace(), status: 'error' });
       scope.postMessage({
         type: 'error',
         id: request.id,

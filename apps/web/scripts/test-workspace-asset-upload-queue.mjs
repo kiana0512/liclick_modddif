@@ -25,7 +25,7 @@ assert.equal(await withWorkspaceAssetUpload(async () => 'recovered'), 'recovered
 // Execute the real API module with fake transports, rather than a separate
 // queue-only implementation. Production ownership/URL/byte paths stay intact.
 const source = fs.readFileSync(new URL('../src/services/workspaceApiClient.ts', import.meta.url), 'utf8');
-const code = ts.transpileModule(source.replaceAll('import.meta.env.VITE_LICLICK_WORKSPACE_API', 'undefined'), {
+const code = ts.transpileModule(pipelineTraceDisabled(source).replaceAll('import.meta.env.VITE_LICLICK_WORKSPACE_API', 'undefined'), {
   compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022},
 }).outputText;
 const originals = Object.fromEntries(['window','fetch','crypto','XMLHttpRequest'].map(k=>[k,Object.getOwnPropertyDescriptor(globalThis,k)]));
@@ -127,3 +127,4 @@ for(const error of [null,new Error('reader failed')]) {
   await assert.rejects(failed,value=>error ? value===error : value.message==='fallback');
 }
 console.log('Deduplicated API helpers: exact URL encoding, progress values, Blob identity and reader errors passed.');
+import { pipelineTraceDisabled } from './pipeline-trace-test-build.mjs';

@@ -22,7 +22,7 @@ class Canvas {
   }; }
 }
 new Function('require', 'exports', 'self', 'fetch', 'createImageBitmap', 'OffscreenCanvas',
-  ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText)(
+  ts.transpileModule(pipelineTraceDisabled(source), { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText)(
   name => {
     if (name.endsWith('workerScheduling')) return { yieldWorkerTask: async () => {} };
     if (name.endsWith('encodeRgbaPngCore')) return {};
@@ -101,3 +101,4 @@ for (let attempt = 0; attempt < 2; attempt++) {
 }
 assert.equal(decodes, beforeOversize + 2, 'over-budget images are decoded at full resolution without caching');
 console.log('Underlay reuse: exact blend, transfer ownership, revision/URL/size, source-over, release, failure and cancellation passed.');
+import { pipelineTraceDisabled } from './pipeline-trace-test-build.mjs';

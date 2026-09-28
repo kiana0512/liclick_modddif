@@ -4,9 +4,10 @@ import { execFileSync } from 'node:child_process';
 import ts from 'typescript';
 import * as THREE from 'three';
 import { ownershipPolicy } from './test-texture-generation-recovery-ownership.mjs';
+import { pipelineTraceDisabled } from './pipeline-trace-test-build.mjs';
 
 const read = (name) => readFile(new URL(`../src/${name}`, import.meta.url), 'utf8');
-const compile = (source) => ts.transpileModule(source, { compilerOptions: {
+const compile = (source) => ts.transpileModule(pipelineTraceDisabled(source), { compilerOptions: {
   target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS,
 } }).outputText;
 const scheduler = {};

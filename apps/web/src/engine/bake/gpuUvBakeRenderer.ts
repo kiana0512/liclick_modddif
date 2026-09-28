@@ -1,3 +1,5 @@
+import { getPipelineTrace } from '@/engine/performance/tracing/pipelineTrace';
+import { traceCaptureRender } from '@/engine/performance/tracing/traceCapturePass';
 import { RELIABLE_PROJECTION_GLSL } from '../projection/projectionCoverageContract.mjs';
 import { readRenderTargetPixelsInStripes } from './gpuReadbackStripes';
 import { QualityAlphaReadback } from './qualityAlphaReadback';
@@ -1347,7 +1349,8 @@ function renderFullscreenPass(input: {
   const mesh = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), input.material);
   mesh.frustumCulled = false;
   scene.add(mesh);
-  input.renderer.render(scene, input.camera);
+  if (import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' && getPipelineTrace()) traceCaptureRender(input.renderer, scene, input.camera, undefined, 'uv.compose');
+  else input.renderer.render(scene, input.camera);
   scene.clear();
   mesh.geometry.dispose();
 }
@@ -1503,7 +1506,8 @@ function runGpuPostprocess(input: {
     seamScene.add(seamMesh);
     input.renderer.autoClear = false;
     input.renderer.setRenderTarget(next);
-    input.renderer.render(seamScene, camera);
+    if (import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' && getPipelineTrace()) traceCaptureRender(input.renderer, seamScene, camera, undefined, 'uv.compose');
+    else input.renderer.render(seamScene, camera);
     seamScene.clear();
     seamMaterial.dispose();
     current = next;
@@ -1880,7 +1884,8 @@ export async function bakeProjectedLayerRastersWithGpu(
       renderer.setClearColor(0x000000, 0);
       renderer.clear(true, true, true);
       reportProgress(layer, layerIndex, true);
-      renderer.render(bakeScene.scene, camera);
+      if (import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' && getPipelineTrace()) traceCaptureRender(renderer, bakeScene.scene, camera, undefined, 'uv.compose');
+      else renderer.render(bakeScene.scene, camera);
       if (rasterCache) document.body.dataset.residentUvProjectionDraws = String(
         Number(document.body.dataset.residentUvProjectionDraws ?? 0) + 1);
       if (input.region) copyBakeRegion(renderer, drawColorTarget, layerColorTarget, input.region);
@@ -1912,7 +1917,8 @@ export async function bakeProjectedLayerRastersWithGpu(
         setBakeRenderTargetState(renderer, drawQualityTarget, input.resolution, input.region);
         renderer.setClearColor(0x000000, 0);
         renderer.clear(true, true, true);
-        renderer.render(bakeScene.scene, camera);
+        if (import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' && getPipelineTrace()) traceCaptureRender(renderer, bakeScene.scene, camera, undefined, 'uv.compose');
+        else renderer.render(bakeScene.scene, camera);
         if (input.region) copyBakeRegion(renderer, drawQualityTarget, qualityTargetValue, input.region);
         qualityPromise = retainLayerRaster ? qualityReadback.read(qualityTargetValue) : undefined;
         layerQualityTexture = qualityTargetValue.texture;
@@ -2132,7 +2138,8 @@ export async function bakeProjectedLayerStackWithGpu(
         renderer.clear(true, true, true);
         renderTargetInitialized = true;
       }
-      renderer.render(bakeScene.scene, camera);
+      if (import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' && getPipelineTrace()) traceCaptureRender(renderer, bakeScene.scene, camera, undefined, 'uv.compose');
+      else renderer.render(bakeScene.scene, camera);
       processedTriangles += totalTrianglesPerLayer;
       reportProgress(layer, layerIndex, true);
       if (input.rasterCache) input.rasterCache.releaseMaterial(material);
@@ -2163,7 +2170,8 @@ export async function bakeProjectedLayerStackWithGpu(
       setBakeRenderTargetState(renderer, uvTopologyTarget, resolution);
       renderer.setClearColor(0x000000, 0);
       renderer.clear(true, true, true);
-      renderer.render(bakeScene.scene, camera);
+      if (import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' && getPipelineTrace()) traceCaptureRender(renderer, bakeScene.scene, camera, undefined, 'uv.compose');
+      else renderer.render(bakeScene.scene, camera);
       topologyMaterial.dispose();
     }
     bakeScene.scene.clear();

@@ -542,10 +542,13 @@ function startProjectModelSourcePrefetch(
         entry.resolve(undefined);
         continue;
       }
+      const traceRead = import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' ? getPipelineTrace()?.begin('model.read', undefined, 'async', object.id) : undefined;
       try {
         const response = await fetch(object.sourcePath);
-        entry.resolve(response.ok ? await response.arrayBuffer() : undefined);
+        const bytes = response.ok ? await response.arrayBuffer() : undefined;
+        traceRead?.end(response.ok ? 'ok' : 'error'); entry.resolve(bytes);
       } catch {
+        traceRead?.end('error');
         entry.resolve(undefined);
       }
     }
@@ -2499,6 +2502,8 @@ export function EditorPage({
   function hydrateProjectStores(projectToHydrate: Project) {
     const hydrationVersion = getProjectHydrationVersion(projectToHydrate);
     if (hydratedProjectVersionRef.current === hydrationVersion) return;
+    const trace = import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' ? getPipelineTrace(projectToHydrate.id)?.begin('project.hydrate', undefined, 'sync') : undefined;
+    try {
     hydratedProjectVersionRef.current = hydrationVersion;
     skipProjectStoreSyncRef.current.layers = true;
     skipProjectStoreSyncRef.current.generations = true;
@@ -2591,6 +2596,8 @@ export function EditorPage({
       restorePersistedHistory(projectToHydrate.id);
       restoredHistoryProjectIdRef.current = projectToHydrate.id;
     });
+    trace?.end();
+    } catch (error) { trace?.end('error'); throw error; }
   }
 
   function applySavedObjectToLoadedModel(
@@ -2713,6 +2720,7 @@ export function EditorPage({
     publishRestoreProgress();
 
     async function loadRestoredModel(object: SceneObject) {
+      const trace = import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' ? getPipelineTrace(projectToRestore.id)?.begin('project.restore', undefined, 'async', object.id) : undefined;
       try {
         const sourceBuffer = await sourcePrefetchByObjectId.get(object.id);
         // Geometry is the first meaningful viewport content after a hard
@@ -2722,6 +2730,7 @@ export function EditorPage({
         // decoding, shader warmup and secondary models remain idle-queued.
         await waitForBrowserPaint();
         if (restoreRequest !== modelRestoreRequestRef.current) {
+          trace?.end('cancelled');
           return { object, cancelled: true as const };
         }
         const loaded = await loadModelFromUrl({
@@ -2749,8 +2758,9 @@ export function EditorPage({
           }),
         };
       } catch (error) {
+        trace?.end('error');
         return { object, error };
-      }
+      } finally { trace?.end(); }
     }
 
     const allResults: Array<Awaited<ReturnType<typeof loadRestoredModel>>> = [];
@@ -7130,10 +7140,11 @@ export function EditorPage({
                   progress: 0.74 + progress * 0.24,
                 }),
         });
-        const { filledRgba, repairedPixels, unresolvedPixels, outputChecksum } = repair;
+        const { filledRgba, repairedPixels, unresolvedPixels, globalFallbackPixels, outputChecksum } = repair;
         reportRepairRunState('running', 'repair-worker-ready', {
           repairedPixels,
           unresolvedPixels,
+          globalFallbackPixels,
           outputChecksum,
           seamLinkCount: repair.seamLinkCount,
           seamTopologyBuildTimeMs: repair.seamTopologyBuildTimeMs,
@@ -7142,7 +7153,7 @@ export function EditorPage({
           initial: repair.initialStats,
           fallback: repair.fallbackStats,
         }));
-        if (repairedPixels === 0) {
+        if (repairedPixels === 0 || unresolvedPixels !== 0) {
           throw new Error(t('contentAwareRepairNoReachableSource'));
         }
         // `filledRgba` is intentionally sparse: only successfully repaired gap
@@ -7168,15 +7179,16 @@ export function EditorPage({
           layerId: repairLayer.id,
           repairedPixels,
           unresolvedPixels,
+          globalFallbackPixels,
           outputChecksum,
         });
         options?.taskContext?.markFirstResult({ layerId: repairLayer.id });
         if (!benchmarkOnly && !silentForeground) {
           pushToast({
-            tone: unresolvedPixels > 0 ? 'warning' : 'success',
+            tone: globalFallbackPixels > 0 ? 'warning' : 'success',
             title: t('contentAwareFillComplete'),
             description: `${t('uvRepairLayerCreated')}: ${repairLayer.name} · ${repairedPixels.toLocaleString()} px` +
-              (unresolvedPixels > 0 ? `；仍有 ${unresolvedPixels.toLocaleString()} px 缺少可靠边界颜色，可使用局部重绘补充。` : ''),
+              (globalFallbackPixels > 0 ? `；其中 ${globalFallbackPixels.toLocaleString()} px 缺少邻近供色，已用模型已有颜色填满，请检查细节。` : ''),
             dedupeKey: `content-aware-repair:${repairLayer.id}`,
           });
         }
@@ -7199,7 +7211,7 @@ export function EditorPage({
             description: error instanceof Error ? error.message : t('localRepaintFailedHelp'),
           });
         }
-        if (benchmarkOnly) throw error;
+        if (benchmarkOnly || silentForeground) throw error;
       } finally {
         options?.taskContext?.signal.removeEventListener('abort', abortFromScheduler);
         delete document.body.dataset.perfUvBakePhase;
@@ -8136,3 +8148,4 @@ export function EditorPage({
     </>
   );
 }
+import { getPipelineTrace } from '@/engine/performance/tracing/pipelineTrace';

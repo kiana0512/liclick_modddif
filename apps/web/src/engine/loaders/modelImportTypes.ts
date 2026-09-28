@@ -1,4 +1,5 @@
 import type * as THREE from 'three';
+import type { PipelineTraceContext } from '@/engine/performance/tracing/types';
 import type {
   ImportNormalizationTransform,
   MaterialSlot,
@@ -36,6 +37,7 @@ export type LoadedModel = {
 };
 
 export type ModelImportOptions = {
+  traceContext?: PipelineTraceContext;
   sourceUrl: string;
   fileName: string;
   normalizeOptions?: NormalizeImportedModelOptions;

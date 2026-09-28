@@ -1,6 +1,7 @@
 import { getImageSize } from '@/utils/imageSize';
 import { prepareImportedReferenceImage } from '@/services/referenceImagePreprocessor';
 import { createPortal } from 'react-dom';
+import { getPipelineTrace } from '@/engine/performance/tracing/pipelineTrace';
 import { allowUserFileUpload } from '@/services/userFileUploadPolicy';
 import {
   useCallback,
@@ -329,6 +330,10 @@ export function ReferenceGroupPicker({
     }
     try {
       const created = await Promise.all(imageFiles.map((file) => imageFromFile(file)));
+      if (import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' && created[0]) {
+        const trace = getPipelineTrace(), role = trace?.begin('reference.select');
+        if (role) trace?.bind(`reference-role:${created[0].id}`, role.context);
+      }
       setPendingImport(created);
       setUploadError(undefined);
     } catch (error) {
@@ -352,6 +357,7 @@ export function ReferenceGroupPicker({
 
   function confirmReferenceFiles(role: ReferenceImportRole) {
     if (!pendingImport?.length) return;
+    if (import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true') getPipelineTrace()?.scopeFor(`reference-role:${pendingImport[0].id}`)?.end();
     const created = pendingImport.map((reference) => ({
       ...reference,
       referenceGroupId: createId('reference-group'),
@@ -645,7 +651,10 @@ export function ReferenceGroupPicker({
         <ReferenceImportDialog
           references={pendingImport}
           onImport={confirmReferenceFiles}
-          onClose={() => setPendingImport(undefined)}
+          onClose={() => {
+            if (import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' && pendingImport[0]) getPipelineTrace()?.scopeFor(`reference-role:${pendingImport[0].id}`)?.end('cancelled');
+            setPendingImport(undefined);
+          }}
         />
       ) : null}
       {containerDragActive ? (

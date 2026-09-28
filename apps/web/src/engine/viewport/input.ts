@@ -82,41 +82,55 @@ export async function waitForViewportInteractionIdle(quietWindowMs = 180, checkC
 async function runInteractionPayload<T>(
   request: ArrayBuffer | Blob,
   transfer: Transferable[] = [],
+  traceContext?: PipelineTraceContext,
 ) {
-  await waitForViewportInteractionIdle();
+  const trace = import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' ? getPipelineTrace() : undefined;
+  if (import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' && trace) await traceAsync(trace, 'result.worker.queue', () => waitForViewportInteractionIdle(), traceContext);
+  else await waitForViewportInteractionIdle();
+  const scope = import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' ? trace?.begin('result.worker', traceContext) : undefined;
+  const sentMs = import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' && scope ? performance.now() : 0;
   const worker = new Worker(
     new URL('../../workers/payload.worker.ts', import.meta.url),
     { type: 'module' },
   );
   return new Promise<T | undefined>((resolve) => {
     const finish = (result?: T) => {
+      if (import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true') scope?.end(result === undefined ? 'error' : 'ok');
       worker.terminate();
       resolve(result);
     };
     worker.onerror = worker.onmessageerror = () => finish();
-    worker.onmessage = ({ data }: MessageEvent<0 | null | [result: unknown]>) => {
-      if (data === 0) {
-        void waitForViewportInteractionIdle().then(() => worker.postMessage(null));
+    worker.onmessage = ({ data }: MessageEvent<0 | null | [result: unknown] | { type: 'pipeline-payload-timing'; timing: WorkerTraceTiming }>) => {
+      if (import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' && data && !Array.isArray(data)) {
+        try { if (data.type === 'pipeline-payload-timing' && trace?.isRecording()) trace.workerResult(data.timing, sentMs, performance.now(), data.timing.status === 'error'); } catch { /* Diagnostics cannot block result publication. */ }
         return;
       }
-      finish(data?.[0] as T | undefined);
+      if (data === 0) {
+        const wait = import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' && trace
+          ? traceAsync(trace, 'result.publish.wait', () => waitForViewportInteractionIdle(), scope?.context) : waitForViewportInteractionIdle();
+        void wait.then(() => worker.postMessage(null));
+        return;
+      }
+      finish((data as [unknown] | null)?.[0] as T | undefined);
     };
-    worker.postMessage(request, transfer);
+    if (import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' && scope) worker.postMessage({ type: 'pipeline-payload', traceContext: scope.context, payload: request }, transfer);
+    else worker.postMessage(request, transfer);
   });
 }
 
-export async function interactionSafeJsonResponse<T>(response: Response): Promise<T | undefined> {
+export async function interactionSafeJsonResponse<T>(response: Response, traceContext?: PipelineTraceContext): Promise<T | undefined> {
   const declared = +(response.headers.get('content-length') ?? Infinity);
   if (declared < PAYLOAD_WORKER_THRESHOLD) {
     return response.json().catch(() => undefined) as Promise<T | undefined>;
   }
-  const bytes = await response.arrayBuffer();
+  const trace = import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' ? getPipelineTrace() : undefined;
+  const bytes = await (import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' && trace ? traceAsync(trace, 'result.body.read', () => response.arrayBuffer(), traceContext) : response.arrayBuffer());
   if (bytes.byteLength >= PAYLOAD_WORKER_THRESHOLD && typeof Worker !== 'undefined') {
-    return runInteractionPayload<T>(bytes, [bytes]);
+    return import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' ? runInteractionPayload<T>(bytes, [bytes], traceContext) : runInteractionPayload<T>(bytes, [bytes]);
   }
   try {
     if (bytes.byteLength >= PAYLOAD_WORKER_THRESHOLD) await waitForViewportInteractionIdle();
-    return JSON.parse(new TextDecoder().decode(bytes)) as T;
+    return (import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' && trace ? traceSync(trace, 'result.json.parse', () => JSON.parse(new TextDecoder().decode(bytes)), traceContext) : JSON.parse(new TextDecoder().decode(bytes))) as T;
   } catch {
     return undefined;
   }
@@ -145,3 +159,5 @@ export function subscribeViewportInteraction(listener: () => void) {
   listeners.add(listener);
   return () => listeners.delete(listener);
 }
+import { getPipelineTrace, traceAsync, traceSync } from '@/engine/performance/tracing/pipelineTrace';
+import type { PipelineTraceContext, WorkerTraceTiming } from '@/engine/performance/tracing/types';

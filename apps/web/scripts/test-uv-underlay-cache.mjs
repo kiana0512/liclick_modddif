@@ -4,7 +4,7 @@ import { webcrypto } from 'node:crypto';
 import ts from 'typescript';
 
 const source=await readFile(new URL('../src/workers/webGpuRgbaComposite.worker.ts',import.meta.url),'utf8');
-const compiled=ts.transpileModule(source.replace(/^import[^;]+;/gm,'').replace('export {};',''),{
+const compiled=ts.transpileModule(pipelineTraceDisabled(source).replace(/^import[^;]+;/gm,'').replace('export {};',''),{
   compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.None},
 }).outputText;
 let bytes=new Uint8Array([1,2,3,4]),decodes=0,fetches=0,closed=0,failure=false,decodeGate;
@@ -164,3 +164,4 @@ for (const size of [4, 8 * 1024 * 1024 + 4, 16 * 1024 * 1024]) {
   assert.equal(mapped, false); assert.equal(mappings, Math.ceil(size / (8 * 1024 * 1024)));
 }
 console.log('UV bounded mapping: buffer completion without redundant queue fences, full/tail bytes and unmap passed.');
+import { pipelineTraceDisabled } from './pipeline-trace-test-build.mjs';

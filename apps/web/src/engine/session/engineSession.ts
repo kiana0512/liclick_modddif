@@ -1,11 +1,14 @@
 import type { LocalComputePlan } from '@liclick/contracts';
 import { markPerformanceEvent } from '@/engine/performance/performanceTimeline';
 import { createId } from '@/utils/id';
+import { getPipelineTrace, type TraceScope } from '@/engine/performance/tracing/pipelineTrace';
+import type { PipelineTraceContext } from '@/engine/performance/tracing/types';
 
 export type EngineTaskLane = 'gpu' | 'cpu' | 'io';
 export type EngineSessionState = 'active' | 'suspended' | 'disposed';
 
 export type EngineTaskContext = {
+  traceContext?: PipelineTraceContext;
   id: number;
   signal: AbortSignal;
   plan: LocalComputePlan;
@@ -41,6 +44,7 @@ export type EngineSessionSnapshot = {
 };
 
 type ScheduledTask<T = unknown> = EngineTaskOptions<T> & {
+  traceQueue?: TraceScope;
   id: number;
   controller: AbortController;
   resolve: (value: T) => void;
@@ -131,6 +135,13 @@ export class EngineSession {
   }
 
   private startTask(task: ScheduledTask) {
+    let traceRun: TraceScope | undefined;
+    if (import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true') {
+      task.traceQueue?.end();
+      const trace = getPipelineTrace(this.projectId);
+      traceRun = trace?.begin('task.run', undefined, 'async', undefined, { lane: task.lane });
+      if (traceRun && task.traceQueue) trace?.link(traceRun.context, task.traceQueue.context);
+    }
     this.activeTasks.set(task.id, task);
     const startedAt = performance.now();
     markPerformanceEvent('interaction', 'engine-task-start', {
@@ -168,6 +179,7 @@ export class EngineSession {
         });
       },
     };
+    if (import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' && traceRun) context.traceContext = traceRun.context;
     void Promise.resolve()
       .then(() => {
         if (task.controller.signal.aborted) {
@@ -177,6 +189,7 @@ export class EngineSession {
       })
       .then((result) => {
         if (task.controller.signal.aborted) throw abortError(`${task.label} was cancelled.`);
+        traceRun?.end();
         markPerformanceEvent('interaction', 'engine-task-complete', {
           sessionId: this.id,
           projectId: this.projectId,
@@ -186,6 +199,7 @@ export class EngineSession {
         task.resolve(result);
       })
       .catch((error) => {
+        traceRun?.end(task.controller.signal.aborted ? 'cancelled' : 'error');
         markPerformanceEvent('interaction', 'engine-task-terminal', {
           sessionId: this.id,
           projectId: this.projectId,
@@ -220,6 +234,10 @@ export class EngineSession {
         resolve: (value) => resolve(value as T),
         reject,
       });
+      if (import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true') {
+        const trace = getPipelineTrace(this.projectId);
+        if (trace) this.queue[this.queue.length - 1].traceQueue = trace.begin('task.queue', undefined, 'async', undefined, { lane: options.lane });
+      }
     });
     this.publish();
     this.pump();
@@ -235,6 +253,7 @@ export class EngineSession {
       if (key && task.key !== key) continue;
       this.queue.splice(index, 1);
       task.controller.abort();
+      if (import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true') task.traceQueue?.end('cancelled');
       task.reject(abortError(`${task.label} was cancelled.`));
     }
     this.publish();

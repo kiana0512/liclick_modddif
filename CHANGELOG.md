@@ -1,5 +1,26 @@
 # Changelog
 
+### 2026-09-28 局部重绘同蒙版返图叠加
+
+- M08 / `ALG-LR-012` v1.2.0：手绘区域与可见未贴图区域分别沿用各自外扩羽化后合成远端蒙版；返图用提交给 ComfyUI 的同一黑白灰蒙版与原效果图混合，再按模型轮廓裁切。效果图/白模引导图保持纯白硬边。旧结果和 GPT 路径不重算。见 CHG-20260928-LOCAL-REPAINT-SUBMITTED-MASK-BLEND。
+
+### 2026-09-28 轻量阶段/函数计时
+
+- M13/M15：收敛旧 Trace 为默认关闭的本地函数计时；启动器 --DEBUG 与显式 start/stop，正式产物裁剪检查。移除本次 Perfetto、硬件采样、诊断服务端/SQL/上传/续接，既有 Performance Lab 保持。无业务算法或数据迁移；见 CHG-20260928-FUNCTION-TIMING。
+
+### 2026-09-23 Pipeline Trace 跨端实施（默认关闭，验收持续）
+
+- M13/M15：加入 Browser/Worker/Node/Blender 阶段、独立诊断存储、刷新/rollover、CPU/GPU 采样和实际 Perfetto 导出；真实工作流与 30 分钟合成稳定性证据已登记。业务像素、QA、Command/CAS 不变；诊断迁移显式执行。完整外部硬件与性能预算仍有缺口，未归档、未发布。见 CHG-20260923-PIPELINE-TRACE-IMPLEMENTATION。
+
+### 2026-09-22 Pipeline Trace 开始实施（未完整交付）
+
+- M13/M15，默认关闭的浏览器录制基础、首批业务探针、阶段表和本地 JSON 导出；无业务算法/持久化变化。细阶段全覆盖、跨端续接、硬件采样与完整真实验收仍待完成。唯一准则 2.23.0，见 CHG-20260922-PIPELINE-TRACE-FOUNDATION。
+
+### 2026-09-22 Trace OpenSpec 评审修订（未实施）
+
+- M13/M15，`CHG-20260922-TRACE-PROPOSAL-REVIEW`：补齐页内采样/外部 CDP 边界、Trace 生命周期、保留时钟、M05、旧人工录制条款及后续 Major/ADR 评审要求；采用现有 VITE 裁剪方式，明确新增模块与最小探针改动范围。
+- 文档版本 2.22.1 → 2.22.2，仅将当前 collector 版本按代码校正为 2.2.1；登记 OpenSpec 阅读入口与证据来源。无算法、运行时、响应头、数据库或部署变化。
+
 ### 2026-09-22 Expand document reading when the evidence requires it
 
 - M15, no algorithm change. Standard version 2.22.0 → 2.22.1: AGENTS.md, section 0 and docs/README.md now start with task-relevant sections and allow expansion for cross-module dependencies, contract changes or insufficient evidence. Absolute reading restrictions were removed. CLAUDE.md continues to import AGENTS.md.

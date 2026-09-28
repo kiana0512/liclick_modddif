@@ -62,6 +62,7 @@ function createFbxLoadingManager(resourceFiles: File[]) {
 
 export async function loadFbxModel(options: ModelImportOptions): Promise<LoadedModel> {
   const loader = new FBXLoader(createFbxLoadingManager(options.resourceFiles ?? []));
+  if (import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true') traceSyncModelLoader(loader, options.traceContext);
   const sourceMetadata = options.sourceBuffer ? readFbxMetadata(options.sourceBuffer) : undefined;
   const sourceUnitScaleFactor = sourceMetadata?.unitScaleFactor ?? 1;
   let fbx;
@@ -74,7 +75,9 @@ export async function loadFbxModel(options: ModelImportOptions): Promise<LoadedM
     });
     try {
       const repairStartedAt = performance.now();
-      const repairedSource = repairLegacyEmbeddedTextureFileNames(options.sourceBuffer);
+      const repairedSource = import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' && getPipelineTrace()
+        ? traceSync(getPipelineTrace()!, 'model.repair', () => repairLegacyEmbeddedTextureFileNames(options.sourceBuffer!), options.traceContext)
+        : repairLegacyEmbeddedTextureFileNames(options.sourceBuffer);
       const repairDurationMs = performance.now() - repairStartedAt;
       const loaderParseStartedAt = performance.now();
       fbx = loader.parse(repairedSource, '');
@@ -153,3 +156,5 @@ export async function loadFbxModel(options: ModelImportOptions): Promise<LoadedM
     },
   };
 }
+import { traceSyncModelLoader } from '@/engine/performance/tracing/modelTrace';
+import { getPipelineTrace, traceSync } from '@/engine/performance/tracing/pipelineTrace';

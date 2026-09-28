@@ -1,4 +1,5 @@
 import type { ReferenceImage } from '@/types/project';
+import { getPipelineTrace } from '@/engine/performance/tracing/pipelineTrace';
 import { isWorkspaceAssetUrl, readWorkspaceAssetBlob } from './workspaceApiClient';
 
 // Atlas receives call-tool files as Base64 inside a JSON-RPC body. The observed
@@ -65,10 +66,11 @@ type CacheEntry = {
 const preparationCache = new Map<string, CacheEntry>();
 
 function blobToDataUrl(blob: Blob) {
+  const trace = import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' ? getPipelineTrace()?.begin('reference.read') : undefined;
   return new Promise<string>((resolve, reject) => {
     const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result));
-    reader.onerror = () => reject(reader.error ?? new Error('无法读取参考图。'));
+    reader.onload = () => { trace?.end(); resolve(String(reader.result)); };
+    reader.onerror = () => { trace?.end('error'); reject(reader.error ?? new Error('无法读取参考图。')); };
     reader.readAsDataURL(blob);
   });
 }

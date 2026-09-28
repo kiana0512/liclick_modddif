@@ -7,7 +7,7 @@ import * as fflate from 'fflate';
 
 const load = (file, dependencies) => {
   const source = fs.readFileSync(new URL(`../src/engine/bake/${file}.ts`, import.meta.url), 'utf8');
-  const js = ts.transpileModule(source.replaceAll('import.meta.url', "''"), {
+  const js = ts.transpileModule(pipelineTraceDisabled(source).replaceAll('import.meta.url', "''"), {
     compilerOptions: {
       target: ts.ScriptTarget.ES2022,
       module: ts.ModuleKind.CommonJS,
@@ -600,7 +600,7 @@ await presentation.waitForResidentUvPresentation(scene, 'other-object');
 {
   const source = fs.readFileSync(new URL('../src/engine/bake/webGpuUvTopologyRaster.ts', import.meta.url), 'utf8')
     .replace(/import\.meta\.url/g, "'https://fixture.invalid/module.js'");
-  const js = ts.transpileModule(source, {compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS}}).outputText;
+  const js = ts.transpileModule(pipelineTraceDisabled(source), {compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS}}).outputText;
   const requests = [];
   class RasterWorker {
     postMessage(request) {
@@ -727,7 +727,7 @@ await presentation.waitForResidentUvPresentation(scene, 'other-object');
     'exports',
     'createImageBitmap',
     'ImageData',
-    ts.transpileModule(workerSource, {
+  ts.transpileModule(pipelineTraceDisabled(workerSource), {
       compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
     }).outputText,
   )(worker, {}, createFixtureBitmap, FixtureImageData);
@@ -779,3 +779,4 @@ await presentation.waitForResidentUvPresentation(scene, 'other-object');
 console.log(
   'Resident UV: exact rounding, duplicate candidate reuse, bounded ownership, geometry invalidation and one-byte mask upload passed.',
 );
+import { pipelineTraceDisabled } from './pipeline-trace-test-build.mjs';

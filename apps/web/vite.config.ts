@@ -2,7 +2,8 @@ import fs from 'node:fs';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { defineConfig, type Plugin } from 'vite';
+import { defineConfig, loadEnv, type Plugin } from 'vite';
+import { functionTimingPlugin } from './scripts/function-timing.mjs';
 import react from '@vitejs/plugin-react';
 import { shaderTemplateFormatPlugin } from './scripts/shader-template-format.mjs';
 import { shaderChunkPackPlugin } from './scripts/shader-chunk-pack.mjs';
@@ -119,8 +120,15 @@ function eraserPerformanceDiagnosticsPlugin(base: string): Plugin {
 }
 
 const publicBase = normalizeBase(process.env.VITE_PUBLIC_PATH ?? process.env.VITE_BASE_PATH);
-export default defineConfig({
-  plugins: [shaderTemplateFormatPlugin(), shaderChunkPackPlugin(), stringPoolPlugin(), cloudPublicAssetsPlugin(), eraserPerformanceDiagnosticsPlugin(publicBase), react()],
+export default defineConfig(({ mode }) => {
+  const env = loadEnv(mode, rootDir, 'VITE_');
+  const traceEnabled = process.env.LI3D_DEBUG_BUILD === 'true' && !env.VITE_LICLICK_RELEASE_ID;
+  return {
+  // Explicit defaults let Rollup remove probes before cross-chunk exports form.
+  define: {
+    'import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED': JSON.stringify(String(traceEnabled)),
+  },
+  plugins: [functionTimingPlugin(traceEnabled), { name: 'trace-build-identity', generateBundle() { this.emitFile({ type: 'asset', fileName: 'trace-build.json', source: JSON.stringify({ enabled: traceEnabled }) }); } }, shaderTemplateFormatPlugin(), shaderChunkPackPlugin(), stringPoolPlugin(), cloudPublicAssetsPlugin(), eraserPerformanceDiagnosticsPlugin(publicBase), react()],
   publicDir: false,
   base: publicBase,
   // THIRD_PARTY_NOTICES.txt is shipped with every cloud artifact. Avoid
@@ -191,4 +199,5 @@ export default defineConfig({
     ],
   },
   server: { proxy: {} },
+  };
 });

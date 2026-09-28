@@ -297,6 +297,7 @@ export function compositeRgbaUnderWithWebGpu(
       reject,
     });
     maintainInteractionHeartbeat();
+    if (import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' && getPipelineTrace()) Object.assign(request, prepareTracedWorkerRequest(getWorker(), id, 'uv.compose'));
     getWorker().postMessage(request, [frontBuffer, underlayBuffer]);
   });
 }
@@ -385,6 +386,7 @@ export function compositeRgbaUrlUnderWithWebGpu(
     const compositeWorker = getWorker();
     recordMainThreadCompositeTiming('get-worker', performance.now() - workerStartedAt);
     const postStartedAt = performance.now();
+    if (import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' && getPipelineTrace()) Object.assign(request, prepareTracedWorkerRequest(compositeWorker, id, 'uv.compose'));
     compositeWorker.postMessage(
       request,
       renderedColorMaskBuffer ? [frontBuffer, renderedColorMaskBuffer] : [frontBuffer],
@@ -435,6 +437,7 @@ export function compositeRgbaUrlUnderAndEncodePngWithWebGpu(
       reject,
     };
     if (!registerPending(id, requestState, signal)) return;
+    if (import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' && getPipelineTrace()) Object.assign(request, prepareTracedWorkerRequest(getWorker(), id, 'uv.compose'));
     getWorker().postMessage(request, [frontBuffer]);
   });
 }
@@ -451,3 +454,5 @@ export function terminateWebGpuRgbaCompositeWorker() {
   worker?.terminate();
   worker = undefined;
 }
+import { getPipelineTrace } from '@/engine/performance/tracing/pipelineTrace';
+import { prepareTracedWorkerRequest } from '@/engine/performance/tracing/workerTraceTransport';

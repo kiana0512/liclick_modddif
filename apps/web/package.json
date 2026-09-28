@@ -4,6 +4,7 @@
   "version": "0.1.3",
   "type": "module",
   "scripts": {
+    "test:pipeline-trace": "node --expose-gc scripts/test-pipeline-trace.mjs",
     "test:string-pool": "node scripts/test-string-pool.mjs",
     "test:camera-projection-switch": "node scripts/test-camera-projection-switch.mjs",
     "check:camera-projection-switch-browser": "node scripts/run-camera-projection-switch-browser.mjs",

@@ -1,3 +1,5 @@
+import type { PipelineTraceContext } from '@/engine/performance/tracing/types';
+import { beginWorkerTrace, sendWorkerTiming } from '@/engine/performance/tracing/workerTrace';
 import { resolvePixelCpu } from '../engine/bake/qualityBlendCpuPixel';
 import { yieldWorkerTask } from '../utils/workerScheduling';
 import {
@@ -590,12 +592,14 @@ async function run(request: BlendRequest) {
 }
 
 scope.onmessage = (event) => {
-  const request = event.data;
+  const request = event.data as typeof event.data & { traceContext?: PipelineTraceContext };
   if (request.type === 'budget') {
     interactive = request.interactive;
     return;
   }
   workQueue = workQueue.then(async () => {
+    const finishTrace = import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' && request.traceContext ? beginWorkerTrace(request.traceContext, 'uv.compose', 'async') : undefined;
+    let traceFailed = false;
     try {
       const result = await run(request);
       const response: WorkerResponse = {
@@ -613,7 +617,10 @@ scope.onmessage = (event) => {
       };
       scope.postMessage(response, [response.output, response.coverage, response.renderedColorMask]);
     } catch (error) {
+      if (import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true') traceFailed = true;
       scope.postMessage({ type: 'error', id: request.id, message: error instanceof Error ? error.message : String(error) });
+    } finally {
+      if (import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' && finishTrace) sendWorkerTiming(request.id, { ...finishTrace(), status: traceFailed ? 'error' : 'ok' });
     }
   });
 };

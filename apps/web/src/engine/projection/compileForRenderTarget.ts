@@ -1,4 +1,5 @@
 import type * as THREE from 'three';
+import { getPipelineTrace } from '@/engine/performance/tracing/pipelineTrace';
 
 const compiling = new WeakMap<THREE.Material, { count: number; dispose?: () => void }>();
 
@@ -17,6 +18,7 @@ export function compileForRenderTarget(
   camera: THREE.Camera,
   target: THREE.WebGLRenderTarget | null,
 ) {
+  const trace = import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' ? getPipelineTrace()?.begin('shader.compile') : undefined;
   const materials = new Set<THREE.Material>();
   scene.traverse((object) => {
     const material = (object as THREE.Mesh).material;
@@ -41,10 +43,11 @@ export function compileForRenderTarget(
   try {
     renderer.setRenderTarget(target);
     return renderer.compileAsync(scene, camera).then(
-      (result) => { release(); return result; },
-      (error: unknown) => { release(); throw error; },
+      (result) => { trace?.end(); release(); return result; },
+      (error: unknown) => { trace?.end('error'); release(); throw error; },
     );
   } catch (error) {
+    trace?.end('error');
     release();
     throw error;
   } finally {
