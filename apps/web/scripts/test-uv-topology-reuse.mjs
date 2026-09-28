@@ -23,7 +23,7 @@ class Worker {
   }
   terminate() {}
 }
-new Function('require', 'exports', 'Worker', 'window', ts.transpileModule(source, {
+new Function('require', 'exports', 'Worker', 'window', ts.transpileModule(pipelineTraceDisabled(source), {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
 }).outputText)(name => name === './uvSeamGeometrySnapshot' ? snapshotApi : { recordWebGpuProductionDispatch() {} },
   api, Worker, { setTimeout, location: { search: '' } });
@@ -75,3 +75,4 @@ for (const attribute of [
   assert.equal(await api.matches(fixture, expected.subarray(0, 4)), false, 'triangle count changes invalidate');
 }
 console.log('UV topology reuse: oversized snapshots, mask reuse, UV/index edits, signed zero, helpers/removal, NaN, Float64, normalized, half-float and interleaved attributes passed.');
+import { pipelineTraceDisabled } from './pipeline-trace-test-build.mjs';

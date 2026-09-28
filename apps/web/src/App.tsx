@@ -63,6 +63,8 @@ const PerformanceLabAdminPage = lazy(() =>
     default: module.PerformanceLabAdminPage,
   })),
 );
+const PipelineTracePanel = import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true'
+  ? lazy(() => import('./features/performanceLab/PipelineTracePanel')) : undefined;
 const BakeWorkspacePage = lazy(() =>
   import('./routes/BakeWorkspacePage').then((module) => ({ default: module.BakeWorkspacePage })),
 );
@@ -421,6 +423,11 @@ export function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  const withTrace = (page: ReactNode) => PipelineTracePanel ? <>
+    <Suspense fallback={null}><PipelineTracePanel projectId={route.name === 'editor' ? route.projectId : undefined} /></Suspense>
+    {page}
+  </> : page;
+
   if (authStatus !== 'authenticated') {
     return (
       <>
@@ -433,7 +440,7 @@ export function App() {
   }
 
   if (route.name === 'performanceLabAdmin') {
-    return (
+    return withTrace(
       <>
         <Suspense fallback={<AppRouteFallback />}>
           <PerformanceLabAdminPage onBack={navigation.openHome} />
@@ -447,7 +454,7 @@ export function App() {
     const textureProjectId =
       route.name === 'editor' ? route.projectId : residentTextureProjectIdRef.current!;
     const textureWorkspaceActive = route.name === 'editor';
-    return (
+    return withTrace(
       <EngineSessionBoundary projectId={textureProjectId}>
         <TextureRuntimeBoundary onBack={navigation.openHome}>
           <div
@@ -530,7 +537,7 @@ export function App() {
   }
 
   if (route.name === 'bake') {
-    return (
+    return withTrace(
       <EngineSessionBoundary projectId={route.projectId}>
         <Suspense fallback={<AppRouteFallback />}>
           <BakeWorkspacePage
@@ -562,7 +569,7 @@ export function App() {
         />
       </Suspense>
     );
-    return (
+    return withTrace(
       <>
         {route.module === 'texture' ? (
           <TextureRuntimeBoundary onBack={navigation.openHome}>
@@ -577,7 +584,7 @@ export function App() {
   }
 
   if (route.name === 'modelingToolbox') {
-    return (
+    return withTrace(
       <>
         <Suspense fallback={<AppRouteFallback />}>
           <ModelingToolboxPage onBack={navigation.openHome} onLogout={navigation.openHome} />
@@ -588,7 +595,7 @@ export function App() {
   }
 
   if (route.name === 'autoRetopology') {
-    return (
+    return withTrace(
       <OptionalEngineSessionBoundary projectId={route.projectId}>
         <Suspense fallback={<AppRouteFallback />}>
           <AutoRetopologyPage
@@ -615,7 +622,7 @@ export function App() {
   }
 
   if (route.name === 'autoUv') {
-    return (
+    return withTrace(
       <OptionalEngineSessionBoundary projectId={route.projectId}>
         <Suspense fallback={<AppRouteFallback />}>
           <AutoUvPage
@@ -641,7 +648,7 @@ export function App() {
     );
   }
 
-  return (
+  return withTrace(
     <>
       <Suspense fallback={<AppRouteFallback />}>
         <HomePage

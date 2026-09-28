@@ -1,4 +1,13 @@
 import type { ProfilerOnRenderCallback } from 'react';
+import { getPipelineTrace, type TraceScope } from './tracing/pipelineTrace';
+import type { PipelineTraceName } from '@/engine/performance/tracing/types';
+
+const pipelineNames: Readonly<Record<string, PipelineTraceName>> = {
+  'fbx-main-thread-parse': 'model.prepare',
+  'compose-uv-stack': 'uv.compose',
+  'merge-layers-to-uv': 'uv.compose',
+  'local-repaint-depth-capture': 'capture.depth',
+};
 
 export type PerformanceTimelineEvent = {
   id: number;
@@ -77,12 +86,23 @@ export function startPerformanceSpan(
   name: string,
   detail?: Record<string, unknown>,
 ) {
+  let pipeline: TraceScope | undefined;
+  if (import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' && Object.hasOwn(pipelineNames, name)) {
+    pipeline = getPipelineTrace()?.begin(pipelineNames[name]);
+  }
   const started = markPerformanceEvent(category, name, detail, 'start');
-  if (!started) return () => {};
+  if (!started) {
+    if (import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' && pipeline) {
+      const scope = pipeline;
+      return (phase: 'end' | 'error' = 'end') => scope.end(phase === 'error' ? 'error' : 'ok');
+    }
+    return () => {};
+  }
   let ended = false;
   return (phase: 'end' | 'error' = 'end', endDetail?: Record<string, unknown>) => {
     if (ended) return;
     ended = true;
+    if (import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true') pipeline?.end(phase === 'error' ? 'error' : 'ok');
     markPerformanceEvent(category, name, endDetail, phase, performance.now() - started.monotonicMs);
   };
 }

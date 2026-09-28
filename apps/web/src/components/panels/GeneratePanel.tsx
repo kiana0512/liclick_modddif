@@ -2711,6 +2711,7 @@ export function GeneratePanel({
     );
     const originalActiveViewId = activeCameraViewId;
     const textureBatchId = createId('remote-multiview-batch');
+    if (import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' && getPipelineTrace(currentProject.id)) planGenerationViews(currentProject.id, textureBatchId, orderedViews.map(view => view.id));
     const textureBatchWasCancelled = () => cancelledTextureBatchIdsRef.current.has(textureBatchId);
     const { createModelviewApiClient } = await import('@/services/modelviewApiClient');
     const presentation = await import('@/engine/generation/gptMultiviewPairs');
@@ -3041,6 +3042,7 @@ export function GeneratePanel({
     const scheduler = await import('@/engine/generation/gptMultiviewPairs');
     const pairs = scheduler.planGptViewPairs(requestedViews, selectedCameraViewPreset);
     const textureBatchId = createId('gpt-paired-multiview');
+    if (import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' && getPipelineTrace(projectId)) planGenerationViews(projectId, textureBatchId, requestedViews.map(view => view.id));
     const assertActive = () => {
       throwIfTexturePipelineCancelled(signal);
       if (cancelledTextureBatchIdsRef.current.has(textureBatchId)) {
@@ -3353,6 +3355,7 @@ export function GeneratePanel({
     const { createModelviewApiClient } = await import('@/services/modelviewApiClient');
     const modelviewClient = usesRemoteSingleView ? createModelviewApiClient() : undefined;
     const textureBatchId = pairContext?.textureBatchId ?? createId('texture-map-batch');
+    if (import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' && !pairContext && getPipelineTrace(currentProject.id)) planGenerationViews(currentProject.id, textureBatchId, viewCaptures.map(view => view.viewId));
     const textureBatchWasCancelled = () => cancelledTextureBatchIdsRef.current.has(textureBatchId);
     const pendingGenerations = viewCaptures.map(({ viewId, cameraView, label, capture }) => {
       const generationId = createId(`texture-map-${viewId}`);
@@ -3863,6 +3866,7 @@ export function GeneratePanel({
   }
 
   async function handleLocalRepaintGenerate() {
+    const traceEntry = import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' ? beginGenerationEntry(currentProjectId) : undefined;
     lastCompletedLocalRepaintGenerationIdRef.current = undefined;
     let pendingGeneration: Generation | undefined;
     let requestAbortController: AbortController | undefined;
@@ -3960,6 +3964,7 @@ export function GeneratePanel({
       requestAbortController = new AbortController();
       localRepaintPreparationAbortControllerRef.current = requestAbortController;
       submitLocksRef.current.add('repaint');
+      traceEntry?.accept();
       setSubmissionActive(true);
       if (personalRepaintEnabled && !isGptLocalRepaint) {
         if (!materialReference || !isMultiviewReference(materialReference)) {
@@ -4542,6 +4547,7 @@ export function GeneratePanel({
         });
       return true;
     } catch (error) {
+      traceEntry?.fail(isGenerationCancellation(error) || requestAbortController?.signal.aborted || (pendingGeneration && isCancelledGeneration(pendingGeneration)) ? 'cancelled' : 'error');
       if (pendingGeneration && isCancelledGeneration(pendingGeneration)) return false;
       if (requestAbortController?.signal.aborted) {
         setGenerateNotice(undefined);
@@ -4594,6 +4600,7 @@ export function GeneratePanel({
       setLocalRepaintPreparation(undefined);
       useSceneStore.getState().setLocalRepaintGenerationPresentationActive(false);
       revokeRegisteredObjectUrl(promptAnalysisCurrentEffectUrl);
+      traceEntry?.end();
       finish();
     }
   }
@@ -4777,12 +4784,15 @@ export function GeneratePanel({
   }
 
   async function handleGeneratePairedMultiview(singleReference: ReferenceImage) {
+    const traceEntry = import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' ? beginGenerationEntry(currentProjectId) : undefined;
     const lighting = isMultiviewReference(singleReference);
     if (workflowSubmissionLocked || submitLocksRef.current.size > 0) {
+      traceEntry?.end();
       notifyWorkflowOperationLocked();
       return;
     }
     submitLocksRef.current.add('single');
+    traceEntry?.accept();
     setSubmissionActive(true);
     setTexturePipelineProgress({ active: true, progress: 4, label: lighting ? '准备光照处理' : '准备多视图参考' });
     setGenerateNotice({ tone: 'info', message: lighting ? '光照处理中' : '正在保存多视图参考。' });
@@ -4796,6 +4806,7 @@ export function GeneratePanel({
         description: '多视图参考已保存，可直接生成纹理贴图。',
       });
     } catch (error) {
+      traceEntry?.fail(isGenerationCancellation(error) ? 'cancelled' : 'error');
       if (isGenerationCancellation(error)) {
         setGenerateNotice(undefined);
         return;
@@ -4804,6 +4815,7 @@ export function GeneratePanel({
       setGenerateNotice({ tone: 'error', message });
       pushToast({ tone: 'error', title: lighting ? '光照处理失败' : '多视图生成失败', description: message });
     } finally {
+      traceEntry?.end();
       submitLocksRef.current.delete('single');
       setSubmissionActive(submitLocksRef.current.size > 0);
       setTexturePipelineProgress(undefined);
@@ -4832,6 +4844,7 @@ export function GeneratePanel({
     requestedViews: CameraViewItem[] | undefined = undefined,
     requestedViewMode: TextureViewMode = textureViewMode,
   ) {
+    const traceEntry = import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' ? beginGenerationEntry(currentProjectId) : undefined;
     let pipelineAbortController: AbortController | undefined;
     let releaseTextureRecoveryOwnership: (() => void) | undefined;
     try {
@@ -4853,6 +4866,7 @@ export function GeneratePanel({
         return;
       }
       submitLocksRef.current.add('multiview');
+      traceEntry?.accept();
       if (currentProjectId)
         releaseTextureRecoveryOwnership = textureRecoveryOwnershipRef.current.begin(currentProjectId);
       setSubmissionActive(true);
@@ -4879,6 +4893,7 @@ export function GeneratePanel({
         pipelineAbortController.signal,
       );
     } catch (error) {
+      traceEntry?.fail(isGenerationCancellation(error, pipelineAbortController?.signal) ? 'cancelled' : 'error');
       if (isGenerationCancellation(error, pipelineAbortController?.signal)) {
         setGenerateNotice(undefined);
         setTexturePipelineProgress(undefined);
@@ -4896,6 +4911,7 @@ export function GeneratePanel({
       finish();
       setTexturePipelineProgress(undefined);
     } finally {
+      traceEntry?.end();
       releaseTextureRecoveryOwnership?.();
       if (texturePipelineAbortControllerRef.current === pipelineAbortController) {
         texturePipelineAbortControllerRef.current = undefined;
@@ -5451,6 +5467,9 @@ export function GeneratePanel({
     generation: Generation,
     options: { automatic?: boolean; capture?: Capture; saveObserver?: ProjectionSaveObserver } = {},
   ) {
+    const trace = import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' ? getPipelineTrace(typeof generation.metadata.projectId === 'string' ? generation.metadata.projectId : undefined) : undefined;
+    const parent = trace?.lookup(generation.id);
+    const queued = trace?.begin('task.queue', parent);
     // Remote multi-view jobs may finish together. Keep staging and persistence
     // in one transaction: if the next view enters the layer store while the
     // previous view is saving, that save snapshot contains a not-yet-persisted
@@ -5458,6 +5477,7 @@ export function GeneratePanel({
     const operation = projectedLayerCommitQueueRef.current
       .catch(() => undefined)
       .then(async () => {
+        queued?.end();
         const latest = useGenerationStore.getState().generations.find(
           (item) => item.id === generation.id,
         );
@@ -5468,7 +5488,12 @@ export function GeneratePanel({
           );
           if (!existing && hasProjectionCommit(latest ?? generation)) return undefined;
         }
-        const prepared = await stageGenerationAsProjectedLayer(generation, options);
+        const preparation = trace?.begin('projection.prepare', parent);
+        let prepared;
+        try {
+          prepared = await stageGenerationAsProjectedLayer(generation, options);
+          preparation?.end(prepared ? 'ok' : 'skipped');
+        } catch (error) { preparation?.end('error'); throw error; }
         if (!prepared) return undefined;
         if (!prepared.shouldPersist) {
           if (!hasProjectionCommit(latest ?? generation)) {
@@ -5478,7 +5503,7 @@ export function GeneratePanel({
           return prepared.layer;
         }
         if (options.automatic && isCancelledGeneration(generation)) return undefined;
-        return persistGenerationAsProjectedLayer(prepared, options);
+        return trace ? traceAsync(trace, 'layer.commit', () => persistGenerationAsProjectedLayer(prepared, options), parent) : persistGenerationAsProjectedLayer(prepared, options);
       });
     projectedLayerCommitQueueRef.current = operation.then(
       () => undefined,
@@ -6193,3 +6218,5 @@ export function GeneratePanel({
     </>
   );
 }
+import { getPipelineTrace, traceAsync } from '@/engine/performance/tracing/pipelineTrace';
+import { beginGenerationEntry, planGenerationViews } from '@/engine/performance/tracing/generationEntry';

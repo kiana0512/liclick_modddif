@@ -5,7 +5,7 @@ import ts from 'typescript';
 
 const source = readFileSync(new URL('../src/engine/bake/ProjectedUvRasterCache.ts', import.meta.url), 'utf8');
 const module = { exports: {} };
-new Function('module', 'exports', 'require', ts.transpileModule(source, {
+new Function('module', 'exports', 'require', ts.transpileModule(pipelineTraceDisabled(source), {
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
 }).outputText)(module, module.exports, name => {
   if (name === 'three') return { RedFormat: 'red' };
@@ -70,3 +70,4 @@ assert.ok(bench.sourceKeyBytes <= 64 * 1024 * 1024);
 assert.deepEqual(layers.map(value => bench.layerKey(value)), compactKeys, 'Byte-budget overflow must retain existing keys');
 bench.dispose();
 process.stdout.write(`Exact UV layer keys passed: all source URLs and pixel inputs invalidate, owner/capacity isolation, no input mutation. 14x2MiB strings: original ${beforeMs.toFixed(1)}ms, cold ${coldMs.toFixed(1)}ms, hot ${hotMs.toFixed(1)}ms (key construction only).\n`);
+import { pipelineTraceDisabled } from './pipeline-trace-test-build.mjs';

@@ -1,4 +1,7 @@
+import type { PipelineTraceContext } from '@/engine/performance/tracing/types';
 import type { Generation } from '@/types/generation';
+import { getPipelineTrace } from '@/engine/performance/tracing/pipelineTrace';
+import { traceFetch, traceJson } from '@/engine/performance/tracing/traceRequest';
 import type { Capture } from '@/types/capture';
 import { urlToDataUrl } from './workspaceApiClient';
 import { getWorkspaceApiBase } from './workspaceApiBase';
@@ -58,9 +61,13 @@ type ModelviewResponse = {
 
 async function requestJson<T>(
   path: string,
-  init?: RequestInit & { timeoutMs?: number },
+  init?: RequestInit & { timeoutMs?: number; traceContext?: PipelineTraceContext },
 ): Promise<T> {
   const { timeoutMs = 2_760_000, headers, signal, ...fetchInit } = init ?? {};
+  let traceContext: PipelineTraceContext | undefined;
+  if (import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' && fetchInit.traceContext) {
+    traceContext = fetchInit.traceContext; delete fetchInit.traceContext;
+  }
   const requestHeaders = new Headers(headers);
   if (fetchInit.body && !requestHeaders.has('content-type')) {
     requestHeaders.set('content-type', 'application/json');
@@ -71,13 +78,15 @@ async function requestJson<T>(
   signal?.addEventListener('abort', abortRequest, { once: true });
   const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const response = await fetch(`${workspaceApiBase}${path}`, {
+    const trace = import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' ? getPipelineTrace() : undefined;
+    const requestInit = {
       ...fetchInit,
       signal: controller.signal,
       credentials: 'include',
       headers: requestHeaders,
-    });
-    const payload = await response.json().catch(() => undefined);
+    } satisfies RequestInit;
+    const response = await (import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' && trace ? traceFetch(`${workspaceApiBase}${path}`, requestInit, traceContext) : fetch(`${workspaceApiBase}${path}`, requestInit));
+    const payload = await (import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' && trace ? traceJson(response) : response.json()).catch(() => undefined);
     if (!response.ok) {
       const message =
         payload &&
@@ -178,6 +187,7 @@ export function createModelviewApiClient() {
       options?: { signal?: AbortSignal },
     ): Promise<Generation> {
       const result = await requestJson<ModelviewResponse>('/api/modelview/inpaint', {
+        ...(import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' && getPipelineTrace() ? { traceContext: getPipelineTrace(input.projectId)?.lookup(input.clientGenerationId) } : {}),
         method: 'POST',
         signal: options?.signal,
         body: JSON.stringify({ ...input, referenceViewCount: input.materialReferenceRole === 'multi-view' ? 6 : 1 }),
@@ -194,6 +204,7 @@ export function createModelviewApiClient() {
       options?: { signal?: AbortSignal },
     ): Promise<Generation> {
       const result = await requestJson<ModelviewResponse>('/api/modelview/inpaint', {
+        ...(import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' && getPipelineTrace() ? { traceContext: getPipelineTrace(input.projectId)?.lookup(input.clientGenerationId) } : {}),
         method: 'POST',
         signal: options?.signal,
         body: JSON.stringify({ ...input, referenceViewCount: input.materialReferenceRole === 'multi-view' ? 6 : 1 }),
@@ -217,6 +228,7 @@ export function createModelviewApiClient() {
         return generation;
       }
       const result = await requestJson<ModelviewResponse>('/api/modelview/inpaint', {
+        ...(import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' && getPipelineTrace() ? { traceContext: getPipelineTrace(input.projectId)?.lookup(input.clientGenerationId) } : {}),
         method: 'POST',
         timeoutMs: 2_760_000,
         signal: options?.signal,

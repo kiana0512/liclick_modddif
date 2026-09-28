@@ -1,6 +1,7 @@
 import type { LoadedModel, SupportedImportFormat } from './modelImportTypes';
 import type { NormalizeImportedModelOptions } from '@/engine/scene/normalizeImportedModel';
 import type { ModelImportProgressCallback } from './modelImportProgress';
+import { getPipelineTrace, traceAsync } from '@/engine/performance/tracing/pipelineTrace';
 
 export const supportedModelExtensions = ['glb', 'gltf', 'fbx', 'obj'] as const;
 
@@ -70,7 +71,8 @@ export async function loadModelFromFile(
   onProgress?.({ phase: 'preparing', phaseProgress: 1 });
   const sourceUrl = URL.createObjectURL(file);
   const sourceBuffer =
-    format === 'fbx' ? await readModelFileAsArrayBuffer(file, onProgress) : undefined;
+    format === 'fbx' ? await (import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' && getPipelineTrace()
+      ? traceAsync(getPipelineTrace()!, 'model.read', () => readModelFileAsArrayBuffer(file, onProgress)) : readModelFileAsArrayBuffer(file, onProgress)) : undefined;
   const options = {
     sourceUrl,
     fileName: file.name,
@@ -81,6 +83,10 @@ export async function loadModelFromFile(
     onProgress,
   };
 
+  if (import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true') {
+    const trace = getPipelineTrace();
+    if (trace) return traceAsync(trace, 'model.load', context => loadModelByFormat(format, { ...options, traceContext: context }));
+  }
   return loadModelByFormat(format, options);
 }
 
@@ -102,5 +108,9 @@ export async function loadModelFromUrl(input: {
     sourceBuffer: input.sourceBuffer,
   };
 
+  if (import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true') {
+    const trace = getPipelineTrace();
+    if (trace) return traceAsync(trace, 'model.load', context => loadModelByFormat(format, { ...options, traceContext: context }));
+  }
   return loadModelByFormat(format, options);
 }

@@ -6,7 +6,7 @@ import * as THREE from 'three';
 const read = path => fs.readFileSync(new URL(`../src/${path}.ts`, import.meta.url), 'utf8');
 const compile = (source, dependencies, globals = {}) => {
   const exports = {};
-  const js = ts.transpileModule(source, { compilerOptions: {
+  const js = ts.transpileModule(pipelineTraceDisabled(source), { compilerOptions: {
     target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS,
   } }).outputText;
   new Function('require', 'exports', ...Object.keys(globals), js)(name => {
@@ -186,3 +186,4 @@ for (const busy of [false, true]) {
   assert(composites.at(-1).signal.aborted, 'Disposal cancels the pending worker operation');
 }
 console.log('Resident UV visibility: bound source-set proof, cancellable busy-camera idle, latest-wins wake, deferred verified persistence and cache-hit publication passed.');
+import { pipelineTraceDisabled } from './pipeline-trace-test-build.mjs';

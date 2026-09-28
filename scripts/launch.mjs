@@ -1,0 +1,11 @@
+import { parseArgs } from 'node:util';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+const { values } = parseArgs({ options: { DEBUG: { type: 'boolean', default: false }, SkipBuild: { type: 'boolean', default: false }, Port: { type: 'string', default: '4517' } } });
+if (!/^\d+$/.test(values.Port) || +values.Port < 1 || +values.Port > 65535) throw new Error('Invalid --Port');
+const args = ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', fileURLToPath(new URL('./run-real-local-preview.ps1', import.meta.url)), '-Port', values.Port];
+if (values.DEBUG) args.push('-TraceTiming');
+if (values.SkipBuild) args.push('-SkipBuild');
+const result = spawnSync('powershell.exe', args, { stdio: 'inherit', windowsHide: true });
+if (result.error) throw result.error;
+process.exitCode = result.status ?? 1;

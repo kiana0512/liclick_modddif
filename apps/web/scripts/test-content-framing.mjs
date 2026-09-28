@@ -270,7 +270,7 @@ function evaluate(code, deps) {
     'module',
     'exports',
     'require',
-    ts.transpileModule(code, {
+    ts.transpileModule(pipelineTraceDisabled(code), {
       compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
     }).outputText,
   )(m, m.exports, (name) => {
@@ -639,3 +639,4 @@ try {
 console.log(
   'Framing image adapter: full square background, byte-exact paired crop, source-edge padding, unchanged references/mask, native return and cancellation passed.',
 );
+import { pipelineTraceDisabled } from './pipeline-trace-test-build.mjs';

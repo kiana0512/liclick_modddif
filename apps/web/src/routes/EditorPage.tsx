@@ -540,10 +540,13 @@ function startProjectModelSourcePrefetch(
         entry.resolve(undefined);
         continue;
       }
+      const traceRead = import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' ? getPipelineTrace()?.begin('model.read', undefined, 'async', object.id) : undefined;
       try {
         const response = await fetch(object.sourcePath);
-        entry.resolve(response.ok ? await response.arrayBuffer() : undefined);
+        const bytes = response.ok ? await response.arrayBuffer() : undefined;
+        traceRead?.end(response.ok ? 'ok' : 'error'); entry.resolve(bytes);
       } catch {
+        traceRead?.end('error');
         entry.resolve(undefined);
       }
     }
@@ -2505,6 +2508,8 @@ export function EditorPage({
   function hydrateProjectStores(projectToHydrate: Project) {
     const hydrationVersion = getProjectHydrationVersion(projectToHydrate);
     if (hydratedProjectVersionRef.current === hydrationVersion) return;
+    const trace = import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' ? getPipelineTrace(projectToHydrate.id)?.begin('project.hydrate', undefined, 'sync') : undefined;
+    try {
     hydratedProjectVersionRef.current = hydrationVersion;
     skipProjectStoreSyncRef.current.layers = true;
     skipProjectStoreSyncRef.current.generations = true;
@@ -2597,6 +2602,8 @@ export function EditorPage({
       restorePersistedHistory(projectToHydrate.id);
       restoredHistoryProjectIdRef.current = projectToHydrate.id;
     });
+    trace?.end();
+    } catch (error) { trace?.end('error'); throw error; }
   }
 
   function applySavedObjectToLoadedModel(
@@ -2719,6 +2726,7 @@ export function EditorPage({
     publishRestoreProgress();
 
     async function loadRestoredModel(object: SceneObject) {
+      const trace = import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' ? getPipelineTrace(projectToRestore.id)?.begin('project.restore', undefined, 'async', object.id) : undefined;
       try {
         const sourceBuffer = await sourcePrefetchByObjectId.get(object.id);
         // Geometry is the first meaningful viewport content after a hard
@@ -2728,6 +2736,7 @@ export function EditorPage({
         // decoding, shader warmup and secondary models remain idle-queued.
         await waitForBrowserPaint();
         if (restoreRequest !== modelRestoreRequestRef.current) {
+          trace?.end('cancelled');
           return { object, cancelled: true as const };
         }
         const loaded = await loadModelFromUrl({
@@ -2755,8 +2764,9 @@ export function EditorPage({
           }),
         };
       } catch (error) {
+        trace?.end('error');
         return { object, error };
-      }
+      } finally { trace?.end(); }
     }
 
     const allResults: Array<Awaited<ReturnType<typeof loadRestoredModel>>> = [];
@@ -8150,3 +8160,4 @@ export function EditorPage({
     </>
   );
 }
+import { getPipelineTrace } from '@/engine/performance/tracing/pipelineTrace';

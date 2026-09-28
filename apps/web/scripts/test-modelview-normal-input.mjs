@@ -4,7 +4,7 @@ import ts from 'typescript';
 import * as jsx from 'react/jsx-runtime';
 function load(path, dependencies) {
   const module = { exports: {} };
-  const code = ts.transpileModule(readFileSync(new URL(path, import.meta.url), 'utf8').replace('import.meta.env.VITE_LICLICK_WORKSPACE_API', 'undefined'), {
+  const code = ts.transpileModule(pipelineTraceDisabled(readFileSync(new URL(path, import.meta.url), 'utf8')).replace('import.meta.env.VITE_LICLICK_WORKSPACE_API', 'undefined'), {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX },
   }).outputText;
   new Function('module', 'exports', 'require', code)(module, module.exports, (name) => {
@@ -191,3 +191,4 @@ for (const mode of ['success', 'input-failure', 'normal-failure', 'abort', 'pre-
 }
 assert.match(panel, /await prepareRepaintInputs\(preparationInput/);
 console.log('Repaint preparation overlap: exact results, parallel start, failure draining, cancellation and URL cleanup passed.');
+import { pipelineTraceDisabled } from './pipeline-trace-test-build.mjs';

@@ -1,3 +1,5 @@
+import { getPipelineTrace } from '@/engine/performance/tracing/pipelineTrace';
+import { traceCaptureRender } from '@/engine/performance/tracing/traceCapturePass';
 import { RELIABLE_PROJECTION_GLSL } from './projectionCoverageContract.mjs';
 import * as THREE from 'three';
 import { loadProjectedTextureWithRetry } from './ProjectedLayerMaterial';
@@ -1120,7 +1122,8 @@ export class ProjectedLayerPreviewCompositor {
         renderer.setScissorTest(true);
         renderer.setClearColor(0x000000, 0);
         renderer.clear(true, true, true);
-        renderer.render(job.bakeScene, job.camera);
+        if (import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' && getPipelineTrace()) traceCaptureRender(renderer, job.bakeScene, job.camera, undefined, 'projection.prepare');
+        else renderer.render(job.bakeScene, job.camera);
 
         const rankRead = job.rankTargets[job.rankReadIndex];
         const rankWriteIndex = job.rankReadIndex === 0 ? 1 : 0;
@@ -1130,7 +1133,8 @@ export class ProjectedLayerPreviewCompositor {
         renderer.setRenderTarget(job.rankTargets[rankWriteIndex]);
         renderer.setViewport(0, 0, tileWidth, tileHeight);
         renderer.setScissorTest(false);
-        renderer.render(job.fullscreenScene, job.camera);
+        if (import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' && getPipelineTrace()) traceCaptureRender(renderer, job.fullscreenScene, job.camera, undefined, 'projection.prepare');
+        else renderer.render(job.fullscreenScene, job.camera);
         job.rankReadIndex = rankWriteIndex;
         job.layerIndex += 1;
         if (job.layerIndex >= job.normalLayers.length) {
@@ -1149,7 +1153,8 @@ export class ProjectedLayerPreviewCompositor {
         renderer.setScissorTest(false);
         renderer.setClearColor(0x000000, 0);
         renderer.clear(true, true, true);
-        renderer.render(job.fullscreenScene, job.camera);
+        if (import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' && getPipelineTrace()) traceCaptureRender(renderer, job.fullscreenScene, job.camera, undefined, 'projection.prepare');
+        else renderer.render(job.fullscreenScene, job.camera);
         job.tileReadIndex = 0;
         job.layerIndex = 0;
         job.phase =
@@ -1172,7 +1177,8 @@ export class ProjectedLayerPreviewCompositor {
         renderer.setScissorTest(true);
         renderer.setClearColor(0x000000, 0);
         renderer.clear(true, true, true);
-        renderer.render(job.bakeScene, job.camera);
+        if (import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' && getPipelineTrace()) traceCaptureRender(renderer, job.bakeScene, job.camera, undefined, 'projection.prepare');
+        else renderer.render(job.bakeScene, job.camera);
 
         const tileRead = job.tileTargets[job.tileReadIndex];
         const tileWriteIndex = job.tileReadIndex === 0 ? 1 : 0;
@@ -1183,7 +1189,8 @@ export class ProjectedLayerPreviewCompositor {
         renderer.setRenderTarget(job.tileTargets[tileWriteIndex]);
         renderer.setViewport(0, 0, tileWidth, tileHeight);
         renderer.setScissorTest(false);
-        renderer.render(job.fullscreenScene, job.camera);
+        if (import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' && getPipelineTrace()) traceCaptureRender(renderer, job.fullscreenScene, job.camera, undefined, 'projection.prepare');
+        else renderer.render(job.fullscreenScene, job.camera);
         job.tileReadIndex = tileWriteIndex;
         job.layerIndex += 1;
         if (job.layerIndex >= job.underlayLayers.length) {
@@ -1204,7 +1211,8 @@ export class ProjectedLayerPreviewCompositor {
         renderer.setScissorTest(true);
         renderer.setClearColor(0x000000, 0);
         renderer.clear(true, true, true);
-        renderer.render(job.bakeScene, job.camera);
+        if (import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' && getPipelineTrace()) traceCaptureRender(renderer, job.bakeScene, job.camera, undefined, 'projection.prepare');
+        else renderer.render(job.bakeScene, job.camera);
 
         const tileRead = job.tileTargets[job.tileReadIndex];
         const tileWriteIndex = job.tileReadIndex === 0 ? 1 : 0;
@@ -1215,7 +1223,8 @@ export class ProjectedLayerPreviewCompositor {
         renderer.setRenderTarget(job.tileTargets[tileWriteIndex]);
         renderer.setViewport(0, 0, tileWidth, tileHeight);
         renderer.setScissorTest(false);
-        renderer.render(job.fullscreenScene, job.camera);
+        if (import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' && getPipelineTrace()) traceCaptureRender(renderer, job.fullscreenScene, job.camera, undefined, 'projection.prepare');
+        else renderer.render(job.fullscreenScene, job.camera);
         job.tileReadIndex = tileWriteIndex;
         job.layerIndex += 1;
         if (job.layerIndex >= job.overlayLayers.length) job.phase = 'copy';

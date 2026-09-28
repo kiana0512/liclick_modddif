@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import ts from 'typescript';
 import { createHash } from 'node:crypto';
+import { pipelineTraceDisabled } from './pipeline-trace-test-build.mjs';
 const current = fs.readFileSync(new URL('../src/workers/qualityBlend.worker.ts', import.meta.url), 'utf8');
 const frozen = fs.readFileSync(new URL('./fixtures/quality-blend-0ee7b0b.ts', import.meta.url), 'utf8');
 const pixelSource=fs.readFileSync(new URL('../src/engine/bake/qualityBlendCpuPixel.ts', import.meta.url),'utf8');
@@ -13,7 +14,7 @@ const overlayCode = ts.transpileModule(overlaySource.slice(overlaySource.indexOf
 }).outputText;
 const sharedOverlayAlpha = new Function(`${overlayCode}; return getProjectionOverlayAlpha;`)();
 function load(source, device) {
-  const code = ts.transpileModule(source.slice(source.indexOf('const TOP_K')), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+  const code = ts.transpileModule(pipelineTraceDisabled(source.slice(source.indexOf('const TOP_K'))), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
   return new Function('resolvePixelCpu','getProjectionOverlayAlpha','self','yieldWorkerTask', `${code}; return {createTopK, resolveCpu, resolveGpu, applyOverlays, shader, run};`)(sharedResolve,sharedOverlayAlpha,{ navigator: { gpu: device ? { requestAdapter: async () => ({ requestDevice: async () => device }) } : undefined } },()=>Promise.resolve());
 }
 const old = load(frozen), next = load(current);

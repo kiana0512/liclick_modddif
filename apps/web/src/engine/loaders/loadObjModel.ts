@@ -1,10 +1,12 @@
 import { OBJLoader } from 'three-stdlib';
+import { traceSyncModelLoader } from '@/engine/performance/tracing/modelTrace';
 import { materialSlotsToSceneSlots, type LoadedModel, type ModelImportOptions } from './modelImportTypes';
 import { yieldForModelImportProgressPaint } from './modelImportProgress';
 import { summarizeLoadedGroup } from './modelLoadUtils';
 
 export async function loadObjModel(options: ModelImportOptions): Promise<LoadedModel> {
   const loader = new OBJLoader();
+  if (import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true') traceSyncModelLoader(loader, options.traceContext);
   let obj;
   if (options.sourceBuffer) {
     options.onProgress?.({ phase: 'parsing' });

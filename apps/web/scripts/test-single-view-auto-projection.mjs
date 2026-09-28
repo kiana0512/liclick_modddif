@@ -4,7 +4,7 @@ import ts from 'typescript';
 
 const read = (file) => readFile(new URL(`../src/${file}`, import.meta.url), 'utf8');
 const panel = await read('components/panels/GeneratePanel.tsx');
-const compile = (source) => ts.transpileModule(source, {
+const compile = (source) => ts.transpileModule(pipelineTraceDisabled(source), {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
 }).outputText;
 const policy = {};
@@ -273,3 +273,4 @@ for (const change of ['project', 'cancel', 'object-deleted', 'committed-then-del
   assert.equal(crossing.rows().length, 0, change);
 }
 console.log('single-view auto projection: restored results, queue dedupe, retry, frozen capture, deletion and cancellation passed');
+import { pipelineTraceDisabled } from './pipeline-trace-test-build.mjs';

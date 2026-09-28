@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { pipelineTraceDisabled } from './pipeline-trace-test-build.mjs';
 import { readFileSync } from 'node:fs';
 import ts from 'typescript';
 import * as THREE from 'three';
@@ -8,7 +9,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 const read = (path) => readFileSync(new URL(path, import.meta.url), 'utf8');
 function evaluate(source, dependencies = {}) {
   const module = { exports: {} };
-  const code = ts.transpileModule(source, { compilerOptions: {
+  const code = ts.transpileModule(pipelineTraceDisabled(source), { compilerOptions: {
     module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX,
   } }).outputText;
   new Function('module', 'exports', 'require', code)(module, module.exports, (name) => {

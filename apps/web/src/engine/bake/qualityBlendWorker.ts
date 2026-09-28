@@ -270,6 +270,7 @@ export function blendProjectedRastersInWorker(
   return new Promise<QualityBlendWorkerResult>((resolve, reject) => {
     pending.set(id, { resolution, resolve, reject });
     maintainInteractionHeartbeat();
+    if (import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' && getPipelineTrace()) Object.assign(request, prepareTracedWorkerRequest(getWorker(), id, 'uv.compose'));
     getWorker().postMessage(request, transfers);
   });
 }
@@ -281,3 +282,5 @@ export function terminateQualityBlendWorker() {
   worker?.terminate();
   worker = undefined;
 }
+import { getPipelineTrace } from '@/engine/performance/tracing/pipelineTrace';
+import { prepareTracedWorkerRequest } from '@/engine/performance/tracing/workerTraceTransport';

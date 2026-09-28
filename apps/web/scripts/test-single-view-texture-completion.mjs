@@ -176,7 +176,7 @@ assert.doesNotMatch(
 );
 
 assert.ok(handleReference, 'The reference action must exist.');
-const handleReferenceJs = ts.transpileModule(handleReference.getText(panelAst), {
+const handleReferenceJs = ts.transpileModule(pipelineTraceDisabled(handleReference.getText(panelAst)), {
   compilerOptions: { target: ts.ScriptTarget.ES2022 },
 }).outputText;
 for (const lighting of [false, true]) {
@@ -395,3 +395,4 @@ const covered = await runWhite(true, false, clay);
 assert.equal(covered.uncoveredPixelCount, 0);
 assert.equal(covered.compositeBlob, undefined, 'Covered views must be skipped rather than regenerated');
 console.log('Single-view completion: remote white/black pixels, unchanged RGB expanded mask, full/partial/covered inputs and legacy GPT passed.');
+import { pipelineTraceDisabled } from './pipeline-trace-test-build.mjs';

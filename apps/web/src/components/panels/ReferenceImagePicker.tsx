@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type DragEvent } from 'react';
+import { getPipelineTrace } from '@/engine/performance/tracing/pipelineTrace';
 import { createPortal } from 'react-dom';
 import { allowUserFileUpload } from '@/services/userFileUploadPolicy';
 import { Check, Copy, Download, Eye, ImagePlus, MoreVertical, Pencil, Plus, Trash2 } from 'lucide-react';
@@ -15,19 +16,21 @@ import {
 } from '@/components/panels/ReferenceImportDialog';
 
 function fileToDataUrl(file: File) {
+  const trace = import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' ? getPipelineTrace()?.begin('reference.read') : undefined;
   return new Promise<string>((resolve, reject) => {
     const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result));
-    reader.onerror = () => reject(reader.error ?? new Error('Could not read image.'));
-    reader.readAsDataURL(file);
+    reader.onload = () => { trace?.end(); resolve(String(reader.result)); };
+    reader.onerror = () => { trace?.end('error'); reject(reader.error ?? new Error('Could not read image.')); };
+    try { reader.readAsDataURL(file); } catch (error) { trace?.end('error'); reject(error); }
   });
 }
 
 function getImageSize(url: string) {
+  const trace = import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' ? getPipelineTrace()?.begin('reference.decode') : undefined;
   return new Promise<{ width: number; height: number }>((resolve) => {
     const image = new Image();
-    image.onload = () => resolve({ width: image.naturalWidth, height: image.naturalHeight });
-    image.onerror = () => resolve({ width: 0, height: 0 });
+    image.onload = () => { trace?.end(); resolve({ width: image.naturalWidth, height: image.naturalHeight }); };
+    image.onerror = () => { trace?.end('error'); resolve({ width: 0, height: 0 }); };
     image.src = url;
   });
 }
@@ -97,7 +100,7 @@ export function ReferenceImagePicker({
       if (event.key === 'Escape') {
         setMenu(undefined);
         setPreviewReferenceId(undefined);
-        setPendingImport(undefined);
+        closePendingImport();
         setIsShiftPressed(false);
       }
     }
@@ -139,12 +142,26 @@ export function ReferenceImagePicker({
         };
       }),
     );
+    if (import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' && nextReferences[0]) {
+      const trace = getPipelineTrace(), role = trace?.begin('reference.select');
+      if (role) trace?.bind(`reference-role:${nextReferences[0].id}`, role.context);
+    }
     setPendingImport(nextReferences);
+  }
+
+  function closePendingImport() {
+    if (import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' && getPipelineTrace()) {
+      setPendingImport(current => {
+        if (current?.[0]) getPipelineTrace()?.scopeFor(`reference-role:${current[0].id}`)?.end('cancelled');
+        return undefined;
+      });
+    } else setPendingImport(undefined);
   }
 
   function confirmPendingImport(role: ReferenceImportRole) {
     if (!pendingImport) return;
     if (blockMutation('导入参考图')) return;
+    if (import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' && pendingImport[0]) getPipelineTrace()?.scopeFor(`reference-role:${pendingImport[0].id}`)?.end();
     const classifiedReferences = pendingImport.map((reference, index) => ({
       ...reference,
       isPrimary: index === 0,
@@ -396,7 +413,7 @@ export function ReferenceImagePicker({
         <ReferenceImportDialog
           references={pendingImport}
           onImport={confirmPendingImport}
-          onClose={() => setPendingImport(undefined)}
+          onClose={closePendingImport}
         />
       ) : null}
       {portalRoot && previewReference && createPortal(

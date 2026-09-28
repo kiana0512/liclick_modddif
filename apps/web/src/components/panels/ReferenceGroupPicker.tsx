@@ -1,4 +1,5 @@
 import { createPortal } from 'react-dom';
+import { getPipelineTrace } from '@/engine/performance/tracing/pipelineTrace';
 import { allowUserFileUpload } from '@/services/userFileUploadPolicy';
 import {
   useCallback,
@@ -50,19 +51,21 @@ function referenceRole(reference: ReferenceImage) {
 }
 
 function fileToDataUrl(file: File) {
+  const trace = import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' ? getPipelineTrace()?.begin('reference.read') : undefined;
   return new Promise<string>((resolve, reject) => {
     const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result));
-    reader.onerror = () => reject(reader.error ?? new Error('无法读取参考图。'));
-    reader.readAsDataURL(file);
+    reader.onload = () => { trace?.end(); resolve(String(reader.result)); };
+    reader.onerror = () => { trace?.end('error'); reject(reader.error ?? new Error('无法读取参考图。')); };
+    try { reader.readAsDataURL(file); } catch (error) { trace?.end('error'); reject(error); }
   });
 }
 
 function getImageSize(url: string) {
+  const trace = import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' ? getPipelineTrace()?.begin('reference.decode') : undefined;
   return new Promise<{ width: number; height: number }>((resolve) => {
     const image = new Image();
-    image.onload = () => resolve({ width: image.naturalWidth, height: image.naturalHeight });
-    image.onerror = () => resolve({ width: 0, height: 0 });
+    image.onload = () => { trace?.end(); resolve({ width: image.naturalWidth, height: image.naturalHeight }); };
+    image.onerror = () => { trace?.end('error'); resolve({ width: 0, height: 0 }); };
     image.src = url;
   });
 }
@@ -342,6 +345,10 @@ export function ReferenceGroupPicker({
       return;
     }
     const created = await Promise.all(imageFiles.map((file) => imageFromFile(file)));
+    if (import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' && created[0]) {
+      const trace = getPipelineTrace(), role = trace?.begin('reference.select');
+      if (role) trace?.bind(`reference-role:${created[0].id}`, role.context);
+    }
     setPendingImport(created);
     setUploadError(undefined);
   }, [imageFromFile]);
@@ -362,6 +369,7 @@ export function ReferenceGroupPicker({
 
   function confirmReferenceFiles(role: ReferenceImportRole) {
     if (!pendingImport?.length) return;
+    if (import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true') getPipelineTrace()?.scopeFor(`reference-role:${pendingImport[0].id}`)?.end();
     const created = pendingImport.map((reference) => ({
       ...reference,
       referenceGroupId: createId('reference-group'),
@@ -655,7 +663,10 @@ export function ReferenceGroupPicker({
         <ReferenceImportDialog
           references={pendingImport}
           onImport={confirmReferenceFiles}
-          onClose={() => setPendingImport(undefined)}
+          onClose={() => {
+            if (import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' && pendingImport[0]) getPipelineTrace()?.scopeFor(`reference-role:${pendingImport[0].id}`)?.end('cancelled');
+            setPendingImport(undefined);
+          }}
         />
       ) : null}
       {containerDragActive ? (

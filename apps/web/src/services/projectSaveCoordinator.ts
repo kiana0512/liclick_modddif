@@ -84,6 +84,7 @@ type ProjectSaveExecutionRequest = {
 };
 
 type PendingProjectSave<Request, Result> = {
+  traceQueues?: TraceScope[];
   request: Request;
   waiters: Array<{
     resolve: (result: Result) => void;
@@ -101,13 +102,16 @@ export class LatestProjectSaveExecutor<
   Request extends ProjectSaveExecutionRequest,
   Result,
 > {
-  private active?: { request: Request; promise: Promise<Result> };
+  private active?: { request: Request; promise: Promise<Result>; trace?: TraceScope };
   private pending?: PendingProjectSave<Request, Result>;
 
   constructor(private readonly execute: (request: Request) => Promise<Result>) {}
 
   enqueue(request: Request): Promise<Result> {
-    if (!this.active) return this.start(request);
+    if (!this.active) {
+      const queue = import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' ? getPipelineTrace(request.snapshot.id)?.begin('save.queue') : undefined;
+      return queue ? this.start(request, [queue]) : this.start(request);
+    }
 
     const sameProject = this.active.request.snapshot.id === request.snapshot.id;
     if (
@@ -115,12 +119,21 @@ export class LatestProjectSaveExecutor<
       request.editVersion <= this.active.request.editVersion &&
       !this.pending
     ) {
+      if (import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true') {
+        const trace = getPipelineTrace(request.snapshot.id), wait = trace?.begin('save.coalesce.wait');
+        if (wait) {
+          if (this.active.trace) trace?.link(wait.context, this.active.trace.context);
+          void this.active.promise.then(() => wait.end(), () => wait.end('error'));
+        }
+      }
       return this.active.promise;
     }
 
+    const queue = import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' ? getPipelineTrace(request.snapshot.id)?.begin('save.queue') : undefined;
     return new Promise<Result>((resolve, reject) => {
       if (!this.pending) {
         this.pending = { request, waiters: [{ resolve, reject }] };
+        if (queue) this.pending.traceQueues = [queue];
         return;
       }
       const pendingSameProject = this.pending.request.snapshot.id === request.snapshot.id;
@@ -128,15 +141,26 @@ export class LatestProjectSaveExecutor<
         this.pending.request = request;
       }
       this.pending.waiters.push({ resolve, reject });
+      if (queue) (this.pending.traceQueues ??= []).push(queue);
     });
   }
 
-  private start(request: Request): Promise<Result> {
-    const promise = Promise.resolve().then(() => this.execute(request));
+  private start(request: Request, queues?: TraceScope[]): Promise<Result> {
+    let dispatch: TraceScope | undefined;
+    const promise = Promise.resolve().then(() => {
+      if (import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true') {
+        const trace = getPipelineTrace(request.snapshot.id);
+        queues?.forEach(queue => queue.end());
+        dispatch = trace?.begin('save.dispatch');
+        if (dispatch) queues?.forEach(queue => trace?.link(dispatch!.context, queue.context));
+        if (this.active && dispatch) this.active.trace = dispatch;
+      }
+      return this.execute(request);
+    });
     this.active = { request, promise };
     void promise.then(
-      () => this.drain(),
-      () => this.drain(),
+      () => { if (import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true') dispatch?.end(); this.drain(); },
+      () => { if (import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true') dispatch?.end('error'); this.drain(); },
     );
     return promise;
   }
@@ -146,10 +170,11 @@ export class LatestProjectSaveExecutor<
     const pending = this.pending;
     this.pending = undefined;
     if (!pending) return;
-    const promise = this.start(pending.request);
+    const promise = import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' ? this.start(pending.request, pending.traceQueues) : this.start(pending.request);
     void promise.then(
       (result) => pending.waiters.forEach((waiter) => waiter.resolve(result)),
       (error) => pending.waiters.forEach((waiter) => waiter.reject(error)),
     );
   }
 }
+import { getPipelineTrace, type TraceScope } from '@/engine/performance/tracing/pipelineTrace';

@@ -1,6 +1,6 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
-> 文档版本：`2.22.2`
+> 文档版本：`2.25.0`
 >
 > 本文件只描述**现在必须成立的规则**。历史变更流水、变更卡摘要与修订记录已移出到 [00_SYSTEM_REVISION_LOG.md](00_SYSTEM_REVISION_LOG.md)，仅在追溯决策、排查兼容或回归问题时读取。
 
@@ -601,7 +601,7 @@ A100 发布同时显式配置 `LICLICK_PERFORMANCE_LAB_ENABLED=true` 与构建�
 | 契约 | 当前版本/规则 |
 | --- | --- |
 | 算法 | `ALG-PERF-SESSION-001` v1.1.0，状态 production-diagnostic |
-| 报告 Schema | `PERF-LAB-REPORT` v2；collector `2.1.0`；5 秒原始数据分块 |
+| 报告 Schema | `PERF-LAB-REPORT` v2；collector `2.2.1`；5 秒原始数据分块 |
 | 浏览器输入 | rAF 帧时间/P50/P95/P99/最大帧、>16.67ms 掉帧、Long Task、Long Animation Frame、Event Timing、布局偏移、输入节拍、资源瀑布、实际 JS chunk 数/传输字节/解压字节/P95 与最大加载耗时、JS heap、可见性、运行时错误、业务阶段 timeline、React commit 总量/P95/最大值、WebGL2/ANGLE renderer 与能力/扩展/GPU timer 支持、采集器自身开销 |
 | 隐私边界 | 资源 URL 删除 query/hash，并泛化 UUID/业务 ID；timeline detail 拒绝 prompt/text/url/path/email/token/cookie、业务 ID 与嵌套对象，只允许有限数值、布尔和白名单状态；不采集提示词、Cookie、键盘文本、模型/纹理像素；身份只取服务端可信 Session |
 | 不可观测项 | 零组件浏览器无法直接读取 Windows ETW/DXGI/D3DKMT 调度计数、系统级 CPU/GPU 利用率、VRAM、温度、功耗及其他进程竞争；报告必须写 `unsupportedWithoutNativeComponent`，禁止伪造 |
@@ -672,6 +672,10 @@ v1.3.3 修复 QA IDaaS JWT 被错误提交到生产 Atlas Gateway 导致 `HTTP 4
 - P0 数据安全门禁：任何调试、性能、演示或测试模块不得向真实 Project/Layer/Capture/Generation 持久化路径写入数据。回归测试必须静态断言编辑器不挂载场景替换加载器，并验证 `perfLab=1` 仅返回布尔诊断开关。若发生污染，先停自动保存、备份原文件，再依据 Generation.metadata.projectedLayerId、textureBatchId、Capture.camera 与本地资产重建，禁止直接删除整个项目。
 
 2026-09-15 M07：ALG-UV-005 v2.0.6 使用 <=1 MiB 的连续区间替代逐像素 gutter 边界登记，避免大片空白 atlas 撑爆索引后反复全扫描。原谓词、动态 coverage、row-major donor 顺序、像素/分辨率/QA、GPU/CPU/Worker/shader、持久化与导出不变，无迁移；碎片超预算保守回退。验证与回滚见 [区间缓存变更卡](changes/CHG-20260915-UV-GUTTER-SPANS.md)。
+
+### 13.3 本地阶段与函数计时（默认关闭）
+
+M13/M15，FUNCTION-TIMING/1.0.0，experimental/disabled。`pnpm dev:4517 --DEBUG` 经启动器开启构建能力，运行时默认 off；使用 startPipelineTrace()/stopPipelineTrace() 显式启停。正式发布强制关闭，Web/Worker 静态消除并检查模块引用；Node 不保留本次诊断。SkipBuild 核对 trace-build.json，模式不符拒绝启动。构建插件只插桩明确清单内的函数，非全仓自动插桩。本地最多 10,000 条，支持阶段/函数表格及 LI3D-FUNCTION-TIMING v1 JSON。异步 wall 包含等待，不表示 CPU/GPU 执行时间。没有 Perfetto、硬件采样、跨服务 Trace、诊断上传/SQL/刷新续传；原 §13.1 Performance Lab 保持独立。业务算法、QA、分辨率、Command/CAS/ownership 与资产不变，无迁移；旧测试诊断表不自动删除。见 [轻量计时变更卡](changes/CHG-20260928-FUNCTION-TIMING.md) 和 [OpenSpec 状态](../openspec/changes/archive/2026-09-28-add-generation-pipeline-tracing/implementation-status.md)。
 
 ## 14. 变更分级与修改上限
 

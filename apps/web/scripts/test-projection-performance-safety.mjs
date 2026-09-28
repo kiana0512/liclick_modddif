@@ -240,7 +240,7 @@ const precompileJs = ts.transpileModule(`const run = ${precompileDeclaration.ini
 const targetCompilerSource = await readFile(
   new URL('../src/engine/projection/compileForRenderTarget.ts', import.meta.url), 'utf8',
 );
-const targetCompilerJs = ts.transpileModule(targetCompilerSource, {
+const targetCompilerJs = ts.transpileModule(pipelineTraceDisabled(targetCompilerSource), {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
 }).outputText;
 const targetCompilerExports = {};
@@ -591,3 +591,4 @@ assert.doesNotMatch(
 );
 
 console.log('Projection performance safety regression checks passed.');
+import { pipelineTraceDisabled } from './pipeline-trace-test-build.mjs';

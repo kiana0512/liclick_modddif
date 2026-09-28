@@ -26,6 +26,8 @@ Read this page and the task routes in section 0 of the [system standard](00_SYST
 | A100 真实服务器交接 | [A100_SERVER_HANDOFF_2026-08-23.zh-CN.md](A100_SERVER_HANDOFF_2026-08-23.zh-CN.md) |
 | 2026-08-24 同事版本功能合并与验收 | [同事版本功能合并验收_2026-08-24.zh-CN.md](同事版本功能合并验收_2026-08-24.zh-CN.md) |
 | 当前性能验收方法 | [performance/LI3D_PERFORMANCE_TEST_PROTOCOL.zh-CN.md](performance/LI3D_PERFORMANCE_TEST_PROTOCOL.zh-CN.md) |
+| 真实模型导入、减面、六视图参考输入与多视图生成自动验收 | [内置浏览器 / CLI 执行与 Trace 说明](changes/CHG-20260922-REAL-WORKFLOW-AUTOMATION.md) |
+| DEBUG 阶段与函数计时（默认关闭） | [轻量实现与使用方式](changes/CHG-20260928-FUNCTION-TIMING.md)、[OpenSpec 与覆盖范围](../openspec/changes/archive/2026-09-28-add-generation-pipeline-tracing/README.md) |
 
 ## 端口真值
 

@@ -276,6 +276,7 @@ export async function rasterizeUvTopologyMaskWithWebGpu(
     };
     return new Promise<WebGpuUvTopologyRasterResult>((resolve, reject) => {
       pending.set(id, { resolve, reject, serializeMs });
+      if (import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true' && getPipelineTrace()) Object.assign(request, prepareTracedWorkerRequest(getWorker(), request.id, 'uv.compose'));
       getWorker().postMessage(request);
     });
   })().catch((error) => {
@@ -292,3 +293,5 @@ export function terminateWebGpuUvTopologyRasterWorker() {
   worker?.terminate();
   worker = undefined;
 }
+import { getPipelineTrace } from '@/engine/performance/tracing/pipelineTrace';
+import { prepareTracedWorkerRequest } from '@/engine/performance/tracing/workerTraceTransport';

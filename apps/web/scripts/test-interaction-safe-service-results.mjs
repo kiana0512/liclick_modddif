@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import ts from 'typescript';
+import { pipelineTraceDisabled } from './pipeline-trace-test-build.mjs';
 import { TextDecoder } from 'node:util';
 
 let source = fs.readFileSync(
@@ -13,7 +14,7 @@ source = source
     /new URL\('\.\.\/\.\.\/workers\/payload\.worker\.ts', import\.meta\.url\)/g,
     "'payload-worker'",
   );
-const code = ts.transpileModule(source, {
+const code = ts.transpileModule(pipelineTraceDisabled(source), {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
 }).outputText;
 

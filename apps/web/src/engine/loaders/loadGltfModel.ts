@@ -1,4 +1,5 @@
 import { LoadingManager } from 'three';
+import { getPipelineTrace, type TraceScope } from '@/engine/performance/tracing/pipelineTrace';
 import { GLTFLoader } from 'three-stdlib';
 import {
   materialSlotsToSceneSlots,
@@ -44,6 +45,21 @@ function createGltfLoadingManager(resourceFiles: File[]) {
 export async function loadGltfModel(options: ModelImportOptions): Promise<LoadedModel> {
   const resourceManager = createGltfLoadingManager(options.resourceFiles ?? []);
   const loader = new GLTFLoader(resourceManager.manager);
+  let readScope: TraceScope | undefined;
+  if (import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED === 'true') {
+    const trace = getPipelineTrace();
+    if (trace) {
+      if (!options.sourceBuffer) readScope = trace.begin('model.read', options.traceContext);
+      const parse = loader.parse;
+      loader.parse = (data, path, onLoad, onError) => {
+        readScope?.end();
+        const parsed = trace.begin('model.parse', options.traceContext);
+        try {
+          parse.call(loader, data, path, result => { parsed?.end(); onLoad(result); }, error => { parsed?.end('error'); onError?.(error); });
+        } catch (error) { parsed?.end('error'); throw error; }
+      };
+    }
+  }
   const format = options.fileName.toLowerCase().endsWith('.gltf') ? 'gltf' : 'glb';
   let gltf;
   try {
@@ -62,7 +78,8 @@ export async function loadGltfModel(options: ModelImportOptions): Promise<Loaded
         });
       });
     }
-  } finally {
+  } catch (error) { readScope?.end('error'); throw error; }
+  finally {
     resourceManager.dispose();
   }
   options.onProgress?.({ phase: 'parsing', phaseProgress: 1 });

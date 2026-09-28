@@ -20,7 +20,7 @@ const functions = names.map((name) => {
   return declaration.getText(ast).replace(/^export /, '');
 }).join('\n');
 const compiled = ts.transpileModule('const yieldToBrowserTask = waitForBrowserPaint;\n' +
-  readbackSource.replace(/import[^;]+;/g, '').replace('export async', 'async') + '\n' + functions,
+  readbackSource.replace(/import[^;]+;/g, '').replace('export async', 'async') + '\n' + functions.replaceAll('import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED', '"false"'),
   { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None } }).outputText;
 
 async function check({ width = 5, height = 3, tileSize = 2, passes = 0, fail, display = false, resize = false } = {}) {
@@ -166,7 +166,7 @@ for (const fail of ['idle', 'render', 'fence', 'readback']) {
 // Actual scene/skeleton cloning and production queue; only the WebGL driver is
 // substituted so this ownership regression can run without touching a UI.
 const isolatedSource = await readFile(new URL('../src/engine/capture/isolatedNormalCapture.ts', import.meta.url), 'utf8');
-const isolatedCode = ts.transpileModule(isolatedSource.replace(/import[\s\S]*?;/g, '').replace('export function', 'function'),
+const isolatedCode = ts.transpileModule(isolatedSource.replace(/import[\s\S]*?;/g, '').replace('export function', 'function').replaceAll('import.meta.env.VITE_LICLICK_PIPELINE_TRACE_ENABLED', '"false"'),
   { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None } }).outputText;
 let creates = 0, disposes = 0, lost = 0, nextTimer = 0;
 const timers = new Map();
