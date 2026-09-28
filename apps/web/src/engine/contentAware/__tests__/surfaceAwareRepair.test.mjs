@@ -468,6 +468,39 @@ test('local completion never uses the global average for a component without a d
   }
 });
 
+test('explicit final coverage pass fills a donorless UV region without changing local repairs', () => {
+  const width = 9;
+  const rgba = new Uint8ClampedArray(width * 4);
+  const writeMask = new Uint8Array(width);
+  const topologyMask = new Uint8Array(width).fill(1);
+  const topologyRegionIds = new Uint32Array([1, 1, 1, 1, 1, 2, 2, 2, 2]);
+  const brown = [154, 103, 65];
+  setPixel(rgba, 0, brown);
+  setPixel(rgba, 1, brown);
+  writeMask.fill(255, 2);
+  const policy = createVisibleSurfaceCompletionPolicy(width, 1);
+
+  const first = repairSurfaceTexture({
+    width, height: 1, rgba, writeMask, topologyMask, topologyRegionIds,
+    ...policy.propagation,
+  });
+  assert.equal(first.stats.repairedPixels, 3);
+  assert.equal(first.stats.unresolvedPixels, 4);
+  assert.equal(first.stats.globalFallbackPixels, 0);
+
+  const final = repairSurfaceTexture({
+    width, height: 1, rgba, writeMask, topologyMask, topologyRegionIds,
+    ...policy.propagation, fillUnreachableWithGlobalAverage: true,
+  });
+  assert.equal(final.stats.repairedPixels, 7);
+  assert.equal(final.stats.unresolvedPixels, 0);
+  assert.equal(final.stats.globalFallbackPixels, 4);
+  for (let index = 2; index < width; index += 1) {
+    assert.deepEqual(getRgb(final, index), brown);
+    assert.equal(final.filledRgba[index * 4 + 3], 255);
+  }
+});
+
 test('coverage skirt closes transparent filtering gaps without crossing UV regions', () => {
   const width = 7;
   const rgba = new Uint8ClampedArray(width * 4);

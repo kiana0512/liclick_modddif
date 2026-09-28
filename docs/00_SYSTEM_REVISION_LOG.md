@@ -1,5 +1,9 @@
 # LI3D Cloud 准则修订流水与历史变更记录
 
+## 2026-09-28 内容填补完整覆盖
+
+M09（协作 M07/M08）：`ALG-CA-003` v1.4.0 让前两轮局部及一条物理缝仍无法到达的严格 UV core 残余使用已有可靠纹理均色作不透明最终兜底；无可靠纹理则拒绝发布，自动多视图补缝失败不再伪装完成。原分辨率、投影 QA、Layer/Project Schema、Command/CAS/ownership/verified assets 与导出合成契约不变；旧资产不自动重写。验证与回退见 [完整覆盖变更卡](changes/CHG-20260928-CONTENT-REPAIR-COMPLETE-COVERAGE.md)。
+
 ## 2026-09-28 轻量计时收敛
 
 2.25.0：M13/M15，FUNCTION-TIMING/1.0.0，默认关闭。按用户要求用 --DEBUG 构建门与 start/stop 取代旧重型 Trace 方案，只保留阶段/函数 wall、本地表格与 JSON；原 Performance Lab 独立保持。移除本次服务端诊断及未发布迁移，无业务算法或数据迁移。见 CHG-20260928-FUNCTION-TIMING。

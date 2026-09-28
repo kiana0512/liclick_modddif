@@ -3814,6 +3814,7 @@ export function GeneratePanel({
       return;
     }
 
+    let automaticRepairFailed = false;
     if (isMultiviewRequest && projectedGenerationCount > 0) {
       updateTexturePipelineProgress(90, '内容识别补缝');
       setGenerateNotice({
@@ -3830,6 +3831,7 @@ export function GeneratePanel({
         });
         updateTexturePipelineProgress(100, '补缝完成');
       } catch (error) {
+        automaticRepairFailed = true;
         updateTexturePipelineProgress(100, '纹理完成，补缝未完成');
         console.warn('[Liclick 3D Texture] Automatic content repair did not complete:', error);
       }
@@ -3840,10 +3842,11 @@ export function GeneratePanel({
     if (completedGenerations.length > 0) {
       setGenerateNotice(undefined);
       pushToast({
-        tone: projectedGenerationCount === completedGenerations.length ? 'success' : 'warning',
+        tone: !automaticRepairFailed && projectedGenerationCount === completedGenerations.length ? 'success' : 'warning',
         title: t('textureMapGenerated'),
         description: isMultiviewRequest
-          ? `已生成 ${completedGenerations.length}/${pendingGenerations.length} 个多视图纹理贴图，自动投影 ${projectedGenerationCount}/${completedGenerations.length} 个。`
+          ? `已生成 ${completedGenerations.length}/${pendingGenerations.length} 个多视图纹理贴图，自动投影 ${projectedGenerationCount}/${completedGenerations.length} 个。` +
+            (automaticRepairFailed ? '内容识别补缝未完成，请检查缺口后重试。' : '')
           : projectedGenerationCount === completedGenerations.length
             ? '单视图纹理贴图已自动投影并添加到图层。'
             : '单视图图片已生成，尚未完成回贴的结果将自动重试，请勿重复生图。',

@@ -1,6 +1,6 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
-> 文档版本：`2.25.1`
+> 文档版本：`2.25.2`
 >
 > 本文件只描述**现在必须成立的规则**。历史变更流水、变更卡摘要与修订记录已移出到 [00_SYSTEM_REVISION_LOG.md](00_SYSTEM_REVISION_LOG.md)，仅在追溯决策、排查兼容或回归问题时读取。
 
@@ -479,10 +479,12 @@ GPU 仅改变准备条件与调度；CPU、Worker、shader、投影/UV/export �
 | --- | --- | --- |
 | `ALG-CA-001` 覆盖缺口检测 | `1.1.0` | 按实时空洞斜线阈值构造待修复 mask；正式策略保留严格 UV core 内全部可见缺口，排除可靠投影、core 外 halo 与真实几何空隙 |
 | `ALG-CA-002` UV 表面拓扑 | `1.0.0` | UV 三角形 region、可选物理 seam link、normal dot 门限；预热并缓存 |
-| `ALG-CA-003` 表面约束传播 | `1.3.0` | Worker 在同一表面/region 内传播颜色，不跨 UV seam；局部混合达到字节固定点后结束，不改变最终 RGBA |
+| `ALG-CA-003` 表面约束传播 | `1.4.0` | 首轮同 region 局部传播；仅有残余时尝试一条物理 UV seam，仍未到达的严格 core 缺口以已有可靠纹理的全模型均色作最后覆盖，全部写入不透明稀疏 underlay；无任何可靠颜色时拒绝发布，不再以部分填补冒充完成 |
 | `ALG-CA-004` Underlay 原子发布 | `1.0.0` | 生成 `uv + content-aware-underlay`，GPU 预热后一次发布，合并时永远在投影之下 |
 
 本地兼容填充的搜索半径为 `clamp(ceil(max(ROI.w,ROI.h)×0.2),16,48)`，迭代 2 次；它不能冒充远端生成或覆盖有效投影颜色。
+
+`ALG-CA-003` 的全模型均色只用于前两轮后仍无局部/物理缝 donor 的残余，不覆盖已填 texel、可靠投影或 core 外几何。自动补缝失败必须向生成流程报告，不得显示为补缝完成；颜色兜底像素数须在诊断和用户提示中可见。迁移、回退与六路径审计见 [完整覆盖变更卡](changes/CHG-20260928-CONTENT-REPAIR-COMPLETE-COVERAGE.md)。
 
 ## 10. 生产 Auto UV、拓扑与 PBR Bake
 
