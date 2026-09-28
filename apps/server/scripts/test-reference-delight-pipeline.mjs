@@ -5,6 +5,7 @@ import path from 'node:path';
 import { createRequire } from 'node:module';
 import { setTimeout as delay } from 'node:timers/promises';
 import ts from 'typescript';
+import { pipelineTraceDisabled } from '../../web/scripts/pipeline-trace-test-build.mjs';
 
 const require = createRequire(import.meta.url);
 const read = (file) => fs.readFileSync(new URL(file, import.meta.url), 'utf8');
@@ -15,7 +16,7 @@ const hooks = ['createGenerationJob', 'applySubmission', 'pollAndUpdateJob', 'st
   'cancelGenerationJob', 'getJobResponse', 'getJobListResponse', 'getPersistableJob',
   'loadGenerationJobs', 'generationJobs', 'saveGenerationJobs'];
 function compile(source, dependencies, globals = {}) {
-  const output = ts.transpileModule(source, { compilerOptions: {
+  const output = ts.transpileModule(pipelineTraceDisabled(source), { compilerOptions: {
     target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS, esModuleInterop: true,
   } }).outputText;
   const exports = {};
