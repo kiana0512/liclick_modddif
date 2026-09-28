@@ -138,10 +138,10 @@ for (const enabled of [false, true]) for (const configLock of [false, true]) for
   button.props.onClick();
   assert.equal(changed, configLock || submitLock ? undefined : !enabled);
 }
-assert.match(panel, /\[normalBlackBackground, setNormalBlackBackground\] = useState\(false\)/);
+assert.match(panel, /\[normalBlackBackground, setNormalBlackBackground\] = useState\(true\)/);
 assert.match(panel, /normalBackground: singleViewProvider === 'remote' \? normalBackground : undefined/);
 assert.match(panel, /\[captureObjectId, resolution, setLastCapture, t, singleViewProvider, normalBackground\]/);
-console.log('Normal background toggle: default off, blue/black forwarding and both runtime locks passed.');
+console.log('Normal background toggle: default on, blue/black forwarding and both runtime locks passed.');
 
 // Both branches start before either resolves; failure/cancellation drains owners.
 for (const mode of ['success', 'input-failure', 'normal-failure', 'abort', 'pre-abort']) {

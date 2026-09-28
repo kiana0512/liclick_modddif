@@ -619,7 +619,7 @@ export function GeneratePanel({
   const [textureViewMode, setTextureViewMode] = useState<TextureViewMode>('multi');
   // TEXTURE-PROVIDER-SWITCH/1.0.0: share selection across single/multiview tabs.
   const [singleViewProvider, setSingleViewProvider] = useState<SingleViewProvider>('gpt');
-  const [normalBlackBackground, setNormalBlackBackground] = useState(false);
+  const [normalBlackBackground, setNormalBlackBackground] = useState(true);
   const [texturePreviewMode, setTexturePreviewMode] = useState<TexturePreviewMode>('multi');
   useEffect(() => {
     if (!openLocalRepaintPanelRequestKey) return;
