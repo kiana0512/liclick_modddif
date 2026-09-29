@@ -4,7 +4,7 @@ import { useAuthStore } from '@/stores/authStore';
 import type { ReferenceImage } from '@/types/project';
 import { sha256Hex } from '@/utils/sha256';
 
-// REFERENCE-LIGHTING/2.0.1: stable server job is the private source/result binding.
+// REFERENCE-LIGHTING/2.0.2: stable server job is the private source/result binding.
 // No component abort signal owns the shared processing request.
 const pending = new Map<string, Promise<string>>();
 const digests = new Map<string, Promise<string>>();
@@ -16,6 +16,10 @@ function contentDigest(url: string) {
     void task.catch(() => digests.delete(url));
   }
   return task;
+}
+function canRetryUnsubmittedReferenceJob(job?: { status: string; taskId?: string; error?: string }) {
+  if (job?.status !== 'failed' || job.taskId) return false;
+  return /当前服务未配置大图对象存储上传。未提交生成任务|共享生图服务凭证未配置或已过期|当前个人莉刻账号的登录凭证缺失或已过期|登录状态已失效或账号不一致/.test(job.error ?? '');
 }
 const active = new Map<string, { projectId: string; controller: AbortController }>();
 const pausedProjects = new Set<string>();
@@ -46,10 +50,11 @@ async function identity(projectId: string, reference: ReferenceImage) {
   const attempt = Number(localStorage.getItem(key) ?? 0);
   let id = `${key}-g${attempt}`;
   if (!pending.has(id)) {
-    // Only the old, explicit pre-upload failure is safe to migrate. Never
-    // replay an accepted/ambiguous paid task or invalidate successful bindings.
+    // Retry only known failures before Atlas accepted a paid task. Old server
+    // errors remain in durable jobs after deployment; an unchanged ID would
+    // otherwise replay the stale error forever.
     const job = await createLiclickApiClient().getGenerationJob(id).catch(() => undefined);
-    if (job?.status === 'failed' && !job.taskId && job.error?.includes('当前服务未配置大图对象存储上传。未提交生成任务')) {
+    if (canRetryUnsubmittedReferenceJob(job)) {
       localStorage.setItem(key, String(attempt + 1));
       id = `${key}-g${attempt + 1}`;
     }

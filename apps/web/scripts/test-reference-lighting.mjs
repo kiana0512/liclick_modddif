@@ -79,7 +79,27 @@ assert.ok(jobs.has(oldId.replace(/-g0$/, '-g1')));
 service = load();
 await service.prepareReferenceLighting('legacy-upload', reference);
 assert.equal(submissions, beforeRetry + 1, 'Reload does not repeat paid generation');
-for (const [label, error, taskId] of [['accepted', uploadError, 'paid-task'], ['ambiguous', 'Network timeout', undefined]]) {
+for (const [label, error] of [
+  ['old-shared-credential', '共享生图服务凭证未配置或已过期，请联系管理员。'],
+  ['expired-personal-credential', '当前个人莉刻账号的登录凭证缺失或已过期，请在右上角账号菜单重新绑定后重试。'],
+]) {
+  await service.prepareReferenceLighting(label, reference);
+  const failedId = [...jobs.keys()].at(-1);
+  jobs.set(failedId, { id: failedId, status: 'failed', error });
+  service = load();
+  const count = submissions;
+  await Promise.all([service.prepareReferenceLighting(label, reference), service.prepareReferenceLighting(label, reference)]);
+  assert.equal(submissions, count + 1, 'Known unsubmitted credential failure starts one fresh task');
+  assert.ok(jobs.has(failedId.replace(/-g0$/, '-g1')));
+  service = load();
+  await service.prepareReferenceLighting(label, reference);
+  assert.equal(submissions, count + 1, 'A successful retry is stable after reload');
+}
+for (const [label, error, taskId] of [
+  ['accepted', uploadError, 'paid-task'],
+  ['accepted-auth-failure', '共享生图服务凭证未配置或已过期，请联系管理员。', 'paid-task'],
+  ['ambiguous', 'Network timeout', undefined],
+]) {
   await service.prepareReferenceLighting(label, reference);
   const id = [...jobs.keys()].at(-1);
   jobs.set(id, { id, status: 'failed', error, taskId });

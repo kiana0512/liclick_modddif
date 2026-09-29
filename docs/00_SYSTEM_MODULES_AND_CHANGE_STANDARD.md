@@ -219,6 +219,8 @@ Cloud 权威实现使用 PostgreSQL JSONB 当前快照和不可变 Revision 表�
 
 `ASSET-READ-FALLBACK/1.0.0`：浏览器读取上述同源 verified asset 时先解析并直读短时签名 GET；若对象存储响应被跨域策略遮蔽为网络 `TypeError`，改由同源 `content?proxy=1` 读取。控制面再次校验 Session、user/project/asset ownership 和 verified 状态，以针对内网 endpoint 新签的 GET 流式转发，并核对长度、MIME 和编码；不把内网地址或对象密钥交给浏览器。普通签名下载与直传协议不变，非项目 URL 不进入回退。`M14` 主模块、`M04` 生成参考图消费者和 `M13` 个人账号错误呈现受影响；无图像算法、Schema、Project Command、Revision、ownership 或既有资产迁移。回退可关闭浏览器网络错误回退和同源 proxy 分支，保留已验证资产。见 `changes/CHG-20260929-GENERATION-ASSET-READ-AND-TOKEN-ERROR.md`。
 
+`ASSET-READ-FALLBACK/1.1.0`：生产 Cloud 浏览器读取同源 verified 项目资产时直接请求同源 `content?proxy=1`，避免已知对象存储 CORS 拒绝的签名 GET 先在浏览器报错；服务端仍逐次核验 Session、ownership、verified 状态和内网 GET 的长度/MIME/编码。旧版签名 GET API 保留供其他下载调用。`REFERENCE-LIGHTING/2.0.2` 仅对失败且没有远端 `taskId` 的已知旧共享凭证、个人凭证或明确未上传错误生成新尝试 ID；已接受付费任务及含糊网络失败继续复用原任务，避免重复计费。见 `changes/CHG-20260929-REFERENCE-LIGHTING-RETRY-AND-SAME-ORIGIN-READ.md`。
+
 ### 4.5 浏览器保存调度 `SAVE-SCHEDULER` v1.1.0
 
 编辑器保存调度由独立 `ProjectSaveCoordinator` 负责：普通编辑采用 2 秒 trailing debounce；持续编辑从首个待保存变更起最多等待 10 秒；视口交互、性能只读事务或图层同步抑制期间每 1 秒重试。Ctrl+S、生成/导入等既有即时保存事件仍直接进入同一项目串行保存队列，不等待自动保存窗口。
@@ -514,7 +516,7 @@ Bake 设置包含 resolution、frontal/rear distance、distance/cage、cage infl
 
 UI-05 的“法线黑色背景”开关新进入面板时默认开启，用户仍可手动关闭以使用蓝色背景。该默认值只选择已有法线捕获参数；法线编码、尺寸、GPU/CPU/Worker/shader、投影/UV、持久化与导出不变，无旧工程迁移。回退时将开关初始值恢复为关闭。
 
-`MATERIAL-REFERENCE-UPLOAD/1.0.0` 对明确材质参考选择原尺寸无损、经逐像素验证的近无损或最高可容纳质量的上传副本，完整请求必须小于 4,000,000 字节；保留原图与去光照结果，法线、蒙版和结构输入仍走精确路径。`REFERENCE-LIGHTING/2.0.1` 只迁移没有远端 taskId 的已知旧上传前失败，不重复提交已接受任务。详见 [材质参考上传变更卡](changes/CHG-20260923-MATERIAL-REFERENCE-UPLOAD.md)。
+`MATERIAL-REFERENCE-UPLOAD/1.0.0` 对明确材质参考选择原尺寸无损、经逐像素验证的近无损或最高可容纳质量的上传副本，完整请求必须小于 4,000,000 字节；保留原图与去光照结果，法线、蒙版和结构输入仍走精确路径。`REFERENCE-LIGHTING/2.0.2` 允许没有远端 taskId 的已知上传前及凭证失败重试，不重复提交已接受或状态含糊的任务。详见 [材质参考上传变更卡](changes/CHG-20260923-MATERIAL-REFERENCE-UPLOAD.md) 和 [生产恢复变更卡](changes/CHG-20260929-REFERENCE-LIGHTING-RETRY-AND-SAME-ORIGIN-READ.md)。
 
 **Master baseline update (2026-09-22; c2ef7667).** MODELVIEW-REFERENCE-ROUTING/2.0.0 sends ModelView single-view, multiview and local-repaint requests through the inpaint API with an explicit reference-role count of 1 or 6; generation no longer automatically expands a single reference into six views. REFERENCE-LIGHTING/2.0.0 prepares shared background de-lighting jobs on import/restore, deduplicates by user/project/reference/source content/version, and waits for the processed reference at generation time. Private persisted bindings and optional processing markers preserve old-project compatibility. Explicit interruption and consumer cancellation have different ownership. See `changes/CHG-20260922-MODELVIEW-REFERENCE-LIGHTING.md` for request, persistence, retry and cancellation contracts. GENERATION-SERVER-DISPLAY v1.1.0 removes the server-source progress row and its label queries; routing and timing remain. GPT-RETURN-BACKGROUND-CLEANUP/1 runs only after v2 alpha-boundary QA fails: the main 8-connected alpha component must contain at least 80% of nonzero-alpha pixels and pass the original boundary tolerance. Only detached edge components with at least 90% of their pixels outside the expected bounds plus 2px may be removed, capped at 10% of the main component; the original QA runs again. Images over 4096 squared pixels or 4096 components are not automatically repaired. See `apps/web/src/engine/generation/returnBackgroundCleanup.ts`; no RGB-based deletion or input-mask clipping is allowed.
 
