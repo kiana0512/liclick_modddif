@@ -97,7 +97,8 @@ try {
     reset([layer('projection'),manual,
       {...manual,id:'hidden',visible:false},{...manual,id:'other',objectId:'other'}]);
     await run(target);
-    assert.deepEqual(encoded[0].data,[67,0,133,192], 'Manual UV covers projection exactly once with its opacity');
+    // Linear-light source-over: red weight ~1/3, blue ~2/3, then encode sRGB.
+    assert.deepEqual(encoded[0].data,[122,0,167,192], 'Manual UV covers projection exactly once in linear light with its opacity');
     assert.deepEqual(flattened[0][2],[], 'Already merged paint must not be composited twice');
   }
   reset([layer('merged', { type: 'uv', role: 'merged-uv', uvMergeVersion: 6 })]);
