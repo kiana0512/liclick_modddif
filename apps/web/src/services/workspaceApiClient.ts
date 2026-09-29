@@ -924,46 +924,18 @@ export function isIntegratedLoopbackWorkspaceAssetUrl(url?: string) {
   return Boolean(url && isIntegratedLoopbackWorkspace() && isLegacyWorkspaceAssetUrl(url));
 }
 
-/**
- * Reads a durable project asset without forwarding the Li3D session cookie to
- * cloud object storage. Cloud URLs are resolved through an authenticated,
- * same-origin request and the short-lived signed URL is fetched credentialless.
- */
+/** Reads verified project bytes through the authenticated same-origin Cloud API. */
 export async function readWorkspaceAssetBlob(url: string) {
   const directAssetPath = directAssetPathAtBase(url, workspaceApiBase);
   if (isCloudBuild && directAssetPath) {
-    const separator = directAssetPath.includes('?') ? '&' : '?';
-    const resolution = await fetch(`${workspaceApiBase}${directAssetPath}${separator}resolve=1`, {
+    // The public signed GET can be rejected by object-storage CORS, even when
+    // the asset is valid. Use the verified same-origin stream from the start.
+    const response = await fetch(`${workspaceApiBase}${directAssetPath}?proxy=1`, {
       credentials: 'include',
       redirect: 'error',
     });
-    if (!resolution.ok) {
-      throw new WorkspaceApiError(resolution.status, `无法解析云端资源（${resolution.status}）。`);
-    }
-    const payload = (await resolution.json()) as { downloadUrl?: unknown };
-    if (typeof payload.downloadUrl !== 'string') {
-      throw new WorkspaceApiError(502, '云端资源缺少签名下载地址。');
-    }
-    const signedUrl = new URL(payload.downloadUrl);
-    if (signedUrl.protocol !== 'https:' && signedUrl.protocol !== 'http:') {
-      throw new WorkspaceApiError(502, '云端资源签名下载协议无效。');
-    }
-    let response: Response;
-    try {
-      response = await fetch(signedUrl, { credentials: 'omit', redirect: 'follow' });
-    } catch (error) {
-      if (!(error instanceof TypeError)) throw error;
-      const proxyResponse = await fetch(`${workspaceApiBase}${directAssetPath}?proxy=1`, {
-        credentials: 'include',
-        redirect: 'error',
-      });
-      if (!proxyResponse.ok) {
-        throw new WorkspaceApiError(proxyResponse.status, `云端资源读取失败（${proxyResponse.status}）。`);
-      }
-      return proxyResponse.blob();
-    }
     if (!response.ok) {
-      throw new WorkspaceApiError(response.status, `无法读取云端资源（${response.status}）。`);
+      throw new WorkspaceApiError(response.status, `云端资源读取失败（${response.status}）。`);
     }
     return response.blob();
   }
