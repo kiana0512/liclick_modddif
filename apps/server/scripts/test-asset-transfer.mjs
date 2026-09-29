@@ -74,11 +74,11 @@ const handler = async (request, response) => {
   }
   if (request.method === 'GET') {
     reads++;
-    if (mode !== 'native') assert.equal(request.headers['if-match'], '"opaque-object-version"');
+    if (mode !== 'native' && mode !== 'proxy-wrong-mime') assert.equal(request.headers['if-match'], '"opaque-object-version"');
     if (mode === 'unavailable') { response.writeHead(503); response.end(); return; }
     if (mode === 'changed') { response.writeHead(412); response.end(); return; }
     if (mode === 'timeout') { return; }
-    if (mode === 'wrong-mime') headers['content-type'] = 'text/plain';
+    if (mode === 'wrong-mime' || mode === 'proxy-wrong-mime') headers['content-type'] = 'text/plain';
     response.writeHead(200, headers);
     if (mode === 'truncated') { response.flushHeaders(); response.write(object.body.subarray(0, 1)); setTimeout(() => response.destroy(), 10); return; }
     // Deliver independently scheduled chunks through actual HTTP, not a mocked fetch.
@@ -92,6 +92,7 @@ const handler = async (request, response) => {
 };
 const objectStorage = createServer(handler);
 const internalStorage = createServer(handler);
+let appServer;
 await new Promise((resolve) => internalStorage.listen(0, '127.0.0.1', resolve));
 
 let address;
@@ -120,11 +121,35 @@ try {
   const {
     completeAssetUploadIntent,
     createAssetDownloadUrl,
+    createInternalAssetDownload,
     createAssetUploadIntent,
     deleteObjectStorageObject,
   } = await import('../dist/services/assetTransferService.js');
 
   const userId = 'asset-transfer-test-user';
+  const { upsertUser, createSession } = await import('../dist/auth/sessionService.js');
+  const { handleAssetsRoute } = await import('../dist/routes/assets.js');
+  await upsertUser({ id: userId, displayName: 'Asset reader', authSource: 'feishu-oauth' });
+  appServer = createServer(async (request, response) => {
+    const requestUrl = new URL(request.url, `http://${request.headers.host}`);
+    if (requestUrl.pathname === '/login') {
+      await createSession(userId, 'feishu-oauth', request, response);
+      response.writeHead(200);
+      response.end();
+      return;
+    }
+    try {
+      if (!await handleAssetsRoute(request, response, requestUrl)) {
+        response.writeHead(404);
+        response.end();
+      }
+    } catch (error) {
+      if (!response.headersSent) response.writeHead(500);
+      response.end(String(error));
+    }
+  });
+  await new Promise((resolve) => appServer.listen(0, '127.0.0.1', resolve));
+  const appBase = `http://127.0.0.1:${appServer.address().port}`;
   const created = await createProject(userId, { name: 'Direct upload' });
   const body = Buffer.from('browser-uploaded-texture-bytes');
   const sha256 = createHash('sha256').update(body).digest('hex');
@@ -169,6 +194,23 @@ try {
   assert.ok(downloadUrl);
   const downloaded = Buffer.from(await (await fetch(downloadUrl)).arrayBuffer());
   assert.deepEqual(downloaded, body);
+  const internalDownload = await createInternalAssetDownload(userId, created.project.id, intent.assetId);
+  assert.equal(new URL(internalDownload.url).origin, `http://127.0.0.1:${internalStorage.address().port}`);
+  assert.equal(internalDownload.mimeType, 'image/png');
+  assert.equal(internalDownload.sizeBytes, body.length);
+  assert.deepEqual(Buffer.from(await (await fetch(internalDownload.url)).arrayBuffer()), body);
+  assert.equal(await createInternalAssetDownload('different-user', created.project.id, intent.assetId), undefined);
+  const login = await fetch(`${appBase}/login`);
+  const cookie = login.headers.get('set-cookie').split(';')[0];
+  const proxyPath = `/api/projects/${created.project.id}/assets/${intent.assetId}/content?proxy=1`;
+  assert.equal((await fetch(`${appBase}${proxyPath}`)).status, 401);
+  const proxied = await fetch(`${appBase}${proxyPath}`, { headers: { cookie } });
+  assert.equal(proxied.status, 200);
+  assert.equal(proxied.headers.get('content-type'), 'image/png');
+  assert.deepEqual(Buffer.from(await proxied.arrayBuffer()), body);
+  mode = 'proxy-wrong-mime';
+  assert.equal((await fetch(`${appBase}${proxyPath}`, { headers: { cookie } })).status, 502);
+  mode = 'native';
   assert.equal(
     await createAssetDownloadUrl('different-user', created.project.id, intent.assetId),
     undefined,
@@ -182,7 +224,7 @@ try {
   );
 
   assert.equal(heads, 1);
-  assert.equal(reads, 1); // Only the explicit download; native verification uses no GET.
+  assert.equal(reads, 4); // Public, internal, proxied and rejected metadata; native verification uses no GET.
   const makeIntent = async () => {
     const next = await createAssetUploadIntent(userId, created.project.id, {
       protocolVersion: 1, category: 'layers', filename: 'ceph.png', mimeType: 'image/png',
@@ -245,6 +287,10 @@ try {
   console.log('16 MiB HTTP readback verified in', Math.round(performance.now() - started), 'ms (local fixture, not Ceph latency)');
   console.log('direct asset transfer and Ceph readback tests passed');
 } finally {
+  if (appServer) {
+    appServer.closeAllConnections();
+    await new Promise((resolve) => appServer.close(resolve));
+  }
   internalStorage.closeAllConnections();
   await new Promise((resolve) => internalStorage.close(resolve));
   objectStorage.closeAllConnections();
