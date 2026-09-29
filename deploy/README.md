@@ -22,6 +22,8 @@ release 执行相同功能门禁并构建两镜像；只有最终提交包含 `[
 
 Docker/Kaniko 都使用根目录 .dockerignore，Dockerfile 专用副本与之保持一致。
 禁止将 .env、密钥、用户 workspace、OAuth 缓存或本机 node_modules 放入构建上下文。
+Dockerfile 的 web 目标位于 server 专用 Blender 阶段之前，使 Kaniko 的 `--target web`
+不再处理 Blender 大层；server 目标仍执行固定校验和下载及运行用户 UV/GLB QA。
 
 构建先安装完整七个工作区的冻结依赖，包含 @liclick/contracts；执行 build:release、
 Cloud artifact 和包体报告。前后端使用相同 release ID、Git SHA、版本、构建时间及 cloud 模式。

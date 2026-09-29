@@ -31,12 +31,24 @@ test('server image ships checksum-pinned Blender and runs UV QA after switching 
   assert.match(docker, /https:\/\/download\.blender\.org\/release\/Blender5\.1\/blender-5\.1\.2-linux-x64\.tar\.xz/);
   assert.match(docker, /aaccb355f50183979b698bcce7467103a76261b5fa59f4972295842662a285fb/);
   assert.match(docker, /sha256sum --check --strict/);
-  const server = docker.split('FROM ${NODE_IMAGE} AS server')[1].split('FROM ${NGINX_IMAGE} AS web')[0];
+  const server = docker.split('FROM ${NODE_IMAGE} AS server')[1];
   assert.match(server, /COPY --from=blender-runtime \/opt\/blender\/ \/opt\/blender\//);
   assert.match(server, /BLENDER_EXECUTABLE_PATH=\/opt\/blender\/blender/);
   assert.match(server, /COPY[^\n]*deploy\/verify-blender-runtime\.mjs/);
   assert.match(server, /COPY[^\n]*test-import-uv-merge-distance\.py/);
   assert.match(server, /USER liclick:liclick[\s\S]*RUN node deploy\/verify-blender-runtime\.mjs/);
+});
+
+test('web target precedes server-only Blender stages in the Kaniko Dockerfile', () => {
+  const docker = read('deploy/Dockerfile');
+  const build = docker.indexOf('FROM deps AS build');
+  const web = docker.indexOf('FROM ${NGINX_IMAGE} AS web');
+  const blender = docker.indexOf('FROM ${NODE_IMAGE} AS blender-runtime');
+  const server = docker.indexOf('FROM ${NODE_IMAGE} AS server');
+  assert.ok(build >= 0 && build < web && web < blender && blender < server,
+    'Kaniko --target web must stop before the costly Blender stage');
+  assert.match(docker.slice(web, blender), /COPY --from=build \/repo\/apps\/web\/dist \/usr\/share\/nginx\/html/);
+  assert.match(docker.slice(server), /COPY --from=blender-runtime \/opt\/blender\/ \/opt\/blender\//);
 });
 test('Bundle report keeps size and headroom diagnostics without blocking CI', () => {
   const totalBudgetBytes = 10 * 1024 * 1024;

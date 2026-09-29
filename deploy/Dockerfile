@@ -2,18 +2,6 @@
 # M15 / CLOUD-DEPLOYMENT v1.0.0. Build from the repository root.
 ARG NODE_IMAGE=node:22-bookworm-slim
 ARG NGINX_IMAGE=nginxinc/nginx-unprivileged:1.27-alpine
-# BLENDER-SERVER-RUNTIME/1.0.0: the production image owns the executable,
-# independent of any host installation. Keep this download layer cacheable.
-FROM ${NODE_IMAGE} AS blender-runtime
-RUN test "$(dpkg --print-architecture)" = amd64 \
-    && apt-get update && apt-get install -y --no-install-recommends ca-certificates curl xz-utils \
-    && curl --fail --location --retry 3 --connect-timeout 30 --max-time 900 \
-      https://download.blender.org/release/Blender5.1/blender-5.1.2-linux-x64.tar.xz -o /tmp/blender.tar.xz \
-    && echo 'aaccb355f50183979b698bcce7467103a76261b5fa59f4972295842662a285fb  /tmp/blender.tar.xz' | sha256sum --check --strict \
-    && mkdir -p /opt/blender \
-    && tar -xJf /tmp/blender.tar.xz --strip-components=1 -C /opt/blender \
-    && rm /tmp/blender.tar.xz
-
 FROM ${NODE_IMAGE} AS deps
 WORKDIR /repo
 RUN apt-get update && apt-get install -y --no-install-recommends openssl ca-certificates \
@@ -65,6 +53,38 @@ ENV VITE_PUBLIC_PATH="" VITE_LICLICK_PERFORMANCE_LAB_ENABLED=true
 RUN pnpm run build:release && pnpm run check:cloud-artifact && pnpm run check:web-bundle-budget
 RUN pnpm deploy --filter=@liclick/server --prod /out/server
 
+FROM ${NGINX_IMAGE} AS web
+# The base image ships `worker_processes auto`, and nginx resolves "auto" from
+# the HOST's CPU count — it does not read the cgroup quota. On these 64-core
+# nodes that started 64 worker processes to share the pod's 1-CPU limit
+# (verified in-pod 2026-09-10: nproc=64, 64 workers, cpu.max 50000 100000).
+# Pin it to 8. This has to happen here rather than in default.conf.template:
+# worker_processes is a main-context directive, and the entrypoint's envsubst
+# only renders templates into conf.d, which is included inside `http {}`.
+# The grep is the point of the `&&` — if a future base image renames or drops
+# the directive the sed would silently no-op, so fail the build instead.
+# Not using NGINX_ENTRYPOINT_WORKER_PROCESSES_AUTOTUNE: it derives the count
+# from the CPU quota, which would give 1, not 8.
+RUN sed -i 's/^worker_processes .*/worker_processes 8;/' /etc/nginx/nginx.conf && grep -qx 'worker_processes 8;' /etc/nginx/nginx.conf
+COPY deploy/docker/nginx/default.conf.template /etc/nginx/templates/default.conf.template
+COPY --from=build /repo/apps/web/dist /usr/share/nginx/html
+ENV BACKEND_HOST=liclick-server BACKEND_PORT=4517
+EXPOSE 8080
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s CMD \
+  wget -q -O /dev/null http://127.0.0.1:8080/healthz || exit 1
+
+# BLENDER-SERVER-RUNTIME/1.0.0: the production image owns the executable,
+# independent of any host installation. Keep this download layer cacheable.
+FROM ${NODE_IMAGE} AS blender-runtime
+RUN test "$(dpkg --print-architecture)" = amd64 \
+    && apt-get update && apt-get install -y --no-install-recommends ca-certificates curl xz-utils \
+    && curl --fail --location --retry 3 --connect-timeout 30 --max-time 900 \
+      https://download.blender.org/release/Blender5.1/blender-5.1.2-linux-x64.tar.xz -o /tmp/blender.tar.xz \
+    && echo 'aaccb355f50183979b698bcce7467103a76261b5fa59f4972295842662a285fb  /tmp/blender.tar.xz' | sha256sum --check --strict \
+    && mkdir -p /opt/blender \
+    && tar -xJf /tmp/blender.tar.xz --strip-components=1 -C /opt/blender \
+    && rm /tmp/blender.tar.xz
+
 FROM ${NODE_IMAGE} AS server
 ARG RELEASE_ID
 ARG GIT_SHA
@@ -106,23 +126,3 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=15s CMD \
   node -e "fetch('http://127.0.0.1:4517/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["sh", "-c", "node deploy/validate-runtime-env.mjs && exec node apps/server/dist/index.js"]
-
-FROM ${NGINX_IMAGE} AS web
-# The base image ships `worker_processes auto`, and nginx resolves "auto" from
-# the HOST's CPU count — it does not read the cgroup quota. On these 64-core
-# nodes that started 64 worker processes to share the pod's 1-CPU limit
-# (verified in-pod 2026-09-10: nproc=64, 64 workers, cpu.max 50000 100000).
-# Pin it to 8. This has to happen here rather than in default.conf.template:
-# worker_processes is a main-context directive, and the entrypoint's envsubst
-# only renders templates into conf.d, which is included inside `http {}`.
-# The grep is the point of the `&&` — if a future base image renames or drops
-# the directive the sed would silently no-op, so fail the build instead.
-# Not using NGINX_ENTRYPOINT_WORKER_PROCESSES_AUTOTUNE: it derives the count
-# from the CPU quota, which would give 1, not 8.
-RUN sed -i 's/^worker_processes .*/worker_processes 8;/' /etc/nginx/nginx.conf && grep -qx 'worker_processes 8;' /etc/nginx/nginx.conf
-COPY deploy/docker/nginx/default.conf.template /etc/nginx/templates/default.conf.template
-COPY --from=build /repo/apps/web/dist /usr/share/nginx/html
-ENV BACKEND_HOST=liclick-server BACKEND_PORT=4517
-EXPOSE 8080
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s CMD \
-  wget -q -O /dev/null http://127.0.0.1:8080/healthz || exit 1
