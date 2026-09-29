@@ -118,8 +118,10 @@ const budgets = [
 // Bounded 5,500-byte allowance; other chunk, pixel and QA gates unchanged.
 // M04 REFERENCE-LIGHTING/2 + unified ModelView: measured 3,267,407 bytes.
 // Allow 6,500 bytes for the lazy processing/recovery service and release reserve.
-const maxTotalJavaScriptBytes = 3_271_000;
-// Local release checks require headroom without relaxing the CI hard limit.
+// The owner set 10 MiB as an advisory release threshold on 2026-09-29.
+// Individual route/chunk thresholds remain visible as advisory metrics.
+const maxTotalJavaScriptBytes = 10 * 1024 * 1024;
+// The local prepush report includes release metadata headroom.
 const reserveArg = process.argv.slice(2);
 if (reserveArg.length > 1 || (reserveArg.length && !/^--reserve-bytes=\d+$/.test(reserveArg[0]))) {
   throw new Error('Usage: check-web-bundle-budget.mjs [--reserve-bytes=N]');
@@ -149,7 +151,7 @@ const scripts = await Promise.all(
     })),
 );
 
-const failures = [];
+const warnings = [];
 for (const budget of budgets) {
   const prefixes = budget.prefixes ?? [budget.prefix];
   const prefixMatches = scripts.filter((script) =>
@@ -161,14 +163,14 @@ for (const budget of budgets) {
   const minimumMatchBytes = budget.minimumMatchBytes ?? (prefixes.length > 1 ? 100_000 : 0);
   const matches = prefixMatches.filter((script) => script.bytes >= minimumMatchBytes);
   if (matches.length !== 1) {
-    failures.push(
+    warnings.push(
       `${budget.label}: expected one of ${prefixes.join(', ')}*.js, found ${matches.length}`,
     );
     continue;
   }
   console.log(`${budget.label}: ${matches[0].bytes} / ${budget.maxBytes} bytes; remaining ${budget.maxBytes - matches[0].bytes} (${matches[0].name})`);
   if (matches[0].bytes > budget.maxBytes) {
-    failures.push(
+    warnings.push(
       `${budget.label}: ${matches[0].bytes} bytes exceeds ${budget.maxBytes} (${matches[0].name})`,
     );
   }
@@ -177,20 +179,19 @@ for (const budget of budgets) {
 const totalJavaScriptBytes = scripts.reduce((total, script) => total + script.bytes, 0);
 console.log(`total JavaScript: ${totalJavaScriptBytes} / ${maxTotalJavaScriptBytes} bytes; remaining ${maxTotalJavaScriptBytes - totalJavaScriptBytes}`);
 if (totalJavaScriptBytes > maxTotalJavaScriptBytes) {
-  failures.push(
+  warnings.push(
     `total JavaScript: ${totalJavaScriptBytes} bytes exceeds ${maxTotalJavaScriptBytes}`,
   );
 }
 if (reserveBytes && totalJavaScriptBytes > maxTotalJavaScriptBytes - reserveBytes) {
-  failures.push(`total JavaScript: require ${reserveBytes} bytes of release metadata headroom`);
+  warnings.push(`total JavaScript: less than ${reserveBytes} bytes of release metadata headroom`);
 }
 
-if (failures.length > 0) {
-  console.error('Cloud Web bundle budget failed:');
-  for (const failure of failures) console.error(`- ${failure}`);
-  process.exit(1);
+if (warnings.length > 0) {
+  console.warn('Cloud Web bundle size advisory (does not block CI):');
+  for (const warning of warnings) console.warn(`- ${warning}`);
 }
 
 console.log(
-  `Cloud Web bundle budget passed: ${scripts.length} chunks, ${totalJavaScriptBytes} bytes total.`,
+  `Cloud Web bundle size report: ${scripts.length} chunks, ${totalJavaScriptBytes} bytes total.`,
 );

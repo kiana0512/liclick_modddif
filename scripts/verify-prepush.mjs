@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import yaml from 'js-yaml';
 
-// RELEASE-PREPUSH/1.2.0: all CI verify jobs, build and metadata headroom.
+// RELEASE-PREPUSH/1.3.0: all CI verify jobs, build and advisory size/headroom report.
 // This command validates locally; it never pushes or deploys.
 const root = path.resolve(import.meta.dirname, '..');
 const git = (...args) => execFileSync('git', args, { cwd: root, encoding: 'utf8' }).trim();
