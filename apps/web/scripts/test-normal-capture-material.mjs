@@ -104,3 +104,37 @@ newer.dispose();
 other.geometry.dispose();
 other.material.dispose();
 console.log('Normal capture material regression passed: three spaces, ten angles, independent renderers, failure restoration and overlapping PNG waits.');
+
+// [shaoyangZhou]: verify runtime visibility orchestration: whole passes keep their idle
+// gates, depth-only early return, frozen source ownership and failure cleanup.
+const runtimeSource = await readFile(new URL('../src/engine/projection/createRuntimeProjectionDepth.ts', import.meta.url), 'utf8');
+const runtimeCode = ts.transpileModule(runtimeSource.replace(/^import[^;]+;\s*/gm, '').replaceAll('export ', ''), {
+  compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
+}).outputText;
+for (const includeNormal of [false, true]) for (const failing of [false, true]) {
+  const events = [], scenes = [];
+  const group = new THREE.Group(), originalMaterial = new THREE.MeshBasicMaterial();
+  const child = new THREE.Mesh(new THREE.BoxGeometry(), originalMaterial); group.add(child);
+  const renderer = {};
+  const runtime = new Function('THREE', 'renderSceneToPngUrl', 'waitForBrowserPaint', runtimeCode + '\nreturn renderRuntimeProjectionDepth;')(
+    THREE, async (request, options) => {
+      const pass = events.includes('depth') ? 'normal' : 'depth'; events.push(pass); scenes.push(request.scene);
+      assert.equal(options.tileSize, undefined);
+      assert.equal(options.samples, 0); assert.equal(options.dataTexture, true);
+      assert.equal(request.width, 1024); assert.equal(request.height, 768);
+      assert.equal(child.material, originalMaterial);
+      if (failing) throw new Error('runtime draw failed');
+      return pass;
+    }, async () => { events.push('paint'); },
+  );
+  const camera = new THREE.PerspectiveCamera(45, 4/3, .1, 10);camera.position.z=3;camera.updateMatrixWorld(true);
+  const task = runtime({ renderer, group, camera: { type:'perspective',near:.1,far:10,aspect:4/3,fov:45,
+    position:camera.position.toArray(),quaternion:camera.quaternion.toArray(),projectionMatrix:camera.projectionMatrix.toArray() },
+    width:1024,height:768,includeNormal,waitForViewportIdle:async()=>{events.push('idle');} });
+  if (failing) await assert.rejects(task,/runtime draw failed/);
+  else assert.deepEqual(await task,{depthUrl:'depth',normalUrl:includeNormal?'normal':''});
+  assert.deepEqual(events,includeNormal&&!failing?['idle','depth','paint','idle','normal']:['idle','depth']);
+  assert(scenes.every(scene=>scene.children.length===0));
+  assert.equal(child.material,originalMaterial);child.geometry.dispose();originalMaterial.dispose();
+}
+console.log('Runtime visibility passed: whole-pass submission, idle gates, depth-only and failure cleanup.');

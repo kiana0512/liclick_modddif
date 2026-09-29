@@ -1,0 +1,1228 @@
+
+> @liclick/web@0.1.3 test:regression D:\li3d\apps\web
+> corepack pnpm --filter @liclick/contracts build && node scripts/run-regression-suite.mjs
+
+
+> @liclick/contracts@0.1.0 build D:\li3d\packages\contracts
+> tsc -p tsconfig.json
+
+
+[web-regression] test:asset-auth-gate
+
+> @liclick/web@0.1.3 test:asset-auth-gate D:\li3d\apps\web
+> node scripts/test-asset-auth-gate.mjs
+
+UV/拓扑未登录提示与 401 停止重试门禁通过。
+
+[web-regression] test:auto-merge-color-export
+
+> @liclick/web@0.1.3 test:auto-merge-color-export D:\li3d\apps\web
+> node scripts/test-auto-merge-color-export.mjs
+
+Automatic UV merge color export regression checks passed.
+
+[web-regression] test:bake-asset-card-preview-policy
+
+> @liclick/web@0.1.3 test:bake-asset-card-preview-policy D:\li3d\apps\web
+> node scripts/test-bake-asset-card-preview-policy.mjs
+
+Bake asset-card preview policy regression test passed.
+
+[web-regression] test:bake-base-color-selection
+
+> @liclick/web@0.1.3 test:bake-base-color-selection D:\li3d\apps\web
+> node scripts/test-bake-base-color-selection.mjs
+
+Bake Base Color selection regression test passed.
+
+[web-regression] test:bake-entry-project
+
+> @liclick/web@0.1.3 test:bake-entry-project D:\li3d\apps\web
+> node scripts/test-bake-entry-project.mjs
+
+Bake entry project regression test passed.
+
+[web-regression] test:bake-model-alignment
+
+> @liclick/web@0.1.3 test:bake-model-alignment D:\li3d\apps\web
+> node scripts/test-bake-model-alignment.mjs
+
+Bake model unit alignment regression test passed.
+
+[web-regression] test:camera-projection-switch
+
+> @liclick/web@0.1.3 test:camera-projection-switch D:\li3d\apps\web
+> node scripts/test-camera-projection-switch.mjs
+
+Camera projection switch passed: 27 configurations, 20 round trips each, panning/pole orientation/non-unit zoom/orthographic zoom.
+
+[web-regression] test:capture-renderer-isolation
+
+> @liclick/web@0.1.3 test:capture-renderer-isolation D:\li3d\apps\web
+> node scripts/test-capture-renderer-isolation.mjs
+
+Capture renderer isolation passed: first/per-tile/per-pass idle, GPU/readback/encode waits; exact edge tiles, full output, display path and failure cleanup.
+
+[web-regression] test:centered-transform-pivot
+
+> @liclick/web@0.1.3 test:centered-transform-pivot D:\li3d\apps\web
+> node scripts/test-centered-transform-pivot.mjs
+
+Centered transform pivot regression test passed.
+
+[web-regression] test:cloud-base-path-assets
+
+> @liclick/web@0.1.3 test:cloud-base-path-assets D:\li3d\apps\web
+> node scripts/test-cloud-base-path-assets.mjs
+
+Cloud public-base asset compatibility checks passed.
+
+[web-regression] test:content-aware-repair
+
+> @liclick/web@0.1.3 test:content-aware-repair D:\li3d\apps\web
+> node --test src/engine/contentAware/__tests__/buildRepairMask.test.mjs src/engine/contentAware/__tests__/surfaceAwareRepair.test.mjs src/engine/contentAware/__tests__/localBoundaryBlend.test.mjs
+
+✔ rejects tiny components while retaining area and long narrow seams (1.9212ms)
+✔ uses 4-neighbor connectivity and never joins components across regions (0.3349ms)
+✔ filters hard noise before weak growth so rejected specks cannot seed halos (0.8958ms)
+✔ defaults reject an isolated texel and an already-aborted signal stays abortable (0.4462ms)
+✔ production visible-surface policy retains isolated hatch texels but never selects geometry outside the UV core (0.4296ms)
+✔ retains a large low-confidence projection region when the scan threshold is raised (0.2836ms)
+✔ repairs intra-component UV seam conflicts but rejects incompatible overlaps (0.2204ms)
+✔ content-aware seam detection preserves every production texture tier through 4K (0.6491ms)
+✔ worker launch transfers disposable pixels but keeps resident topology buffers attached (0.6593ms)
+✔ production worker result omits atlas-sized diagnostics without changing sparse RGBA or stats (0.2096ms)
+✔ a narrow seam interpolates both local boundaries instead of a constant or nearest-owner stripe (2.3793ms)
+✔ no-seam fast path keeps mouth pink on its own boundary (0.2674ms)
+✔ strong material boundaries do not become averaged muddy colors (0.1885ms)
+✔ fine boundary variation stays local and holes/excluded weak pixels cannot donate (0.231ms)
+✔ blend is deterministic, cancellable, and radius scales without lowering output resolution (0.4918ms)
+✔ adaptive distance fills a wide gap from original boundaries without promoting generated donors (1.2346ms)
+✔ flat local colour reaches a byte-identical fixed point without spending all blend iterations (0.5732ms)
+✔ adaptive distance follows a winding selected gap, never jumps an unselected barrier (0.5871ms)
+✔ cached boundary edges preserve complete v1.2.0 golden pixels (8.1115ms)
+✔ a physical seam-connected gap locks every UV region to one donor (1.5706ms)
+✔ UV islands without a physical seam link keep independent donors (0.3482ms)
+✔ bounded seam propagation seeds one blank neighbour without cascading across islands (0.2298ms)
+✔ unresolved continuation reuses buffers and merges one bounded physical-seam pass (1.0104ms)
+✔ competing source pixels inside one donor region cannot split a gap into two colours (0.1683ms)
+✔ adaptive locking preserves multi-source expansion across a textured boundary (0.1527ms)
+✔ adaptive locking still stabilizes a nearly uniform flat-colour gap (0.1356ms)
+✔ complete-component mode does not publish a coloured rim around an unresolved centre (0.1464ms)
+✔ a second bounded pass advances from the previous repair result (0.2676ms)
+✔ explicit bounded local completion still stops at the requested distance (0.3206ms)
+✔ local completion never uses the global average for a component without a donor (0.1295ms)
+✔ coverage skirt closes transparent filtering gaps without crossing UV regions (0.1519ms)
+✔ dominant-source locking visits one connected gap only once (0.2189ms)
+✔ thin white projection fringe cannot become a repair donor (0.2512ms)
+ℹ tests 33
+ℹ suites 0
+ℹ pass 33
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 176.8239
+
+[web-regression] test:content-aware-topology
+
+> @liclick/web@0.1.3 test:content-aware-topology D:\li3d\apps\web
+> node scripts/test-content-aware-topology.mjs
+
+Content-aware topology classification regression test passed.
+
+[web-regression] test:content-framing-bounds
+
+> @liclick/web@0.1.3 test:content-framing-bounds D:\li3d\apps\web
+> node scripts/test-content-framing-bounds.mjs
+
+Content bounds passed: 360 exhaustive mask/normal/depth references, identical cooperative framing, empty-row cancellation, native-size/strict-ratio/silhouette QA and async decode cancellation/compatibility.
+
+[web-regression] test:display-image-readback
+
+> @liclick/web@0.1.3 test:display-image-readback D:\li3d\apps\web
+> node scripts/test-display-image-readback.mjs
+
+Scratch canvas release passed: complete, cancelled, failed readback, unchanged resize operations and independent output.
+Shared preview crop passed: exact draw/read rectangles, RGBA ownership, cleanup, distinct padding and original fallbacks.
+Display stages passed: all cancellation boundaries; 400 exact-bound fixtures. Opaque 1024 bounds: 1.136 -> 0.003 ms.
+Display image readback passed: decode before draw, exact RGBA stripe assembly, unchanged default path, cancellation and failures.
+Display masks passed: 600 byte-exact fixtures, threshold edges, source ownership and dimension errors.
+
+[web-regression] test:display-preview-queue
+
+> @liclick/web@0.1.3 test:display-preview-queue D:\li3d\apps\web
+> node scripts/test-display-preview-queue.mjs
+
+Display preview scheduling, cancellation, LRU/byte budget and panel ownership passed.
+Layer thumbnail ownership passed: revision/type/mode identity, cancellation, live masks, zoom and error fallback.
+Display preview failed: Error: decode failure
+    at file:///D:/li3d/apps/web/scripts/test-display-preview-queue.mjs:149:24
+
+[web-regression] test:editor-project-route-load
+
+> @liclick/web@0.1.3 test:editor-project-route-load D:\li3d\apps\web
+> node scripts/test-editor-project-route-load.mjs
+
+Editor project route loading regression test passed.
+
+[web-regression] test:engine-session
+
+> @liclick/web@0.1.3 test:engine-session D:\li3d\apps\web
+> node scripts/test-engine-session.mjs
+
+Engine Session concurrency, replacement and resource lifecycle tests passed.
+
+[web-regression] test:engine-session-registry
+
+> @liclick/web@0.1.3 test:engine-session-registry D:\li3d\apps\web
+> node scripts/test-engine-session-registry.mjs
+
+Engine Session registry bounded-idle and GPU resource disposal test passed.
+
+[web-regression] test:eraser-target-policy
+
+> @liclick/web@0.1.3 test:eraser-target-policy D:\li3d\apps\web
+> node scripts/test-eraser-target-policy.mjs
+
+eraser target-policy regression passed
+
+[web-regression] test:export-zip
+
+> @liclick/web@0.1.3 test:export-zip D:\li3d\apps\web
+> node scripts/test-export-zip.mjs
+
+ZIP byte parity passed; explicit buffer copies: 16777979 -> 0 bytes; typed views and Blob snapshot preserved.
+CRC exactness passed: standard vectors and 400 offset/length/random/zero/255 fixtures.
+
+[web-regression] test:fbx-legacy-repair
+
+> @liclick/web@0.1.3 test:fbx-legacy-repair D:\li3d\apps\web
+> node scripts/test-fbx-legacy-repair.mjs
+
+FBX legacy embedded-texture repair regression test passed.
+
+[web-regression] test:fbx-temporary-uv
+
+> @liclick/web@0.1.3 test:fbx-temporary-uv D:\li3d\apps\web
+> node scripts/test-fbx-temporary-uv.mjs
+
+FBX temporary UV: both targets, shared merge rules, repaint/masks, ordering, 1K–8K, live snapshot, stale/failure cleanup and no persistence passed.
+
+[web-regression] test:feishu-login-popup
+
+> @liclick/web@0.1.3 test:feishu-login-popup D:\li3d\apps\web
+> node scripts/test-feishu-login-popup.mjs
+
+Feishu popup login contract passed.
+
+[web-regression] test:fixed-chinese-language
+
+> @liclick/web@0.1.3 test:fixed-chinese-language D:\li3d\apps\web
+> node scripts/test-fixed-chinese-language.mjs
+
+Fixed Simplified Chinese UI language regression test passed.
+
+[web-regression] test:flat-capture-material-isolation
+
+> @liclick/web@0.1.3 test:flat-capture-material-isolation D:\li3d\apps\web
+> node scripts/test-flat-capture-material-isolation.mjs
+
+Production flat capture: per-tile material/uniform isolation, unchanged texture/2048, interrupted snapshot rejection and error cleanup passed.
+
+[web-regression] test:frame-budget-governor
+
+> @liclick/web@0.1.3 test:frame-budget-governor D:\li3d\apps\web
+> node scripts/test-frame-budget-governor.mjs
+
+Frame-budget governor regression test passed.
+
+[web-regression] test:generation-auth-continuation
+
+> @liclick/web@0.1.3 test:generation-auth-continuation D:\li3d\apps\web
+> node scripts/test-generation-auth-continuation.mjs
+
+Server Web OAuth continuation regression test passed.
+
+[web-regression] test:generation-conflict-guard
+
+> @liclick/web@0.1.3 test:generation-conflict-guard D:\li3d\apps\web
+> node scripts/test-generation-conflict-guard.mjs
+
+Generation conflict guard regression checks passed.
+
+[web-regression] test:generation-draft-preview
+
+> @liclick/web@0.1.3 test:generation-draft-preview D:\li3d\apps\web
+> node scripts/test-generation-draft-preview.mjs
+
+Generation interaction: prompt draft editable, reference preview-only during tasks, input focus and mutation gates preserved.
+
+[web-regression] test:generation-framing
+
+> @liclick/web@0.1.3 test:generation-framing D:\li3d\apps\web
+> node scripts/test-generation-framing.mjs
+
+Generation framing passed: 144 perspective/orthographic, pole, aspect, near/far and immutable snapshot cases.
+
+[web-regression] test:generation-image-source-cache
+
+> @liclick/web@0.1.3 test:generation-image-source-cache D:\li3d\apps\web
+> node scripts/test-generation-image-source-cache.mjs
+
+Generation source preparation: exact bytes, concurrent/repeat reuse, mutable bypass, bounded eviction and failure recovery passed.
+
+[web-regression] test:generation-layer-deletion
+
+> @liclick/web@0.1.3 test:generation-layer-deletion D:\li3d\apps\web
+> node scripts/test-generation-layer-deletion.mjs
+
+Generation layer deletion passed: scoped controls, protected inputs, selected/local deletion, history and CAS retry freshness.
+
+[web-regression] test:generation-polling
+
+> @liclick/web@0.1.3 test:generation-polling D:\li3d\apps\web
+> node scripts/test-generation-polling.mjs
+
+Generation polling and timing regression tests passed.
+
+[web-regression] test:generation-preview-edge-decontamination
+
+> @liclick/web@0.1.3 test:generation-preview-edge-decontamination D:\li3d\apps\web
+> node scripts/test-generation-preview-edge-decontamination.mjs
+
+Generation preview and projection edge decontamination regression test passed.
+
+[web-regression] test:generation-preview-status
+
+> @liclick/web@0.1.3 test:generation-preview-status D:\li3d\apps\web
+> node scripts/test-generation-preview-status.mjs
+
+Preview status: 64 real JSX combinations plus empty/cancel/retry/failure/success transitions passed.
+
+[web-regression] test:generation-revision-conflict-recovery
+
+> @liclick/web@0.1.3 test:generation-revision-conflict-recovery D:\li3d\apps\web
+> node scripts/test-generation-revision-conflict-recovery.mjs
+
+生图前项目 revision 冲突恢复门禁通过。
+
+[web-regression] test:generation-server-persistence
+
+> @liclick/web@0.1.3 test:generation-server-persistence D:\li3d\apps\web
+> node scripts/test-generation-server-persistence.mjs
+
+Cloud/legacy generation persistence, four capture planes, save-before-submit, failure and cancellation passed.
+
+[web-regression] test:global-auth-gate
+
+> @liclick/web@0.1.3 test:global-auth-gate D:\li3d\apps\web
+> node scripts/test-global-auth-gate.mjs
+
+Global Li3D authentication gate regression test passed.
+
+[web-regression] test:gpt-multiview-pairs
+
+> @liclick/web@0.1.3 test:gpt-multiview-pairs D:\li3d\apps\web
+> node scripts/test-gpt-multiview-pairs.mjs
+
+Texture QA foreground ownership, stale-response guards, terminal rejection and isolated recovery passed.
+Fixed accelerated GPT groups: defaults, legacy settings, fresh inputs, ordered commits, cancellation and failure contracts passed.
+
+[web-regression] test:gpt25-repaint
+
+> @liclick/web@0.1.3 test:gpt25-repaint D:\li3d\apps\web
+> node scripts/test-gpt25-repaint.mjs
+
+GPT normal repaint: optional switch, two/three actual serialized inputs, prompt roles, exact pixels, cancellation, camera and geometry material cleanup passed (no paid generation).
+GPT: clay/texture pixels, aligned guides + optional reference, model selection, prompt and safe recovery passed.
+Content framing: geometry bounds, border, custom 57:49, 3:1 cap, exact inverse UV, result validation and recovery passed.
+Framing API: exact payload, immediate/polled results, lazy history recovery, no double restore and cancellation passed.
+Framing image adapter: full square background, byte-exact paired crop, source-edge padding, unchanged references/mask, native return and cancellation passed.
+
+[web-regression] test:heavy-task-scheduler
+
+> @liclick/web@0.1.3 test:heavy-task-scheduler D:\li3d\apps\web
+> node scripts/test-heavy-task-scheduler.mjs
+
+Heavy task scheduler regression test passed.
+
+[web-regression] test:history-handoff-revision-retry
+
+> @liclick/web@0.1.3 test:history-handoff-revision-retry D:\li3d\apps\web
+> node scripts/test-history-handoff-revision-retry.mjs
+
+UV 历史传入烘焙的最新 revision 合并与冲突重试门禁通过。
+
+[web-regression] test:home-service-boundaries
+
+> @liclick/web@0.1.3 test:home-service-boundaries D:\li3d\apps\web
+> node scripts/test-home-service-boundaries.mjs
+
+首页四个可用功能入口、隐藏自动拓扑与真实计算服务边界回归通过。
+
+[web-regression] test:http-random-uuid
+
+> @liclick/web@0.1.3 test:http-random-uuid D:\li3d\apps\web
+> node scripts/test-http-random-uuid.mjs
+
+HTTP random UUID compatibility checks passed.
+
+[web-regression] test:incremental-uv
+
+> @liclick/web@0.1.3 test:incremental-uv D:\li3d\apps\web
+> node scripts/test-incremental-uv.mjs
+
+Incremental UV region, padding, raw ownership, coverage and rendered-color preservation passed.
+Eraser dirty revisions: publication acknowledgement, in-flight input, bounded queue and next stroke passed.
+
+[web-regression] test:inpaint-selection-display
+
+> @liclick/web@0.1.3 test:inpaint-selection-display D:\li3d\apps\web
+> node scripts/test-inpaint-selection-display.mjs
+
+Selection display: three production materials, 10001 coverage samples, erase/invert/depth/capture isolation passed.
+
+[web-regression] test:interaction-safe-service-results
+
+> @liclick/web@0.1.3 test:interaction-safe-service-results D:\li3d\apps\web
+> node scripts/test-interaction-safe-service-results.mjs
+
+Interaction-safe service results: large JSON and Blob publication preserve exact payloads and yield to viewport input.
+
+[web-regression] test:layer-context-menu-policy
+
+> @liclick/web@0.1.3 test:layer-context-menu-policy D:\li3d\apps\web
+> node scripts/test-layer-context-menu-policy.mjs
+
+layer context-menu and eraser mask indicator regression passed
+
+[web-regression] test:layer-thumbnail-visibility
+
+> @liclick/web@0.1.3 test:layer-thumbnail-visibility D:\li3d\apps\web
+> node scripts/test-layer-thumbnail-visibility.mjs
+
+Layer thumbnail visibility passed: 71 hidden switches -> 0 preview consumers; visible, clipped, offscreen and cleanup covered.
+
+[web-regression] test:liclick-auth-separation
+
+> @liclick/web@0.1.3 test:liclick-auth-separation D:\li3d\apps\web
+> node scripts/test-liclick-auth-separation.mjs
+
+Liclick zero-install cloud auth regression test passed.
+
+[web-regression] test:live-projected-texture-registry
+
+> @liclick/web@0.1.3 test:live-projected-texture-registry D:\li3d\apps\web
+> node --test src/engine/projection/__tests__/liveProjectedCanvasTextureRegistry.test.mjs
+
+✔ repeated reads of a multi-layer live stack do not dirty unchanged GPU sources (1.7212ms)
+✔ content writes, backing replacement and changed sampling still request uploads (0.9067ms)
+✔ keeps resident texture identity when a stable live canvas URL changes backing canvas (0.2532ms)
+✔ resized eraser masks reallocate GPU storage once, without changing resident texture identity (0.3643ms)
+✔ exposes decoded live images to baking and persistence consumers (0.2837ms)
+ℹ tests 5
+ℹ suites 0
+ℹ pass 5
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 950.3221
+
+[web-regression] test:local-generation-entry-alignment
+
+> @liclick/web@0.1.3 test:local-generation-entry-alignment D:\li3d\apps\web
+> node scripts/test-local-generation-entry-alignment.mjs
+
+Local generation entry alignment regression checks passed.
+Mask clear shortcut regression checks passed.
+Local repaint workflow guide timing regression checks passed.
+
+[web-regression] test:local-generation-self-lock
+
+> @liclick/web@0.1.3 test:local-generation-self-lock D:\li3d\apps\web
+> node scripts/test-local-generation-self-lock.mjs
+
+Scoped weak-light template, shared entries, suffix and provider passthrough passed (no paid generation).
+Local generation self-lock regression test passed.
+
+[web-regression] test:local-pbr-bake
+
+> @liclick/web@0.1.3 test:local-pbr-bake D:\li3d\apps\web
+> node scripts/test-local-pbr-bake.mjs
+
+Local BVH PBR bake Base Color, curvature, six-channel closed-box and 4K matrix passed.
+
+[web-regression] test:local-repaint-background-scheduling
+
+> @liclick/web@0.1.3 test:local-repaint-background-scheduling D:\li3d\apps\web
+> node scripts/test-local-repaint-background-scheduling.mjs
+
+Local repaint background scheduling passed: hidden-at-start, hidden-after-queue, no-rAF submission, cancellation and exactly-once bootstrap.
+Local repaint GPU uploads passed: separate yields, cancellation after either yield, absent source, hidden-page completion.
+Local repaint decode barrier passed: shared pending decode, original 4K image, fallback, retry and six-entry LRU.
+
+[web-regression] test:local-repaint-bake-batching
+
+> @liclick/web@0.1.3 test:local-repaint-bake-batching D:\li3d\apps\web
+> node scripts/test-local-repaint-bake-batching.mjs
+
+Local repaint bake batching invariants passed.
+
+[web-regression] test:local-repaint-generation-input
+
+> @liclick/web@0.1.3 test:local-repaint-generation-input D:\li3d\apps\web
+> node scripts/test-local-repaint-generation-input.mjs
+
+Local repaint: pure white pixels, restored remote mask expansion and feathering, no clay input, default-off prompt/cache/network and existing morphology tests passed.
+
+[web-regression] test:local-repaint-inward-crossfade
+
+> @liclick/web@0.1.3 test:local-repaint-inward-crossfade D:\li3d\apps\web
+> node scripts/test-local-repaint-inward-crossfade.mjs
+
+Local repaint inward-crossfade checks passed.
+Inward-crossfade parity: 96 pixel cases and full/dirty canvas adapters passed.
+120 threshold/alpha fuzz cases and actual composite creation passed.
+
+[web-regression] test:local-repaint-layer-retention
+
+> @liclick/web@0.1.3 test:local-repaint-layer-retention D:\li3d\apps\web
+> node scripts/test-local-repaint-layer-retention.mjs
+
+[zustand persist middleware] Unable to update item 'liclick-viewport-preferences-v1', the given storage is currently unavailable.
+[zustand persist middleware] Unable to update item 'liclick-viewport-preferences-v1', the given storage is currently unavailable.
+[zustand persist middleware] Unable to update item 'liclick-viewport-preferences-v1', the given storage is currently unavailable.
+[zustand persist middleware] Unable to update item 'liclick-viewport-preferences-v1', the given storage is currently unavailable.
+Local repaint layer retention regression checks passed.
+
+[web-regression] test:local-repaint-material-reference
+
+> @liclick/web@0.1.3 test:local-repaint-material-reference D:\li3d\apps\web
+> node scripts/test-local-repaint-material-reference.mjs
+
+local repaint material reference regression checks passed
+
+[web-regression] test:local-repaint-ordered-composition
+
+> @liclick/web@0.1.3 test:local-repaint-ordered-composition D:\li3d\apps\web
+> node scripts/test-local-repaint-ordered-composition.mjs
+
+Local repaint ordered composition invariants passed.
+
+[web-regression] test:local-repaint-performance-merge
+
+> @liclick/web@0.1.3 test:local-repaint-performance-merge D:\li3d\apps\web
+> node scripts/test-local-repaint-performance-merge.mjs
+
+Zero-install local repaint/product regression test passed.
+
+[web-regression] test:local-repaint-result-composite
+
+> @liclick/web@0.1.3 test:local-repaint-result-composite D:\li3d\apps\web
+> node scripts/test-local-repaint-result-composite.mjs
+
+Local repaint result composite tests passed.
+
+[web-regression] test:local-repaint-seam-harmonization
+
+> @liclick/web@0.1.3 test:local-repaint-seam-harmonization D:\li3d\apps\web
+> node scripts/test-local-repaint-seam-harmonization.mjs
+
+Local repaint seam harmonization invariants passed.
+
+[web-regression] test:local-uv-atlas
+
+> @liclick/web@0.1.3 test:local-uv-atlas D:\li3d\apps\web
+> node scripts/test-local-uv-atlas.mjs
+
+Local xatlas WASM UV flat baseline and multi-mesh closed-geometry matrix passed.
+
+[web-regression] test:local-uv-history
+
+> @liclick/web@0.1.3 test:local-uv-history D:\li3d\apps\web
+> node scripts/test-local-uv-history.mjs
+
+Account-scoped browser-local UV history mapping passed.
+
+[web-regression] test:manual-repaint-layer
+
+> @liclick/web@0.1.3 test:manual-repaint-layer D:\li3d\apps\web
+> node scripts/test-manual-repaint-layer.mjs
+
+Actual create callback: one selected/persisted/panel-visible layer; reload and standalone draft compatibility passed.
+Manual repaint: read-only selected target, hidden/foreign/projected rejection, explicit creation gate, reused row/metadata, generation independence and no resurrection passed.
+
+[web-regression] test:masked-projected-png-worker
+
+> @liclick/web@0.1.3 test:masked-projected-png-worker D:\li3d\apps\web
+> node scripts/test-masked-projected-png-worker.mjs
+
+Masked projection PNG Worker: serial canvas ownership, exact RGBA input, release, failure recovery and original pixel protocol passed.
+
+[web-regression] test:merge-final-preparation
+
+> @liclick/web@0.1.3 test:merge-final-preparation D:\li3d\apps\web
+> node scripts/test-merge-final-preparation.mjs
+
+Final Merge preparation: ordered underlays, immutable inputs, deduplication, exact cache keys, bounded copy scheduling, native UV snapshots and stale-result cancellation passed.
+
+[web-regression] test:merge-projection-preparation
+
+> @liclick/web@0.1.3 test:merge-projection-preparation D:\li3d\apps\web
+> node scripts/test-merge-projection-preparation.mjs
+
+Merge preparation: deduplication, immutable full-resolution results, edit invalidation, stale-result rejection and teardown passed.
+Merge signature: stable inputs, UV edits, attribute/index replacement, ancestor visibility and transforms passed.
+
+[web-regression] test:model-export-texture-orientation
+
+> @liclick/web@0.1.3 test:model-export-texture-orientation D:\li3d\apps\web
+> node scripts/test-model-export-texture-orientation.mjs
+
+Model export texture-orientation regression checks passed.
+
+[web-regression] test:model-import-progress
+
+> @liclick/web@0.1.3 test:model-import-progress D:\li3d\apps\web
+> node scripts/test-model-import-progress.mjs
+
+Model import progress regression test passed.
+
+[web-regression] test:model-placement-camera-focus
+
+> @liclick/web@0.1.3 test:model-placement-camera-focus D:\li3d\apps\web
+> node scripts/test-model-placement-camera-focus.mjs
+
+Model placement and camera-focus regression test passed.
+
+[web-regression] test:model-selection-residency
+
+> @liclick/web@0.1.3 test:model-selection-residency D:\li3d\apps\web
+> node scripts/test-model-selection-residency.mjs
+
+Model selection residency passed: 71 switches, no indicator churn, no busy prewarm allocation, no redundant scene bounds; final prewarm and cleanup preserved.
+
+[web-regression] test:model-silhouette-clip
+
+> @liclick/web@0.1.3 test:model-silhouette-clip D:\li3d\apps\web
+> node scripts/test-model-silhouette-clip.mjs
+
+Model silhouette clip: 3px@2K outside/hole boundaries, resolution scaling, RGB preservation, frame alignment, thin geometry, failure and projection/save/restore contracts passed.
+
+[web-regression] test:model-triangle-limits
+
+> @liclick/web@0.1.3 test:model-triangle-limits D:\li3d\apps\web
+> node scripts/test-model-triangle-limits.mjs
+
+Model triangle limit tests passed.
+
+[web-regression] test:modelview-normal-input
+
+> @liclick/web@0.1.3 test:modelview-normal-input D:\li3d\apps\web
+> node scripts/test-modelview-normal-input.mjs
+
+ModelView raw normal: frozen camera, 2K dimensions, cancellation and exact API serialization passed.
+Normal background toggle: default off, blue/black forwarding and both runtime locks passed.
+Repaint preparation overlap: exact results, parallel start, failure draining, cancellation and URL cleanup passed.
+
+[web-regression] test:multi-model-restore-policy
+
+> @liclick/web@0.1.3 test:multi-model-restore-policy D:\li3d\apps\web
+> node scripts/test-multi-model-restore-policy.mjs
+
+Multi-model restore policy regression test passed.
+
+[web-regression] test:multiview-snapshot-cancellation
+
+> @liclick/web@0.1.3 test:multiview-snapshot-cancellation D:\li3d\apps\web
+> node scripts/test-multiview-snapshot-cancellation.mjs
+
+Multiview snapshot cancellation regression checks passed.
+
+[web-regression] test:native-uv-merge
+
+> @liclick/web@0.1.3 test:native-uv-merge D:\li3d\apps\web
+> node scripts/test-native-uv-merge.mjs
+
+Native UV merge selection, ordering, opacity, transparent coverage and Bake/export plan passed.
+
+[web-regression] test:native-uv-repaint
+
+> @liclick/web@0.1.3 test:native-uv-repaint D:\li3d\apps\web
+> node scripts/test-native-uv-repaint.mjs
+
+Native UV: independent RGBA, frozen source, old-layer/selection retention, deletion guard, user settings, save barrier/failure and lazy pipeline passed.
+
+[web-regression] test:normal-capture-material
+
+> @liclick/web@0.1.3 test:normal-capture-material D:\li3d\apps\web
+> node scripts/test-normal-capture-material.mjs
+
+Normal capture material regression passed: three spaces, ten angles, independent renderers, failure restoration and overlapping PNG waits.
+
+[web-regression] test:object-deletion-history
+
+> @liclick/web@0.1.3 test:object-deletion-history D:\li3d\apps\web
+> node scripts/test-object-deletion-history.mjs
+
+object deletion history tests passed
+
+[web-regression] test:paint-history-granularity
+
+> @liclick/web@0.1.3 test:paint-history-granularity D:\li3d\apps\web
+> node scripts/test-paint-history-granularity.mjs
+
+Paint history granularity regression checks passed.
+
+[web-regression] test:paint-history-transactions
+
+> @liclick/web@0.1.3 test:paint-history-transactions D:\li3d\apps\web
+> node scripts/test-paint-history-transactions.mjs
+
+Paint history transactions: ordering, fast undo/redo, gesture boundary, failure, session reset, live GPU reset, per-stroke refinement and cancellation passed.
+
+[web-regression] test:performance-lab-cloud-recording
+
+> @liclick/web@0.1.3 test:performance-lab-cloud-recording D:\li3d\apps\web
+> node scripts/test-performance-lab-cloud-recording.mjs
+
+Performance Lab Cloud recording passed: real client metrics, repeatable sessions, Worker upload, Feishu grouping, strict administrator HTML/API access, and no A100 GPU sampling.
+
+[web-regression] test:performance-lab-metrics
+
+> @liclick/web@0.1.3 test:performance-lab-metrics D:\li3d\apps\web
+> node scripts/test-performance-lab-metrics.mjs
+
+Performance-lab metric parity test passed.
+
+[web-regression] test:performance-lab-stress
+
+> @liclick/web@0.1.3 test:performance-lab-stress D:\li3d\apps\web
+> node scripts/test-performance-lab-stress.mjs
+
+Full retention summary: 24.85 ms (informational; no machine-dependent timing assertion).
+Performance Lab stress passed: 100 start/stop cycles, 100,000 wheel events, 200,100 timeline events, exact full-retention quantiles.
+
+[web-regression] test:persistent-merge-preparation
+
+> @liclick/web@0.1.3 test:persistent-merge-preparation D:\li3d\apps\web
+> node scripts/test-persistent-merge-preparation.mjs
+
+Persistent Merge cache: cross-reload geometry/source identity, user isolation, UV invalidation, exact RGBA restore, resolution and corruption checks passed.
+
+[web-regression] test:persistent-texture-editor
+
+> @liclick/web@0.1.3 test:persistent-texture-editor D:\li3d\apps\web
+> node scripts/test-persistent-texture-editor.mjs
+
+Persistent texture editor regression test passed.
+
+[web-regression] test:pipeline-trace
+
+> @liclick/web@0.1.3 test:pipeline-trace D:\li3d\apps\web
+> node --expose-gc scripts/test-pipeline-trace.mjs
+
+Function timing: bounds, privacy, nesting, worker clocks, stop/restart, errors, compile-off and explicit function coverage passed.
+
+[web-regression] test:prepared-merge-preview
+
+> @liclick/web@0.1.3 test:prepared-merge-preview D:\li3d\apps\web
+> node scripts/test-prepared-merge-preview.mjs
+
+Prepared GPU preview: exact Blob identity, one owner, cancellation/failure cleanup, no alias/disposal, occupied target and context loss guards passed.
+
+[web-regression] test:preview-upload-cleanup
+
+> @liclick/web@0.1.3 test:preview-upload-cleanup D:\li3d\apps\web
+> node scripts/test-preview-upload-cleanup.mjs
+
+Preview upload cleanup passed: RGBA bitmap/bytes and R8 mask success/cancel/failure cases; visible and detached bounded batching, deferred barrier, idle/cancel gating, late/rejected stripes, GL state, source ownership, orientation and zero live monitors/uploads.
+
+[web-regression] test:production-minification
+
+> @liclick/web@0.1.3 test:production-minification D:\li3d\apps\web
+> node scripts/test-production-minification.mjs
+
+Production minification preserves exports, diagnostics, getters, Unicode and data contracts.
+
+[web-regression] test:project-default-name
+
+> @liclick/web@0.1.3 test:project-default-name D:\li3d\apps\web
+> node scripts/test-project-default-name.mjs
+
+Project default name regression test passed.
+
+[web-regression] test:project-list-recovery
+
+> @liclick/web@0.1.3 test:project-list-recovery D:\li3d\apps\web
+> node scripts/test-project-list-recovery.mjs
+
+Project list recovery passed: failure preserves cache, explicit retry recovers, auth remains separate.
+
+[web-regression] test:project-onboarding-entry
+
+> @liclick/web@0.1.3 test:project-onboarding-entry D:\li3d\apps\web
+> node scripts/test-project-onboarding-entry.mjs
+
+新建贴图项目新人引导入口回归通过。
+Onboarding: migration, pause/remount, project isolation, completion and placement passed.
+
+[web-regression] test:project-save-coordinator
+
+> @liclick/web@0.1.3 test:project-save-coordinator D:\li3d\apps\web
+> node scripts/test-project-save-coordinator.mjs
+
+Project save coordinator regression test passed.
+
+[web-regression] test:project-thumbnail-policy
+
+> @liclick/web@0.1.3 test:project-thumbnail-policy D:\li3d\apps\web
+> node scripts/test-project-thumbnail-policy.mjs
+
+Project thumbnail policy regression test passed.
+
+[web-regression] test:projected-material-reveal
+
+> @liclick/web@0.1.3 test:projected-material-reveal D:\li3d\apps\web
+> node scripts/test-projected-material-reveal.mjs
+
+Projected material reveal passed: single/stack, resident reuse, material arrays, stale structure, bootstrap and placeholder rejection.
+
+[web-regression] test:projected-selection-display
+
+> @liclick/web@0.1.3 test:projected-selection-display D:\li3d\apps\web
+> node scripts/test-projected-selection-display.mjs
+
+Projected selection editor lifecycle: 12 views, coalescing, immutable history, undo/clear, transforms, fallback, GPU state and disposal passed.
+
+[web-regression] test:projected-selection-preview
+
+> @liclick/web@0.1.3 test:projected-selection-preview D:\li3d\apps\web
+> node scripts/test-projected-selection-preview.mjs
+
+Projection display prototype: no model UV dependency, snapshot isolation, ordered erase, inversion, bounded capacity, fail-closed depth and borrowed texture lifetime passed.
+
+[web-regression] test:projected-texture-preparation
+
+> @liclick/web@0.1.3 test:projected-texture-preparation D:\li3d\apps\web
+> node scripts/test-projected-texture-preparation.mjs
+
+Projected texture preparation passed: 2,000 repeated mask preparations, content revisions, UV/mask color-space transitions, orientation and bytes.
+
+[web-regression] test:projected-warmup-framebuffer
+
+> @liclick/web@0.1.3 test:projected-warmup-framebuffer D:\li3d\apps\web
+> node scripts/test-projected-warmup-framebuffer.mjs
+
+Projected warmup framebuffer: visible frames, cube/mip, cancellation, errors and GPU fence cleanup passed.
+
+[web-regression] test:projection-layers
+
+> @liclick/web@0.1.3 test:projection-layers D:\li3d\apps\web
+> node scripts/test-projected-layer-visibility.mjs
+
+[zustand persist middleware] Unable to update item 'liclick-viewport-preferences-v1', the given storage is currently unavailable.
+[zustand persist middleware] Unable to update item 'liclick-viewport-preferences-v1', the given storage is currently unavailable.
+[zustand persist middleware] Unable to update item 'liclick-viewport-preferences-v1', the given storage is currently unavailable.
+[zustand persist middleware] Unable to update item 'liclick-viewport-preferences-v1', the given storage is currently unavailable.
+[zustand persist middleware] Unable to update item 'liclick-viewport-preferences-v1', the given storage is currently unavailable.
+[zustand persist middleware] Unable to update item 'liclick-viewport-preferences-v1', the given storage is currently unavailable.
+[zustand persist middleware] Unable to update item 'liclick-viewport-preferences-v1', the given storage is currently unavailable.
+[zustand persist middleware] Unable to update item 'liclick-viewport-preferences-v1', the given storage is currently unavailable.
+[zustand persist middleware] Unable to update item 'liclick-viewport-preferences-v1', the given storage is currently unavailable.
+Resident subset reuse passed: 570 transitions, eraser slot ownership, single/structural rejection and unchanged inputs/shader.
+Retained visibility lifecycle passed: 60 single/multi restores, exclusive ownership, replacement, invalidation and teardown.
+Projected-layer visibility regression test passed.
+X [ERROR] The build was canceled
+
+
+[web-regression] test:projection-mask-footprint
+
+> @liclick/web@0.1.3 test:projection-mask-footprint D:\li3d\apps\web
+> node scripts/test-projection-mask-footprint.mjs
+
+{"cases":800,"oldMs":106.7432,"newMs":6.476499999999987}
+
+[web-regression] test:projection-performance-safety
+
+> @liclick/web@0.1.3 test:projection-performance-safety D:\li3d\apps\web
+> node scripts/test-projection-performance-safety.mjs
+
+Projection performance safety regression checks passed.
+
+[web-regression] test:projection-reliability
+
+> @liclick/web@0.1.3 test:projection-reliability D:\li3d\apps\web
+> node scripts/test-projection-reliability.mjs
+
+Projection reliability: geometric cutoff, authored alpha, all shader branches, real alpha gap mask, black RGB/hole/MSAA protection passed.
+
+[web-regression] test:quality-blend-resources
+
+> @liclick/web@0.1.3 test:quality-blend-resources D:\li3d\apps\web
+> node scripts/test-quality-blend-resources.mjs
+
+Quality blend: 240 CPU parity cases, full/partial GPU tile byte parity and resource lifetime passed.
+
+[web-regression] test:real-local-workspace-upload
+
+> @liclick/web@0.1.3 test:real-local-workspace-upload D:\li3d\apps\web
+> node scripts/test-real-local-workspace-upload.mjs
+
+Real local integrated-workspace upload regression test passed.
+
+[web-regression] test:real-uv-handoff
+
+> @liclick/web@0.1.3 test:real-uv-handoff D:\li3d\apps\web
+> node scripts/test-real-uv-handoff.mjs
+
+真实服务器 UV 提交、校验、保存与烘焙交接门禁通过。
+
+[web-regression] test:reference-binding
+
+> @liclick/web@0.1.3 test:reference-binding D:\li3d\apps\web
+> node scripts/test-reference-binding.mjs
+
+Reference binding passed: latest replacement, durable selection, stale-history repair, reload, deletion, ownership and late-result guards.
+Lighting references: paired/standalone/repeat, replacement, original binding, durable reload and failure retention passed.
+
+[web-regression] test:reference-click-preview
+
+> @liclick/web@0.1.3 test:reference-click-preview D:\li3d\apps\web
+> node scripts/test-reference-click-preview.mjs
+
+User file upload limit: exact 100MB allowed, +1 byte rejected, per-file batch policy, 14 early-return handlers and cage guard passed.
+reference select-then-preview and locked preview-only regression passed
+
+[web-regression] test:reference-lighting
+
+> @liclick/web@0.1.3 test:reference-lighting D:\li3d\apps\web
+> node scripts/test-reference-lighting.mjs
+
+Reference lighting passed: concurrent dedupe, immutable source, content identity, reload, account isolation, consumer cancellation and explicit interruption.
+
+[web-regression] test:reference-preview-fit
+
+> @liclick/web@0.1.3 test:reference-preview-fit D:\li3d\apps\web
+> node scripts/test-reference-preview-fit.mjs
+
+Reference preview adaptive fit regression test passed.
+
+[web-regression] test:reference-single-click-preview
+
+> @liclick/web@0.1.3 test:reference-single-click-preview D:\li3d\apps\web
+> node scripts/test-reference-single-click-preview.mjs
+
+reference selection and preview regression passed
+
+[web-regression] test:remote-multiview-sequential
+
+> @liclick/web@0.1.3 test:remote-multiview-sequential D:\li3d\apps\web
+> node scripts/test-remote-multiview-sequential.mjs
+
+Remote multiview sequential generation regression checks passed.
+
+[web-regression] test:repaint-layer-selection
+
+> @liclick/web@0.1.3 test:repaint-layer-selection D:\li3d\apps\web
+> node scripts/test-repaint-layer-selection.mjs
+
+Repaint layer selection passed: 400 source-stable selections, 100 presentation-stable selections, 100 UV-input-stable selections; eraser ownership, stale completion, visibility, edits, deletion and cleanup preserved.
+
+[web-regression] test:repaint-panel-navigation
+
+> @liclick/web@0.1.3 test:repaint-panel-navigation D:\li3d\apps\web
+> node scripts/test-repaint-panel-navigation.mjs
+
+Repaint panel navigation: three buttons, repeated requests, panel expansion and generation isolation passed.
+Repaint RMB menu: controls, repeated open, consumed dismissal, next stroke, navigation/eraser isolation and cleanup passed.
+
+[web-regression] test:repaint-selection-consumption
+
+> @liclick/web@0.1.3 test:repaint-selection-consumption D:\li3d\apps\web
+> node scripts/test-repaint-selection-consumption.mjs
+
+Repaint selection consumption: sparse history, sided coverage, erase guard, atomic restore and lifecycle passed.
+
+[web-regression] test:resident-resolve-scheduling
+
+> @liclick/web@0.1.3 test:resident-resolve-scheduling D:\li3d\apps\web
+> node scripts/test-resident-resolve-scheduling.mjs
+
+Resident resolve scheduling: overlapped coverage reduction, exact counts and draining on either failure passed.
+
+[web-regression] test:resident-upload-barrier
+
+> @liclick/web@0.1.3 test:resident-upload-barrier D:\li3d\apps\web
+> node scripts/test-resident-upload-barrier.mjs
+
+Resident upload: shared barrier after both textures, cancellation before publication, exclusive timing totals passed.
+
+[web-regression] test:resident-uv-display
+
+> @liclick/web@0.1.3 test:resident-uv-display D:\li3d\apps\web
+> node scripts/test-resident-uv-display.mjs
+
+Resident UV visibility: bound source-set proof, cancellable busy-camera idle, latest-wins wake, deferred verified persistence and cache-hit publication passed.
+Resident UV: exact rounding, duplicate candidate reuse, bounded ownership, geometry invalidation and one-byte mask upload passed.
+
+[web-regression] test:resident-uv-policy
+
+> @liclick/web@0.1.3 test:resident-uv-policy D:\li3d\apps\web
+> node scripts/test-resident-uv-policy.mjs
+
+Resident UV policy: normal/single-layer GPU routing, stale flags ignored, exact QA, rejection and context loss passed.
+Merge v8: automatic topology growth and hole repair disabled at every resolution.
+
+[web-regression] test:retained-viewport-activity
+
+> @liclick/web@0.1.3 test:retained-viewport-activity D:\li3d\apps\web
+> node scripts/test-retained-viewport-activity.mjs
+
+Retained viewport activity regression test passed.
+
+[web-regression] test:return-background-cleanup
+
+> @liclick/web@0.1.3 test:return-background-cleanup D:\li3d\apps\web
+> node scripts/test-return-background-cleanup.mjs
+
+Conservative return background cleanup: alpha, retained details, mismatch, cancellation and output wiring passed.
+
+[web-regression] test:shader-chunk-pack
+
+> @liclick/web@0.1.3 test:shader-chunk-pack D:\li3d\apps\web
+> node scripts/test-shader-chunk-pack.mjs
+
+Three shader packing passed: 141 byte-exact shaders, ShaderLib/exports and production Terser retained; 87462 source bytes saved. Module verification 16.6ms includes JS import/parsing.
+
+[web-regression] test:shader-template-format
+
+> @liclick/web@0.1.3 test:shader-template-format D:\li3d\apps\web
+> node scripts/test-shader-template-format.mjs
+
+Shader formatting preserves actual module tokens and GLSL line boundaries; removes 25465 source bytes.
+Three registered shaders retain all GLSL tokens, directives and line counts: 141 strings; 16519 source bytes removed.
+
+[web-regression] test:single-view-auto-projection
+
+> @liclick/web@0.1.3 test:single-view-auto-projection D:\li3d\apps\web
+> node scripts/test-single-view-auto-projection.mjs
+
+single-view auto projection: restored results, queue dedupe, retry, frozen capture, deletion and cancellation passed
+
+[web-regression] test:single-view-priority
+
+> @liclick/web@0.1.3 test:single-view-priority D:\li3d\apps\web
+> node scripts/test-single-view-priority.mjs
+
+Unified single-view and multiview quality composition invariants passed.
+
+[web-regression] test:single-view-texture-completion
+
+> @liclick/web@0.1.3 test:single-view-texture-completion D:\li3d\apps\web
+> node scripts/test-single-view-texture-completion.mjs
+
+Single-view completion: remote white/black pixels, unchanged RGB expanded mask, full/partial/covered inputs and legacy GPT passed.
+
+[web-regression] test:string-pool
+
+> @liclick/web@0.1.3 test:string-pool D:\li3d\apps\web
+> node scripts/test-string-pool.mjs
+
+String pooling: exact Unicode/escape values, property/import/directive protection and production minification passed.
+
+[web-regression] test:surface-stroke-latency-policy
+
+> @liclick/web@0.1.3 test:surface-stroke-latency-policy D:\li3d\apps\web
+> node scripts/test-surface-stroke-latency-policy.mjs
+
+inpaint/prewarm ownership and generation capture tests passed
+View-aligned brush passed: 32 perspective/orthographic, aspect, parent-camera, slope and UV/source cases.
+surface stroke latency policy tests passed
+
+[web-regression] test:texture-load-recovery
+
+> @liclick/web@0.1.3 test:texture-load-recovery D:\li3d\apps\web
+> node scripts/test-texture-load-recovery.mjs
+
+Texture load recovery regression test passed.
+Preview cache concurrency passed: 26 overlapping exact loads, cancellation, shared leases and bounded cleanup.
+Live UV borrowing passed: synchronous binding, owner replacement, no decode/upload/cache/disposal.
+
+[web-regression] test:toolbox-parity
+
+> @liclick/web@0.1.3 test:toolbox-parity D:\li3d\apps\web
+> node scripts/test-toolbox-parity.mjs
+
+原版建模工具箱下载入口、9 项清单、顶部 Logo 导航与零组件边界门禁通过。
+
+[web-regression] test:underlay-reuse
+
+> @liclick/web@0.1.3 test:underlay-reuse D:\li3d\apps\web
+> node scripts/test-underlay-reuse.mjs
+
+Underlay reuse: exact blend, transfer ownership, revision/URL/size, source-over, release, failure and cancellation passed.
+
+[web-regression] test:uv-composite-backpressure
+
+> @liclick/web@0.1.3 test:uv-composite-backpressure D:\li3d\apps\web
+> node scripts/test-uv-composite-backpressure.mjs
+
+UV composition backpressure regression test passed.
+
+[web-regression] test:uv-composite-worker-lifecycle
+
+> @liclick/web@0.1.3 test:uv-composite-worker-lifecycle D:\li3d\apps\web
+> node scripts/test-uv-composite-worker-lifecycle.mjs
+
+UV compositor bitmap lifecycle and drawing contract regressions passed.
+
+[web-regression] test:uv-gutter-cooperative
+
+> @liclick/web@0.1.3 test:uv-gutter-cooperative D:\li3d\apps\web
+> node scripts/test-uv-gutter-cooperative.mjs
+
+Gutter spans: large empty atlas, outside-topology coverage, all alpha modes, cold/warm and fragmented fallback are byte-exact.
+UV gutter: 600 frozen-oracle RGBA/coverage/count cases, scheduling, errors and all bake consumers passed.
+UV repair/seams: 500 repair and 40 transformed-mesh frozen-oracle cases passed.
+UV repair/seam event-loop delivery checks passed.
+UV seam repeated/non-manifold edge order parity passed.
+Exact seam reuse: geometry bytes, normals, indices, UV, hierarchy and transforms invalidate; cold/warm output matches frozen kernel.
+
+[web-regression] test:uv-gutter-reuse
+
+> @liclick/web@0.1.3 test:uv-gutter-reuse D:\li3d\apps\web
+> node scripts/test-uv-gutter-reuse.mjs
+
+UV gutter reuse: dense immutable atlas, changed coverage and geometry identity passed.
+
+[web-regression] test:uv-gutter-timings
+
+> @liclick/web@0.1.3 test:uv-gutter-timings D:\li3d\apps\web
+> node scripts/test-uv-gutter-timings.mjs
+
+UV gutter timings: cold/warm phases, scheduler waits, reset, exact pixels and stage total accounting passed.
+
+[web-regression] test:uv-live-bitmap-lifecycle
+
+> @liclick/web@0.1.3 test:uv-live-bitmap-lifecycle D:\li3d\apps\web
+> node scripts/test-uv-live-bitmap-lifecycle.mjs
+
+Live UV bitmap lifecycle: drain, cleanup, parallel order, full-size identity and Worker ownership passed.
+
+[web-regression] test:uv-merge-consumption
+
+> @liclick/web@0.1.3 test:uv-merge-consumption D:\li3d\apps\web
+> node scripts/test-uv-merge-consumption.mjs
+
+UV merge consumption, shared targets, snapshot restore and UV preview parity passed.
+
+[web-regression] test:uv-merge-layer-preview
+
+> @liclick/web@0.1.3 test:uv-merge-layer-preview D:\li3d\apps\web
+> node scripts/test-uv-merge-layer-preview.mjs
+
+UV-merge layer preview regression test passed.
+
+[web-regression] test:uv-postprocess-scheduling
+
+> @liclick/web@0.1.3 test:uv-postprocess-scheduling D:\li3d\apps\web
+> node scripts/test-uv-postprocess-scheduling.mjs
+
+UV postprocess scheduling: stale requests stop before/after yielding; current requests resume.
+
+[web-regression] test:uv-raster-layer-keys
+
+> @liclick/web@0.1.3 test:uv-raster-layer-keys D:\li3d\apps\web
+> node scripts/test-uv-raster-layer-keys.mjs
+
+Exact UV layer keys passed: all source URLs and pixel inputs invalidate, owner/capacity isolation, no input mutation. 14x2MiB strings: original 19.8ms, cold 6.8ms, hot 3.6ms (key construction only).
+
+[web-regression] test:uv-readback-stripes
+
+> @liclick/web@0.1.3 test:uv-readback-stripes D:\li3d\apps\web
+> node scripts/test-uv-readback-stripes.mjs
+
+UV readback passed: exact destinations/tail, bounded isolated overlap, visible paint boundaries, out-of-order success/failure and cleanup.
+
+[web-regression] test:uv-seam-large-cache
+
+> @liclick/web@0.1.3 test:uv-seam-large-cache D:\li3d\apps\web
+> node scripts/test-uv-seam-large-cache.mjs
+
+Large seam cache: exact bytes, direct edits, transform invalidation and cold/warm frozen pixel oracle passed.
+
+[web-regression] test:uv-source-lookahead
+
+> @liclick/web@0.1.3 test:uv-source-lookahead D:\li3d\apps\web
+> node scripts/test-uv-source-lookahead.mjs
+
+UV lookahead: 23-layer order, bounded resources, batched presentation barrier, live gate, failure, cancellation and ownership passed.
+
+[web-regression] test:uv-source-scheduling
+
+> @liclick/web@0.1.3 test:uv-source-scheduling D:\li3d\apps\web
+> node scripts/test-uv-source-scheduling.mjs
+
+Readback Worker: ready-before-transfer, bounded bootstrap retry, failure cleanup and stale-event isolation passed.
+Gutter Worker client: bootstrap, exclusive transfer, topology reuse and stale-result cancellation passed.
+UV alpha closure: 155 copy-only fast paths, 145 filter-only fallback cases, zero byte/coverage differences.
+UV source scheduling: frozen cleanup RGBA/coverage, event loop, decode barrier/fallback and load failure passed.
+Static canvas stripe reads: all RGBA, odd dimensions, tail rows and read failure passed.
+4K live source synchronous snapshot timing preserved.
+GPU source: full-resolution bitmap, no CPU RGBA readback, live timing and scratch release passed.
+Sampling Worker: full dimensions, bitmap ownership, post/crash cleanup, orphan release and recovery passed.
+Resident readback Worker: frozen full RGBA, Y orientation, alpha coverage and counts passed.
+Gutter Worker: 360 cold/warm topology, RGBA/coverage/count, ownership transfer and invalid-input cases passed.
+
+[web-regression] test:uv-topology-reuse
+
+> @liclick/web@0.1.3 test:uv-topology-reuse D:\li3d\apps\web
+> node scripts/test-uv-topology-reuse.mjs
+
+UV topology reuse: oversized snapshots, mask reuse, UV/index edits, signed zero, helpers/removal, NaN, Float64, normalized, half-float and interleaved attributes passed.
+
+[web-regression] test:uv-underlay-cache
+
+> @liclick/web@0.1.3 test:uv-underlay-cache D:\li3d\apps\web
+> node scripts/test-uv-underlay-cache.mjs
+
+UV underlay cache: exact bytes, unchanged decode reuse, changed content/dimensions, source-over ownership, permission failure, cancellation and release races passed.
+Worker underlay fetch cancellation: blocked stale response aborted; latest full pixels published without waiting.
+UV GPU underlay upload: exact verified identity, changed bytes/resources, mutable inputs, transfer metrics and budgeted CPU parity passed.
+UV bounded mapping: buffer completion without redundant queue fences, full/tail bytes and unmap passed.
+
+[web-regression] test:view-cube-orientation
+
+> @liclick/web@0.1.3 test:view-cube-orientation D:\li3d\apps\web
+> node scripts/test-view-cube-orientation.mjs
+
+ViewCube orientation and no-camera-React-commit regression test passed.
+
+[web-regression] test:viewport-project-subscription
+
+> @liclick/web@0.1.3 test:viewport-project-subscription D:\li3d\apps\web
+> node scripts/test-viewport-project-subscription.mjs
+
+Viewport project subscription passed: 900 unrelated invalidations -> 0; relevant references and project identity remain live.
+
+[web-regression] test:viewport-wheel-events
+
+> @liclick/web@0.1.3 test:viewport-wheel-events D:\li3d\apps\web
+> node scripts/test-viewport-wheel-events.mjs
+
+Viewport wheel regression passed: 1021 -> 0 picks; perspective/orthographic zoom, click, miss and cleanup preserved.
+Viewport buttons passed: Alt+LMB orbit, MMB pan (Alt optional), Alt+RMB dolly, plain paint/erase and wheel zoom.
+Native paint tail regression passed: 60 strokes / 120 -> 0 redundant picks; DOM delivery, selection reset, canvas/pointer isolation and capture cleanup preserved.
+
+[web-regression] test:workspace-asset-upload-queue
+
+> @liclick/web@0.1.3 test:workspace-asset-upload-queue D:\li3d\apps\web
+> node scripts/test-workspace-asset-upload-queue.mjs
+
+Shared asset queue: FIFO, max 3, failures/recovery, both API modes, cross-project mixed transports and exact Blob bytes passed.
+Deduplicated API helpers: exact URL encoding, progress values, Blob identity and reader errors passed.
+
+Web regression suite passed: 156 contracts.

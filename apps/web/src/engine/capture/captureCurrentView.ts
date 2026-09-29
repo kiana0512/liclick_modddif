@@ -32,9 +32,8 @@ import * as THREE from 'three';
 const maxCaptureSize = 2048;
 const defaultFillRatio = 0.96;
 // Local-repaint structure/reference frames are pixel-authoritative inputs for
-// the remote edit. Keep their real 2K detail; renderSceneToPngUrl already
-// submits the target in 512px tiles and yields between GPU work, so a low-res
-// render followed by worker upscaling is both unnecessary and visibly blurry.
+// the remote edit. Keep their real 2K detail and striped readback; a low-res
+// render followed by worker upscaling is unnecessary and visibly blurry.
 const localRepaintInteractiveCaptureSize = maxCaptureSize;
 
 function getBoxCorners(box: THREE.Box3) {
@@ -226,6 +225,8 @@ async function captureClayTarget(
   passRequest: CapturePassRequest,
   encodedSize?: { width: number; height: number },
 ) {
+  // [shaoyangZhou]: repair clay capture latency with one full-resolution draw.
+  await waitForViewportFrame();
   const captureMaterial = createClayModelMaterial();
   try {
     return {
@@ -237,17 +238,10 @@ async function captureClayTarget(
         },
         {
           applyDisplayTransform: true,
-          // Keep the exact 2K ModelView input, but submit it in bounded GPU
-          // tiles so the visible viewport receives a frame between capture
-          // chunks. Total capture work stays equivalent without a multi-second
-          // main-thread/GPU presentation stall on button 2.
-          tileSize: 512,
           performancePhasePrefix: 'button2-white-model',
           encodedWidth: encodedSize?.width,
           encodedHeight: encodedSize?.height,
-          // Restrict the scene only for the exact offscreen draw. Restoring
-          // before every inter-tile browser frame keeps the live background,
-          // grid and helpers continuously visible during snapshot preparation.
+          // Restore the scene immediately after submission, before striped readback.
           prepareScene: () =>
             applyTargetOnlyMaterial(passRequest.scene, passRequest.objectId, () => captureMaterial),
         },
@@ -489,9 +483,10 @@ async function captureFlatTarget(
   options: { forceEmptyProjectionHatch?: boolean } = {},
 ) {
   await waitForResidentUvPresentation(passRequest.scene, passRequest.objectId);
-  // CAPTURE-MATERIAL-ISOLATION v1.0.0: never retain presentation mutations
-  // across a browser-paint yield. Reject an interrupted snapshot rather than
-  // encode tiles from different material generations into one GPT guide.
+  await waitForViewportFrame();
+  // [shaoyangZhou]: repair flat capture latency (CAPTURE-MATERIAL-ISOLATION v1.0.1).
+  // Borrow presentation state only during
+  // the synchronous draw and reject a replaced source before submission.
   const sourceMaterials = new Map<THREE.Mesh, THREE.Material[]>();
   const sourceUvMaps = new Map<THREE.Material, unknown[]>();
   passRequest.scene.traverse((object) => {
@@ -536,7 +531,6 @@ async function captureFlatTarget(
       // presentation transform after the generated image is painted back.
       {
         applyDisplayTransform: false,
-        tileSize: 512,
         performancePhasePrefix: 'button2-viewport-reference',
         encodedWidth: encodedSize?.width,
         encodedHeight: encodedSize?.height,

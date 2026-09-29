@@ -869,14 +869,20 @@ export function isTrustedGenerationWorkspaceAssetUrl(url?: string) {
 
 export async function urlToBlob(url: string) {
   const trustedGenerationAsset = isTrustedGenerationWorkspaceAssetUrl(url);
-  const response = await fetch(url, {
-    credentials: trustedGenerationAsset ? 'include' : 'same-origin',
-    redirect: trustedGenerationAsset ? 'error' : 'follow',
-  });
-  if (!response.ok) throw new Error(`无法读取资源（${response.status}），请稍后重试。`);
-  const blob = await response.blob();
+  const directAssetPath = isCloudBuild ? directAssetPathAtBase(url, workspaceApiBase) : undefined;
+  let blob: Blob;
+  if (directAssetPath) {
+    blob = await readWorkspaceAssetBlob(url);
+  } else {
+    const response = await fetch(url, {
+      credentials: trustedGenerationAsset ? 'include' : 'same-origin',
+      redirect: trustedGenerationAsset ? 'error' : 'follow',
+    });
+    if (!response.ok) throw new Error(`无法读取资源（${response.status}），请稍后重试。`);
+    blob = await response.blob();
+  }
   if (trustedGenerationAsset) {
-    const contentType = (response.headers.get('content-type') || blob.type).toLowerCase();
+    const contentType = blob.type.toLowerCase();
     if (!contentType.startsWith('image/')) {
       throw new Error('局部重绘结果不是有效图片。');
     }
@@ -942,7 +948,20 @@ export async function readWorkspaceAssetBlob(url: string) {
     if (signedUrl.protocol !== 'https:' && signedUrl.protocol !== 'http:') {
       throw new WorkspaceApiError(502, '云端资源签名下载协议无效。');
     }
-    const response = await fetch(signedUrl, { credentials: 'omit', redirect: 'follow' });
+    let response: Response;
+    try {
+      response = await fetch(signedUrl, { credentials: 'omit', redirect: 'follow' });
+    } catch (error) {
+      if (!(error instanceof TypeError)) throw error;
+      const proxyResponse = await fetch(`${workspaceApiBase}${directAssetPath}?proxy=1`, {
+        credentials: 'include',
+        redirect: 'error',
+      });
+      if (!proxyResponse.ok) {
+        throw new WorkspaceApiError(proxyResponse.status, `云端资源读取失败（${proxyResponse.status}）。`);
+      }
+      return proxyResponse.blob();
+    }
     if (!response.ok) {
       throw new WorkspaceApiError(response.status, `无法读取云端资源（${response.status}）。`);
     }

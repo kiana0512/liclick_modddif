@@ -9633,11 +9633,15 @@ function SurfacePaintOverlay() {
       });
       const startedAt = performance.now();
       try {
+        // [shaoyangZhou]: repair mask capture latency; freeze the camera before yielding.
+        const captureCamera = cloneCameraForCaptureAspect(options?.camera ?? camera, aspect);
+        // Submit the frozen mask once; keep striped readback for viewport responsiveness.
+        await waitForBrowserPaint();
         const maskUrl = await renderSceneToPngUrl(
           {
             gl,
             scene,
-            camera: cloneCameraForCaptureAspect(options?.camera ?? camera, aspect),
+            camera: captureCamera,
             objectId: model.objectId,
             width,
             height,
@@ -9648,9 +9652,7 @@ function SurfacePaintOverlay() {
             dataTexture: true,
             grayscaleOutput: true,
             ignoreSceneBackground: true,
-            tileSize: PROJECTION_PAINT_MAX_SIZE,
             performancePhasePrefix: 'button2-mask-capture',
-            waitForViewportIdle: waitForBrowserPaint,
             prepareScene: () => {
               const restoreScene = applyTargetOnlyMaterial(scene, model.objectId, () => material);
               if (capturedMeshes) {

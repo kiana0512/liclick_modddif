@@ -1,0 +1,273 @@
+{
+  "viewport": [
+    1241,
+    1206
+  ],
+  "fullscreen": true,
+  "rows": [
+    {
+      "width": 2048,
+      "height": 2048,
+      "mode": "paint",
+      "ms": 260.79999999701977,
+      "differences": 0,
+      "frameP95": 16.799999999999272,
+      "frameMax": 16.799999999999272,
+      "pointerP95": 12.5,
+      "pointerCount": 15
+    },
+    {
+      "width": 2048,
+      "height": 2048,
+      "mode": "task",
+      "ms": 99.59999999403954,
+      "differences": 0,
+      "frameP95": 16.799999999999272,
+      "frameMax": 16.799999999999272,
+      "pointerP95": 9,
+      "pointerCount": 6
+    },
+    {
+      "width": 2048,
+      "height": 2048,
+      "mode": "task",
+      "ms": 114.20000000298023,
+      "differences": 0,
+      "frameP95": 16.700000000000728,
+      "frameMax": 16.700000000000728,
+      "pointerP95": 8.600000008940697,
+      "pointerCount": 6
+    },
+    {
+      "width": 2048,
+      "height": 2048,
+      "mode": "paint",
+      "ms": 260,
+      "differences": 0,
+      "frameP95": 16.700000000000728,
+      "frameMax": 16.700000000000728,
+      "pointerP95": 10.600000008940697,
+      "pointerCount": 15
+    },
+    {
+      "width": 2048,
+      "height": 2048,
+      "mode": "paint",
+      "ms": 255.90000000596046,
+      "differences": 0,
+      "frameP95": 16.799999999999272,
+      "frameMax": 16.799999999999272,
+      "pointerP95": 8.900000005960464,
+      "pointerCount": 14
+    },
+    {
+      "width": 2048,
+      "height": 2048,
+      "mode": "task",
+      "ms": 89.5,
+      "differences": 0,
+      "frameP95": 16.799999999999272,
+      "frameMax": 16.799999999999272,
+      "pointerP95": 7.899999991059303,
+      "pointerCount": 5
+    },
+    {
+      "width": 2048,
+      "height": 2048,
+      "mode": "task",
+      "ms": 100.09999999403954,
+      "differences": 0,
+      "frameP95": 16.700000000000728,
+      "frameMax": 16.700000000000728,
+      "pointerP95": 10.200000002980232,
+      "pointerCount": 5
+    },
+    {
+      "width": 2048,
+      "height": 2048,
+      "mode": "paint",
+      "ms": 262.09999999403954,
+      "differences": 0,
+      "frameP95": 16.80000000000291,
+      "frameMax": 16.80000000000291,
+      "pointerP95": 15.100000008940697,
+      "pointerCount": 15
+    },
+    {
+      "width": 2048,
+      "height": 1495,
+      "mode": "paint",
+      "ms": 188.59999999403954,
+      "differences": 0,
+      "frameP95": 16.700000000000728,
+      "frameMax": 16.700000000000728,
+      "pointerP95": 9.399999991059303,
+      "pointerCount": 11
+    },
+    {
+      "width": 2048,
+      "height": 1495,
+      "mode": "task",
+      "ms": 71.20000000298023,
+      "differences": 0,
+      "frameP95": 16.700000000000728,
+      "frameMax": 16.700000000000728,
+      "pointerP95": 15.700000002980232,
+      "pointerCount": 3
+    },
+    {
+      "width": 2048,
+      "height": 1495,
+      "mode": "task",
+      "ms": 78.09999999403954,
+      "differences": 0,
+      "frameP95": 16.799999999999272,
+      "frameMax": 16.799999999999272,
+      "pointerP95": 9.700000002980232,
+      "pointerCount": 4
+    },
+    {
+      "width": 2048,
+      "height": 1495,
+      "mode": "paint",
+      "ms": 181.40000000596046,
+      "differences": 0,
+      "frameP95": 16.700000000000728,
+      "frameMax": 16.700000000000728,
+      "pointerP95": 9.400000005960464,
+      "pointerCount": 11
+    },
+    {
+      "width": 2048,
+      "height": 1495,
+      "mode": "paint",
+      "ms": 189,
+      "differences": 0,
+      "frameP95": 16.799999999999272,
+      "frameMax": 16.799999999999272,
+      "pointerP95": 9.599999994039536,
+      "pointerCount": 11
+    },
+    {
+      "width": 2048,
+      "height": 1495,
+      "mode": "task",
+      "ms": 78,
+      "differences": 0,
+      "frameP95": 16.80000000000291,
+      "frameMax": 16.80000000000291,
+      "pointerP95": 9.899999991059303,
+      "pointerCount": 4
+    },
+    {
+      "width": 2048,
+      "height": 1495,
+      "mode": "task",
+      "ms": 68.09999999403954,
+      "differences": 0,
+      "frameP95": 16.700000000000728,
+      "frameMax": 16.700000000000728,
+      "pointerP95": 8.799999997019768,
+      "pointerCount": 4
+    },
+    {
+      "width": 2048,
+      "height": 1495,
+      "mode": "paint",
+      "ms": 189.20000000298023,
+      "differences": 0,
+      "frameP95": 16.80000000000291,
+      "frameMax": 16.80000000000291,
+      "pointerP95": 9.200000002980232,
+      "pointerCount": 11
+    },
+    {
+      "width": 4096,
+      "height": 4096,
+      "mode": "paint",
+      "ms": 1056.4000000059605,
+      "differences": 0,
+      "frameP95": 16.799999999999272,
+      "frameMax": 16.799999999999272,
+      "pointerP95": 9.299999997019768,
+      "pointerCount": 63
+    },
+    {
+      "width": 4096,
+      "height": 4096,
+      "mode": "task",
+      "ms": 379.59999999403954,
+      "differences": 0,
+      "frameP95": 16.799999999999272,
+      "frameMax": 16.799999999999272,
+      "pointerP95": 9.299999997019768,
+      "pointerCount": 22
+    },
+    {
+      "width": 4096,
+      "height": 4096,
+      "mode": "task",
+      "ms": 377.09999999403954,
+      "differences": 0,
+      "frameP95": 16.799999999999272,
+      "frameMax": 16.799999999999272,
+      "pointerP95": 9.599999994039536,
+      "pointerCount": 22
+    },
+    {
+      "width": 4096,
+      "height": 4096,
+      "mode": "paint",
+      "ms": 1066,
+      "differences": 0,
+      "frameP95": 16.799999999999272,
+      "frameMax": 16.80000000000291,
+      "pointerP95": 9.800000011920929,
+      "pointerCount": 63
+    },
+    {
+      "width": 4096,
+      "height": 4096,
+      "mode": "paint",
+      "ms": 1062.4000000059605,
+      "differences": 0,
+      "frameP95": 16.799999999999272,
+      "frameMax": 16.799999999999272,
+      "pointerP95": 9.099999994039536,
+      "pointerCount": 63
+    },
+    {
+      "width": 4096,
+      "height": 4096,
+      "mode": "task",
+      "ms": 395,
+      "differences": 0,
+      "frameP95": 16.80000000000291,
+      "frameMax": 33.30000000000291,
+      "pointerP95": 8.899999991059303,
+      "pointerCount": 22
+    },
+    {
+      "width": 4096,
+      "height": 4096,
+      "mode": "task",
+      "ms": 386,
+      "differences": 0,
+      "frameP95": 16.700000000000728,
+      "frameMax": 33.29999999999927,
+      "pointerP95": 9.600000008940697,
+      "pointerCount": 23
+    },
+    {
+      "width": 4096,
+      "height": 4096,
+      "mode": "paint",
+      "ms": 1065.5,
+      "differences": 0,
+      "frameP95": 16.799999999999272,
+      "frameMax": 16.80000000000291,
+      "pointerP95": 9.699999988079071,
+      "pointerCount": 63
+    }
+  ]
+}

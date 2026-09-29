@@ -262,11 +262,13 @@ export async function renderSceneToPngUrl(
     }
 
     markCapturePerformancePhase(options.performancePhasePrefix, 'readback-submit');
+    // [shaoyangZhou]: repair per-stripe frame waits; keep bounded async GPU reads.
     const readbackPromise = readRenderTargetPixelsInStripes(
       request.gl,
       readTarget,
       request.width,
       request.height,
+      'task',
     );
     // The async PBO read owns the submitted frame. Restore the shared renderer
     // before waiting so React Three Fiber can keep drawing the viewport.
