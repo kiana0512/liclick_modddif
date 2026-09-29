@@ -217,6 +217,8 @@ Cloud 权威实现使用 PostgreSQL JSONB 当前快照和不可变 Revision 表�
 
 `ASSET_TRANSFER_PROTOCOL_VERSION=1`，单资产最大 `160 MiB`。类别固定为 models、references、captures、generations、layers、baked。浏览器计算 SHA-256，请求绑定 user/project/category/filename/MIME/size/hash 的上传意图，使用短期签名 PUT 上传；完成接口执行 `ALG-ASSET-VERIFY-001` v1.1.0：HEAD 校验长度、MIME；有 SHA-256 checksum 时直接比对，缺失时通过配置的内网 endpoint 流式 GET 计算实际 SHA-256，全部匹配才把资产从 pending 置为 verified。明确 checksum 不匹配不得读回放行，metadata/ETag 不替代 SHA-256。对象 key 为 `users/<sha256(userId)>/projects/<projectId>/<assetId>/<safe-name>`。下载先校验 ownership，再返回短时签名 GET；访问对象存储时 `credentials: omit`。
 
+`ASSET-READ-FALLBACK/1.0.0`：浏览器读取上述同源 verified asset 时先解析并直读短时签名 GET；若对象存储响应被跨域策略遮蔽为网络 `TypeError`，改由同源 `content?proxy=1` 读取。控制面再次校验 Session、user/project/asset ownership 和 verified 状态，以针对内网 endpoint 新签的 GET 流式转发，并核对长度、MIME 和编码；不把内网地址或对象密钥交给浏览器。普通签名下载与直传协议不变，非项目 URL 不进入回退。`M14` 主模块、`M04` 生成参考图消费者和 `M13` 个人账号错误呈现受影响；无图像算法、Schema、Project Command、Revision、ownership 或既有资产迁移。回退可关闭浏览器网络错误回退和同源 proxy 分支，保留已验证资产。见 `changes/CHG-20260929-GENERATION-ASSET-READ-AND-TOKEN-ERROR.md`。
+
 ### 4.5 浏览器保存调度 `SAVE-SCHEDULER` v1.1.0
 
 编辑器保存调度由独立 `ProjectSaveCoordinator` 负责：普通编辑采用 2 秒 trailing debounce；持续编辑从首个待保存变更起最多等待 10 秒；视口交互、性能只读事务或图层同步抑制期间每 1 秒重试。Ctrl+S、生成/导入等既有即时保存事件仍直接进入同一项目串行保存队列，不等待自动保存窗口。

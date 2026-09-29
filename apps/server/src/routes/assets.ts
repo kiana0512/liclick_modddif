@@ -1,4 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import { Readable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 import {
   parseCompleteAssetUploadIntent,
   parseCreateAssetUploadIntent,
@@ -10,6 +12,7 @@ import {
   AssetTransferError,
   completeAssetUploadIntent,
   createAssetDownloadUrl,
+  createInternalAssetDownload,
   createAssetUploadIntent,
   saveProxiedObjectStorageAsset,
 } from '../services/assetTransferService.js';
@@ -84,6 +87,47 @@ export async function handleAssetsRoute(request: IncomingMessage, response: Serv
 
   if (request.method === 'GET' && segments.length === 6 && segments[5] === 'content') {
     try {
+      if (url.searchParams.get('proxy') === '1') {
+        const asset = await createInternalAssetDownload(user.id, projectId, segments[4]);
+        if (!asset) {
+          sendJson(response, 404, { error: 'Asset not found.' });
+          return true;
+        }
+        const controller = new AbortController();
+        const onClose = () => controller.abort();
+        response.once('close', onClose);
+        try {
+          const upstream = await fetch(asset.url, {
+            headers: { 'accept-encoding': 'identity' },
+            redirect: 'error',
+            signal: AbortSignal.any([controller.signal, AbortSignal.timeout(90_000)]),
+          });
+          if (upstream.status !== 200 || !upstream.body) {
+            await upstream.body?.cancel();
+            sendJson(response, 502, { code: 'ASSET_STORAGE_READ_FAILED', error: 'Object storage could not read the verified asset.' });
+            return true;
+          }
+          if (upstream.headers.get('content-length') !== String(asset.sizeBytes)
+            || upstream.headers.get('content-type')?.split(';')[0]?.trim().toLowerCase() !== asset.mimeType.toLowerCase()
+            || ![null, 'identity'].includes(upstream.headers.get('content-encoding'))) {
+            await upstream.body.cancel();
+            sendJson(response, 502, { code: 'ASSET_METADATA_MISMATCH', error: 'Object storage asset metadata changed.' });
+            return true;
+          }
+          response.writeHead(200, {
+            ...corsHeaders(response),
+            'content-type': asset.mimeType,
+            'content-length': String(asset.sizeBytes),
+            'cache-control': 'private, no-store',
+            'x-content-type-options': 'nosniff',
+          });
+          await pipeline(Readable.from(upstream.body as unknown as AsyncIterable<Uint8Array>), response);
+        } finally {
+          response.off('close', onClose);
+          controller.abort();
+        }
+        return true;
+      }
       const downloadUrl = await createAssetDownloadUrl(user.id, projectId, segments[4]);
       if (!downloadUrl) {
         sendJson(response, 404, { error: 'Asset not found.' });
