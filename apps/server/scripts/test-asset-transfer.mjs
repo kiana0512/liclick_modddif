@@ -23,6 +23,17 @@ const fetchForbiddenPorts = new Set([
   3659, 4045, 5060, 5061, 6000, 6566, 6665, 6666, 6667, 6668, 6669, 6697, 10080,
 ]);
 
+const listenFetchCompatible = async (server) => {
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    assert.ok(address && typeof address === 'object');
+    if (!fetchForbiddenPorts.has(address.port)) return address;
+    await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+  }
+  throw new Error('Unable to reserve a Fetch-compatible test port.');
+};
+
 const handler = async (request, response) => {
   const url = new URL(request.url ?? '/', `http://${request.headers.host}`);
   assert.equal(url.searchParams.get('X-Amz-Algorithm'), 'AWS4-HMAC-SHA256');
@@ -93,18 +104,8 @@ const handler = async (request, response) => {
 const objectStorage = createServer(handler);
 const internalStorage = createServer(handler);
 let appServer;
-await new Promise((resolve) => internalStorage.listen(0, '127.0.0.1', resolve));
-
-let address;
-for (let attempt = 0; attempt < 10; attempt += 1) {
-  await new Promise((resolve) => objectStorage.listen(0, '127.0.0.1', resolve));
-  address = objectStorage.address();
-  assert.ok(address && typeof address === 'object');
-  if (!fetchForbiddenPorts.has(address.port)) break;
-  await new Promise((resolve, reject) => objectStorage.close((error) => (error ? reject(error) : resolve())));
-  address = undefined;
-}
-assert.ok(address && typeof address === 'object', 'Unable to reserve a Fetch-compatible test port.');
+await listenFetchCompatible(internalStorage);
+const address = await listenFetchCompatible(objectStorage);
 
 try {
   process.env.LICLICK_WORKSPACE_DIR = workspace;
@@ -148,7 +149,7 @@ try {
       response.end(String(error));
     }
   });
-  await new Promise((resolve) => appServer.listen(0, '127.0.0.1', resolve));
+  await listenFetchCompatible(appServer);
   const appBase = `http://127.0.0.1:${appServer.address().port}`;
   const created = await createProject(userId, { name: 'Direct upload' });
   const body = Buffer.from('browser-uploaded-texture-bytes');

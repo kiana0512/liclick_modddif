@@ -1,6 +1,6 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
-> 文档版本：`2.25.4`
+> 文档版本：`2.25.5`
 >
 > 本文件只描述**现在必须成立的规则**。历史变更流水、变更卡摘要与修订记录已移出到 [00_SYSTEM_REVISION_LOG.md](00_SYSTEM_REVISION_LOG.md)，仅在追溯决策、排查兼容或回归问题时读取。
 
@@ -750,6 +750,8 @@ M15 / `CI-LATENCY/1.0.0`（2026-09-29）：verify 与正式 build 并行；relea
 M15 / `CI-CACHE-POLICY/1.0.0`（2026-09-29）：GitLab Node job 默认仅拉取 pnpm/Prisma 锁文件缓存；master 锁文件变化时由 contracts job 写回一次，手动 `LI3D_REFRESH_PNPM_CACHE=true` 可重建被清理的缓存。Kaniko 镜像与 kubectl 部署 job 禁用不使用的 Node 缓存，避免每个 job 重复打包约 22,000 个文件或下载它们。缓存缺失时 frozen-lockfile 安装继续，功能门禁、镜像验证与部署依赖不变；无算法、Schema 或数据迁移。回滚恢复所有 job 的默认 pull-push，但增加缓存传输时间。见 `changes/CHG-20260929-CI-CACHE-POLICY.md`。
 
 M15 / `CI-WEB-IMAGE-STAGES/1.0.0`（2026-09-29）：将 Dockerfile 的 web 目标放在仅供 server 使用的 Blender 下载阶段之前。Kaniko 的 `--target web` 因而在 Blender 阶段前结束，避免前端镜像解压约 396 MB 的服务端运行时缓存层；server 目标仍复制固定校验和的 Blender，并以运行用户执行原有 UV/GLB QA。两个目标仍从同一 build 阶段取得同一 Cloud 构建产物，镜像内容、业务算法、Schema、资产及部署门禁不变。无迁移；回滚为还原阶段顺序，但前端镜像再次处理 Blender 大层。见 `changes/CHG-20260929-CI-WEB-IMAGE-STAGES.md`。
+
+M15 / `ASSET-TRANSFER-TEST-PORTS/1.0.0`（2026-09-29）：资产传输真实 HTTP 回归中的对象存储、内部存储和应用服务三者都须避开 WHATWG Fetch 禁用端口。Windows 的 `listen(0)` 可能分配此类端口；测试只重选监听端口，保持真实签名上传、下载、代理与完整性校验。生产端口、业务逻辑、Schema 和资产不变；无迁移，回滚会恢复随机失败风险。见 `changes/CHG-20260929-ASSET-TRANSFER-TEST-PORTS.md`。
 
 M15 lint 发布修复（2026-08-31）：根工作区显式声明与锁文件一致的 `@eslint/js@9.39.4`，避免依赖提升差异导致 ESLint 配置加载失败。M04 / `ALG-GEN-005` 的提示词终端转义清理由 Node `stripVTControlCharacters` 实现，替代触发 `no-control-regex/no-useless-escape` 的手写正则；保留全部 lint 门禁。回归覆盖 ANSI 颜色、C1 CSI、OSC 标题/超链接清理，以及中文、标点、URL 与段落保留。诊断/转换模板和调用链、算法版本 v1.5.0、GPU/CPU/Worker/shader/UV/export、Schema 与资产均不变，无迁移。回退仅还原依赖声明、锁文件和清理实现，不修改密钥或工程数据。
 
