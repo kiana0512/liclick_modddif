@@ -2,6 +2,14 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { serverConfig } from '../config.js';
 
 const allowedOrigins = new Set(serverConfig.allowedOrigins);
+const defaultJsonBodyLimitBytes = 8 * 1024 * 1024;
+
+export class RequestBodyTooLargeError extends Error {
+  constructor() {
+    super('Request body is too large.');
+    this.name = 'RequestBodyTooLargeError';
+  }
+}
 
 export function isAllowedRequestOrigin(request: IncomingMessage) {
   const origin = request.headers.origin;
@@ -29,14 +37,21 @@ export function corsHeaders(response: ServerResponse) {
 
 export async function readJsonBody<T>(
   request: IncomingMessage,
-  maxBytes = Number.POSITIVE_INFINITY,
+  maxBytes = defaultJsonBodyLimitBytes,
 ): Promise<T> {
+  const declaredLength = Number(request.headers['content-length']);
+  if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
+    throw new RequestBodyTooLargeError();
+  }
   const chunks: Buffer[] = [];
   let totalBytes = 0;
-  for await (const chunk of request) {
+  for await (const chunk of request.iterator({ destroyOnReturn: false })) {
     const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
     totalBytes += buffer.byteLength;
-    if (totalBytes > maxBytes) throw new Error('Request body is too large.');
+    if (totalBytes > maxBytes) {
+      request.pause();
+      throw new RequestBodyTooLargeError();
+    }
     chunks.push(buffer);
   }
   const raw = Buffer.concat(chunks).toString('utf8');
@@ -76,9 +91,12 @@ export function sendRequestFailure(response: ServerResponse, error: unknown) {
     response.destroy();
     return;
   }
-  sendJson(response, 500, {
-    error: error instanceof Error ? error.message : 'Internal server error.',
-  });
+  if (error instanceof RequestBodyTooLargeError) {
+    response.setHeader('connection', 'close');
+    sendJson(response, 413, { error: error.message });
+    return;
+  }
+  sendJson(response, 500, { error: 'Internal server error.' });
 }
 
 export function getPathSegments(url: URL) {

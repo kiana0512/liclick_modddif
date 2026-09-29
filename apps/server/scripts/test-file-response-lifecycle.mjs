@@ -35,7 +35,7 @@ new Function('exports', 'require', ts.transpileModule(httpSource, {
 }).outputText)(httpExports, (id) => id === '../config.js'
   ? { serverConfig: { allowedOrigins: [], frontendOrigin: 'http://127.0.0.1' } }
   : require(id));
-const { sendRequestFailure } = httpExports;
+const { readJsonBody, sendRequestFailure } = httpExports;
 const entrySource = await fs.promises.readFile(new URL('../src/index.ts', import.meta.url), 'utf8');
 assert.match(entrySource, /catch \(error\) \{\s*console\.error\('\[Liclick Workspace Server\]', error\);\s*sendRequestFailure\(response, error\);/);
 const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'li3d-file-response-'));
@@ -48,6 +48,18 @@ await descriptor.close();
 const expected = Buffer.from('Complete image bytes, unchanged.');
 await fs.promises.writeFile(path.join(project, 'image.png'), expected);
 const server = http.createServer((request, response) => {
+  if (request.url === '/default-body-limit') {
+    void readJsonBody(request).then(() => response.end('accepted'))
+      .catch(error => sendRequestFailure(response, error));
+    return;
+  }
+  if (request.url === '/body-limit') {
+    void readJsonBody(request, 8).then(body => {
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end(JSON.stringify(body));
+    }).catch(error => sendRequestFailure(response, error));
+    return;
+  }
   if (request.url === '/closed-before-pipe') {
     response.destroy();
     const count = streams.length;
@@ -102,7 +114,38 @@ try {
   }, 'Partial streams must terminate instead of receiving a second set of JSON headers');
   const earlyError = await globalThis.fetch(`${base}/early-error`);
   assert.equal(earlyError.status, 500);
-  assert.deepEqual(await earlyError.json(), { error: 'before headers' });
+  assert.deepEqual(await earlyError.json(), { error: 'Internal server error.' },
+    'Unexpected internal details must not be returned to browsers');
+  const allowedBody = await globalThis.fetch(`${base}/body-limit`, { method: 'POST', body: '{}' });
+  assert.equal(allowedBody.status, 200);
+  assert.deepEqual(await allowedBody.json(), {});
+  const oversizedBody = await globalThis.fetch(`${base}/body-limit`, { method: 'POST', body: '{"long":true}' });
+  assert.equal(oversizedBody.status, 413);
+  assert.deepEqual(await oversizedBody.json(), { error: 'Request body is too large.' });
+  const chunkedBody = await new Promise((resolve, reject) => {
+    const request = http.request(`${base}/body-limit`, { method: 'POST', headers: { 'transfer-encoding': 'chunked' } }, response => {
+      const chunks = [];
+      response.on('data', chunk => chunks.push(chunk));
+      response.on('end', () => resolve({ status: response.statusCode, body: Buffer.concat(chunks).toString() }));
+    });
+    request.on('error', reject);
+    request.end('{"long":true}');
+  });
+  assert.equal(chunkedBody.status, 413);
+  assert.deepEqual(JSON.parse(chunkedBody.body), { error: 'Request body is too large.' });
+  const defaultLimit = await new Promise((resolve, reject) => {
+    const request = http.request(`${base}/default-body-limit`, {
+      method: 'POST', headers: { 'content-length': String(8 * 1024 * 1024 + 1) },
+    }, response => {
+      const chunks = [];
+      response.on('data', chunk => chunks.push(chunk));
+      response.on('end', () => resolve({ status: response.statusCode, body: Buffer.concat(chunks).toString() }));
+    });
+    request.on('error', reject);
+    request.end();
+  });
+  assert.equal(defaultLimit.status, 413, 'Declared oversized JSON must be rejected before reading the body');
+  assert.deepEqual(JSON.parse(defaultLimit.body), { error: 'Request body is too large.' });
   assert.deepEqual(Buffer.from(await (await globalThis.fetch(`${base}/complete`)).arrayBuffer()), expected,
     'The same HTTP server must remain available after aborted and partially sent responses');
   const trash = path.join(root, 'trash');
@@ -110,7 +153,7 @@ try {
   assert.equal(path.dirname(trash), root);
   await fs.promises.rename(project, trash);
   assert.deepEqual(await fs.promises.readFile(path.join(trash, 'image.png')), expected, 'Moving to trash preserves all data');
-  globalThis.console.log('File response lifecycle passed: real HTTP abort closes file, complete bytes, read failure and project-to-trash rename.');
+  globalThis.console.log('HTTP lifecycle passed: aborted/partial file streams, JSON 413 limits, sanitized 500 and project-to-trash rename.');
 } finally {
   streams.forEach(stream => stream.destroy());
   server.closeAllConnections();

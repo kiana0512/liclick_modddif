@@ -14,7 +14,7 @@ import {
   startStoragePurge,
   startStorageScan,
 } from '../services/storageManagementService.js';
-import { getPathSegments, readJsonBody, sendJson } from './httpUtils.js';
+import { RequestBodyTooLargeError, getPathSegments, readJsonBody, sendJson } from './httpUtils.js';
 
 export async function handleStorageRoute(
   request: IncomingMessage,
@@ -56,6 +56,7 @@ export async function handleStorageRoute(
     try {
       input = parseStartStoragePurgeRequest(await readJsonBody<unknown>(request, 16 * 1024));
     } catch (error) {
+      if (error instanceof RequestBodyTooLargeError) throw error;
       sendJson(response, 400, {
         error: error instanceof Error ? error.message : 'Invalid storage purge request.',
         code: 'INVALID_STORAGE_PURGE_REQUEST',
@@ -102,6 +103,7 @@ export async function handleStorageRoute(
     try {
       input = parseStartStorageCleanupRequest(await readJsonBody<unknown>(request, 16 * 1024));
     } catch (error) {
+      if (error instanceof RequestBodyTooLargeError) throw error;
       sendJson(response, 400, {
         error: error instanceof Error ? error.message : 'Invalid storage cleanup request.',
         code: 'INVALID_STORAGE_CLEANUP_REQUEST',

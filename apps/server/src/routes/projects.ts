@@ -7,7 +7,7 @@ import {
 import { executeProjectCommand } from '../services/projectCommandService.js';
 import type { WorkspaceProject } from '../types/project.js';
 import { requireAuth } from '../auth/authMiddleware.js';
-import { getPathSegments, readJsonBody, sendJson } from './httpUtils.js';
+import { RequestBodyTooLargeError, getPathSegments, readJsonBody, sendJson } from './httpUtils.js';
 
 function sendProjectConflict(response: ServerResponse, error: unknown) {
   if (!(error instanceof ProjectSaveConflictError)) return false;
@@ -45,7 +45,7 @@ export async function handleProjectsRoute(request: IncomingMessage, response: Se
   }
 
   if (request.method === 'PUT' && projectId && segments.length === 3) {
-    const body = await readJsonBody<WorkspaceProject>(request);
+    const body = await readJsonBody<WorkspaceProject>(request, 128 * 1024 * 1024);
     let result: Awaited<ReturnType<typeof projectRepository.save>>;
     try {
       result = await projectRepository.save(user.id, projectId, body);
@@ -66,8 +66,9 @@ export async function handleProjectsRoute(request: IncomingMessage, response: Se
   ) {
     let command;
     try {
-      command = parseProjectCommand(await readJsonBody<unknown>(request));
+      command = parseProjectCommand(await readJsonBody<unknown>(request, 128 * 1024 * 1024));
     } catch (error) {
+      if (error instanceof RequestBodyTooLargeError) throw error;
       sendJson(response, 400, {
         error: error instanceof Error ? error.message : 'Invalid project command.',
         code: 'INVALID_PROJECT_COMMAND',

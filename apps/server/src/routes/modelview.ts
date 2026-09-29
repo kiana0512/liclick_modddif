@@ -66,7 +66,7 @@ export async function handleModelviewRoute(
   }
 
   if (request.method === 'POST' && segments[2] === 'inpaint') {
-    const input = await readJsonBody<ModelviewInpaintInput>(request);
+    const input = await readJsonBody<ModelviewInpaintInput>(request, 256 * 1024 * 1024);
     const controller = new AbortController();
     const abortRemoteRequest = () => controller.abort();
     request.once('aborted', abortRemoteRequest);
@@ -92,7 +92,7 @@ export async function handleModelviewRoute(
   }
 
   if (request.method === 'POST' && segments[2] === 'single-view-inpaint') {
-    const input = await readJsonBody<ModelviewSingleViewInpaintInput>(request);
+    const input = await readJsonBody<ModelviewSingleViewInpaintInput>(request, 256 * 1024 * 1024);
     const controller = new AbortController();
     const abortRemoteRequest = () => controller.abort();
     request.once('aborted', abortRemoteRequest);
@@ -118,7 +118,7 @@ export async function handleModelviewRoute(
   }
 
   if (request.method === 'POST' && segments[2] === 'single-view') {
-    const input = await readJsonBody<ModelviewSingleViewInput>(request);
+    const input = await readJsonBody<ModelviewSingleViewInput>(request, 256 * 1024 * 1024);
     const controller = new AbortController();
     const abortRemoteRequest = () => controller.abort();
     request.once('aborted', abortRemoteRequest);

@@ -17,7 +17,7 @@ import {
   saveProxiedObjectStorageAsset,
 } from '../services/assetTransferService.js';
 import type { AssetCategory } from '../types/asset.js';
-import { corsHeaders, getPathSegments, readBinaryBody, readJsonBody, sendJson } from './httpUtils.js';
+import { RequestBodyTooLargeError, corsHeaders, getPathSegments, readBinaryBody, readJsonBody, sendJson } from './httpUtils.js';
 
 function sendAssetTransferError(response: ServerResponse, error: unknown) {
   if (!(error instanceof AssetTransferError)) return false;
@@ -39,6 +39,7 @@ export async function handleAssetsRoute(request: IncomingMessage, response: Serv
     try {
       input = parseCreateAssetUploadIntent(await readJsonBody<unknown>(request));
     } catch (error) {
+      if (error instanceof RequestBodyTooLargeError) throw error;
       sendJson(response, 400, {
         error: error instanceof Error ? error.message : 'Invalid asset upload intent.',
         code: 'INVALID_ASSET_UPLOAD_INTENT',
@@ -65,6 +66,7 @@ export async function handleAssetsRoute(request: IncomingMessage, response: Serv
     try {
       input = parseCompleteAssetUploadIntent(await readJsonBody<unknown>(request));
     } catch (error) {
+      if (error instanceof RequestBodyTooLargeError) throw error;
       sendJson(response, 400, {
         error: error instanceof Error ? error.message : 'Invalid asset upload completion.',
         code: 'INVALID_ASSET_UPLOAD_COMPLETION',
@@ -193,7 +195,7 @@ export async function handleAssetsRoute(request: IncomingMessage, response: Serv
     dataUrl?: string;
     url?: string;
     filename: string;
-  }>(request);
+  }>(request, 224 * 1024 * 1024);
   if (!body.dataUrl && !body.url) {
     sendJson(response, 400, { error: 'Asset dataUrl or url is required.' });
     return true;
