@@ -22,6 +22,7 @@
     "test:bake-artifact-plan": "node scripts/clean-dist.mjs && tsc -p tsconfig.json && node scripts/test-bake-artifact-plan.mjs",
     "test:bake-archive": "node scripts/test-bake-archive.mjs",
     "test:file-response-lifecycle": "node scripts/test-file-response-lifecycle.mjs",
+    "test:remote-image-boundary": "node scripts/test-remote-image-boundary.mjs",
     "test:pipeline-persistence": "node scripts/clean-dist.mjs && tsc -p tsconfig.json && node scripts/test-project-pipeline-persistence.mjs",
     "test:postgres-project-repository": "node scripts/clean-dist.mjs && tsc -p tsconfig.json && node scripts/test-postgres-project-repository.mjs",
     "test:postgres-connection-lifecycle": "node scripts/clean-dist.mjs && tsc -p tsconfig.json && node scripts/test-postgres-connection-lifecycle.mjs",

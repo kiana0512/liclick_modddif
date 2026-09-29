@@ -28,6 +28,7 @@ import {
   type LiclickImageSubmission,
 } from '../services/liclickGenerationService.js';
 import { getLiclickUserErrorMessage } from '../services/liclickErrorMessage.js';
+import { fetchAllowedRemoteImage } from '../services/assetFileService.js';
 import { polishPrompt, type PromptPolishInput } from '../services/promptPolishService.js';
 import { serverConfig } from '../config.js';
 import { getPathSegments, readJsonBody, sendJson } from './httpUtils.js';
@@ -667,12 +668,8 @@ async function waitForSubmitted(job: GenerationJob) {
 }
 
 async function remoteImageToDataUrl(url: string) {
-  const imageResponse = await fetch(url);
-  if (!imageResponse.ok)
-    throw new Error(`Could not download Liclick edit result: ${imageResponse.status}`);
-  const contentType = imageResponse.headers.get('content-type') ?? 'image/png';
-  const buffer = Buffer.from(await imageResponse.arrayBuffer());
-  return `data:${contentType};base64,${buffer.toString('base64')}`;
+  const { mime, buffer } = await fetchAllowedRemoteImage(url);
+  return `data:${mime};base64,${buffer.toString('base64')}`;
 }
 
 function getJobListResponse(job: GenerationJob) {
@@ -1121,7 +1118,7 @@ export async function handleLiclickRoute(
         return true;
       }
     }
-    const input = await readJsonBody<EditImageInput>(request);
+    const input = await readJsonBody<EditImageInput>(request, 256 * 1024 * 1024);
     if (!input.image || !input.mask || !input.prompt?.trim()) {
       sendJson(response, 400, { error: 'Image, mask, and prompt are required for local repaint.' });
       return true;

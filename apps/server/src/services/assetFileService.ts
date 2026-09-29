@@ -66,13 +66,24 @@ function uniqueAssetName(filename: string, fallbackExtension: string) {
 function assertAllowedRemoteUrl(url: string) {
   const parsed = new URL(url);
   if (parsed.protocol !== 'https:') throw new Error('Only HTTPS remote assets can be imported.');
+  if (parsed.port || parsed.username || parsed.password) {
+    throw new Error('Remote asset URL must use standard HTTPS without embedded credentials.');
+  }
   if (!allowedRemoteAssetHosts.has(parsed.hostname)) {
     throw new Error(`Remote asset host is not allowed: ${parsed.hostname}`);
   }
   return parsed;
 }
 
-async function fetchRemoteImage(url: string) {
+export async function fetchAllowedRemoteImage(url: string, maxBytes = maxRemoteAssetBytes) {
+  const limit = Math.min(maxRemoteAssetBytes, maxBytes);
+  if (url.startsWith('data:')) {
+    if (!/^data:image\//i.test(url) || Buffer.byteLength(url, 'utf8') > Math.ceil(limit * 4 / 3) + 1024) {
+      throw new Error('Remote asset is not an allowed image.');
+    }
+  } else {
+    assertAllowedRemoteUrl(url);
+  }
   const controller = new AbortController();
   const timeout = delay(30_000, undefined, { signal: controller.signal })
     .then(() => {
@@ -80,15 +91,41 @@ async function fetchRemoteImage(url: string) {
     })
     .catch(() => undefined);
   try {
-    const response = await fetch(url, { signal: controller.signal });
+    let currentUrl = url;
+    let response: Response | undefined;
+    for (let hop = 0; hop <= 3; hop++) {
+      response = await fetch(currentUrl, { signal: controller.signal, redirect: 'manual' });
+      if (![301, 302, 303, 307, 308].includes(response.status)) break;
+      const location = response.headers.get('location');
+      if (!location || hop === 3) throw new Error('Remote asset redirect limit reached.');
+      const nextUrl = new URL(location, currentUrl).href;
+      assertAllowedRemoteUrl(nextUrl);
+      await response.body?.cancel();
+      currentUrl = nextUrl;
+    }
+    if (!response) throw new Error('Remote asset request failed.');
     if (!response.ok) throw new Error(`Remote asset request failed: ${response.status}`);
     const contentType = response.headers.get('content-type')?.split(';')[0]?.trim().toLowerCase() ?? '';
     if (!contentType.startsWith('image/')) throw new Error('Remote asset is not an image.');
     const contentLength = Number(response.headers.get('content-length') ?? 0);
-    if (contentLength > maxRemoteAssetBytes) throw new Error('Remote asset is too large.');
-    const arrayBuffer = await response.arrayBuffer();
-    if (arrayBuffer.byteLength > maxRemoteAssetBytes) throw new Error('Remote asset is too large.');
-    return { mime: contentType, buffer: Buffer.from(arrayBuffer) };
+    if (contentLength > limit) throw new Error('Remote asset is too large.');
+    if (!response.body) throw new Error('Remote asset has no image body.');
+    const chunks: Buffer[] = [];
+    let totalBytes = 0;
+    const reader = response.body.getReader();
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        const buffer = Buffer.from(value);
+        totalBytes += buffer.byteLength;
+        if (totalBytes > limit) throw new Error('Remote asset is too large.');
+        chunks.push(buffer);
+      }
+    } finally {
+      reader.releaseLock();
+    }
+    return { mime: contentType, buffer: Buffer.concat(chunks, totalBytes) };
   } finally {
     controller.abort();
     void timeout;
@@ -181,6 +218,6 @@ export async function saveRemoteImageAsset(input: {
   filename: string;
 }): Promise<SavedAsset | undefined> {
   assertAllowedRemoteUrl(input.url);
-  const { mime, buffer } = await fetchRemoteImage(input.url);
+  const { mime, buffer } = await fetchAllowedRemoteImage(input.url);
   return writeAsset({ ...input, mime, buffer });
 }
