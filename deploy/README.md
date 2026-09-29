@@ -4,16 +4,15 @@
 
 ## 当前操作范围
 
-先在 master 完成 CI 验证。本次不推送 release、不触发正式部署、不修改集群或生产数据。
-代码准备基于 master 5f880fd，合并 release cd30512 的部署历史。两条分支原来没有共同祖先；
-合并保留双方历史，应用代码使用当前 master，逐项适配 release 的部署配置。禁止强推或以旧正文覆盖现行维护标准。
+master 执行完整功能和 Cloud 构建验证；打包输入变化时额外验证两镜像。
+release 执行相同功能门禁并构建两镜像；只有最终提交包含 `[deploy]` 且全部验证成功后才更新生产集群。禁止强推或以旧正文覆盖现行维护标准。
 
 ## 流水线
 
 - 所有分支保留 contracts、Cloud 边界、typecheck、web/server regression、lint 和 release build。
 - 新增部署配置回归：校验 YAML、启动配置、镜像路径、迁移入口、分支规则与凭据排除。
-- master/MR 的 container:verify 并行构建 server、web 两个真实镜像目标，使用 --no-push，不写镜像仓库或集群。
-- release 的 build:server/build:web 只有在上述门禁通过后才推送镜像。
+- master/MR 只有 Docker、依赖清单、SQL 或部署配置变化时才运行 container:verify，并行构建 server、web 两个真实镜像目标，使用 --no-push，不写镜像仓库或集群。
+- release 的 build:server/build:web 必须等待发布构建与全部 verify 门禁，避免未验证镜像更新 `release-latest`；deploy:k8s 再等待两镜像成功才执行。
 - deploy:k8s 同时要求 release 分支和最终提交信息包含 [deploy]；生产部署串行执行。
 - 两镜像和 db-push 初始化容器使用同一提交 SHA；apply 前已写入最终镜像标签，避免先启动旧标签。
 - Runner、ACR 地址、namespace、域名、TLS、现有 PVC 名称及容量继承效率组配置。
@@ -24,7 +23,7 @@ Docker/Kaniko 都使用根目录 .dockerignore，Dockerfile 专用副本与之�
 禁止将 .env、密钥、用户 workspace、OAuth 缓存或本机 node_modules 放入构建上下文。
 
 构建先安装完整七个工作区的冻结依赖，包含 @liclick/contracts；执行 build:release、
-Cloud artifact 和既有包体门禁。前后端使用相同 release ID、Git SHA、版本、构建时间及 cloud 模式。
+Cloud artifact 和包体报告。前后端使用相同 release ID、Git SHA、版本、构建时间及 cloud 模式。
 后端保留 /app/apps/server 目录层级，打包生产依赖、SQL 与现有 PostgreSQL 迁移脚本；
 Atlas SkillHub 2.9.1 从现有公司 npm registry 安装到服务端镜像，仅托管每用户授权。
 不导入个人密钥，不启用共享测试账号，不恢复已退休安装器路由。
@@ -41,7 +40,7 @@ Dockerfile 固定下载地址及 SHA-256，安装 Linux 动态库，并设置
 以及破坏表面的输入必须被 QA 拒绝；临时测试文件始终清理。没有 GPU 或显示服务也须通过。
 版本错误、动态库缺失、权限错误、超时或 QA 失败都阻止镜像发布，不能只用 `/api/health` 代替验收。
 
-现有 master `container:verify` 与 release `build:server` 自动执行此 Dockerfile 门禁，
+打包输入变化时 master `container:verify` 与每次 release `build:server` 自动执行此 Dockerfile 门禁，
 无需增加 CI Secret、宿主机服务或 Kubernetes 挂载。首次构建需要访问 `download.blender.org`
 （约 396 MB 安装包），后续复用独立下载层缓存；若 Runner 禁止外网，由效率组提供同 SHA-256 的内部制品源。
 本地可在 server 编译后设置相同版本的 `BLENDER_EXECUTABLE_PATH` 运行该验收脚本。

@@ -88,6 +88,9 @@ lint:
 
 build:
   stage: build
+  # Release build is independent of verify jobs; run both in parallel.
+  # The deploy job below still requires every blocking verify job.
+  needs: []
   variables:
     LICLICK_RELEASE_ID: '$CI_COMMIT_REF_SLUG-$CI_COMMIT_SHORT_SHA'
     LICLICK_GIT_SHA: '$CI_COMMIT_SHA'
@@ -120,9 +123,19 @@ build:
   tags:
     - ztest
     - k8s
-  # Keep all verify/build gates on every branch, including release.
+  # Published release tags must never point at an unverified image.
   needs:
     - job: build
+      artifacts: false
+    - job: contracts-and-cloud-boundary
+      artifacts: false
+    - job: typecheck
+      artifacts: false
+    - job: web-regression
+      artifacts: false
+    - job: server-regression
+      artifacts: false
+    - job: lint
       artifacts: false
   rules:
     - if: '$CI_COMMIT_BRANCH == "release"'
@@ -177,8 +190,20 @@ deploy:k8s:
     - ztest
     - k8s
   needs:
-    - build:server
-    - build:web
+    - job: contracts-and-cloud-boundary
+      artifacts: false
+    - job: typecheck
+      artifacts: false
+    - job: web-regression
+      artifacts: false
+    - job: server-regression
+      artifacts: false
+    - job: lint
+      artifacts: false
+    - job: build:server
+      artifacts: false
+    - job: build:web
+      artifacts: false
   rules:
     - if: '$CI_COMMIT_BRANCH == "release" && $CI_COMMIT_MESSAGE =~ /\[deploy\]/'
       when: on_success
@@ -224,7 +249,8 @@ deploy:k8s:
     - kubectl -n "$KUBE_NAMESPACE" rollout status "deployment/liclick-server" --timeout=180s
     - kubectl -n "$KUBE_NAMESPACE" rollout status "deployment/li3d-web" --timeout=180s
 
-# Check both images on master without pushing or deploying.
+# Check both images on master/MR when packaging inputs change. Application
+# source changes retain verify/build gates; release always builds both images.
 container:verify:
   <<: *containerize_template
   parallel:
@@ -232,6 +258,17 @@ container:verify:
       - IMAGE_TARGET: [server, web]
   rules:
     - if: '$CI_COMMIT_BRANCH == "master" || $CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes:
+        - .gitlab-ci.yml
+        - .dockerignore
+        - deploy/**/*
+        - package.json
+        - pnpm-lock.yaml
+        - pnpm-workspace.yaml
+        - apps/*/package.json
+        - packages/*/package.json
+        - apps/server/sql/**/*
+        - apps/server/scripts/test-import-uv-merge-distance.py
       when: on_success
     - when: never
   script:

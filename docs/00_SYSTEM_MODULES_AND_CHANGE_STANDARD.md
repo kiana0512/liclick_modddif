@@ -85,13 +85,13 @@ LI3D Cloud 控制面（无状态 Node.js App）
 
 浏览器交互图形不发送逐帧命令给 App Server。Auto UV、自动拓扑、生产 PBR Bake 必须使用真实生产服务，不得在服务失败时静默切换为浏览器 xatlas/BVH 模拟结果。浏览器保留的 UV/PBR 内核只用于隔离测试、算法对照和明确标记的实验，不是产品正式默认路径。
 
-### 1.3 每次 CI/CD 推送前的强制包体检查
+### 1.3 每次 CI/CD 推送前的包体报告
 
-2026-09-11 用户明确要求：每次推送触发 CI/CD 前，必须先处理并通过正式发布包体检查。M15/M13，`RELEASE-PREPUSH/1.0.0`。
+2026-09-11 用户要求每次推送前执行正式发布包体检查；2026-09-29 用户调整为 10 MiB 总量和各 chunk 阈值只作报告/告警，不因字节数超出阻断 CI。功能、类型、lint、构建、Cloud 边界和部署健康检查仍是阻断门禁。M15/M13，`RELEASE-PREPUSH/1.3.0`。
 
 1. 先提交准备推送的修改，再运行 `pnpm verify:prepush`。该入口直接读取 `.gitlab-ci.yml` 的 build 变量和命令，带齐 Cloud 模式、性能实验室开关、完整 Git SHA、分支 release ID、版本和构建时间；执行正式构建、云产物检查、全部包体预算及云部署模拟。
-2. 普通 `pnpm --filter @liclick/web build` 和没有正式元数据的包体检查不能代替上述流程。失败时必须缩减实际产物并重新检查；禁止为性能补丁提高预算、跳过检查、删除诊断/QA，或降低输出分辨率。
-3. 检查通过后才能 `git push`。合入远端、修改代码/依赖/构建配置、变更提交后，必须针对最终提交重新运行。记录最终 SHA、各受限 chunk 和总字节数，并跟踪远端流水线到结果，不能把“已触发”表述为“CI 通过”。
+2. 普通 `pnpm --filter @liclick/web build` 和没有正式元数据的包体报告不能代替上述流程。实际构建缺失、功能回归或安全边界失败仍须修复；字节预算超出只记录告警，不得以关闭诊断/QA 或降低输出分辨率掩盖成本。2026-09-29 总 JS 报告阈值设为 10 MiB，单个关键 chunk 的原阈值保留为诊断指标。
+3. 功能等阻断门禁通过后才能 `git push`。合入远端、修改代码/依赖/构建配置、变更提交后，必须针对最终提交重新运行。记录最终 SHA、各 chunk 和总字节数及超额告警，并跟踪远端流水线到结果，不能把“已触发”表述为“CI 通过”。
 4. 本次失败实例：`6fc08a1` / pipeline `629782` 的 verify 全过、build 阶段包体失败，正式 JS 为 **3,221,231 bytes**，超过 **3,221,000 bytes** 上限 **231 bytes**；普通本地构建为 3,220,729 bytes，少计 502 bytes 发布差异。`3e68405` 同样在 build 阶段失败。以后须读取失败日志确认原因，不能仅凭历史经验认定故障。
 
 此入口不会推送或部署，也不会安装 Git hook；上述规则适用于每次人工或代理推送。构建格式策略 `SHADER-TEMPLATE-FORMAT/1.0.0` 在发布时移除投影着色器模板缩进，保留源文件可读性与计算语义。持续优化必须记录总量和各 chunk 余量，优先去重、不可达代码清理与按需加载；拆包不能冒充总量减少，平均 FPS 不能替代交互延迟验收。验证记录、后续准则及回滚见 [正式发布包体变更卡](changes/CHG-20260911-CI-RELEASE-BUDGET.md)。
@@ -99,6 +99,8 @@ LI3D Cloud 控制面（无状态 Node.js App）
 ## 2. 大模块划分
 
 M02 参考图导入执行 `REFERENCE-IMPORT-BUDGET` v1.0.0：新导入参考图在进入项目与去高光流程前压缩至编码文件不超过 4,000,000 bytes；小图保留原编码，大图复用 WebP 压缩器。文件选择、粘贴、拖拽及 URL 回退共用实现。旧资产不迁移，任务上传的独立 JSON/Base64 预算继续保留。见 `changes/CHG-20260924-REFERENCE-IMPORT-BUDGET.md`。
+
+M02/M13 `REMOTE-IMAGE-INTAKE/1.0.0`（2026-09-29）：服务端读取莉刻编辑返图和远端资产时，只允许配置中的标准 HTTPS 图片域名（以及明确的内联 image data URL），禁止非标准端口和嵌入式账号；最多跟随三次且逐跳校验目标域名，拒绝跳向内网或非白名单；30 秒超时、`image/*` MIME 与 160 MiB 上限在响应头及实际流读取阶段执行。只改变下载安全边界，不处理或重编码像素；无 Project/Revision、ownership、算法或资产迁移。回滚会恢复编辑返图的无来源/大小限制及远端资产的无校验自动重定向风险。见 `changes/CHG-20260929-REMOTE-IMAGE-INTAKE.md`。
 
 | ID | 大模块 | 唯一职责 | 主要实现 |
 | --- | --- | --- | --- |
@@ -621,6 +623,8 @@ Pipeline Revision 与 Project Revision 不同：前者记录 texture/retopology/
 
 ## 13. 身份、安全、容量与性能
 
+M13 / `HTTP-REQUEST-BOUNDARY/1.0.0`（2026-09-29）：控制面 JSON 请求默认最多 8 MiB；Project 文档/Command 显式最多 128 MiB，旧 data URL 资产导入最多 224 MiB，携带原图的莉刻编辑和 ModelView 请求最多 256 MiB（与生产入口上限一致），提示词润色沿用 48 MiB 等既有独立限制。Content-Length 和实际分块读取均校验，超限返回 413 并关闭连接；未预期的全局 500 只向浏览器返回通用文案，详细异常保留在服务端日志。只限制传输和错误呈现，不改变图像算法、Project Command/Revision CAS、ownership 或资产内容；无数据迁移。回滚代码会恢复无限制默认 JSON 读取和异常详情外露。见 `changes/CHG-20260929-HTTP-REQUEST-BOUNDARY.md`。
+
 ### 13.1 客户端性能录制 `ALG-PERF-SESSION-001` v1.1.0
 
 A100 发布同时显式配置 `LICLICK_PERFORMANCE_LAB_ENABLED=true` 与构建变量 `VITE_LICLICK_PERFORMANCE_LAB_ENABLED=true` 后，`perfLab=1` 才按需加载云端记录桥；本地默认关闭且不生成/上传统计。既有“开始人工录制/结束并分析”状态从 `data-perf-manual-local-repaint-recording` 驱动一次完整会话。每次开始必须创建新的 `perf_<UUID>`，允许同一用户连续录制多次；结束后由 Worker 计算 SHA-256、写入 IndexedDB 待传队列并按 start → chunk → complete 顺序重试。采集不得写 Project/Scene/Layer Store，也不得触发 Project Command 或 Revision。
@@ -720,7 +724,7 @@ M13/M15，FUNCTION-TIMING/1.0.0，experimental/disabled。`pnpm dev:4517 --DEBUG
 
 ## 15. 模块验收矩阵
 
-**Master baseline update (2026-09-22; c2ef7667).** The master baseline already includes BUILD-STRING-POOL/1 in `apps/web/scripts/string-pool.mjs` and SHADER-TEMPLATE-FORMAT/1.4.2. These are inherited build optimizations, not additions made by this documentation migration. The authoritative current budgets are in `scripts/check-web-bundle-budget.mjs`: total JavaScript 3,268,500 bytes and editor route 499,624 bytes, with all other gates retained. Historical measured totals are snapshots, not the current limits. Run section 1.3 checks for the final commit before pushing.
+**Master baseline update (2026-09-22; c2ef7667).** The master baseline already includes BUILD-STRING-POOL/1 in `apps/web/scripts/string-pool.mjs` and SHADER-TEMPLATE-FORMAT/1.4.2. These are inherited build optimizations, not additions made by this documentation migration. The authoritative size-report thresholds are in `scripts/check-web-bundle-budget.mjs`; on 2026-09-29 the owner set total JavaScript to 10 MiB (10,485,760 bytes) and made all byte thresholds non-blocking. The editor route remains 499,624 bytes as an advisory metric. Historical measured totals are snapshots, not current thresholds. Run section 1.3 checks for the final commit before pushing.
 
 The baseline update above supersedes older descriptions in this section where they differ.
 
@@ -741,11 +745,13 @@ The baseline update above supersedes older descriptions in this section where th
 
 GitLab CI 依赖安装必须把 pnpm store 与 Prisma engine cache 放入 `$CI_PROJECT_DIR` 下的项目级缓存目录。Prisma engine 下载发生瞬时网络错误时，允许完整的 `pnpm install --frozen-lockfile` 最多重试 3 次并采用有界退避；禁止通过 `--ignore-scripts`、跳过 Prisma engine、放宽测试或使用未冻结 lockfile 伪造通过。此策略只提高 M15 发布验证的网络容错，不改变生产 Prisma schema、数据库协议、Project Command/Revision 或浏览器运行时。
 
+M15 / `CI-LATENCY/1.0.0`（2026-09-29）：verify 与正式 build 并行；release 两镜像等待 build 与全部 verify job 成功后发布，避免未验证镜像覆盖 `release-latest`；deploy 明确依赖全部 verify job 和两镜像成功。master/MR 仅在 Docker、依赖清单、SQL、Blender QA 脚本或部署配置变化时运行两目标 `container:verify`；普通源码提交仍执行全部 verify、Cloud build 和部署模拟，release 始终构建真实两镜像。Server 回归套件对 23 个标准编译型测试只编译一次，独立运行单项测试仍各自编译。功能、身份、数据、QA、发布配置与产物完整性门禁不降级；无业务算法、Schema 或资产迁移。回滚可恢复每项重复编译与所有 master 镜像验证，但恢复原等待时间。见 `changes/CHG-20260929-CI-LATENCY.md`。
+
 M15 lint 发布修复（2026-08-31）：根工作区显式声明与锁文件一致的 `@eslint/js@9.39.4`，避免依赖提升差异导致 ESLint 配置加载失败。M04 / `ALG-GEN-005` 的提示词终端转义清理由 Node `stripVTControlCharacters` 实现，替代触发 `no-control-regex/no-useless-escape` 的手写正则；保留全部 lint 门禁。回归覆盖 ANSI 颜色、C1 CSI、OSC 标题/超链接清理，以及中文、标点、URL 与段落保留。诊断/转换模板和调用链、算法版本 v1.5.0、GPU/CPU/Worker/shader/UV/export、Schema 与资产均不变，无迁移。回退仅还原依赖声明、锁文件和清理实现，不修改密钥或工程数据。
 
 M15 体积修复：锁定 `terser@5.51.2` 两轮安全压缩，保留日志和属性名；JS 总量实测 3,067,290 字节，原门禁不变。新增真实构建等价性回归；业务、算法、数据均不变，无迁移。回退仅恢复压缩配置和依赖，发布仍须全 CI 验证。
 
-M15 / CLOUD-DEPLOYMENT v1.0.0（2026-09-03）：正常合并 release 部署历史与 master 应用基线；修正完整 workspace 镜像构建、Cloud 构建身份、运行目录和 PostgreSQL SQL 001–003 初始化。所有分支保留完整 verify/build 门禁，master/MR 额外验证 server/web 镜像但不推送；仅 release 且最终提交含 [deploy] 才允许生产部署。Docker/Kaniko 上下文排除真实凭据和用户数据；Qwen 密钥注入由效率组管理。原 PVC 保留，生产权威数据必须使用 PostgreSQL＋HTTPS 对象存储，存量数据独立迁移验收后才设置 LI3D_CLOUD_DATA_READY；缺配置不得静默回退。Project Command v1、Revision CAS、ownership、verified assets 与全部业务算法版本不变，无自动数据迁移。回滚只切换兼容 Cloud 协议的已验证镜像，不删除库、对象或 PVC。详见 CHG-20260903-CLOUD-DEPLOYMENT-CI 与 deploy/README.md。
+M15 / CLOUD-DEPLOYMENT v1.0.0（2026-09-03）：正常合并 release 部署历史与 master 应用基线；修正完整 workspace 镜像构建、Cloud 构建身份、运行目录和 PostgreSQL SQL 001–003 初始化。所有分支保留完整 verify/build 门禁，master/MR 在打包输入变化时额外验证 server/web 镜像但不推送；仅 release 且最终提交含 [deploy] 才允许生产部署。Docker/Kaniko 上下文排除真实凭据和用户数据；Qwen 密钥注入由效率组管理。原 PVC 保留，生产权威数据必须使用 PostgreSQL＋HTTPS 对象存储，存量数据独立迁移验收后才设置 LI3D_CLOUD_DATA_READY；缺配置不得静默回退。Project Command v1、Revision CAS、ownership、verified assets 与全部业务算法版本不变，无自动数据迁移。回滚只切换兼容 Cloud 协议的已验证镜像，不删除库、对象或 PVC。详见 CHG-20260903-CLOUD-DEPLOYMENT-CI 与 deploy/README.md。
 
 ## 16. 固定审计卡格式
 

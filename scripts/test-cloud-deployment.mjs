@@ -38,7 +38,9 @@ test('server image ships checksum-pinned Blender and runs UV QA after switching 
   assert.match(server, /COPY[^\n]*test-import-uv-merge-distance\.py/);
   assert.match(server, /USER liclick:liclick[\s\S]*RUN node deploy\/verify-blender-runtime\.mjs/);
 });
-test('Bundle gate keeps its hard limit and local release headroom', () => {
+test('Bundle report keeps size and headroom diagnostics without blocking CI', () => {
+  const totalBudgetBytes = 10 * 1024 * 1024;
+  assert.match(read('scripts/check-web-bundle-budget.mjs'), /maxTotalJavaScriptBytes = 10 \* 1024 \* 1024/);
   const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'li3d-bundle-gate-'));
   try {
     const assets = path.join(temporary, 'apps/web/dist/assets');
@@ -51,9 +53,18 @@ test('Bundle gate keeps its hard limit and local release headroom', () => {
     const run = (...args) => spawnSync(process.execPath,
       [path.join(root,'scripts/check-web-bundle-budget.mjs'),...args], {cwd:temporary,encoding:'utf8'});
     for(const remaining of [-8,-4,0,255,256,430]) {
-      fs.writeFileSync(path.join(assets,'other.js'),Buffer.alloc(3271000-fixed-remaining));
-      assert.equal(run().status,remaining>=0 ? 0 : 1);
-      assert.equal(run('--reserve-bytes=256').status,remaining>=256 ? 0 : 1);
+      const other = path.join(assets,'other.js');
+      fs.writeFileSync(other,'');
+      fs.truncateSync(other,totalBudgetBytes-fixed-remaining);
+      const ci = run();
+      assert.equal(ci.status,0);
+      assert.match(ci.stdout,/Cloud Web bundle size report/);
+      if (remaining < 0) assert.match(ci.stderr,/advisory.*does not block CI/s);
+      else assert.doesNotMatch(ci.stderr,/advisory/);
+      const local = run('--reserve-bytes=256');
+      assert.equal(local.status,0);
+      if (remaining < 256) assert.match(local.stderr,/headroom/);
+      else assert.doesNotMatch(local.stderr,/headroom/);
     }
     for(const invalid of ['--reserve-bytes=-1','--reserve-bytes=NaN','--reserve-bytes=999999999999999999']) {
       assert.notEqual(run(invalid).status,0);
@@ -176,7 +187,7 @@ test('secret preparation preserves existing keys and blocks missing or multiline
   }
 });
 
-test('master verifies both containers with no publishing and release retains every quality gate', () => {
+test('CI overlaps release build, scopes master image checks and gates deployment on quality', () => {
   const ci = parse('.gitlab-ci.yml');
   for (const name of ['contracts-and-cloud-boundary', 'typecheck', 'web-regression', 'server-regression', 'lint', 'build']) {
     assert.ok(ci[name], name);
@@ -186,15 +197,25 @@ test('master verifies both containers with no publishing and release retains eve
   const verify = ci['container:verify'];
   assert.deepEqual(verify.parallel.matrix, [{ IMAGE_TARGET: ['server', 'web'] }]);
   assert.match(verify.rules[0].if, /CI_COMMIT_BRANCH == "master"/);
+  for (const changed of ['deploy/**/*', '.dockerignore', 'pnpm-lock.yaml', 'apps/*/package.json']) {
+    assert.ok(verify.rules[0].changes.includes(changed), changed);
+  }
   assert.match(verify.script.join('\n'), /--no-push\b/);
   assert.doesNotMatch(verify.script.join('\n'), /--destination|kubectl/);
+  assert.deepEqual(ci.build.needs, [], 'Build must run alongside independent verify jobs');
   for (const name of ['build:server', 'build:web']) {
     assert.equal(ci[name].rules[0].if, '$CI_COMMIT_BRANCH == "release"');
-    assert.deepEqual(ci[name].needs, [{ job: 'build', artifacts: false }]);
+    assert.deepEqual(ci[name].needs.map(need => need.job).sort(), [
+      'build', 'contracts-and-cloud-boundary', 'lint',
+      'server-regression', 'typecheck', 'web-regression',
+    ].sort(), 'Published images must wait for the build and every blocking quality job');
   }
   assert.equal(ci['deploy:k8s'].rules[0].if,
     '$CI_COMMIT_BRANCH == "release" && $CI_COMMIT_MESSAGE =~ /\\[deploy\\]/');
-  assert.deepEqual(ci['deploy:k8s'].needs, ['build:server', 'build:web']);
+  assert.deepEqual(ci['deploy:k8s'].needs.map(need => need.job).sort(), [
+    'build:server', 'build:web', 'contracts-and-cloud-boundary', 'lint',
+    'server-regression', 'typecheck', 'web-regression',
+  ].sort(), 'Deploy must wait for every blocking quality job and both images');
   assert.equal(ci['deploy:k8s'].resource_group, 'li3d-production');
   assert.match(ci.default.before_script.join('\n'), /--frozen-lockfile/);
 });
