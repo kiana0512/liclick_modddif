@@ -48,13 +48,18 @@ async function check(mode = 'success', coverage = true, untextured = false) {
     assert.equal(originalDisposed, 0);
   };
   const render = async (request, options) => {
+    // [shaoyangZhou]: verify single-pass capture without weakening material isolation.
     assert.equal(request.resolution, 2048);
-    assert.equal(options.tileSize, 512);
+    assert.equal(options.tileSize, undefined);
     assert.equal(options.applyDisplayTransform, false);
     assert.equal(options.encodedWidth, 2048);
-    assert.equal(typeof options.prepareScene, 'function', 'flat capture must prepare each tile, not hold mutations over async frames');
+    assert.equal(typeof options.prepareScene, 'function', 'flat capture must restore borrowed state before async readback');
     assertRestored();
-    for (let tile = 0; tile < 16; tile++) {
+    if (mode === 'replacement') {
+      replacement = new THREE.MeshStandardMaterial({ name: 'new authoritative material' });
+      meshes[0].material = replacement;
+    }
+    {
       const restore = options.prepareScene();
       try {
         assert.equal(meshes[0].material, shader, 'resident GPU program must be reused');
@@ -75,21 +80,17 @@ async function check(mode = 'success', coverage = true, untextured = false) {
       assertRestored();
       await Promise.resolve();
       assertRestored();
-      if (mode === 'replacement' && tile === 0) {
-        replacement = new THREE.MeshStandardMaterial({ name: 'new authoritative material' });
-        meshes[0].material = replacement;
-      }
     }
     return 'encoded-authored-2048';
   };
-  const run = new Function('THREE', 'renderSceneToPngUrl', 'waitForResidentUvPresentation', `${compiled}\nreturn captureFlatTarget;`)(THREE, render, async () => {});
+  const run = new Function('THREE', 'renderSceneToPngUrl', 'waitForResidentUvPresentation', 'waitForViewportFrame', `${compiled}\nreturn captureFlatTarget;`)(THREE, render, async () => {}, async () => {});
   const task = run({ scene, objectId: 'target', resolution: 2048 }, { width: 2048, height: 2048 }, { forceEmptyProjectionHatch: coverage });
   if (mode === 'replacement') await assert.rejects(task, /模型材质在截图期间发生变化/);
   else if (mode === 'render-error') await assert.rejects(task, /controlled render failure/);
   else assert.equal((await task).url, 'encoded-authored-2048');
   assertRestored();
   assert.equal(disposed, draws, 'temporary materials are released once per draw, including errors');
-  assert.equal(draws, mode === 'success' ? 16 : 1);
+  assert.equal(draws, mode === 'replacement' ? 0 : 1);
 }
 await check();
 await check('success', false);
@@ -97,4 +98,4 @@ await check('render-error');
 await check('replacement');
 await check('success', true, true);
 await check('success', false, true);
-console.log('Production flat capture: per-tile material/uniform isolation, unchanged texture/2048, interrupted snapshot rejection and error cleanup passed.');
+console.log('Production flat capture: single-draw material/uniform isolation, unchanged texture/2048, interrupted snapshot rejection and error cleanup passed.');

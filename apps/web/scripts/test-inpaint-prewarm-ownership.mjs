@@ -42,8 +42,10 @@ function harness(overrides = {}) {
   foreground.userData.liclickObjectId = 'bike';
   scene.add(foreground);
   const originalMaterial = foreground.material;
-  const calls = { acquired: 0, disposed: 0, presented: 0, invalidated: 0, encoded: 0 };
+  const calls = { acquired: 0, disposed: 0, presented: 0, invalidated: 0, encoded: 0, paintWaits: 0 };
   let finish;
+  // [shaoyangZhou]: guard the capture snapshot before the first presentation yield.
+  let frozenCaptureCamera;
   const ready = new Promise(resolve => { finish = resolve; });
   const scope = {
     isInpaintMode: false, isLocalRepaintApplyMode: false, paintMaskHasContent: false,
@@ -81,13 +83,19 @@ function harness(overrides = {}) {
       assert.equal(texture, mask.accumulatedMaskTarget.texture);
       return { uniforms: { maskInverted: { value: 0 } }, dispose() {} };
     },
-    cloneCameraForCaptureAspect: camera => camera,
-    waitForBrowserPaint: async () => {},
+    cloneCameraForCaptureAspect: camera => { frozenCaptureCamera = { ...camera }; return frozenCaptureCamera; },
+    waitForBrowserPaint: async () => {
+      assert(frozenCaptureCamera, 'Freeze the capture camera before yielding to viewport navigation');
+      calls.paintWaits++;
+    },
     renderSceneToPngUrl: async (input, options) => {
       assert.equal(input.width, 2048);
       assert.equal(input.height, 2048);
       assert.equal(input.camera.frozen, true);
       assert.equal(options.grayscaleOutput, true);
+      assert.equal(options.tileSize, undefined, 'Capture the frozen mask in one draw');
+      assert.equal(options.waitForViewportIdle, undefined, 'Do not wait once per tile');
+      assert.equal(calls.paintWaits, 1, 'Yield to presentation once before capture');
       const restore = options.prepareScene();
       assert.equal(foreground.visible, true, 'Unpainted foreground must remain an occluder');
       assert.equal(foreground.material.color.getHex(), 0);

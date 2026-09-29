@@ -385,6 +385,7 @@ async function renderRuntimeProjectionDepth(request: RuntimeProjectionDepthReque
   let normalSubmitMs = 0;
   let normalTotalMs = 0;
   try {
+    await request.waitForViewportIdle?.();
     const depthStartedAt = performance.now();
     const depthPromise = renderSceneToPngUrl(
       {
@@ -401,12 +402,9 @@ async function renderRuntimeProjectionDepth(request: RuntimeProjectionDepthReque
         dataTexture: true,
         samples: 0,
         ignoreSceneBackground: true,
-        // Dense/overdrawn models can turn a larger depth tile into a 100ms+
-        // physical-GPU fence even on a fast adapter. Keep this pass at the
-        // measured-safe 256px size; adaptive scheduling can still group cheap
-        // tiles, while resolution and samples remain unchanged.
-        tileSize: 256,
-        waitForViewportIdle: request.waitForViewportIdle,
+        // [shaoyangZhou]: repair tiled visibility latency (RUNTIME-VISIBILITY-SCHEDULING/1.0.1).
+        // Submit each frozen pass once;
+        // retain bounded readback and the interaction gate between passes.
         performancePhasePrefix: 'runtime-depth',
       },
     );
@@ -440,8 +438,6 @@ async function renderRuntimeProjectionDepth(request: RuntimeProjectionDepthReque
         dataTexture: true,
         samples: 0,
         ignoreSceneBackground: true,
-        tileSize: 256,
-        waitForViewportIdle: request.waitForViewportIdle,
         performancePhasePrefix: 'runtime-depth',
       },
     );
