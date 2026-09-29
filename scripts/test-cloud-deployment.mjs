@@ -50,6 +50,28 @@ test('web target precedes server-only Blender stages in the Kaniko Dockerfile', 
   assert.match(docker.slice(web, blender), /COPY --from=build \/repo\/apps\/web\/dist \/usr\/share\/nginx\/html/);
   assert.match(docker.slice(server), /COPY --from=blender-runtime \/opt\/blender\/ \/opt\/blender\//);
 });
+
+test('CI web image packages the verified build artifact without a second Node install', () => {
+  const ci = parse('.gitlab-ci.yml');
+  const artifact = ci['build'].artifacts.paths;
+  assert.ok(artifact.includes('apps/web/dist/'));
+  for (const name of ['build:web', 'container:verify']) {
+    assert.equal(ci[name].needs.find(need => need.job === 'build').artifacts, true,
+      `${name} must receive the verified Web dist`);
+  }
+  assert.match(ci['build:web'].script.join('\n'), /deploy\/Dockerfile\.web/);
+  assert.match(ci['container:verify'].script.join('\n'), /IMAGE_TARGET.*web.*Dockerfile\.web/);
+  const docker = read('deploy/Dockerfile.web');
+  assert.match(docker, /FROM \$\{NGINX_IMAGE\} AS web/);
+  assert.match(docker, /COPY apps\/web\/dist\/ \/usr\/share\/nginx\/html\//);
+  assert.match(docker, /COPY deploy\/docker\/nginx\/default\.conf\.template/);
+  assert.match(docker, /worker_processes 8/);
+  assert.doesNotMatch(docker, /NODE_IMAGE|pnpm|prisma|Blender|FROM .* AS build/);
+  const webIgnore = read('deploy/Dockerfile.web.dockerignore');
+  assert.match(webIgnore, /!apps\/web\/dist\n!apps\/web\/dist\/\*\*/);
+  const patterns = source => source.split(/\r?\n/).filter(line => line && !line.startsWith('#'));
+  assert.deepEqual(patterns(webIgnore).slice(0, -2), patterns(read('.dockerignore')));
+});
 test('Bundle report keeps size and headroom diagnostics without blocking CI', () => {
   const totalBudgetBytes = 10 * 1024 * 1024;
   assert.match(read('scripts/check-web-bundle-budget.mjs'), /maxTotalJavaScriptBytes = 10 \* 1024 \* 1024/);

@@ -1,0 +1,14 @@
+# syntax=docker/dockerfile:1
+# M15 / CI-WEB-ARTIFACT-IMAGE/1.0.0: package the verified Cloud build artifact.
+ARG NGINX_IMAGE=nginxinc/nginx-unprivileged:1.27-alpine
+FROM ${NGINX_IMAGE} AS web
+
+# Keep the same cgroup-aware worker setting as the source-build fallback.
+RUN sed -i 's/^worker_processes .*/worker_processes 8;/' /etc/nginx/nginx.conf && grep -qx 'worker_processes 8;' /etc/nginx/nginx.conf
+COPY deploy/docker/nginx/default.conf.template /etc/nginx/templates/default.conf.template
+COPY apps/web/dist/ /usr/share/nginx/html/
+
+ENV BACKEND_HOST=liclick-server BACKEND_PORT=4517
+EXPOSE 8080
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s CMD \
+  wget -q -O /dev/null http://127.0.0.1:8080/healthz || exit 1

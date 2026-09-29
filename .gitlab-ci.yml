@@ -143,7 +143,8 @@ build:
   # Published release tags must never point at an unverified image.
   needs:
     - job: build
-      artifacts: false
+      # Web packaging consumes the already verified Cloud dist artifact.
+      artifacts: true
     - job: contracts-and-cloud-boundary
       artifacts: false
     - job: typecheck
@@ -185,14 +186,9 @@ build:web:
   script:
     - /kaniko/executor
       --context "$CI_PROJECT_DIR"
-      --dockerfile "$CI_PROJECT_DIR/deploy/Dockerfile"
+      --dockerfile "$CI_PROJECT_DIR/deploy/Dockerfile.web"
       --target web
-      --build-arg "NODE_IMAGE=$NODE_IMAGE"
       --build-arg "NGINX_IMAGE=$NGINX_IMAGE"
-      --build-arg "RELEASE_ID=$CI_COMMIT_REF_SLUG-$CI_COMMIT_SHORT_SHA"
-      --build-arg "GIT_SHA=$CI_COMMIT_SHA"
-      --build-arg "RELEASE_VERSION=0.1.13"
-      --build-arg "BUILD_TIME=$CI_PIPELINE_CREATED_AT"
       --destination "$IMAGE_REPOSITORY_WEB:$IMAGE_TAG"
       --destination "$IMAGE_REPOSITORY_WEB:$RELEASE_TAG"
       --cache=true
@@ -291,4 +287,5 @@ container:verify:
       when: on_success
     - when: never
   script:
-    - /kaniko/executor --context "$CI_PROJECT_DIR" --dockerfile "$CI_PROJECT_DIR/deploy/Dockerfile" --target "$IMAGE_TARGET" --no-push --no-push-cache --build-arg "NODE_IMAGE=$NODE_IMAGE" --build-arg "NGINX_IMAGE=$NGINX_IMAGE" --build-arg "RELEASE_ID=$CI_COMMIT_REF_SLUG-$CI_COMMIT_SHORT_SHA" --build-arg "GIT_SHA=$CI_COMMIT_SHA" --build-arg "RELEASE_VERSION=0.1.13" --build-arg "BUILD_TIME=$CI_PIPELINE_CREATED_AT"
+    - if [ "$IMAGE_TARGET" = web ]; then DOCKERFILE="$CI_PROJECT_DIR/deploy/Dockerfile.web"; else DOCKERFILE="$CI_PROJECT_DIR/deploy/Dockerfile"; fi
+    - /kaniko/executor --context "$CI_PROJECT_DIR" --dockerfile "$DOCKERFILE" --target "$IMAGE_TARGET" --no-push --no-push-cache --build-arg "NODE_IMAGE=$NODE_IMAGE" --build-arg "NGINX_IMAGE=$NGINX_IMAGE" --build-arg "RELEASE_ID=$CI_COMMIT_REF_SLUG-$CI_COMMIT_SHORT_SHA" --build-arg "GIT_SHA=$CI_COMMIT_SHA" --build-arg "RELEASE_VERSION=0.1.13" --build-arg "BUILD_TIME=$CI_PIPELINE_CREATED_AT"
