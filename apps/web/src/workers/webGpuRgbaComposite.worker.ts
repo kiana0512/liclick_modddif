@@ -208,14 +208,14 @@ const shaderSource = `
       return;
     }
 
-    let red = srgbByte((linearByte(byteAt(front, 0u)) * frontAlpha +
-      linearByte(byteAt(underlay, 0u)) * visibleUnderlayAlpha) / outputAlpha);
-    let green = srgbByte((linearByte(byteAt(front, 8u)) * frontAlpha +
-      linearByte(byteAt(underlay, 8u)) * visibleUnderlayAlpha) / outputAlpha);
-    let blue = srgbByte((linearByte(byteAt(front, 16u)) * frontAlpha +
-      linearByte(byteAt(underlay, 16u)) * visibleUnderlayAlpha) / outputAlpha);
+    var rgb = 0u;
+    for (var shift = 0u; shift < 24u; shift += 8u) {
+      let channel = srgbByte((linearByte(byteAt(front, shift)) * frontAlpha +
+        linearByte(byteAt(underlay, shift)) * visibleUnderlayAlpha) / outputAlpha);
+      rgb |= channel << shift;
+    }
     let alpha = roundedByte(outputAlpha * 255.0);
-    frontPixels[index] = red | (green << 8u) | (blue << 16u) | (alpha << 24u);
+    frontPixels[index] = rgb | (alpha << 24u);
   }
 `;
 
