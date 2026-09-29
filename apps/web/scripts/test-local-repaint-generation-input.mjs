@@ -64,6 +64,12 @@ new Function('require', 'exports', 'module', pngCoreCompiled)(
 );
 const { encodeGrayscalePngBytes, encodeRgbaPngBytes } = pngCoreModule.exports;
 
+// [shaoyangZhou]: verify encoder-owned buffers can transfer without a second copy.
+for (const png of [encodeRgbaPngBytes(7,13,new Uint8Array(7*13*4)), encodeGrayscalePngBytes(7,13,new Uint8Array(7*13))]) {
+  assert.equal(png.byteOffset, 0);
+  assert.equal(png.byteLength, png.buffer.byteLength);
+}
+
 function assertPixelsEqual(actual, expected, message) {
   assert.equal(actual.length, expected.length, `${message}: pixel count`);
   for (let index = 0; index < actual.length; index += 1) {

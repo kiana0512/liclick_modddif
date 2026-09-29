@@ -1,0 +1,369 @@
+{
+  "viewport": [
+    1241,
+    1206
+  ],
+  "fullscreen": true,
+  "rows": [
+    {
+      "source": "flat",
+      "mode": "new",
+      "ms": 135.3999999910593,
+      "bytes": 710958,
+      "differences": 0,
+      "frameP95": 16.700000000000728,
+      "pointerP95": null
+    },
+    {
+      "source": "flat",
+      "mode": "old",
+      "ms": 137.20000000298023,
+      "bytes": 710958,
+      "differences": 0,
+      "frameP95": 16.799999999999272,
+      "pointerP95": 9.5
+    },
+    {
+      "source": "flat",
+      "mode": "old",
+      "ms": 128.59999999403954,
+      "bytes": 710958,
+      "differences": 0,
+      "frameP95": 16.700000000000728,
+      "pointerP95": 13.299999997019768
+    },
+    {
+      "source": "flat",
+      "mode": "new",
+      "ms": 131.20000000298023,
+      "bytes": 710958,
+      "differences": 0,
+      "frameP95": 16.700000000000728,
+      "pointerP95": 16.200000002980232
+    },
+    {
+      "source": "flat",
+      "mode": "new",
+      "ms": 116.30000001192093,
+      "bytes": 710958,
+      "differences": 0,
+      "frameP95": 16.700000000000728,
+      "pointerP95": 9.700000002980232
+    },
+    {
+      "source": "flat",
+      "mode": "old",
+      "ms": 118,
+      "bytes": 710958,
+      "differences": 0,
+      "frameP95": 16.80000000000109,
+      "pointerP95": 9.300000011920929
+    },
+    {
+      "source": "flat",
+      "mode": "old",
+      "ms": 110.79999999701977,
+      "bytes": 710958,
+      "differences": 0,
+      "frameP95": 16.80000000000109,
+      "pointerP95": 10.099999994039536
+    },
+    {
+      "source": "flat",
+      "mode": "new",
+      "ms": 107.20000000298023,
+      "bytes": 710958,
+      "differences": 0,
+      "frameP95": 16.80000000000109,
+      "pointerP95": 9.799999997019768
+    },
+    {
+      "source": "flat",
+      "mode": "new",
+      "ms": 113.1000000089407,
+      "bytes": 710958,
+      "differences": 0,
+      "frameP95": 16.799999999999272,
+      "pointerP95": 10
+    },
+    {
+      "source": "flat",
+      "mode": "old",
+      "ms": 118.59999999403954,
+      "bytes": 710958,
+      "differences": 0,
+      "frameP95": 16.799999999999272,
+      "pointerP95": 9.799999997019768
+    },
+    {
+      "source": "flat",
+      "mode": "old",
+      "ms": 112,
+      "bytes": 710958,
+      "differences": 0,
+      "frameP95": 16.700000000000728,
+      "pointerP95": 13
+    },
+    {
+      "source": "flat",
+      "mode": "new",
+      "ms": 109.59999999403954,
+      "bytes": 710958,
+      "differences": 0,
+      "frameP95": 16.799999999999272,
+      "pointerP95": 13.5
+    },
+    {
+      "source": "flat",
+      "mode": "new",
+      "ms": 114.09999999403954,
+      "bytes": 710958,
+      "differences": 0,
+      "frameP95": 16.700000000000728,
+      "pointerP95": 13.299999997019768
+    },
+    {
+      "source": "flat",
+      "mode": "old",
+      "ms": 119.29999999701977,
+      "bytes": 710958,
+      "differences": 0,
+      "frameP95": 16.700000000000728,
+      "pointerP95": 9.300000011920929
+    },
+    {
+      "source": "flat",
+      "mode": "old",
+      "ms": 111.09999999403954,
+      "bytes": 710958,
+      "differences": 0,
+      "frameP95": 16.700000000000728,
+      "pointerP95": 9.600000008940697
+    },
+    {
+      "source": "flat",
+      "mode": "new",
+      "ms": 108.29999999701977,
+      "bytes": 710958,
+      "differences": 0,
+      "frameP95": 16.799999999999272,
+      "pointerP95": 9.900000005960464
+    },
+    {
+      "source": "flat",
+      "mode": "new",
+      "ms": 115.70000000298023,
+      "bytes": 710958,
+      "differences": 0,
+      "frameP95": 16.700000000000728,
+      "pointerP95": 8.800000011920929
+    },
+    {
+      "source": "flat",
+      "mode": "old",
+      "ms": 119.09999999403954,
+      "bytes": 710958,
+      "differences": 0,
+      "frameP95": 16.799999999999272,
+      "pointerP95": 8.900000005960464
+    },
+    {
+      "source": "flat",
+      "mode": "old",
+      "ms": 118,
+      "bytes": 710958,
+      "differences": 0,
+      "frameP95": 16.799999999999272,
+      "pointerP95": 11.099999994039536
+    },
+    {
+      "source": "flat",
+      "mode": "new",
+      "ms": 116.5,
+      "bytes": 710958,
+      "differences": 0,
+      "frameP95": 16.700000000000728,
+      "pointerP95": 8.099999994039536
+    },
+    {
+      "source": "clay",
+      "mode": "new",
+      "ms": 120,
+      "bytes": 616818,
+      "differences": 0,
+      "frameP95": 16.700000000000728,
+      "pointerP95": 8.799999997019768
+    },
+    {
+      "source": "clay",
+      "mode": "old",
+      "ms": 117.09999999403954,
+      "bytes": 616818,
+      "differences": 0,
+      "frameP95": 16.700000000000728,
+      "pointerP95": 9.5
+    },
+    {
+      "source": "clay",
+      "mode": "old",
+      "ms": 106.90000000596046,
+      "bytes": 616818,
+      "differences": 0,
+      "frameP95": 16.80000000000109,
+      "pointerP95": 8.900000005960464
+    },
+    {
+      "source": "clay",
+      "mode": "new",
+      "ms": 120.70000000298023,
+      "bytes": 616818,
+      "differences": 0,
+      "frameP95": 16.80000000000109,
+      "pointerP95": 9.200000002980232
+    },
+    {
+      "source": "clay",
+      "mode": "new",
+      "ms": 136.09999999403954,
+      "bytes": 616818,
+      "differences": 0,
+      "frameP95": 16.80000000000109,
+      "pointerP95": 13.299999997019768
+    },
+    {
+      "source": "clay",
+      "mode": "old",
+      "ms": 115.3999999910593,
+      "bytes": 616818,
+      "differences": 0,
+      "frameP95": 16.799999999999272,
+      "pointerP95": 8.5
+    },
+    {
+      "source": "clay",
+      "mode": "old",
+      "ms": 109.1000000089407,
+      "bytes": 616818,
+      "differences": 0,
+      "frameP95": 16.700000000000728,
+      "pointerP95": 8.900000005960464
+    },
+    {
+      "source": "clay",
+      "mode": "new",
+      "ms": 139.80000001192093,
+      "bytes": 616818,
+      "differences": 0,
+      "frameP95": 16.700000000000728,
+      "pointerP95": 9.399999991059303
+    },
+    {
+      "source": "clay",
+      "mode": "new",
+      "ms": 110.59999999403954,
+      "bytes": 616818,
+      "differences": 0,
+      "frameP95": 16.799999999999272,
+      "pointerP95": 10.900000005960464
+    },
+    {
+      "source": "clay",
+      "mode": "old",
+      "ms": 121.09999999403954,
+      "bytes": 616818,
+      "differences": 0,
+      "frameP95": 16.799999999999272,
+      "pointerP95": 8.700000002980232
+    },
+    {
+      "source": "clay",
+      "mode": "old",
+      "ms": 106.70000000298023,
+      "bytes": 616818,
+      "differences": 0,
+      "frameP95": 16.700000000000728,
+      "pointerP95": 9.800000011920929
+    },
+    {
+      "source": "clay",
+      "mode": "new",
+      "ms": 124,
+      "bytes": 616818,
+      "differences": 0,
+      "frameP95": 17,
+      "pointerP95": 11.599999994039536
+    },
+    {
+      "source": "clay",
+      "mode": "new",
+      "ms": 113.09999999403954,
+      "bytes": 616818,
+      "differences": 0,
+      "frameP95": 16.700000000000728,
+      "pointerP95": 9.299999997019768
+    },
+    {
+      "source": "clay",
+      "mode": "old",
+      "ms": 113.80000001192093,
+      "bytes": 616818,
+      "differences": 0,
+      "frameP95": 16.80000000000291,
+      "pointerP95": 9.5
+    },
+    {
+      "source": "clay",
+      "mode": "old",
+      "ms": 111.3999999910593,
+      "bytes": 616818,
+      "differences": 0,
+      "frameP95": 16.700000000000728,
+      "pointerP95": 9.100000008940697
+    },
+    {
+      "source": "clay",
+      "mode": "new",
+      "ms": 116.20000000298023,
+      "bytes": 616818,
+      "differences": 0,
+      "frameP95": 16.799999999999272,
+      "pointerP95": 9.399999991059303
+    },
+    {
+      "source": "clay",
+      "mode": "new",
+      "ms": 103.09999999403954,
+      "bytes": 616818,
+      "differences": 0,
+      "frameP95": 16.700000000000728,
+      "pointerP95": 10.199999988079071
+    },
+    {
+      "source": "clay",
+      "mode": "old",
+      "ms": 115,
+      "bytes": 616818,
+      "differences": 0,
+      "frameP95": 16.80000000000291,
+      "pointerP95": 9.5
+    },
+    {
+      "source": "clay",
+      "mode": "old",
+      "ms": 109.59999999403954,
+      "bytes": 616818,
+      "differences": 0,
+      "frameP95": 16.700000000000728,
+      "pointerP95": 9.599999994039536
+    },
+    {
+      "source": "clay",
+      "mode": "new",
+      "ms": 122.59999999403954,
+      "bytes": 616818,
+      "differences": 0,
+      "frameP95": 16.700000000000728,
+      "pointerP95": 9.700000002980232
+    }
+  ]
+}

@@ -1,5 +1,13 @@
 # LI3D Cloud 准则修订流水与历史变更记录
 
+## 2026-09-29 局部重绘蒙版捕获调度
+
+2.25.2：M06/M03，RUNTIME-VISIBILITY-SCHEDULING v1.0.1。运行时深度／法线采用整张绘制，保留两 pass 间呈现与 idle 门禁；A/B/C 72 次捕获像素一致，2K 双图 2623.7→518.5ms，删除额外呈现帧的候选收益小未采用。156 项完整回归及 typecheck/lint 通过；飞书文档与原始数据见 CHG-20260929-RUNTIME-VISIBILITY-SCHEDULING。
+
+M03/M08，INPAINT-MASK-CAPTURE-SCHEDULING v1.0.0：作者蒙版由 512px 分块改为整张绘制，保留一次呈现等待、分条读回、PNG 编码和原遮挡语义。无资产或 Schema 迁移，详见 CHG-20260929-INPAINT-MASK-CAPTURE-SCHEDULING。
+
+同次优化后续：flat/clay 整张绘制，CAPTURE-MATERIAL-ISOLATION v1.0.1；PNG 捕获选择 task 让步读回，UV-READBACK-SCHEDULING v1.2.2，其他 UV 默认调度不变。PNG Worker 直接转移完整编码缓冲；省 RGBA 翻转缓冲的候选因复测白模变慢撤回。156 项 Web 回归、typecheck/lint 通过；图片、原始数据及完整文档在 output/texture-optimization-20260929。
+
 ## 2026-09-28 轻量计时收敛
 
 2.25.0：M13/M15，FUNCTION-TIMING/1.0.0，默认关闭。按用户要求用 --DEBUG 构建门与 start/stop 取代旧重型 Trace 方案，只保留阶段/函数 wall、本地表格与 JSON；原 Performance Lab 独立保持。移除本次服务端诊断及未发布迁移，无业务算法或数据迁移。见 CHG-20260928-FUNCTION-TIMING。

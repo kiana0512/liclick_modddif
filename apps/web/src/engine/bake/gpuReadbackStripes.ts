@@ -1,8 +1,10 @@
 import type * as THREE from 'three';
 import { waitForBrowserPaint, yieldToBrowserTask } from '@/utils/browserScheduling';
 
-// UV-READBACK-SCHEDULING/1.2.1: private contexts pipeline four 2 MiB stripes;
-// visible contexts retain one 1 MiB stripe. At most 8 MiB of private PBOs.
+// [shaoyangZhou]: repair capture readback latency (UV-READBACK-SCHEDULING/1.2.2).
+// Private contexts pipeline four 2 MiB stripes;
+// visible contexts retain one 1 MiB stripe. Capture may yield a task instead
+// of waiting a frame; default UV presentation scheduling remains unchanged.
 const GPU_READBACK_STRIPE_BYTES = 1024 * 1024;
 
 export async function readRenderTargetPixelsInStripes(
@@ -10,6 +12,7 @@ export async function readRenderTargetPixelsInStripes(
   target: THREE.WebGLRenderTarget,
   resolution: number,
   height = resolution,
+  yieldMode: 'paint' | 'task' = 'paint',
 ) {
   const pixels = new Uint8Array(resolution * height * 4);
   const usesVisibleRenderer = renderer.domElement.isConnected;
@@ -50,9 +53,9 @@ export async function readRenderTargetPixelsInStripes(
       if ('error' in completed) throw completed.error;
       if (nextY >= height && !pending.length) break;
       // Refill the freed private slot before yielding, so its GPU transfer can
-      // overlap browser input. Never submit visible work before its paint gate.
+      // overlap browser input. Visible work always awaits its selected yield gate.
       if (!usesVisibleRenderer && nextY < height) submit();
-      if (usesVisibleRenderer) {
+      if (usesVisibleRenderer && yieldMode === 'paint') {
         await waitForBrowserPaint();
       } else {
         await yieldToBrowserTask();
