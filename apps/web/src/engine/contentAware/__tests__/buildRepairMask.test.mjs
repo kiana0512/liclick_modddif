@@ -26,7 +26,7 @@ test('final coverage check rejects transparent/partial targets and supports canc
   assert.equal(await countUncoveredRepairTargets(mask, rgba), 1);
   rgba[7] = 255;
   assert.equal(await countUncoveredRepairTargets(mask, rgba), 0);
-  const c = new AbortController(); c.abort();
+  const c = new globalThis.AbortController(); c.abort();
   await assert.rejects(countUncoveredRepairTargets(mask, rgba, c.signal), {name: 'AbortError'});
 });
 

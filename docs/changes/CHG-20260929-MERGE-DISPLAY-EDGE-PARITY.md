@@ -4,6 +4,8 @@
 User approved the evidenced plan on 2026-09-29: align merge edge mixing and color space with live display; local testing only, no master push or A100 deployment. Primary module M07, collaborators M06/M09/M11; UI-09 merge, resident UV and export. Major semantic change, implementation Codex, visual acceptance by user.
 
 ## Evidence
+Publication follow-up (2026-09-29): user subsequently requested pushing these fixes to master. Merge latest origin/master and pass the complete `verify:prepush` gate before publication. Personal account overrides, secrets and local deployment configuration remain excluded; no A100 deployment is authorized in this follow-up. FBX overlay regression now expects linear-light RGB (122,0,167) with unchanged alpha 192.
+
 The actual CPU Top-3 resolver marked every accepted projection sample alpha=255 in merge mode. At confidence 0.06 the live shader instead uses smoothstep(0,0.12,confidence)=0.5; the opaque merge excludes the repair underlay entirely. Underlay byte-space RGB interpolation also differs from the shader's decoded linear-light interpolation. These are proven code discrepancies, not proof that all model seams have the same cause.
 
 ## Contract / alternatives

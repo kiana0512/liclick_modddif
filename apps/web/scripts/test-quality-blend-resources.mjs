@@ -18,7 +18,7 @@ function load(source, device) {
   return new Function('resolvePixelCpu','getProjectionOverlayAlpha','self','yieldWorkerTask', `${code}; return {createTopK, resolveCpu, resolveGpu, applyOverlays, shader, run};`)(sharedResolve,sharedOverlayAlpha,{ navigator: { gpu: device ? { requestAdapter: async () => ({ requestDevice: async () => device }) } : undefined } },()=>Promise.resolve());
 }
 const old = load(frozen), next = load(current);
-assert.equal(next.shader.replace('var confidence =', 'let confidence =').replace(/    if \(params\.preserveCoverageAlpha == 2u\)[^\n]+\n/, ''), old.shader,
+assert.equal(next.shader.replace('var confidence =', 'let confidence =').replace(/ {4}if \(params\.preserveCoverageAlpha == 2u\)[^\n]+\n/, ''), old.shader,
   'Only the new display-alpha branch changes the quality shader; legacy modes stay identical');
 let seed = 715;
 const random = () => (seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0);
