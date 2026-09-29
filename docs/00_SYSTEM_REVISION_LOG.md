@@ -1144,3 +1144,10 @@ Source: `c2ef76672a28e494fcf8322042d2cb96996b50fe`. The records below are preser
 2026-09-09 release 集成（M15）：合入 master 942417c，保留 release dff6ba6 的 Ceph 完整性验证、生产配置及部署策略。算法版本沿用各变更卡，不新增 Schema 或数据迁移。UV 90% 等待和复杂图层交互峰值仍列为下次优化，未宣称零卡顿。回滚使用上一 release dff6ba6 的前后端同版本镜像，保留生产数据与资产。发布结果以本次 release 流水线及部署核验为准。
 
 2026-09-09 release 增量发布（M15/M04）：同步 master 405f7f51 的 MODELVIEW-CONNECTION-LIFECYCLE v1.0.1 修复，保留 release 8a6d0e21 的生产配置及 Ceph 验证。无新增算法语义或数据迁移；回退前后端至 8a6d0e21 同版本镜像，保留工程和资产。
+
+
+2026-09-23 Blender 发布集成（M15）：合入 master `19457814`，补齐正式 server 的 Blender 5.1.2 运行时与真实 UV 构建验收，同时带入参考图 4MB 上传适配及 master 既有局部重绘采样蒙版修复。保留 release `7d034de5` 的生产 K8s、对象存储、数据库、资源及 nginx 配置；无新 Schema/资产迁移。最终 release 提交须通过完整 verify:prepush，CI 镜像验收和部署结果另行核对；回滚使用 `7d034de5` 同组镜像并保留数据，但旧镜像不具备此次 Blender 导入修复能力。本条不预先宣称部署成功。
+
+2026-09-24 发布集成（M15，CLOUD-DEPLOYMENT v1.0.0）：合入 master 5fbcaa4a，包含 GPT 回图半透明背景清理、交错投射/局部重绘显示修复与 ALG-LR-006 v2.2.0 朝向门槛 0.03。保留 release 4182e47a 的生产配置和 Blender 运行时；维护规范采用 master 拆分结构，release 独有历史完整保留。无额外算法、Schema 或资产迁移；完整 verify:prepush 通过后推送带 [deploy] 的最终提交，部署结果单独验收。回滚使用 4182e47a 的 server/web/db-push 同组镜像，保留数据库、对象资产和 PVC；不预先宣称部署成功。
+
+2026-09-24 发布集成（M15，CLOUD-DEPLOYMENT v1.0.0）：合入 master ee09f457，包含 REFERENCE-IMPORT-BUDGET v1.0.0、INPAINT-CAPTURE-OCCLUSION v1.1.0、远端 GPT 选项可见性修复及快速/精细模式命名排序。4517 已重新构建重启，首页/鉴权/健康检查与相关回归通过。保留 release 0c2410cb 的生产配置、Blender 运行时与历史记录，无额外算法或 Schema 变化，既有资产不重写；业务迁移边界沿用对应变更卡。最终 release 提交需完整 verify:prepush 后推送 [deploy] 并核验 CI 与线上同版本。回滚使用 0c2410cb 的 server/web/db-push 同组镜像，保留数据库、对象资产与 PVC；本条不预先宣称部署成功。
