@@ -5,6 +5,7 @@ User approved the evidenced plan on 2026-09-29: align merge edge mixing and colo
 
 ## Evidence
 Publication follow-up (2026-09-29): user subsequently requested pushing these fixes to master. Merge latest origin/master and pass the complete `verify:prepush` gate before publication. Personal account overrides, secrets and local deployment configuration remain excluded; no A100 deployment is authorized in this follow-up. FBX overlay regression now expects linear-light RGB (122,0,167) with unchanged alpha 192.
+The first full release passed functional tests, lint and deployment simulation but left only 69 bytes of total-JS headroom (256 required). PBR merge now imports the already-identical sRGB lookup and encoder from the canonical color kernel, removing duplicate math without changing outputs or budgets.
 
 The actual CPU Top-3 resolver marked every accepted projection sample alpha=255 in merge mode. At confidence 0.06 the live shader instead uses smoothstep(0,0.12,confidence)=0.5; the opaque merge excludes the repair underlay entirely. Underlay byte-space RGB interpolation also differs from the shader's decoded linear-light interpolation. These are proven code discrepancies, not proof that all model seams have the same cause.
 

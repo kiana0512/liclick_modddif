@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import {compositeLinearChannel} from './linearUnderComposite';
+import { SRGB_BYTE_TO_LINEAR as SRGB_TO_LINEAR, linearToSrgbByte } from '../bake/qualityBlendCpuPixel';
 import type { Layer } from '@/types/layer';
 import { isNativeUvRepaintLayer } from '@/engine/localRepaint/uvRepaintState';
 import { compareUvLayersForComposition } from './uvLayerComposition';
@@ -56,17 +57,6 @@ type PbrLightingBakeSettings = {
   pbrLightAzimuth: number;
   environmentPreset: 'color' | 'studio' | 'soft' | 'dark';
 };
-
-const SRGB_TO_LINEAR = Array.from({ length: 256 }, (_, value) => {
-  const color = value / 255;
-  return color <= 0.04045 ? color / 12.92 : ((color + 0.055) / 1.055) ** 2.4;
-});
-
-function linearToSrgbByte(value: number) {
-  const color = Math.max(0, Math.min(1, value));
-  const srgb = color <= 0.0031308 ? color * 12.92 : 1.055 * color ** (1 / 2.4) - 0.055;
-  return Math.max(0, Math.min(255, Math.round(srgb * 255)));
-}
 
 /**
  * Flattens the editor's deterministic PBR preview light into the merged UV.
