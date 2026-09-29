@@ -345,8 +345,10 @@ assert.doesNotMatch(
 );
 assert.match(workerSource, /Math\.round\(24 \* scale\)/);
 assert.match(workerSource, /Math\.round\(64 \* scale\)/);
-assert.match(workerSource, /Math\.round\(minimumDimension \* 0\.25\)/);
-assert.match(workerSource, /Math\.round\(dilationRadius \* 0\.2\)/);
+assert.match(workerSource, /Math\.round\(dimension \* 0\.25\)/);
+assert.match(workerSource, /Math\.round\(dilation \* 0\.2\)/);
+assert.match(workerSource, /const compositeEdgeRadius = 0;/,
+  'The current-effect/white-model guide must keep a hard edge; only the submitted mask feathers');
 assert.match(
   workerSource,
   /if \(authoredStrength\[index\] >= 24\) \{[\s\S]*?candidate\[index\] = 255/,
@@ -359,8 +361,8 @@ assert.match(
   workerSource,
   /\(\{ core: compositeCore, bounds: coreBounds \} = buildCompositeCoreMask/,
 );
-assert.match(workerSource, /const dilated = dilateMask\(compositeCore/);
-assert.match(workerSource, /if \(compositeCore\[index\] > 0\) submittedMask\[index\] = 255/);
+assert.match(workerSource, /const submittedMask = expand\(samplingCore, samplingBounds, dilationRadius, featherRadius\)/);
+assert.match(workerSource, /const gapBlended = expand\(gapBytes,/);
 
 // Execute the complete production Worker. The canvas shim exposes exact RGBA
 // instead of PNG encoding; the separate browser check covers real PNG round trips.
@@ -451,6 +453,9 @@ for (let i = 0; i < w * h; i++) {
   if (value) assert.equal(unionSubmitted[offset], 255);
   if (depth[offset] === 255) assert.equal(unionSubmitted[offset], 0, 'Sampling margin must not enter background or holes');
 }
+assert.equal(unionSubmitted[(25 * w + 25) * 4], 255, 'Untextured pixel keeps full coverage');
+assert.ok(unionSubmitted[(65 * w + 79) * 4] > 0, 'Untextured region retains its former seam expansion');
+assert.equal(unionSubmitted[(65 * w + 80) * 4], 255, 'The broad untextured region remains fully editable');
 assert.deepEqual(coverage, coverageBefore, 'Input coverage is immutable');
 assert.equal(closed, 7, 'Coverage depth bitmap released with other inputs');
 await workerRuntime.onmessage({data:{id:4,mode:'local',currentEffect:bitmap(coverage),inputMask:bitmap(authored),coverageDepth:{...bitmap(depth),width:w-1}}});
@@ -465,7 +470,11 @@ assert.match(panelSource, /paintMaskSource: isGptLocalRepaint \? 'user' : 'user-
 
 }
 assert.match(panelSource, /localRepaintSmartPolish: false/);
-assert.match(panelSource, /aria-label="局部重绘智能润色"[\s\S]*?aria-checked=\{localRepaintSmartPolish\}/);
+assert.doesNotMatch(panelSource, /aria-label="局部重绘智能润色"|开启智能润色后可输入编辑要求/);
+const hiddenPolishDefault = panelSource.match(/const localRepaintSmartPolish = ([^;]+);/)[1];
+for (const saved of [undefined, false, true]) {
+  assert.equal(new Function('generationSettings', `return ${hiddenPolishDefault};`)({ localRepaintSmartPolish: saved }), false);
+}
 assert.match(panelSource, /\.\.\.\(localRepaintSmartPolish \? \{ prompt: effectivePrompt \} : \{\}\)/);
 assert.match(panelSource, /if \(isGptLocalRepaint\) \{\s*const clayPreview = await captureCurrentColorPreview/);
 // Execute prompt resolution from the real component with the switch off, stale

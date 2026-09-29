@@ -14,11 +14,12 @@ export type VisibleSurfaceRepairResult = {
   outputChecksum: number;
   initialStats: SurfaceRepairStats;
   fallbackStats?: SurfaceRepairStats;
+  globalFallbackPixels: number;
   seamLinkCount: number;
   seamTopologyBuildTimeMs: number;
 };
 
-/** Common requests stay seam-free; only a proven residual pays for one physical-seam pass. */
+/** Common requests stay seam-free; residuals get one bounded seam and coverage pass. */
 export async function runVisibleSurfaceRepairWithFallback(input: {
   root: THREE.Object3D;
   width: number;
@@ -54,6 +55,7 @@ export async function runVisibleSurfaceRepairWithFallback(input: {
     unresolvedPixels: initial.stats.unresolvedPixels,
     outputChecksum: initial.stats.outputChecksum,
     initialStats: initial.stats,
+    globalFallbackPixels: 0,
     seamLinkCount: 0,
     seamTopologyBuildTimeMs: 0,
   };
@@ -72,10 +74,6 @@ export async function runVisibleSurfaceRepairWithFallback(input: {
     onProgress: (progress) =>
       input.onProgress?.(0.8 + 0.1 * (progress.total ? progress.completed / progress.total : 1)),
   });
-  if (topology.seamLinkCount === 0) {
-    input.onProgress?.(1);
-    return { ...base, seamTopologyBuildTimeMs: topology.buildTimeMs };
-  }
   const fallback = await runSurfaceAwareRepair(
     {
       width: input.width,
@@ -84,9 +82,13 @@ export async function runVisibleSurfaceRepairWithFallback(input: {
       writeMask: initial.unresolvedMask,
       topologyMask: topology.topologyMask,
       topologyRegionIds: topology.regionIds,
-      seamLinks: topology.seamLinks,
+      ...(topology.seamLinkCount > 0 ? { seamLinks: topology.seamLinks } : {}),
       ...input.propagation,
-      maxSeamCrossings: 1,
+      maxSeamCrossings: topology.seamLinkCount > 0 ? 1 : 0,
+      // Only the residual reaches this pass. Prefer same-region local colour,
+      // then one physical seam hop; a fully blank island finally receives an
+      // opaque authored-colour fallback instead of remaining a visible hole.
+      fillUnreachableWithGlobalAverage: true,
     },
     {
       signal: input.signal,
@@ -103,6 +105,7 @@ export async function runVisibleSurfaceRepairWithFallback(input: {
     outputChecksum: fallback.stats.outputChecksum,
     initialStats: initial.stats,
     fallbackStats: fallback.stats,
+    globalFallbackPixels: fallback.stats.globalFallbackPixels,
     seamLinkCount: topology.seamLinkCount,
     seamTopologyBuildTimeMs: topology.buildTimeMs,
   };

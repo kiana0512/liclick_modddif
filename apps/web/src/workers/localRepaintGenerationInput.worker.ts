@@ -498,6 +498,52 @@ function writeMaskPixels(mask: Uint8Array, width: number, height: number) {
   return new ImageData(pixels, width, height);
 }
 
+function buildSubmittedSamplingMask(input: {
+  compositeCore: Uint8Array;
+  authoredCore?: Uint8Array;
+  gapCore?: Uint8ClampedArray;
+  visibleObjectMask?: Uint8ClampedArray;
+  width: number;
+  height: number;
+  scale: number;
+}) {
+  const { compositeCore, authoredCore, gapCore, visibleObjectMask, width, height, scale } = input;
+  const samplingCore = authoredCore ?? compositeCore;
+  const samplingBounds = getMaskBounds(samplingCore, width, height);
+  const radii = (bounds: MaskBounds) => {
+    const dimension = Math.min(bounds.maxX - bounds.minX + 1, bounds.maxY - bounds.minY + 1);
+    const dilation = Math.max(Math.round(24 * scale), Math.min(Math.round(64 * scale), Math.round(dimension * 0.25)));
+    return [dilation, Math.max(Math.round(4 * scale), Math.min(Math.round(10 * scale), Math.round(dilation * 0.2)))] as const;
+  };
+  const expand = (core: Uint8Array, bounds: MaskBounds, dilation: number, feather: number) => {
+    if (bounds.maxX < bounds.minX) return new Uint8Array(core.length);
+    const result = boxBlur(dilateMask(core, width, height, dilation, bounds), width, height, feather,
+      expandMaskBounds(bounds, dilation, width, height));
+    for (let index = 0; index < core.length; index++) if (core[index]) result[index] = 255;
+    return result;
+  };
+  const [dilationRadius, featherRadius] = samplingBounds.maxX >= samplingBounds.minX
+    ? radii(samplingBounds) : [0, 0];
+  const submittedMask = expand(samplingCore, samplingBounds, dilationRadius, featherRadius);
+  if (gapCore) {
+    // Keep the existing gap-to-texture seam treatment. Its radius was based on
+    // the whole visible selection before the authored/gap split.
+    const unionBounds = getMaskBounds(compositeCore, width, height);
+    const [gapRadius, gapFeather] = radii(unionBounds);
+    const gapBytes = new Uint8Array(gapCore);
+    const gapBlended = expand(gapBytes, getMaskBounds(gapBytes, width, height), gapRadius, gapFeather);
+    for (let index = 0; index < submittedMask.length; index++) {
+      submittedMask[index] = Math.max(submittedMask[index], gapBlended[index]);
+    }
+  }
+  if (visibleObjectMask) {
+    for (let index = 0; index < submittedMask.length; index++) {
+      if (!visibleObjectMask[index]) submittedMask[index] = 0;
+    }
+  }
+  return { submittedMask, dilationRadius, featherRadius };
+}
+
 self.onmessage = async (event: MessageEvent<GenerationInputWorkerRequest>) => {
   const request = event.data;
   const { id, currentEffect, clayPreview, inputMask, coverageDepth } = request;
@@ -542,6 +588,8 @@ self.onmessage = async (event: MessageEvent<GenerationInputWorkerRequest>) => {
     const scale = Math.max(width, height) / 2048;
     let selectionMask: Uint8Array | undefined;
     let visibleObjectMask: Uint8ClampedArray | undefined;
+    let authoredSamplingCore: Uint8Array | undefined;
+    let gapSamplingCore: Uint8ClampedArray | undefined;
     let compositeCore: Uint8Array;
     let coreBounds: MaskBounds;
     let objectPixelCount = 0;
@@ -603,6 +651,11 @@ self.onmessage = async (event: MessageEvent<GenerationInputWorkerRequest>) => {
           visibleObjectMask[index] = depth[offset] >= 254 && depth[offset + 1] >= 254 && depth[offset + 2] >= 254 ? 0 : 255;
         }
         const gaps = projectionGapMaskFromAlpha(currentPixels, { width, height, data: visibleObjectMask });
+        gapSamplingCore = gaps.data;
+        authoredSamplingCore = new Uint8Array(authoredStrength);
+        for (let index = 0; index < authoredSamplingCore.length; index++) {
+          if (!visibleObjectMask[index]) authoredSamplingCore[index] = 0;
+        }
         selectionMask = authoredStrength;
         for (let index = 0; index < selectionMask.length; index++) {
           selectionMask[index] = visibleObjectMask[index] ? Math.max(selectionMask[index], gaps.data[index]) : 0;
@@ -637,22 +690,6 @@ self.onmessage = async (event: MessageEvent<GenerationInputWorkerRequest>) => {
         if (compositeCore[index] > 0) compositeAlpha[index] = 255;
       }
     }
-    const minX = coreBounds.minX;
-    const minY = coreBounds.minY;
-    const maxX = coreBounds.maxX;
-    const maxY = coreBounds.maxY;
-    const minimumDimension = Math.min(maxX - minX + 1, maxY - minY + 1);
-    // LOCAL-REPAINT-SAMPLING-MASK/3: restore the remote sampling margin.
-    // The unexpanded selection still owns white marking and result writeback.
-    const dilationRadius = Math.max(
-      Math.round(24 * scale),
-      Math.min(Math.round(64 * scale), Math.round(minimumDimension * 0.25)),
-    );
-    const featherRadius = Math.max(
-      Math.round(4 * scale),
-      Math.min(Math.round(10 * scale), Math.round(dilationRadius * 0.2)),
-    );
-
     const compositePixels = new Uint8ClampedArray(currentPixels.data);
     // MODELVIEW-SINGLE-WHITE/1.0.0: remote guides are opaque black outside the
     // frozen object silhouette. Coverage is derived from alpha, never RGB.
@@ -686,21 +723,12 @@ self.onmessage = async (event: MessageEvent<GenerationInputWorkerRequest>) => {
     }
     finishPhase(isSingleViewCompletion && !whiteSingleView ? 'blend-clay-composite' : 'fill-white-selection');
 
-    const dilated = dilateMask(compositeCore, width, height, dilationRadius, coreBounds);
-    const dilatedBounds = expandMaskBounds(coreBounds, dilationRadius, width, height);
-    const submittedMask = boxBlur(dilated, width, height, featherRadius, dilatedBounds);
-    for (let y = coreBounds.minY; y <= coreBounds.maxY; y += 1) {
-      const row = y * width;
-      for (let x = coreBounds.minX; x <= coreBounds.maxX; x += 1) {
-        const index = row + x;
-        if (compositeCore[index] > 0) submittedMask[index] = 255;
-      }
-    }
-    if (visibleObjectMask) {
-      for (let index = 0; index < submittedMask.length; index++) {
-        if (!visibleObjectMask[index]) submittedMask[index] = 0;
-      }
-    }
+    // Only hand-painted pixels receive an outward feather. Visible untextured
+    // pixels keep their exact footprint. This same PNG blends the return image.
+    const { submittedMask, dilationRadius, featherRadius } = buildSubmittedSamplingMask({
+      compositeCore, authoredCore: authoredSamplingCore, gapCore: gapSamplingCore,
+      visibleObjectMask, width, height, scale,
+    });
     finishPhase('build-submitted-mask');
 
     const compositeCanvas = new OffscreenCanvas(width, height);

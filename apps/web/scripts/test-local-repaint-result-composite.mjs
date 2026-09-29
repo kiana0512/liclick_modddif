@@ -151,8 +151,8 @@ assert.match(
 );
 assert.match(
   generatePanelSource,
-  /resultUrl: preparedResult.resultUrl,[\s\S]*rawResultUrl: generation\.resultUrl,[\s\S]*resultComposition: 'direct-v1'/,
-  'model silhouette clipping preserves the untouched provider result without colour harmonization',
+  /resultUrl: preparedResult.resultUrl,[\s\S]*rawResultUrl: generation\.resultUrl,[\s\S]*resultComposition: repaintResultComposition/,
+  'ModelView persists the submitted-mask blend while preserving the untouched provider result separately',
 );
 assert.doesNotMatch(
   generatePanelSource,

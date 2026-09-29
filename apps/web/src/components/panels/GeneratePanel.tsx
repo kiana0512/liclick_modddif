@@ -619,7 +619,6 @@ export function GeneratePanel({
   const [textureViewMode, setTextureViewMode] = useState<TextureViewMode>('multi');
   // TEXTURE-PROVIDER-SWITCH/1.0.0: share selection across single/multiview tabs.
   const [singleViewProvider, setSingleViewProvider] = useState<SingleViewProvider>('gpt');
-  const [normalBlackBackground, setNormalBlackBackground] = useState(false);
   const [texturePreviewMode, setTexturePreviewMode] = useState<TexturePreviewMode>('multi');
   useEffect(() => {
     if (!openLocalRepaintPanelRequestKey) return;
@@ -766,8 +765,9 @@ export function GeneratePanel({
   const textureGptQuality = resolveGptTextureQuality(generationSettings.textureGptQuality, textureGptModel);
   const isGptLocalRepaint = generationSettings.localRepaintProvider === 'gpt';
   const gptRepaintUseMaterialReference = generationSettings.gptRepaintUseMaterialReference === true;
-  const localRepaintSmartPolish = !personalRepaintEnabled && generationSettings.localRepaintSmartPolish === true;
-  const normalBackground = normalBlackBackground ? 'black' : 'blue';
+  // Hidden product defaults override legacy persisted switches for new requests.
+  const localRepaintSmartPolish = false;
+  const normalBackground = 'black' as const;
   const imageModel = isTextureMapTab || (isLocalRepaintTab && isGptLocalRepaint)
     ? textureGptModel
     : (generationSettings.model as LiclickImageModel);
@@ -3814,6 +3814,7 @@ export function GeneratePanel({
       return;
     }
 
+    let automaticRepairFailed = false;
     if (isMultiviewRequest && projectedGenerationCount > 0) {
       updateTexturePipelineProgress(90, '内容识别补缝');
       setGenerateNotice({
@@ -3830,6 +3831,7 @@ export function GeneratePanel({
         });
         updateTexturePipelineProgress(100, '补缝完成');
       } catch (error) {
+        automaticRepairFailed = true;
         updateTexturePipelineProgress(100, '纹理完成，补缝未完成');
         console.warn('[Liclick 3D Texture] Automatic content repair did not complete:', error);
       }
@@ -3840,10 +3842,11 @@ export function GeneratePanel({
     if (completedGenerations.length > 0) {
       setGenerateNotice(undefined);
       pushToast({
-        tone: projectedGenerationCount === completedGenerations.length ? 'success' : 'warning',
+        tone: !automaticRepairFailed && projectedGenerationCount === completedGenerations.length ? 'success' : 'warning',
         title: t('textureMapGenerated'),
         description: isMultiviewRequest
-          ? `已生成 ${completedGenerations.length}/${pendingGenerations.length} 个多视图纹理贴图，自动投影 ${projectedGenerationCount}/${completedGenerations.length} 个。`
+          ? `已生成 ${completedGenerations.length}/${pendingGenerations.length} 个多视图纹理贴图，自动投影 ${projectedGenerationCount}/${completedGenerations.length} 个。` +
+            (automaticRepairFailed ? '内容识别补缝未完成，请检查缺口后重试。' : '')
           : projectedGenerationCount === completedGenerations.length
             ? '单视图纹理贴图已自动投影并添加到图层。'
             : '单视图图片已生成，尚未完成回贴的结果将自动重试，请勿重复生图。',
@@ -4252,6 +4255,7 @@ export function GeneratePanel({
         throw new DOMException('用户已终止局部生图准备。', 'AbortError');
       }
       const effectivePrompt = resolvedPrompt.prompt;
+      const repaintResultComposition = isGptLocalRepaint ? 'direct-v1' : 'submitted-mask-v1';
       pendingGeneration = {
         id: generationId,
         mode: 'inpaint',
@@ -4283,7 +4287,7 @@ export function GeneratePanel({
           sourceComposition: isGptLocalRepaint ? 'gpt-clay-selection-coverage-v1' : 'flat-white-mask-v1',
           maskExpansionRadius: preparedGenerationInput.dilationRadius,
           maskFeatherRadius: preparedGenerationInput.featherRadius,
-          resultComposition: 'direct-v1',
+          resultComposition: repaintResultComposition,
           objectMatrixWorld: captureObjectMatrixWorld,
           captureCamera: capture.camera,
           serverSubmitted: false,
@@ -4429,6 +4433,8 @@ export function GeneratePanel({
       const personalResultStartedAt = personalRepaintEnabled ? performance.now() : 0;
       const preparedResult = await prepareRepaintResult(
         generation.resultUrl, capture.depthUrl, isGptLocalRepaint, requestAbortController.signal,
+        isGptLocalRepaint ? undefined : flatCurrentEffectUrl,
+        isGptLocalRepaint ? undefined : preparedGenerationInput.submittedMaskUrl,
       );
       if (personalRepaintEnabled && generation.metadata.provider === 'autodl-personal') {
         generation.metadata.personalRequestPreparationMs = personalRequestPreparationMs;
@@ -4453,7 +4459,7 @@ export function GeneratePanel({
           maskUrl: currentPaintMaskDataUrl,
           rawResultUrl: generation.resultUrl,
           ...preparedResult.metadata,
-          resultComposition: 'direct-v1',
+          resultComposition: repaintResultComposition,
           paintMaskRevision: currentPaintMaskRevision,
           sourceColorMode: isGptLocalRepaint ? 'gpt-clay-selection-coverage-v1' : 'flat-clay-mask-v1',
           sourceComposition: isGptLocalRepaint ? 'gpt-clay-selection-coverage-v1' : 'flat-clay-mask-v1',
@@ -4476,7 +4482,7 @@ export function GeneratePanel({
         ? persistGeneratedImage(
             'generations',
             completedGeneration.resultUrl,
-            `${generationId}-direct-v1.png`,
+            `${generationId}-${repaintResultComposition}.png`,
             undefined,
             currentProject.id,
           ).catch((error) => {
@@ -4505,7 +4511,7 @@ export function GeneratePanel({
               authoredMaskUrl: persistedAuthoredMaskUrl,
               submittedMaskUrl: persistedSubmittedMaskUrl,
               rawResultUrl: generation.resultUrl,
-              resultComposition: 'direct-v1',
+              resultComposition: repaintResultComposition,
             },
           };
           syncGeneration(durableGeneration);
@@ -5748,26 +5754,6 @@ export function GeneratePanel({
                 className="mb-2"
               />
             )}
-            {(isLocalRepaintTab || (isTextureMapTab && singleViewProvider === 'remote')) && (
-              <div className="mb-2 flex items-center justify-between gap-2 text-xs text-white/75">
-                <span>法线黑色背景</span>
-                <button
-                  type="button"
-                  role="switch"
-                  aria-label="法线黑色背景"
-                  aria-checked={normalBlackBackground}
-                  disabled={workflowConfigurationLocked || workflowSubmissionLocked}
-                  title="开：黑底；关：蓝底"
-                  onClick={() => {
-                    if (workflowConfigurationLocked || workflowSubmissionLocked) return;
-                    setNormalBlackBackground(!normalBlackBackground);
-                  }}
-                  className={`relative h-5 w-9 shrink-0 rounded-full transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-fuchsia-400 disabled:opacity-40 ${normalBlackBackground ? 'bg-fuchsia-500' : 'bg-white/20'}`}
-                >
-                  <span className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-transform ${normalBlackBackground ? 'left-0.5 translate-x-4' : 'left-0.5'}`} />
-                </button>
-              </div>
-            )}
             {isLocalRepaintTab && isGptLocalRepaint && (
               <div className="mb-2 flex items-center justify-between gap-2 text-xs text-white/75">
                 <span>使用材质参考图</span>
@@ -5782,23 +5768,6 @@ export function GeneratePanel({
                   className={`relative h-5 w-9 shrink-0 rounded-full transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-fuchsia-400 disabled:opacity-40 ${gptRepaintUseMaterialReference ? 'bg-fuchsia-500' : 'bg-white/20'}`}
                 >
                   <span className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-transform ${gptRepaintUseMaterialReference ? 'left-0.5 translate-x-4' : 'left-0.5'}`} />
-                </button>
-              </div>
-            )}
-            {isLocalRepaintTab && !isGptLocalRepaint && !personalRepaintEnabled && (
-              <div className="mb-2 flex items-center justify-between gap-2 text-xs text-white/75">
-                <span>智能润色</span>
-                <button
-                  type="button"
-                  role="switch"
-                  aria-label="局部重绘智能润色"
-                  aria-checked={localRepaintSmartPolish}
-                  disabled={workflowConfigurationLocked || workflowSubmissionLocked}
-                  title="关闭使用远端内置提示词；开启后按编辑要求润色并覆盖提示词"
-                  onClick={() => updateGenerationSettings({ localRepaintSmartPolish: !localRepaintSmartPolish })}
-                  className={`relative h-5 w-9 shrink-0 rounded-full transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-fuchsia-400 disabled:opacity-40 ${localRepaintSmartPolish ? 'bg-fuchsia-500' : 'bg-white/20'}`}
-                >
-                  <span className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-transform ${localRepaintSmartPolish ? 'left-0.5 translate-x-4' : 'left-0.5'}`} />
                 </button>
               </div>
             )}
@@ -6030,7 +5999,7 @@ export function GeneratePanel({
                     : undefined
                 }
                 placeholder={
-                  isLocalRepaintTab ? (!isGptLocalRepaint && !localRepaintSmartPolish ? '开启智能润色后可输入编辑要求' : '可输入本次编辑要求') : undefined
+                  isLocalRepaintTab ? (!isGptLocalRepaint && !localRepaintSmartPolish ? '当前使用远端内置提示词' : '可输入本次编辑要求') : undefined
                 }
                 onChange={(event) => {
                   if (isLocalRepaintTab) {

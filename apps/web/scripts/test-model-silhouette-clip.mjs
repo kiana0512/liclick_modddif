@@ -9,7 +9,18 @@ class Pixels { constructor(data, width, height) { this.data=data;this.width=widt
 const exports = {};
 new Function('exports','ImageData',js)(exports,Pixels);
 const clip = exports.clipRepaintToModelSilhouette;
+const blend = exports.compositeRepaintWithSubmittedMask;
 assert.equal(exports.MODEL_SILHOUETTE_CLIP_VERSION, 2);
+{
+ const generated = new Pixels(new Uint8ClampedArray([200, 100, 50, 255, 200, 100, 50, 255, 200, 100, 50, 255]), 3, 1);
+ const original = new Pixels(new Uint8ClampedArray([20, 40, 60, 255, 20, 40, 60, 255, 20, 40, 60, 255]), 3, 1);
+ const mask = new Pixels(new Uint8ClampedArray([0, 255, 255, 255, 128, 0, 0, 255, 255, 0, 0, 255]), 3, 1);
+ const merged = blend(generated, original, mask);
+ assert.deepEqual([...merged.data.slice(0, 4)], [20, 40, 60, 255], 'Black in the submitted mask preserves the original');
+ assert.deepEqual([...merged.data.slice(4, 8)], [110, 70, 55, 255], 'Gray in the submitted red channel blends both images');
+ assert.deepEqual([...merged.data.slice(8, 12)], [200, 100, 50, 255], 'White in the submitted mask uses the return image');
+ assert.throws(() => blend(generated, original, new Pixels(new Uint8ClampedArray(4), 1, 1)), /尺寸/);
+}
 const w=2048,h=16;
 const color=new Pixels(new Uint8ClampedArray(w*h*4),w,h);
 const depth=new Pixels(new Uint8ClampedArray(w*h*4).fill(255),w,h);
@@ -48,7 +59,8 @@ for (const [width, radius] of [[512,1], [1024,2], [2048,3], [4096,6]]) {
 const panel=read('components/panels/GeneratePanel.tsx');
 assert.match(panel,/prepareRepaintResult\(\s*generation.resultUrl, capture.depthUrl, isGptLocalRepaint, requestAbortController.signal/);
 const policy=read('engine/localRepaint/resultAlphaPolicy.ts');
-assert.match(policy,/prepareModelClippedRepaint\(sourceUrl, depthUrl, signal\)/);
+assert.match(policy,/prepareModelClippedRepaint\([\s\S]*?sourceUrl, depthUrl, signal, originalUrl, submittedMaskUrl/);
+assert.match(panel,/isGptLocalRepaint \? undefined : preparedGenerationInput\.submittedMaskUrl/);
 assert.match(panel,/cameraSnapshot: captureCameraSnapshot,\s*}, 2048\).catch/);
 assert.match(panel,/rawResultUrl: generation.resultUrl/);
 const editor=read('routes/EditorPage.tsx');

@@ -7140,10 +7140,11 @@ export function EditorPage({
                   progress: 0.74 + progress * 0.24,
                 }),
         });
-        const { filledRgba, repairedPixels, unresolvedPixels, outputChecksum } = repair;
+        const { filledRgba, repairedPixels, unresolvedPixels, globalFallbackPixels, outputChecksum } = repair;
         reportRepairRunState('running', 'repair-worker-ready', {
           repairedPixels,
           unresolvedPixels,
+          globalFallbackPixels,
           outputChecksum,
           seamLinkCount: repair.seamLinkCount,
           seamTopologyBuildTimeMs: repair.seamTopologyBuildTimeMs,
@@ -7152,7 +7153,7 @@ export function EditorPage({
           initial: repair.initialStats,
           fallback: repair.fallbackStats,
         }));
-        if (repairedPixels === 0) {
+        if (repairedPixels === 0 || unresolvedPixels !== 0) {
           throw new Error(t('contentAwareRepairNoReachableSource'));
         }
         // `filledRgba` is intentionally sparse: only successfully repaired gap
@@ -7178,15 +7179,16 @@ export function EditorPage({
           layerId: repairLayer.id,
           repairedPixels,
           unresolvedPixels,
+          globalFallbackPixels,
           outputChecksum,
         });
         options?.taskContext?.markFirstResult({ layerId: repairLayer.id });
         if (!benchmarkOnly && !silentForeground) {
           pushToast({
-            tone: unresolvedPixels > 0 ? 'warning' : 'success',
+            tone: globalFallbackPixels > 0 ? 'warning' : 'success',
             title: t('contentAwareFillComplete'),
             description: `${t('uvRepairLayerCreated')}: ${repairLayer.name} · ${repairedPixels.toLocaleString()} px` +
-              (unresolvedPixels > 0 ? `；仍有 ${unresolvedPixels.toLocaleString()} px 缺少可靠边界颜色，可使用局部重绘补充。` : ''),
+              (globalFallbackPixels > 0 ? `；其中 ${globalFallbackPixels.toLocaleString()} px 缺少邻近供色，已用模型已有颜色填满，请检查细节。` : ''),
             dedupeKey: `content-aware-repair:${repairLayer.id}`,
           });
         }
@@ -7209,7 +7211,7 @@ export function EditorPage({
             description: error instanceof Error ? error.message : t('localRepaintFailedHelp'),
           });
         }
-        if (benchmarkOnly) throw error;
+        if (benchmarkOnly || silentForeground) throw error;
       } finally {
         options?.taskContext?.signal.removeEventListener('abort', abortFromScheduler);
         delete document.body.dataset.perfUvBakePhase;

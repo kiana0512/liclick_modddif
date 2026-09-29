@@ -2,11 +2,17 @@
 
 ## 2026-09-29 局部重绘蒙版捕获调度
 
+2.25.3：合入 origin/master 的请求选项、提交蒙版合成和补缝完整覆盖更新，保留本次捕获/读回优化；代码注释按 Git 用户 shaoyangZhou 标记。最终合并提交按 RELEASE-PREPUSH 流程验证后推送，A/B 原始证据保持原测试基线，不冒充远端生图端到端复测。
+
 2.25.2：M06/M03，RUNTIME-VISIBILITY-SCHEDULING v1.0.1。运行时深度／法线采用整张绘制，保留两 pass 间呈现与 idle 门禁；A/B/C 72 次捕获像素一致，2K 双图 2623.7→518.5ms，删除额外呈现帧的候选收益小未采用。156 项完整回归及 typecheck/lint 通过；飞书文档与原始数据见 CHG-20260929-RUNTIME-VISIBILITY-SCHEDULING。
 
 M03/M08，INPAINT-MASK-CAPTURE-SCHEDULING v1.0.0：作者蒙版由 512px 分块改为整张绘制，保留一次呈现等待、分条读回、PNG 编码和原遮挡语义。无资产或 Schema 迁移，详见 CHG-20260929-INPAINT-MASK-CAPTURE-SCHEDULING。
 
 同次优化后续：flat/clay 整张绘制，CAPTURE-MATERIAL-ISOLATION v1.0.1；PNG 捕获选择 task 让步读回，UV-READBACK-SCHEDULING v1.2.2，其他 UV 默认调度不变。PNG Worker 直接转移完整编码缓冲；省 RGBA 翻转缓冲的候选因复测白模变慢撤回。156 项 Web 回归、typecheck/lint 通过；图片、原始数据及完整文档在 output/texture-optimization-20260929。
+
+## 2026-09-28 内容填补完整覆盖
+
+M09（协作 M07/M08）：`ALG-CA-003` v1.4.0 让前两轮局部及一条物理缝仍无法到达的严格 UV core 残余使用已有可靠纹理均色作不透明最终兜底；无可靠纹理则拒绝发布，自动多视图补缝失败不再伪装完成。原分辨率、投影 QA、Layer/Project Schema、Command/CAS/ownership/verified assets 与导出合成契约不变；旧资产不自动重写。验证与回退见 [完整覆盖变更卡](changes/CHG-20260928-CONTENT-REPAIR-COMPLETE-COVERAGE.md)。
 
 ## 2026-09-28 轻量计时收敛
 
