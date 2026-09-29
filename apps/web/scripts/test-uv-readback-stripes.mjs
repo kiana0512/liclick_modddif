@@ -84,3 +84,20 @@ for (const visible of [true,false]) {
   }
 }
 console.log('UV readback passed: exact destinations/tail, bounded isolated overlap, visible paint boundaries, out-of-order success/failure and cleanup.');
+
+// [shaoyangZhou]: verify capture task yields retain stripe bounds and failures without
+// charging a full presentation interval for every one-MiB copy.
+for (const fail of [false, true]) {
+  let paints = 0, tasks = 0, calls = 0;
+  const taskRead = new Function('waitForBrowserPaint', 'yieldToBrowserTask', `${compiled}; return readRenderTargetPixelsInStripes;`)(
+    async () => { paints++; }, async () => { tasks++; },
+  );
+  const run = taskRead({ domElement: { isConnected: true }, async readRenderTargetPixelsAsync(t,x,y,w,h,bytes) {
+    assert(bytes.byteLength <= 1024 * 1024);
+    if (fail && calls === 1) throw new Error('capture read failed');
+    bytes.fill(++calls);
+  } }, {}, 2048, 257, 'task');
+  if (fail) await assert.rejects(run, /capture read failed/);
+  else { const bytes = await run; assert.equal(bytes[0], 1); assert.equal(bytes.at(-1), 3); }
+  assert.equal(paints, 0); assert.equal(tasks, fail ? 1 : 2);
+}

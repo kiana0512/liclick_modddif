@@ -91,6 +91,10 @@ assert.equal(
   ),
   '服务器莉刻运行时版本不兼容，请联系管理员升级服务。',
 );
+assert.equal(
+  getLiclickUserErrorMessage(new Error('Atlas token cache is missing access_token: [redacted]')),
+  '当前个人莉刻账号的登录凭证缺失或已过期，请在右上角账号菜单重新绑定后重试。',
+);
 
 assert.equal(
   buildPersonalLiclickAccountCallbackUrl('http://10.3.2.59:44770', '/li3d').toString(),

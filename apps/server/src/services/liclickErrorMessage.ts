@@ -22,7 +22,7 @@ export function getLiclickUserErrorMessage(
       normalized,
     )
   ) {
-    return '共享生图服务凭证未配置或已过期，请联系管理员。';
+    return '当前个人莉刻账号的登录凭证缺失或已过期，请在右上角账号菜单重新绑定后重试。';
   }
   if (
     /\b402\b|payment required|billing[_\s-]*(hard[_\s-]*)?limit|insufficient.*(?:credit|balance|quota)|(?:credit|balance|quota).*(?:insufficient|exhausted|exceeded|empty)|quota[_\s-]*(?:exceeded|exhausted)|计费.*(?:上限|权限)|账单.*限额|(?:额度|余额|积分|资源点).*(?:不足|用完|耗尽|超限)/.test(

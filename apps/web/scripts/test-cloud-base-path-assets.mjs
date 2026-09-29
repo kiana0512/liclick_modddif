@@ -6,6 +6,7 @@ import { createServer } from 'vite';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const originalWindow = globalThis.window;
+const originalFetch = globalThis.fetch;
 
 globalThis.window = {
   setTimeout: globalThis.setTimeout,
@@ -27,7 +28,7 @@ const server = await createServer({
 });
 
 try {
-  const { directAssetPathAtBase, workspacePathAtBase } = await server.ssrLoadModule(
+  const { directAssetPathAtBase, workspacePathAtBase, urlToBlob } = await server.ssrLoadModule(
     '/src/services/workspaceApiClient.ts',
   );
   const base = 'http://127.0.0.1:5646/li3d';
@@ -51,9 +52,25 @@ try {
     workspacePath,
   );
 
+  const requests = [];
+  globalThis.fetch = async (url, options) => {
+    requests.push({ url: String(url), options });
+    if (requests.length === 1) return new Response(JSON.stringify({ downloadUrl: 'https://storage.example.test/signed' }), { status: 200 });
+    if (requests.length === 2) throw new TypeError('CORS blocked signed GET');
+    return new Response(new Blob(['reference pixels'], { type: 'image/png' }), { status: 200 });
+  };
+  const blob = await urlToBlob(`http://127.0.0.1:5646${directPath}`);
+  assert.equal(await blob.text(), 'reference pixels');
+  assert.equal(requests.length, 3);
+  assert.match(requests[0].url, /resolve=1$/);
+  assert.equal(requests[1].options.credentials, 'omit');
+  assert.match(requests[2].url, /proxy=1$/);
+  assert.equal(requests[2].options.credentials, 'include');
+
   stdout.write('Cloud public-base asset compatibility checks passed.\n');
 } finally {
   await server.close();
+  globalThis.fetch = originalFetch;
   if (originalWindow === undefined) delete globalThis.window;
   else globalThis.window = originalWindow;
 }

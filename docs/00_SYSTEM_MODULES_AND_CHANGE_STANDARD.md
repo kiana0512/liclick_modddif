@@ -1,6 +1,6 @@
 # LI3D Cloud 系统模块、算法与变更管理唯一准则
 
-> 文档版本：`2.25.2`
+> 文档版本：`2.25.3`
 >
 > 本文件只描述**现在必须成立的规则**。历史变更流水、变更卡摘要与修订记录已移出到 [00_SYSTEM_REVISION_LOG.md](00_SYSTEM_REVISION_LOG.md)，仅在追溯决策、排查兼容或回归问题时读取。
 
@@ -216,6 +216,8 @@ Cloud 权威实现使用 PostgreSQL JSONB 当前快照和不可变 Revision 表�
 ### 4.4 对象存储协议
 
 `ASSET_TRANSFER_PROTOCOL_VERSION=1`，单资产最大 `160 MiB`。类别固定为 models、references、captures、generations、layers、baked。浏览器计算 SHA-256，请求绑定 user/project/category/filename/MIME/size/hash 的上传意图，使用短期签名 PUT 上传；完成接口执行 `ALG-ASSET-VERIFY-001` v1.1.0：HEAD 校验长度、MIME；有 SHA-256 checksum 时直接比对，缺失时通过配置的内网 endpoint 流式 GET 计算实际 SHA-256，全部匹配才把资产从 pending 置为 verified。明确 checksum 不匹配不得读回放行，metadata/ETag 不替代 SHA-256。对象 key 为 `users/<sha256(userId)>/projects/<projectId>/<assetId>/<safe-name>`。下载先校验 ownership，再返回短时签名 GET；访问对象存储时 `credentials: omit`。
+
+`ASSET-READ-FALLBACK/1.0.0`：浏览器读取上述同源 verified asset 时先解析并直读短时签名 GET；若对象存储响应被跨域策略遮蔽为网络 `TypeError`，改由同源 `content?proxy=1` 读取。控制面再次校验 Session、user/project/asset ownership 和 verified 状态，以针对内网 endpoint 新签的 GET 流式转发，并核对长度、MIME 和编码；不把内网地址或对象密钥交给浏览器。普通签名下载与直传协议不变，非项目 URL 不进入回退。`M14` 主模块、`M04` 生成参考图消费者和 `M13` 个人账号错误呈现受影响；无图像算法、Schema、Project Command、Revision、ownership 或既有资产迁移。回退可关闭浏览器网络错误回退和同源 proxy 分支，保留已验证资产。见 `changes/CHG-20260929-GENERATION-ASSET-READ-AND-TOKEN-ERROR.md`。
 
 ### 4.5 浏览器保存调度 `SAVE-SCHEDULER` v1.1.0
 
@@ -539,7 +541,10 @@ The baseline update above supersedes older descriptions in this section where th
 | `GPT-ALPHA-PREVIEW-CROP` | v1.0.0；仅透明结果预览副本，轮廓外扩 8px，原图/下载/回贴不变 |
 | `LOCAL-REPAINT-BRUSH-DEFAULT` | v1.1.0；视口和独立画布初始大小 30，用户后续调整不覆盖 |
 | `ALG-CAP-006` 捕获状态隔离 v1.0.1 | 每个同步提交段取得当前 renderer/背景并幂等归还，跨 await 不重放旧 viewport/scissor；保留像素与分辨率 |
-| `CAPTURE-MATERIAL-ISOLATION` v1.0.0 | flat 材质/uniforms 仅在每个同步 tile draw 内借用，逐 tile 恢复；材质身份变化拒绝混合截图，已有纹理在 clay 展示前冻结 |
+| `INPAINT-MASK-CAPTURE-SCHEDULING` v1.0.0 | 局部重绘作者蒙版在单次呈现等待后整张绘制，沿用分条异步读回及灰度 PNG 编码；不改变反选、遮挡和原尺寸，见 `changes/CHG-20260929-INPAINT-MASK-CAPTURE-SCHEDULING.md` |
+| `CAPTURE-MATERIAL-ISOLATION` v1.0.1 | flat 材质/uniforms 仅在同步 draw 内借用并立即恢复；flat/clay 保持 2K 整张绘制；材质身份变化拒绝截图，已有纹理在 clay 展示前冻结 |
+| `UV-READBACK-SCHEDULING` v1.2.2 | PNG 捕获按 task 让步，仍以 1MiB/并发 1 读回可见 renderer；其他调用默认 paint 门禁，独立上下文仍 2MiB/并发 4；全部在途工作排空后释放目标 |
+| `RUNTIME-VISIBILITY-SCHEDULING` v1.0.1 | 运行时深度／可选法线各整张提交，开始前检查交互 idle；深度→法线保留一次 paint 和 idle，原缓存、捕获矩阵及像素公式不变，见 `changes/CHG-20260929-RUNTIME-VISIBILITY-SCHEDULING.md` |
 | `ALG-GEN-001` 单视图生成 | `1.3.0`；当前相机 Capture + 材质参考 → Generation；GPT 初始白模与已有贴图补全共用图一几何锁定/图二材质参考的局部弱光影模板；GPT 局部重绘现独立使用 `GPT-REPAINT-NORMAL` v1.0.0。结果按既有 Alpha 策略与独立 capture mask/depth 创建投影图层 |
 | `ALG-GEN-002` 多视图批次 | `1.3.0`；N 个捕获共享 batch；GPT 与单视图共用局部弱光影材质补全模板；完成层串行 commit，整批结束一次发布新投影栈 |
 | `ALG-GEN-003` 任务身份归一 | clientGenerationId/serverJobId/taskId 合并，避免恢复时重复 running 行 |

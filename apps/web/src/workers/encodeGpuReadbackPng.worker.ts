@@ -93,10 +93,8 @@ scope.onmessage = (event) => {
         }
       }
       const encoded = encodeGrayscalePngBytes(width, height, grayscale);
-      const png = encoded.buffer.slice(
-        encoded.byteOffset,
-        encoded.byteOffset + encoded.byteLength,
-      ) as ArrayBuffer;
+      // [shaoyangZhou]: transfer the encoder-owned PNG without another full copy.
+      const png = encoded.buffer as ArrayBuffer;
       scope.postMessage({ id, png, ...(trace ? { traceTiming: trace() } : {}) }, [png]);
       return;
     }
@@ -108,10 +106,9 @@ scope.onmessage = (event) => {
     }
     const output = resizeRgbaBilinear(flipped, width, height, outputWidth, outputHeight);
     const encoded = encodeRgbaPngBytes(outputWidth, outputHeight, output);
-    const png = encoded.buffer.slice(
-      encoded.byteOffset,
-      encoded.byteOffset + encoded.byteLength,
-    ) as ArrayBuffer;
+    // [shaoyangZhou]: both PNG encoders return a fresh, exact-sized buffer. Transfer ownership
+    // directly instead of copying the complete encoded image once more.
+    const png = encoded.buffer as ArrayBuffer;
     scope.postMessage({ id, png, ...(trace ? { traceTiming: trace() } : {}) }, [png]);
   } catch (error) {
     scope.postMessage({ id, error: error instanceof Error ? error.message : String(error), ...(trace ? { traceTiming: trace() } : {}) });

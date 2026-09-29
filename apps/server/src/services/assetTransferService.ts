@@ -321,15 +321,40 @@ export async function createAssetDownloadUrl(
   assetId: string,
 ) {
   const config = assertObjectStorageConfigured();
-  const record = postgresControlRepository
-    ? await postgresControlRepository.getAssetTransferByAsset<StoredAssetTransfer>(userId, assetId)
-    : await readJsonFile<StoredAssetTransfer | undefined>(assetPath(userId, assetId), undefined);
-  if (!record || record.projectId !== projectId || record.status !== 'verified') return undefined;
+  const record = await readVerifiedAssetTransfer(userId, projectId, assetId);
+  if (!record) return undefined;
   return presigner()({
     method: 'GET',
     objectKey: record.objectKey,
     expiresInSeconds: Math.min(300, config.signedUrlTtlSeconds),
   });
+}
+
+async function readVerifiedAssetTransfer(userId: string, projectId: string, assetId: string) {
+  const record = postgresControlRepository
+    ? await postgresControlRepository.getAssetTransferByAsset<StoredAssetTransfer>(userId, assetId)
+    : await readJsonFile<StoredAssetTransfer | undefined>(assetPath(userId, assetId), undefined);
+  return record?.projectId === projectId && record.status === 'verified' ? record : undefined;
+}
+
+/** Same-origin fallback for a browser whose signed public GET is blocked by CORS. */
+export async function createInternalAssetDownload(
+  userId: string,
+  projectId: string,
+  assetId: string,
+) {
+  const config = assertObjectStorageConfigured();
+  const record = await readVerifiedAssetTransfer(userId, projectId, assetId);
+  if (!record) return undefined;
+  return {
+    url: internalPresigner()({
+      method: 'GET',
+      objectKey: record.objectKey,
+      expiresInSeconds: Math.min(120, config.signedUrlTtlSeconds),
+    }),
+    mimeType: record.mimeType,
+    sizeBytes: record.sizeBytes,
+  };
 }
 
 export async function deleteObjectStorageObject(objectKey: string) {
