@@ -191,7 +191,12 @@ test('CI overlaps release build, scopes master image checks and gates deployment
   const ci = parse('.gitlab-ci.yml');
   for (const name of ['contracts-and-cloud-boundary', 'typecheck', 'web-regression', 'server-regression', 'lint', 'build']) {
     assert.ok(ci[name], name);
-    assert.equal(ci[name].rules, undefined, name + ' must run on every branch');
+    if (name === 'contracts-and-cloud-boundary') {
+      assert.deepEqual(ci[name].rules.at(-1), { when: 'on_success' },
+        'Contracts must remain a blocking job on every branch');
+    } else {
+      assert.equal(ci[name].rules, undefined, name + ' must run on every branch');
+    }
     assert.notEqual(ci[name].allow_failure, true);
   }
   const verify = ci['container:verify'];
@@ -218,6 +223,21 @@ test('CI overlaps release build, scopes master image checks and gates deployment
   ].sort(), 'Deploy must wait for every blocking quality job and both images');
   assert.equal(ci['deploy:k8s'].resource_group, 'li3d-production');
   assert.match(ci.default.before_script.join('\n'), /--frozen-lockfile/);
+});
+
+test('CI restores shared Node caches without duplicate uploads or Kaniko downloads', () => {
+  const ci = parse('.gitlab-ci.yml');
+  assert.equal(ci.variables.PNPM_CACHE_POLICY, 'pull');
+  assert.deepEqual(ci.default.cache.key.files, ['pnpm-lock.yaml']);
+  assert.equal(ci.default.cache.policy, '$PNPM_CACHE_POLICY');
+  const rules = ci['contracts-and-cloud-boundary'].rules;
+  assert.deepEqual(rules[0].changes, ['pnpm-lock.yaml']);
+  assert.equal(rules[0].variables.PNPM_CACHE_POLICY, 'pull-push');
+  assert.equal(rules[1].variables.PNPM_CACHE_POLICY, 'pull-push');
+  assert.deepEqual(ci['container:verify'].cache, []);
+  assert.deepEqual(ci['build:server'].cache, []);
+  assert.deepEqual(ci['build:web'].cache, []);
+  assert.deepEqual(ci['deploy:k8s'].cache, []);
 });
 
 test('runtime packaging and migration agree on paths and preserve existing PVC', () => {

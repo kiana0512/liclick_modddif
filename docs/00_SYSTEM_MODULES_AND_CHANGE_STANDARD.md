@@ -747,6 +747,8 @@ GitLab CI 依赖安装必须把 pnpm store 与 Prisma engine cache 放入 `$CI_P
 
 M15 / `CI-LATENCY/1.0.0`（2026-09-29）：verify 与正式 build 并行；release 两镜像等待 build 与全部 verify job 成功后发布，避免未验证镜像覆盖 `release-latest`；deploy 明确依赖全部 verify job 和两镜像成功。master/MR 仅在 Docker、依赖清单、SQL、Blender QA 脚本或部署配置变化时运行两目标 `container:verify`；普通源码提交仍执行全部 verify、Cloud build 和部署模拟，release 始终构建真实两镜像。Server 回归套件对 23 个标准编译型测试只编译一次，独立运行单项测试仍各自编译。功能、身份、数据、QA、发布配置与产物完整性门禁不降级；无业务算法、Schema 或资产迁移。回滚可恢复每项重复编译与所有 master 镜像验证，但恢复原等待时间。见 `changes/CHG-20260929-CI-LATENCY.md`。
 
+M15 / `CI-CACHE-POLICY/1.0.0`（2026-09-29）：GitLab Node job 默认仅拉取 pnpm/Prisma 锁文件缓存；master 锁文件变化时由 contracts job 写回一次，手动 `LI3D_REFRESH_PNPM_CACHE=true` 可重建被清理的缓存。Kaniko 镜像与 kubectl 部署 job 禁用不使用的 Node 缓存，避免每个 job 重复打包约 22,000 个文件或下载它们。缓存缺失时 frozen-lockfile 安装继续，功能门禁、镜像验证与部署依赖不变；无算法、Schema 或数据迁移。回滚恢复所有 job 的默认 pull-push，但增加缓存传输时间。见 `changes/CHG-20260929-CI-CACHE-POLICY.md`。
+
 M15 lint 发布修复（2026-08-31）：根工作区显式声明与锁文件一致的 `@eslint/js@9.39.4`，避免依赖提升差异导致 ESLint 配置加载失败。M04 / `ALG-GEN-005` 的提示词终端转义清理由 Node `stripVTControlCharacters` 实现，替代触发 `no-control-regex/no-useless-escape` 的手写正则；保留全部 lint 门禁。回归覆盖 ANSI 颜色、C1 CSI、OSC 标题/超链接清理，以及中文、标点、URL 与段落保留。诊断/转换模板和调用链、算法版本 v1.5.0、GPU/CPU/Worker/shader/UV/export、Schema 与资产均不变，无迁移。回退仅还原依赖声明、锁文件和清理实现，不修改密钥或工程数据。
 
 M15 体积修复：锁定 `terser@5.51.2` 两轮安全压缩，保留日志和属性名；JS 总量实测 3,067,290 字节，原门禁不变。新增真实构建等价性回归；业务、算法、数据均不变，无迁移。回退仅恢复压缩配置和依赖，发布仍须全 CI 验证。

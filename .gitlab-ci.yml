@@ -11,6 +11,8 @@ variables:
   # GitLab's project-scoped cache can actually restore them on the next job.
   PNPM_STORE_DIR: '$CI_PROJECT_DIR/.pnpm-store'
   XDG_CACHE_HOME: '$CI_PROJECT_DIR/.cache'
+  # Parallel Node jobs reuse the lockfile cache without each archiving it.
+  PNPM_CACHE_POLICY: 'pull'
   REGISTRY_HOST: "tsh-devops-prod-all-0001-registry.cn-shanghai.cr.aliyuncs.com"
   REGISTRY_NAMESPACE: "devops"
   IMAGE_REPOSITORY_SERVER: "tsh-devops-prod-all-0001-registry.cn-shanghai.cr.aliyuncs.com/devops/li3d-server"
@@ -51,9 +53,22 @@ default:
     paths:
       - .pnpm-store/
       - .cache/prisma/
+    policy: '$PNPM_CACHE_POLICY'
 
 contracts-and-cloud-boundary:
   stage: verify
+  # Refresh a new lockfile cache once on master. A manual pipeline can refresh
+  # an evicted cache with LI3D_REFRESH_PNPM_CACHE=true.
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "master"'
+      changes:
+        - pnpm-lock.yaml
+      variables:
+        PNPM_CACHE_POLICY: 'pull-push'
+    - if: '$LI3D_REFRESH_PNPM_CACHE == "true"'
+      variables:
+        PNPM_CACHE_POLICY: 'pull-push'
+    - when: on_success
   script:
     - corepack pnpm run check:cloud-boundary
     - corepack pnpm run check:project-repository-boundary
@@ -117,6 +132,8 @@ build:
 
 .containerize_template: &containerize_template
   stage: containerize
+  # Kaniko uses Docker layer cache, not the Node dependency cache.
+  cache: []
   image:
     name: "$CI_KANIKO_IMAGE"
     entrypoint: [""]
@@ -182,6 +199,8 @@ build:web:
 
 deploy:k8s:
   stage: deploy
+  # kubectl needs neither pnpm nor Prisma download caches.
+  cache: []
   resource_group: li3d-production
   image:
     name: "$CI_KUBECTL_IMAGE"

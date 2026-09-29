@@ -10,6 +10,7 @@ release 执行相同功能门禁并构建两镜像；只有最终提交包含 `[
 ## 流水线
 
 - 所有分支保留 contracts、Cloud 边界、typecheck、web/server regression、lint 和 release build。
+- Node job 按 pnpm 锁文件复用缓存；通常只读缓存，master 锁文件变化时由 contracts job 写一次；Kaniko 和 kubectl 不下载 Node 缓存。缓存缺失时 frozen-lockfile 安装仍照常执行，可用 `LI3D_REFRESH_PNPM_CACHE=true` 手动刷新。
 - 新增部署配置回归：校验 YAML、启动配置、镜像路径、迁移入口、分支规则与凭据排除。
 - master/MR 只有 Docker、依赖清单、SQL 或部署配置变化时才运行 container:verify，并行构建 server、web 两个真实镜像目标，使用 --no-push，不写镜像仓库或集群。
 - release 的 build:server/build:web 必须等待发布构建与全部 verify 门禁，避免未验证镜像更新 `release-latest`；deploy:k8s 再等待两镜像成功才执行。
