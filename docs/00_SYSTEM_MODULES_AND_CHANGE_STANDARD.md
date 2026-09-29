@@ -345,6 +345,8 @@ The baseline update above supersedes older descriptions in this section where th
 
 ## 7. UV 合成与剪刀事务（关键）
 
+本地试验（用户批准，2026-09-29）：ALG-UV-003/006 3.0.0 对齐视口边缘 Alpha 与线性光 under 合成；merge version 14 / bake protocol 11。旧资产不重写，仅重新合并生效。见 [合并边缘一致性](changes/CHG-20260929-MERGE-DISPLAY-EDGE-PARITY.md)。
+
 ### 7.1 完整调用链
 
 ```text
@@ -474,6 +476,12 @@ UI-05/UI-13 的贴图驻留边界要求所有挂到页面根节点的生成面�
 GPU 仅改变准备条件与调度；CPU、Worker、shader、投影/UV/export 仍消费相同 source/mask/depth，颜色、几何授权与最终分辨率不变。无持久字段或 Schema 升级，Project Command、Revision CAS、ownership、verified assets 与历史图层不变，无迁移。回退只恢复无条件 resident 等待和点击重启准备，并移除任务登记；不得删除资产。模拟时钟运行实际 viewport 等待代码，验证新建顶层等待为 0、已发布行/ordered preview 等待真实绑定、10 秒边界仍保留；会话测试覆盖复用、重叠阶段、取消、失败及旧清理不影响新任务。真实浏览器端到端耗时/首笔效果待有项目页面时验收，不以模拟结果声明实际 GPU 提速。
 
 ## 9. 内容识别补缝
+
+本地坐标对齐试验：ALG-CA-002 1.1.0，拓扑/物理缝端点采用 GPU 像素中心约定，见 [UV 像素中心](changes/CHG-20260929-UV-TEXEL-CENTRES.md)。不改变投影边缘门限，旧图层不改写。
+
+本地衔接试验：ALG-CA-003 1.5.0 允许同 region 一像素底层覆盖可靠投影下方，避免独立过滤后漏底；M11 移除最终导出额外均色。见 [过滤交界与导出对照](changes/CHG-20260929-FILTERED-REPAIR-EXPORT.md)，远端基线和旧资产不变。
+
+本地试验（2026-09-29）：`ALG-CA-001` 1.2.0 纳入归属明确、无冲突的保守光栅边缘；`ALG-CA-004` 1.1.0 发布前独立核对选中像素 Alpha=255。仅新增填补生效，不更改既有图层、UV 或分辨率。完整契约与验证边界见 [边缘覆盖试验](changes/CHG-20260929-CONSERVATIVE-REPAIR-EDGES.md)。下表为远端基线。
 
 | ALG ID / 名称 | 版本 | 定义 |
 | --- | --- | --- |

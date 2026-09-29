@@ -59,6 +59,7 @@ import {
   type WebGpuUvTopologyRasterResult,
 } from './webGpuUvTopologyRaster';
 import { canReuseAuthoredProjectionVisibility } from './projectionVisibilityReuse';
+import {resolvePixelCpu, SRGB_BYTE_TO_LINEAR, linearToSrgbByte} from './qualityBlendCpuPixel';
 
 const UNPROJECTED_TEXTURE_FILL: [number, number, number] = [8, 9, 13];
 const MIN_VALID_COVERAGE_RATIO = 0.001;
@@ -67,23 +68,12 @@ const SHARPEN_DETAIL_THRESHOLD = 5;
 const MAX_CPU_SHARPEN_RESOLUTION = 2048;
 const MIN_TRANSPARENT_OUTPUT_ALPHA = 8;
 const TOP_K_BLEND_LAYERS = 3;
-const BLEND_POWER = 2.4;
-const RESIDUAL_MIX = 0.2;
-const DOMINANCE_BLEND_START = 1.45;
-const DOMINANCE_BLEND_END = 2.6;
-const DOMINANCE_MARGIN_START = 0.05;
-const DOMINANCE_MARGIN_END = 0.2;
-const COLOR_CONSISTENCY_SIGMA = 0.22;
 const COVERAGE_THRESHOLD = 0.02;
 const QUALITY_FLOOR_FROM_COVERAGE = 0.08;
 const GPU_COVERAGE_VALIDATION_RESOLUTION = 512 as UvBakeResolution;
 const MIN_GPU_CPU_COVERAGE_IOU = 0.45;
 const MIN_GPU_CPU_COVERAGE_RATIO = 0.55;
 const MAX_GPU_CPU_COLOR_MEAN_ERROR = 0.18;
-const SRGB_BYTE_TO_LINEAR = Array.from({ length: 256 }, (_, value) => {
-  const color = value / 255;
-  return color <= 0.04045 ? color / 12.92 : ((color + 0.055) / 1.055) ** 2.4;
-});
 const SHARPEN_KERNEL = [
   { x: -1, y: -1, weight: 1 },
   { x: 0, y: -1, weight: 2 },
@@ -649,140 +639,32 @@ function srgbByteToLinear(value: number) {
   return SRGB_BYTE_TO_LINEAR[value] ?? 0;
 }
 
-function smoothstepScalar(edge0: number, edge1: number, value: number) {
-  const t = Math.max(0, Math.min(1, (value - edge0) / Math.max(edge1 - edge0, 0.000001)));
-  return t * t * (3 - 2 * t);
-}
-
-function linearToSrgbByte(value: number) {
-  const color = Math.max(0, Math.min(1, value));
-  const srgb = color <= 0.0031308 ? color * 12.92 : 1.055 * color ** (1 / 2.4) - 0.055;
-  return clampByte(srgb * 255);
-}
-
-function applyColorConsistency(qualities: number[], colors: number[][]) {
-  let totalQuality = 0;
-  let baseRed = 0;
-  let baseGreen = 0;
-  let baseBlue = 0;
-  for (let index = 0; index < qualities.length; index += 1) {
-    const quality = qualities[index];
-    if (quality <= 0) continue;
-    totalQuality += quality;
-    baseRed += colors[index][0] * quality;
-    baseGreen += colors[index][1] * quality;
-    baseBlue += colors[index][2] * quality;
-  }
-  if (totalQuality <= 0) return;
-  baseRed /= totalQuality;
-  baseGreen /= totalQuality;
-  baseBlue /= totalQuality;
-
-  for (let index = 0; index < qualities.length; index += 1) {
-    if (qualities[index] <= 0) continue;
-    const color = colors[index];
-    const diff = Math.hypot(color[0] - baseRed, color[1] - baseGreen, color[2] - baseBlue);
-    const consistency = Math.exp(
-      -(diff * diff) / (COLOR_CONSISTENCY_SIGMA * COLOR_CONSISTENCY_SIGMA),
-    );
-    qualities[index] *= 0.35 + 0.65 * consistency;
-  }
-}
-
 async function writeQualityBlendStackComposite(
   composite: QualityBlendStackComposite,
   output: ImageData,
-  preserveCoverageConfidenceAlpha = false,
+  preserveCoverageConfidenceAlpha: boolean | 'display' = false,
 ) {
-  let writtenTexels = 0;
-  const colors = Array.from({ length: TOP_K_BLEND_LAYERS }, () => [0, 0, 0]);
-  const coverages = new Array<number>(TOP_K_BLEND_LAYERS).fill(0);
-  const qualities = new Array<number>(TOP_K_BLEND_LAYERS).fill(0);
-
-  for (
-    let pixelIndex = 0, offset = 0;
-    pixelIndex < composite.coverage.length;
-    pixelIndex += 1, offset += 4
-  ) {
-    if (pixelIndex > 0 && pixelIndex % 8_192 === 0) await yieldToBakeUi();
-    if (!composite.coverage[pixelIndex]) continue;
-    const colorOffset = pixelIndex * 3;
-    let candidateCount = 0;
-    for (let slot = 0; slot < TOP_K_BLEND_LAYERS; slot += 1) {
-      coverages[slot] = composite.coverages[slot][pixelIndex];
-      qualities[slot] = composite.qualities[slot][pixelIndex];
-      if (coverages[slot] > COVERAGE_THRESHOLD) candidateCount += 1;
+  // Adapt the diagnostic raster layout to the canonical Worker/resident kernel.
+  const top = {
+    colors: Array.from({length:3},()=>new Uint32Array(1)),
+    coverages: Array.from({length:3},()=>new Float32Array(1)),
+    qualities: Array.from({length:3},()=>new Float32Array(1)),
+    coverage: new Uint8Array([1]), writtenTexels:0,
+  };
+  const pixel = new Uint8ClampedArray(4);
+  let writtenTexels=0;
+  for(let i=0;i<composite.coverage.length;i++) {
+    if(i>0 && i%8192===0) await yieldToBakeUi();
+    if(!composite.coverage[i]) continue;
+    for(let slot=0;slot<3;slot++) {
+      const rgb=composite.colors[slot], o=i*3;
+      top.colors[slot][0]=rgb[o]|(rgb[o+1]<<8)|(rgb[o+2]<<16);
+      top.coverages[slot][0]=composite.coverages[slot][i];
+      top.qualities[slot][0]=composite.qualities[slot][i];
     }
-    const coverageConfidence =
-      1 -
-      coverages.reduce(
-        (remaining, coverage) => remaining * (1 - Math.max(0, Math.min(1, coverage))),
-        1,
-      );
-    const outputAlpha = preserveCoverageConfidenceAlpha
-      ? clampByte(coverageConfidence * 255)
-      : 255;
-
-    if (candidateCount === 1) {
-      output.data[offset] = composite.colors[0][colorOffset];
-      output.data[offset + 1] = composite.colors[0][colorOffset + 1];
-      output.data[offset + 2] = composite.colors[0][colorOffset + 2];
-      output.data[offset + 3] = outputAlpha;
-      writtenTexels += 1;
-      continue;
+    if(resolvePixelCpu(top,0,preserveCoverageConfidenceAlpha,pixel)) {
+      output.data.set(pixel,i*4);writtenTexels++;
     }
-
-    for (let slot = 0; slot < TOP_K_BLEND_LAYERS; slot += 1) {
-      colors[slot][0] = srgbByteToLinear(composite.colors[slot][colorOffset]);
-      colors[slot][1] = srgbByteToLinear(composite.colors[slot][colorOffset + 1]);
-      colors[slot][2] = srgbByteToLinear(composite.colors[slot][colorOffset + 2]);
-    }
-
-    applyColorConsistency(qualities, colors);
-    let sumStrong = 0;
-    let sumSoft = 0;
-    for (let slot = 0; slot < TOP_K_BLEND_LAYERS; slot += 1) {
-      const effectiveQuality = Math.max(0, qualities[slot]);
-      sumStrong += effectiveQuality ** BLEND_POWER;
-      sumSoft += Math.max(0, coverages[slot]);
-    }
-    if (sumSoft <= 0.000001) continue;
-
-    let finalRed = 0;
-    let finalGreen = 0;
-    let finalBlue = 0;
-    for (let slot = 0; slot < TOP_K_BLEND_LAYERS; slot += 1) {
-      const quality = Math.max(0, qualities[slot]);
-      const coverage = Math.max(0, coverages[slot]);
-      if (coverage <= 0) continue;
-      const strongWeight = quality ** BLEND_POWER / Math.max(sumStrong, 0.000001);
-      const softWeight = coverage / sumSoft;
-      const weight = strongWeight * (1 - RESIDUAL_MIX) + softWeight * RESIDUAL_MIX;
-      finalRed += colors[slot][0] * weight;
-      finalGreen += colors[slot][1] * weight;
-      finalBlue += colors[slot][2] * weight;
-    }
-
-    const qualityRatio = qualities[0] / Math.max(qualities[1], 0.000001);
-    const dominance =
-      smoothstepScalar(DOMINANCE_BLEND_START, DOMINANCE_BLEND_END, qualityRatio) *
-      smoothstepScalar(
-        DOMINANCE_MARGIN_START,
-        DOMINANCE_MARGIN_END,
-        qualities[0] - qualities[1],
-      );
-    const winnerRed = colors[0][0];
-    const winnerGreen = colors[0][1];
-    const winnerBlue = colors[0][2];
-    output.data[offset] = linearToSrgbByte(finalRed * (1 - dominance) + winnerRed * dominance);
-    output.data[offset + 1] = linearToSrgbByte(
-      finalGreen * (1 - dominance) + winnerGreen * dominance,
-    );
-    output.data[offset + 2] = linearToSrgbByte(
-      finalBlue * (1 - dominance) + winnerBlue * dominance,
-    );
-    output.data[offset + 3] = outputAlpha;
-    writtenTexels += 1;
   }
   return writtenTexels;
 }

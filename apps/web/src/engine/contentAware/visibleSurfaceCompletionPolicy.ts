@@ -9,6 +9,7 @@ type GapMaskPolicy = Pick<
   | 'weakGrowPixels'
   | 'minimumComponentPixels'
   | 'minimumComponentSpan'
+  | 'includeConservativeEdges'
 >;
 
 type SurfacePropagationPolicy = Pick<
@@ -53,6 +54,7 @@ export function createVisibleSurfaceCompletionPolicy(
   }
   return {
     gapMask: {
+      includeConservativeEdges: true,
       // This is the live shader's exact hatch feather boundary. Running at the
       // selected viewport resolution avoids the former 2K/4K disagreement.
       hardAlphaThreshold: EMPTY_PROJECTION_MAX_VISIBLE_ALPHA,
@@ -82,7 +84,9 @@ export function createVisibleSurfaceCompletionPolicy(
       sourceColorOutlierThreshold: 64,
       connectivity: 4,
       coverageSkirtPixels: 1,
-      coverageSkirtMaxInputAlpha: EMPTY_PROJECTION_MAX_VISIBLE_ALPHA,
+      // One same-region texel underneath projection coverage prevents two
+      // independently filtered alpha edges from exposing the diagnostic base.
+      coverageSkirtMaxInputAlpha: 255,
       outputBleedPixels: 4,
       fillUnreachableWithGlobalAverage: false,
       lockToDominantSourceRegion: false,

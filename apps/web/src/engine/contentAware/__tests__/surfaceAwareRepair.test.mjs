@@ -35,6 +35,30 @@ function setPixel(rgba, index, color, alpha = 255) {
   rgba.set([...color, alpha], index * 4);
 }
 
+test('production underlay overlaps one reliable texel for bilinear seam coverage', () => {
+  const rgba = new Uint8ClampedArray(7 * 4);
+  for (let i=0;i<7;i++) setPixel(rgba,i,[180,120,50]);
+  rgba[3*4+3]=0;
+  const original = rgba.slice();
+  const writeMask = new Uint8Array(7); writeMask[3]=255;
+  const result = repairSurfaceTexture({width:7,height:1,rgba,writeMask,
+    topologyMask:new Uint8Array(7).fill(1),
+    topologyRegionIds:new Uint32Array([1,1,1,1,1,2,2]),
+    ...createVisibleSurfaceCompletionPolicy(7,1).propagation});
+  assert.deepEqual(rgba,original,'projection input must remain unchanged');
+  assert.equal(result.filledRgba[2*4+3],255);
+  assert.equal(result.filledRgba[4*4+3],255);
+  assert.equal(result.filledRgba[1*4+3],0,'overlap must be bounded to one texel');
+  assert.equal(result.filledRgba[5*4+3],0,'must not cross islands');
+  assert.deepEqual(getRgb(result,2),[180,120,50]);
+  for (const t of [0.1,0.25,0.5,0.75,0.9]) {
+    const p = 1-t; // projection alpha between the reliable texel and gap
+    const u = (1-t)*result.filledRgba[2*4+3]/255+t*result.filledRgba[3*4+3]/255;
+    assert.equal(p+u*(1-p),1,'filtered projection + underlay must be opaque');
+    assert.ok(p+t*(1-p)<1,'old disjoint coverage exposes the background');
+  }
+});
+
 function getRgb(result, index) {
   return Array.from(result.filledRgba.subarray(index * 4, index * 4 + 3));
 }

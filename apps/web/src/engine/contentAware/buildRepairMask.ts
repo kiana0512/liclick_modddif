@@ -2,7 +2,7 @@ export type ContentAwareRepairMaskInput = {
   width: number;
   height: number;
   rgba: Uint8Array | Uint8ClampedArray;
-  /** Conservative topology used only to report rejected halo pixels. */
+  /** Conservative triangle/pixel intersections, including subpixel slivers. */
   topologyMask: Uint8Array;
   /** Strict pixel-centre topology. Only these texels may receive output alpha. */
   coreMask: Uint8Array;
@@ -14,6 +14,8 @@ export type ContentAwareRepairMaskInput = {
    * final projection composite. Defaults to false.
    */
   allowConflictedWrites?: boolean;
+  /** Include unambiguous conservative edge texels; generic callers stay strict. */
+  includeConservativeEdges?: boolean;
   hardAlphaThreshold?: number;
   weakAlphaThreshold?: number;
   weakGrowPixels?: 0 | 1;
@@ -130,6 +132,11 @@ export async function buildContentAwareRepairMask(
 
   throwIfAborted(input.signal);
 
+  const isWritable = (index: number) => Boolean(input.coreMask[index] || (
+    input.includeConservativeEdges && input.topologyMask[index] &&
+    input.regionIds[index] && input.conflictMask[index] === 0
+  ));
+
   for (let y = 0; y < input.height; y += 1) {
     const rowStart = y * input.width;
     for (let x = 0; x < input.width; x += 1) {
@@ -146,7 +153,7 @@ export async function buildContentAwareRepairMask(
         }
         continue;
       }
-      if (!input.coreMask[index]) {
+      if (!isWritable(index)) {
         if (input.topologyMask[index] && alpha <= hardAlphaThreshold) {
           conservativeHaloRejectedPixels += 1;
         }
@@ -262,7 +269,7 @@ export async function buildContentAwareRepairMask(
         const index = rowStart + x;
         if (
           mask[index] ||
-          !input.coreMask[index] ||
+          !isWritable(index) ||
           (input.conflictMask[index] > 1 && !input.allowConflictedWrites) ||
           !input.regionIds[index] ||
           input.rgba[index * 4 + 3] > weakAlphaThreshold

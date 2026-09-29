@@ -604,8 +604,8 @@ async function rasterizeSources(
       const points = [0, 1, 2].map((slot) => {
         const vertexIndex = getTriangleVertexIndex(source, triangle, slot);
         return [
-          source.uv.getX(vertexIndex) * (width - 1),
-          (1 - source.uv.getY(vertexIndex)) * (height - 1),
+          source.uv.getX(vertexIndex) * width - 0.5,
+          (1 - source.uv.getY(vertexIndex)) * height - 0.5,
         ] as const;
       });
       if (points.every(([x, y]) => Number.isFinite(x) && Number.isFinite(y))) {
@@ -651,8 +651,9 @@ type PixelPoint = { x: number; y: number };
 
 function toPixel(uv: GeometryAttribute, vertexIndex: number, width: number, height: number) {
   return {
-    x: uv.getX(vertexIndex) * (width - 1),
-    y: (1 - uv.getY(vertexIndex)) * (height - 1),
+    // Texel i is sampled at (i + 0.5) / size, matching WebGL UV baking.
+    x: uv.getX(vertexIndex) * width - 0.5,
+    y: (1 - uv.getY(vertexIndex)) * height - 0.5,
   };
 }
 

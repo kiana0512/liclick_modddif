@@ -1,5 +1,21 @@
 # LI3D Cloud 准则修订流水与历史变更记录
 
+## 2026-09-29 本地合并边缘与线性混合对齐
+
+M07/M06/M11，用户批准的 Major 本地试验：ALG-UV-003/006 3.0.0，合并采用视口 display Alpha，补缝仍用 raw confidence，UV under 合成统一线性光；merge 14 / bake protocol 11 / 派生缓存失效，旧资产不重写。见 [变更卡](changes/CHG-20260929-MERGE-DISPLAY-EDGE-PARITY.md)。
+
+## 2026-09-29 本地 UV 像素中心对齐
+
+M09/M07，ALG-CA-002 1.1.0：拓扑光栅与物理缝端点使用 GPU 的 UV×尺寸−0.5。实机日志已排除新版未加载及填补层未发布；接缝视觉验收未完成。见 [变更卡](changes/CHG-20260929-UV-TEXEL-CENTRES.md)。
+
+## 2026-09-29 本地过滤交界与导出颜色对照
+
+M09/M11：ALG-CA-003 1.5.0 / EXPORT-FINAL-COLOR 1.1.0，本地试验：同 region 一像素 underlay 衔接，移除最终导出全不透明接缝均色。旧资产不改写，真实模型视觉验收待测试。见 [变更卡](changes/CHG-20260929-FILTERED-REPAIR-EXPORT.md)。
+
+## 2026-09-29 本地边缘覆盖试验
+
+M09：ALG-CA-001 1.2.0 / ALG-CA-004 1.1.0，纳入无冲突的 conservative-only texel，发布前检查实际修补 Alpha。未推送远端，未改动已有资产；详见 [试验卡](changes/CHG-20260929-CONSERVATIVE-REPAIR-EDGES.md)。
+
 ## 2026-09-28 内容填补完整覆盖
 
 M09（协作 M07/M08）：`ALG-CA-003` v1.4.0 让前两轮局部及一条物理缝仍无法到达的严格 UV core 残余使用已有可靠纹理均色作不透明最终兜底；无可靠纹理则拒绝发布，自动多视图补缝失败不再伪装完成。原分辨率、投影 QA、Layer/Project Schema、Command/CAS/ownership/verified assets 与导出合成契约不变；旧资产不自动重写。验证与回退见 [完整覆盖变更卡](changes/CHG-20260928-CONTENT-REPAIR-COMPLETE-COVERAGE.md)。

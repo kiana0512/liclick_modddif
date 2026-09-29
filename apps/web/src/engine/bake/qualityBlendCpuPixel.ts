@@ -18,7 +18,7 @@ const pixelStrongWeights = [0, 0, 0];
 const pixelColors = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
 
 
-const SRGB_BYTE_TO_LINEAR = Array.from({ length: 256 }, (_, value) => {
+export const SRGB_BYTE_TO_LINEAR = Array.from({ length: 256 }, (_, value) => {
   const color = value / 255;
   return color <= 0.04045 ? color / 12.92 : ((color + 0.055) / 1.055) ** 2.4;
 });
@@ -42,14 +42,14 @@ function smoothstep(edge0: number, edge1: number, value: number) {
   return t * t * (3 - 2 * t);
 }
 
-function linearToSrgbByte(value: number) {
+export function linearToSrgbByte(value: number) {
   const color = Math.max(0, Math.min(1, value));
   const srgb = color <= 0.0031308 ? color * 12.92 : 1.055 * color ** (1 / 2.4) - 0.055;
   return clampByte(srgb * 255);
 }
 
 
-export function resolvePixelCpu(topK: TopK, pixelIndex: number, preserveAlpha: boolean, output: Uint8ClampedArray) {
+export function resolvePixelCpu(topK: TopK, pixelIndex: number, preserveAlpha: boolean | 'display', output: Uint8ClampedArray) {
   if (!topK.coverage[pixelIndex]) return false;
   const offset = pixelIndex * 4;
   let candidateCount = 0;
@@ -64,7 +64,8 @@ export function resolvePixelCpu(topK: TopK, pixelIndex: number, preserveAlpha: b
     remaining *= 1 - Math.max(0, Math.min(1, coverage));
     if (coverage > COVERAGE_THRESHOLD) candidateCount += 1;
   }
-  const alpha = preserveAlpha ? clampByte((1 - remaining) * 255) : 255;
+  const alpha = preserveAlpha ? clampByte((preserveAlpha === 'display'
+    ? smoothstep(0, 0.12, 1 - remaining) : 1 - remaining) * 255) : 255;
   if (candidateCount === 1) {
     const packed = topK.colors[0][pixelIndex];
     output[offset] = packed & 255;

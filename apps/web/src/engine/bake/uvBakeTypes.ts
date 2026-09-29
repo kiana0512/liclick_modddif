@@ -110,9 +110,10 @@ export interface BakeVisibleProjectedLayersInput {
   /**
    * Keep aggregate projection confidence in the output alpha instead of
    * marking every accepted top-three candidate fully opaque. Used by
-   * content-aware gap detection; ordinary merged UV output stays opaque.
+   * content-aware gap detection. 'display' applies the viewport's 0..0.12
+   * smoothstep before overlays; false retains legacy opaque output.
    */
-  preserveCoverageConfidenceAlpha?: boolean;
+  preserveCoverageConfidenceAlpha?: boolean | 'display';
   /** Keep dilation only where it closes an interior pinhole or narrow crack. */
   constrainDilationToInteriorHoles?: boolean;
   /** Add color padding only outside UV islands to prevent bilinear-filter seams. */

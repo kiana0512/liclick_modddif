@@ -29,7 +29,7 @@ export function mergePreparationSignature(input:Request) {
   return createReusableProjectionBakeSignature({...input,purpose:'merge-uv',optionSignature:[
     `gutter:${postprocess.uvIslandGutterPixels}`,`interior:${postprocess.uvInteriorHolePixels}`,
     `coverage:${postprocess.uvCoverageGapPixels}`,`seam:${postprocess.uvSeamRepairPixels}`,
-    'coverage-confidence:0',
+    'coverage-display:1',
   ].join('|')});
 }
 

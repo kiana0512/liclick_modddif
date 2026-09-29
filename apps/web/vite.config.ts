@@ -159,6 +159,9 @@ export default defineConfig(({ mode }) => {
         // cacheable outside the large viewport snapshot instead of reparsing it
         // as part of that feature chunk on every release.
         manualChunks(id) {
+          // Pure color kernels are shared by resident preview, merge and export.
+          // Keep one cacheable module rather than embedding them in the snapshot route.
+          if (id.endsWith('/engine/bake/qualityBlendCpuPixel.ts') || id.endsWith('/engine/layers/linearUnderComposite.ts')) return 'uv-color-math';
           if (id.endsWith('/engine/localRepaint/projectedSelectionDisplay.ts')) return 'projected-selection-display';
           // Shared image I/O must not make the lazy silhouette clip import the editor route.
           if (id.endsWith('/engine/localRepaint/imageUtils.ts')) return 'local-repaint-image-utils';

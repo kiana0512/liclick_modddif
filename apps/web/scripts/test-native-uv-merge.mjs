@@ -37,7 +37,7 @@ try {
   let result=rgba(255,0,0,255, 0,0,0,0);
   api.compositeRgbaUnderInPlace(result,rgba(0,0,255,255, 0,0,255,255));
   result=api.compositeRgbaUnderInPlace(rgba(0,255,0,255, 0,0,0,0),result,1,0.5);
-  assert.deepEqual([...result],[128,128,0,255, 0,0,255,255],
+  assert.deepEqual([...result],[188,188,0,255, 0,0,255,255],
     'Native repaint covers projection once; transparent pixels retain underlay');
   const selected=[base,bottom,top,make('local-repaint-uv-native-v1-hidden',{visible:false}),
     make('local-repaint-uv-native-v1-other',{objectId:'b'})];

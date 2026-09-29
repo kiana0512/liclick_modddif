@@ -2,6 +2,7 @@ import type { PipelineTraceContext } from '@/engine/performance/tracing/types';
 import { beginWorkerTrace, sendWorkerTiming } from '@/engine/performance/tracing/workerTrace';
 import { encodeRgbaPngBytesChunked } from '@/utils/encodeRgbaPngCore';
 import { yieldWorkerTask } from '@/utils/workerScheduling';
+import {compositeLinearChannel} from '@/engine/layers/linearUnderComposite';
 
 export {};
 
@@ -179,6 +180,16 @@ const shaderSource = `
     return u32(clamp(floor(value + 0.5), 0.0, 255.0));
   }
 
+  fn linearByte(value: u32) -> f32 {
+    let c=f32(value)/255.0;
+    if(c<=0.04045) { return c/12.92; }
+    return pow((c+0.055)/1.055,2.4);
+  }
+  fn srgbByte(c: f32) -> u32 {
+    if(c<=0.0031308) { return roundedByte(c*12.92*255.0); }
+    return roundedByte((1.055*pow(c,1.0/2.4)-0.055)*255.0);
+  }
+
   @compute @workgroup_size(256)
   fn compositeUnder(@builtin(global_invocation_id) invocation: vec3<u32>) {
     let localIndex = invocation.y * params.workgroupsPerRow * 256u + invocation.x;
@@ -197,12 +208,12 @@ const shaderSource = `
       return;
     }
 
-    let red = roundedByte((f32(byteAt(front, 0u)) * frontAlpha +
-      f32(byteAt(underlay, 0u)) * visibleUnderlayAlpha) / outputAlpha);
-    let green = roundedByte((f32(byteAt(front, 8u)) * frontAlpha +
-      f32(byteAt(underlay, 8u)) * visibleUnderlayAlpha) / outputAlpha);
-    let blue = roundedByte((f32(byteAt(front, 16u)) * frontAlpha +
-      f32(byteAt(underlay, 16u)) * visibleUnderlayAlpha) / outputAlpha);
+    let red = srgbByte((linearByte(byteAt(front, 0u)) * frontAlpha +
+      linearByte(byteAt(underlay, 0u)) * visibleUnderlayAlpha) / outputAlpha);
+    let green = srgbByte((linearByte(byteAt(front, 8u)) * frontAlpha +
+      linearByte(byteAt(underlay, 8u)) * visibleUnderlayAlpha) / outputAlpha);
+    let blue = srgbByte((linearByte(byteAt(front, 16u)) * frontAlpha +
+      linearByte(byteAt(underlay, 16u)) * visibleUnderlayAlpha) / outputAlpha);
     let alpha = roundedByte(outputAlpha * 255.0);
     frontPixels[index] = red | (green << 8u) | (blue << 16u) | (alpha << 24u);
   }
@@ -396,15 +407,8 @@ function compositeOnCpu(frontBuffer: ArrayBuffer, underlayBuffer: ArrayBuffer, o
       if (mask) mask[offset / 4] = 0;
       continue;
     }
-    front[offset] = Math.round(
-      (front[offset] * frontAlpha + underlay[offset] * visibleUnderlayAlpha) / outputAlpha,
-    );
-    front[offset + 1] = Math.round(
-      (front[offset + 1] * frontAlpha + underlay[offset + 1] * visibleUnderlayAlpha) / outputAlpha,
-    );
-    front[offset + 2] = Math.round(
-      (front[offset + 2] * frontAlpha + underlay[offset + 2] * visibleUnderlayAlpha) / outputAlpha,
-    );
+    for (let c=0;c<3;c++) front[offset+c] = compositeLinearChannel(front[offset+c],
+      underlay[offset+c],frontAlpha,visibleUnderlayAlpha,outputAlpha);
     front[offset + 3] = Math.round(outputAlpha * 255);
     if (mask) mask[offset / 4] = front[offset + 3]
       ? Math.round((mask[offset / 4] * previousAlpha) / front[offset + 3]) : 0;

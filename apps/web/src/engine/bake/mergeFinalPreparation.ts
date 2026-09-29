@@ -9,7 +9,7 @@ import {cloneProjectionBakeImageData} from './projectionBakeSignature';
 
 let ready:{key:string;blob:Blob}|undefined;
 let pending:{key:string;controller:AbortController;promise:Promise<void>}|undefined;
-const keyFor=(signature:string,layers:Layer[])=>signature+'|uv-final-v4|'+JSON.stringify([
+const keyFor=(signature:string,layers:Layer[])=>signature+'|uv-final-v5|'+JSON.stringify([
   layers,layers.map(layer=>getLiveProjectedTextureSourceState(layer.imageUrl)?.revision),
 ]);
 export function cancelMergeFinalPreparation(clear=false) {

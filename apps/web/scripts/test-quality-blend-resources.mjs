@@ -6,7 +6,7 @@ import { pipelineTraceDisabled } from './pipeline-trace-test-build.mjs';
 const current = fs.readFileSync(new URL('../src/workers/qualityBlend.worker.ts', import.meta.url), 'utf8');
 const frozen = fs.readFileSync(new URL('./fixtures/quality-blend-0ee7b0b.ts', import.meta.url), 'utf8');
 const pixelSource=fs.readFileSync(new URL('../src/engine/bake/qualityBlendCpuPixel.ts', import.meta.url),'utf8');
-const pixelCode=ts.transpileModule(pixelSource.replace('export function','function'),{compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText;
+const pixelCode=ts.transpileModule(pixelSource.replaceAll('export ',''),{compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText;
 const sharedResolve=new Function(pixelCode+';return resolvePixelCpu;')();
 const overlaySource = fs.readFileSync(new URL('../src/engine/bake/projectedOverlayComposition.ts', import.meta.url), 'utf8');
 const overlayCode = ts.transpileModule(overlaySource.slice(overlaySource.indexOf('export function getProjectionOverlayAlpha')).replace('export function', 'function'), {
@@ -18,7 +18,8 @@ function load(source, device) {
   return new Function('resolvePixelCpu','getProjectionOverlayAlpha','self','yieldWorkerTask', `${code}; return {createTopK, resolveCpu, resolveGpu, applyOverlays, shader, run};`)(sharedResolve,sharedOverlayAlpha,{ navigator: { gpu: device ? { requestAdapter: async () => ({ requestDevice: async () => device }) } : undefined } },()=>Promise.resolve());
 }
 const old = load(frozen), next = load(current);
-assert.equal(next.shader, old.shader, 'production shader is unchanged');
+assert.equal(next.shader.replace('var confidence =', 'let confidence =').replace(/    if \(params\.preserveCoverageAlpha == 2u\)[^\n]+\n/, ''), old.shader,
+  'Only the new display-alpha branch changes the quality shader; legacy modes stay identical');
 let seed = 715;
 const random = () => (seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0);
 for (let test = 0; test < 120; test++) {

@@ -83,6 +83,45 @@ try {
   const { buildContentAwareSurfaceTopology } = await server.ssrLoadModule(
     '/src/engine/contentAware/buildSurfaceTopology.ts',
   );
+  // End-to-end centre-free triangle: real raster -> mask -> shared CPU/Worker kernel.
+  const { buildContentAwareRepairMask } = await server.ssrLoadModule('/src/engine/contentAware/buildRepairMask.ts');
+  const { createVisibleSurfaceCompletionPolicy } = await server.ssrLoadModule('/src/engine/contentAware/visibleSurfaceCompletionPolicy.ts');
+  const { repairSurfaceTexture } = await server.ssrLoadModule('/src/engine/contentAware/surfaceAwareRepair.ts');
+  const sliver = createCrossComponentMesh();
+  sliver.geometry.setAttribute('uv', new THREE.Float32BufferAttribute([
+    6.6/32, 1-5.5/32, 6.8/32, 1-5.5/32, 6.7/32, 1-25.5/32,
+  ], 2));
+  const thin = await buildContentAwareSurfaceTopology(sliver, 32, 32, {includeSeamLinks:false});
+  assert.equal(thin.coreMask.some(Boolean), false);
+  const touched = [...thin.topologyMask.keys()].filter(i => thin.topologyMask[i]);
+  assert.ok(touched.length > 3);
+  const rgba = new Uint8ClampedArray(32*32*4);
+  rgba.set([120,80,40,255], touched[0]*4);
+  const policy = createVisibleSurfaceCompletionPolicy(32);
+  const selected = await buildContentAwareRepairMask({width:32,height:32,rgba,
+    ...thin, ...policy.gapMask});
+  assert.equal(selected.stats.totalPixels, touched.length-1);
+  const fixed = repairSurfaceTexture({width:32,height:32,rgba,writeMask:selected.mask,
+    topologyMask:thin.topologyMask,topologyRegionIds:thin.regionIds,...policy.propagation});
+  assert.equal(fixed.stats.unresolvedPixels, 0);
+  for (const i of touched.slice(1)) assert.equal(fixed.filledRgba[i*4+3],255);
+  sliver.geometry.dispose(); sliver.material.dispose();
+  // Independent texture-sampling oracle: pixel centres are (i + .5)/size,
+  // not i/(size-1). Cover both atlas ends and non-square resolutions.
+  for (const [width,height] of [[16,16],[32,16],[64,32]]) {
+    for (const [left,right] of [[0.02,0.28],[0.72,0.98]]) {
+      const mesh = new THREE.Mesh(new THREE.PlaneGeometry(1,1), new THREE.MeshBasicMaterial());
+      const uv = mesh.geometry.getAttribute('uv');
+      for (let i=0;i<uv.count;i++) uv.setXY(i,left+uv.getX(i)*(right-left),0.02+uv.getY(i)*0.96);
+      const result = await buildContentAwareSurfaceTopology(mesh,width,height,{includeSeamLinks:false});
+      for (let y=0;y<height;y++) for(let x=0;x<width;x++) {
+        const u=(x+0.5)/width, v=1-(y+0.5)/height;
+        const expected=u>left&&u<right&&v>0.02&&v<0.98;
+        assert.equal(Boolean(result.coreMask[y*width+x]),expected,`GPU texel centre ${width}x${height} at ${x},${y}`);
+      }
+      mesh.geometry.dispose(); mesh.material.dispose();
+    }
+  }
   // Merge uses only these masks/owners. Removing the unused seam-link table
   // must not alter either one, including overlaps, hard edges and hidden meshes.
   for (let trial = 0; trial < 24; trial++) {

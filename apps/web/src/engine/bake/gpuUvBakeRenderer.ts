@@ -64,7 +64,7 @@ type GpuLayerStackBakeInput = {
   allowWhileInteracting?: boolean;
   checkCancelled?: () => void;
   rasterCache?: import('./ProjectedUvRasterCache').ProjectedUvRasterCache;
-  residentQuality?: { preserveAlpha: boolean; retainRasters: boolean };
+  residentQuality?: { preserveAlpha: boolean | 'display'; retainRasters: boolean };
   renderer: THREE.WebGLRenderer;
   group: THREE.Group;
   layers: Layer[];

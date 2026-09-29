@@ -88,7 +88,7 @@ const { ResidentQualityComposite } = load('residentQualityComposite', {
   assert.deepEqual(result.output, new Uint8ClampedArray(sentinels));
   assert.equal(result.correctedPixels, 0);
 }
-for (const preserveAlpha of [false, true])
+for (const preserveAlpha of [false, true, 'display'])
   for (const runMarkers of [false, true]) {
     const resolution = 64,
       count = resolution * resolution;
@@ -166,12 +166,12 @@ for (const preserveAlpha of [false, true])
     assert(calls<100,'Warm integer tuples avoid redundant canonical pixel work');
     // Force a hash collision with the same first color but a different second.
     const a=packed[0],b=packed[1],c=packed[2];
-    const q=(packed[3]&0xffffff)|(preserveAlpha?0x1000000:0x2000000);
+    const q=(packed[3]&0xffffff)|(preserveAlpha==='display'?0x3000000:preserveAlpha?0x1000000:0x2000000);
     const hash=Math.imul(a^Math.imul(b,1597334677)^Math.imul(c,3812015801)^q,2654435761);
     const entry=((hash^(hash>>>16))&262143)*5;
     instance.correctedTuples.set([a,b^1,c,q,0],entry);
     assert.deepEqual((await instance.readCorrected(preserveAlpha)).output,reference,'Hash collisions must verify all four keys');
-    const alternate=await instance.readCorrected(!preserveAlpha);
+    const alternate=await instance.readCorrected(preserveAlpha==='display'?true:!preserveAlpha);
     assert.notDeepEqual(alternate.output,reference,'Preserve-alpha modes must never share an incorrect memo output');
     assert.deepEqual((await instance.readCorrected(preserveAlpha)).output,reference);
   }
@@ -484,7 +484,7 @@ await cacheWorker.onmessage({ data: { id: 3, type: 'restore', key: 'missing' } }
 assert.equal(cacheReply.output, undefined);
 // A fresh worker has no in-memory keys: F5 must recover exact RGBA and mask,
 // while another input/account digest and corrupt bytes must miss.
-const disk = new Map(), cacheStores = new Map([['li3d-resident-uv-display-v1', disk]]);
+const disk = new Map(), cacheStores = new Map([['li3d-resident-uv-display-v2', disk]]);
 const previousCaches = globalThis.caches;
 globalThis.caches = { async open(name) { const store = cacheStores.get(name) ?? new Map(); cacheStores.set(name, store); return {
   async put(key, response) { store.set(typeof key === 'string' ? key : key.url, response.clone()); },

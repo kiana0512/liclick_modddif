@@ -7,8 +7,8 @@ let diskWrites = Promise.resolve<string | undefined>(undefined);
 const budget = 256 * 1024 * 1024;
 const diskEntryLimit = 4;
 let retained = 0;
-const diskCache = 'li3d-resident-uv-display-v1';
-const pointerCache = 'li3d-resident-uv-active-v1';
+const diskCache = 'li3d-resident-uv-display-v2';
+const pointerCache = 'li3d-resident-uv-active-v2';
 const pointerRequest = () => `${self.location.origin}/__li3d_internal/resident-uv-active`;
 const diskRequest = (key: string) => `${self.location.origin}/__li3d_internal/resident-uv/${key}`;
 const digest = async (bytes: Uint8Array<ArrayBuffer>) =>

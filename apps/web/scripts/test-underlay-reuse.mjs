@@ -4,6 +4,12 @@ import ts from 'typescript';
 
 // Exercise the real worker queue and CPU blend. Only browser I/O is substituted.
 const source = await readFile(new URL('../src/workers/webGpuRgbaComposite.worker.ts', import.meta.url), 'utf8');
+const linearSource = await readFile(new URL('../src/engine/layers/linearUnderComposite.ts', import.meta.url), 'utf8');
+const linearExports = {};
+const pixelSource = await readFile(new URL('../src/engine/bake/qualityBlendCpuPixel.ts', import.meta.url), 'utf8');
+const pixelExports={};
+new Function('exports',ts.transpileModule(pixelSource,{compilerOptions:{module:ts.ModuleKind.CommonJS}}).outputText)(pixelExports);
+new Function('exports','require', ts.transpileModule(linearSource, {compilerOptions:{module:ts.ModuleKind.CommonJS}}).outputText)(linearExports,()=>pixelExports);
 const pending = new Map();
 let fetches = 0, decodes = 0, closes = 0, fail = false, duringDecode;
 const scope = { navigator: {}, postMessage(message, transfer = []) {
@@ -24,6 +30,7 @@ class Canvas {
 new Function('require', 'exports', 'self', 'fetch', 'createImageBitmap', 'OffscreenCanvas',
   ts.transpileModule(pipelineTraceDisabled(source), { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText)(
   name => {
+    if (name.endsWith('linearUnderComposite')) return linearExports;
     if (name.endsWith('workerScheduling')) return { yieldWorkerTask: async () => {} };
     if (name.endsWith('encodeRgbaPngCore')) return {};
     throw Error(name);

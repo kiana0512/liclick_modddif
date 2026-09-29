@@ -393,29 +393,6 @@ async function drawRenderedColorLayerAsBaseColor(
   targetContext.restore();
 }
 
-function reconcileFlattenedBaseColorUvSeams(
-  context: CanvasRenderingContext2D,
-  root: THREE.Object3D,
-) {
-  const { width, height } = context.canvas;
-  // A full 8K readback plus the reconciliation copy would allocate more than
-  // half a gigabyte. Its sparse repaint layers were already repaired at 4K
-  // above, so reserve this final opaque-atlas pass for the resolutions where
-  // it is both most useful and safely bounded.
-  if (Math.max(width, height) > 4096) return;
-
-  const imageData = context.getImageData(0, 0, width, height);
-  const coverage = new Uint8Array(width * height);
-  coverage.fill(1);
-  const result = reconcileUvSeams(imageData, root, coverage, {
-    // At this point both sides are opaque. Average corresponding texels instead
-    // of running missing-coverage repair: this removes the colour discontinuity
-    // that Blender's bilinear and mip-map sampling otherwise magnifies.
-    bandPixels: Math.max(8, Math.min(32, Math.ceil(Math.max(width, height) / 128))),
-  });
-  if (result.adjustedPixels > 0) context.putImageData(imageData, 0, 0);
-}
-
 function findVisibleUvLayers(objectId: string) {
   const layers = useLayerStore.getState().layers;
   const stack = getVisibleUvLayerStack(layers, objectId, 'bottom-to-top');
@@ -633,7 +610,8 @@ async function flattenVisibleLayersToBaseColor(
       await drawBlobToCanvas(context, blob, width, height, opacity);
     }
   }
-  reconcileFlattenedBaseColorUvSeams(context, root);
+  // The composed Base Color is authoritative. Do not average valid colours
+  // across UV seams solely on export (e.g. lamp metal/glass boundaries).
   // The canvas started opaque, and source-over compositing preserves that alpha.
   // Avoid a full-canvas readback here so 8K exports do not allocate another
   // quarter-gigabyte ImageData merely to rewrite alpha bytes to 255.

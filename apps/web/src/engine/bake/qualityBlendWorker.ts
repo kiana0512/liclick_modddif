@@ -52,7 +52,7 @@ type BlendRequest = {
   type: 'blend';
   id: number;
   resolution: number;
-  preserveCoverageConfidenceAlpha: boolean;
+  preserveCoverageConfidenceAlpha: boolean | 'display';
   verify: boolean;
   forceCpuOutput: boolean;
   interactive: boolean;
@@ -209,7 +209,7 @@ function getWorker() {
 export function blendProjectedRastersInWorker(
   layers: QualityBlendWorkerLayer[],
   resolution: number,
-  preserveCoverageConfidenceAlpha: boolean,
+  preserveCoverageConfidenceAlpha: boolean | 'display',
   overlays: QualityBlendWorkerOverlay[] = [],
   forceCpuReference = false,
   resolvedBase?: QualityBlendWorkerResult,

@@ -4,7 +4,10 @@ import { webcrypto } from 'node:crypto';
 import ts from 'typescript';
 
 const source=await readFile(new URL('../src/workers/webGpuRgbaComposite.worker.ts',import.meta.url),'utf8');
-const compiled=ts.transpileModule(pipelineTraceDisabled(source).replace(/^import[^;]+;/gm,'').replace('export {};',''),{
+const linearSource=await readFile(new URL('../src/engine/layers/linearUnderComposite.ts',import.meta.url),'utf8');
+const pixelSource=await readFile(new URL('../src/engine/bake/qualityBlendCpuPixel.ts',import.meta.url),'utf8');
+const linearCode=ts.transpileModule(pixelSource.replaceAll('export ','')+'\nconst linear=SRGB_BYTE_TO_LINEAR;\n'+linearSource.replace(/^import[^;]+;/gm,'').replace('export function','function'),{compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText;
+const compiled=linearCode+ts.transpileModule(pipelineTraceDisabled(source).replace(/^import[^;]+;/gm,'').replace('export {};',''),{
   compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.None},
 }).outputText;
 let bytes=new Uint8Array([1,2,3,4]),decodes=0,fetches=0,closed=0,failure=false,decodeGate;

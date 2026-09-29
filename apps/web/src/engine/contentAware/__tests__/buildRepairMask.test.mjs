@@ -3,6 +3,32 @@ import test from 'node:test';
 
 import { buildContentAwareRepairMask } from '../buildRepairMask.ts';
 import { createVisibleSurfaceCompletionPolicy } from '../visibleSurfaceCompletionPolicy.ts';
+import { countUncoveredRepairTargets } from '../verifyRepairCoverage.ts';
+
+test('production selects subpixel edges but not ambiguous halo or authored texels', async () => {
+  const f = createFixture(8, 1);
+  f.coreMask.fill(0); f.rgba.fill(0);
+  f.topologyMask[5] = 0;
+  f.regionIds[6] = 0;
+  f.conflictMask[2] = 1; f.conflictMask[3] = 2;
+  f.rgba[4 * 4 + 3] = 255;
+  const result = await buildContentAwareRepairMask({ ...f,
+    ...createVisibleSurfaceCompletionPolicy(8, 1).gapMask, allowConflictedWrites: true });
+  assert.deepEqual([...result.mask], [255,255,0,0,0,0,0,255]);
+  const strict = await buildContentAwareRepairMask({...f, minimumComponentPixels: 1});
+  assert.equal(strict.stats.totalPixels, 0);
+});
+
+test('final coverage check rejects transparent/partial targets and supports cancellation', async () => {
+  const mask = new Uint8Array([255,255,0]);
+  const rgba = new Uint8ClampedArray(12);
+  rgba[3] = 255; rgba[7] = 254;
+  assert.equal(await countUncoveredRepairTargets(mask, rgba), 1);
+  rgba[7] = 255;
+  assert.equal(await countUncoveredRepairTargets(mask, rgba), 0);
+  const c = new AbortController(); c.abort();
+  await assert.rejects(countUncoveredRepairTargets(mask, rgba, c.signal), {name: 'AbortError'});
+});
 
 function createFixture(width, height) {
   const pixelCount = width * height;
@@ -153,7 +179,7 @@ test('defaults reject an isolated texel and an already-aborted signal stays abor
   );
 });
 
-test('production visible-surface policy retains isolated hatch texels but never selects geometry outside the UV core', async () => {
+test('production visible-surface policy retains isolated hatch texels but never selects outside the UV footprint', async () => {
   const fixture = createFixture(4096, 1);
   setAlpha(fixture, 1024, 0, 0);
   setAlpha(fixture, 3072, 0, 0);

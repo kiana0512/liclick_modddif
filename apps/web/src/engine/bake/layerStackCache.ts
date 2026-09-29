@@ -4,7 +4,7 @@ import type { Layer } from '@/types/layer';
 import { getLiveProjectedTextureSourceState } from '@/engine/projection/liveProjectedCanvasTextureRegistry';
 
 const MIN_REUSABLE_LAYER_STACK_COVERAGE_RATIO = 0.001;
-const UV_BAKE_PROTOCOL_VERSION = 10; // Broader reliable footprint; do not reuse narrower coverage.
+const UV_BAKE_PROTOCOL_VERSION = 11; // Display-alpha and linear underlay merge semantics.
 const inFlightLayerStackBakes = new Map<string, Promise<BakedTexture | undefined>>();
 
 export function getVisibleProjectedLayerStack(layers: Layer[], objectId: string) {

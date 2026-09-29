@@ -6,8 +6,8 @@ import { yieldToBrowserTask } from '@/utils/browserScheduling';
 import { isLegacyUvBakeDiagnosticEnabled } from './uvBakeDebugControls';
 import { withUvRenderTarget, type UvContributionTiles } from './uvContributionTiles';
 
-const approvals=new WeakMap<THREE.WebGLRenderer,Map<boolean,boolean>>();
-export function residentQualityPolicy(renderer:THREE.WebGLRenderer,preserveAlpha:boolean) {
+const approvals=new WeakMap<THREE.WebGLRenderer,Map<boolean | 'display',boolean>>();
+export function residentQualityPolicy(renderer:THREE.WebGLRenderer,preserveAlpha: boolean | 'display') {
   const params=new URLSearchParams(window.location.search);
   if(isLegacyUvBakeDiagnosticEnabled() &&
     (params.get('perfResidentQuality')==='0' || params.get('perfQualityCpuGold')==='1')) return undefined;
@@ -20,7 +20,7 @@ export function residentQualityPolicy(renderer:THREE.WebGLRenderer,preserveAlpha
   return {preserveAlpha,retainRasters:modes.get(preserveAlpha)!==true || params.get('perfQualityGpuAb')==='1'};
 }
 
-export async function verifyResidentQuality(renderer:THREE.WebGLRenderer,preserveAlpha:boolean,
+export async function verifyResidentQuality(renderer:THREE.WebGLRenderer,preserveAlpha: boolean | 'display',
   candidate:QualityBlendWorkerResult,reference:QualityBlendWorkerResult) {
   const a=candidate.imageData.data,b=reference.imageData.data;
   const modes=approvals.get(renderer);
@@ -115,7 +115,7 @@ void main() {
 // candidates are gathered for the canonical double-precision CPU resolver.
 const resolveShader = `${common}
 uniform sampler2D linearTable;
-uniform bool preserveAlpha;
+uniform int preserveAlpha;
 uniform bool markUncertain;
 layout(location=0) out vec4 result;
 vec3 linearColor(uint packed) {
@@ -144,7 +144,8 @@ void main() {
   uvec3 qs=uvec3(packed.w,packed.w >> 8u,packed.w >> 16u)&255u;
   vec4 a=score(packed.x,qs.x), b=score(packed.y,qs.y), c=score(packed.z,qs.z);
   vec3 coverage=vec3(a.w,b.w,c.w);
-  float rawAlpha=preserveAlpha ? (1.0-(1.0-a.w)*(1.0-b.w)*(1.0-c.w))*255.0 : 255.0;
+  float confidence=1.0-(1.0-a.w)*(1.0-b.w)*(1.0-c.w);
+  float rawAlpha=preserveAlpha == 0 ? 255.0 : (preserveAlpha == 2 ? smoothstep(0.0,0.12,confidence) : confidence)*255.0;
   float alpha=floor(rawAlpha+0.5);
   bool uncertainAlpha=abs(fract(rawAlpha)-0.5)<0.01;
   if ((packed.y >> 24u)==0u) {
@@ -302,7 +303,7 @@ export class ResidentQualityComposite {
         previousCandidates:{value:null}, scoreTable:{value:this.scoreTexture},
         layerColor:{value:null}, layerQuality:{value:null}, qualityIsRed:{value:false},
         contributionIndex:{value:null},tiledContribution:{value:false},contributionColumns:{value:1},
-        linearTable:{value:this.linearTexture}, preserveAlpha:{value:false},
+        linearTable:{value:this.linearTexture}, preserveAlpha:{value:0},
         markUncertain:{value:false}, coordinates:{value:null}, resolution:{value:resolution},
         counts:{value:null},firstCount:{value:true},
         unpremultiplyTable:{value:this.unpremultiplyTexture},
@@ -351,10 +352,10 @@ export class ResidentQualityComposite {
     this.initialized=true;
   }
 
-  resolve(preserveAlpha: boolean, markUncertain = false) {
+  resolve(preserveAlpha: boolean | 'display', markUncertain = false) {
     if (!this.initialized) throw new Error('Resident quality composite has no layers.');
     this.resolveMaterial.uniforms.previousCandidates.value=this.targets[this.current].texture;
-    this.resolveMaterial.uniforms.preserveAlpha.value=preserveAlpha;
+    this.resolveMaterial.uniforms.preserveAlpha.value=preserveAlpha === 'display' ? 2 : Number(preserveAlpha);
     this.resolveMaterial.uniforms.markUncertain.value=markUncertain;
     this.mesh.material=this.resolveMaterial;
     this.withTarget(this.output,() => this.renderer.render(this.scene,this.camera));
@@ -362,7 +363,7 @@ export class ResidentQualityComposite {
   }
 
   /** GPU-order RGBA. The caller performs the existing final Y flip once. */
-  async readCorrected(preserveAlpha: boolean) {
+  async readCorrected(preserveAlpha: boolean | 'display') {
     const bytes=await readRenderTargetPixelsInStripes(this.renderer,this.resolve(preserveAlpha,true),this.resolution);
     const output=new Uint8ClampedArray(bytes.buffer);
     const outputWords = new Uint32Array(output.buffer);
@@ -412,7 +413,7 @@ export class ResidentQualityComposite {
             selected[offset + 2] !== previous[2] || selected[offset + 3] !== previous[3]) {
           const a=selected[offset],b=selected[offset+1],c=selected[offset+2];
           // The high byte is only a coverage counter, not a resolver input.
-          const q=(selected[offset+3]&0xffffff)|(preserveAlpha ? 0x1000000 : 0x2000000);
+          const q=(selected[offset+3]&0xffffff)|(preserveAlpha === 'display' ? 0x3000000 : preserveAlpha ? 0x1000000 : 0x2000000);
           const hash=Math.imul(a^Math.imul(b,1597334677)^Math.imul(c,3812015801)^q,2654435761);
           const entry=((hash^(hash>>>16))&262143)*5;
           if(memo[entry]===a && memo[entry+1]===b && memo[entry+2]===c && memo[entry+3]===q) {

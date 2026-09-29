@@ -1228,10 +1228,9 @@ export function repairSurfaceTexture(
 
   // Close the one-texel alpha gap that texture filtering can expose between a
   // repaired component and its UV coverage. Unlike atlas RGB bleed, this skirt
-  // is opaque, so it is deliberately conservative: it may only replace texels
-  // that were still effectively empty in the composited input, and it cannot
-  // cross a topology region boundary. Existing projections and previous repair
-  // layers therefore remain untouched.
+  // is opaque and cannot cross a topology region boundary. The production
+  // underlay may extend below authored projection for filtered overlap; generic
+  // callers retain their explicit input-alpha cap. Source layers stay intact.
   let coverageSkirtPixelCount = 0;
   head = 0;
   let coverageSkirtDistance = 0;
@@ -1265,9 +1264,13 @@ export function repairSurfaceTexture(
           if (!seedRegion || targetRegion !== seedRegion) continue;
         }
         const targetOffset = neighbor * 4;
-        filledRgba[targetOffset] = filledRgba[sourceOffset];
-        filledRgba[targetOffset + 1] = filledRgba[sourceOffset + 1];
-        filledRgba[targetOffset + 2] = filledRgba[sourceOffset + 2];
+        // Reliable authored boundary colour wins over propagated fill colour.
+        // This only writes the sparse underlay, never the projection input.
+        const reliable = input.rgba[targetOffset + 3] >= input.minSourceAlpha;
+        for (let channel = 0; channel < 3; channel += 1) {
+          filledRgba[targetOffset + channel] = reliable
+            ? input.rgba[targetOffset + channel] : filledRgba[sourceOffset + channel];
+        }
         filledRgba[targetOffset + 3] = 255;
         repairedMask[neighbor] = 255;
         owner[neighbor] = seedIndex;

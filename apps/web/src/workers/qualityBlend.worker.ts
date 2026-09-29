@@ -38,7 +38,7 @@ type BlendRequest = {
   type: 'blend';
   id: number;
   resolution: number;
-  preserveCoverageConfidenceAlpha: boolean;
+  preserveCoverageConfidenceAlpha: boolean | 'display';
   verify: boolean;
   forceCpuOutput: boolean;
   interactive: boolean;
@@ -154,6 +154,7 @@ let workQueue = Promise.resolve();
 const gpuQualityApproval = {
   opaque: false,
   confidenceAlpha: false,
+  displayAlpha: false,
 };
 
 function clampByte(value: number) {
@@ -219,7 +220,7 @@ async function accumulate(topK: TopK, request: BlendRequest) {
   }
 }
 
-async function resolveCpu(topK: TopK, preserveAlpha: boolean) {
+async function resolveCpu(topK: TopK, preserveAlpha: boolean | 'display') {
   const output = new Uint8ClampedArray(topK.coverage.length * 4);
   let writtenTexels = 0;
   for (let pixelIndex = 0; pixelIndex < topK.coverage.length; pixelIndex += 1) {
@@ -349,10 +350,11 @@ const shader = `
   fn component(color: u32, shift: u32) -> u32 { return (color >> shift) & 255u; }
   fn outputAlpha(a: Candidate, b: Candidate, c: Candidate) -> u32 {
     if (params.preserveCoverageAlpha == 0u) { return 255u; }
-    let confidence = 1.0 -
+    var confidence = 1.0 -
       (1.0 - clamp(a.coverage, 0.0, 1.0)) *
       (1.0 - clamp(b.coverage, 0.0, 1.0)) *
       (1.0 - clamp(c.coverage, 0.0, 1.0));
+    if (params.preserveCoverageAlpha == 2u) { confidence = smoothStepExact(0.0, 0.12, confidence); }
     return u32(clamp(floor(confidence * 255.0 + 0.5), 0.0, 255.0));
   }
 
@@ -395,7 +397,7 @@ async function getDevice() {
   return devicePromise;
 }
 
-async function resolveGpu(topK: TopK, preserveAlpha: boolean) {
+async function resolveGpu(topK: TopK, preserveAlpha: boolean | 'display') {
   const device = await getDevice();
   if (!device) return undefined;
   const pipeline = device.createComputePipeline({
@@ -437,7 +439,7 @@ async function resolveGpu(topK: TopK, preserveAlpha: boolean) {
       const outputBytes = count * 4;
       device.queue.writeBuffer(inputBuffer, 0, packed, 0, count * TOP_K * 24);
       const params = new Uint32Array(4);
-      params[0] = preserveAlpha ? 1 : 0;
+      params[0] = preserveAlpha === 'display' ? 2 : Number(preserveAlpha);
       device.queue.writeBuffer(paramsBuffer, 0, params.buffer);
       const bindGroup = device.createBindGroup({
         layout: pipeline.getBindGroupLayout(0),
@@ -522,7 +524,7 @@ async function run(request: BlendRequest) {
   await accumulate(topK, request);
   const accumulateMs = performance.now() - accumulateStartedAt;
   const resolveStartedAt = performance.now();
-  const approvedForMode = request.preserveCoverageConfidenceAlpha
+  const approvedForMode = request.preserveCoverageConfidenceAlpha === 'display' ? gpuQualityApproval.displayAlpha : request.preserveCoverageConfidenceAlpha
     ? gpuQualityApproval.confidenceAlpha
     : gpuQualityApproval.opaque;
   const needsCpuReference =
@@ -548,9 +550,11 @@ async function run(request: BlendRequest) {
         verification.acceptedGpuOutput = visuallyLossless && !request.forceCpuOutput;
         verification.usedCpuOutput = !verification.acceptedGpuOutput;
         if (visuallyLossless) {
-          if (request.preserveCoverageConfidenceAlpha) {
+          if (request.preserveCoverageConfidenceAlpha === 'display') {
+            gpuQualityApproval.displayAlpha = true;
+          } else if (request.preserveCoverageConfidenceAlpha === true) {
             gpuQualityApproval.confidenceAlpha = true;
-          } else {
+          } else if (!request.preserveCoverageConfidenceAlpha) {
             gpuQualityApproval.opaque = true;
           }
         }

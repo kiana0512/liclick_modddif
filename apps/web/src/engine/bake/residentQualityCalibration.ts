@@ -4,12 +4,12 @@ import { yieldToBrowserTask } from '@/utils/browserScheduling';
 import { blendProjectedRastersInWorker } from './qualityBlendWorker';
 import { convertLayerGpuReadbackInWorker } from './gpuReadbackConversionWorker';
 
-const pending = new WeakMap<THREE.WebGLRenderer, Map<boolean, Promise<void>>>();
+const pending = new WeakMap<THREE.WebGLRenderer, Map<boolean | 'display', Promise<void>>>();
 
 /** UV-DEVICE-CALIBRATION/1.1.1. Validate both R8/RGBA on the actual renderer; never trust a
  * persisted adapter name. Full-project CPU/GPU comparisons remain release QA.
  */
-export async function calibrateResidentQuality(renderer: THREE.WebGLRenderer, preserveAlpha: boolean) {
+export async function calibrateResidentQuality(renderer: THREE.WebGLRenderer, preserveAlpha: boolean | 'display') {
   const policy = residentQualityPolicy(renderer, preserveAlpha);
   if (!policy?.retainRasters || new URLSearchParams(location.search).get('perfQualityGpuAb') === '1') return;
   let modes = pending.get(renderer);

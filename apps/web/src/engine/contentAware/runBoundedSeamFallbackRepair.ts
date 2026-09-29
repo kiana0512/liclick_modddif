@@ -6,6 +6,7 @@ import {
 import { runSurfaceAwareRepair } from './runSurfaceAwareRepair';
 import type { SurfaceRepairStats } from './surfaceAwareRepair';
 import type { VisibleSurfaceCompletionPolicy } from './visibleSurfaceCompletionPolicy';
+import { countUncoveredRepairTargets } from './verifyRepairCoverage';
 
 export type VisibleSurfaceRepairResult = {
   filledRgba: Uint8ClampedArray<ArrayBuffer>;
@@ -31,6 +32,9 @@ export async function runVisibleSurfaceRepairWithFallback(input: {
   signal?: AbortSignal;
   onProgress?: (progress: number) => void;
 }): Promise<VisibleSurfaceRepairResult> {
+  // The original mask is transferred to the Worker; retain one byte per texel
+  // for an independent final-output check (not a second full-colour atlas).
+  const targets = new Uint8Array(input.writeMask);
   const initial = await runSurfaceAwareRepair(
     {
       width: input.width,
@@ -60,6 +64,7 @@ export async function runVisibleSurfaceRepairWithFallback(input: {
     seamTopologyBuildTimeMs: 0,
   };
   if (initial.stats.unresolvedPixels === 0) {
+    base.unresolvedPixels = await countUncoveredRepairTargets(targets, initial.filledRgba, input.signal);
     input.onProgress?.(1);
     return base;
   }
@@ -101,7 +106,8 @@ export async function runVisibleSurfaceRepairWithFallback(input: {
   return {
     filledRgba: fallback.filledRgba,
     repairedPixels: initial.stats.repairedPixels + fallback.stats.repairedPixels,
-    unresolvedPixels: fallback.stats.unresolvedPixels,
+    unresolvedPixels: Math.max(fallback.stats.unresolvedPixels,
+      await countUncoveredRepairTargets(targets, fallback.filledRgba, input.signal)),
     outputChecksum: fallback.stats.outputChecksum,
     initialStats: initial.stats,
     fallbackStats: fallback.stats,

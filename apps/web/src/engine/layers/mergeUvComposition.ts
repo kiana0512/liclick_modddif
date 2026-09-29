@@ -1,14 +1,15 @@
 import * as THREE from 'three';
+import {compositeLinearChannel} from './linearUnderComposite';
 import type { Layer } from '@/types/layer';
 import { isNativeUvRepaintLayer } from '@/engine/localRepaint/uvRepaintState';
 import { compareUvLayersForComposition } from './uvLayerComposition';
 
 /**
  * Increment when a merged UV produced by an older editor can no longer be
- * trusted to match the live layer stack. Version 12 also includes ordinary
- * user-created UV paint layers; their UUID/name is not a repaint discriminator.
+ * trusted to match the live layer stack. Version 14 preserves display coverage
+ * at projected edges and composites UV sources in linear light.
  */
-export const UV_MERGE_COMPOSITION_VERSION = 13;
+export const UV_MERGE_COMPOSITION_VERSION = 14;
 
 export function compositeRenderedColorMaskUnderInPlace(
   frontMask: Uint8Array,
@@ -276,11 +277,8 @@ export function compositeRgbaUnderInPlace<T extends Uint8Array | Uint8ClampedArr
     }
 
     for (let channel = 0; channel < 3; channel += 1) {
-      front[offset + channel] = Math.round(
-        (front[offset + channel] * frontAlpha +
-          underlay[offset + channel] * visibleUnderlayAlpha) /
-          outputAlpha,
-      );
+      front[offset + channel] = compositeLinearChannel(front[offset + channel],
+        underlay[offset + channel], frontAlpha, visibleUnderlayAlpha, outputAlpha);
     }
     front[offset + 3] = Math.round(outputAlpha * 255);
   }
@@ -302,6 +300,7 @@ export function getRgbaAlphaCoverageRatio(
 export function getMergeUvPostprocessOptions(resolution: number) {
   const safeResolution = Math.max(1, Math.floor(resolution));
   return {
+    preserveCoverageConfidenceAlpha: 'display' as const,
     // Restore the verified atlas postprocess profile. The two-pixel gutter is
     // outside model UV triangles and retains source alpha for bilinear sampling.
     uvIslandGutterPixels: Math.min(8, Math.max(2, Math.ceil(safeResolution / 512))),
