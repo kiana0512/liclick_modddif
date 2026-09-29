@@ -48,3 +48,5 @@ workspace-smoke*/
 
 # Production secret material is created only at deploy time.
 deploy/k8s/base/secrets/server.env
+
+/Li3dTests/
